@@ -1,7 +1,7 @@
 services:
   another_chat_tg:
     build: .
-    container_name: Another_chat_TG
+    container_name: another_chat_tg
     env_file:
       - .env
     restart: unless-stopped
