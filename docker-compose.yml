@@ -1,7 +1,7 @@
 services:
-  groq_chat_tg:
+  ACWLLM:
     build: .
-    container_name: groq_chat_tg
+    container_name: ACWLLM
     env_file:
       - .env
     restart: unless-stopped
