@@ -1,0 +1,9 @@
+services:
+  groq_chat_tg:
+    build: .
+    container_name: groq_chat_tg
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./allowed_users.txt:/app/allowed_users.txt

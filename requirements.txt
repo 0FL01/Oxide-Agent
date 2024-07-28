@@ -1,0 +1,6 @@
+python-telegram-bot
+groq
+python-dotenv
+SpeechRecognition
+duckduckgo_search
+octoai

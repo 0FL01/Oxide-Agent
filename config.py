@@ -1,0 +1,25 @@
+import os
+from groq import AsyncGroq
+from octoai.client import OctoAI
+from dotenv import load_dotenv
+from utils import load_allowed_users, save_allowed_users, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
+
+load_dotenv()
+
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+OCTOAI_API_KEY = os.getenv('OCTOAI_API_KEY')
+
+groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+octoai_client = OctoAI(api_key=OCTOAI_API_KEY)
+
+chat_history = {}
+
+MODELS = {
+    "Gemma 2 9B": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
+    "Llama 3 70B": {"id": "llama3-70b-8192", "max_tokens": 8192, "provider": "groq"},
+    "Llama 3.1 70B": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
+    "Llama 3.1 405B": {"id": "meta-llama-3.1-405b-instruct", "max_tokens": 32768, "provider": "octoai"}
+}
+
+ADMIN_ID = int(os.getenv('ADMIN_ID'))

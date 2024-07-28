@@ -1,0 +1,5 @@
+Admin can add and remove user
+
+/add_user <user_id>
+
+/remove_user <user_id>
