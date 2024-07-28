@@ -23,8 +23,8 @@ This Telegram bot leverages powerful language models to provide intelligent conv
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/groq-chat-telegram-bot.git
-   cd groq-chat-telegram-bot
+   git clone https://github.com/0FL01/Another-Chat-with-LLM.git
+   cd Another-Chat-with-LLM
    ```
 
 2. Create a `.env` file in the project root and add your API keys:
