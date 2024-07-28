@@ -1,5 +1,5 @@
 services:
-  Another_chat_TG:
+  another_chat_tg:
     build: .
     container_name: Another_chat_TG
     env_file:
