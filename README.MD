@@ -1,4 +1,4 @@
-# Groq Chat Telegram Bot
+# Another chat with LLM in telegram 
 
 This Telegram bot leverages powerful language models to provide intelligent conversations, voice recognition, and internet search capabilities.
 
