@@ -1,5 +1,5 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, constants
-from telegram.ext import ContextTypes, ConversationHandler
+from telegram.ext import ContextTypes
 from config import chat_history, groq_client, octoai_client, MODELS, ADMIN_ID
 from utils import format_html, split_long_message, search_duckduckgo, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
 from octoai.text_gen import ChatMessage
@@ -7,8 +7,6 @@ import logging
 import os
 
 logger = logging.getLogger(__name__)
-
-CHOOSING, SELECTING_MODEL, AWAITING_AUTH = range(3)
 
 def get_main_keyboard():
     keyboard = [
@@ -22,13 +20,22 @@ def get_model_keyboard():
     keyboard.append([KeyboardButton("Назад")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def check_auth(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not get_user_auth_state(user_id):
+            await update.message.reply_text("Вы не авторизованы. Пожалуйста, введите /start для авторизации.")
+            return
+        return await func(update, context)
+    return wrapper
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.info(f"User {user_id} started the bot")
 
     if not is_user_allowed(user_id):
         await update.message.reply_text("Пожалуйста, введите код авторизации:")
-        return AWAITING_AUTH
+        return
 
     if 'search_mode' not in context.user_data:
         context.user_data['search_mode'] = False
@@ -41,107 +48,69 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=constants.ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
-    return CHOOSING
 
-async def handle_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    auth_code = update.message.text
-
-    if auth_code == "your_secret_auth_code":  # Замените на реальный код авторизации
-        add_allowed_user(user_id)
-        set_user_auth_state(user_id, True)
-        await update.message.reply_text("Авторизация успешна. Добро пожаловать!", reply_markup=get_main_keyboard())
-        return CHOOSING
-    else:
-        await update.message.reply_text("Неверный код авторизации. Попробуйте еще раз или свяжитесь с администратором.")
-        return AWAITING_AUTH
-
-async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
-        return
-
-    try:
-        new_user_id = int(context.args[0])
-        add_allowed_user(new_user_id)
-        await update.message.reply_text(f"Пользователь {new_user_id} успешно добавлен.")
-    except (ValueError, IndexError):
-        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
-
-async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
-        return
-
-    try:
-        remove_user_id = int(context.args[0])
-        remove_allowed_user(remove_user_id)
-        await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
-    except (ValueError, IndexError):
-        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
-
+@check_auth
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in chat_history:
         del chat_history[user_id]
     logger.info(f"Chat history cleared for user {user_id}")
     await update.message.reply_text('<b>История чата очищена.</b>', parse_mode=constants.ParseMode.HTML)
-    return CHOOSING
 
+@check_auth
 async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         'Выберите модель:',
         reply_markup=get_model_keyboard()
     )
-    return SELECTING_MODEL
 
-async def select_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    selected_model = update.message.text
-    if selected_model in MODELS:
-        context.user_data['model'] = selected_model
-        await update.message.reply_text(
-            f"Выбрана модель: {selected_model}",
-            reply_markup=get_main_keyboard()
-        )
-        return CHOOSING
-    elif selected_model == "Назад":
-        await update.message.reply_text(
-            "Возвращаемся в главное меню.",
-            reply_markup=get_main_keyboard()
-        )
-        return CHOOSING
-    else:
-        await update.message.reply_text(
-            "Пожалуйста, выберите модель из предложенных вариантов.",
-            reply_markup=get_model_keyboard()
-        )
-        return SELECTING_MODEL
-
-
+@check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    text = update.message.text
+
+    if text == "Онлайн режим":
+        context.user_data['search_mode'] = True
+        await update.message.reply_text("Вы выбрали онлайн режим (В этом режиме бот может искать информацию в интернете). Теперь вы можете отправлять сообщения.")
+        return
+
+    if text == "Офлайн режим":
+        context.user_data['search_mode'] = False
+        await update.message.reply_text("Вы выбрали офлайн режим. Теперь вы можете отправлять сообщения.")
+        return
+
+    if text == "Очистить контекст":
+        await clear(update, context)
+        return
+
+    if text == "Сменить модель":
+        await change_model(update, context)
+        return
+
+    if text in MODELS:
+        context.user_data['model'] = text
+        await update.message.reply_text(f"Выбрана модель: {text}", reply_markup=get_main_keyboard())
+        return
+
     search_mode = context.user_data.get('search_mode', False)
-    user_message = context.user_data.get('recognized_text') if 'recognized_text' in context.user_data else update.message.text
     selected_model = context.user_data.get('model', list(MODELS.keys())[0])
 
-    logger.info(f"Received message from user {user_id}: {user_message}")
+    logger.info(f"Received message from user {user_id}: {text}")
 
     if user_id not in chat_history:
         chat_history[user_id] = []
 
-    chat_history[user_id].append({"role": "user", "content": user_message})
+    chat_history[user_id].append({"role": "user", "content": text})
     chat_history[user_id] = chat_history[user_id][-10:]
 
     if search_mode:
-        search_results = search_duckduckgo(user_message, max_results=3)
+        search_results = search_duckduckgo(text, max_results=3)
         search_response = "Вот что я нашёл в интернете:\n\n"
         for result in search_results:
             search_response += f"<b>{result['title']}</b>\n{result['href']}\n{result['body']}\n\n"
         chat_history[user_id].append({"role": "system", "content": search_response})
 
-    messages = [{"role": "system", "content": "Ты полезный ассистент, у тебя есть возможность распозновать голосовые сообщения, искать информацию в интернете и на основе этих данных ты даёшь релевантный ответ. Используй следующие обозначения для форматирования: ** для жирного текста, * для курсива, также при работе с кодом, следуй стандартам отправки сообщений Telegram, * в начале строки для элементов списка."}] + chat_history[user_id]
+    messages = [{"role": "system", "content": "Ты полезный ассистент, у тебя есть возможность искать информацию в интернете и на основе этих данных ты даёшь релевантный ответ. Используй следующие обозначения для форматирования: ** для жирного текста, * для курсива, также при работе с кодом, следуй стандартам отправки сообщений Telegram, * в начале строки для элементов списка."}] + chat_history[user_id]
 
     try:
         if MODELS[selected_model]["provider"] == "groq":
@@ -175,32 +144,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error processing request for user {user_id}: {str(e)}")
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=constants.ParseMode.HTML)
-    finally:
-        if 'recognized_text' in context.user_data:
-            del context.user_data['recognized_text']
-    
-    return CHOOSING
 
-
-
-async def handle_message_with_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-
-    if text == "Онлайн режим":
-        context.user_data['search_mode'] = True
-        await update.message.reply_text("Вы выбрали онлайн режим (В этом режиме бот может искать информацию в интернете). Теперь вы можете отправлять сообщения.")
-    elif text == "Офлайн режим":
-        context.user_data['search_mode'] = False
-        await update.message.reply_text("Вы выбрали офлайн режим. Теперь вы можете отправлять сообщения.")
-    elif text == "Очистить контекст":
-        await clear(update, context)
-    elif text == "Сменить модель":
-        return await change_model(update, context)
-    else:
-        return await handle_message(update, context)
-    return CHOOSING
-
+@check_auth
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.info(f"Received voice message from user {user_id}")
@@ -230,20 +175,31 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
             logger.info(f"Temporary file {temp_filename} removed")
-    return CHOOSING
 
-def check_auth(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if not get_user_auth_state(user_id):
-            await update.message.reply_text("Вы не авторизованы. Пожалуйста, введите /start для авторизации.")
-            return AWAITING_AUTH
-        return await func(update, context)
-    return wrapper
+@check_auth
+async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+        return
 
-handle_message = check_auth(handle_message)
-handle_message_with_mode = check_auth(handle_message_with_mode)
-handle_voice = check_auth(handle_voice)
-clear = check_auth(clear)
-change_model = check_auth(change_model)
-select_model = check_auth(select_model)
+    try:
+        new_user_id = int(context.args[0])
+        add_allowed_user(new_user_id)
+        await update.message.reply_text(f"Пользователь {new_user_id} успешно добавлен.")
+    except (ValueError, IndexError):
+        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+
+@check_auth
+async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+        return
+
+    try:
+        remove_user_id = int(context.args[0])
+        remove_allowed_user(remove_user_id)
+        await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
+    except (ValueError, IndexError):
+        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")

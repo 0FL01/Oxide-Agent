@@ -4,3 +4,4 @@ python-dotenv
 SpeechRecognition
 duckduckgo_search
 octoai
+watchdog

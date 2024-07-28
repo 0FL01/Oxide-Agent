@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install libasound2-dev gcc -y
 WORKDIR /app
 
 # Копируем файлы в контейнер
-COPY config.py handlers.py main.py utils.py allowed_users.txt requirements.txt ./
+COPY config.py handlers.py main.py utils.py watchdog_runner.py allowed_users.txt requirements.txt ./
 
 # Устанавливаем зависимости
 RUN pip install --upgrade pip && pip install -r requirements.txt
@@ -17,4 +17,4 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 ENV PYTHONUNBUFFERED=1
 
 # Запускаем скрипт
-CMD ["python", "main.py"]
+CMD ["python", "watchdog_runner.py"]
