@@ -16,10 +16,10 @@ octoai_client = OctoAI(api_key=OCTOAI_API_KEY)
 chat_history = {}
 
 MODELS = {
-    "Gemma 2 9B": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
-    "Llama 3 70B": {"id": "llama3-70b-8192", "max_tokens": 8192, "provider": "groq"},
-    "Llama 3.1 70B": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
-    "Llama 3.1 405B": {"id": "meta-llama-3.1-405b-instruct", "max_tokens": 32768, "provider": "octoai"}
+    "Gemma 2 9B-8192": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
+    "Llama 3 70B-8192": {"id": "llama3-70b-8192", "max_tokens": 8192, "provider": "groq"},
+    "Llama 3.1 70B-8192": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
+    "Llama 3.1 405B-65536": {"id": "meta-llama-3.1-405b-instruct", "max_tokens": 65536, "provider": "octoai"}
 }
 
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
