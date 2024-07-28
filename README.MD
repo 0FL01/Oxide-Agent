@@ -47,7 +47,7 @@ This Telegram bot leverages powerful language models to provide intelligent conv
 Run the bot using Python:
 
 ```
-python main.py
+python watchdog_runner.py
 ```
 
 ### Docker Deployment
