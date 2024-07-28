@@ -1,7 +1,7 @@
 services:
-  ACWLLM:
+  Another_chat_TG:
     build: .
-    container_name: ACWLLM
+    container_name: Another_chat_TG
     env_file:
       - .env
     restart: unless-stopped
