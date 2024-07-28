@@ -71,31 +71,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "Онлайн режим":
         context.user_data['search_mode'] = True
+        logger.info(f"Online mode activated for user {user_id}")
         await update.message.reply_text("Вы выбрали онлайн режим (В этом режиме бот может искать информацию в интернете). Теперь вы можете отправлять сообщения.")
         return
 
     if text == "Офлайн режим":
         context.user_data['search_mode'] = False
+        logger.info(f"Offline mode activated for user {user_id}")
         await update.message.reply_text("Вы выбрали офлайн режим. Теперь вы можете отправлять сообщения.")
         return
 
-    if text == "Очистить контекст":
-        await clear(update, context)
-        return
-
-    if text == "Сменить модель":
-        await change_model(update, context)
-        return
-
-    if text in MODELS:
-        context.user_data['model'] = text
-        await update.message.reply_text(f"Выбрана модель: {text}", reply_markup=get_main_keyboard())
-        return
-
     search_mode = context.user_data.get('search_mode', False)
-    selected_model = context.user_data.get('model', list(MODELS.keys())[0])
-
-    logger.info(f"Received message from user {user_id}: {text}")
+    selected_model = context.user_data.get('model', list(MODELS.keys())[0])  # Используем первую модель по умолчанию
+    logger.info(f"Search mode for user {user_id}: {search_mode}")
+    logger.info(f"Selected model for user {user_id}: {selected_model}")
 
     if user_id not in chat_history:
         chat_history[user_id] = []
@@ -145,11 +134,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error processing request for user {user_id}: {str(e)}")
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=constants.ParseMode.HTML)
 
+
 @check_auth
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.info(f"Received voice message from user {user_id}")
     temp_filename = f"tempvoice{user_id}.ogg"
+
+    class DummyMessage:
+        def __init__(self, text, from_user):
+            self.text = text
+            self.from_user = from_user
+
     try:
         voice = await update.message.voice.get_file()
         voice_file = await voice.download_as_bytearray()
@@ -165,9 +161,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recognized_text = transcription.text
         logger.info(f"Voice message from user {user_id} recognized: {recognized_text}")
 
-        context.user_data['recognized_text'] = recognized_text
+        dummy_update = Update(update.update_id, message=DummyMessage(recognized_text, update.effective_user))
 
-        await handle_message(update, context)
+        # Вызываем handle_message с фиктивным объектом Update
+        await handle_message(dummy_update, context)
     except Exception as e:
         logger.error(f"Error processing voice message for user {user_id}: {str(e)}")
         await update.message.reply_text(f"Произошла ошибка при обработке голосового сообщения: {str(e)}")
@@ -175,6 +172,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
             logger.info(f"Temporary file {temp_filename} removed")
+
 
 @check_auth
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
