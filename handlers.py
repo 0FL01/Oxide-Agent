@@ -81,16 +81,74 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Вы выбрали офлайн режим. Теперь вы можете отправлять сообщения.")
         return
 
-    search_mode = context.user_data.get('search_mode', False)
-    selected_model = context.user_data.get('model', list(MODELS.keys())[0])  # Используем первую модель по умолчанию
-    logger.info(f"Search mode for user {user_id}: {search_mode}")
-    logger.info(f"Selected model for user {user_id}: {selected_model}")
+    if text == "Очистить контекст":
+        await clear(update, context)
+        return
 
+    if text == "Сменить модель":
+        await change_model(update, context)
+        return
+
+    if text == "Назад":
+        await update.message.reply_text(
+            'Выберите действие:',
+            reply_markup=get_main_keyboard()
+        )
+        return
+
+    if text in MODELS:
+        context.user_data['model'] = text
+        await update.message.reply_text(
+            f'Модель изменена на {text}. Выберите действие:',
+            reply_markup=get_main_keyboard()
+        )
+        return
+
+    await process_message(update, context, text)
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    logger.info(f"Received voice message from user {user_id}")
+    temp_filename = f"tempvoice{user_id}.ogg"
+
+    try:
+        voice = await update.message.voice.get_file()
+        voice_file = await voice.download_as_bytearray()
+        with open(temp_filename, "wb") as f:
+            f.write(voice_file)
+        with open(temp_filename, "rb") as audio_file:
+            transcription = await groq_client.audio.transcriptions.create(
+                file=(temp_filename, audio_file.read()),
+                model="whisper-large-v3",
+                language="ru"
+            )
+
+        recognized_text = transcription.text
+        logger.info(f"Voice message from user {user_id} recognized: {recognized_text}")
+
+        await process_message(update, context, recognized_text)
+
+    except Exception as e:
+        logger.error(f"Error processing voice message for user {user_id}: {str(e)}")
+        await update.message.reply_text(f"Произошла ошибка при обработке голосового сообщения: {str(e)}")
+    finally:
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+            logger.info(f"Temporary file {temp_filename} removed")
+
+async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    
     if user_id not in chat_history:
         chat_history[user_id] = []
 
     chat_history[user_id].append({"role": "user", "content": text})
     chat_history[user_id] = chat_history[user_id][-10:]
+
+    search_mode = context.user_data.get('search_mode', False)
+    selected_model = context.user_data.get('model', list(MODELS.keys())[0])
+    logger.info(f"Search mode for user {user_id}: {search_mode}")
+    logger.info(f"Selected model for user {user_id}: {selected_model}")
 
     if search_mode:
         search_results = search_duckduckgo(text, max_results=3)
@@ -135,16 +193,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=constants.ParseMode.HTML)
 
 
+
 @check_auth
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.info(f"Received voice message from user {user_id}")
     temp_filename = f"tempvoice{user_id}.ogg"
-
-    class DummyMessage:
-        def __init__(self, text, from_user):
-            self.text = text
-            self.from_user = from_user
 
     try:
         voice = await update.message.voice.get_file()
@@ -161,10 +215,58 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recognized_text = transcription.text
         logger.info(f"Voice message from user {user_id} recognized: {recognized_text}")
 
-        dummy_update = Update(update.update_id, message=DummyMessage(recognized_text, update.effective_user))
+        # Вместо создания DummyMessage, мы напрямую обрабатываем распознанный текст
+        if user_id not in chat_history:
+            chat_history[user_id] = []
 
-        # Вызываем handle_message с фиктивным объектом Update
-        await handle_message(dummy_update, context)
+        chat_history[user_id].append({"role": "user", "content": recognized_text})
+        chat_history[user_id] = chat_history[user_id][-10:]
+
+        search_mode = context.user_data.get('search_mode', False)
+        selected_model = context.user_data.get('model', list(MODELS.keys())[0])
+
+        if search_mode:
+            search_results = search_duckduckgo(recognized_text, max_results=3)
+            search_response = "Вот что я нашёл в интернете:\n\n"
+            for result in search_results:
+                search_response += f"<b>{result['title']}</b>\n{result['href']}\n{result['body']}\n\n"
+            chat_history[user_id].append({"role": "system", "content": search_response})
+
+        messages = [{"role": "system", "content": "Ты полезный ассистент, у тебя есть возможность искать информацию в интернете и на основе этих данных ты даёшь релевантный ответ. Используй следующие обозначения для форматирования: ** для жирного текста, * для курсива, также при работе с кодом, следуй стандартам отправки сообщений Telegram, * в начале строки для элементов списка."}] + chat_history[user_id]
+
+        try:
+            if MODELS[selected_model]["provider"] == "groq":
+                response = await groq_client.chat.completions.create(
+                    messages=messages,
+                    model=MODELS[selected_model]["id"],
+                    temperature=0.7,
+                    max_tokens=MODELS[selected_model]["max_tokens"],
+                )
+                bot_response = response.choices[0].message.content
+            elif MODELS[selected_model]["provider"] == "octoai":
+                octoai_messages = [ChatMessage(content=msg["content"], role=msg["role"]) for msg in messages]
+                response = octoai_client.text_gen.create_chat_completion(
+                    messages=octoai_messages,
+                    model=MODELS[selected_model]["id"],
+                    temperature=0.7,
+                    max_tokens=MODELS[selected_model]["max_tokens"],
+                )
+                bot_response = response.choices[0].message.content
+            else:
+                raise ValueError(f"Unknown provider for model {selected_model}")
+
+            chat_history[user_id].append({"role": "assistant", "content": bot_response})
+            logger.info(f"Sent response to user {user_id}")
+
+            formatted_response = f"\n\n{format_html(bot_response)}"
+            message_parts = split_long_message(formatted_response)
+            
+            for part in message_parts:
+                await update.message.reply_text(part, parse_mode=constants.ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"Error processing request for user {user_id}: {str(e)}")
+            await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=constants.ParseMode.HTML)
+
     except Exception as e:
         logger.error(f"Error processing voice message for user {user_id}: {str(e)}")
         await update.message.reply_text(f"Произошла ошибка при обработке голосового сообщения: {str(e)}")
