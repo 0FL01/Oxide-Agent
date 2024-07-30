@@ -3,6 +3,7 @@ from groq import AsyncGroq
 from octoai.client import OctoAI
 from dotenv import load_dotenv
 from utils import load_allowed_users, save_allowed_users, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
+from langchain.tools import DuckDuckGoSearchRun
 
 load_dotenv()
 
@@ -23,3 +24,5 @@ MODELS = {
 }
 
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
+
+search_tool = DuckDuckGoSearchRun()
