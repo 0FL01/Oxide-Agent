@@ -91,6 +91,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await process_message(update, context, text)
 
+
+
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
     
@@ -103,9 +105,18 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     selected_model = context.user_data.get('model', list(MODELS.keys())[0])
     logger.info(f"Selected model for user {user_id}: {selected_model}")
 
-    search_results = search_tool.run(text)
-    search_response = f"Результаты поиска:\n\n{search_results}\n\n"
-    chat_history[user_id].append({"role": "system", "content": search_response})
+    # Проверяем, нужен ли поиск
+    need_search = len(text.split()) > 5 and not text.lower().startswith("перевод:")
+
+    if need_search:
+        try:
+            search_results = search_tool.run(text[:100])  # Ограничиваем длину запроса
+            search_response = f"Результаты поиска:\n\n{search_results}\n\n"
+            chat_history[user_id].append({"role": "system", "content": search_response})
+        except Exception as e:
+            logger.error(f"Search error for user {user_id}: {str(e)}")
+            search_response = "Не удалось выполнить поиск.\n\n"
+            chat_history[user_id].append({"role": "system", "content": search_response})
 
     messages = [{"role": "system", "content": "Ты полезный ассистент, у тебя есть возможность искать информацию в интернете и на основе этих данных ты даёшь релевантный ответ. Используй следующие обозначения для форматирования: ** для жирного текста, * для курсива, также при работе с кодом, следуй стандартам отправки сообщений Telegram, * в начале строки для элементов списка."}] + chat_history[user_id]
 
