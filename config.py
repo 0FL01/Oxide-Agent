@@ -18,7 +18,7 @@ chat_history = {}
 MODELS = {
     "Gemma 2 9B-8192": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
     "Llama 3 70B-8192": {"id": "llama3-70b-8192", "max_tokens": 8192, "provider": "groq"},
-    "Llama 3.1 70B-8192": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
+    "Llama 3.1 70B-65536": {"id": "llama-3.1-70b-versatile", "max_tokens": 65536, "provider": "groq"},
     "Llama 3.1 405B-65536": {"id": "meta-llama-3.1-405b-instruct", "max_tokens": 65536, "provider": "octoai"}
 }
 
