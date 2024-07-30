@@ -106,19 +106,29 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     logger.info(f"Selected model for user {user_id}: {selected_model}")
 
     # Проверяем, нужен ли поиск
-    need_search = len(text.split()) > 5 and not text.lower().startswith("перевод:")
+    need_search = len(text.split()) > 3 and not text.lower().startswith(("перевод:", "переведи:", "translate:"))
+    logger.info(f"Need search for user {user_id}: {need_search}")
 
+    search_response = ""
     if need_search:
         try:
-            search_results = search_tool.run(text[:100])  # Ограничиваем длину запроса
+            search_query = ' '.join(text.split()[:10])  # Используем первые 10 слов для поиска
+            logger.info(f"Searching for: {search_query}")
+            search_results = search_tool.run(search_query)
             search_response = f"Результаты поиска:\n\n{search_results}\n\n"
             chat_history[user_id].append({"role": "system", "content": search_response})
+            logger.info(f"Search results for user {user_id}: {search_results[:100]}...")  # Логируем первые 100 символов результатов
         except Exception as e:
             logger.error(f"Search error for user {user_id}: {str(e)}")
             search_response = "Не удалось выполнить поиск.\n\n"
             chat_history[user_id].append({"role": "system", "content": search_response})
 
-    messages = [{"role": "system", "content": "Ты полезный ассистент, у тебя есть возможность искать информацию в интернете и на основе этих данных ты даёшь релевантный ответ. Используй следующие обозначения для форматирования: ** для жирного текста, * для курсива, также при работе с кодом, следуй стандартам отправки сообщений Telegram, * в начале строки для элементов списка."}] + chat_history[user_id]
+    system_message = """Ты полезный ассистент с доступом к актуальной информации из интернета. 
+    Используй эту информацию для ответов на вопросы. Если информация не найдена, сообщи об этом пользователю.
+    Используй следующие обозначения для форматирования: ** для жирного текста, * для курсива, 
+    также при работе с кодом, следуй стандартам отправки сообщений Telegram, * в начале строки для элементов списка."""
+
+    messages = [{"role": "system", "content": system_message}] + chat_history[user_id]
 
     try:
         if MODELS[selected_model]["provider"] == "groq":
@@ -152,7 +162,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     except Exception as e:
         logger.error(f"Error processing request for user {user_id}: {str(e)}")
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=constants.ParseMode.HTML)
-
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
