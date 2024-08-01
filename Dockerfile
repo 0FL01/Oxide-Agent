@@ -11,7 +11,8 @@ WORKDIR /app
 COPY config.py handlers.py main.py utils.py watchdog_runner.py allowed_users.txt requirements.txt ./
 
 # Устанавливаем зависимости
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip 
+RUN pip install -r requirements.txt
 
 # Устанавливаем переменные окружения для корректной работы aiogram
 ENV PYTHONUNBUFFERED=1
