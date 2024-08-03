@@ -15,6 +15,7 @@ groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 octoai_client = OctoAI(api_key=OCTOAI_API_KEY)
 
 chat_history = {}
+user_settings = {}  # Новый словарь для хранения настроек пользователей
 
 MODELS = {
     "Gemma 2 9B-8192": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},

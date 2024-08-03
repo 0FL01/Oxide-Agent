@@ -1,6 +1,6 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, constants
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, octoai_client, MODELS, ADMIN_ID, search_tool
+from config import chat_history, groq_client, octoai_client, MODELS, ADMIN_ID, search_tool, user_settings
 from utils import format_html, split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
 from octoai.text_gen import ChatMessage
 import logging
@@ -12,7 +12,8 @@ SYSTEM_MESSAGE = """Ты высокоинтеллектуальный ИИ-ас�
 
 def get_main_keyboard():
     keyboard = [
-        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")]
+        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")],
+        [KeyboardButton("Онлайн режим"), KeyboardButton("Оффлайн режим")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -41,6 +42,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'model' not in context.user_data:
         context.user_data['model'] = list(MODELS.keys())[0]
 
+    if user_id not in user_settings:
+        user_settings[user_id] = {'mode': 'offline'}
+
     set_user_auth_state(user_id, True)
     await update.message.reply_text(
         '<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.',
@@ -64,6 +68,18 @@ async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 @check_auth
+async def set_online_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_settings[user_id]['mode'] = 'online'
+    await update.message.reply_text('Режим изменен на <b>онлайн</b>', parse_mode=constants.ParseMode.HTML)
+
+@check_auth
+async def set_offline_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_settings[user_id]['mode'] = 'offline'
+    await update.message.reply_text('Режим изменен на <b>оффлайн</b>', parse_mode=constants.ParseMode.HTML)
+
+@check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -71,24 +87,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "Очистить контекст":
         await clear(update, context)
         return
-
-    if text == "Сменить модель":
+    elif text == "Сменить модель":
         await change_model(update, context)
         return
-
-    if text == "Назад":
+    elif text == "Онлайн режим":
+        await set_online_mode(update, context)
+        return
+    elif text == "Оффлайн режим":
+        await set_offline_mode(update, context)
+        return
+    elif text == "Назад":
         await update.message.reply_text(
             'Выберите действие:',
             reply_markup=get_main_keyboard()
         )
         return
-
-    if text in MODELS:
+    elif text in MODELS:
         context.user_data['model'] = text
         await update.message.reply_text(
             f'Модель изменена на <b>{text}</b>',
-        parse_mode=constants.ParseMode.HTML,
-        reply_markup=get_main_keyboard()
+            parse_mode=constants.ParseMode.HTML,
+            reply_markup=get_main_keyboard()
         )
         return
 
@@ -106,23 +125,24 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     selected_model = context.user_data.get('model', list(MODELS.keys())[0])
     logger.info(f"Selected model for user {user_id}: {selected_model}")
 
-    # Проверяем, нужен ли поиск
-    need_search = len(text.split()) > 3 and not text.lower().startswith(("перевод:", "переведи:", "translate:"))
-    logger.info(f"Need search for user {user_id}: {need_search}")
+    mode = user_settings[user_id]['mode']
+    logger.info(f"Current mode for user {user_id}: {mode}")
 
     search_response = ""
-    if need_search:
-        try:
-            search_query = ' '.join(text.split()[:10])  # Используем первые 10 слов для поиска
-            logger.info(f"Searching for: {search_query}")
-            search_results = search_tool.run(search_query)
-            search_response = f"Результаты поиска:\n\n{search_results}\n\n"
-            chat_history[user_id].append({"role": "system", "content": search_response})
-            logger.info(f"Search results for user {user_id}: {search_results[:100]}...")  # Логируем первые 100 символов результатов
-        except Exception as e:
-            logger.error(f"Search error for user {user_id}: {str(e)}")
-            search_response = "Не удалось выполнить поиск.\n\n"
-            chat_history[user_id].append({"role": "system", "content": search_response})
+    if mode == 'online':
+        need_search = len(text.split()) > 3 and not text.lower().startswith(("перевод:", "переведи:", "translate:"))
+        if need_search:
+            try:
+                search_query = ' '.join(text.split()[:10])
+                logger.info(f"Searching for: {search_query}")
+                search_results = search_tool.run(search_query)
+                search_response = f"Результаты поиска:\n\n{search_results}\n\n"
+                chat_history[user_id].append({"role": "system", "content": search_response})
+                logger.info(f"Search results for user {user_id}: {search_results[:100]}...")
+            except Exception as e:
+                logger.error(f"Search error for user {user_id}: {str(e)}")
+                search_response = "Не удалось выполнить поиск.\n\n"
+                chat_history[user_id].append({"role": "system", "content": search_response})
 
     messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
 
