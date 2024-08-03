@@ -43,7 +43,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     set_user_auth_state(user_id, True)
     await update.message.reply_text(
-        '<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь. Выберите действие:',
+        '<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.',
         parse_mode=constants.ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
@@ -86,8 +86,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in MODELS:
         context.user_data['model'] = text
         await update.message.reply_text(
-            f'Модель изменена на {text}. Выберите действие:',
-            reply_markup=get_main_keyboard()
+            f'Модель изменена на <b>{text}</b>',
+        parse_mode=constants.ParseMode.HTML,
+        reply_markup=get_main_keyboard()
         )
         return
 
