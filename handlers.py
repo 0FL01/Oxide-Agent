@@ -67,17 +67,20 @@ async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_model_keyboard()
     )
 
+
 @check_auth
 async def set_online_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_settings[user_id]['mode'] = 'online'
-    await update.message.reply_text('Режим изменен на <b>онлайн</b>', parse_mode=constants.ParseMode.HTML)
+    context.user_data['model'] = "Gemma 2 9B-8192"
+    await update.message.reply_text('Режим изменен на <b>онлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=constants.ParseMode.HTML)
 
 @check_auth
 async def set_offline_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_settings[user_id]['mode'] = 'offline'
-    await update.message.reply_text('Режим изменен на <b>оффлайн</b>', parse_mode=constants.ParseMode.HTML)
+    context.user_data['model'] = "Gemma 2 9B-8192"
+    await update.message.reply_text('Режим изменен на <b>оффлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=constants.ParseMode.HTML)
 
 @check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,6 +115,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await process_message(update, context, text)
+
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
