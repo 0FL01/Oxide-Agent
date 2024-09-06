@@ -1,6 +1,6 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, constants
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, octoai_client, MODELS, ADMIN_ID, search_tool, user_settings
+from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings
 from utils import format_html, split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
 from octoai.text_gen import ChatMessage
 import logging
@@ -119,7 +119,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
-    
+
     if user_id not in chat_history:
         chat_history[user_id] = []
 
@@ -168,6 +168,16 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             bot_response = response.choices[0].message.content
+        elif MODELS[selected_model]["provider"] == "openrouter":
+            if openrouter_client is None:
+                raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
+            response = openrouter_client.chat.completions.create(
+                model=MODELS[selected_model]["id"],
+                messages=messages,
+                temperature=0.7,
+                max_tokens=MODELS[selected_model]["max_tokens"],
+            )
+            bot_response = response.choices[0].message.content
         else:
             raise ValueError(f"Unknown provider for model {selected_model}")
 
@@ -176,12 +186,13 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
         formatted_response = f"\n\n{format_html(bot_response)}"
         message_parts = split_long_message(formatted_response)
-        
+
         for part in message_parts:
             await update.message.reply_text(part, parse_mode=constants.ParseMode.HTML)
     except Exception as e:
         logger.error(f"Error processing request for user {user_id}: {str(e)}")
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=constants.ParseMode.HTML)
+
 
 @check_auth
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -241,3 +252,4 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
     except (ValueError, IndexError):
         await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+
