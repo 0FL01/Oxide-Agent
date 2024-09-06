@@ -1,10 +1,12 @@
-from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, constants
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
+from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
 from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings
-from utils import format_html, split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
+from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
 from octoai.text_gen import ChatMessage
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,63 @@ def check_auth(func):
         return await func(update, context)
     return wrapper
 
+def clean_html(text):
+    """Remove any unclosed or improperly nested HTML tags, preserving code blocks."""
+    # Temporarily replace code blocks
+    code_blocks = []
+    def replace_code_block(match):
+        code_blocks.append(match.group(0))
+        return f"__CODE_BLOCK_{len(code_blocks)-1}__"
+    
+    text = re.sub(r'```[\s\S]*?```', replace_code_block, text)
+    
+    # Remove any standalone < or > characters
+    text = re.sub(r'(?<!<)>(?!>)', '&gt;', text)
+    text = re.sub(r'(?<!<)<(?!<)', '&lt;', text)
+    
+    # Remove any unclosed tags
+    open_tags = []
+    clean_text = ""
+    for char in text:
+        if char == '<':
+            open_tags.append(len(clean_text))
+        elif char == '>':
+            if open_tags:
+                start = open_tags.pop()
+                clean_text += text[start:len(clean_text)+1]
+            else:
+                clean_text += '&gt;'
+        else:
+            clean_text += char
+    
+    # Close any remaining open tags
+    while open_tags:
+        start = open_tags.pop()
+        clean_text = clean_text[:start] + '&lt;' + clean_text[start+1:]
+    
+    # Restore code blocks
+    for i, block in enumerate(code_blocks):
+        clean_text = clean_text.replace(f"__CODE_BLOCK_{i}__", block)
+    
+    return clean_text
+
+def format_html(text):
+    text = clean_html(text)  # Clean the HTML first
+    
+    # Bold
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    
+    # Italic
+    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
+    
+    # Code blocks (three backticks)
+    text = re.sub(r'```(\w+)?\n(.*?)\n```', r'<pre><code class="\1">\2</code></pre>', text, flags=re.DOTALL)
+    
+    # Inline code (single backticks)
+    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
+    
+    return text
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.info(f"User {user_id} started the bot")
@@ -48,7 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_user_auth_state(user_id, True)
     await update.message.reply_text(
         '<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.',
-        parse_mode=constants.ParseMode.HTML,
+        parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
 
@@ -58,7 +117,7 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in chat_history:
         del chat_history[user_id]
     logger.info(f"Chat history cleared for user {user_id}")
-    await update.message.reply_text('<b>История чата очищена.</b>', parse_mode=constants.ParseMode.HTML)
+    await update.message.reply_text('<b>История чата очищена.</b>', parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
 
 @check_auth
 async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,55 +126,46 @@ async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_model_keyboard()
     )
 
-
 @check_auth
 async def set_online_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_settings[user_id]['mode'] = 'online'
     context.user_data['model'] = "Gemma 2 9B-8192"
-    await update.message.reply_text('Режим изменен на <b>онлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=constants.ParseMode.HTML)
+    await update.message.reply_text('Режим изменен на <b>онлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=ParseMode.HTML)
 
 @check_auth
 async def set_offline_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_settings[user_id]['mode'] = 'offline'
     context.user_data['model'] = "Gemma 2 9B-8192"
-    await update.message.reply_text('Режим изменен на <b>оффлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=constants.ParseMode.HTML)
+    await update.message.reply_text('Режим изменен на <b>оффлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=ParseMode.HTML)
 
 @check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     text = update.message.text
 
     if text == "Очистить контекст":
         await clear(update, context)
-        return
     elif text == "Сменить модель":
         await change_model(update, context)
-        return
     elif text == "Онлайн режим":
         await set_online_mode(update, context)
-        return
     elif text == "Оффлайн режим":
         await set_offline_mode(update, context)
-        return
     elif text == "Назад":
         await update.message.reply_text(
             'Выберите действие:',
             reply_markup=get_main_keyboard()
         )
-        return
     elif text in MODELS:
         context.user_data['model'] = text
         await update.message.reply_text(
             f'Модель изменена на <b>{text}</b>',
-            parse_mode=constants.ParseMode.HTML,
+            parse_mode=ParseMode.HTML,
             reply_markup=get_main_keyboard()
         )
-        return
-
-    await process_message(update, context, text)
-
+    else:
+        await process_message(update, context, text)
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
@@ -151,6 +201,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
 
     try:
+        await update.message.chat.send_action(action=ChatAction.TYPING)
+
         if MODELS[selected_model]["provider"] == "groq":
             response = await groq_client.chat.completions.create(
                 messages=messages,
@@ -184,14 +236,35 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         chat_history[user_id].append({"role": "assistant", "content": bot_response})
         logger.info(f"Sent response to user {user_id}")
 
+
         formatted_response = f"\n\n{format_html(bot_response)}"
         message_parts = split_long_message(formatted_response)
 
         for part in message_parts:
-            await update.message.reply_text(part, parse_mode=constants.ParseMode.HTML)
+            try:
+                await update.message.reply_text(part, parse_mode=ParseMode.HTML)
+            except Exception as send_error:
+                logger.error(f"Error sending message part for user {user_id}: {str(send_error)}")
+                # If HTML parsing fails, try to send without formatting
+                try:
+                    # Replace HTML tags with Markdown-style formatting
+                    plain_text = part.replace('<code class="', '```')
+                    plain_text = plain_text.replace('<code>', '`')
+                    plain_text = plain_text.replace('</code>', '`')
+                    plain_text = plain_text.replace('<pre>', '\n')
+                    plain_text = plain_text.replace('</pre>', '\n')
+                    plain_text = plain_text.replace('<b>', '**')
+                    plain_text = plain_text.replace('</b>', '**')
+                    plain_text = plain_text.replace('<i>', '_')
+                    plain_text = plain_text.replace('</i>', '_')
+                    await update.message.reply_text(plain_text, parse_mode=None)
+                except Exception as plain_send_error:
+                    logger.error(f"Error sending plain message part for user {user_id}: {str(plain_send_error)}")
+                    await update.message.reply_text("Произошла ошибка при отправке сообщения. Пожалуйста, попробуйте еще раз.")
+
     except Exception as e:
         logger.error(f"Error processing request for user {user_id}: {str(e)}")
-        await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=constants.ParseMode.HTML)
+        await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз или обратитесь к администратору.", parse_mode=ParseMode.HTML)
 
 
 @check_auth
@@ -252,4 +325,3 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
     except (ValueError, IndexError):
         await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
-
