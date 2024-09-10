@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings
+from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings, encode_image
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
 from octoai.text_gen import ChatMessage
 import logging
@@ -140,9 +140,11 @@ async def set_offline_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['model'] = "Gemma 2 9B-8192"
     await update.message.reply_text('Режим изменен на <b>оффлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=ParseMode.HTML)
 
+
 @check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    text = update.message.text or ""
+    image = update.message.photo[-1] if update.message.photo else None
 
     if text == "Очистить контекст":
         await clear(update, context)
@@ -165,22 +167,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard()
         )
     else:
-        await process_message(update, context, text)
+        await process_message(update, context, text, image)
 
-async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+
+async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, image=None):
     user_id = update.effective_user.id
 
     if user_id not in chat_history:
         chat_history[user_id] = []
-
-    chat_history[user_id].append({"role": "user", "content": text})
-    chat_history[user_id] = chat_history[user_id][-10:]
 
     selected_model = context.user_data.get('model', list(MODELS.keys())[0])
     logger.info(f"Selected model for user {user_id}: {selected_model}")
 
     mode = user_settings[user_id]['mode']
     logger.info(f"Current mode for user {user_id}: {mode}")
+
+    image_description = ""
+    if image:
+        file = await image.get_file()
+        image_path = f"temp_image_{user_id}.jpg"
+        await file.download_to_drive(image_path)
+        image_base64 = encode_image(image_path)
+        os.remove(image_path)
+
+        llava_messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Describe this image in detail."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+            ]}
+        ]
+
+        try:
+            llava_response = await groq_client.chat.completions.create(
+                messages=llava_messages,
+                model="llava-v1.5-7b-4096-preview",
+                temperature=0.7,
+                max_tokens=1024,
+            )
+            image_description = llava_response.choices[0].message.content
+            logger.info(f"Image description for user {user_id}: {image_description[:100]}...")
+        except Exception as e:
+            logger.error(f"Error processing image for user {user_id}: {str(e)}")
+            image_description = "Не удалось обработать изображение."
+
+    full_message = f"{text}\n\nОписание изображения: {image_description}" if image else text
+    chat_history[user_id].append({"role": "user", "content": full_message})
+    chat_history[user_id] = chat_history[user_id][-10:]
 
     search_response = ""
     if mode == 'online':
@@ -198,12 +230,15 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 search_response = "Не удалось выполнить поиск.\n\n"
                 chat_history[user_id].append({"role": "system", "content": search_response})
 
-    messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
-
     try:
         await update.message.chat.send_action(action=ChatAction.TYPING)
 
         if MODELS[selected_model]["provider"] == "groq":
+            if selected_model == "Llava 1.5 7B-4096":
+                messages = [{"role": "user", "content": full_message}]
+            else:
+                messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
+            
             response = await groq_client.chat.completions.create(
                 messages=messages,
                 model=MODELS[selected_model]["id"],
@@ -212,7 +247,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             )
             bot_response = response.choices[0].message.content
         elif MODELS[selected_model]["provider"] == "octoai":
-            octoai_messages = [ChatMessage(content=msg["content"], role=msg["role"]) for msg in messages]
+            octoai_messages = [ChatMessage(content=msg["content"], role=msg["role"]) for msg in [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]]
             response = octoai_client.text_gen.create_chat_completion(
                 messages=octoai_messages,
                 model=MODELS[selected_model]["id"],
@@ -225,7 +260,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
             response = openrouter_client.chat.completions.create(
                 model=MODELS[selected_model]["id"],
-                messages=messages,
+                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
                 temperature=0.7,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
@@ -236,35 +271,14 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         chat_history[user_id].append({"role": "assistant", "content": bot_response})
         logger.info(f"Sent response to user {user_id}")
 
-
         formatted_response = f"\n\n{format_html(bot_response)}"
         message_parts = split_long_message(formatted_response)
 
         for part in message_parts:
-            try:
-                await update.message.reply_text(part, parse_mode=ParseMode.HTML)
-            except Exception as send_error:
-                logger.error(f"Error sending message part for user {user_id}: {str(send_error)}")
-                # If HTML parsing fails, try to send without formatting
-                try:
-                    # Replace HTML tags with Markdown-style formatting
-                    plain_text = part.replace('<code class="', '```')
-                    plain_text = plain_text.replace('<code>', '`')
-                    plain_text = plain_text.replace('</code>', '`')
-                    plain_text = plain_text.replace('<pre>', '\n')
-                    plain_text = plain_text.replace('</pre>', '\n')
-                    plain_text = plain_text.replace('<b>', '**')
-                    plain_text = plain_text.replace('</b>', '**')
-                    plain_text = plain_text.replace('<i>', '_')
-                    plain_text = plain_text.replace('</i>', '_')
-                    await update.message.reply_text(plain_text, parse_mode=None)
-                except Exception as plain_send_error:
-                    logger.error(f"Error sending plain message part for user {user_id}: {str(plain_send_error)}")
-                    await update.message.reply_text("Произошла ошибка при отправке сообщения. Пожалуйста, попробуйте еще раз.")
-
+            await update.message.reply_text(part, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Error processing request for user {user_id}: {str(e)}")
-        await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз или обратитесь к администратору.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=ParseMode.HTML)
 
 
 @check_auth
