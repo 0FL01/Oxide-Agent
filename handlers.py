@@ -131,15 +131,15 @@ async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_online_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_settings[user_id]['mode'] = 'online'
-    context.user_data['model'] = "Gemma 2 9B-8192"
-    await update.message.reply_text('Режим изменен на <b>онлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=ParseMode.HTML)
+    context.user_data['model'] = "Gemini Flash 1M"
+    await update.message.reply_text('Режим изменен на <b>онлайн</b>. Модель установлена на <b>Gemini Flash 1M</b>', parse_mode=ParseMode.HTML)
 
 @check_auth
 async def set_offline_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_settings[user_id]['mode'] = 'offline'
-    context.user_data['model'] = "Gemma 2 9B-8192"
-    await update.message.reply_text('Режим изменен на <b>оффлайн</b>. Модель установлена на <b>Gemma 2 9B-8192</b>', parse_mode=ParseMode.HTML)
+    context.user_data['model'] = "Gemini Flash 1M"
+    await update.message.reply_text('Режим изменен на <b>оффлайн</b>. Модель установлена на <b>Gemini Flash 1M</b>', parse_mode=ParseMode.HTML)
 
 
 @check_auth
