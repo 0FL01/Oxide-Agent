@@ -6,6 +6,10 @@ from utils import load_allowed_users, save_allowed_users, is_user_allowed, add_a
 from langchain.tools import DuckDuckGoSearchRun
 from openai import OpenAI
 import base64
+import docx
+import openpyxl
+import xlrd
+import pandas as pd
 
 load_dotenv()
 
@@ -44,3 +48,31 @@ search_tool = DuckDuckGoSearchRun()
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
+
+# New function to process different file types
+def process_file(file_path):
+    file_extension = os.path.splitext(file_path)[1].lower()
+    content = ""
+
+    try:
+        if file_extension in ['.docx', '.doc']:
+            doc = docx.Document(file_path)
+            content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+        elif file_extension in ['.xlsx', '.xls']:
+            if file_extension == '.xlsx':
+                wb = openpyxl.load_workbook(file_path)
+                sheet = wb.active
+                content = "\n".join([", ".join([str(cell.value) for cell in row]) for row in sheet.iter_rows()])
+            else:
+                wb = xlrd.open_workbook(file_path)
+                sheet = wb.sheet_by_index(0)
+                content = "\n".join([", ".join([str(sheet.cell_value(row, col)) for col in range(sheet.ncols)]) for row in range(sheet.nrows)])
+        elif file_extension == '.csv':
+            df = pd.read_csv(file_path)
+            content = df.to_string(index=False)
+        else:
+            content = "Unsupported file type"
+    except Exception as e:
+        content = f"Error processing file: {str(e)}"
+    
+    return content

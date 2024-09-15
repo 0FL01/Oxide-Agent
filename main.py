@@ -19,7 +19,7 @@ def main():
     application.add_handler(CommandHandler("remove_user", remove_user))
     application.add_handler(MessageHandler(filters.Regex('^Онлайн режим$'), set_online_mode))
     application.add_handler(MessageHandler(filters.Regex('^Оффлайн режим$'), set_offline_mode))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     application.run_polling()

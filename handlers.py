@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings, encode_image
+from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings, encode_image, process_file
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
 from octoai.text_gen import ChatMessage
 import logging
@@ -9,6 +9,7 @@ import os
 import re
 
 logger = logging.getLogger(__name__)
+
 
 
 SYSTEM_MESSAGE = """Ты высокоинтеллектуальный ИИ-ассистент с доступом к обширной базе знаний. Твоя задача - предоставлять точные, полезные и понятные ответы на вопросы пользователей, включая базовые и технические темы. Основные принципы: 1. Всегда стремись дать наиболее релевантный и точный ответ. 2. Если ты не уверен в ответе, честно сообщи об этом. 3. Используй простой язык, но не избегай технических терминов, когда они уместны. 4. При ответе на технические вопросы, старайся предоставить краткое объяснение и, если уместно, пример кода. Форматирование: - Используй **жирный текст** для выделения ключевых слов или фраз. - Используй *курсив* для определений или акцентирования. - Для списков используй * в начале строки. - Код оформляй в соответствии со стандартами Telegram: ```язык_программирования // твой код здесь ``` При ответе на вопросы: 1. Сначала дай краткий ответ. 2. Затем, если необходимо, предоставь более подробное объяснение. 3. Если уместно, приведи пример или предложи дополнительные ресурсы для изучения. Помни: твоя цель - помочь пользователю понять тему и решить его проблему."""
@@ -146,6 +147,7 @@ async def set_offline_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     image = update.message.photo[-1] if update.message.photo else None
+    document = update.message.document
 
     if text == "Очистить контекст":
         await clear(update, context)
@@ -167,8 +169,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_keyboard()
         )
+    elif document:
+        await process_document(update, context, document)
     else:
         await process_message(update, context, text, image)
+
+async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, document):
+    user_id = update.effective_user.id
+    file = await document.get_file()
+    file_extension = os.path.splitext(document.file_name)[1].lower()
+    
+    if file_extension in ['.docx', '.doc', '.xlsx', '.xls', '.csv']:
+        file_path = f"temp_file_{user_id}{file_extension}"
+        await file.download_to_drive(file_path)
+        
+        try:
+            file_content = process_file(file_path)
+            await process_message(update, context, f"Содержимое файла:\n\n{file_content}")
+        except Exception as e:
+            logger.error(f"Error processing file for user {user_id}: {str(e)}")
+            await update.message.reply_text(f"Произошла ошибка при обработке файла: {str(e)}")
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"Temporary file {file_path} removed")
+    else:
+        await update.message.reply_text("Неподдерживаемый тип файла. Пожалуйста, отправьте файл формата .docx, .doc, .xlsx, .xls или .csv.")
+
+
 
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, image=None):
