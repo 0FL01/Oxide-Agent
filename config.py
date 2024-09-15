@@ -31,12 +31,10 @@ user_settings = {}
 
 MODELS = {
     "Gemma 2 9B-8192": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
-    "Gemini Flash 8B-1M": {"id": "google/gemini-flash-8b-1.5-exp", "max_tokens": 1000000, "provider": "openrouter"},
+    "Gemini Flash 8B-1M": {"id": "google/gemini-flash-8b-1.5-exp", "max_tokens": 1000000, "provider": "openrouter", "vision": True},
     "Llama 3.1 70B-8192": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
     "Llama 3.1 405B-128K": {"id": "meta-llama-3.1-405b-instruct", "max_tokens": 128000, "provider": "octoai"},
-    "Llava 1.5 7B-4096": {"id": "llava-v1.5-7b-4096-preview", "max_tokens": 4096, "provider": "groq", "single_message": True}
 }
-
 
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 

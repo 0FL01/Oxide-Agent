@@ -10,6 +10,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
+
 SYSTEM_MESSAGE = """Ты высокоинтеллектуальный ИИ-ассистент с доступом к обширной базе знаний. Твоя задача - предоставлять точные, полезные и понятные ответы на вопросы пользователей, включая базовые и технические темы. Основные принципы: 1. Всегда стремись дать наиболее релевантный и точный ответ. 2. Если ты не уверен в ответе, честно сообщи об этом. 3. Используй простой язык, но не избегай технических терминов, когда они уместны. 4. При ответе на технические вопросы, старайся предоставить краткое объяснение и, если уместно, пример кода. Форматирование: - Используй **жирный текст** для выделения ключевых слов или фраз. - Используй *курсив* для определений или акцентирования. - Для списков используй * в начале строки. - Код оформляй в соответствии со стандартами Telegram: ```язык_программирования // твой код здесь ``` При ответе на вопросы: 1. Сначала дай краткий ответ. 2. Затем, если необходимо, предоставь более подробное объяснение. 3. Если уместно, приведи пример или предложи дополнительные ресурсы для изучения. Помни: твоя цель - помочь пользователю понять тему и решить его проблему."""
 
 def get_main_keyboard():
@@ -190,25 +191,32 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         image_base64 = encode_image(image_path)
         os.remove(image_path)
 
-        llava_messages = [
-            {"role": "user", "content": [
-                {"type": "text", "text": "Describe this image in detail."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-            ]}
-        ]
+        if MODELS[selected_model].get("vision", False):
+            try:
+                gemini_messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Describe this image in detail."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                        ]
+                    }
+                ]
 
-        try:
-            llava_response = await groq_client.chat.completions.create(
-                messages=llava_messages,
-                model="llava-v1.5-7b-4096-preview",
-                temperature=0.7,
-                max_tokens=1024,
-            )
-            image_description = llava_response.choices[0].message.content
-            logger.info(f"Image description for user {user_id}: {image_description[:100]}...")
-        except Exception as e:
-            logger.error(f"Error processing image for user {user_id}: {str(e)}")
-            image_description = "Не удалось обработать изображение."
+                response = openrouter_client.chat.completions.create(
+                    model=MODELS[selected_model]["id"],
+                    messages=gemini_messages,
+                    temperature=0.7,
+                    max_tokens=1024,
+                )
+                image_description = response.choices[0].message.content
+                logger.info(f"Image description for user {user_id}: {image_description[:100]}...")
+            except Exception as e:
+                logger.error(f"Error processing image for user {user_id}: {str(e)}")
+                image_description = "Не удалось обработать изображение."
+        else:
+            logger.warning(f"Selected model {selected_model} does not support vision. Skipping image processing.")
+            image_description = "Выбранная модель не поддерживает обработку изображений."
 
     full_message = f"{text}\n\nОписание изображения: {image_description}" if image else text
     chat_history[user_id].append({"role": "user", "content": full_message})
@@ -234,11 +242,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await update.message.chat.send_action(action=ChatAction.TYPING)
 
         if MODELS[selected_model]["provider"] == "groq":
-            if selected_model == "Llava 1.5 7B-4096":
-                messages = [{"role": "user", "content": full_message}]
-            else:
-                messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
-            
+            messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
             response = await groq_client.chat.completions.create(
                 messages=messages,
                 model=MODELS[selected_model]["id"],
@@ -279,6 +283,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     except Exception as e:
         logger.error(f"Error processing request for user {user_id}: {str(e)}")
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=ParseMode.HTML)
+
 
 
 @check_auth
