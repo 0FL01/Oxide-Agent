@@ -197,7 +197,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "Describe this image in detail."},
+                            {"type": "text", "text": "Ты — ассистент, который распознает изображения и анализирует их содержимое, интерпретируя как простую информацию."},
                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
                         ]
                     }
