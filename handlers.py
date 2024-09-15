@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings, encode_image, process_file
+from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings, encode_image, process_file, DEFAULT_MODEL
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
 from octoai.text_gen import ChatMessage
 import logging
@@ -197,15 +197,13 @@ async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         await update.message.reply_text("Неподдерживаемый тип файла. Пожалуйста, отправьте файл формата .docx, .doc, .xlsx, .xls или .csv.")
 
 
-
-
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, image=None):
     user_id = update.effective_user.id
 
     if user_id not in chat_history:
         chat_history[user_id] = []
 
-    selected_model = context.user_data.get('model', list(MODELS.keys())[0])
+    selected_model = context.user_data.get('model', DEFAULT_MODEL)
     logger.info(f"Selected model for user {user_id}: {selected_model}")
 
     mode = user_settings[user_id]['mode']
