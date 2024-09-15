@@ -4,7 +4,7 @@ This Telegram bot leverages powerful language models to provide intelligent conv
 
 ## Features
 
-- Multiple language model support (Gemma 2 9B, Llama 3 70B, Llama 3.1 70B, Llama 3.1 405B)
+- Multiple language model support (Gemma 2 9B, Llama 3.1 70B, Llama 3.1 405B, and other model from OpenRouter.ai)
 - Online and offline conversation modes
 - Voice message transcription
 - Internet search integration
@@ -33,6 +33,7 @@ This Telegram bot leverages powerful language models to provide intelligent conv
    TELEGRAM_TOKEN=your_telegram_bot_token
    ADMIN_ID=your_admin_telegram_id
    OCTOAI_API_KEY=your_octoai_api_key
+   OPENROUTER_API_KEY=your_openrouter_api_key
    ```
 
 3. Install dependencies:
