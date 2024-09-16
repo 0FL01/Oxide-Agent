@@ -34,11 +34,11 @@ chat_history = {}
 user_settings = {}
 
 MODELS = {
-    "Gemini Flash 1M": {"id": "google/gemini-flash-1.5", "max_tokens": 1000000, "provider": "openrouter", "vision": True},
-    "GPT 4o-mini": {"id": "openai/gpt-4o-mini", "max_tokens": 128000, "provider": "openrouter", "vision": True},
-    "Gemma 2 9B-8192": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
-    "Llama 3.1 70B-8192": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
-    "Llama 3.1 405B-128K": {"id": "meta-llama-3.1-405b-instruct", "max_tokens": 128000, "provider": "octoai"},
+    "Gemini 1.5 Flash 1M": {"id": "google/gemini-flash-1.5", "max_tokens": 1000000, "provider": "openrouter", "vision": True},
+    "GPT 4o mini 128K": {"id": "openai/gpt-4o-mini", "max_tokens": 128000, "provider": "openrouter", "vision": True},
+    "Gemma 2 9B 8K": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
+    "Llama 3.1 70B 8K": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
+    "Llama 3.1 405B 128K": {"id": "meta-llama-3.1-405b-instruct", "max_tokens": 128000, "provider": "octoai"}
 }
 
 DEFAULT_MODEL = "Gemini Flash 1M"
