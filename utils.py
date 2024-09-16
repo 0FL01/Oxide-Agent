@@ -1,8 +1,9 @@
 import html
 import re
 import os
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from duckduckgo_search import DDGS
+from enum import Enum
 
 # Функции форматирования
 
@@ -52,33 +53,47 @@ def search_duckduckgo(query, region="wt-wt", safesearch="moderate", timelimit=No
 
 # Функции авторизации
 
+class UserRole(Enum):
+    ADMIN = "ADMIN"
+    USER = "USER"
+
 ALLOWED_USERS_FILE = "allowed_users.txt"
 
-def load_allowed_users() -> List[int]:
+def load_allowed_users() -> Dict[int, UserRole]:
     if not os.path.exists(ALLOWED_USERS_FILE):
-        return []
+        return {}
+    allowed_users = {}
     with open(ALLOWED_USERS_FILE, "r") as f:
-        return [int(line.strip()) for line in f if line.strip().isdigit()]
+        for line in f:
+            parts = line.strip().split(',')
+            if len(parts) == 2 and parts[0].isdigit():
+                user_id = int(parts[0])
+                role = UserRole(parts[1])
+                allowed_users[user_id] = role
+    return allowed_users
 
-def save_allowed_users(users: List[int]):
+def save_allowed_users(users: Dict[int, UserRole]):
     with open(ALLOWED_USERS_FILE, "w") as f:
-        for user_id in users:
-            f.write(f"{user_id}\n")
+        for user_id, role in users.items():
+            f.write(f"{user_id},{role.value}\n")
 
 def is_user_allowed(user_id: int) -> bool:
     allowed_users = load_allowed_users()
     return user_id in allowed_users
 
-def add_allowed_user(user_id: int):
+def get_user_role(user_id: int) -> UserRole:
     allowed_users = load_allowed_users()
-    if user_id not in allowed_users:
-        allowed_users.append(user_id)
-        save_allowed_users(allowed_users)
+    return allowed_users.get(user_id, None)
+
+def add_allowed_user(user_id: int, role: UserRole):
+    allowed_users = load_allowed_users()
+    allowed_users[user_id] = role
+    save_allowed_users(allowed_users)
 
 def remove_allowed_user(user_id: int):
     allowed_users = load_allowed_users()
     if user_id in allowed_users:
-        allowed_users.remove(user_id)
+        del allowed_users[user_id]
         save_allowed_users(allowed_users)
 
 user_auth_state: Dict[int, bool] = {}

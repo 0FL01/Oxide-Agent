@@ -1,9 +1,8 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, ADMIN_ID, search_tool, user_settings, encode_image, process_file, DEFAULT_MODEL
-from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
-from octoai.text_gen import ChatMessage
+from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, search_tool, user_settings, encode_image, process_file, DEFAULT_MODEL
+from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 import logging
 import os
 import re
@@ -26,6 +25,7 @@ def get_model_keyboard():
     keyboard.append([KeyboardButton("Назад")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+
 def check_auth(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -34,6 +34,17 @@ def check_auth(func):
             return
         return await func(update, context)
     return wrapper
+
+def admin_required(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        user_role = get_user_role(user_id)
+        if user_role != UserRole.ADMIN:
+            await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+            return
+        return await func(update, context)
+    return wrapper
+
 
 def clean_html(text):
     """Remove any unclosed or improperly nested HTML tags, preserving code blocks."""
@@ -344,29 +355,23 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Temporary file {temp_filename} removed")
 
 @check_auth
+@admin_required
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
-        return
-
     try:
         new_user_id = int(context.args[0])
-        add_allowed_user(new_user_id)
-        await update.message.reply_text(f"Пользователь {new_user_id} успешно добавлен.")
+        role = UserRole(context.args[1].upper())
+        add_allowed_user(new_user_id, role)
+        await update.message.reply_text(f"Пользователь {new_user_id} успешно добавлен с ролью {role.value}.")
     except (ValueError, IndexError):
-        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя и роль (ADMIN или USER).")
 
 @check_auth
+@admin_required
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
-        return
-
     try:
         remove_user_id = int(context.args[0])
         remove_allowed_user(remove_user_id)
         await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
     except (ValueError, IndexError):
         await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+
