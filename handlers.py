@@ -29,11 +29,35 @@ def get_model_keyboard():
 def check_auth(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-        if not get_user_auth_state(user_id):
+        if not is_user_allowed(user_id):
+            set_user_auth_state(user_id, False)
             await update.message.reply_text("Вы не авторизованы. Пожалуйста, введите /start для авторизации.")
             return
+        set_user_auth_state(user_id, True)
         return await func(update, context)
     return wrapper
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} started the bot")
+
+    if not is_user_allowed(user_id):
+        await update.message.reply_text("Пожалуйста, введите код авторизации:")
+        return
+
+    if 'model' not in context.user_data:
+        context.user_data['model'] = list(MODELS.keys())[0]
+
+    if user_id not in user_settings:
+        user_settings[user_id] = {'mode': 'offline'}
+
+    set_user_auth_state(user_id, True)
+    await update.message.reply_text(
+        '<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.',
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_main_keyboard()
+    )
+
 
 def admin_required(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,7 +177,6 @@ async def set_offline_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['model'] = "Gemini Flash 1M"
     await update.message.reply_text('Режим изменен на <b>оффлайн</b>. Модель установлена на <b>Gemini Flash 1M</b>', parse_mode=ParseMode.HTML)
 
-
 @check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
@@ -184,6 +207,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_document(update, context, document)
     else:
         await process_message(update, context, text, image)
+
 
 async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, document):
     user_id = update.effective_user.id
