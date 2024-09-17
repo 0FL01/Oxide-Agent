@@ -37,6 +37,7 @@ def check_auth(func):
         return await func(update, context)
     return wrapper
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.info(f"User {user_id} started the bot")
@@ -48,6 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'model' not in context.user_data:
         context.user_data['model'] = list(MODELS.keys())[0]
 
+    # Инициализация user_settings для нового пользователя
     if user_id not in user_settings:
         user_settings[user_id] = {'mode': 'offline'}
 
@@ -241,8 +243,13 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     selected_model = context.user_data.get('model', DEFAULT_MODEL)
     logger.info(f"Selected model for user {user_id}: {selected_model}")
 
+    # Проверка наличия пользователя в user_settings и установка значения по умолчанию
+    if user_id not in user_settings:
+        user_settings[user_id] = {'mode': 'offline'}
+    
     mode = user_settings[user_id]['mode']
     logger.info(f"Current mode for user {user_id}: {mode}")
+
 
     image_description = ""
     if image:
