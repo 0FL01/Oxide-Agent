@@ -15,8 +15,7 @@ SYSTEM_MESSAGE = """Ты высокоинтеллектуальный ИИ-ас�
 
 def get_main_keyboard():
     keyboard = [
-        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")],
-        [KeyboardButton("Онлайн режим"), KeyboardButton("Оффлайн режим")]
+        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
