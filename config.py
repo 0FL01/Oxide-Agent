@@ -1,6 +1,5 @@
 import os
 from groq import AsyncGroq
-from octoai.client import OctoAI
 from dotenv import load_dotenv
 from utils import load_allowed_users, save_allowed_users, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
 from langchain.tools import DuckDuckGoSearchRun
@@ -15,11 +14,10 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
-OCTOAI_API_KEY = os.getenv('OCTOAI_API_KEY')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+HYPERBOLIC_API_KEY = os.getenv('HYPERBOLIC_API_KEY')
 
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-octoai_client = OctoAI(api_key=OCTOAI_API_KEY)
 
 if OPENROUTER_API_KEY:
     openrouter_client = OpenAI(
@@ -30,15 +28,25 @@ else:
     print("Warning: OPENROUTER_API_KEY is not set in the environment variables.")
     openrouter_client = None
 
+if HYPERBOLIC_API_KEY:
+    hyperbolic_client = OpenAI(
+        base_url="https://api.hyperbolic.xyz/v1",
+        api_key=HYPERBOLIC_API_KEY,
+    )
+else:
+    print("Warning: HYPERBOLIC_API_KEY is not set in the environment variables.")
+    hyperbolic_client = None
+
 chat_history = {}
 user_settings = {}
 
 MODELS = {
     "Gemini 1.5 Flash 1M": {"id": "google/gemini-flash-1.5", "max_tokens": 1000000, "provider": "openrouter", "vision": True},
-    "GPT 4o mini 128K": {"id": "openai/gpt-4o-mini", "max_tokens": 128000, "provider": "openrouter", "vision": True},
+    "GPT 4o mini 128K": {"id": "openai/gpt-4o-mini-2024-07-18", "max_tokens": 128000, "provider": "openrouter", "vision": True},
+    "Qwen2.5 72B 32K": {"id": "Qwen/Qwen2.5-72B-Instruct", "max_tokens": 32000, "provider": "hyperbolic"},
     "Gemma 2 9B 8K": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
     "Llama 3.1 70B 8K": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
-    "Llama 3.1 405B 128K": {"id": "meta-llama-3.1-405b-instruct", "max_tokens": 128000, "provider": "octoai"}
+    "Llama 3.1 405B 128K": {"id": "nousresearch/hermes-3-llama-3.1-405b:free", "max_tokens": 128000, "provider": "openrouter"}
 }
 
 DEFAULT_MODEL = "Gemini Flash 1M"

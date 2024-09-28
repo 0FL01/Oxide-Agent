@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, octoai_client, openrouter_client, MODELS, search_tool, user_settings, encode_image, process_file, DEFAULT_MODEL
+from config import chat_history, groq_client,openrouter_client, hyperbolic_client, MODELS, search_tool, user_settings, encode_image, process_file, DEFAULT_MODEL
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 import logging
 import os
@@ -317,15 +317,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             bot_response = response.choices[0].message.content
-        elif MODELS[selected_model]["provider"] == "octoai":
-            octoai_messages = [ChatMessage(content=msg["content"], role=msg["role"]) for msg in [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]]
-            response = octoai_client.text_gen.create_chat_completion(
-                messages=octoai_messages,
-                model=MODELS[selected_model]["id"],
-                temperature=0.7,
-                max_tokens=MODELS[selected_model]["max_tokens"],
-            )
-            bot_response = response.choices[0].message.content
+
         elif MODELS[selected_model]["provider"] == "openrouter":
             if openrouter_client is None:
                 raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
@@ -336,8 +328,19 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             bot_response = response.choices[0].message.content
+        elif MODELS[selected_model]["provider"] == "hyperbolic":
+            if hyperbolic_client is None:
+                raise ValueError("Hyperbolic client is not initialized. Please check your HYPERBOLIC_API_KEY.")
+            response = hyperbolic_client.chat.completions.create(
+                model=MODELS[selected_model]["id"],
+                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
+                temperature=0.7,
+                max_tokens=MODELS[selected_model]["max_tokens"],
+            )
+            bot_response = response.choices[0].message.content
         else:
             raise ValueError(f"Unknown provider for model {selected_model}")
+
 
         chat_history[user_id].append({"role": "assistant", "content": bot_response})
         logger.info(f"Sent response to user {user_id}")

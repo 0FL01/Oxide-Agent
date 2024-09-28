@@ -3,7 +3,6 @@ groq
 python-dotenv
 duckduckgo_search
 langchain==0.0.292
-octoai
 openai
 watchdog
 python-docx
