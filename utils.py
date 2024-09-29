@@ -2,7 +2,7 @@ import html
 import re
 import os
 from typing import List, Dict, Tuple
-from duckduckgo_search import DDGS
+#from duckduckgo_search import DDGS
 from enum import Enum
 
 # Функции форматирования
@@ -46,10 +46,10 @@ def split_long_message(message, max_length=4000):
 
 # Функции поиска
 
-def search_duckduckgo(query, region="wt-wt", safesearch="moderate", timelimit=None, max_results=5):
-    with DDGS() as ddgs:
-        results = ddgs.text(keywords=query, region=region, safesearch=safesearch, timelimit=timelimit, max_results=max_results)
-        return results
+#def search_duckduckgo(query, region="wt-wt", safesearch="moderate", timelimit=None, max_results=5):
+#    with DDGS() as ddgs:
+#        results = ddgs.text(keywords=query, region=region, safesearch=safesearch, timelimit=timelimit, max_results=max_results)
+#        return results
 
 # Функции авторизации
 

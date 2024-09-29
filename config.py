@@ -2,7 +2,7 @@ import os
 from groq import AsyncGroq
 from dotenv import load_dotenv
 from utils import load_allowed_users, save_allowed_users, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
-from langchain.tools import DuckDuckGoSearchRun
+#from langchain.tools import DuckDuckGoSearchRun
 from openai import OpenAI
 import base64
 import docx
@@ -42,7 +42,7 @@ user_settings = {}
 
 MODELS = {
     "Gemini 1.5 Flash 1M": {"id": "google/gemini-flash-1.5", "max_tokens": 1000000, "provider": "openrouter", "vision": True},
-    "GPT 4o mini 128K": {"id": "openai/gpt-4o-mini-2024-07-18", "max_tokens": 128000, "provider": "openrouter", "vision": True},
+    "GPT 4o mini 128K": {"id": "openai/gpt-4o-mini", "max_tokens": 128000, "provider": "openrouter", "vision": True},
     "Qwen2.5 72B 32K": {"id": "Qwen/Qwen2.5-72B-Instruct", "max_tokens": 32000, "provider": "hyperbolic"},
     "Gemma 2 9B 8K": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
     "Llama 3.1 70B 8K": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
@@ -53,7 +53,7 @@ DEFAULT_MODEL = "Gemini Flash 1M"
 
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 
-search_tool = DuckDuckGoSearchRun()
+#search_tool = DuckDuckGoSearchRun()
 
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:

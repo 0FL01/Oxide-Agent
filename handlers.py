@@ -1,7 +1,8 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client,openrouter_client, hyperbolic_client, MODELS, search_tool, user_settings, encode_image, process_file, DEFAULT_MODEL
+from config import chat_history, groq_client,openrouter_client, hyperbolic_client, MODELS, user_settings, encode_image, process_file, DEFAULT_MODEL
+#from config import search_tool
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 import logging
 import os
@@ -289,21 +290,21 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     chat_history[user_id].append({"role": "user", "content": full_message})
     chat_history[user_id] = chat_history[user_id][-10:]
 
-    search_response = ""
-    if mode == 'online':
-        need_search = len(text.split()) > 3 and not text.lower().startswith(("перевод:", "переведи:", "translate:"))
-        if need_search:
-            try:
-                search_query = ' '.join(text.split()[:10])
-                logger.info(f"Searching for: {search_query}")
-                search_results = search_tool.run(search_query)
-                search_response = f"Результаты поиска:\n\n{search_results}\n\n"
-                chat_history[user_id].append({"role": "system", "content": search_response})
-                logger.info(f"Search results for user {user_id}: {search_results[:100]}...")
-            except Exception as e:
-                logger.error(f"Search error for user {user_id}: {str(e)}")
-                search_response = "Не удалось выполнить поиск.\n\n"
-                chat_history[user_id].append({"role": "system", "content": search_response})
+#    search_response = ""
+#    if mode == 'online':
+#        need_search = len(text.split()) > 3 and not text.lower().startswith(("перевод:", "переведи:", "translate:"))
+#        if need_search:
+#            try:
+#                search_query = ' '.join(text.split()[:10])
+#                logger.info(f"Searching for: {search_query}")
+#                search_results = search_tool.run(search_query)
+#                search_response = f"Результаты поиска:\n\n{search_results}\n\n"
+#                chat_history[user_id].append({"role": "system", "content": search_response})
+#                logger.info(f"Search results for user {user_id}: {search_results[:100]}...")
+#            except Exception as e:
+#                logger.error(f"Search error for user {user_id}: {str(e)}")
+#                search_response = "Не удалось выполнить поиск.\n\n"
+#                chat_history[user_id].append({"role": "system", "content": search_response})
 
     try:
         await update.message.chat.send_action(action=ChatAction.TYPING)
@@ -327,7 +328,11 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 temperature=0.7,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
-            bot_response = response.choices[0].message.content
+            if response.choices and len(response.choices) > 0 and response.choices[0].message:
+                bot_response = response.choices[0].message.content
+            else:
+                raise ValueError("API provider temporary dead")
+
         elif MODELS[selected_model]["provider"] == "hyperbolic":
             if hyperbolic_client is None:
                 raise ValueError("Hyperbolic client is not initialized. Please check your HYPERBOLIC_API_KEY.")
