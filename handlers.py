@@ -331,7 +331,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             if response.choices and len(response.choices) > 0 and response.choices[0].message:
                 bot_response = response.choices[0].message.content
             else:
-                raise ValueError("API provider temporary dead")
+                raise ValueError("Опять API провайдер откис, воскреснет когда нибудь наверное")
 
         elif MODELS[selected_model]["provider"] == "hyperbolic":
             if hyperbolic_client is None:

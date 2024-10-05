@@ -8,4 +8,3 @@ python-pptx
 openpyxl
 xlrd
 pandas
-together

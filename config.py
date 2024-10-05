@@ -42,11 +42,14 @@ user_settings = {}
 
 MODELS = {
     "Gemini 1.5 Flash 1M": {"id": "google/gemini-flash-1.5", "max_tokens": 1000000, "provider": "openrouter", "vision": True},
-    "GPT 4o mini 128K": {"id": "openai/gpt-4o-mini", "max_tokens": 128000, "provider": "openrouter", "vision": True},
-    "Qwen2.5 72B 32K": {"id": "Qwen/Qwen2.5-72B-Instruct", "max_tokens": 32000, "provider": "hyperbolic"},
+    #"GPT 4o mini 128K": {"id": "openai/gpt-4o-mini", "max_tokens": 128000, "provider": "openrouter", "vision": True},
+    #"Qwen2.5 72B 128K": {"id": "qwen/qwen-2.5-72b-instruct", "max_tokens": 128000, "provider": "openrouter"},
     "Gemma 2 9B 8K": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
-    "Llama 3.1 70B 8K": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
-    "Llama 3.1 405B 128K": {"id": "nousresearch/hermes-3-llama-3.1-405b:free", "max_tokens": 128000, "provider": "openrouter"}
+    "Llama 3.1 70B 128K": {"id": "meta-llama/llama-3.1-70b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
+    #"Llama 3.1 70B 8K": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
+    #"Llama 3.1 405B 128K": {"id": "nousresearch/hermes-3-llama-3.1-405b:free", "max_tokens": 128000, "provider": "openrouter"}
+    "Llama 3.1 405B 128K": {"id": "meta-llama/llama-3.1-405b-instruct:free", "max_tokens": 128000, "provider": "openrouter"}
+
 }
 
 DEFAULT_MODEL = "Gemini Flash 1M"
