@@ -4,6 +4,9 @@ from telegram.ext import ContextTypes
 from config import chat_history, groq_client,openrouter_client, hyperbolic_client, MODELS, user_settings, encode_image, process_file, DEFAULT_MODEL
 #from config import search_tool
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
+from telegram.error import BadRequest
+import html
+from utils import format_html, split_long_message
 import logging
 import os
 import re
@@ -290,21 +293,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     chat_history[user_id].append({"role": "user", "content": full_message})
     chat_history[user_id] = chat_history[user_id][-10:]
 
-#    search_response = ""
-#    if mode == 'online':
-#        need_search = len(text.split()) > 3 and not text.lower().startswith(("перевод:", "переведи:", "translate:"))
-#        if need_search:
-#            try:
-#                search_query = ' '.join(text.split()[:10])
-#                logger.info(f"Searching for: {search_query}")
-#                search_results = search_tool.run(search_query)
-#                search_response = f"Результаты поиска:\n\n{search_results}\n\n"
-#                chat_history[user_id].append({"role": "system", "content": search_response})
-#                logger.info(f"Search results for user {user_id}: {search_results[:100]}...")
-#            except Exception as e:
-#                logger.error(f"Search error for user {user_id}: {str(e)}")
-#                search_response = "Не удалось выполнить поиск.\n\n"
-#                chat_history[user_id].append({"role": "system", "content": search_response})
 
     try:
         await update.message.chat.send_action(action=ChatAction.TYPING)
@@ -350,14 +338,21 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         chat_history[user_id].append({"role": "assistant", "content": bot_response})
         logger.info(f"Sent response to user {user_id}")
 
-        formatted_response = f"\n\n{format_html(bot_response)}"
+        formatted_response = format_html(bot_response)
         message_parts = split_long_message(formatted_response)
 
         for part in message_parts:
-            await update.message.reply_text(part, parse_mode=ParseMode.HTML)
+            try:
+                await update.message.reply_text(part, parse_mode=ParseMode.HTML)
+            except BadRequest as e:
+                logger.error(f"Error sending message: {str(e)}")
+                # Если возникла ошибка при отправке с HTML-разметкой, отправляем без разметки
+                await update.message.reply_text(html.unescape(part), parse_mode=None)
+
     except Exception as e:
         logger.error(f"Error processing request for user {user_id}: {str(e)}")
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=ParseMode.HTML)
+
 
 
 
