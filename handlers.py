@@ -1,8 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client,openrouter_client, hyperbolic_client, MODELS, user_settings, encode_image, process_file, DEFAULT_MODEL
-#from config import search_tool
+from config import chat_history, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, user_settings, encode_image, process_file, DEFAULT_MODEL
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 from telegram.error import BadRequest
 import html
@@ -214,7 +213,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_offline_mode(update, context)
     elif text == "Назад":
         await update.message.reply_text(
-            'Выберите действие:',
+            'Выберите действие: (Или начните диалог)',
             reply_markup=get_main_keyboard()
         )
     elif text in MODELS:
@@ -322,6 +321,29 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             bot_response = response.choices[0].message.content
+
+        elif MODELS[selected_model]["provider"] == "mistral":
+            if mistral_client is None:
+                raise ValueError("Mistral client is not initialized. Please check your MISTRAL_API_KEY.")
+            response = mistral_client.chat.complete(
+                model=MODELS[selected_model]["id"],
+                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
+                temperature=1,
+                max_tokens=MODELS[selected_model]["max_tokens"],
+            )
+            bot_response = response.choices[0].message.content
+
+        elif MODELS[selected_model]["provider"] == "together":
+            if together_client is None:
+                raise ValueError("Together AI client is not initialized. Please check your TOGETHER_API_KEY.")
+            response = together_client.chat.completions.create(
+                model=MODELS[selected_model]["id"],
+                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
+                temperature=0.8,
+                max_tokens=MODELS[selected_model]["max_tokens"],
+            )
+            bot_response = response.choices[0].message.content
+
 
         elif MODELS[selected_model]["provider"] == "openrouter":
             if openrouter_client is None:
