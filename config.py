@@ -40,7 +40,6 @@ else:
     print("Warning: TOGETHER_API_KEY is not set in the environment variables.")
     together_client = None
 
-
 if HYPERBOLIC_API_KEY:
     hyperbolic_client = OpenAI(
         base_url="https://api.hyperbolic.xyz/v1",
@@ -57,19 +56,13 @@ else:
     mistral_client = None
 
 chat_history = {}
-user_settings = {}
 
 MODELS = {
     "Gemma 2 9B 8K (groq)": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
-#    "Qwen 2.5 72B 32K": {"id": "Qwen/Qwen2.5-72B-Instruct-Turbo", "max_tokens": 32000, "provider": "together"},
     "Mistral Large 128K": {"id": "mistral-large-2407", "max_tokens": 128000, "provider": "mistral"},
     "Llama 3.1 70B 128K (or)": {"id": "meta-llama/llama-3.1-70b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
     "Llama 3.1 405B 128K (or)": {"id": "nousresearch/hermes-3-llama-3.1-405b:free", "max_tokens": 128000, "provider": "openrouter"},
-    #"Llama 3.1 405B 128K (or)": {"id": "meta-llama/llama-3.1-405b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
     "Llama 3.1 70B 8K (groq)": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
-    #"Gemini 1.5 Flash 1M (or)": {"id": "google/gemini-flash-1.5", "max_tokens": 1000000, "provider": "openrouter", "vision": True}
-    #"GPT 4o mini 128K": {"id": "openai/gpt-4o-mini", "max_tokens": 128000, "provider": "openrouter", "vision": True},
-    #"Qwen2.5 72B 128K": {"id": "qwen/qwen-2.5-72b-instruct", "max_tokens": 128000, "provider": "openrouter"},
 }
 
 DEFAULT_MODEL = "Llama 3.1 70B 8K (groq)"
@@ -80,7 +73,6 @@ def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-# Функция для обработки различных типов файлов
 def process_file(file_path):
     file_extension = os.path.splitext(file_path)[1].lower()
     content = ""

@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, user_settings, encode_image, process_file, DEFAULT_MODEL
+from config import chat_history, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 from telegram.error import BadRequest
 import html
@@ -11,8 +11,6 @@ import os
 import re
 
 logger = logging.getLogger(__name__)
-
-
 
 SYSTEM_MESSAGE = """.    не беспокойтесь о формальностях.
 
@@ -43,7 +41,6 @@ def get_model_keyboard():
     keyboard.append([KeyboardButton("Назад")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-
 def check_auth(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -54,7 +51,6 @@ def check_auth(func):
         set_user_auth_state(user_id, True)
         return await func(update, context)
     return wrapper
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -67,17 +63,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'model' not in context.user_data:
         context.user_data['model'] = list(MODELS.keys())[0]
 
-    # Инициализация user_settings для нового пользователя
-    if user_id not in user_settings:
-        user_settings[user_id] = {'mode': 'offline'}
-
     set_user_auth_state(user_id, True)
     await update.message.reply_text(
         '<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.',
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
-
 
 def admin_required(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -88,7 +79,6 @@ def admin_required(func):
             return
         return await func(update, context)
     return wrapper
-
 
 def clean_html(text):
     """Remove any unclosed or improperly nested HTML tags, preserving code blocks."""
@@ -147,27 +137,6 @@ def format_html(text):
     
     return text
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    logger.info(f"User {user_id} started the bot")
-
-    if not is_user_allowed(user_id):
-        await update.message.reply_text("Пожалуйста, введите код авторизации:")
-        return
-
-    if 'model' not in context.user_data:
-        context.user_data['model'] = list(MODELS.keys())[0]
-
-    if user_id not in user_settings:
-        user_settings[user_id] = {'mode': 'offline'}
-
-    set_user_auth_state(user_id, True)
-    await update.message.reply_text(
-        '<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.',
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_main_keyboard()
-    )
-
 @check_auth
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -184,20 +153,6 @@ async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 @check_auth
-async def set_online_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_settings[user_id]['mode'] = 'online'
-    context.user_data['model'] = "Gemini Flash 1M"
-    await update.message.reply_text('Режим изменен на <b>онлайн</b>. Модель установлена на <b>Gemini Flash 1M</b>', parse_mode=ParseMode.HTML)
-
-@check_auth
-async def set_offline_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_settings[user_id]['mode'] = 'offline'
-    context.user_data['model'] = "Gemini Flash 1M"
-    await update.message.reply_text('Режим изменен на <b>оффлайн</b>. Модель установлена на <b>Gemini Flash 1M</b>', parse_mode=ParseMode.HTML)
-
-@check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     image = update.message.photo[-1] if update.message.photo else None
@@ -207,10 +162,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await clear(update, context)
     elif text == "Сменить модель":
         await change_model(update, context)
-    elif text == "Онлайн режим":
-        await set_online_mode(update, context)
-    elif text == "Оффлайн режим":
-        await set_offline_mode(update, context)
     elif text == "Назад":
         await update.message.reply_text(
             'Выберите действие: (Или начните диалог)',
@@ -227,6 +178,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_document(update, context, document)
     else:
         await process_message(update, context, text, image)
+
 
 
 async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, document):
@@ -260,14 +212,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
     selected_model = context.user_data.get('model', DEFAULT_MODEL)
     logger.info(f"Selected model for user {user_id}: {selected_model}")
-
-    # Проверка наличия пользователя в user_settings и установка значения по умолчанию
-    if user_id not in user_settings:
-        user_settings[user_id] = {'mode': 'offline'}
-    
-    mode = user_settings[user_id]['mode']
-    logger.info(f"Current mode for user {user_id}: {mode}")
-
 
     image_description = ""
     if image:
