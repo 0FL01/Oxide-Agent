@@ -64,6 +64,7 @@ MODELS = {
 #    "Qwen 2.5 72B 32K": {"id": "Qwen/Qwen2.5-72B-Instruct-Turbo", "max_tokens": 32000, "provider": "together"},
     "Mistral Large 128K": {"id": "mistral-large-2407", "max_tokens": 128000, "provider": "mistral"},
     "Llama 3.1 70B 128K (or)": {"id": "meta-llama/llama-3.1-70b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
+    "Llama 3.1 405B 128K (or)": {"id": "nousresearch/hermes-3-llama-3.1-405b:free", "max_tokens": 128000, "provider": "openrouter"},
     #"Llama 3.1 405B 128K (or)": {"id": "meta-llama/llama-3.1-405b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
     "Llama 3.1 70B 8K (groq)": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
     #"Gemini 1.5 Flash 1M (or)": {"id": "google/gemini-flash-1.5", "max_tokens": 1000000, "provider": "openrouter", "vision": True}
