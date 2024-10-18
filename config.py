@@ -19,8 +19,21 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 HYPERBOLIC_API_KEY = os.getenv('HYPERBOLIC_API_KEY')
 TOGETHER_API_KEY = os.getenv('TOGETHER_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
-
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+
+
+AZURE_ENDPOINT = "https://models.inference.ai.azure.com"
+
+if GITHUB_TOKEN:
+    azure_client = OpenAI(
+        base_url=AZURE_ENDPOINT,
+        api_key=GITHUB_TOKEN,
+    )
+else:
+    print("Warning: GITHUB_TOKEN is not set in the environment variables.")
+    azure_client = None
+
 
 if OPENROUTER_API_KEY:
     openrouter_client = OpenAI(
@@ -58,10 +71,11 @@ else:
 chat_history = {}
 
 MODELS = {
-    "Gemma 2 9B 8K (groq)": {"id": "gemma2-9b-it", "max_tokens": 8192, "provider": "groq"},
     "Mistral Large 128K": {"id": "mistral-large-2407", "max_tokens": 128000, "provider": "mistral"},
     "Llama 3.1 70B 128K (or)": {"id": "meta-llama/llama-3.1-70b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
     "Llama 3.1 405B 128K (or)": {"id": "nousresearch/hermes-3-llama-3.1-405b:free", "max_tokens": 128000, "provider": "openrouter"},
+    "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
+    "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure", "vision": True},
     "Llama 3.1 70B 8K (groq)": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
 }
 

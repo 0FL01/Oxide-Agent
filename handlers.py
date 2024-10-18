@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL
+from config import chat_history, azure_client, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 from telegram.error import BadRequest
 import html
@@ -252,7 +252,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     chat_history[user_id].append({"role": "user", "content": full_message})
     chat_history[user_id] = chat_history[user_id][-10:]
 
-
     try:
         await update.message.chat.send_action(action=ChatAction.TYPING)
 
@@ -288,7 +287,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             )
             bot_response = response.choices[0].message.content
 
-
         elif MODELS[selected_model]["provider"] == "openrouter":
             if openrouter_client is None:
                 raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
@@ -313,9 +311,36 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             bot_response = response.choices[0].message.content
+
+        elif MODELS[selected_model]["provider"] == "azure":
+            if azure_client is None:
+                raise ValueError("Azure client is not initialized. Please check your GITHUB_TOKEN.")
+
+            messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
+
+            if image:
+                # Обработка изображения для vision модели
+                image_data_url = f"data:image/jpeg;base64,{image_base64}"
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": text},
+                        {"type": "image_url", "image_url": {"url": image_data_url, "detail": "low"}}
+                    ]
+                })
+            else:
+                messages.append({"role": "user", "content": text})
+
+            response = azure_client.chat.completions.create(
+                model=MODELS[selected_model]["id"],
+                messages=messages,
+                temperature=0.7,
+                max_tokens=MODELS[selected_model]["max_tokens"],
+            )
+            bot_response = response.choices[0].message.content
+
         else:
             raise ValueError(f"Unknown provider for model {selected_model}")
-
 
         chat_history[user_id].append({"role": "assistant", "content": bot_response})
         logger.info(f"Sent response to user {user_id}")
@@ -389,4 +414,5 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
     except (ValueError, IndexError):
         await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+
 
