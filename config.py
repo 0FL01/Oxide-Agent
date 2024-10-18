@@ -22,8 +22,6 @@ MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
 
-together_client = Together(api_key=TOGETHER_API_KEY)
-
 
 AZURE_ENDPOINT = "https://models.inference.ai.azure.com"
 
@@ -79,9 +77,26 @@ MODELS = {
     "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
     "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure", "vision": True},
     "Llama 3.1 70B 8K (groq)": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
+    "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"}
 }
 
 DEFAULT_MODEL = "Llama 3.1 70B 8K (groq)"
+
+def generate_image(prompt):
+    if not TOGETHER_API_KEY:
+        raise ValueError("TOGETHER_API_KEY is not set in the environment variables.")
+
+    together_client = Together(api_key=TOGETHER_API_KEY)
+    response = together_client.images.generate(
+        prompt=prompt,
+        model="black-forest-labs/FLUX.1-schnell-Free",
+        width=1024,
+        height=768,
+        steps=1,
+        n=1,
+        response_format="b64_json"
+    )
+    return response.data[0].b64_json
 
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 
@@ -115,3 +130,4 @@ def process_file(file_path):
         content = f"Error processing file: {str(e)}"
     
     return content
+

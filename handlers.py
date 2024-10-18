@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, azure_client, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL
+from config import chat_history, azure_client, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, generate_image
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 from telegram.error import BadRequest
 import html
@@ -31,11 +31,9 @@ SYSTEM_MESSAGE = """.    не беспокойтесь о формальност
 
     Форматирование: - Для списков используй * в начале строки. - Код оформляй в соответствии со стандартами Telegram: ```язык_программирования // твой код здесь ```."""
 
-
 def get_main_keyboard():
     keyboard = [
-        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")],
-        [KeyboardButton("Gen Image"), KeyboardButton("Chat")]
+        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -177,57 +175,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_keyboard()
         )
-    elif text == "Gen Image":
-        context.user_data['mode'] = 'image_gen'
-        await update.message.reply_text(
-            'режим генерации изображений активирован. введите описание изображения.',
-            reply_markup=get_main_keyboard()
-        )
-    elif text == "Chat":
-        context.user_data['mode'] = 'chat'
-        await update.message.reply_text(
-            'режим чата активирован. о чем поговорим?',
-            reply_markup=get_main_keyboard()
-        )
     elif document:
         await process_document(update, context, document)
     else:
-        if context.user_data.get('mode') == 'image_gen':
-            await generate_image(update, context, text)
-        else:
-            await process_message(update, context, text, image)
+        await process_message(update, context, text, image)
 
-async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
-    user_id = update.effective_user.id
-    logger.info(f"генерация изображения для пользователя {user_id} с промптом: {prompt}")
-
-    try:
-        await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO)
-
-        response = together_client.images.generate(
-            prompt=prompt,
-            model="black-forest-labs/FLUX.1-schnell-Free",
-            width=1024,
-            height=768,
-            steps=4,
-            n=1,
-            response_format="b64_json"
-        )
-
-        image_data = base64.b64decode(response.data[0].b64_json)
-        
-        with open(f"generated_image_{user_id}.png", "wb") as f:
-            f.write(image_data)
-        
-        with open(f"generated_image_{user_id}.png", "rb") as f:
-            await update.message.reply_photo(f, caption="вот ваше сгенерированное изображение:")
-        
-        os.remove(f"generated_image_{user_id}.png")
-        logger.info(f"изображение успешно отправлено пользователю {user_id}")
-
-    except Exception as e:
-        logger.error(f"ошибка при генерации изображения для пользователя {user_id}: {str(e)}")
-        await update.message.reply_text(f"произошла ошибка при генерации изображения: {str(e)}")
 
 
 async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, document):
@@ -261,6 +213,11 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
     selected_model = context.user_data.get('model', DEFAULT_MODEL)
     logger.info(f"Selected model for user {user_id}: {selected_model}")
+
+    if MODELS[selected_model].get("type") == "image":
+        await generate_and_send_image(update, context, text)
+        return
+
 
     image_description = ""
     if image:
@@ -410,6 +367,25 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=ParseMode.HTML)
 
 
+async def generate_and_send_image(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
+    user_id = update.effective_user.id
+    try:
+        await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO)
+
+        image_base64 = generate_image(prompt)
+        image_data = base64.b64decode(image_base64)
+
+        with open(f"temp_image_{user_id}.png", "wb") as f:
+            f.write(image_data)
+
+        with open(f"temp_image_{user_id}.png", "rb") as f:
+            await update.message.reply_photo(photo=f, caption=f"Сгенерировано изображение по запросу: {prompt}")
+
+        os.remove(f"temp_image_{user_id}.png")
+
+    except Exception as e:
+        logger.error(f"error generating image for user {user_id}: {str(e)}")
+        await update.message.reply_text(f"произошла ошибка при генерации изображения: {str(e)}")
 
 
 @check_auth
@@ -463,5 +439,6 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
     except (ValueError, IndexError):
         await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+
 
 
