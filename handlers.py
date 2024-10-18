@@ -9,6 +9,7 @@ from utils import format_html, split_long_message
 import logging
 import os
 import re
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,11 @@ SYSTEM_MESSAGE = """.    не беспокойтесь о формальност
 
     Форматирование: - Для списков используй * в начале строки. - Код оформляй в соответствии со стандартами Telegram: ```язык_программирования // твой код здесь ```."""
 
+
 def get_main_keyboard():
     keyboard = [
-        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")]
+        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")],
+        [KeyboardButton("Gen Image"), KeyboardButton("Chat")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -174,11 +177,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_keyboard()
         )
+    elif text == "Gen Image":
+        context.user_data['mode'] = 'image_gen'
+        await update.message.reply_text(
+            'режим генерации изображений активирован. введите описание изображения.',
+            reply_markup=get_main_keyboard()
+        )
+    elif text == "Chat":
+        context.user_data['mode'] = 'chat'
+        await update.message.reply_text(
+            'режим чата активирован. о чем поговорим?',
+            reply_markup=get_main_keyboard()
+        )
     elif document:
         await process_document(update, context, document)
     else:
-        await process_message(update, context, text, image)
+        if context.user_data.get('mode') == 'image_gen':
+            await generate_image(update, context, text)
+        else:
+            await process_message(update, context, text, image)
 
+async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
+    user_id = update.effective_user.id
+    logger.info(f"генерация изображения для пользователя {user_id} с промптом: {prompt}")
+
+    try:
+        await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO)
+
+        response = together_client.images.generate(
+            prompt=prompt,
+            model="black-forest-labs/FLUX.1-schnell-Free",
+            width=1024,
+            height=768,
+            steps=4,
+            n=1,
+            response_format="b64_json"
+        )
+
+        image_data = base64.b64decode(response.data[0].b64_json)
+        
+        with open(f"generated_image_{user_id}.png", "wb") as f:
+            f.write(image_data)
+        
+        with open(f"generated_image_{user_id}.png", "rb") as f:
+            await update.message.reply_photo(f, caption="вот ваше сгенерированное изображение:")
+        
+        os.remove(f"generated_image_{user_id}.png")
+        logger.info(f"изображение успешно отправлено пользователю {user_id}")
+
+    except Exception as e:
+        logger.error(f"ошибка при генерации изображения для пользователя {user_id}: {str(e)}")
+        await update.message.reply_text(f"произошла ошибка при генерации изображения: {str(e)}")
 
 
 async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, document):

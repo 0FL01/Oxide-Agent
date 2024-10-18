@@ -22,6 +22,8 @@ MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
 
+together_client = Together(api_key=TOGETHER_API_KEY)
+
 
 AZURE_ENDPOINT = "https://models.inference.ai.azure.com"
 
