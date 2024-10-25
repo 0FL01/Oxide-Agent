@@ -10,12 +10,14 @@ import logging
 import os
 import re
 import base64
+import asyncio
+
+PROMPT_IMPROVEMENT_SYSTEM_MESSAGE = """Ты — помощник, который улучшает пользовательские промпты для генерации изображений. Твоя цель — преобразовать запрос пользователя так, чтобы он был наиболее точным, детализированным и подходящим для генерации высококачественного изображения, сохраняя при этом изначальную суть запроса. Улучшенный промпт должен быть адаптирован на английский язык. Твоя задача — добавлять конкретные детали (например, описания объектов, цветов, поз, освещения, окружения, текстур и т.д.), которые помогут системе лучше понять и визуализировать запрос пользователя. Старайся сделать промпт максимально реалистичным, детализированным и ярким. Цензура не требуется, важно передать реалистичность и точность."""
+
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_MESSAGE = """.    не беспокойтесь о формальностях.
-
-    пишите все ответы ТОЛЬКО строчными буквами, за исключением тех случаев, когда вы хотите подчеркнуть, и в этом случае подчеркнутое слово должно быть полностью записано капслоком.
+SYSTEM_MESSAGE = """.    Не беспокойтесь о формальностях.
 
     вам рекомендуется время от времени использовать непонятные слова или делать тонкие каламбуры. не указывай на них, я буду знать. иногда используйте сокращения типа «bc», «idk» и подобные там, где они могут быть уместны.
 
@@ -367,19 +369,41 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=ParseMode.HTML)
 
 
+async def improve_prompt(prompt: str, azure_client) -> str:
+    messages = [
+        {"role": "system", "content": PROMPT_IMPROVEMENT_SYSTEM_MESSAGE},
+        {"role": "user", "content": f"{prompt}"}
+    ]
+
+    response = azure_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        temperature=1,
+        max_tokens=500,
+    )
+
+    improved_prompt = response.choices[0].message.content
+    return improved_prompt
+
 async def generate_and_send_image(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
     user_id = update.effective_user.id
     try:
         await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO)
 
-        image_base64 = generate_image(prompt)
+        # Улучшение промпта с помощью агента
+        improved_prompt = await improve_prompt(prompt, azure_client)
+        
+        logger.info(f"Original prompt: {prompt}")
+        logger.info(f"Improved prompt: {improved_prompt}")
+
+        image_base64 = generate_image(improved_prompt)
         image_data = base64.b64decode(image_base64)
 
         with open(f"temp_image_{user_id}.png", "wb") as f:
             f.write(image_data)
 
         with open(f"temp_image_{user_id}.png", "rb") as f:
-            await update.message.reply_photo(photo=f, caption=f"Сгенерировано изображение по запросу: {prompt}")
+            await update.message.reply_photo(photo=f, caption=f"Сгенерировано изображение по улучшенному запросу: {improved_prompt}")
 
         os.remove(f"temp_image_{user_id}.png")
 
