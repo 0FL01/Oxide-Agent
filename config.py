@@ -136,75 +136,101 @@ def process_file(file_path: str, max_size: int = 10 * 1024 * 1024) -> str:
 
         # JSON files
         elif file_extension == '.json':
-            with open(file_path, 'r', encoding='utf-8') as file:
-                json_data = json.load(file)
-                content = json.dumps(json_data, indent=2, ensure_ascii=False)
+            try:
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    # Читаем весь файл и удаляем BOM если он есть
+                    raw_content = file.read().strip()
+                    if raw_content.startswith('\ufeff'):
+                        raw_content = raw_content[1:]
+                    json_data = json.loads(raw_content)
+                    content = json.dumps(json_data, indent=2, ensure_ascii=False)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Некорректный JSON файл: {str(e)}")
 
         # YAML files
         elif file_extension in ['.yaml', '.yml']:
-            with open(file_path, 'r', encoding='utf-8') as file:
-                yaml_data = yaml.safe_load(file)
-                content = yaml.dump(yaml_data, allow_unicode=True)
+            try:
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    # Читаем весь файл и удаляем BOM если он есть
+                    raw_content = file.read().strip()
+                    if raw_content.startswith('\ufeff'):
+                        raw_content = raw_content[1:]
+                    yaml_data = yaml.safe_load(raw_content)
+                    if yaml_data is None:
+                        raise ValueError("Файл YAML пуст или содержит только комментарии")
+                    content = yaml.dump(yaml_data, allow_unicode=True, sort_keys=False)
+            except yaml.YAMLError as e:
+                raise ValueError(f"Некорректный YAML файл: {str(e)}")
 
         # XML files
         elif file_extension == '.xml':
-            tree = ET.parse(file_path)
-            root = tree.getroot()
+            try:
+                tree = ET.parse(file_path)
+                root = tree.getroot()
 
-            def process_element(element, level=0):
-                result = []
-                indent = "  " * level
-                attrib_str = ', '.join([f"{k}='{v}'" for k, v in element.attrib.items()])
-                tag_info = f"{element.tag}"
-                if attrib_str:
-                    tag_info += f" ({attrib_str})"
-                result.append(f"{indent}{tag_info}")
+                def process_element(element, level=0):
+                    result = []
+                    indent = "  " * level
+                    attrib_str = ', '.join([f"{k}='{v}'" for k, v in element.attrib.items()])
+                    tag_info = f"{element.tag}"
+                    if attrib_str:
+                        tag_info += f" ({attrib_str})"
+                    result.append(f"{indent}{tag_info}")
 
-                if element.text and element.text.strip():
-                    result.append(f"{indent}  {element.text.strip()}")
+                    if element.text and element.text.strip():
+                        result.append(f"{indent}  {element.text.strip()}")
 
-                for child in element:
-                    result.extend(process_element(child, level + 1))
+                    for child in element:
+                        result.extend(process_element(child, level + 1))
 
-                return result
+                    return result
 
-            content = "\n".join(process_element(root))
+                content = "\n".join(process_element(root))
+            except ET.ParseError as e:
+                raise ValueError(f"Некорректный XML файл: {str(e)}")
 
         # Word documents
         elif file_extension in ['.docx', '.doc']:
-            doc = docx.Document(file_path)
-            paragraphs = []
+            try:
+                doc = docx.Document(file_path)
+                paragraphs = []
 
-            # Process paragraphs with their styles
-            for paragraph in doc.paragraphs:
-                if paragraph.text.strip():
-                    style = paragraph.style.name if paragraph.style else "Normal"
-                    paragraphs.append(f"[{style}] {paragraph.text}")
+                for paragraph in doc.paragraphs:
+                    if paragraph.text.strip():
+                        style = paragraph.style.name if paragraph.style else "Normal"
+                        paragraphs.append(f"[{style}] {paragraph.text}")
 
-            content = "\n\n".join(paragraphs)
+                content = "\n\n".join(paragraphs)
+            except Exception as e:
+                raise ValueError(f"Ошибка при обработке документа Word: {str(e)}")
 
         # Excel files
         elif file_extension in ['.xlsx', '.xls']:
-            if file_extension == '.xlsx':
-                df = pd.read_excel(file_path, engine='openpyxl')
-            else:
-                df = pd.read_excel(file_path, engine='xlrd')
+            try:
+                if file_extension == '.xlsx':
+                    df = pd.read_excel(file_path, engine='openpyxl')
+                else:
+                    df = pd.read_excel(file_path, engine='xlrd')
 
-            # Convert DataFrame to string with better formatting
-            content = (
-                f"Columns: {', '.join(df.columns)}\n"
-                f"Rows: {len(df)}\n\n"
-                f"{df.to_string(index=True, max_rows=1000)}"  # Limit rows for very large files
-            )
+                content = (
+                    f"Columns: {', '.join(df.columns)}\n"
+                    f"Rows: {len(df)}\n\n"
+                    f"{df.to_string(index=True, max_rows=1000)}"
+                )
+            except Exception as e:
+                raise ValueError(f"Ошибка при обработке Excel файла: {str(e)}")
 
         # CSV files
         elif file_extension == '.csv':
-            df = pd.read_csv(file_path)
-            content = (
-                f"Columns: {', '.join(df.columns)}\n"
-                f"Rows: {len(df)}\n\n"
-                f"{df.to_string(index=True, max_rows=1000)}"
-            )
+            try:
+                df = pd.read_csv(file_path)
+                content = (
+                    f"Columns: {', '.join(df.columns)}\n"
+                    f"Rows: {len(df)}\n\n"
+                    f"{df.to_string(index=True, max_rows=1000)}"
+                )
+            except Exception as e:
+                raise ValueError(f"Ошибка при обработке CSV файла: {str(e)}")
 
         else:
             content = f"Unsupported file type: {file_extension}"
@@ -226,6 +252,7 @@ def process_file(file_path: str, max_size: int = 10 * 1024 * 1024) -> str:
         error_msg = f"Error processing file {file_path}: {str(e)}"
         logger.error(error_msg)
         raise ValueError(error_msg)
+
 
 
 
