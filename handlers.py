@@ -217,7 +217,7 @@ async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, d
 
     # List of supported file extensions
     supported_extensions = [
-        '.txt', '.log', '.json', '.xml', '.md', '.yaml', '.yml',
+        '.txt', '.log', '.xml', '.md',
         '.doc', '.docx', '.csv', '.xls', '.xlsx'
     ]
 

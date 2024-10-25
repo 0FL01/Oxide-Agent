@@ -111,17 +111,7 @@ def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def process_file(file_path: str, max_size: int = 10 * 1024 * 1024) -> str:
-    """
-    Process file content with size limit and better error handling.
-
-    Args:
-        file_path: Path to the file to process
-        max_size: Maximum file size in bytes (default 10MB)
-
-    Returns:
-        str: Processed file content
-    """
+def process_file(file_path: str, max_size: int = 1 * 1024 * 1024) -> str:
     if os.path.getsize(file_path) > max_size:
         raise ValueError(f"Файл слишком большой. Максимальный размер: {max_size/1024/1024}MB")
 
@@ -133,34 +123,6 @@ def process_file(file_path: str, max_size: int = 10 * 1024 * 1024) -> str:
         if file_extension in ['.txt', '.log', '.md']:
             with open(file_path, 'r', encoding='utf-8') as file:
                 content = file.read()
-
-        # JSON files
-        elif file_extension == '.json':
-            try:
-                with open(file_path, 'r', encoding='utf-8') as file:
-                    # Читаем весь файл и удаляем BOM если он есть
-                    raw_content = file.read().strip()
-                    if raw_content.startswith('\ufeff'):
-                        raw_content = raw_content[1:]
-                    json_data = json.loads(raw_content)
-                    content = json.dumps(json_data, indent=2, ensure_ascii=False)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Некорректный JSON файл: {str(e)}")
-
-        # YAML files
-        elif file_extension in ['.yaml', '.yml']:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as file:
-                    # Читаем весь файл и удаляем BOM если он есть
-                    raw_content = file.read().strip()
-                    if raw_content.startswith('\ufeff'):
-                        raw_content = raw_content[1:]
-                    yaml_data = yaml.safe_load(raw_content)
-                    if yaml_data is None:
-                        raise ValueError("Файл YAML пуст или содержит только комментарии")
-                    content = yaml.dump(yaml_data, allow_unicode=True, sort_keys=False)
-            except yaml.YAMLError as e:
-                raise ValueError(f"Некорректный YAML файл: {str(e)}")
 
         # XML files
         elif file_extension == '.xml':
