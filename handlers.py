@@ -185,26 +185,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, document):
+    """
+    Process incoming document files from Telegram users.
+    Supports multiple file formats and handles large files appropriately.
+    """
     user_id = update.effective_user.id
     file = await document.get_file()
     file_extension = os.path.splitext(document.file_name)[1].lower()
-    
-    if file_extension in ['.docx', '.doc', '.xlsx', '.xls', '.csv']:
+
+    # List of supported file extensions
+    supported_extensions = [
+        '.txt', '.log', '.json', '.xml', '.md', '.yaml', '.yml',
+        '.doc', '.docx', '.csv', '.xls', '.xlsx'
+    ]
+
+    if file_extension in supported_extensions:
+        await update.message.reply_text("Обрабатываю файл, пожалуйста подождите...")
         file_path = f"temp_file_{user_id}{file_extension}"
-        await file.download_to_drive(file_path)
-        
+
         try:
+            # Download and process the file
+            await file.download_to_drive(file_path)
             file_content = process_file(file_path)
-            await process_message(update, context, f"Содержимое файла:\n\n{file_content}")
+
+            # Split content if it's too long
+            content_parts = split_long_message(file_content, max_length=4000)
+
+            # Send each part separately
+            for i, part in enumerate(content_parts, 1):
+                if len(content_parts) > 1:
+                    header = f"Часть {i}/{len(content_parts)}\n\n"
+                    await update.message.reply_text(header + part)
+                else:
+                    await update.message.reply_text(part)
+
         except Exception as e:
+            error_msg = f"Произошла ошибка при обработке файла: {str(e)}"
             logger.error(f"Error processing file for user {user_id}: {str(e)}")
-            await update.message.reply_text(f"Произошла ошибка при обработке файла: {str(e)}")
+            await update.message.reply_text(error_msg)
+
         finally:
+            # Clean up temporary file
             if os.path.exists(file_path):
                 os.remove(file_path)
                 logger.info(f"Temporary file {file_path} removed")
     else:
-        await update.message.reply_text("Неподдерживаемый тип файла. Пожалуйста, отправьте файл формата .docx, .doc, .xlsx, .xls или .csv.")
+        supported_formats = ", ".join(supported_extensions)
+        await update.message.reply_text(
+            f"Неподдерживаемый тип файла: {file_extension}\n"
+            f"Поддерживаемые форматы: {supported_formats}"
+        )
 
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, image=None):
@@ -279,7 +309,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             response = mistral_client.chat.complete(
                 model=MODELS[selected_model]["id"],
                 messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
-                temperature=1,
+                temperature=0.9,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             bot_response = response.choices[0].message.content
@@ -301,7 +331,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             response = openrouter_client.chat.completions.create(
                 model=MODELS[selected_model]["id"],
                 messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
-                temperature=0.7,
+                temperature=0.8,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             if response.choices and len(response.choices) > 0 and response.choices[0].message:
@@ -342,7 +372,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             response = azure_client.chat.completions.create(
                 model=MODELS[selected_model]["id"],
                 messages=messages,
-                temperature=0.7,
+                temperature=0.8,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             bot_response = response.choices[0].message.content
@@ -463,6 +493,7 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
     except (ValueError, IndexError):
         await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+
 
 
 

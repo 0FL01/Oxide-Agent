@@ -10,3 +10,4 @@ mistralai
 together
 xlrd
 pandas
+pyyaml

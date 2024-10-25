@@ -2,7 +2,6 @@ import html
 import re
 import os
 from typing import List, Dict, Tuple
-#from duckduckgo_search import DDGS
 from enum import Enum
 
 # Функции форматирования
@@ -35,35 +34,69 @@ def format_html(text):
     return text
 
 
-def split_long_message(message, max_length=4000):
+def split_long_message(message: str, max_length: int = 4000) -> list[str]:
+    """
+    Split a long message into smaller chunks that fit within Telegram's message size limits.
+    Preserves code blocks, markdown formatting, and natural text boundaries.
+
+    Args:
+        message (str): The message to split
+        max_length (int): Maximum length of each chunk (default: 4000)
+
+    Returns:
+        list[str]: List of message chunks
+    """
+    if not message:
+        return []
+
+    if len(message) <= max_length:
+        return [message]
+
     parts = []
-    while len(message) > max_length:
-        split_index = max_length
-        
-        newline_index = message.rfind('\n', 0, max_length)
-        if newline_index > max_length * 0.8:
-            split_index = newline_index
+    current_message = ""
+    code_block = False
+    code_fence = "```"
+
+    lines = message.split('\n')
+
+    for line in lines:
+        # Check for code block boundaries
+        if line.startswith(code_fence):
+            code_block = not code_block
+
+        # Calculate new length with potential new line
+        new_length = len(current_message) + len(line) + 1  # +1 for newline
+
+        if new_length > max_length and current_message:
+            # If in code block, close it properly
+            if code_block:
+                current_message += code_fence + '\n'
+                code_block = False
+
+            parts.append(current_message.rstrip())
+            current_message = ""
+
+            # If we were in a code block, start a new one
+            if line.startswith(code_fence):
+                current_message = line + '\n'
+            else:
+                # Restart code block in new chunk if needed
+                if code_block:
+                    current_message = code_fence + '\n' + line + '\n'
+                else:
+                    current_message = line + '\n'
         else:
-            space_index = message.rfind(' ', 0, max_length)
-            if space_index > max_length * 0.8:
-                split_index = space_index
-        
-        parts.append(message[:split_index].strip())
-        message = message[split_index:].strip()
-    
-    if message:
-        parts.append(message)
-    
+            current_message += line + '\n'
+
+    # Add the last part if there's anything left
+    if current_message:
+        # Close any open code blocks
+        if code_block:
+            current_message += code_fence + '\n'
+        parts.append(current_message.rstrip())
+
     return parts
 
-# Функции поиска
-
-#def search_duckduckgo(query, region="wt-wt", safesearch="moderate", timelimit=None, max_results=5):
-#    with DDGS() as ddgs:
-#        results = ddgs.text(keywords=query, region=region, safesearch=safesearch, timelimit=timelimit, max_results=max_results)
-#        return results
-
-# Функции авторизации
 
 class UserRole(Enum):
     ADMIN = "ADMIN"
@@ -115,3 +148,4 @@ def set_user_auth_state(user_id: int, state: bool):
 
 def get_user_auth_state(user_id: int) -> bool:
     return user_auth_state.get(user_id, False)
+
