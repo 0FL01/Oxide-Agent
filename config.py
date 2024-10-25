@@ -111,17 +111,20 @@ def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def process_file(file_path: str) -> str:
+def process_file(file_path: str, max_size: int = 10 * 1024 * 1024) -> str:
     """
-    Process various file formats and convert them to text.
-    Supported formats: log, txt, json, xml, md, yaml, yml, doc, docx, csv, xls, xlsx
+    Process file content with size limit and better error handling.
 
     Args:
-        file_path (str): Path to the file to process
+        file_path: Path to the file to process
+        max_size: Maximum file size in bytes (default 10MB)
 
     Returns:
-        str: Extracted text content from the file
+        str: Processed file content
     """
+    if os.path.getsize(file_path) > max_size:
+        raise ValueError(f"Файл слишком большой. Максимальный размер: {max_size/1024/1024}MB")
+
     file_extension = os.path.splitext(file_path)[1].lower()
     content = ""
 
@@ -151,13 +154,14 @@ def process_file(file_path: str) -> str:
             def process_element(element, level=0):
                 result = []
                 indent = "  " * level
-                result.append(f"{indent}{element.tag}:")
-
-                if element.attrib:
-                    result.append(f"{indent}  attributes: {element.attrib}")
+                attrib_str = ', '.join([f"{k}='{v}'" for k, v in element.attrib.items()])
+                tag_info = f"{element.tag}"
+                if attrib_str:
+                    tag_info += f" ({attrib_str})"
+                result.append(f"{indent}{tag_info}")
 
                 if element.text and element.text.strip():
-                    result.append(f"{indent}  text: {element.text.strip()}")
+                    result.append(f"{indent}  {element.text.strip()}")
 
                 for child in element:
                     result.extend(process_element(child, level + 1))
@@ -171,43 +175,36 @@ def process_file(file_path: str) -> str:
             doc = docx.Document(file_path)
             paragraphs = []
 
+            # Process paragraphs with their styles
             for paragraph in doc.paragraphs:
                 if paragraph.text.strip():
-                    paragraphs.append(paragraph.text)
+                    style = paragraph.style.name if paragraph.style else "Normal"
+                    paragraphs.append(f"[{style}] {paragraph.text}")
 
             content = "\n\n".join(paragraphs)
 
         # Excel files
-        elif file_extension == '.xlsx':
-            wb = openpyxl.load_workbook(file_path)
-            sheets_data = []
+        elif file_extension in ['.xlsx', '.xls']:
+            if file_extension == '.xlsx':
+                df = pd.read_excel(file_path, engine='openpyxl')
+            else:
+                df = pd.read_excel(file_path, engine='xlrd')
 
-            for sheet_name in wb.sheetnames:
-                sheet = wb[sheet_name]
-                df = pd.DataFrame(sheet.values)
-                if not df.empty:
-                    sheets_data.append(f"Sheet: {sheet_name}\n{df.to_string(index=False)}")
-
-            content = "\n\n".join(sheets_data)
-
-        elif file_extension == '.xls':
-            wb = xlrd.open_workbook(file_path)
-            sheets_data = []
-
-            for sheet_idx in range(wb.nsheets):
-                sheet = wb.sheet_by_index(sheet_idx)
-                data = []
-                for row in range(sheet.nrows):
-                    row_data = [str(sheet.cell_value(row, col)) for col in range(sheet.ncols)]
-                    data.append("\t".join(row_data))
-                sheets_data.append(f"Sheet: {sheet.name}\n{chr(10).join(data)}")
-
-            content = "\n\n".join(sheets_data)
+            # Convert DataFrame to string with better formatting
+            content = (
+                f"Columns: {', '.join(df.columns)}\n"
+                f"Rows: {len(df)}\n\n"
+                f"{df.to_string(index=True, max_rows=1000)}"  # Limit rows for very large files
+            )
 
         # CSV files
         elif file_extension == '.csv':
             df = pd.read_csv(file_path)
-            content = df.to_string(index=False)
+            content = (
+                f"Columns: {', '.join(df.columns)}\n"
+                f"Rows: {len(df)}\n\n"
+                f"{df.to_string(index=True, max_rows=1000)}"
+            )
 
         else:
             content = f"Unsupported file type: {file_extension}"
@@ -228,7 +225,7 @@ def process_file(file_path: str) -> str:
     except Exception as e:
         error_msg = f"Error processing file {file_path}: {str(e)}"
         logger.error(error_msg)
-        return error_msg
+        raise ValueError(error_msg)
 
 
 

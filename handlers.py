@@ -157,9 +157,12 @@ async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
+    """
+    Handle both text messages and documents, supporting multiple files in one message.
+    """
+    text = update.message.text or update.message.caption or ""
     image = update.message.photo[-1] if update.message.photo else None
-    document = update.message.document
+    documents = update.message.document if isinstance(update.message.document, list) else [update.message.document] if update.message.document else []
 
     if text == "Очистить контекст":
         await clear(update, context)
@@ -177,8 +180,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_keyboard()
         )
-    elif document:
-        await process_document(update, context, document)
+    elif documents:
+        # Process all documents in the message
+        combined_content = ""
+        for doc in documents:
+            file = await doc.get_file()
+            file_extension = os.path.splitext(doc.file_name)[1].lower()
+            file_path = f"temp_file_{update.effective_user.id}_{doc.file_name}"
+
+            try:
+                await file.download_to_drive(file_path)
+                file_content = process_file(file_path)
+                combined_content += f"\nСодержимое файла {doc.file_name}:\n{file_content}\n"
+            finally:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+
+        # Combine file content with user's text
+        if combined_content:
+            full_message = f"{combined_content}\nЗапрос пользователя: {text}"
+            await process_message(update, context, full_message)
     else:
         await process_message(update, context, text, image)
 
@@ -187,11 +208,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, document):
     """
     Process incoming document files from Telegram users.
-    Supports multiple file formats and handles large files appropriately.
+    Supports multiple file formats and integrates content into chat context.
     """
     user_id = update.effective_user.id
     file = await document.get_file()
     file_extension = os.path.splitext(document.file_name)[1].lower()
+    user_text = update.message.caption or ""
 
     # List of supported file extensions
     supported_extensions = [
@@ -208,16 +230,15 @@ async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             await file.download_to_drive(file_path)
             file_content = process_file(file_path)
 
-            # Split content if it's too long
-            content_parts = split_long_message(file_content, max_length=4000)
+            # Create context message with file content
+            context_message = (
+                f"Содержимое файла {document.file_name}:\n\n"
+                f"{file_content}\n\n"
+                f"Запрос пользователя: {user_text}"
+            )
 
-            # Send each part separately
-            for i, part in enumerate(content_parts, 1):
-                if len(content_parts) > 1:
-                    header = f"Часть {i}/{len(content_parts)}\n\n"
-                    await update.message.reply_text(header + part)
-                else:
-                    await update.message.reply_text(part)
+            # Process the combined message
+            await process_message(update, context, context_message)
 
         except Exception as e:
             error_msg = f"Произошла ошибка при обработке файла: {str(e)}"
