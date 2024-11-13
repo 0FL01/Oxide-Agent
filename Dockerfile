@@ -1,5 +1,5 @@
-# Используем официальный образ Python 3.10 slim в качестве базового образа
-FROM python:3.10-slim
+# Стадия сборки
+FROM python:3.10-slim AS builder
 
 # Устанавливаем зависимости, необходимые для Pydub и компиляции
 RUN apt-get update && apt-get install -y \
@@ -12,12 +12,28 @@ RUN apt-get update && apt-get install -y \
 # Создаем рабочую директорию
 WORKDIR /app
 
-# Копируем файлы в контейнер
-COPY config.py handlers.py main.py utils.py watchdog_runner.py allowed_users.txt requirements.txt ./
+# Копируем файлы зависимостей
+COPY requirements.txt ./
 
-# Обновляем pip и устанавливаем зависимости
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Стадия выполнения
+FROM python:3.10-slim
+
+# Устанавливаем зависимости, необходимые для Pydub в рантайме
+RUN apt-get update && apt-get install -y \
+    libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаем рабочую директорию
+WORKDIR /app
+
+# Копируем зависимости из стадии сборки
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+
+# Копируем файлы приложения
+COPY config.py handlers.py main.py utils.py watchdog_runner.py allowed_users.txt ./
 
 # Устанавливаем переменные окружения для корректной работы aiogram
 ENV PYTHONUNBUFFERED=1

@@ -80,7 +80,7 @@ chat_history = {}
 MODELS = {
     "Mistral Large 128K": {"id": "mistral-large-2407", "max_tokens": 128000, "provider": "mistral"},
     "Llama 3.1 70B 128K (or)": {"id": "meta-llama/llama-3.1-70b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
-    "Llama 3.1 405B 128K (or)": {"id": "nousresearch/hermes-3-llama-3.1-405b:free", "max_tokens": 128000, "provider": "openrouter"},
+    "Llama 3.1 405B 128K (or)": {"id": "meta-llama/llama-3.1-405b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
     "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
     "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure", "vision": True},
     "Llama 3.1 70B 8K (groq)": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
