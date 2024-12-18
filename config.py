@@ -22,6 +22,7 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+HF_API_KEY = os.getenv('HF_API_KEY')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 HYPERBOLIC_API_KEY = os.getenv('HYPERBOLIC_API_KEY')
 TOGETHER_API_KEY = os.getenv('TOGETHER_API_KEY')
@@ -60,6 +61,16 @@ else:
     print("Warning: TOGETHER_API_KEY is not set in the environment variables.")
     together_client = None
 
+if HF_API_KEY:
+    huggingface_client = OpenAI(
+        base_url="https://api-inference.huggingface.co/v1/",
+        api_key=HF_API_KEY,
+    )
+else:
+    print("Warning: HF_API_KEY is not set in the environment variables.")
+    huggingface_client = None
+
+
 if HYPERBOLIC_API_KEY:
     hyperbolic_client = OpenAI(
         base_url="https://api.hyperbolic.xyz/v1",
@@ -78,16 +89,17 @@ else:
 chat_history = {}
 
 MODELS = {
-    "Mistral Large 128K": {"id": "mistral-large-2407", "max_tokens": 128000, "provider": "mistral"},
-    "Llama 3.1 70B 128K (or)": {"id": "meta-llama/llama-3.1-70b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
-    "Llama 3.1 405B 128K (or)": {"id": "meta-llama/llama-3.1-405b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
+    "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
+  #  "Llama 3.1 70B 128K (or)": {"id": "meta-llama/llama-3.1-70b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
+  #  "Qwen 2.5 32B Coder 32K (hf)": {"id": "Qwen/Qwen2.5-Coder-32B-Instruct", "max_tokens": 32000, "provider": "huggingface"},
+    "Qwen 2.5 72B 32K (hf)": {"id": "Qwen/Qwen2.5-72B-Instruct", "max_tokens": 32000, "provider": "huggingface"},
     "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
     "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure", "vision": True},
-    "Llama 3.1 70B 8K (groq)": {"id": "llama-3.1-70b-versatile", "max_tokens": 8000, "provider": "groq"},
+    "Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 8000, "provider": "groq"},
     "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"}
 }
 
-DEFAULT_MODEL = "Llama 3.1 70B 8K (groq)"
+DEFAULT_MODEL = "Llama 3.3 70B 8K (groq)"
 
 def generate_image(prompt):
     if not TOGETHER_API_KEY:

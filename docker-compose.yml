@@ -1,6 +1,7 @@
 services:
   another_chat_tg:
     build: .
+    image: another_chat_tg:latest
     container_name: another_chat_tg
     env_file:
       - .env
