@@ -15,6 +15,8 @@ import xlrd
 import pandas as pd
 from typing import Union
 import logging
+import google.generativeai as genai
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ TOGETHER_API_KEY = os.getenv('TOGETHER_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 
 AZURE_ENDPOINT = "https://models.inference.ai.azure.com"
@@ -86,20 +89,27 @@ else:
     print("Warning: MISTRAL_API_KEY is not set in the environment variables.")
     mistral_client = None
 
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_client = genai
+else:
+    print("Warning: GEMINI_API_KEY is not set in the environment variables.")
+    gemini_client = None
+
 chat_history = {}
 
 MODELS = {
+    "Gemini Exp 1206": {"id": "gemini-exp-1206", "max_tokens": 256000, "provider": "gemini"},
+    "Gemini 2.0 Flash Experimental": {"id": "gemini-2.0-flash-exp", "max_tokens": 8192, "provider": "gemini"},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
-  #  "Llama 3.1 70B 128K (or)": {"id": "meta-llama/llama-3.1-70b-instruct:free", "max_tokens": 128000, "provider": "openrouter"},
-  #  "Qwen 2.5 32B Coder 32K (hf)": {"id": "Qwen/Qwen2.5-Coder-32B-Instruct", "max_tokens": 32000, "provider": "huggingface"},
-    "Qwen 2.5 72B 32K (hf)": {"id": "Qwen/Qwen2.5-72B-Instruct", "max_tokens": 32000, "provider": "huggingface"},
     "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
     "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure", "vision": True},
     "Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 8000, "provider": "groq"},
     "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"}
 }
 
-DEFAULT_MODEL = "Llama 3.3 70B 8K (groq)"
+DEFAULT_MODEL = "Gemini 2.0 Flash Experimental"
+#DEFAULT_MODEL = "Llama 3.3 70B 8K (groq)"
 
 def generate_image(prompt):
     if not TOGETHER_API_KEY:

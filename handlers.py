@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, generate_image
+from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, generate_image, gemini_client
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 from telegram.error import BadRequest
 import html
@@ -352,6 +352,29 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
             bot_response = response.choices[0].message.content
+
+        elif MODELS[selected_model]["provider"] == "gemini":
+            if gemini_client is None:
+                raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
+            model = gemini_client.GenerativeModel(MODELS[selected_model]["id"])
+            messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
+            converted_messages = []
+            for message in messages:
+                converted_messages.append({
+                    "role": "user" if message["role"] == "user" else "model",
+                    "parts": [message["content"]]
+                })
+
+            response = model.generate_content(
+                converted_messages,
+                generation_config=gemini_client.types.GenerationConfig(
+                    max_output_tokens=MODELS[selected_model]["max_tokens"],
+                    temperature=1,
+                )
+            )
+
+            bot_response = response.text
+
 
         elif MODELS[selected_model]["provider"] == "together":
             if together_client is None:

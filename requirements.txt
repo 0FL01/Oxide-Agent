@@ -1,3 +1,4 @@
+google-generativeai
 python-telegram-bot
 groq
 python-dotenv
