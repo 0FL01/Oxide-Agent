@@ -2,3 +2,4 @@ acwlc-1.0.1.tar
 allowed_users.txt
 .env
 acwlc_before.tar
+logs
