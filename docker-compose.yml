@@ -8,3 +8,4 @@ services:
     restart: unless-stopped
     volumes:
       - ./allowed_users.txt:/app/allowed_users.txt
+      - ./logs:/app/logs

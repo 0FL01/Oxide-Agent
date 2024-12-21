@@ -1,12 +1,21 @@
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user 
+from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user
 from config import TELEGRAM_TOKEN
+import os
 
+# Создаем папку logs, если ее нет
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+# Настройка логирования в файл с ротацией по времени
 logging.basicConfig(
+    handlers=[TimedRotatingFileHandler('logs/bot.log', when='h', interval=1, backupCount=72)],
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
 logger = logging.getLogger(__name__)
 
 def main():

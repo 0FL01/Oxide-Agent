@@ -267,6 +267,7 @@ async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, d
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, image=None):
     user_id = update.effective_user.id
+    user_name = update.effective_user.username or update.effective_user.first_name
 
     if user_id not in chat_history:
         chat_history[user_id] = []
@@ -277,7 +278,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     if MODELS[selected_model].get("type") == "image":
         await generate_and_send_image(update, context, text)
         return
-
 
     image_description = ""
     if image:
@@ -314,7 +314,12 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             logger.warning(f"Selected model {selected_model} does not support vision. Skipping image processing.")
             image_description = "Выбранная модель не поддерживает обработку изображений."
 
+            logger.info(f"User {user_id} ({user_name}) sent an image. Description: {image_description[:100]}...")
+
     full_message = f"{text}\n\nОписание изображения: {image_description}" if image else text
+    
+    logger.info(f"User {user_id} ({user_name}) sent: {full_message}")
+    
     chat_history[user_id].append({"role": "user", "content": full_message})
     chat_history[user_id] = chat_history[user_id][-10:]
 
@@ -443,7 +448,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             raise ValueError(f"Unknown provider for model {selected_model}")
 
         chat_history[user_id].append({"role": "assistant", "content": bot_response})
-        logger.info(f"Sent response to user {user_id}")
+        logger.info(f"Sent response to user {user_id} ({user_name}): {bot_response}")
 
         formatted_response = format_html(bot_response)
         message_parts = split_long_message(formatted_response)
@@ -523,7 +528,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         recognized_text = transcription.text
-        logger.info(f"Voice message from user {user_id} recognized: {recognized_text}")
+        logger.info(f"Voice message from user {user_id} ({user_name}) recognized: {recognized_text}")
 
         await process_message(update, context, recognized_text)
 
