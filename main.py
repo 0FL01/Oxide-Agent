@@ -18,6 +18,20 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+def filter_telegram_token(record):
+    message = record.getMessage()
+    if "api.telegram.org" in message:
+        token_pattern = r"bot(\d+):([a-zA-Z0-9_-]+)"
+        replacement = r"bot\1:REDACTED_TOKEN"
+        record.msg = re.sub(token_pattern, replacement, message)
+    return True
+
+# Настройка фильтра для httpx
+httpx_logger = logging.getLogger("httpx")
+httpx_logger.addFilter(filter_telegram_token)
+
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+
 def main():
     logger.info("Starting the bot")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
