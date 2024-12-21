@@ -4,6 +4,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user
 from config import TELEGRAM_TOKEN
 import os
+import re
 
 # Создаем папку logs, если ее нет
 if not os.path.exists('logs'):
@@ -26,14 +27,13 @@ def filter_telegram_token(record):
         record.msg = re.sub(token_pattern, replacement, message)
     return True
 
-# Настройка фильтра для httpx
-httpx_logger = logging.getLogger("httpx")
-httpx_logger.addFilter(filter_telegram_token)
-
-application = Application.builder().token(TELEGRAM_TOKEN).build()
-
 def main():
     logger.info("Starting the bot")
+
+    # Настройка фильтра для httpx
+    httpx_logger = logging.getLogger("httpx")
+    httpx_logger.addFilter(filter_telegram_token)
+
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
