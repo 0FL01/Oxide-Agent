@@ -12,7 +12,7 @@ if not os.path.exists('logs'):
 
 # Настройка логирования в файл с ротацией по времени
 logging.basicConfig(
-    handlers=[TimedRotatingFileHandler('logs/acwl.log', when='h', interval=1, backupCount=72, encoding='utf-8')],
+    handlers=[TimedRotatingFileHandler('logs/bot.log', when='h', interval=1, backupCount=72, encoding='utf-8')],
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
@@ -20,11 +20,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def filter_telegram_token(record):
-    message = record.getMessage()
-    if "api.telegram.org" in message:
-        token_pattern = r"bot(\d+):([a-zA-Z0-9_-]+)"
-        replacement = r"bot\1:REDACTED_TOKEN"
-        record.msg = re.sub(token_pattern, replacement, message)
+    if record.name == "httpx" and record.levelno == logging.INFO:
+        message = record.getMessage()
+        if "api.telegram.org" in message:
+            token_pattern = r"bot(\d+):([a-zA-Z0-9_-]+)"
+            replacement = r"bot\1:REDACTED_TOKEN"
+            new_message = re.sub(token_pattern, replacement, message)
+
+            # Изменяем аргументы, чтобы скрыть токен в оригинальном сообщении
+            if record.args:
+              record.args = tuple(re.sub(token_pattern, replacement, arg) if isinstance(arg, str) else arg for arg in record.args)
+              
+            return True
+
     return True
 
 def main():
