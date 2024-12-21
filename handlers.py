@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, hyperbolic_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, generate_image, gemini_client
+from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, generate_image, gemini_client
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 from telegram.error import BadRequest
 import html
@@ -406,16 +406,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             else:
                 raise ValueError("Опять API провайдер откис, воскреснет когда нибудь наверное")
 
-        elif MODELS[selected_model]["provider"] == "hyperbolic":
-            if hyperbolic_client is None:
-                raise ValueError("Hyperbolic client is not initialized. Please check your HYPERBOLIC_API_KEY.")
-            response = hyperbolic_client.chat.completions.create(
-                model=MODELS[selected_model]["id"],
-                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
-                temperature=0.7,
-                max_tokens=MODELS[selected_model]["max_tokens"],
-            )
-            bot_response = response.choices[0].message.content
 
         elif MODELS[selected_model]["provider"] == "azure":
             if azure_client is None:

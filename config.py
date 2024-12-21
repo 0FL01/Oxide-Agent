@@ -26,7 +26,6 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 HF_API_KEY = os.getenv('HF_API_KEY')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
-HYPERBOLIC_API_KEY = os.getenv('HYPERBOLIC_API_KEY')
 TOGETHER_API_KEY = os.getenv('TOGETHER_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
@@ -73,15 +72,6 @@ else:
     print("Warning: HF_API_KEY is not set in the environment variables.")
     huggingface_client = None
 
-
-if HYPERBOLIC_API_KEY:
-    hyperbolic_client = OpenAI(
-        base_url="https://api.hyperbolic.xyz/v1",
-        api_key=HYPERBOLIC_API_KEY,
-    )
-else:
-    print("Warning: HYPERBOLIC_API_KEY is not set in the environment variables.")
-    hyperbolic_client = None
 
 if MISTRAL_API_KEY:
     mistral_client = Mistral(api_key=MISTRAL_API_KEY)
