@@ -11,7 +11,7 @@ if not os.path.exists('logs'):
 
 # Настройка логирования в файл с ротацией по времени
 logging.basicConfig(
-    handlers=[TimedRotatingFileHandler('logs/bot.log', when='h', interval=1, backupCount=72)],
+    handlers=[TimedRotatingFileHandler('logs/acwl.log', when='h', interval=1, backupCount=72, encoding='utf-8')],
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
