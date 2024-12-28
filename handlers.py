@@ -279,44 +279,24 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await generate_and_send_image(update, context, text)
         return
 
-    image_description = ""
     if image:
+        # Если модель не поддерживает обработку изображений, отправляем сообщение пользователю
+        if not MODELS[selected_model].get("vision", False):
+            await update.message.reply_text("Выбранная модель не поддерживает обработку изображений.")
+            return  # Прекращаем дальнейшую обработку, так как модель не может обработать изображение
+
+        # Если модель поддерживает обработку изображений, продолжаем как обычно
         file = await image.get_file()
         image_path = f"temp_image_{user_id}.jpg"
         await file.download_to_drive(image_path)
         image_base64 = encode_image(image_path)
         os.remove(image_path)
 
-        if MODELS[selected_model].get("vision", False):
-            try:
-                gemini_messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "Ты — ассистент, который распознает изображения и анализирует их содержимое, интерпретируя как простую информацию."},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                        ]
-                    }
-                ]
+        # Здесь можно добавить логику для обработки изображения, если модель поддерживает vision
+        image_description = "Описание изображения будет здесь, если модель поддерживает vision."
+        logger.info(f"User {user_id} ({user_name}) sent an image. Description: {image_description[:100]}...")
 
-                response = openrouter_client.chat.completions.create(
-                    model=MODELS[selected_model]["id"],
-                    messages=gemini_messages,
-                    temperature=0.7,
-                    max_tokens=1024,
-                )
-                image_description = response.choices[0].message.content
-                logger.info(f"Image description for user {user_id}: {image_description[:100]}...")
-            except Exception as e:
-                logger.error(f"Error processing image for user {user_id}: {str(e)}")
-                image_description = "Не удалось обработать изображение."
-        else:
-            logger.warning(f"Selected model {selected_model} does not support vision. Skipping image processing.")
-            image_description = "Выбранная модель не поддерживает обработку изображений."
-
-            logger.info(f"User {user_id} ({user_name}) sent an image. Description: {image_description[:100]}...")
-
-    full_message = f"{text}\n\nОписание изображения: {image_description}" if image else text
+    full_message = text  # Используем только текст, так как изображение не обрабатывается
     
     logger.info(f"User {user_id} ({user_name}) sent: {full_message}")
     
@@ -325,6 +305,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
     try:
         await update.message.chat.send_action(action=ChatAction.TYPING)
+
 
         if MODELS[selected_model]["provider"] == "groq":
             messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
