@@ -2,6 +2,7 @@ from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
 from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, generate_image, gemini_client
+from PIL import Image
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
 from telegram.error import BadRequest
 import html
@@ -279,6 +280,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await generate_and_send_image(update, context, text)
         return
 
+    image_path = None  # Инициализируем переменную для пути к изображению
+
     if image:
         # Если модель не поддерживает обработку изображений, отправляем сообщение пользователю
         if not MODELS[selected_model].get("vision", False):
@@ -287,10 +290,9 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
         # Если модель поддерживает обработку изображений, продолжаем как обычно
         file = await image.get_file()
-        image_path = f"temp_image_{user_id}.jpg"
-        await file.download_to_drive(image_path)
-        image_base64 = encode_image(image_path)
-        os.remove(image_path)
+        image_path = f"temp_image_{user_id}.jpg"  # Сохраняем путь к изображению
+        await file.download_to_drive(image_path)  # Сохраняем изображение на диск
+        image_base64 = encode_image(image_path)  # Кодируем изображение в base64
 
         # Здесь можно добавить логику для обработки изображения, если модель поддерживает vision
         image_description = "Описание изображения будет здесь, если модель поддерживает vision."
@@ -351,6 +353,14 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                     "parts": [message["content"]]
                 })
 
+            # Добавляем изображение в запрос, если оно есть
+            if image:
+                image_data = Image.open(image_path)
+                converted_messages.append({
+                    "role": "user",
+                    "parts": [image_data, text]
+                })
+
             response = model.generate_content(
                 converted_messages,
                 generation_config=gemini_client.types.GenerationConfig(
@@ -360,7 +370,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             )
 
             bot_response = response.text
-
 
         elif MODELS[selected_model]["provider"] == "together":
             if together_client is None:
