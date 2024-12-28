@@ -502,6 +502,7 @@ async def generate_and_send_image(update: Update, context: ContextTypes.DEFAULT_
 @check_auth
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    user_name = update.effective_user.username or update.effective_user.first_name
     logger.info(f"Received voice message from user {user_id}")
     temp_filename = f"tempvoice{user_id}.ogg"
 
@@ -529,6 +530,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
             logger.info(f"Temporary file {temp_filename} removed")
+
 
 @check_auth
 @admin_required
