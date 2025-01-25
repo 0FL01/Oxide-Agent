@@ -90,7 +90,7 @@ chat_history = {}
 
 MODELS = {
     "Gemini Exp 1206": {"id": "gemini-exp-1206", "max_tokens": 256000, "provider": "gemini", "vision": True},
-    "Gemini 2.0 Flash Thinking Experimental": {"id": "gemini-2.0-flash-thinking-exp-1219", "max_tokens": 8192, "provider": "gemini", "vision": True},
+    "Gemini 2.0 Flash Thinking Experimental": {"id": "gemini-2.0-flash-thinking-exp-01-21", "max_tokens": 8192, "provider": "gemini", "vision": True},
     "Gemini 2.0 Flash Experimental": {"id": "gemini-2.0-flash-exp", "max_tokens": 8192, "provider": "gemini", "vision": True},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
     "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
