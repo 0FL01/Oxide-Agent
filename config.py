@@ -93,11 +93,11 @@ MODELS = {
     "Gemini 2.0 Flash Thinking Experimental": {"id": "gemini-2.0-flash-thinking-exp-01-21", "max_tokens": 8192, "provider": "gemini", "vision": True},
     "Gemini 2.0 Flash Experimental": {"id": "gemini-2.0-flash-exp", "max_tokens": 8192, "provider": "gemini", "vision": True},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
+    "DeepSeek-R1": {"id": "deepseek-ai/DeepSeek-R1", "max_tokens": 8192, "provider": "together"},
     "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
     "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure", "vision": True},
     "Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 8000, "provider": "groq"},
-    "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"},
-    "DeepSeek-R1": {"id": "deepseek-ai/DeepSeek-R1", "max_tokens": 8192, "provider": "together"}
+    "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"}
 }
 
 DEFAULT_MODEL = "Gemini 2.0 Flash Experimental"
