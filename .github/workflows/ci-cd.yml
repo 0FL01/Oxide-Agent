@@ -92,7 +92,6 @@ jobs:
             cd /root/docker/Another-Chat-with-LLM
             export TAG=${{ github.sha }}
             echo "Deploying version: $TAG"
-            docker compose down
             docker compose pull
             docker compose up -d
             docker compose ps
