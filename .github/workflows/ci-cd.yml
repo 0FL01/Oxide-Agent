@@ -37,17 +37,19 @@ jobs:
         with:
           images: ${{ env.DOCKER_IMAGE }}
           tags: |
+            type=raw,value=latest
+            type=sha,format=short
             type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
-            type=sha,format=long
 
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:latest
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -88,5 +90,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /root/docker/Another-Chat-with-LLM
+            export TAG=${{ github.sha }}
+            echo "Deploying version: $TAG"
             docker compose pull
             docker compose up -d
+            docker compose ps
