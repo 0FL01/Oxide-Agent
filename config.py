@@ -90,7 +90,7 @@ chat_history = {}
 
 MODELS = {
     "Gemini Exp 1206": {"id": "gemini-exp-1206", "max_tokens": 256000, "provider": "gemini", "vision": True},
-    "Gemini 2.0 Flash Thinking Experimental": {"id": "gemini-2.0-flash-thinking-exp-01-21", "max_tokens": 8192, "provider": "gemini", "vision": True},
+    "Gemini 2.0 Flash Thinking Experimental": {"id": "gemini-2.0-flash-thinking-exp-01-21", "max_tokens": 128000, "provider": "gemini", "vision": True},
     "Gemini 2.0 Flash Experimental": {"id": "gemini-2.0-flash-exp", "max_tokens": 8192, "provider": "gemini", "vision": True},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
     "DeepSeek-R1": {"id": "deepseek-ai/DeepSeek-R1", "max_tokens": 8192, "provider": "together"},
@@ -100,7 +100,7 @@ MODELS = {
     "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"}
 }
 
-DEFAULT_MODEL = "Gemini 2.0 Flash Experimental"
+DEFAULT_MODEL = "Gemini 2.0 Flash Thinking Experimental"
 #DEFAULT_MODEL = "Llama 3.3 70B 8K (groq)"
 
 def generate_image(prompt):
