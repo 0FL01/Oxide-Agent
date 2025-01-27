@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_MESSAGE = """.  
 ###Answering Rules###
+
 Follow in the strict order:
 
 1. ИСПОЛЬЗУЙТЕ язык моего сообщения
