@@ -89,7 +89,6 @@ else:
 chat_history = {}
 
 MODELS = {
-    "Gemini Exp 1206": {"id": "gemini-exp-1206", "max_tokens": 256000, "provider": "gemini", "vision": True},
     "Gemini 2.0 Flash Thinking Experimental": {"id": "gemini-2.0-flash-thinking-exp-01-21", "max_tokens": 128000, "provider": "gemini", "vision": True},
     "Gemini 2.0 Flash Experimental": {"id": "gemini-2.0-flash-exp", "max_tokens": 8192, "provider": "gemini", "vision": True},
     "DeepSeek-V3": {"id": "deepseek-ai/DeepSeek-V3", "max_tokens": 8192, "provider": "together"},
