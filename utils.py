@@ -4,32 +4,52 @@ import os
 from typing import List, Dict, Tuple
 from enum import Enum
 
-# Функции форматирования
+def clean_html(text):
+    """Remove improper HTML tags while preserving code blocks."""
+    code_blocks = []
+    
+    def replace_code_block(match):
+        code_blocks.append(match.group(0))
+        return f"__CODE_BLOCK_{len(code_blocks)-1}__"
+    
+    text = re.sub(r'```[\s\S]*?```', replace_code_block, text)
+    
+    # Remove standalone angle brackets
+    text = re.sub(r'<(?![/a-zA-Z])', '&lt;', text)
+    text = re.sub(r'(?<!>)>', '&gt;', text)
+    
+    # Restore code blocks
+    for i, block in enumerate(code_blocks):
+        text = text.replace(f"__CODE_BLOCK_{i}__", block)
+    
+    return text
 
-def format_html(text):
+def format_text(text):
+    """Format text with Telegram markdown."""
+    text = clean_html(text)
+    
     def code_block_replacer(match):
         code = match.group(2)
         language = match.group(1) or ''
         escaped_code = html.escape(code.strip())
-        return f'<pre><code class="{language}">{escaped_code}</code></pre>'
-
-    # Заменяем блоки кода
-    text = re.sub(r'```(\w+)?\n(.*?)```', code_block_replacer, text, flags=re.DOTALL)
-    text = re.sub(r'`(\w+)\n(.*?)`', code_block_replacer, text, flags=re.DOTALL)
+        return f'```{language}\n{escaped_code}\n```'
     
-    # Заменяем маркированные списки
+    # Replace code blocks
+    text = re.sub(r'```(\w+)?\n(.*?)```', code_block_replacer, text, flags=re.DOTALL)
+    
+    # Format lists
     text = re.sub(r'^\* ', '• ', text, flags=re.MULTILINE)
     
-    # Заменяем жирный и курсивный текст
+    # Format bold and italic
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
     
-    # Заменяем инлайн-код
+    # Format inline code
     text = re.sub(r'`(.*?)`', lambda m: f'<code>{html.escape(m.group(1))}</code>', text)
     
-    # Удаляем все оставшиеся HTML-теги, кроме разрешенных
-    allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-    text = re.sub(r'<(?!/?({})).*?>'.format('|'.join(allowed_tags)), '', text)
+    # Clean up unnecessary whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = text.strip()
     
     return text
 

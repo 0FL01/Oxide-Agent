@@ -3,10 +3,9 @@ from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
 from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, generate_image, gemini_client
 from PIL import Image
-from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, UserRole
+from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, clean_html, format_html UserRole
 from telegram.error import BadRequest
 import html
-from utils import format_html, split_long_message
 import logging
 import os
 import re
@@ -75,63 +74,6 @@ def admin_required(func):
             return
         return await func(update, context)
     return wrapper
-
-def clean_html(text):
-    """Remove any unclosed or improperly nested HTML tags, preserving code blocks."""
-    # Temporarily replace code blocks
-    code_blocks = []
-    def replace_code_block(match):
-        code_blocks.append(match.group(0))
-        return f"__CODE_BLOCK_{len(code_blocks)-1}__"
-    
-    text = re.sub(r'```[\s\S]*?```', replace_code_block, text)
-    
-    # Remove any standalone < or > characters
-    text = re.sub(r'(?<!<)>(?!>)', '&gt;', text)
-    text = re.sub(r'(?<!<)<(?!<)', '&lt;', text)
-    
-    # Remove any unclosed tags
-    open_tags = []
-    clean_text = ""
-    for char in text:
-        if char == '<':
-            open_tags.append(len(clean_text))
-        elif char == '>':
-            if open_tags:
-                start = open_tags.pop()
-                clean_text += text[start:len(clean_text)+1]
-            else:
-                clean_text += '&gt;'
-        else:
-            clean_text += char
-    
-    # Close any remaining open tags
-    while open_tags:
-        start = open_tags.pop()
-        clean_text = clean_text[:start] + '&lt;' + clean_text[start+1:]
-    
-    # Restore code blocks
-    for i, block in enumerate(code_blocks):
-        clean_text = clean_text.replace(f"__CODE_BLOCK_{i}__", block)
-    
-    return clean_text
-
-def format_html(text):
-    text = clean_html(text)  # Clean the HTML first
-    
-    # Bold
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    
-    # Italic
-    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    
-    # Code blocks (three backticks)
-    text = re.sub(r'```(\w+)?\n(.*?)\n```', r'<pre><code class="\1">\2</code></pre>', text, flags=re.DOTALL)
-    
-    # Inline code (single backticks)
-    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
-    
-    return text
 
 @check_auth
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
