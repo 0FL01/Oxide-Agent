@@ -357,7 +357,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         chat_history[user_id].append({"role": "assistant", "content": bot_response})
         logger.info(f"Sent response to user {user_id} ({user_name}): {bot_response}")
 
-        formatted_response = format_html(bot_response)
+        formatted_response = format_text(bot_response)
         message_parts = split_long_message(formatted_response)
 
         for part in message_parts:
