@@ -76,8 +76,8 @@ jobs:
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
           echo "XAI_API_KEY=${{ secrets.XAI_API_KEY }}" >> .env
           echo "ADMIN_ID=${{ secrets.ADMIN_ID }}" >> .env
-          echo "PROMPT_IMPROVEMENT_SYSTEM_MESSAGE=${{ secrets.PROMPT_IMPROVEMENT_SYSTEM_MESSAGE }}" >> .env
-          echo "SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE }}" >> .env
+          echo "PROMPT_IMPROVEMENT_SYSTEM_MESSAGE=${{ secrets.PROMPT_IMPROVEMENT_SYSTEM_MESSAGE:-'Ты - эксперт по улучшению промптов для генерации изображений. Твоя задача - сделать промпт более детальным и эффективным, сохраняя при этом основную идею. Анализируй контекст и добавляй художественные детали.' }}" >> .env
+          echo "SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE:-'Ты - полезный ассистент с искусственным интеллектом. Ты всегда стараешься дать точные и полезные ответы. Ты можешь общаться на разных языках, включая русский и английский.' }}" >> .env
 
       - name: Create allowed_users.txt file
         run: |
