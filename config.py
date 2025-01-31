@@ -101,8 +101,8 @@ MODELS = {
     "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"}
 }
 
-DEFAULT_MODEL = "DeepSeek-R1-Distill-Llama-70B"
-#DEFAULT_MODEL = "Llama 3.3 70B 8K (groq)"
+#DEFAULT_MODEL = "DeepSeek-R1-Distill-Llama-70B"
+DEFAULT_MODEL = "Llama 3.3 70B 8K (groq)"
 
 def generate_image(prompt):
     if not TOGETHER_API_KEY:
