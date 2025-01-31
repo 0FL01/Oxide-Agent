@@ -76,6 +76,8 @@ jobs:
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
           echo "XAI_API_KEY=${{ secrets.XAI_API_KEY }}" >> .env
           echo "ADMIN_ID=${{ secrets.ADMIN_ID }}" >> .env
+          echo "PROMPT_IMPROVEMENT_SYSTEM_MESSAGE=${{ secrets.PROMPT_IMPROVEMENT_SYSTEM_MESSAGE }}" >> .env
+          echo "SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE }}" >> .env
 
       - name: Create allowed_users.txt file
         run: |
