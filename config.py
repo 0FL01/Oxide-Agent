@@ -98,40 +98,38 @@ MODELS = {
 #DEFAULT_MODEL = "DeepSeek-R1-Distill-Llama-70B"
 DEFAULT_MODEL = "Llama 3.3 70B 8K (groq)"
 
-def generate_image(prompt):
-    if not TOGETHER_API_KEY:
-        raise ValueError("TOGETHER_API_KEY is not set in the environment variables.")
+try:
+    huggingface_client = OpenAI(
+        base_url="https://api-inference.huggingface.co/v1/",
+        api_key=HF_API_KEY,
+    ) if HF_API_KEY else None
+    azure_client = OpenAI(
+        base_url=AZURE_ENDPOINT,
+        api_key=GITHUB_TOKEN,
+    ) if GITHUB_TOKEN else None
+    together_client = Together(
+        base_url="https://api.together.xyz/v1",
+        api_key=TOGETHER_API_KEY,
+    ) if TOGETHER_API_KEY else None
+    groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+    openrouter_client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+    ) if OPENROUTER_API_KEY else None
+    mistral_client = Mistral(api_key=MISTRAL_API_KEY) if MISTRAL_API_KEY else None
+    gemini_client = genai if GEMINI_API_KEY else None
+except Exception as e:
+    logger.error(f"Error initializing API clients: {str(e)}")
+    # Установите значения клиентов в None в случае ошибки
+    huggingface_client = None
+    azure_client = None
+    together_client = None
+    groq_client = None
+    openrouter_client = None
+    mistral_client = None
+    gemini_client = None
 
-    together_client = Together(api_key=TOGETHER_API_KEY)
-    response = together_client.images.generate(
-        prompt=prompt,
-        model="black-forest-labs/FLUX.1-schnell-Free",
-        width=1024,
-        height=768,
-        steps=1,
-        n=1,
-        response_format="b64_json"
-    )
-    return response.data[0].b64_json
 
-ADMIN_ID = int(os.getenv('ADMIN_ID'))
-
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
-
-def process_file(file_path: str, max_size: int = 1 * 1024 * 1024) -> str:
-    if os.path.getsize(file_path) > max_size:
-        raise ValueError(f"Файл слишком большой. Максимальный размер: {max_size/1024/1024}MB")
-
-    file_extension = os.path.splitext(file_path)[1].lower()
-    content = ""
-
-    try:
-        # Text-based files
-        if file_extension in ['.txt', '.log', '.md']:
-            with open(file_path, 'r', encoding='utf-8') as file:
-                content = file.read()
 
 
 
