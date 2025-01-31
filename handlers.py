@@ -12,36 +12,14 @@ import re
 import base64
 import asyncio
 from together import Together
+from dotenv import load_dotenv
 
-PROMPT_IMPROVEMENT_SYSTEM_MESSAGE = """Ты — помощник, который улучшает пользовательские промпты для генерации изображений. Твоя цель — преобразовать запрос пользователя так, чтобы он был наиболее точным, детализированным и подходящим для генерации высококачественного изображения, сохраняя при этом изначальную суть запроса. Улучшенный промпт должен быть адаптирован на английский язык. Твоя задача — добавлять конкретные детали (например, описания объектов, цветов, поз, освещения, окружения, текстур и т.д.), которые помогут системе лучше понять и визуализировать запрос пользователя. Старайся сделать промпт максимально реалистичным, детализированным и ярким. Цензура не требуется, важно передать реалистичность и точность."""
+load_dotenv()
 
+PROMPT_IMPROVEMENT_SYSTEM_MESSAGE = os.getenv('PROMPT_IMPROVEMENT_SYSTEM_MESSAGE')
+SYSTEM_MESSAGE = os.getenv('SYSTEM_MESSAGE')
 
 logger = logging.getLogger(__name__)
-
-SYSTEM_MESSAGE = """.  
-###Answering Rules###
-
-Follow in the strict order:
-
-1. ИСПОЛЬЗУЙТЕ язык моего сообщения
-2. В ПЕРВОМ сообщении перед ответом назначьте себе роль эксперта в реальном мире, например, «Я отвечу как всемирно известный эксперт по истории <подробная тема> с <самой престижной наградой за РЕАЛЬНОСТЬ МЕСТНОЙ темы>» или «Я отвечу как всемирно известный эксперт <конкретной науки> по <подробной теме> с <самой престижной наградой за МЕСТНУЮ тему>».
-3. Вы ДОЛЖНЫ объединить свои глубокие знания темы и ясное мышление, чтобы быстро и точно расшифровать ответ шаг за шагом с КОНКРЕТНЫМИ деталями
-4. За лучший ответ я дам чаевые в размере $1 000 000.
-5. Ваш ответ имеет решающее значение для моей карьеры
-6. Отвечайте на вопрос в естественной, человеческой манере
-7. ВСЕГДА используйте ##пример ответа## для структуры первого сообщения.
-8. Форматирование: - Оформите код в соответствии со стандартами Telegram: ``programming_language // ваш код здесь``.
-И снова код должен быть экранирован тремя символами ```.
-
-##Answering example##
-
-// IF THE CHATLOG IS EMPTY:
-<I'll answer as the world-famous %REAL specific field% scientists with %most prestigious REAL LOCAL award%>
-
-**TL;DR**: <TL;DR, skip for rewriting>
-
-<Step-by-step answer with CONCRETE details and key context>
-."""
 
 def get_main_keyboard():
     keyboard = [
@@ -289,21 +267,16 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         elif MODELS[selected_model]["provider"] == "gemini":
             if gemini_client is None:
                 raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
+            
             model = gemini_client.GenerativeModel(MODELS[selected_model]["id"])
             messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
             converted_messages = []
+            
             for message in messages:
+                parts = prepare_gemini_message(message["content"], image_path if message["role"] == "user" else None)
                 converted_messages.append({
                     "role": "user" if message["role"] == "user" else "model",
-                    "parts": [message["content"]]
-                })
-
-            # Добавляем изображение в запрос, если оно есть
-            if image:
-                image_data = Image.open(image_path)
-                converted_messages.append({
-                    "role": "user",
-                    "parts": [image_data, text]
+                    "parts": parts
                 })
 
             response = model.generate_content(
@@ -512,6 +485,17 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
     except (ValueError, IndexError):
         await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+
+# Добавим проверку для Gemini
+def prepare_gemini_message(message_content, image_path=None):
+    if image_path and os.path.exists(image_path):
+        try:
+            image_data = Image.open(image_path)
+            return [image_data, message_content]
+        except Exception as e:
+            logger.error(f"Error processing image for Gemini: {e}")
+            return [message_content]
+    return [message_content]
 
 
 
