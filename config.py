@@ -1,17 +1,11 @@
 import os
 from groq import AsyncGroq
 from dotenv import load_dotenv
-from utils import load_allowed_users, save_allowed_users, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state
+from utils import load_allowed_users, save_allowed_users, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, encode_image, process_file
 from openai import OpenAI
 from mistralai import Mistral
 from together import Together
 import base64
-import json
-import yaml
-import xml.etree.ElementTree as ET
-import docx
-import openpyxl
-import xlrd
 import pandas as pd
 from typing import Union
 import logging
@@ -138,97 +132,6 @@ def process_file(file_path: str, max_size: int = 1 * 1024 * 1024) -> str:
         if file_extension in ['.txt', '.log', '.md']:
             with open(file_path, 'r', encoding='utf-8') as file:
                 content = file.read()
-
-        # XML files
-        elif file_extension == '.xml':
-            try:
-                tree = ET.parse(file_path)
-                root = tree.getroot()
-
-                def process_element(element, level=0):
-                    result = []
-                    indent = "  " * level
-                    attrib_str = ', '.join([f"{k}='{v}'" for k, v in element.attrib.items()])
-                    tag_info = f"{element.tag}"
-                    if attrib_str:
-                        tag_info += f" ({attrib_str})"
-                    result.append(f"{indent}{tag_info}")
-
-                    if element.text and element.text.strip():
-                        result.append(f"{indent}  {element.text.strip()}")
-
-                    for child in element:
-                        result.extend(process_element(child, level + 1))
-
-                    return result
-
-                content = "\n".join(process_element(root))
-            except ET.ParseError as e:
-                raise ValueError(f"Некорректный XML файл: {str(e)}")
-
-        # Word documents
-        elif file_extension in ['.docx', '.doc']:
-            try:
-                doc = docx.Document(file_path)
-                paragraphs = []
-
-                for paragraph in doc.paragraphs:
-                    if paragraph.text.strip():
-                        style = paragraph.style.name if paragraph.style else "Normal"
-                        paragraphs.append(f"[{style}] {paragraph.text}")
-
-                content = "\n\n".join(paragraphs)
-            except Exception as e:
-                raise ValueError(f"Ошибка при обработке документа Word: {str(e)}")
-
-        # Excel files
-        elif file_extension in ['.xlsx', '.xls']:
-            try:
-                if file_extension == '.xlsx':
-                    df = pd.read_excel(file_path, engine='openpyxl')
-                else:
-                    df = pd.read_excel(file_path, engine='xlrd')
-
-                content = (
-                    f"Columns: {', '.join(df.columns)}\n"
-                    f"Rows: {len(df)}\n\n"
-                    f"{df.to_string(index=True, max_rows=1000)}"
-                )
-            except Exception as e:
-                raise ValueError(f"Ошибка при обработке Excel файла: {str(e)}")
-
-        # CSV files
-        elif file_extension == '.csv':
-            try:
-                df = pd.read_csv(file_path)
-                content = (
-                    f"Columns: {', '.join(df.columns)}\n"
-                    f"Rows: {len(df)}\n\n"
-                    f"{df.to_string(index=True, max_rows=1000)}"
-                )
-            except Exception as e:
-                raise ValueError(f"Ошибка при обработке CSV файла: {str(e)}")
-
-        else:
-            content = f"Unsupported file type: {file_extension}"
-
-        # Add file metadata
-        file_size = os.path.getsize(file_path) / 1024  # Size in KB
-        file_name = os.path.basename(file_path)
-        metadata = (
-            f"File Information:\n"
-            f"Name: {file_name}\n"
-            f"Type: {file_extension}\n"
-            f"Size: {file_size:.2f} KB\n"
-            f"---\n\n"
-        )
-
-        return metadata + content
-
-    except Exception as e:
-        error_msg = f"Error processing file {file_path}: {str(e)}"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
 
 
 
