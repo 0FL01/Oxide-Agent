@@ -32,19 +32,19 @@ def format_text(text):
         code = match.group(2)
         language = match.group(1) or ''
         escaped_code = html.escape(code.strip())
-        return f'```{language}\n{escaped_code}\n```'
+        return f'<pre><code class="{language}">{escaped_code}</code></pre>'
     
-    # Replace code blocks
+    # Replace code blocks with proper HTML tags
     text = re.sub(r'```(\w+)?\n(.*?)```', code_block_replacer, text, flags=re.DOTALL)
     
     # Format lists
     text = re.sub(r'^\* ', '• ', text, flags=re.MULTILINE)
     
-    # Format bold and italic
+    # Format bold and italic (в правильном порядке)
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
     
-    # Format inline code
+    # Format inline code with proper HTML escaping
     text = re.sub(r'`(.*?)`', lambda m: f'<code>{html.escape(m.group(1))}</code>', text)
     
     # Clean up unnecessary whitespace
