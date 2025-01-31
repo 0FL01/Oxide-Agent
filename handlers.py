@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, generate_image, gemini_client
+from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, gemini_client, TOGETHER_API_KEY
 from PIL import Image
 from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, clean_html, format_text, UserRole
 from telegram.error import BadRequest
@@ -432,6 +432,31 @@ async def generate_and_send_image(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"error generating image for user {user_id}: {str(e)}")
         await update.message.reply_text(f"произошла ошибка при генерации изображения: {str(e)}")
 
+def generate_image(prompt):
+    if not TOGETHER_API_KEY:
+        raise ValueError("TOGETHER_API_KEY is not set in the environment variables.")
+
+    together_client = Together(api_key=TOGETHER_API_KEY)
+    response = together_client.images.generate(
+        prompt=prompt,
+        model="black-forest-labs/FLUX.1-schnell-Free",
+        width=1024,
+        height=768,
+        steps=1,
+        n=1,
+        response_format="b64_json"
+    )
+    return response.data[0].b64_json
+
+ADMIN_ID = int(os.getenv('ADMIN_ID'))
+
+def encode_image(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+def process_file(file_path: str, max_size: int = 1 * 1024 * 1024) -> str:
+    if os.path.getsize(file_path) > max_size:
+        raise ValueError(f"Файл слишком большой. Максимальный размер: {max_size/1024/1024}MB")
 
 @check_auth
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
