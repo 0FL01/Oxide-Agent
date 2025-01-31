@@ -93,7 +93,7 @@ MODELS = {
     "Gemini 2.0 Flash Experimental": {"id": "gemini-2.0-flash-exp", "max_tokens": 8192, "provider": "gemini", "vision": True},
     "DeepSeek-V3": {"id": "deepseek-ai/DeepSeek-V3", "max_tokens": 8192, "provider": "together"},
     "DeepSeek-R1": {"id": "deepseek-ai/DeepSeek-R1", "max_tokens": 8192, "provider": "together"},
-    "DeepSeek-R1-Distill-Llama-70B": {"id": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B", "max_tokens": 8192, "provider": "groq"},
+    "DeepSeek-R1-Distill-Llama-70B": {"id": "DeepSeek-R1-Distill-Llama-70B", "max_tokens": 8192, "provider": "groq"},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
     "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
     "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure", "vision": True},
