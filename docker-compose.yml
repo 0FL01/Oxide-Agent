@@ -8,3 +8,8 @@ services:
     volumes:
       #  - ./allowed_users.txt:/app/allowed_users.txt
       - ./logs:/app/logs
+
+networks:
+  postgres_network:
+    external: true
+    name: pg_default
