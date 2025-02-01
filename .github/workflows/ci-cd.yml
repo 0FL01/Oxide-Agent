@@ -92,7 +92,7 @@ jobs:
             HYPERBOLIC_API_KEY=${{ secrets.HYPERBOLIC_API_KEY }}
             TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
             HF_API_KEY=${{ secrets.HF_API_KEY }}
-            GITHUB_TOKEN=${{ secrets.GH_TOKEN }}
+            GH_TOKEN=${{ secrets.GH_TOKEN }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             XAI_API_KEY=${{ secrets.XAI_API_KEY }}
             ADMIN_ID=${{ secrets.ADMIN_ID }}

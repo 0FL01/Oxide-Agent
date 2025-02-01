@@ -24,7 +24,7 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 TOGETHER_API_KEY = os.getenv('TOGETHER_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+GITHUB_TOKEN = os.getenv('GH_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 
