@@ -11,13 +11,15 @@ class UserRole(Enum):
     USER = "USER"
 
 def get_db_connection():
-    return psycopg2.connect(
-        dbname=os.getenv('POSTGRES_DB'),
-        user=os.getenv('POSTGRES_USER'),
-        password=os.getenv('POSTGRES_PASSWORD'),
-        host=os.getenv('POSTGRES_HOST', '127.0.0.1'),
-        port=os.getenv('POSTGRES_PORT', '5432')
-    )
+    connection_params = {
+        'dbname': os.getenv('POSTGRES_DB'),
+        'user': os.getenv('POSTGRES_USER'),
+        'password': os.getenv('POSTGRES_PASSWORD'),
+        'host': os.getenv('POSTGRES_HOST', '127.0.0.1'),
+        'port': os.getenv('POSTGRES_PORT', '5432')
+    }
+    logger.info(f"Attempting to connect to database with params: {connection_params}")
+    return psycopg2.connect(**connection_params)
 
 def is_user_allowed(user_id: int) -> bool:
     try:

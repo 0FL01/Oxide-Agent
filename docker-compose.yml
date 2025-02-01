@@ -4,9 +4,12 @@ services:
     container_name: another_chat_tg
     env_file:
       - .env
+    environment:
+      - POSTGRES_HOST=postgres17
+    networks:
+      - postgres_network
     restart: unless-stopped
     volumes:
-      #  - ./allowed_users.txt:/app/allowed_users.txt
       - ./logs:/app/logs
 
 networks:
