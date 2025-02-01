@@ -3,6 +3,7 @@ import psycopg2
 from psycopg2.extras import DictCursor
 from enum import Enum
 import logging
+import socket
 
 logger = logging.getLogger(__name__)
 
@@ -72,4 +73,22 @@ def remove_allowed_user(user_id: int):
                 conn.commit()
     except Exception as e:
         logger.error(f"Database error in remove_allowed_user: {e}")
-        raise 
+        raise
+
+def check_postgres_connection():
+    host = os.getenv('POSTGRES_HOST', '127.0.0.1')
+    port = int(os.getenv('POSTGRES_PORT', '5432'))
+    
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        result = sock.connect_ex((host, port))
+        
+        if result == 0:
+            logger.info(f"Port {port} is open on host {host}")
+        else:
+            logger.error(f"Port {port} is closed on host {host}")
+            
+        sock.close()
+    except Exception as e:
+        logger.error(f"Network connectivity test failed: {e}") 
