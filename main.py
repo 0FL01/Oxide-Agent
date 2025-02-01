@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from logging.handlers import TimedRotatingFileHandler
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck
@@ -115,7 +116,7 @@ def setup_logging():
 # Initialize logger
 logger = setup_logging()
 
-def main():
+async def main():
     """Main function to start the bot"""
     logger.info("Starting the bot")
     
@@ -136,7 +137,7 @@ def main():
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     
     # Start the bot
-    application.run_polling()
+    await application.run_polling()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
