@@ -1,6 +1,13 @@
 import os
-# Устанавливаем фиктивное значение для GROQ_API_KEY, чтобы избежать ошибки при импорте
+
+# Устанавливаем фиктивные значения для всех ключей провайдеров
 os.environ["GROQ_API_KEY"] = "dummy"
+os.environ["HF_API_KEY"] = "dummy"
+os.environ["OPENROUTER_API_KEY"] = "dummy"
+os.environ["TOGETHER_API_KEY"] = "dummy"
+os.environ["MISTRAL_API_KEY"] = "dummy"
+os.environ["GITHUB_TOKEN"] = "dummy"
+os.environ["GEMINI_API_KEY"] = "dummy"
 
 import sys
 # Добавляем корневую директорию в sys.path
