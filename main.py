@@ -9,7 +9,7 @@ from handlers import start, clear, handle_message, handle_voice, change_model, a
 from config import TELEGRAM_TOKEN
 import os
 import re
-from database import get_db_connection
+from database import get_db_connection, check_postgres_connection
 
 class SensitiveDataFilter(logging.Filter):
     def __init__(self):
