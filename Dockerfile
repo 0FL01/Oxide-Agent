@@ -33,7 +33,7 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
 # Копируем файлы приложения
-COPY config.py handlers.py main.py utils.py watchdog_runner.py allowed_users.txt ./
+COPY config.py handlers.py main.py utils.py database.py watchdog_runner.py ./
 
 # Устанавливаем переменные окружения для корректной работы aiogram
 ENV PYTHONUNBUFFERED=1
