@@ -1,7 +1,7 @@
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user
+from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck
 from config import TELEGRAM_TOKEN
 import os
 import re
@@ -126,6 +126,7 @@ def main():
     application.add_handler(CommandHandler("clear", clear))
     application.add_handler(CommandHandler("add_user", add_user))
     application.add_handler(CommandHandler("remove_user", remove_user))
+    application.add_handler(CommandHandler("healthcheck", healthcheck))
     
     # Add message handlers
     application.add_handler(MessageHandler(

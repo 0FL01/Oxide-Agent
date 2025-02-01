@@ -495,6 +495,12 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (ValueError, IndexError):
         await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
 
+async def healthcheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик команды /healthcheck. Возвращает "OK" если бот работает.
+    """
+    await update.message.reply_text("OK")
+
 
 
 
