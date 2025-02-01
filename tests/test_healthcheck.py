@@ -1,5 +1,8 @@
-import sys
 import os
+# Устанавливаем фиктивное значение для GROQ_API_KEY, чтобы избежать ошибки при импорте
+os.environ["GROQ_API_KEY"] = "dummy"
+
+import sys
 # Добавляем корневую директорию в sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
