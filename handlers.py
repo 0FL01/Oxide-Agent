@@ -110,7 +110,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "Очистить контекст":
         await clear(update, context)
-    elif text == "Сменить модель" or text == "Назад":
+    elif text == "Сменить модель":
         await change_model(update, context)
     elif text == "Назад":
         await update.message.reply_text(
@@ -124,26 +124,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_keyboard()
         )
-    elif documents:
-        # Process all documents in the message
-        combined_content = ""
-        for doc in documents:
-            file = await doc.get_file()
-            file_extension = os.path.splitext(doc.file_name)[1].lower()
-            file_path = f"temp_file_{update.effective_user.id}_{doc.file_name}"
+    elif document:
+        # Process single document
+        file = await document.get_file()
+        file_extension = os.path.splitext(document.file_name)[1].lower()
+        file_path = f"temp_file_{update.effective_user.id}_{document.file_name}"
 
-            try:
-                await file.download_to_drive(file_path)
-                file_content = process_file(file_path)
-                combined_content += f"\nСодержимое файла {doc.file_name}:\n{file_content}\n"
-            finally:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-
-        # Combine file content with user's text
-        if combined_content:
-            full_message = f"{combined_content}\nЗапрос пользователя: {text}"
+        try:
+            await file.download_to_drive(file_path)
+            file_content = process_file(file_path)
+            full_message = f"\nСодержимое файла {document.file_name}:\n{file_content}\n"
+            if text:
+                full_message += f"\nЗапрос пользователя: {text}"
             await process_message(update, context, full_message)
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
     else:
         await process_message(update, context, text, image)
 

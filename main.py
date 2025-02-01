@@ -148,12 +148,12 @@ async def main():
         application.add_handler(CommandHandler("healthcheck", healthcheck))
         
         # Add message handlers
+        application.add_handler(MessageHandler(filters.Regex("^(Сменить модель|Назад)$"), change_model))
+        application.add_handler(MessageHandler(filters.VOICE, handle_voice))
         application.add_handler(MessageHandler(
             filters.TEXT | filters.PHOTO | filters.Document.ALL, 
             handle_message
         ))
-        application.add_handler(MessageHandler(filters.VOICE, handle_voice))
-        application.add_handler(MessageHandler(filters.Regex("^(Сменить модель|Назад)$"), change_model))
         
         # Start the bot
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
