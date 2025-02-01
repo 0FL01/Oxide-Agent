@@ -17,18 +17,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pytest pytest-asyncio
-
       - name: Run tests
         run: pytest --maxfail=1 --disable-warnings -q
 
@@ -38,16 +35,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
-
       - name: Login to Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v4
@@ -58,7 +52,6 @@ jobs:
             type=sha,format=short
             type=ref,event=branch
             type=semver,pattern={{version}}
-
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
@@ -75,32 +68,9 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        
-      - name: Create env file
-        run: |
-          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
-          echo "TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}" >> .env
-          echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" >> .env
-          echo "MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}" >> .env
-          echo "HYPERBOLIC_API_KEY=${{ secrets.HYPERBOLIC_API_KEY }}" >> .env
-          echo "TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}" >> .env
-          echo "HF_API_KEY=${{ secrets.HF_API_KEY }}" >> .env
-          echo "GITHUB_TOKEN=${{ secrets.GH_TOKEN }}" >> .env
-          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
-          echo "XAI_API_KEY=${{ secrets.XAI_API_KEY }}" >> .env
-          echo "ADMIN_ID=${{ secrets.ADMIN_ID }}" >> .env
-          echo "PROMPT_IMPROVEMENT_SYSTEM_MESSAGE=${{ secrets.PROMPT_IMPROVEMENT_SYSTEM_MESSAGE }}" >> .env
-          echo "SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE }}" >> .env
-          echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" >> .env
-          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> .env
-          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> .env
-          echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> .env
-          echo "POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" >> .env
-
       - name: Deploy to server
         uses: appleboy/ssh-action@master
         with:
@@ -108,9 +78,35 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: GITHUB_SHA
           script: |
+            # Create directory if it doesn't exist
+            mkdir -p /root/docker/Another-Chat-with-LLM
+            
+            # Create .env file directly on the remote server
+            cat > /root/docker/Another-Chat-with-LLM/.env << 'EOL'
+            GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+            TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
+            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+            MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}
+            HYPERBOLIC_API_KEY=${{ secrets.HYPERBOLIC_API_KEY }}
+            TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
+            HF_API_KEY=${{ secrets.HF_API_KEY }}
+            GITHUB_TOKEN=${{ secrets.GH_TOKEN }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            XAI_API_KEY=${{ secrets.XAI_API_KEY }}
+            ADMIN_ID=${{ secrets.ADMIN_ID }}
+            PROMPT_IMPROVEMENT_SYSTEM_MESSAGE=${{ secrets.PROMPT_IMPROVEMENT_SYSTEM_MESSAGE }}
+            SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}
+            POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
+            EOL
+            
             cd /root/docker/Another-Chat-with-LLM
-            export TAG=${{ github.sha }}
+            export TAG=${GITHUB_SHA}
             echo "Deploying version: $TAG"
             docker compose pull
             docker compose up -d
