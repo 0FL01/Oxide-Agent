@@ -17,6 +17,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+user_auth_states = {}
+
+def set_user_auth_state(user_id: int, state: bool):
+    user_auth_states[user_id] = state
+
 DEFAULT_SYSTEM_MESSAGE = """Ты - полезный ассистент с искусственным интеллектом. Ты всегда стараешься дать точные и полезные ответы. Ты можешь общаться на разных языках, включая русский и английский."""
 
 DEFAULT_PROMPT_IMPROVEMENT_MESSAGE = """Ты - эксперт по улучшению промптов для генерации изображений. Твоя задача - сделать промпт более детальным и эффективным, сохраняя при этом основную идею. Анализируй контекст и добавляй художественные детали."""
@@ -96,13 +101,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handle both text messages and documents, supporting multiple files in one message.
     """
+    if not update.message:
+        return
+
     text = update.message.text or update.message.caption or ""
     image = update.message.photo[-1] if update.message.photo else None
-    documents = update.message.document if isinstance(update.message.document, list) else [update.message.document] if update.message.document else []
+    document = update.message.document
 
     if text == "Очистить контекст":
         await clear(update, context)
-    elif text == "Сменить модель":
+    elif text == "Сменить модель" or text == "Назад":
         await change_model(update, context)
     elif text == "Назад":
         await update.message.reply_text(

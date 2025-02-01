@@ -81,7 +81,7 @@ def setup_logging():
 
     # Configure root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+    root_logger.setLevel(logging.DEBUG)
     # Remove existing handlers
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
@@ -121,39 +121,44 @@ def setup_logging():
 logger = setup_logging()
 
 async def main():
-    """Main function to start the bot"""
-    logger.info("Starting the bot")
-    
-    # Проверяем подключение к PostgreSQL
-    check_postgres_connection()
-    
-    # Пробуем установить тестовое подключение к БД
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT version();")
-                version = cur.fetchone()
-                logger.info(f"Connected to PostgreSQL. Version: {version[0]}")
+        logger.info("Starting the bot")
+        
+        # Проверяем подключение к PostgreSQL
+        check_postgres_connection()
+        
+        # Пробуем установить тестовое подключение к БД
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT version();")
+                    version = cur.fetchone()
+                    logger.info(f"Connected to PostgreSQL. Version: {version[0]}")
+        except Exception as e:
+            logger.error(f"Failed to connect to database during startup check: {e}")
+        
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # Add command handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("clear", clear))
+        application.add_handler(CommandHandler("add_user", add_user))
+        application.add_handler(CommandHandler("remove_user", remove_user))
+        application.add_handler(CommandHandler("healthcheck", healthcheck))
+        
+        # Add message handlers
+        application.add_handler(MessageHandler(
+            filters.TEXT | filters.PHOTO | filters.Document.ALL, 
+            handle_message
+        ))
+        application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+        application.add_handler(MessageHandler(filters.Regex("^(Сменить модель|Назад)$"), change_model))
+        
+        # Start the bot
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
-        logger.error(f"Failed to connect to database during startup check: {e}")
-    
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Add command handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("clear", clear))
-    application.add_handler(CommandHandler("add_user", add_user))
-    application.add_handler(CommandHandler("remove_user", remove_user))
-    application.add_handler(CommandHandler("healthcheck", healthcheck))
-    
-    # Add message handlers
-    application.add_handler(MessageHandler(
-        filters.TEXT | filters.PHOTO | filters.Document.ALL, 
-        handle_message
-    ))
-    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    
-    # Start the bot
+        logger.error(f"Critical error in main loop: {e}", exc_info=True)
+        raise
     await application.run_polling()
 
 if __name__ == '__main__':
