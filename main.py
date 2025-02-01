@@ -9,6 +9,7 @@ from handlers import start, clear, handle_message, handle_voice, change_model, a
 from config import TELEGRAM_TOKEN
 import os
 import re
+from database import get_db_connection, check_postgres_connection
 
 class SensitiveDataFilter(logging.Filter):
     def __init__(self):
@@ -123,6 +124,19 @@ async def main():
     """Main function to start the bot"""
     logger.info("Starting the bot")
     
+    # Проверяем подключение к PostgreSQL
+    check_postgres_connection()
+    
+    # Пробуем установить тестовое подключение к БД
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT version();")
+                version = cur.fetchone()
+                logger.info(f"Connected to PostgreSQL. Version: {version[0]}")
+    except Exception as e:
+        logger.error(f"Failed to connect to database during startup check: {e}")
+    
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Add command handlers
@@ -144,3 +158,23 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+def check_postgres_connection():
+    import socket
+    
+    host = os.getenv('POSTGRES_HOST', '127.0.0.1')
+    port = int(os.getenv('POSTGRES_PORT', '5432'))
+    
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        result = sock.connect_ex((host, port))
+        
+        if result == 0:
+            logger.info(f"Port {port} is open on host {host}")
+        else:
+            logger.error(f"Port {port} is closed on host {host}")
+            
+        sock.close()
+    except Exception as e:
+        logger.error(f"Network connectivity test failed: {e}")

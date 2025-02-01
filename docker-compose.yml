@@ -2,16 +2,10 @@ services:
   another_chat_tg:
     image: ${DOCKER_IMAGE:-0fl01/another-chat-tg}:${TAG:-latest}
     container_name: another_chat_tg
+    network_mode: "host"
     environment:
       - POSTGRES_HOST=127.0.0.1
-    networks:
-      - postgres_network
     restart: unless-stopped
     volumes:
       - ./.env:/app/.env:ro
       - ./logs:/app/logs
-
-networks:
-  postgres_network:
-    external: true
-    name: pg_default

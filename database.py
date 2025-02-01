@@ -18,8 +18,17 @@ def get_db_connection():
         'host': os.getenv('POSTGRES_HOST', '127.0.0.1'),
         'port': os.getenv('POSTGRES_PORT', '5432')
     }
+    
     logger.info(f"Attempting to connect to database with params: {connection_params}")
-    return psycopg2.connect(**connection_params)
+    
+    try:
+        conn = psycopg2.connect(**connection_params)
+        logger.info("Successfully connected to database")
+        return conn
+    except psycopg2.Error as e:
+        logger.error(f"Failed to connect to database: {e}")
+        logger.error(f"Connection error details: {e.diag.message_detail if hasattr(e, 'diag') else 'No details'}")
+        raise
 
 def is_user_allowed(user_id: int) -> bool:
     try:
