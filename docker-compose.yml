@@ -2,14 +2,13 @@ services:
   another_chat_tg:
     image: ${DOCKER_IMAGE:-0fl01/another-chat-tg}:${TAG:-latest}
     container_name: another_chat_tg
-    env_file:
-      - .env
     environment:
       - POSTGRES_HOST=postgres17
     networks:
       - postgres_network
     restart: unless-stopped
     volumes:
+      - ./.env:/app/.env:ro
       - ./logs:/app/logs
 
 networks:

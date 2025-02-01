@@ -21,7 +21,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
@@ -47,10 +47,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Create allowed_users.txt file
-        run: |
-          echo "${{ secrets.ALLOWED_USERS }}" > allowed_users.txt
 
       - name: Extract metadata
         id: meta
@@ -104,10 +100,6 @@ jobs:
           echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> .env
           echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> .env
           echo "POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" >> .env
-
-      - name: Create allowed_users.txt file
-        run: |
-          echo "${{ secrets.ALLOWED_USERS }}" > allowed_users.txt
 
       - name: Deploy to server
         uses: appleboy/ssh-action@master
