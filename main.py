@@ -128,6 +128,9 @@ async def main():
         # Проверяем подключение к PostgreSQL
         check_postgres_connection()
         
+        # Создаем таблицу для истории чата
+        create_chat_history_table()
+        
         # Пробуем установить тестовое подключение к БД
         try:
             with get_db_connection() as conn:
