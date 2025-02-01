@@ -4,6 +4,7 @@ nest_asyncio.apply()
 import logging
 import asyncio
 from logging.handlers import TimedRotatingFileHandler
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck
 from config import TELEGRAM_TOKEN
@@ -159,7 +160,6 @@ async def main():
     except Exception as e:
         logger.error(f"Critical error in main loop: {e}", exc_info=True)
         raise
-    await application.run_polling()
 
 if __name__ == '__main__':
     asyncio.run(main())
