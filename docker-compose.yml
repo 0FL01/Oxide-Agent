@@ -3,7 +3,7 @@ services:
     image: ${DOCKER_IMAGE:-0fl01/another-chat-tg}:${TAG:-latest}
     container_name: another_chat_tg
     environment:
-      - POSTGRES_HOST=postgres17
+      - POSTGRES_HOST=127.0.0.1
     networks:
       - postgres_network
     restart: unless-stopped

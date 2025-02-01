@@ -23,20 +23,19 @@ HF_API_KEY = os.getenv('HF_API_KEY')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 TOGETHER_API_KEY = os.getenv('TOGETHER_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
-groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-GITHUB_TOKEN = os.getenv('GH_TOKEN')
+GH_TOKEN = os.getenv('GH_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 
 AZURE_ENDPOINT = "https://models.inference.ai.azure.com"
 
-if GITHUB_TOKEN:
+if GH_TOKEN:
     azure_client = OpenAI(
         base_url=AZURE_ENDPOINT,
-        api_key=GITHUB_TOKEN,
+        api_key=GH_TOKEN,
     )
 else:
-    print("Warning: GITHUB_TOKEN is not set in the environment variables.")
+    print("Warning: GH_TOKEN is not set in the environment variables.")
     azure_client = None
 
 
@@ -105,8 +104,8 @@ try:
     ) if HF_API_KEY else None
     azure_client = OpenAI(
         base_url=AZURE_ENDPOINT,
-        api_key=GITHUB_TOKEN,
-    ) if GITHUB_TOKEN else None
+        api_key=GH_TOKEN,
+    ) if GH_TOKEN else None
     together_client = Together(
         base_url="https://api.together.xyz/v1",
         api_key=TOGETHER_API_KEY,
