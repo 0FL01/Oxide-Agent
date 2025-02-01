@@ -1,6 +1,8 @@
 import os
 
-# Устанавливаем фиктивные значения для всех ключей провайдеров
+# Устанавливаем фиктивные значения для всех необходимых переменных окружения
+os.environ["ADMIN_ID"] = "1"
+os.environ["TELEGRAM_TOKEN"] = "dummy"
 os.environ["GROQ_API_KEY"] = "dummy"
 os.environ["HF_API_KEY"] = "dummy"
 os.environ["OPENROUTER_API_KEY"] = "dummy"
