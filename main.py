@@ -6,7 +6,7 @@ import asyncio
 from logging.handlers import TimedRotatingFileHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck
+from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck, create_chat_history_table
 from config import TELEGRAM_TOKEN
 import os
 import re
@@ -127,6 +127,9 @@ async def main():
         
         # Проверяем подключение к PostgreSQL
         check_postgres_connection()
+        
+        # Создаем таблицу для истории чата
+        create_chat_history_table()
         
         # Пробуем установить тестовое подключение к БД
         try:

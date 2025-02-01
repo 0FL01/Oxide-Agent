@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes
 from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, gemini_client, TOGETHER_API_KEY
 from PIL import Image
 from utils import split_long_message, clean_html, format_text
-from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role
+from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message
 from telegram.error import BadRequest
 import html
 import logging
@@ -84,10 +84,13 @@ def admin_required(func):
 @check_auth
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id in chat_history:
-        del chat_history[user_id]
-    logger.info(f"Chat history cleared for user {user_id}")
-    await update.message.reply_text('<b>История чата очищена.</b>', parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+    try:
+        clear_chat_history(user_id)
+        logger.info(f"Chat history cleared for user {user_id}")
+        await update.message.reply_text('<b>История чата очищена.</b>', parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.error(f"Error clearing chat history for user {user_id}: {e}")
+        await update.message.reply_text('Произошла ошибка при очистке истории чата.')
 
 @check_auth
 async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,8 +205,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     user_id = update.effective_user.id
     user_name = update.effective_user.username or update.effective_user.first_name
 
-    if user_id not in chat_history:
-        chat_history[user_id] = []
+    # Получаем историю чата из базы данных
+    chat_history = get_chat_history(user_id)
 
     selected_model = context.user_data.get('model', DEFAULT_MODEL)
     logger.info(f"Selected model for user {user_id}: {selected_model}")
@@ -234,15 +237,16 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     
     logger.info(f"User {user_id} ({user_name}) sent: {full_message}")
     
-    chat_history[user_id].append({"role": "user", "content": full_message})
-    chat_history[user_id] = chat_history[user_id][-10:]
+    # Сохраняем сообщение пользователя
+    save_message(user_id, "user", full_message)
 
     try:
         await update.message.chat.send_action(action=ChatAction.TYPING)
 
+        # Получаем актуальную историю после сохранения сообщения пользователя
+        messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + get_chat_history(user_id)
 
         if MODELS[selected_model]["provider"] == "groq":
-            messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
             response = await groq_client.chat.completions.create(
                 messages=messages,
                 model=MODELS[selected_model]["id"],
@@ -256,7 +260,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 raise ValueError("Mistral client is not initialized. Please check your MISTRAL_API_KEY.")
             response = mistral_client.chat.complete(
                 model=MODELS[selected_model]["id"],
-                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
+                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + messages,
                 temperature=0.9,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
@@ -267,7 +271,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 raise ValueError("Huggingface client is not initialized. Please check your HF_API_KEY.")
             response = huggingface_client.chat.completions.create(
                 model=MODELS[selected_model]["id"],
-                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
+                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + messages,
                 temperature=0.7,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
@@ -277,7 +281,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             if gemini_client is None:
                 raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
             model = gemini_client.GenerativeModel(MODELS[selected_model]["id"])
-            messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
             converted_messages = []
             for message in messages:
                 converted_messages.append({
@@ -308,7 +311,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 raise ValueError("Together AI client is not initialized. Please check your TOGETHER_API_KEY.")
             response = together_client.chat.completions.create(
                 model=MODELS[selected_model]["id"],
-                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
+                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + messages,
                 temperature=0.8,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
@@ -319,7 +322,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
             response = openrouter_client.chat.completions.create(
                 model=MODELS[selected_model]["id"],
-                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id],
+                messages=[{"role": "system", "content": SYSTEM_MESSAGE}] + messages,
                 temperature=0.8,
                 max_tokens=MODELS[selected_model]["max_tokens"],
             )
@@ -333,7 +336,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             if azure_client is None:
                 raise ValueError("Azure client is not initialized. Please check your GITHUB_TOKEN.")
 
-            messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + chat_history[user_id]
+            messages = [{"role": "system", "content": SYSTEM_MESSAGE}] + messages
 
             if image:
                 # Обработка изображения для vision модели
@@ -359,7 +362,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         else:
             raise ValueError(f"Unknown provider for model {selected_model}")
 
-        chat_history[user_id].append({"role": "assistant", "content": bot_response})
+        # Сохраняем ответ ассистента
+        save_message(user_id, "assistant", bot_response)
         logger.info(f"Sent response to user {user_id} ({user_name}): {bot_response}")
 
         formatted_response = format_text(bot_response)

@@ -91,4 +91,67 @@ def check_postgres_connection():
             
         sock.close()
     except Exception as e:
-        logger.error(f"Network connectivity test failed: {e}") 
+        logger.error(f"Network connectivity test failed: {e}")
+
+def create_chat_history_table():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS chat_history (
+                        id SERIAL PRIMARY KEY,
+                        telegram_id BIGINT NOT NULL,
+                        role VARCHAR(50) NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (telegram_id) REFERENCES allowed_users(telegram_id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_telegram_id_created_at ON chat_history(telegram_id, created_at);
+                """)
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Error creating chat_history table: {e}")
+        raise
+
+def save_message(telegram_id: int, role: str, content: str):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO chat_history (telegram_id, role, content) VALUES (%s, %s, %s)",
+                    (telegram_id, role, content)
+                )
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Error saving message: {e}")
+        raise
+
+def get_chat_history(telegram_id: int, limit: int = 10) -> list:
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT role, content 
+                    FROM chat_history 
+                    WHERE telegram_id = %s 
+                    ORDER BY created_at DESC 
+                    LIMIT %s
+                    """,
+                    (telegram_id, limit)
+                )
+                messages = cur.fetchall()
+                return [{"role": msg["role"], "content": msg["content"]} for msg in messages][::-1]
+    except Exception as e:
+        logger.error(f"Error getting chat history: {e}")
+        return []
+
+def clear_chat_history(telegram_id: int):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM chat_history WHERE telegram_id = %s", (telegram_id,))
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Error clearing chat history: {e}")
+        raise 
