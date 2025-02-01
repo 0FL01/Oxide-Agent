@@ -1,3 +1,6 @@
+import nest_asyncio
+nest_asyncio.apply()
+
 import logging
 import asyncio
 from logging.handlers import TimedRotatingFileHandler

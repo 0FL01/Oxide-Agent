@@ -13,3 +13,4 @@ xlrd
 pandas
 pyyaml
 psycopg2-binary
+nest_asyncio
