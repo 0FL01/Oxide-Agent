@@ -3,7 +3,8 @@ from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
 from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, gemini_client, TOGETHER_API_KEY
 from PIL import Image
-from utils import split_long_message, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, get_user_role, clean_html, format_text, UserRole
+from utils import split_long_message, clean_html, format_text
+from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role
 from telegram.error import BadRequest
 import html
 import logging

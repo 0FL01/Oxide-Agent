@@ -12,3 +12,4 @@ together
 xlrd
 pandas
 pyyaml
+psycopg2-binary

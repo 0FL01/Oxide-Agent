@@ -128,57 +128,6 @@ def split_long_message(message: str, max_length: int = 4000) -> list[str]:
     return parts
 
 
-class UserRole(Enum):
-    ADMIN = "ADMIN"
-    USER = "USER"
-
-ALLOWED_USERS_FILE = "allowed_users.txt"
-
-def load_allowed_users() -> Dict[int, UserRole]:
-    if not os.path.exists(ALLOWED_USERS_FILE):
-        return {}
-    allowed_users = {}
-    with open(ALLOWED_USERS_FILE, "r") as f:
-        for line in f:
-            parts = line.strip().split(',')
-            if len(parts) == 2 and parts[0].isdigit():
-                user_id = int(parts[0])
-                role = UserRole(parts[1])
-                allowed_users[user_id] = role
-    return allowed_users
-
-def save_allowed_users(users: Dict[int, UserRole]):
-    with open(ALLOWED_USERS_FILE, "w") as f:
-        for user_id, role in users.items():
-            f.write(f"{user_id},{role.value}\n")
-
-def is_user_allowed(user_id: int) -> bool:
-    allowed_users = load_allowed_users()
-    return user_id in allowed_users
-
-def get_user_role(user_id: int) -> UserRole:
-    allowed_users = load_allowed_users()
-    return allowed_users.get(user_id, None)
-
-def add_allowed_user(user_id: int, role: UserRole):
-    allowed_users = load_allowed_users()
-    allowed_users[user_id] = role
-    save_allowed_users(allowed_users)
-
-def remove_allowed_user(user_id: int):
-    allowed_users = load_allowed_users()
-    if user_id in allowed_users:
-        del allowed_users[user_id]
-        save_allowed_users(allowed_users)
-
-user_auth_state: Dict[int, bool] = {}
-
-def set_user_auth_state(user_id: int, state: bool):
-    user_auth_state[user_id] = state
-
-def get_user_auth_state(user_id: int) -> bool:
-    return user_auth_state.get(user_id, False)
-
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
