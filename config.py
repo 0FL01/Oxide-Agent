@@ -1,7 +1,8 @@
 import os
 from groq import AsyncGroq
 from dotenv import load_dotenv
-from utils import load_allowed_users, save_allowed_users, is_user_allowed, add_allowed_user, remove_allowed_user, set_user_auth_state, get_user_auth_state, encode_image, process_file
+from database import is_user_allowed, add_allowed_user, remove_allowed_user, UserRole
+from utils import encode_image, process_file
 from openai import OpenAI
 from mistralai import Mistral
 from together import Together
