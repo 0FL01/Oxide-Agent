@@ -154,4 +154,23 @@ def clear_chat_history(telegram_id: int):
                 conn.commit()
     except Exception as e:
         logger.error(f"Error clearing chat history: {e}")
+        raise
+
+def update_user_prompt(telegram_id: int, system_prompt: str):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO user_prompts (telegram_id, system_prompt)
+                    VALUES (%s, %s)
+                    ON CONFLICT (telegram_id) DO UPDATE
+                    SET system_prompt = EXCLUDED.system_prompt,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (telegram_id, system_prompt)
+                )
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка обновления пользовательского промпта для {telegram_id}: {e}")
         raise 

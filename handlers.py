@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes
 from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, gemini_client, TOGETHER_API_KEY
 from PIL import Image
 from utils import split_long_message, clean_html, format_text
-from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message
+from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt
 from telegram.error import BadRequest
 import html
 import logging
@@ -33,7 +33,14 @@ logger = logging.getLogger(__name__)
 
 def get_main_keyboard():
     keyboard = [
-        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")]
+        [KeyboardButton("Очистить контекст"), KeyboardButton("Сменить модель")],
+        [KeyboardButton("Доп функции")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_extra_functions_keyboard():
+    keyboard = [
+        [KeyboardButton("Изменить промпт"), KeyboardButton("Назад")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -101,10 +108,21 @@ async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handle both text messages and documents, supporting multiple files in one message.
-    """
     if not update.message:
+        return
+
+    if context.user_data.get('editing_prompt'):
+        if update.message.text.strip() == "Назад":
+            context.user_data['editing_prompt'] = False
+            await update.message.reply_text("Отмена обновления системного промпта.", reply_markup=get_main_keyboard())
+        else:
+            try:
+                update_user_prompt(update.effective_user.id, update.message.text)
+                context.user_data['editing_prompt'] = False
+                await update.message.reply_text("Системный промпт обновлен.", reply_markup=get_main_keyboard())
+            except Exception as e:
+                logger.error(f"Ошибка обновления системного промпта для пользователя {update.effective_user.id}: {e}", exc_info=True)
+                await update.message.reply_text("Произошла ошибка при обновлении системного промпта.", reply_markup=get_main_keyboard())
         return
 
     text = update.message.text or update.message.caption or ""
@@ -115,6 +133,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await clear(update, context)
     elif text == "Сменить модель":
         await change_model(update, context)
+    elif text == "доп функции":
+        await update.message.reply_text("Выберите действие:", reply_markup=get_extra_functions_keyboard())
+    elif text == "Изменить промпт":
+        context.user_data['editing_prompt'] = True
+        await update.message.reply_text("Введите новый системный промпт. Для отмены введите 'Назад':", reply_markup=get_extra_functions_keyboard())
     elif text == "Назад":
         await update.message.reply_text(
             'Выберите действие: (Или начните диалог)',
