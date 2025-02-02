@@ -152,12 +152,19 @@ async def main():
         
         # Add message handlers
         application.add_handler(MessageHandler(
-            filters.Regex("^(Сменить модель|Назад|Доп функции)$"), 
+            filters.Regex("^(Сменить модель|Назад)$"), 
             change_model
         ))
-        application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
+        # Добавляем отдельный обработчик для "Доп функции" и "Изменить промпт"
         application.add_handler(MessageHandler(
-            filters.TEXT | filters.PHOTO | filters.Document.ALL, 
+            filters.Regex("^(Доп функции|Изменить промпт)$"),
+            handle_message
+        ))
+
+        # Добавляем общий обработчик для остальных сообщений
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.Regex("^(Сменить модель|Назад|Доп функции|Изменить промпт)$"),
             handle_message
         ))
         
