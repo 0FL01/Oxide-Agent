@@ -173,4 +173,18 @@ def update_user_prompt(telegram_id: int, system_prompt: str):
                 conn.commit()
     except Exception as e:
         logger.error(f"Ошибка обновления пользовательского промпта для {telegram_id}: {e}")
-        raise 
+        raise
+
+def get_user_prompt(telegram_id: int) -> str:
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT system_prompt FROM user_prompts WHERE telegram_id = %s",
+                    (telegram_id,)
+                )
+                result = cur.fetchone()
+                return result[0] if result else None
+    except Exception as e:
+        logger.error(f"Ошибка получения пользовательского промпта для {telegram_id}: {e}")
+        return None 
