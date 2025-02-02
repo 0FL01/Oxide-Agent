@@ -541,6 +541,39 @@ async def healthcheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     await update.message.reply_text("OK")
 
+@check_auth
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_name = update.effective_user.username or update.effective_user.first_name
+    logger.info(f"Получено видео сообщение от пользователя {user_id}")
+    temp_filename = f"tempvideo_{user_id}.mp4"
+    
+    try:
+        video = await update.message.video.get_file()
+        video_bytes = await video.download_as_bytearray()
+        with open(temp_filename, "wb") as f:
+            f.write(video_bytes)
+        
+        with open(temp_filename, "rb") as video_file:
+            transcription = await groq_client.audio.transcriptions.create(
+                file=(temp_filename, video_file.read()),
+                model="whisper-large-v3",
+                language="ru"
+            )
+        
+        recognized_text = transcription.text
+        logger.info(f"Видео сообщение от пользователя {user_id} ({user_name}) распознано: {recognized_text}")
+        await process_message(update, context, recognized_text)
+    
+    except Exception as e:
+        logger.error(f"Ошибка при обработке видео сообщения для пользователя {user_id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"Произошла ошибка при обработке видео сообщения: {str(e)}")
+    
+    finally:
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+            logger.info(f"Временный файл {temp_filename} удалён")
+
 
 
 
