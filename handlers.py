@@ -111,13 +111,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
 
+    text = update.message.text or update.message.caption or ""
+
+    # Обработка режима редактирования промпта
     if context.user_data.get('editing_prompt'):
-        if update.message.text.strip() == "Назад":
+        if text == "Назад":
             context.user_data['editing_prompt'] = False
             await update.message.reply_text("Отмена обновления системного промпта.", reply_markup=get_main_keyboard())
         else:
             try:
-                update_user_prompt(update.effective_user.id, update.message.text)
+                update_user_prompt(update.effective_user.id, text)
                 context.user_data['editing_prompt'] = False
                 await update.message.reply_text("Системный промпт обновлен.", reply_markup=get_main_keyboard())
             except Exception as e:
@@ -139,11 +142,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['editing_prompt'] = True
         await update.message.reply_text("Введите новый системный промпт. Для отмены введите 'Назад':", reply_markup=get_extra_functions_keyboard())
     elif text == "Назад":
+        context.user_data['editing_prompt'] = False  # Сбрасываем флаг редактирования
         await update.message.reply_text(
             'Выберите действие: (Или начните диалог)',
             reply_markup=get_main_keyboard()
         )
-    elif text in MODELS:
+    elif text in MODELS and not context.user_data.get('editing_prompt'):  # Добавлена проверка флага
         context.user_data['model'] = text
         await update.message.reply_text(
             f'Модель изменена на <b>{text}</b>',
