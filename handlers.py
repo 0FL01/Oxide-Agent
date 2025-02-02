@@ -133,7 +133,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await clear(update, context)
     elif text == "Сменить модель":
         await change_model(update, context)
-    elif text == "доп функции":
+    elif text == "Доп функции":
         await update.message.reply_text("Выберите действие:", reply_markup=get_extra_functions_keyboard())
     elif text == "Изменить промпт":
         context.user_data['editing_prompt'] = True
