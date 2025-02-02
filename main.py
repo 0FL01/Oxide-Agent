@@ -6,7 +6,7 @@ import asyncio
 from logging.handlers import TimedRotatingFileHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck
+from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck, handle_video
 from config import TELEGRAM_TOKEN
 import os
 import re
@@ -143,14 +143,14 @@ async def main():
         
         application = Application.builder().token(TELEGRAM_TOKEN).build()
         
-        # Add command handlers
+        # Command handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("clear", clear))
         application.add_handler(CommandHandler("add_user", add_user))
         application.add_handler(CommandHandler("remove_user", remove_user))
         application.add_handler(CommandHandler("healthcheck", healthcheck))
         
-        # Add message handlers
+        # Message handlers
         application.add_handler(MessageHandler(
             filters.Regex("^(Сменить модель|Назад)$"), 
             change_model
@@ -167,6 +167,12 @@ async def main():
             filters.TEXT & ~filters.Regex("^(Сменить модель|Назад|Доп функции|Изменить промпт)$"),
             handle_message
         ))
+        
+        # Регистрируем обработчик для голосовых сообщений
+        application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
+        # Регистрируем обработчик для видео сообщений
+        application.add_handler(MessageHandler(filters.VIDEO, handle_video))
         
         # Start the bot
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
