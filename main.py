@@ -151,15 +151,15 @@ async def main():
         application.add_handler(CommandHandler("remove_user", remove_user))
         application.add_handler(CommandHandler("healthcheck", healthcheck))
         
-        # Обработчик для кнопки "Сменить модель"
+        # Обработчик для кнопки "Сменить модель" и выбора модели
         application.add_handler(MessageHandler(
-            filters.Regex("^Сменить модель$"), 
+            filters.Regex("^Сменить модель$") | filters.Regex(f"^({'|'.join(MODELS)})$"),
             change_model
         ))
 
-        # Обработчик для кнопок "Доп функции", "Изменить промпт", "Назад" и других текстовых сообщений
+        # Обработчик для остальных текстовых сообщений
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.Regex("^Сменить модель$"),
+            filters.TEXT & ~filters.Regex("^Сменить модель$") & ~filters.Regex(f"^({'|'.join(MODELS)})$"),
             handle_message
         ))
         

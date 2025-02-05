@@ -102,9 +102,17 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @check_auth
 async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if text in MODELS:
+    text = update.message.text
+    
+    if text == "Сменить модель":
+        # Показываем клавиатуру с моделями
+        await update.message.reply_text(
+            'Выберите модель:',
+            reply_markup=get_model_keyboard()
+        )
+    elif text in MODELS:
+        # Обновляем модель в памяти и базе данных
         context.user_data['model'] = text
-        # Сохраняем выбранную модель в базу данных
         update_user_model(update.effective_user.id, text)
         await update.message.reply_text(
             f'Модель изменена на <b>{text}</b>',
