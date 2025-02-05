@@ -84,7 +84,7 @@ chat_history = {}
 
 MODELS = {
     #"Gemini 2.0 Flash Thinking Experimental": {"id": "gemini-2.0-flash-thinking-exp-01-21", "max_tokens": 128000, "provider": "gemini", "vision": True},
-    "Gemini 2.0 Flash Experimental": {"id": "gemini-2.0-flash-exp", "max_tokens": 8192, "provider": "gemini", "vision": True},
+    "Gemini 2.0 Flash Experimental": {"id": "gemini-2.0-flash", "max_tokens": 8192, "provider": "gemini", "vision": True},
     "DeepSeek-R1": {"id": "DeepSeek-R1", "max_tokens": 8192, "provider": "azure"},
     "DeepSeek-R1-Distill-Llama-70B": {"id": "DeepSeek-R1-Distill-Llama-70B", "max_tokens": 128000, "provider": "groq"},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
