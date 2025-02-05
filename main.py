@@ -7,7 +7,7 @@ from logging.handlers import TimedRotatingFileHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck, handle_video
-from config import TELEGRAM_TOKEN
+from config import TELEGRAM_TOKEN, MODELS
 import os
 import re
 from database import get_db_connection, check_postgres_connection, create_chat_history_table, create_user_models_table
