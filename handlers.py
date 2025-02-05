@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes
 from config import chat_history, huggingface_client, azure_client, together_client, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, gemini_client, TOGETHER_API_KEY
 from PIL import Image
 from utils import split_long_message, clean_html, format_text
-from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt
+from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
 from telegram.error import BadRequest
 import html
 import logging
@@ -68,12 +68,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Пожалуйста, введите код авторизации:")
         return
 
-    if 'model' not in context.user_data:
-        context.user_data['model'] = list(MODELS.keys())[0]
+    # Получаем сохраненную модель пользователя или используем модель по умолчанию
+    saved_model = get_user_model(user_id)
+    context.user_data['model'] = saved_model if saved_model else DEFAULT_MODEL
 
     set_user_auth_state(user_id, True)
     await update.message.reply_text(
-        '<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.',
+        f'<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.\nТекущая модель: <b>{context.user_data["model"]}</b>',
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
@@ -101,10 +102,15 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @check_auth
 async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        'Выберите модель:',
-        reply_markup=get_model_keyboard()
-    )
+    if text in MODELS:
+        context.user_data['model'] = text
+        # Сохраняем выбранную модель в базу данных
+        update_user_model(update.effective_user.id, text)
+        await update.message.reply_text(
+            f'Модель изменена на <b>{text}</b>',
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
 
 @check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):

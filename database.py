@@ -187,4 +187,51 @@ def get_user_prompt(telegram_id: int) -> str:
                 return result[0] if result else None
     except Exception as e:
         logger.error(f"Ошибка получения пользовательского промпта для {telegram_id}: {e}")
+        return None
+
+def create_user_models_table():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_models (
+                        telegram_id BIGINT PRIMARY KEY,
+                        model_name VARCHAR(100) NOT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (telegram_id) REFERENCES allowed_users(telegram_id) ON DELETE CASCADE
+                    );
+                """)
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка создания таблицы user_models: {e}")
+        raise
+
+def update_user_model(telegram_id: int, model_name: str):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO user_models (telegram_id, model_name)
+                    VALUES (%s, %s)
+                    ON CONFLICT (telegram_id) DO UPDATE
+                    SET model_name = EXCLUDED.model_name,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (telegram_id, model_name))
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка обновления модели пользователя {telegram_id}: {e}")
+        raise
+
+def get_user_model(telegram_id: int) -> str:
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT model_name FROM user_models WHERE telegram_id = %s",
+                    (telegram_id,)
+                )
+                result = cur.fetchone()
+                return result[0] if result else None
+    except Exception as e:
+        logger.error(f"Ошибка получения модели пользователя {telegram_id}: {e}")
         return None 
