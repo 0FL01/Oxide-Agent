@@ -427,20 +427,28 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{str(e)}</code>", parse_mode=ParseMode.HTML)
 
 
-async def improve_prompt(prompt: str, azure_client) -> str:
+async def improve_prompt(prompt: str, gemini_client) -> str:
+    if gemini_client is None:
+        raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
+    
+    model = gemini_client.GenerativeModel('gemini-2.0-flash')
+    
     messages = [
-        {"role": "system", "content": PROMPT_IMPROVEMENT_SYSTEM_MESSAGE},
-        {"role": "user", "content": f"{prompt}"}
+        {
+            "role": "user",
+            "parts": [PROMPT_IMPROVEMENT_SYSTEM_MESSAGE, prompt]
+        }
     ]
 
-    response = azure_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        temperature=1,
-        max_tokens=500,
+    response = model.generate_content(
+        messages,
+        generation_config=gemini_client.types.GenerationConfig(
+            max_output_tokens=500,
+            temperature=1,
+        )
     )
 
-    improved_prompt = response.choices[0].message.content
+    improved_prompt = response.text
     return improved_prompt
 
 async def generate_and_send_image(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
@@ -448,8 +456,8 @@ async def generate_and_send_image(update: Update, context: ContextTypes.DEFAULT_
     try:
         await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO)
 
-        # Улучшение промпта с помощью агента
-        improved_prompt = await improve_prompt(prompt, azure_client)
+        # Улучшение промпта с помощью Gemini
+        improved_prompt = await improve_prompt(prompt, gemini_client)
         
         logger.info(f"Original prompt: {prompt}")
         logger.info(f"Improved prompt: {improved_prompt}")
