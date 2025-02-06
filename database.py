@@ -20,7 +20,16 @@ def get_db_connection():
         'port': os.getenv('POSTGRES_PORT', '5432')
     }
     
-    logger.info(f"Attempting to connect to database with params: {connection_params}")
+    # Создаем копию параметров для логирования
+    logging_params = {
+        'dbname': '[MASKED]',
+        'user': '[MASKED]',
+        'password': '[MASKED]',
+        'host': connection_params['host'],
+        'port': connection_params['port']
+    }
+    
+    logger.info(f"Attempting to connect to database with params: {logging_params}")
     
     try:
         conn = psycopg2.connect(**connection_params)
