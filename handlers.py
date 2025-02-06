@@ -325,29 +325,29 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         elif MODELS[selected_model]["provider"] == "gemini":
             if gemini_client is None:
                 raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
+            
             model = gemini_client.GenerativeModel(MODELS[selected_model]["id"])
-            converted_messages = []
-            for message in messages:
-                converted_messages.append({
-                    "role": "user" if message["role"] == "user" else "model",
-                    "parts": [message["content"]]
-                })
-
-            # Добавляем изображение в запрос, если оно есть
+            
             if image:
+                # Создаем контент с изображением
                 image_data = Image.open(image_path)
-                converted_messages.append({
-                    "role": "user",
-                    "parts": [image_data, text]
-                })
-
-            response = model.generate_content(
-                converted_messages,
-                generation_config=gemini_client.types.GenerationConfig(
-                    max_output_tokens=MODELS[selected_model]["max_tokens"],
-                    temperature=1,
+                response = model.generate_content([image_data, text])
+            else:
+                # Преобразуем историю сообщений в формат Gemini
+                converted_messages = []
+                for message in messages:
+                    converted_messages.append({
+                        "role": "user" if message["role"] == "user" else "model",
+                        "parts": [message["content"]]
+                    })
+                
+                response = model.generate_content(
+                    converted_messages,
+                    generation_config=gemini_client.types.GenerationConfig(
+                        max_output_tokens=MODELS[selected_model]["max_tokens"],
+                        temperature=1,
+                    )
                 )
-            )
 
             bot_response = response.text
 
