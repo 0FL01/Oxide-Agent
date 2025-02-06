@@ -484,7 +484,7 @@ def generate_image(prompt):
     together_client = Together(api_key=TOGETHER_API_KEY)
     response = together_client.images.generate(
         prompt=prompt,
-        model="black-forest-labs/FLUX.1-schnell-Free",
+        model="black-forest-labs/FLUX.1-dev",
         width=1024,
         height=768,
         steps=1,
