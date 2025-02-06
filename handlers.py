@@ -329,11 +329,10 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             model = gemini_client.GenerativeModel(MODELS[selected_model]["id"])
             
             if image:
-                # Создаем контент с изображением
+                # Открываем изображение и запускаем генерацию в отдельном потоке, чтобы не блокировать event loop
                 image_data = Image.open(image_path)
-                response = model.generate_content([image_data, text])
+                response = await asyncio.to_thread(model.generate_content, [image_data, text])
             else:
-                # Преобразуем историю сообщений в формат Gemini
                 converted_messages = []
                 for message in messages:
                     converted_messages.append({
@@ -341,14 +340,14 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                         "parts": [message["content"]]
                     })
                 
-                response = model.generate_content(
+                response = await asyncio.to_thread(
+                    model.generate_content,
                     converted_messages,
                     generation_config=gemini_client.types.GenerationConfig(
                         max_output_tokens=MODELS[selected_model]["max_tokens"],
                         temperature=1,
                     )
                 )
-
             bot_response = response.text
 
         elif MODELS[selected_model]["provider"] == "together":
