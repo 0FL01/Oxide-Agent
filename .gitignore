@@ -4,3 +4,4 @@ allowed_users.txt
 acwlc_before.tar
 logs
 .dockerignore
+not_env
