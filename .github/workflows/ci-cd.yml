@@ -81,10 +81,10 @@ jobs:
           envs: GITHUB_SHA
           script: |
             # Create directory if it doesn't exist
-            mkdir -p /root/docker/Another-Chat-with-LLM
+            mkdir -p ${{ secrets.SERVICE_DIR }}
             
             # Create .env file directly on the remote server
-            cat > /root/docker/Another-Chat-with-LLM/.env << 'EOL'
+            cat > ${{ secrets.SERVICE_DIR }}/.env << 'EOL'
             GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
             TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
@@ -104,7 +104,7 @@ jobs:
             POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
             EOL
             
-            cd /root/docker/Another-Chat-with-LLM
+            cd ${{ secrets.SERVICE_DIR }}
             export TAG=${GITHUB_SHA}
             echo "Deploying version: $TAG"
             docker compose pull
