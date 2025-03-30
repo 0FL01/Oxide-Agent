@@ -71,42 +71,61 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        
       - name: Deploy to server
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.SSH_HOST }}
-          port: ${{ secrets.SSH_PORT }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: GITHUB_SHA
-          script: |
-            # Create directory if it doesn't exist
-            mkdir -p ${{ secrets.SERVICE_DIR }}
-            
-            # Create .env file directly on the remote server
-            cat > ${{ secrets.SERVICE_DIR }}/.env << 'EOL'
-            GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
-            TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
-            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
-            MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}
-            HYPERBOLIC_API_KEY=${{ secrets.HYPERBOLIC_API_KEY }}
-            TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
-            HF_API_KEY=${{ secrets.HF_API_KEY }}
-            GH_TOKEN=${{ secrets.GH_TOKEN }}
-            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-            ADMIN_ID=${{ secrets.ADMIN_ID }}
-            PROMPT_IMPROVEMENT_SYSTEM_MESSAGE=${{ secrets.PROMPT_IMPROVEMENT_SYSTEM_MESSAGE }}
-            SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE }}
-            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}
-            POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
-            EOL
-            
-            cd ${{ secrets.SERVICE_DIR }}
-            export TAG=${GITHUB_SHA}
-            echo "Deploying version: $TAG"
-            docker compose pull
-            docker compose up -d
-            docker compose ps
+                  host: ${{ secrets.SSH_HOST }}
+                  port: ${{ secrets.SSH_PORT }}
+                  username: ${{ secrets.SSH_USERNAME }}
+                  key: ${{ secrets.SSH_PRIVATE_KEY }}
+                  envs: GITHUB_SHA,DOCKER_IMAGE
+                  script: |
+                    mkdir -p ${{ secrets.SERVICE_DIR }}
+                    cd ${{ secrets.SERVICE_DIR }}
+        
+                    cat > .env << 'EOL'
+                    GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+                    TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
+                    OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+                    MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}
+                    HYPERBOLIC_API_KEY=${{ secrets.HYPERBOLIC_API_KEY }}
+                    TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
+                    HF_API_KEY=${{ secrets.HF_API_KEY }}
+                    GH_TOKEN=${{ secrets.GH_TOKEN }}
+                    GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+                    ADMIN_ID=${{ secrets.ADMIN_ID }}
+                    PROMPT_IMPROVEMENT_SYSTEM_MESSAGE=${{ secrets.PROMPT_IMPROVEMENT_SYSTEM_MESSAGE }}
+                    SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE }}
+                    POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+                    POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+                    POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+                    POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}
+                    POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
+                    EOL
+        
+                    cat > docker-compose.yml << 'EOL'
+                    services:
+                      another_chat_tg:
+                        image: ${DOCKER_IMAGE:-0fl01/another-chat-tg}:${TAG:-latest}
+                        container_name: another_chat_tg
+                        network_mode: "host"
+                        environment:
+                          - POSTGRES_HOST=127.0.0.1
+                        restart: unless-stopped
+                        volumes:
+                          - ./.env:/app/.env:ro
+                          - ./logs:/app/logs
+                    volumes:
+                      logs: {}
+                    EOL
+        
+                    mkdir -p ./logs
+        
+                    export TAG=${GITHUB_SHA}
+                    export DOCKER_IMAGE=${DOCKER_IMAGE}
+        
+                    docker compose pull
+                    docker compose up -d
+                    docker compose ps
+                    docker image prune -f
