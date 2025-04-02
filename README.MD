@@ -1,84 +1,147 @@
-# Another chat with LLM in telegram 
+# Another Chat TG Bot
 
-This Telegram bot leverages powerful language models to provide intelligent conversations, voice recognition, and internet search capabilities.
+Универсальный Telegram-бот с ИИ-ассистентом, поддерживающий множество моделей, типов контента и расширенные функции.
 
-## Features
+## Описание
 
-- Multiple language model support (Gemma 2 9B, Llama 3.1 70B, Llama 3.1 405B, and other model from OpenRouter.ai)
-- Online and offline conversation modes
-- Voice message transcription
-- Internet search integration
-- User authorization system
-- Conversation history management
-- Docker support for easy deployment
+Этот проект представляет собой Telegram-бота, который интегрируется с различными API больших языковых моделей (LLM) и другими сервисами для предоставления пользователям многофункционального ИИ-ассистента. Бот может обрабатывать текстовые, голосовые и видео сообщения, работать с прикрепленными документами различных форматов, генерировать изображения, управлять историей диалога и предоставлять административные функции для управления доступом пользователей.
 
-## Prerequisites
+Бот разработан с использованием Python, библиотеки `python-telegram-bot`, `psycopg2` для взаимодействия с PostgreSQL, и различных SDK для работы с ИИ-моделями (Groq, OpenAI, Mistral AI, Together AI, Google Generative AI). Развертывание осуществляется с помощью Docker и Docker Compose. Скрипт `watchdog_runner.py` обеспечивает автоматический перезапуск при изменениях в коде для удобства разработки.
 
-- Python 3.10+
-- Telegram Bot Token
-- Groq API Key
-- OctoAI API Key
+## Возможности
 
-## Setup
+*   **Поддержка множества LLM:** Интеграция с моделями от Groq, Mistral AI, Azure (OpenAI), Together AI, OpenRouter, Google Gemini.
+*   **Обработка различных типов ввода:**
+    *   Текстовые сообщения.
+    *   Голосовые сообщения (распознавание речи через Whisper на Groq).
+    *   Видео сообщения (извлечение аудио и распознавание через Whisper на Groq).
+    *   Документы: `.txt`, `.log`, `.md`, `.xml`, `.doc`, `.docx`, `.csv`, `.xls`, `.xlsx`.
+*   **Генерация изображений:** Использование модели `FLUX.1-schnell` через Together AI с предварительным улучшением промпта с помощью Gemini.
+*   **Управление контекстом:**
+    *   Сохранение истории диалога в базе данных PostgreSQL.
+    *   Возможность очистки контекста диалога.
+*   **Гибкость моделей:** Пользователи могут переключаться между доступными моделями.
+*   **Персонализация:**
+    *   Поддержка пользовательских системных промптов.
+    *   Сохранение предпочитаемой модели для каждого пользователя.
+*   **Авторизация и роли:**
+    *   Доступ к боту только для разрешенных пользователей.
+    *   Роли пользователей (ADMIN, USER).
+*   **Администрирование:** Команды для добавления и удаления пользователей (только для ADMIN).
+*   **Форматирование ответов:** Поддержка Markdown/HTML разметки Telegram (жирный шрифт, курсив, блоки кода, списки).
+*   **Обработка длинных сообщений:** Автоматическое разделение длинных ответов на несколько сообщений.
+*   **Развертывание с Docker:** Легкое развертывание с использованием Docker и Docker Compose.
+*   **Логирование:** Подробное логирование с маскированием чувствительных данных (токены, данные БД).
+*   **Автоперезапуск при разработке:** Использование `watchdog` для перезапуска при изменении `.py` файлов.
 
-1. Clone the repository:
-   ```
-   git clone https://github.com/0FL01/Another-Chat-with-LLM.git
-   cd Another-Chat-with-LLM
-   ```
+## Необходимые условия
 
-2. Create a `.env` file in the project root and add your API keys:
-   ```
-   GROQ_API_KEY=your_groq_api_key
-   TELEGRAM_TOKEN=your_telegram_bot_token
-   ADMIN_ID=your_admin_telegram_id
-   OCTOAI_API_KEY=your_octoai_api_key
-   OPENROUTER_API_KEY=your_openrouter_api_key
-   ```
+*   **Docker:** [Установите Docker](https://docs.docker.com/engine/install/)
+*   **Docker Compose:** [Установите Docker Compose](https://docs.docker.com/compose/install/) (обычно идет вместе с Docker Desktop)
+*   **Git:** Для клонирования репозитория.
+*   **PostgreSQL:** Работающий экземпляр PostgreSQL, доступный для бота.
+*   **API Ключи:** Получите необходимые API ключи для сервисов, которые планируете использовать (см. раздел Конфигурация).
 
-3. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+## Установка и запуск
 
-## Running the Bot
+1.  **Клонируйте репозиторий:**
+    ```bash
+    git clone <URL_вашего_репозитория>
+    cd <имя_папки_репозитория>
+    ```
 
-### Local Deployment
+2.  **Создайте файл `.env`:**
+    Создайте файл `.env` в корневой директории проекта и заполните его необходимыми переменными окружения. Скопируйте структуру из примера ниже.
 
-Run the bot using Python:
+3.  **Настройте PostgreSQL:**
+    Убедитесь, что ваш PostgreSQL сервер запущен и доступен по адресу, указанному в `POSTGRES_HOST` (по умолчанию `127.0.0.1` в `docker-compose.yml`, так как используется `network_mode: "host"`). Создайте базу данных и пользователя, если необходимо, и укажите их данные в `.env`. Бот автоматически создаст необходимые таблицы при первом запуске.
 
+4.  **Соберите и запустите контейнер:**
+    ```bash
+    docker-compose up --build -d
+    ```
+    Эта команда соберет Docker образ (если он еще не собран или если Dockerfile изменился) и запустит контейнер в фоновом режиме (`-d`).
+
+## Конфигурация
+
+Создайте файл `.env` в корневой директории проекта и добавьте следующие переменные:
+
+```dotenv
+# Telegram
+TELEGRAM_TOKEN=ВАШ_ТЕЛЕГРАМ_БОТ_ТОКЕН
+ADMIN_ID=ВАШ_ТЕЛЕГРАМ_ID_АДМИНИСТРАТОРА
+
+# PostgreSQL Database
+POSTGRES_DB=имя_вашей_бд
+POSTGRES_USER=пользователь_бд
+POSTGRES_PASSWORD=пароль_пользователя_бд
+POSTGRES_HOST=127.0.0.1 # Или IP/хост вашего сервера PostgreSQL
+POSTGRES_PORT=5432     # Порт вашего сервера PostgreSQL
+
+# API Keys (укажите те, которые будете использовать)
+GROQ_API_KEY=ВАШ_GROQ_API_КЛЮЧ
+HF_API_KEY=ВАШ_HUGGINGFACE_API_КЛЮЧ
+OPENROUTER_API_KEY=ВАШ_OPENROUTER_API_КЛЮЧ
+TOGETHER_API_KEY=ВАШ_TOGETHER_API_КЛЮЧ # Необходим для генерации изображений
+MISTRAL_API_KEY=ВАШ_MISTRAL_API_КЛЮЧ
+GH_TOKEN=ВАШ_GITHUB_TOKEN_ИЛИ_ДРУГОЙ_КЛЮЧ_ДЛЯ_AZURE_ENDPOINT # Для Azure OpenAI
+GEMINI_API_KEY=ВАШ_GEMINI_API_КЛЮЧ # Необходим для улучшения промптов и моделей Gemini
+
+# Опциональные настройки промптов
+# SYSTEM_MESSAGE="Ваш кастомный системный промпт по умолчанию"
+# PROMPT_IMPROVEMENT_SYSTEM_MESSAGE="Ваш кастомный промпт для улучшения запросов к генератору изображений"
 ```
-python watchdog_runner.py
-```
 
-### Docker Deployment
+**Важно:**
+*   Замените `ВАШ_*` на ваши реальные токены, ID и учетные данные.
+*   `ADMIN_ID` - это числовой ID пользователя Telegram, который будет иметь права администратора в боте.
+*   Для работы с PostgreSQL при использовании `network_mode: "host"`, `POSTGRES_HOST` должен быть `127.0.0.1` или IP-адрес хост-машины, если PostgreSQL запущен на ней. Если PostgreSQL в другом Docker-контейнере, настройте сеть соответствующим образом или используйте хост/IP.
 
-1. Build and run the Docker container:
-   ```
-   docker-compose up -d
-   ```
+## Использование
 
-2. To stop the bot:
-   ```
-   docker-compose down
-   ```
+1.  **Найдите вашего бота в Telegram** по имени пользователя, которое вы указали при создании бота.
+2.  **Отправьте команду `/start`**. Если ваш Telegram ID добавлен как `ADMIN_ID` в `.env` или добавлен администратором через команду `/add_user`, бот вас поприветствует. В противном случае бот запросит код авторизации (текущая реализация не включает ввод кода, только проверку наличия ID в БД).
+3.  **Начните общение:** Отправляйте текстовые сообщения, голосовые сообщения, видео или прикрепляйте поддерживаемые документы.
+4.  **Используйте клавиатуру:**
+    *   **"Очистить контекст"**: Удаляет историю текущего диалога для вас.
+    *   **"Сменить модель"**: Позволяет выбрать другую доступную ИИ-модель для генерации ответов или изображений.
+    *   **"Доп функции"**: Открывает меню с дополнительными опциями.
+        *   **"Изменить промпт"**: Позволяет установить кастомный системный промпт для ваших диалогов.
+        *   **"Назад"**: Возврат в главное меню.
 
-## Usage
+## Доступные модели (на момент написания)
 
-- Start the bot by sending `/start` in Telegram
-- Choose between online and offline modes
-- Send text messages or voice messages for responses
-- Clear conversation context or change the AI model as needed
+*   **Gemini 2.0 Flash** (gemini, vision)
+*   **DeepSeek-R1** (azure)
+*   **DeepSeek-R1-Distill-Llama-70B** (groq)
+*   **Mistral Large 128K** (mistral)
+*   **GPT-4o 8K** (azure, vision)
+*   **GPT-4o-mini 16K** (azure, vision)
+*   **Llama 3.3 70B 8K** (groq)
+*   **FLUX.1-schnell** (together, image generation)
 
-## Admin Commands
+*(Список моделей и их параметры могут изменяться в `config.py`)*
 
-- Add a user: `/add_user <user_id>`
-- Remove a user: `/remove_user <user_id>`
+## Команды администратора
 
-## Contributing
+**Важно:** По умолчанию бот настроен с авторизацией. Это означает, что доступ к его функциям имеют только администратор (чей Telegram ID указан в переменной `ADMIN_ID` в файле `.env`) и пользователи, которых администратор добавил вручную с ролью `USER`. Следующие команды предназначены для управления этим списком доступа и доступны только пользователям с ролью `ADMIN`:
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+*   `/add_user <telegram_id> <role>`: Добавляет нового пользователя в список разрешенных с указанной ролью (`USER` или `ADMIN`). Только добавленные пользователи смогут взаимодействовать с ботом.
+    *   Пример: `/add_user 123456789 USER`
+*   `/remove_user <telegram_id>`: Удаляет пользователя из списка разрешенных, отзывая его доступ к боту.
+    *   Пример: `/remove_user 123456789`
 
-## License
+## Развертывание
 
-This project is licensed under the GNU GENERAL PUBLIC LICENSE Version 3 - see the LICENSE file for details.
+Проект использует Docker и Docker Compose для упрощения развертывания.
+
+*   `Dockerfile` описывает шаги для сборки образа приложения с необходимыми зависимостями. Используется многостадийная сборка для уменьшения размера финального образа.
+*   `docker-compose.yml` определяет сервис `another_chat_tg`, который запускает контейнер:
+    *   Использует `network_mode: "host"`, что позволяет контейнеру напрямую использовать сетевой интерфейс хоста (удобно для доступа к локально запущенной БД на `127.0.0.1`).
+    *   Монтирует файл `.env` внутрь контейнера (только для чтения).
+    *   Монтирует папку `logs` для сохранения логов на хост-машине.
+    *   Устанавливает политику перезапуска `unless-stopped`.
+
+## Логирование
+
+Бот ведет логи своей работы в папку `logs` (файл `acwl.log`). Логирование настроено с ротацией файлов по времени и маскированием чувствительной информации (токены Telegram, данные для подключения к БД).
