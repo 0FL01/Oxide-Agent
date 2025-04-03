@@ -8,7 +8,6 @@ python-docx
 python-pptx
 openpyxl
 mistralai
-together
 xlrd
 pandas
 pyyaml

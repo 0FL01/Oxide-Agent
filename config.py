@@ -5,7 +5,6 @@ from database import is_user_allowed, add_allowed_user, remove_allowed_user, Use
 from utils import process_file
 from openai import OpenAI
 from mistralai import Mistral
-from together import Together
 import pandas as pd
 from typing import Union
 import logging
@@ -18,24 +17,10 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
-HF_API_KEY = os.getenv('HF_API_KEY')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
-TOGETHER_API_KEY = os.getenv('TOGETHER_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
-GH_TOKEN = os.getenv('GH_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-
-AZURE_ENDPOINT = "https://models.inference.ai.azure.com"
-
-if GH_TOKEN:
-    azure_client = OpenAI(
-        base_url=AZURE_ENDPOINT,
-        api_key=GH_TOKEN,
-    )
-else:
-    print("Warning: GH_TOKEN is not set in the environment variables.")
-    azure_client = None
 
 
 if OPENROUTER_API_KEY:
@@ -46,24 +31,6 @@ if OPENROUTER_API_KEY:
 else:
     print("Warning: OPENROUTER_API_KEY is not set in the environment variables.")
     openrouter_client = None
-
-if TOGETHER_API_KEY:
-    together_client = Together(
-        base_url="https://api.together.xyz/v1",
-        api_key=TOGETHER_API_KEY,
-    )
-else:
-    print("Warning: TOGETHER_API_KEY is not set in the environment variables.")
-    together_client = None
-
-if HF_API_KEY:
-    huggingface_client = OpenAI(
-        base_url="https://api-inference.huggingface.co/v1/",
-        api_key=HF_API_KEY,
-    )
-else:
-    print("Warning: HF_API_KEY is not set in the environment variables.")
-    huggingface_client = None
 
 
 if MISTRAL_API_KEY:
@@ -82,33 +49,15 @@ else:
 chat_history = {}
 
 MODELS = {
-    #"Gemini 2.0 Flash Thinking Experimental": {"id": "gemini-2.0-flash-thinking-exp-01-21", "max_tokens": 128000, "provider": "gemini", "vision": True},
     "Gemini 2.0 Flash": {"id": "gemini-2.0-flash", "max_tokens": 16384, "provider": "gemini", "vision": True},
-    "DeepSeek-R1": {"id": "DeepSeek-R1", "max_tokens": 8192, "provider": "azure"},
     "DeepSeek-R1-Distill-Llama-70B": {"id": "DeepSeek-R1-Distill-Llama-70B", "max_tokens": 128000, "provider": "groq"},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
-    "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure"},
-    "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure"},
-    "Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 32000, "provider": "groq"},
-    "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"}
+    "Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 32000, "provider": "groq"}
 }
 
 DEFAULT_MODEL = "Gemini 2.0 Flash"
-#DEFAULT_MODEL = "Llama 3.3 70B 8K (groq)"
 
 try:
-    huggingface_client = OpenAI(
-        base_url="https://api-inference.huggingface.co/v1/",
-        api_key=HF_API_KEY,
-    ) if HF_API_KEY else None
-    azure_client = OpenAI(
-        base_url=AZURE_ENDPOINT,
-        api_key=GH_TOKEN,
-    ) if GH_TOKEN else None
-    together_client = Together(
-        base_url="https://api.together.xyz/v1",
-        api_key=TOGETHER_API_KEY,
-    ) if TOGETHER_API_KEY else None
     groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
     openrouter_client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
@@ -119,9 +68,6 @@ try:
 except Exception as e:
     logger.error(f"Error initializing API clients: {str(e)}")
     # Установите значения клиентов в None в случае ошибки
-    huggingface_client = None
-    azure_client = None
-    together_client = None
     groq_client = None
     openrouter_client = None
     mistral_client = None
