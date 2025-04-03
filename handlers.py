@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, openrouter_client, mistral_client, MODELS, process_file, DEFAULT_MODEL, gemini_client
+from config import chat_history, groq_client, mistral_client, MODELS, process_file, DEFAULT_MODEL, gemini_client
 from utils import split_long_message, clean_html, format_text
 from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
 from telegram.error import BadRequest
@@ -322,24 +322,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             )
             bot_response = response.text
             logger.info(f"Received response from Gemini for user {user_id}.")
-
-
-        elif provider == "openrouter":
-            if openrouter_client is None:
-                raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
-            logger.info(f"OpenRouter request payload for user {user_id}: model={model_id}, messages={messages}") # Добавлено логирование
-            response = openrouter_client.chat.completions.create(
-                model=model_id,
-                messages=messages, # Теперь messages включает и текущий запрос
-                temperature=0.8,
-                max_tokens=max_tokens,
-            )
-            if response.choices and len(response.choices) > 0 and response.choices[0].message:
-                bot_response = response.choices[0].message.content
-                logger.info(f"Received response from OpenRouter for user {user_id}.")
-            else:
-                logger.error(f"Invalid response structure from OpenRouter for user {user_id}: {response}")
-                raise ValueError("Опять API провайдер откис, воскреснет когда нибудь наверное")
 
         else:
             logger.error(f"Unknown provider '{provider}' for model {selected_model} requested by user {user_id}.")
