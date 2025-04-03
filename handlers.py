@@ -14,6 +14,7 @@ import base64
 import asyncio
 from together import Together
 from dotenv import load_dotenv
+import sys
 
 load_dotenv()
 
@@ -621,16 +622,87 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 class SensitiveDataFilter(logging.Filter):
     def __init__(self):
         super().__init__()
+        # Паттерны для маскирования чувствительных данных
+        # Можно добавить больше паттернов по мере необходимости
         self.patterns = [
             # Существующие паттерны для токена Telegram
-            (r'(https?:\/\/[^\/]+\/bot)([0-9]+:[A-Za-z0-9_-]+)(\/[^"\s]*)', r'\1[TELEGRAM_TOKEN]\3'),
-            (r'([0-9]{8,10}:[A-Za-z0-9_-]{35})', '[TELEGRAM_TOKEN]'),
-            (r'(bot[0-9]{8,10}:)[A-Za-z0-9_-]+', r'\1[TELEGRAM_TOKEN]'),
-            
-            # Новые паттерны для данных БД
-            (r"'user': '[^']*'", "'user': '[MASKED]'"),
-            (r"'password': '[^']*'", "'password': '[MASKED]'"),
-            (r"'dbname': '[^']*'", "'dbname': '[MASKED]'"),
-            (r"'host': '[^']*'", "'host': '[MASKED]'"),
-            (r"'port': '[^']*'", "'port': '[MASKED]'")
+            (r'(https?:\/\/[^\/]+\/bot)([0-9]+:[A-Za-z0-9_-]+)(\/[^"\s]*)', r'\1[TELEGRAM_TOKEN_MASKED]\3'),
+            (r'([0-9]{8,10}:[A-Za-z0-9_-]{35})', '[TELEGRAM_TOKEN_MASKED]'),
+            (r'(bot[0-9]{8,10}:)[A-Za-z0-9_-]+', r'\1[TELEGRAM_TOKEN_MASKED]'),
+
+            # Паттерны для API ключей (примеры, адаптируйте под свои нужды)
+            (r'(sk-[a-zA-Z0-9]{48})', '[OPENAI_API_KEY_MASKED]'), # OpenAI
+            (r'(AIza[0-9A-Za-z\\-_]{35})', '[GEMINI_API_KEY_MASKED]'), # Google AI/Gemini
+            (r'([a-zA-Z0-9]{32})', '[GENERIC_API_KEY_MASKED_32]'), # Общий 32-значный ключ
+            (r'(ghp_[a-zA-Z0-9]{36})', '[GITHUB_TOKEN_MASKED]'), # GitHub Token
+
+            # Паттерны для данных БД (если используются и могут попасть в логи)
+            (r"'user': '[^']*'", "'user': '[DB_USER_MASKED]'"),
+            (r"'password': '[^']*'", "'password': '[DB_PASSWORD_MASKED]'"),
+            (r"'dbname': '[^']*'", "'dbname': '[DB_NAME_MASKED]'"),
+            (r"'host': '[^']*'", "'host': '[DB_HOST_MASKED]'"),
+            (r"'port': '[^']*'", "'port': '[DB_PORT_MASKED]'"),
         ]
+        # Компилируем регулярные выражения для производительности
+        self.compiled_patterns = [(re.compile(pattern), repl) for pattern, repl in self.patterns]
+
+    def filter(self, record):
+        # Преобразуем сообщение лога в строку
+        log_message = record.getMessage()
+        # Применяем все паттерны для маскирования
+        for pattern, repl in self.compiled_patterns:
+            log_message = pattern.sub(repl, log_message)
+        # Обновляем сообщение записи лога
+        record.msg = log_message
+        # Очищаем кешированные данные, чтобы getMessage() использовал измененное msg
+        record.args = () # Очищаем args, так как форматирование уже применено к msg
+        record._message = None # Сбрасываем кешированное сообщение
+        return True
+
+def setup_logging():
+    # Получаем корневой логгер
+    root_logger = logging.getLogger()
+    # Устанавливаем уровень логирования INFO (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    root_logger.setLevel(logging.INFO)
+
+    # Удаляем все существующие обработчики, чтобы избежать дублирования
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Создаем обработчик для вывода в STDOUT
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    # Устанавливаем уровень для обработчика (можно сделать отличным от логгера)
+    stdout_handler.setLevel(logging.INFO)
+
+    # Создаем форматтер для логов
+    log_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    # Применяем форматтер к обработчику
+    stdout_handler.setFormatter(log_formatter)
+
+    # Создаем и добавляем фильтр для маскирования данных
+    sensitive_filter = SensitiveDataFilter()
+    stdout_handler.addFilter(sensitive_filter)
+
+    # Добавляем обработчик к корневому логгеру
+    root_logger.addHandler(stdout_handler)
+
+    # Конфигурируем логгер библиотеки telegram.ext, чтобы он тоже выводил в STDOUT
+    # Можно установить другой уровень, если нужно меньше/больше логов от самой библиотеки
+    telegram_logger = logging.getLogger("telegram.ext")
+    telegram_logger.setLevel(logging.INFO) # Или WARNING, если не нужны INFO от библиотеки
+    # Убедимся, что у него нет своих обработчиков и он использует корневой
+    telegram_logger.handlers = []
+    telegram_logger.propagate = True # Передавать сообщения корневому логгеру
+
+    # Отключаем логгеры httpcore и httpx, чтобы избежать спама
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Вызываем функцию настройки логирования при старте
+setup_logging()
+
+# Получаем логгер для текущего модуля ПОСЛЕ настройки
+logger = logging.getLogger(__name__)
