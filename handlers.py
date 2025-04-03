@@ -330,28 +330,45 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             model = gemini_client.GenerativeModel(MODELS[selected_model]["id"])
             
             if image:
-                # Открываем изображение как PIL Image
-                image_data = Image.open(image_path)
-                
-                # Создаем список контента с текстом и изображением
-                contents = []
-                if text:
-                    contents.append(text)
-                contents.append(image_data)
-                
-                # Генерируем ответ
                 try:
+                    # Create proper Gemini content parts
+                    contents = []
+                    
+                    # Add text part if provided
+                    if text:
+                        contents.append(text)
+                    
+                    # Add image part in Gemini's expected format
+                    image_data = Image.open(image_path)
+                    contents.append({
+                        "mime_type": "image/jpeg",
+                        "data": base64.b64encode(image_data.tobytes()).decode('utf-8')
+                    })
+                    
+                    # Generate response
                     response = await asyncio.to_thread(
                         model.generate_content,
-                        contents,
+                        {
+                            "contents": [{
+                                "parts": contents
+                            }]
+                        },
                         generation_config=gemini_client.types.GenerationConfig(
                             max_output_tokens=MODELS[selected_model]["max_tokens"],
                             temperature=0.7,
                         )
                     )
+                    
+                    if not response.text:
+                        raise ValueError("Gemini returned empty response")
+                        
                 except Exception as e:
-                    logger.error(f"Error generating Gemini response: {str(e)}")
-                    raise ValueError(f"Ошибка при генерации ответа Gemini: {str(e)}")
+                    logger.error(f"Error generating Gemini response: {str(e)}", exc_info=True)
+                    raise ValueError(f"Ошибка при обработке изображения: {str(e)}")
+                finally:
+                    # Clean up temporary image file
+                    if image_path and os.path.exists(image_path):
+                        os.remove(image_path)
             else:
                 # Обработка только текстового сообщения
                 converted_messages = []
