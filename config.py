@@ -66,14 +66,7 @@ try:
     gemini_client = genai if GEMINI_API_KEY else None
 except Exception as e:
     logger.error(f"Error initializing API clients: {str(e)}")
-    # Установите значения клиентов в None в случае ошибки
     groq_client = None
     openrouter_client = None
     mistral_client = None
     gemini_client = None
-
-
-
-
-
-
