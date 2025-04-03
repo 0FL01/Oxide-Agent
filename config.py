@@ -2,11 +2,10 @@ import os
 from groq import AsyncGroq
 from dotenv import load_dotenv
 from database import is_user_allowed, add_allowed_user, remove_allowed_user, UserRole
-from utils import encode_image, process_file
+from utils import process_file
 from openai import OpenAI
 from mistralai import Mistral
 from together import Together
-import base64
 import pandas as pd
 from typing import Union
 import logging
@@ -88,8 +87,8 @@ MODELS = {
     "DeepSeek-R1": {"id": "DeepSeek-R1", "max_tokens": 8192, "provider": "azure"},
     "DeepSeek-R1-Distill-Llama-70B": {"id": "DeepSeek-R1-Distill-Llama-70B", "max_tokens": 128000, "provider": "groq"},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
-    "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure", "vision": True},
-    "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure", "vision": True},
+    "GPT-4o 8K (Azure)": {"id": "gpt-4o", "max_tokens": 8192, "provider": "azure"},
+    "GPT-4o-mini 16K (Azure)": {"id": "gpt-4o-mini", "max_tokens": 16192, "provider": "azure"},
     "Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 32000, "provider": "groq"},
     "FLUX.1-schnell": {"id": "black-forest-labs/FLUX.1-schnell-Free", "provider": "together", "type": "image"}
 }

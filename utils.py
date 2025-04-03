@@ -10,7 +10,6 @@ import xlrd
 import pandas as pd
 import logging
 from typing import Union
-import base64
 
 logger = logging.getLogger(__name__)
 
@@ -127,10 +126,6 @@ def split_long_message(message: str, max_length: int = 4000) -> list[str]:
 
     return parts
 
-
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
 
 def process_file(file_path: str, max_size: int = 1 * 1024 * 1024) -> str:
     if os.path.getsize(file_path) > max_size:
