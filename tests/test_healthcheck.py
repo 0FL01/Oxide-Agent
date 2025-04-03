@@ -39,9 +39,7 @@ class DummyContext:
 
 @pytest.mark.asyncio
 async def test_healthcheck():
-    with patch('database.get_db_connection'), \
-         patch('config.encode_image', Mock(), create=True):
-
+    with patch('database.get_db_connection'):
         from handlers import healthcheck
 
         update = DummyUpdate()

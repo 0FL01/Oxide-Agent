@@ -1,8 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, openrouter_client, mistral_client, MODELS, encode_image, process_file, DEFAULT_MODEL, gemini_client
-from PIL import Image
+from config import chat_history, groq_client, openrouter_client, mistral_client, MODELS, process_file, DEFAULT_MODEL, gemini_client
 from utils import split_long_message, clean_html, format_text
 from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
 from telegram.error import BadRequest
@@ -138,7 +137,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text or update.message.caption or ""
-    image = update.message.photo[-1] if update.message.photo else None
     document = update.message.document
 
     if text == "Очистить контекст":
@@ -179,7 +177,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(file_path):
                 os.remove(file_path)
     else:
-        await process_message(update, context, text, image)
+        await process_message(update, context, text)
 
 
 
@@ -231,7 +229,7 @@ async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         )
 
 
-async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, image=None):
+async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
     user_name = update.effective_user.username or update.effective_user.first_name
 
@@ -242,25 +240,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
     selected_model = context.user_data.get('model', DEFAULT_MODEL)
     logger.info(f"Selected model for user {user_id}: {selected_model}")
-
-    if MODELS[selected_model].get("type") == "image":
-        await generate_and_send_image(update, context, text)
-        return
-
-    image_path = None  
-
-    if image:
-        if not MODELS[selected_model].get("vision", False):
-            await update.message.reply_text("Выбранная модель не поддерживает обработку изображений.")
-            return  
-
-        file = await image.get_file()
-        image_path = f"temp_image_{user_id}.jpg"  
-        await file.download_to_drive(image_path)  
-        image_base64 = encode_image(image_path)  
-
-        image_description = "Описание изображения будет здесь, если модель поддерживает vision."
-        logger.info(f"User {user_id} ({user_name}) sent an image. Description: {image_description[:100]}...")
 
     full_message = text  
     
@@ -302,13 +281,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 converted_messages.append({
                     "role": "user" if message["role"] == "user" else "model",
                     "parts": [message["content"]]
-                })
-
-            if image:
-                image_data = Image.open(image_path)
-                converted_messages.append({
-                    "role": "user",
-                    "parts": [image_data, text]
                 })
 
             response = model.generate_content(

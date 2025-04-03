@@ -21,8 +21,6 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-
-
 if OPENROUTER_API_KEY:
     openrouter_client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
@@ -49,7 +47,7 @@ else:
 chat_history = {}
 
 MODELS = {
-    "Gemini 2.0 Flash": {"id": "gemini-2.0-flash", "max_tokens": 64000, "provider": "gemini", "vision": True},
+    "Gemini 2.0 Flash": {"id": "gemini-2.0-flash", "max_tokens": 64000, "provider": "gemini"},
     "Deepseek V3": {"id": "deepseek/deepseek-v3-base:free", "max_tokens": 32000, "provider": "openrouter"},
     "DeepSeek-R1-Distill-Llama-70B": {"id": "DeepSeek-R1-Distill-Llama-70B", "max_tokens": 128000, "provider": "groq"},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
