@@ -460,12 +460,10 @@ class SensitiveDataFilter(logging.Filter):
     def __init__(self):
         super().__init__()
         self.patterns = [
-            # Существующие паттерны для токена Telegram
             (r'(https?:\/\/[^\/]+\/bot)([0-9]+:[A-Za-z0-9_-]+)(\/[^"\s]*)', r'\1[TELEGRAM_TOKEN]\3'),
             (r'([0-9]{8,10}:[A-Za-z0-9_-]{35})', '[TELEGRAM_TOKEN]'),
             (r'(bot[0-9]{8,10}:)[A-Za-z0-9_-]+', r'\1[TELEGRAM_TOKEN]'),
             
-            # Новые паттерны для данных БД
             (r"'user': '[^']*'", "'user': '[MASKED]'"),
             (r"'password': '[^']*'", "'password': '[MASKED]'"),
             (r"'dbname': '[^']*'", "'dbname': '[MASKED]'"),
