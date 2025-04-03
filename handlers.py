@@ -134,7 +134,7 @@ async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
          logger.warning(f"User {user_id} sent unexpected text '{text}' during model change.")
-         await handle_message(update, context) # Fallback to handle_message if text is not a model or button
+         await handle_message(update, context)
 
 @check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -188,7 +188,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text in MODELS and not context.user_data.get('editing_prompt'):
         logger.info(f"User {user_id} selected model '{text}' via text input.")
         context.user_data['model'] = text
-        update_user_model(user_id, text) 
+        update_user_model(user_id, text)
         await update.message.reply_text(
             f'Модель изменена на <b>{text}</b>',
             parse_mode=ParseMode.HTML,
@@ -209,8 +209,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             full_message = f"\nСодержимое файла {document.file_name}:\n{file_content}\n"
             if text:
                 full_message += f"\nЗапрос пользователя: {text}"
+            else:
+                 full_message += f"\nЗапрос пользователя: Опиши содержимое файла." # Добавляем запрос по умолчанию, если текст пуст
             logger.info(f"Sending document content and user query to process_message for user {user_id}.")
-            await process_message(update, context, full_message)
+            await process_message(update, context, full_message) # Передаем собранное сообщение
         except ValueError as ve:
              logger.error(f"Value error processing document for user {user_id}: {ve}")
              await update.message.reply_text(f"Ошибка обработки файла: {str(ve)}")
@@ -256,7 +258,10 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         logger.info(f"Sending typing action to chat {update.message.chat.id} for user {user_id}.")
         await update.message.chat.send_action(action=ChatAction.TYPING)
 
-        messages = [{"role": "system", "content": system_message}] + chat_history_db 
+        # --- ИСПРАВЛЕНИЕ НАЧАЛО ---
+        # Добавляем текущее сообщение пользователя в список для отправки в API
+        messages = [{"role": "system", "content": system_message}] + chat_history_db + [{"role": "user", "content": full_message}]
+        # --- ИСПРАВЛЕНИЕ КОНЕЦ ---
         logger.info(f"Prepared {len(messages)} messages for API call for user {user_id}.")
 
         bot_response = ""
@@ -282,7 +287,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 raise ValueError("Mistral client is not initialized. Please check your MISTRAL_API_KEY.")
             response = mistral_client.chat.complete(
                 model=model_id,
-                messages=messages, #
+                messages=messages,
                 temperature=0.9,
                 max_tokens=max_tokens,
             )
@@ -292,20 +297,24 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         elif provider == "gemini":
             if gemini_client is None:
                 raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
-            model = gemini_client.GenerativeModel(model_id)
+
+            # Конвертируем сообщения в формат Gemini, включая системный промпт и текущее сообщение
+            model = gemini_client.GenerativeModel(
+                model_id,
+                system_instruction=system_message # Явно передаем системный промпт
+            )
             converted_messages = []
-            current_history = []
-            system_content = system_message 
-            for message in chat_history_db: 
-                 current_history.append({
+            for message in chat_history_db: # Только история
+                 converted_messages.append({
                      "role": "user" if message["role"] == "user" else "model",
                      "parts": [message["content"]]
                  })
-            current_history.append({"role": "user", "parts": [full_message]})
+            # Добавляем текущее сообщение пользователя в конец
+            converted_messages.append({"role": "user", "parts": [full_message]})
 
-            logger.info(f"Sending {len(current_history)} converted messages to Gemini for user {user_id}.")
+            logger.info(f"Sending {len(converted_messages)} converted messages (plus system prompt) to Gemini for user {user_id}.")
             response = model.generate_content(
-                current_history,
+                converted_messages, # Отправляем историю + текущее сообщение
                 generation_config=gemini_client.types.GenerationConfig(
                     max_output_tokens=max_tokens,
                     temperature=1,
@@ -318,9 +327,10 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         elif provider == "openrouter":
             if openrouter_client is None:
                 raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
+            logger.info(f"OpenRouter request payload for user {user_id}: model={model_id}, messages={messages}") # Добавлено логирование
             response = openrouter_client.chat.completions.create(
                 model=model_id,
-                messages=messages,
+                messages=messages, # Теперь messages включает и текущий запрос
                 temperature=0.8,
                 max_tokens=max_tokens,
             )
@@ -350,7 +360,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 await update.message.reply_text(part, parse_mode=ParseMode.HTML)
             except BadRequest as e:
                 logger.error(f"BadRequest error sending part {i+1} to user {user_id}: {str(e)}. Sending raw text.")
-                await update.message.reply_text(html.unescape(part), parse_mode=None)
+                # Убираем экранирование html.unescape, т.к. format_text уже должен был подготовить текст
+                await update.message.reply_text(part, parse_mode=None)
             except Exception as e:
                  logger.error(f"Unexpected error sending part {i+1} to user {user_id}: {str(e)}", exc_info=True)
                  await update.message.reply_text(f"Ошибка при отправке части ответа: {str(e)}")
