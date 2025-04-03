@@ -84,6 +84,8 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    environment:
+      name: production
     if: github.event_name != 'pull_request'
     steps:
       - name: Download SHA artifact
@@ -91,11 +93,11 @@ jobs:
         with:
           name: sha-artifact
           path: .
-
+      
       - name: Read SHA from artifact file
         id: get_sha
         run: echo "SHORT_SHA_VALUE=$(cat sha.txt)" >> $GITHUB_ENV
-
+        
       - name: Deploy to server
         uses: appleboy/ssh-action@master
         with:
@@ -110,10 +112,10 @@ jobs:
               exit 1
             fi
             echo "Using Short SHA: $SHORT_SHA_VALUE for deployment"
-
+        
             mkdir -p ${{ secrets.SERVICE_DIR }}
             cd ${{ secrets.SERVICE_DIR }}
-
+        
             echo "Creating .env file..."
             cat << 'EOF' > .env
             GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
@@ -135,7 +137,7 @@ jobs:
             POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
             EOF
             echo ".env file created."
-
+        
             echo "Creating docker-compose.yml file..."
             cat << EOF > docker-compose.yml
             services:
@@ -153,27 +155,27 @@ jobs:
               logs: {}
             EOF
             echo "docker-compose.yml file created."
-
+        
             mkdir -p ./logs
-
+        
             echo "Using Docker Image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}"
-
+        
             echo "Pulling Docker image..."
             docker compose pull
             echo "Image pulled."
-
+        
             echo "Stopping existing container (if any)..."
             docker compose down || true
             echo "Starting services with docker compose up..."
             docker compose up -d
             echo "Services started."
-
+        
             echo "Current container status:"
             docker compose ps
-
+        
             echo "Pruning unused Docker images..."
             docker image prune -a -f
             echo "Docker images pruned."
-
+        
       - name: Clean up local SHA artifact
         run: rm sha.txt
