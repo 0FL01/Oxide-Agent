@@ -82,7 +82,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: build 
+    needs: build
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
@@ -90,11 +90,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: sha-artifact
-          path: . 
+          path: .
 
-      - name: Read SHA from artifact
-        id: read_sha
-        run: echo "sha=$(cat sha.txt)" >> $GITHUB_OUTPUT
+      - name: Read SHA from artifact file
+        id: get_sha
+        run: echo "SHORT_SHA_VALUE=$(cat sha.txt)" >> $GITHUB_ENV
 
       - name: Deploy to server
         uses: appleboy/ssh-action@master
@@ -103,20 +103,19 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: DOCKER_IMAGE 
+          envs: DOCKER_IMAGE, SHORT_SHA_VALUE
           script: |
-            SHORT_SHA=$(cat sha.txt) # Читаем SHA из переданного файла
-            if [ -z "$SHORT_SHA" ]; then
-              echo "Error: SHORT_SHA is empty (read from artifact file sha.txt). Cannot proceed with deployment."
+            if [ -z "$SHORT_SHA_VALUE" ]; then
+              echo "Error: SHORT_SHA_VALUE environment variable is empty. Cannot proceed with deployment."
               exit 1
             fi
-            echo "Using Short SHA: $SHORT_SHA for deployment"
+            echo "Using Short SHA: $SHORT_SHA_VALUE for deployment"
 
             mkdir -p ${{ secrets.SERVICE_DIR }}
             cd ${{ secrets.SERVICE_DIR }}
 
             echo "Creating .env file..."
-            cat > .env << 'EOL'
+            cat << 'EOF' > .env
             GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
             TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
@@ -134,14 +133,14 @@ jobs:
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}
             POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
-            EOL
+            EOF
             echo ".env file created."
 
             echo "Creating docker-compose.yml file..."
-            cat > docker-compose.yml << EOL
+            cat << EOF > docker-compose.yml
             services:
               another_chat_tg:
-                image: ${DOCKER_IMAGE}:${SHORT_SHA}
+                image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}
                 container_name: another_chat_tg
                 network_mode: "host"
                 environment:
@@ -152,12 +151,12 @@ jobs:
                   - ./logs:/app/logs
             volumes:
               logs: {}
-            EOL
+            EOF
             echo "docker-compose.yml file created."
 
             mkdir -p ./logs
 
-            echo "Using Docker Image: ${DOCKER_IMAGE}:${SHORT_SHA}"
+            echo "Using Docker Image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}"
 
             echo "Pulling Docker image..."
             docker compose pull
@@ -176,8 +175,5 @@ jobs:
             docker image prune -a -f
             echo "Docker images pruned."
 
-            rm sha.txt
-            echo "Removed temporary sha.txt file from server."
-
       - name: Clean up local SHA artifact
-        run: rm sha.txt 
+        run: rm sha.txt
