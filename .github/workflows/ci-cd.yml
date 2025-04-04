@@ -173,7 +173,11 @@ jobs:
             docker compose ps
         
             echo "Pruning unused Docker images..."
-            docker image prune -a -f
+            docker images --format "{{.Repository}}:{{.Tag}} {{.ID}}" | \
+            grep "^0fl01/another-chat-tg" | \
+            awk '{ print $2 }' | \
+            xargs -r docker rmi -f
+
             echo "Docker images pruned."
         
       - name: Clean up local SHA artifact
