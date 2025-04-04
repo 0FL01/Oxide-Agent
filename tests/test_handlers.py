@@ -6,6 +6,7 @@ from telegram import Update, User, Message, Chat, Voice, Video
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, Application, CommandHandler, MessageHandler, filters
 
+import handlers
 from handlers import start, clear, handle_message, handle_voice, handle_video, change_model, add_user, remove_user, process_message, get_main_keyboard, get_model_keyboard, get_extra_functions_keyboard
 from database import UserRole, get_user_role, add_allowed_user
 from config import MODELS, DEFAULT_MODEL
@@ -131,10 +132,11 @@ async def test_handle_message_text_gemini(mock_update, mock_context, mocker):
     mocker.patch('handlers.get_user_model', return_value="Gemini 2.0 Flash")
     mock_save_message = mocker.patch('handlers.save_message')
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "user", "content": "previous message"}])
-    mock_gemini_generate = mocker.patch('handlers.gemini_client.GenerativeModel').return_value.generate_content
 
     mock_update.message.text = "Привет, бот!"
     mock_context.user_data['model'] = "Gemini 2.0 Flash"
+
+    mock_gemini_generate = handlers.gemini_client.GenerativeModel.return_value.generate_content
 
     await handle_message(mock_update, mock_context)
 
