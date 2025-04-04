@@ -162,9 +162,6 @@ async def main():
         application.add_handler(MessageHandler(filters.VIDEO, handle_video))
         logger.info("Video message handler registered.")
 
-        application.add_handler(MessageHandler(filters.Document.ALL, handle_message))
-        logger.info("Document handler registered (handled within handle_message).")
-
         logger.info("All handlers registered.")
 
         logger.info("Starting bot polling...")

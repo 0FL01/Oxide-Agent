@@ -4,12 +4,7 @@ groq
 python-dotenv
 openai
 watchdog
-python-docx
-python-pptx
-openpyxl
 mistralai
-xlrd
 pandas
-pyyaml
 psycopg2-binary
 nest_asyncio

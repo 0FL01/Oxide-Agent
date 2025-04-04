@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-from config import chat_history, groq_client, mistral_client, MODELS, process_file, DEFAULT_MODEL, gemini_client
+from config import chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client
 from utils import split_long_message, clean_html, format_text
 from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
 from telegram.error import BadRequest
@@ -148,6 +148,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
     logger.info(f"Handling message from user {user_id} ({user_name}). Text: '{text[:100]}...'. Document attached: {bool(document)}")
 
+    if document:
+        logger.warning(f"User {user_id} sent an unsupported document: {document.file_name}")
+        await update.message.reply_text("Данный файл не поддерживается.")
+        return
+
     if context.user_data.get('editing_prompt'):
         logger.info(f"User {user_id} is in prompt editing mode.")
         if text == "Назад":
@@ -194,46 +199,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_keyboard()
         )
-    elif document:
-        logger.info(f"Processing document '{document.file_name}' from user {user_id}.")
-        file = await document.get_file()
-        file_extension = os.path.splitext(document.file_name)[1].lower()
-        file_path = f"temp_file_{user_id}_{document.file_name}"
-        logger.info(f"Downloading document to {file_path}.")
-
-        try:
-            await file.download_to_drive(file_path)
-            logger.info(f"Document downloaded. Processing file content.")
-            file_content = process_file(file_path)
-            logger.info(f"File content processed successfully.")
-            full_message = f"\nСодержимое файла {document.file_name}:\n{file_content}\n"
-            if text:
-                full_message += f"\nЗапрос пользователя: {text}"
-            else:
-                 full_message += f"\nЗапрос пользователя: Опиши содержимое файла." # Добавляем запрос по умолчанию, если текст пуст
-            logger.info(f"Sending document content and user query to process_message for user {user_id}.")
-            await process_message(update, context, full_message) # Передаем собранное сообщение
-        except ValueError as ve:
-             logger.error(f"Value error processing document for user {user_id}: {ve}")
-             await update.message.reply_text(f"Ошибка обработки файла: {str(ve)}")
-        except Exception as e:
-            logger.error(f"General error processing document for user {user_id}: {e}", exc_info=True)
-            await update.message.reply_text(f"Произошла ошибка при обработке файла: {str(e)}")
-        finally:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.info(f"Temporary file {file_path} removed for user {user_id}.")
     else:
         logger.info(f"Processing regular text message from user {user_id}.")
         await process_message(update, context, text)
-
-
-async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, document):
-    user_id = update.effective_user.id
-    user_name = update.effective_user.username or update.effective_user.first_name
-    logger.info(f"Deprecated process_document called for user {user_id} ({user_name}) with file {document.file_name}. Should be handled by handle_message.")
-    await handle_message(update, context)
-
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
@@ -258,10 +226,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         logger.info(f"Sending typing action to chat {update.message.chat.id} for user {user_id}.")
         await update.message.chat.send_action(action=ChatAction.TYPING)
 
-        # --- ИСПРАВЛЕНИЕ НАЧАЛО ---
-        # Добавляем текущее сообщение пользователя в список для отправки в API
         messages = [{"role": "system", "content": system_message}] + chat_history_db + [{"role": "user", "content": full_message}]
-        # --- ИСПРАВЛЕНИЕ КОНЕЦ ---
         logger.info(f"Prepared {len(messages)} messages for API call for user {user_id}.")
 
         bot_response = ""
@@ -298,23 +263,21 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             if gemini_client is None:
                 raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
 
-            # Конвертируем сообщения в формат Gemini, включая системный промпт и текущее сообщение
             model = gemini_client.GenerativeModel(
                 model_id,
-                system_instruction=system_message # Явно передаем системный промпт
+                system_instruction=system_message
             )
             converted_messages = []
-            for message in chat_history_db: # Только история
+            for message in chat_history_db:
                  converted_messages.append({
                      "role": "user" if message["role"] == "user" else "model",
                      "parts": [message["content"]]
                  })
-            # Добавляем текущее сообщение пользователя в конец
             converted_messages.append({"role": "user", "parts": [full_message]})
 
             logger.info(f"Sending {len(converted_messages)} converted messages (plus system prompt) to Gemini for user {user_id}.")
             response = model.generate_content(
-                converted_messages, # Отправляем историю + текущее сообщение
+                converted_messages, 
                 generation_config=gemini_client.types.GenerationConfig(
                     max_output_tokens=max_tokens,
                     temperature=1,
@@ -342,17 +305,14 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 await update.message.reply_text(part, parse_mode=ParseMode.HTML)
             except BadRequest as e:
                 logger.error(f"BadRequest error sending part {i+1} to user {user_id}: {str(e)}. Sending raw text.")
-                # Убираем экранирование html.unescape, т.к. format_text уже должен был подготовить текст
                 await update.message.reply_text(part, parse_mode=None)
             except Exception as e:
                  logger.error(f"Unexpected error sending part {i+1} to user {user_id}: {str(e)}", exc_info=True)
                  await update.message.reply_text(f"Ошибка при отправке части ответа: {str(e)}")
 
-
     except Exception as e:
         logger.error(f"Error processing message for user {user_id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
-
 
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 
@@ -393,7 +353,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(temp_filename)
             logger.info(f"Temporary voice file {temp_filename} removed for user {user_id}.")
 
-
 @check_auth
 @admin_required
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -415,7 +374,6 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in add_user command initiated by admin {admin_user_id}: {e}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка при добавлении пользователя: {str(e)}")
 
-
 @check_auth
 @admin_required
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -435,13 +393,11 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in remove_user command initiated by admin {admin_user_id}: {e}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка при удалении пользователя: {str(e)}")
 
-
 async def healthcheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id if update.effective_user else "Unknown"
     logger.info(f"Healthcheck command received from user {user_id}.")
     await update.message.reply_text("OK")
     logger.info(f"Responded 'OK' to healthcheck from user {user_id}.")
-
 
 @check_auth
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -480,7 +436,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
             logger.info(f"Temporary video file {temp_filename} removed for user {user_id}.")
-
 
 class SensitiveDataFilter(logging.Filter):
     def __init__(self):
