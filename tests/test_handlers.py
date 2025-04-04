@@ -59,15 +59,11 @@ def mock_api_clients(mocker):
     # --- Мокаем Groq ---
     mock_groq_chat_create = AsyncMock()
     mock_groq_chat_create.return_value.choices = [MagicMock(message=MagicMock(content="Mocked Groq Response"))]
-    # Патчим в config, где groq_client инициализируется
-    mocker.patch('config.groq_client.chat.completions.create', mock_groq_chat_create, create=True) 
+    mocker.patch('handlers.groq_client.chat.completions.create', mock_groq_chat_create, create=True)
 
     mock_groq_transcribe = AsyncMock()
     mock_groq_transcribe.return_value.text = "Mocked transcription text"
-    # Патчим в config
-    mocker.patch('config.groq_client.audio.transcriptions.create', mock_groq_transcribe, create=True)
-    # Если нужно мокать сам клиент (например, для проверки if groq_client is None)
-    # mocker.patch('config.groq_client', new_callable=AsyncMock, create=True) # Используйте create=True, если groq_client может быть None
+    mocker.patch('handlers.groq_client.audio.transcriptions.create', mock_groq_transcribe, create=True)   
     
     mock_groq_transcribe = AsyncMock()
     mock_groq_transcribe.return_value.text = "Mocked transcription text"
@@ -77,10 +73,10 @@ def mock_api_clients(mocker):
     # --- Мокаем Mistral ---
     mock_mistral_complete = MagicMock() 
     mock_mistral_complete.return_value.choices = [MagicMock(message=MagicMock(content="Mocked Mistral Response"))]
-    # Патчим в config
-    mocker.patch('config.mistral_client.chat.complete', mock_mistral_complete, create=True)
+    # Патчим в handlers
+    mocker.patch('handlers.mistral_client.chat.complete', mock_mistral_complete, create=True)
     # Если нужно мокать сам клиент
-    # mocker.patch('config.mistral_client', new_callable=MagicMock, create=True)
+    # mocker.patch('handlers.mistral_client', new_callable=MagicMock, create=True)
 
     # Мокаем Gemini
     mock_gemini_generate = MagicMock() # НЕ async, судя по коду handlers.py
