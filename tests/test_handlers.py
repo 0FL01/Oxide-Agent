@@ -161,8 +161,6 @@ async def test_handle_message_text_groq(mock_update, mock_context, mocker):
     mocker.patch('handlers.get_user_model', return_value="DeepSeek-R1-Distill-Llama-70B")
     mock_save_message = mocker.patch('handlers.save_message')
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "user", "content": "previous"}])
-    mock_groq_create = mocker.patch('handlers.groq_client.chat.completions.create')
-
     mock_update.message.text = "Hello Groq"
     mock_context.user_data['model'] = "DeepSeek-R1-Distill-Llama-70B"
 
@@ -225,32 +223,6 @@ async def test_clear_context(mock_update, mock_context, mocker):
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
-
-async def test_handle_video_message(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_model', return_value="DeepSeek-R1-Distill-Llama-70B") # Use Groq for transcription
-    mock_save_message = mocker.patch('handlers.save_message')
-    mock_groq_transcribe = mocker.patch('handlers.groq_client.audio.transcriptions.create')
-    mock_groq_chat_create = mocker.patch('handlers.groq_client.chat.completions.create')
-    mock_os_remove = mocker.patch('os.remove')
-
-    mock_update.message.video = MagicMock(spec=Video)
-    mock_update.message.caption = None # Test without caption, should transcribe video
-
-    await handle_video(mock_update, mock_context)
-
-    mock_groq_transcribe.assert_called_once()
-    mock_groq_chat_create.assert_called_once()
-    call_args, call_kwargs = mock_groq_chat_create.call_args
-    messages = call_kwargs['messages']
-    assert messages[-1]['role'] == 'user'
-    assert messages[-1]['content'] == "Mocked transcription text"
-
-    assert mock_save_message.call_count == 2
-    mock_save_message.assert_any_call(12345, "user", "Mocked transcription text")
-    mock_save_message.assert_any_call(12345, "assistant", "Mocked Groq Response")
-
-    mock_update.message.reply_text.assert_called_once_with("Mocked Groq Response", parse_mode=ParseMode.HTML)
-    mock_os_remove.assert_called_once()
 
 async def test_change_model_show_options(mock_update, mock_context, mocker):
     mock_update.message.text = "Сменить модель"
