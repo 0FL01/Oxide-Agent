@@ -54,7 +54,7 @@ def mock_db_functions(self, mocker):
     pass
 
 @pytest.fixture(autouse=True)
-def mock_api_clients(self, mocker):
+def mock_api_clients(mocker):
     """Фикстура для мокинга внешних API клиентов."""
     # Мокаем Groq
     mock_groq_chat_create = AsyncMock()
