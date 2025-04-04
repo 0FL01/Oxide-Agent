@@ -2,7 +2,6 @@ google-generativeai
 python-telegram-bot
 groq
 python-dotenv
-openai
 watchdog
 mistralai
 pandas

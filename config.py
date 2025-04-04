@@ -2,10 +2,7 @@ import os
 from groq import AsyncGroq
 from dotenv import load_dotenv
 from database import is_user_allowed, add_allowed_user, remove_allowed_user, UserRole
-from utils import process_file
-from openai import OpenAI
 from mistralai import Mistral
-import pandas as pd
 from typing import Union
 import logging
 import google.generativeai as genai
