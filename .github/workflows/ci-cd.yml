@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ADMIN_ID: ${{ secrets.ADMIN_ID }}
+      GEMINI_API_KEY: dummy
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
