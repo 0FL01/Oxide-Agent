@@ -56,21 +56,31 @@ def mock_db_functions(self, mocker):
 @pytest.fixture(autouse=True)
 def mock_api_clients(mocker):
     """Фикстура для мокинга внешних API клиентов."""
-    # Мокаем Groq
+    # --- Мокаем Groq ---
     mock_groq_chat_create = AsyncMock()
     mock_groq_chat_create.return_value.choices = [MagicMock(message=MagicMock(content="Mocked Groq Response"))]
-    mocker.patch('handlers.groq_client.chat.completions.create', mock_groq_chat_create)
+    # Патчим в config, где groq_client инициализируется
+    mocker.patch('config.groq_client.chat.completions.create', mock_groq_chat_create, create=True) 
+
+    mock_groq_transcribe = AsyncMock()
+    mock_groq_transcribe.return_value.text = "Mocked transcription text"
+    # Патчим в config
+    mocker.patch('config.groq_client.audio.transcriptions.create', mock_groq_transcribe, create=True)
+    # Если нужно мокать сам клиент (например, для проверки if groq_client is None)
+    # mocker.patch('config.groq_client', new_callable=AsyncMock, create=True) # Используйте create=True, если groq_client может быть None
     
     mock_groq_transcribe = AsyncMock()
     mock_groq_transcribe.return_value.text = "Mocked transcription text"
     mocker.patch('handlers.groq_client.audio.transcriptions.create', mock_groq_transcribe)
     mocker.patch('handlers.groq_client', new_callable=AsyncMock) # Мокаем сам клиент, если нужно
 
-    # Мокаем Mistral
-    mock_mistral_complete = MagicMock() # НЕ async, судя по коду handlers.py
+    # --- Мокаем Mistral ---
+    mock_mistral_complete = MagicMock() 
     mock_mistral_complete.return_value.choices = [MagicMock(message=MagicMock(content="Mocked Mistral Response"))]
-    mocker.patch('handlers.mistral_client.chat.complete', mock_mistral_complete)
-    mocker.patch('handlers.mistral_client', MagicMock()) # Мокаем сам клиент
+    # Патчим в config
+    mocker.patch('config.mistral_client.chat.complete', mock_mistral_complete, create=True)
+    # Если нужно мокать сам клиент
+    # mocker.patch('config.mistral_client', new_callable=MagicMock, create=True)
 
     # Мокаем Gemini
     mock_gemini_generate = MagicMock() # НЕ async, судя по коду handlers.py
@@ -84,9 +94,11 @@ def mock_api_clients(mocker):
     # Мокаем скачивание файлов
     mock_download = AsyncMock(return_value=b'fake_file_content')
     mocker.patch('telegram.File.download_as_bytearray', mock_download)
-    mocker.patch('telegram.Voice.get_file', AsyncMock(return_value=MagicMock(download_as_bytearray=mock_download)))
-    mocker.patch('telegram.Video.get_file', AsyncMock(return_value=MagicMock(download_as_bytearray=mock_download)))
-
+    # Улучшенный мок для get_file, чтобы он возвращал мок файла с моком скачивания
+    mock_file_instance = MagicMock()
+    mock_file_instance.download_as_bytearray = mock_download
+    mocker.patch('telegram.Voice.get_file', AsyncMock(return_value=mock_file_instance))
+    mocker.patch('telegram.Video.get_file', AsyncMock(return_value=mock_file_instance))
     # Мокаем os функции для временных файлов
     mocker.patch('os.path.exists', return_value=True)
     mocker.patch('os.remove')
