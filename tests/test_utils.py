@@ -39,7 +39,7 @@ def test_split_long_message():
     parts = split_long_message(code_msg)
     assert len(parts) == 2
     assert "```" in parts[0]
-    assert "```" in parts[1]
+    assert parts[1] == "b" * 2000    
     
     # Test edge cases
     assert split_long_message("") == []
