@@ -1,5 +1,3 @@
---- START OF FILE test_handlers.py ---
-
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch, mock_open
