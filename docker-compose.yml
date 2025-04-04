@@ -9,4 +9,3 @@ services:
     volumes:
       - ./.env:/app/.env:ro
       - ./logs:/app/logs
-
