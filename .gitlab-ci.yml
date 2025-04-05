@@ -4,8 +4,6 @@ variables:
   # Переменные DOCKER_HOST и DOCKER_TLS_CERTDIR необходимы для Docker-in-Docker
   DOCKER_HOST: tcp://docker:2376
   DOCKER_TLS_CERTDIR: "/certs"
-  # Отключаем проверку TLS для сервиса dind (менее безопасно, но проще для старта)
-  # Для production рекомендуется настроить TLS верификацию
   DOCKER_TLS_VERIFY: ""
   DOCKER_DRIVER: overlay2
 
@@ -66,10 +64,9 @@ build:
     # Используем предопределенную переменную GitLab CI для короткого SHA коммита
     - export SHA_SHORT=$CI_COMMIT_SHORT_SHA
     - echo "Building image: ${DOCKER_IMAGE}:${SHA_SHORT}"
-    - docker build --pull -t "${DOCKER_IMAGE}:${SHA_SHORT}" .
-    # Добавляем метки к образу
-    - docker build --label "org.opencontainers.image.source=${CI_REPOSITORY_URL}" --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" -t "${DOCKER_IMAGE}:${SHA_SHORT}" .
-    # Пушим образ только если это не мерж-реквест (т.е., пуш в main или тег)
+    # Объединенная команда сборки с метками
+    - docker build --pull --label "org.opencontainers.image.source=${CI_REPOSITORY_URL}" --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" -t "${DOCKER_IMAGE}:${SHA_SHORT}" .
+    # Пушим образ только если это не мерж-реквест (т.е., пуш в testing или тег)
     - |
       if [ "$CI_PIPELINE_SOURCE" != "merge_request_event" ]; then
         echo "Pushing image: ${DOCKER_IMAGE}:${SHA_SHORT}"
