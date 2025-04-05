@@ -1,14 +1,23 @@
+.push_rules: &push_rules
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_BRANCH == 'testing'
+    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_TAG =~ /^v.*/
+
 variables:
   DOCKER_IMAGE: 0fl01/another-chat-tg
   DOCKER_HOST: tcp://docker:2376
   DOCKER_TLS_CERTDIR: "/certs"
   DOCKER_TLS_VERIFY: ""
   DOCKER_DRIVER: overlay2
+  SHA_SHORT: $CI_COMMIT_SHORT_SHA
 
 stages:
   - test
   - build
   - deploy
+
+default:
+  interruptible: true
 
 workflow:
   rules:
@@ -19,9 +28,8 @@ workflow:
 test:
   stage: test
   image: python:3.10-slim
-  variables:
-    ADMIN_ID: $ADMIN_ID
   script:
+    - set -e
     - python -m pip install --upgrade pip
     - pip install "pytest>=7.0.0" "pytest-asyncio>=0.18.0" "pytest-mock>=3.7.0" "psycopg2-binary>=2.9.10"
     - |
@@ -36,29 +44,28 @@ build:
   stage: build
   image: docker:25.0
   services:
-    - docker:25.0-dind
+    - name: docker:25.0-dind
+      alias: docker
   needs: [test]
   variables:
     GIT_STRATEGY: clone
     GIT_CHECKOUT: "true"
   before_script:
+    - set -e
     - until docker info; do sleep 1; done
     - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
   script:
-    - export SHA_SHORT=$CI_COMMIT_SHORT_SHA
+    - set -e
     - echo "Building image: ${DOCKER_IMAGE}:${SHA_SHORT}"
     - docker build --pull --label "org.opencontainers.image.source=${CI_REPOSITORY_URL}" --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" -t "${DOCKER_IMAGE}:${SHA_SHORT}" .
-    - >
-      if [ "$CI_PIPELINE_SOURCE" != "merge_request_event" ]; then
-        echo "Pushing image: ${DOCKER_IMAGE}:${SHA_SHORT}";
-        docker push "${DOCKER_IMAGE}:${SHA_SHORT}";
-      else
-        echo "Skipping push for merge request.";
+    - |
+      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
+        echo "Skipping push for merge request."
+        exit 0
       fi
-
-  rules:
-    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_BRANCH == 'testing'
-    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_TAG =~ /^v.*/
+    - echo "Pushing image: ${DOCKER_IMAGE}:${SHA_SHORT}"
+    - docker push "${DOCKER_IMAGE}:${SHA_SHORT}"
+  <<: *push_rules
 
 deploy:
   stage: deploy
@@ -67,6 +74,7 @@ deploy:
   environment:
     name: dev
   before_script:
+    - set -e
     - apk add --no-cache openssh-client bash
     - mkdir -p ~/.ssh
     - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
@@ -75,11 +83,9 @@ deploy:
     - chmod 644 ~/.ssh/known_hosts
     - chmod +x ./deploy.sh
   script:
-    - export SHA_SHORT=$CI_COMMIT_SHORT_SHA
+    - set -e
     - export SSH_PORT SSH_USERNAME SSH_HOST SERVICE_DIR DOCKER_IMAGE
     - export GROQ_API_KEY TELEGRAM_TOKEN MISTRAL_API_KEY GEMINI_API_KEY ADMIN_ID SYSTEM_MESSAGE
     - export POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
     - ./deploy.sh
-  rules:
-    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_BRANCH == 'testing'
-    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_TAG =~ /^v.*/
+  <<: *push_rules
