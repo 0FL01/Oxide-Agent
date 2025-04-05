@@ -4,7 +4,7 @@ import pytest
 import asyncio
 from unittest.mock import patch, Mock 
 
-os.environ["ADMIN_ID"] = "1"
+os.environ["ADMIN_ID"] = "148349384"
 os.environ["TELEGRAM_TOKEN"] = "dummy"
 os.environ["GROQ_API_KEY"] = "dummy"
 os.environ["OPENROUTER_API_KEY"] = "dummy"
