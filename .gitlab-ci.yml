@@ -54,17 +54,9 @@ build:
     - set -e
     - until docker info; do sleep 1; done
     - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+    - chmod +x ./ci_build.sh
   script:
-    - set -e
-    - echo "Building image: ${DOCKER_IMAGE}:${SHA_SHORT}"
-    - docker build --pull --label "org.opencontainers.image.source=${CI_REPOSITORY_URL}" --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" -t "${DOCKER_IMAGE}:${SHA_SHORT}" .
-    - |
-      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
-        echo "Skipping push for merge request."
-        exit 0
-      fi
-    - echo "Pushing image: ${DOCKER_IMAGE}:${SHA_SHORT}"
-    - docker push "${DOCKER_IMAGE}:${SHA_SHORT}"
+    - ./ci_build.sh
   <<: *push_rules
 
 deploy:
