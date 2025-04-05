@@ -1,0 +1,195 @@
+# Глобальные переменные, доступные во всех заданиях
+variables:
+  DOCKER_IMAGE: 0fl01/another-chat-tg
+  # Переменные DOCKER_HOST и DOCKER_TLS_CERTDIR необходимы для Docker-in-Docker
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_CERTDIR: "/certs"
+  # Отключаем проверку TLS для сервиса dind (менее безопасно, но проще для старта)
+  # Для production рекомендуется настроить TLS верификацию
+  DOCKER_TLS_VERIFY: ""
+  DOCKER_DRIVER: overlay2
+
+# Определение стадий выполнения пайплайна
+stages:
+  - test
+  - build
+  - deploy
+
+# Правила для всего пайплайна: запускать для веток testing, тегов v* и мерж-реквестов в main
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event' && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'main'
+    - if: $CI_COMMIT_BRANCH == 'testing' && $CI_PIPELINE_SOURCE == 'push'
+    - if: $CI_COMMIT_TAG =~ /^v.*/ && $CI_PIPELINE_SOURCE == 'push'
+
+# Задание для запуска тестов
+test:
+  stage: test
+  # Используем официальный образ Python 3.10
+  image: python:3.10-slim
+  # Переменные окружения для тестов (ADMIN_ID и GEMINI_API_KEY должны быть заданы в GitLab CI/CD Variables)
+  variables:
+    ADMIN_ID: $ADMIN_ID
+  script:
+    - python -m pip install --upgrade pip
+    - pip install "pytest>=7.0.0" "pytest-asyncio>=0.18.0" "pytest-mock>=3.7.0" "psycopg2-binary>=2.9.10"
+    # Проверяем наличие requirements.txt перед установкой
+    - |
+      if [ -f requirements.txt ]; then
+        pip install -r requirements.txt
+      fi
+    - python -m pytest tests/ --maxfail=1 --disable-warnings
+  # Это задание выполняется всегда, когда запускается пайплайн (согласно workflow:rules)
+  rules:
+    - when: always # Упрощенное правило, т.к. workflow уже фильтрует
+
+# Задание для сборки Docker-образа
+build:
+  stage: build
+  # Используем официальный образ Docker для сборки
+  image: docker:25.0
+  # Подключаем сервис Docker-in-Docker (dind)
+  services:
+    - docker:25.0-dind
+  # Указываем, что задание зависит от успешного выполнения задания test
+  needs: [test]
+  # Переменные для Docker Hub (DOCKERHUB_USERNAME и DOCKERHUB_TOKEN должны быть заданы в GitLab CI/CD Variables)
+  variables:
+    GIT_STRATEGY: clone # Убедимся, что репозиторий клонируется
+    GIT_CHECKOUT: "true"
+  before_script:
+    # Ожидание запуска Docker-сервиса
+    - until docker info; do sleep 1; done
+    # Логин в Docker Hub с использованием переменных GitLab CI/CD
+    - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+  script:
+    # Используем предопределенную переменную GitLab CI для короткого SHA коммита
+    - export SHA_SHORT=$CI_COMMIT_SHORT_SHA
+    - echo "Building image: ${DOCKER_IMAGE}:${SHA_SHORT}"
+    - docker build --pull -t "${DOCKER_IMAGE}:${SHA_SHORT}" .
+    # Добавляем метки к образу
+    - docker build --label "org.opencontainers.image.source=${CI_REPOSITORY_URL}" --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" -t "${DOCKER_IMAGE}:${SHA_SHORT}" .
+    # Пушим образ только если это не мерж-реквест (т.е., пуш в main или тег)
+    - |
+      if [ "$CI_PIPELINE_SOURCE" != "merge_request_event" ]; then
+        echo "Pushing image: ${DOCKER_IMAGE}:${SHA_SHORT}"
+        docker push "${DOCKER_IMAGE}:${SHA_SHORT}"
+      else
+        echo "Skipping push for merge request."
+      fi
+  # Запускаем сборку только для пушей в testing и тегов v*
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_BRANCH == 'testing'
+    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_TAG =~ /^v.*/
+
+# Задание для деплоя на сервер
+deploy:
+  stage: deploy
+  # Используем базовый образ Alpine, установим нужные утилиты
+  image: alpine:latest
+  # Указываем зависимость от задания build
+  needs: [build]
+  # Определяем окружение для деплоя
+  environment:
+    name: dev
+    # Можно добавить URL, если он есть
+    # url: https://your-dev-url.com
+  before_script:
+    # Устанавливаем SSH-клиент и docker-compose
+    - apk add --no-cache openssh-client docker-compose
+    # Настройка SSH-ключа из переменной GitLab CI/CD (SSH_PRIVATE_KEY должна быть типа File)
+    - mkdir -p ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    # Добавляем ключ в известный хост, чтобы избежать интерактивного запроса
+    # Лучше заранее добавить ключ хоста в известные или использовать ssh-keyscan
+    - ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    # Используем короткий SHA коммита из предопределенной переменной
+    - export SHA_SHORT=$CI_COMMIT_SHORT_SHA
+    # Формируем команды для выполнения на удаленном сервере
+    # Переменные $SSH_USER, $SSH_HOST, $SSH_PORT, $SERVICE_DIR и все секреты для .env
+    # должны быть заданы в GitLab CI/CD Variables
+    - |
+      ssh -p "$SSH_PORT" "$SSH_USERNAME@$SSH_HOST" "
+        echo '--- Starting deployment for commit ${SHA_SHORT} ---'
+
+        # Проверка наличия SHA
+        if [ -z \"${SHA_SHORT}\" ]; then
+          echo 'Error: SHA_SHORT is empty. Cannot proceed.'
+          exit 1
+        fi
+        echo 'Using Short SHA: ${SHA_SHORT}'
+
+        # Создание директории сервиса
+        mkdir -p ${SERVICE_DIR}
+        cd ${SERVICE_DIR}
+        echo \"Working directory: \$(pwd)\"
+
+        # Создание .env файла (переменные берутся из окружения GitLab CI Runner и передаются на сервер)
+        echo 'Creating .env file...'
+        cat << 'EOF_ENV' > .env
+      GROQ_API_KEY=${GROQ_API_KEY}
+      TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      MISTRAL_API_KEY=${MISTRAL_API_KEY}
+      GEMINI_API_KEY=${GEMINI_API_KEY}
+      ADMIN_ID=${ADMIN_ID}
+      SYSTEM_MESSAGE=${SYSTEM_MESSAGE}
+      POSTGRES_DB=${POSTGRES_DB}
+      POSTGRES_USER=${POSTGRES_USER}
+      POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      POSTGRES_HOST=${POSTGRES_HOST}
+      POSTGRES_PORT=${POSTGRES_PORT}
+      EOF_ENV
+        echo '.env file created.'
+
+        # Создание docker-compose.yml файла
+        echo 'Creating docker-compose.yml file...'
+        cat << EOF_COMPOSE > docker-compose.yml
+      services:
+        another_chat_tg:
+          image: ${DOCKER_IMAGE}:${SHA_SHORT}
+          container_name: another_chat_tg
+          network_mode: \"host\"
+          environment:
+            - POSTGRES_HOST=127.0.0.1 # Убедитесь, что это правильно для вашего случая
+          restart: unless-stopped
+          volumes:
+            - ./.env:/app/.env:ro
+      EOF_COMPOSE
+        echo 'docker-compose.yml file created.'
+
+        echo 'Using Docker Image: ${DOCKER_IMAGE}:${SHA_SHORT}'
+
+        # Пулл образа
+        echo 'Pulling Docker image...'
+        docker compose pull
+        echo 'Image pulled.'
+
+        # Остановка и запуск
+        echo 'Stopping existing container (if any)...'
+        docker compose down || true # Игнорируем ошибку, если контейнера нет
+        echo 'Starting services with docker compose up...'
+        docker compose up -d
+        echo 'Services started.'
+
+        # Статус контейнеров
+        echo 'Current container status:'
+        docker compose ps
+
+        # Очистка старых образов (осторожно, удаляет все образы этого репозитория, кроме текущего)
+        echo 'Pruning unused Docker images...'
+        docker images --format \"{{.Repository}}:{{.Tag}} {{.ID}}\" | \
+        grep \"^${DOCKER_IMAGE}\" | \
+        grep -v \":${SHA_SHORT}\" | \
+        awk '{ print \$2 }' | \
+        xargs -r docker rmi -f || echo 'No old images to prune or error during pruning.'
+
+        echo 'Docker images pruned.'
+        echo '--- Deployment finished ---'
+      "
+  # Запускаем деплой только для пушей в testing и тегов v*
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_BRANCH == 'testing'
+    - if: $CI_PIPELINE_SOURCE == 'push' && $CI_COMMIT_TAG =~ /^v.*/
