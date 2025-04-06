@@ -22,8 +22,6 @@ ssh -p "$SSH_PORT" "$SSH_USERNAME@$SSH_HOST" "
   echo '--- Начало удаленного развертывания ---'
 
   # Передаем нужные переменные внутрь удаленной сессии явно
-  # Обратите внимание на экранирование $ для переменных, которые должны раскрыться локально
-  # и отсутствие экранирования для тех, что должны раскрыться удаленно (но мы передаем их значения)
   export GROQ_API_KEY='${GROQ_API_KEY}'
   export TELEGRAM_TOKEN='${TELEGRAM_TOKEN}'
   export MISTRAL_API_KEY='${MISTRAL_API_KEY}'
@@ -65,9 +63,8 @@ services:
   another_chat_tg:
     image: \${DOCKER_IMAGE}:\${CI_COMMIT_SHORT_SHA}
     container_name: another_chat_tg
-    network_mode: \"host\"
-    environment:
-      - POSTGRES_HOST=127.0.0.1
+    network_mode: \"bridge\"
+    # УБРАНА СЕКЦИЯ ENVIRONMENT, ЧТОБЫ НЕ ПЕРЕОПРЕДЕЛЯТЬ ПЕРЕМЕННЫЕ ИЗ .ENV
     restart: unless-stopped
     volumes:
       - ./.env:/app/.env:ro
