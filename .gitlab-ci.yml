@@ -5,9 +5,6 @@
 
 variables:
   DOCKER_IMAGE: 0fl01/another-chat-tg
-  DOCKER_HOST: tcp://docker:2376
-  DOCKER_TLS_CERTDIR: "/certs"
-  DOCKER_TLS_VERIFY: ""
   DOCKER_DRIVER: overlay2
   SHA_SHORT: $CI_COMMIT_SHORT_SHA
 
@@ -81,4 +78,3 @@ deploy:
     - export POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
     - ./deploy.sh
   <<: *push_rules
-  
