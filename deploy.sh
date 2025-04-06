@@ -7,7 +7,7 @@
       echo "Ошибка: Не установлена одна или несколько обязательных переменных окружения (SSH_PORT, SSH_USERNAME, SSH_HOST, SHA_SHORT, SERVICE_DIR, DOCKER_IMAGE)."
       exit 1
     fi
-    if [ -z "$GROQ_API_KEY" ] || [ -z "$TELEGRAM_TOKEN" ] || [ -z "$MISTRAL_API_KEY" ] || [ -z "$GEMINI_API_KEY" ] || [ -z "$ADMIN_ID" ] || [ -z "$SYSTEM_MESSAGE" ] || [ -z "$POSTGRES_DB" ] || [ -z "$POSTGRES_USER" ] || [ -z "$POSTGRES_PASSWORD" ] || [ -z "$POSTGRES_HOST" ] || [ -z "$POSTGRES_PORT" ]; then
+    if [ -z "$GROQ_API_KEY" ] || [ -z "$TELEGRAM_TOKEN" ] || [ -z "$MISTRAL_API_KEY" ] || [ -z "$GEMINI_API_KEY" ] || [ -z "$ADMIN_ID" ] || [ -z "$POSTGRES_DB" ] || [ -z "$POSTGRES_USER" ] || [ -z "$POSTGRES_PASSWORD" ] || [ -z "$POSTGRES_HOST" ] || [ -z "$POSTGRES_PORT" ]; then
        echo "Ошибка: Не установлена одна или несколько переменных для .env файла."
        exit 1
     fi
@@ -30,7 +30,6 @@ TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
 MISTRAL_API_KEY=${MISTRAL_API_KEY}
 GEMINI_API_KEY=${GEMINI_API_KEY}
 ADMIN_ID=${ADMIN_ID}
-SYSTEM_MESSAGE=${SYSTEM_MESSAGE}
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
