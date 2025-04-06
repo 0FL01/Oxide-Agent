@@ -89,4 +89,5 @@ deploy:
     - export GROQ_API_KEY TELEGRAM_TOKEN MISTRAL_API_KEY GEMINI_API_KEY ADMIN_ID SYSTEM_MESSAGE
     - export POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
     - ./deploy.sh
-  <<: *push_rules
+  rules:
+      - when: manual
