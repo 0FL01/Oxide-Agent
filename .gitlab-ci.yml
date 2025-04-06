@@ -77,9 +77,9 @@ deploy:
     - set -e
     - apk add --no-cache openssh-client bash
     - mkdir -p ~/.ssh
-    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-    - echo "" >> ~/.ssh/id_rsa
+    - printf "%s" "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
     - chmod 600 ~/.ssh/id_rsa
+    - ssh-keygen -l -f ~/.ssh/id_rsa || echo "Ошибка проверки ключа"
     - ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
     - chmod +x ./deploy.sh
