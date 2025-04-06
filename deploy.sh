@@ -16,6 +16,7 @@
     echo "Подключение к $SSH_USERNAME@$SSH_HOST:$SSH_PORT"
     echo "Развертывание образа ${DOCKER_IMAGE}:${SHA_SHORT} в ${SERVICE_DIR}"
 
+
     ssh -p "$SSH_PORT" "$SSH_USERNAME@$SSH_HOST" "
       set -e
       echo '--- Начало удаленного развертывания ---'
@@ -23,8 +24,8 @@
       echo 'Создание директории сервиса: ${SERVICE_DIR}'
       mkdir -p ${SERVICE_DIR} && cd ${SERVICE_DIR}
 
-      echo 'Создание файла .env'
-      cat << 'EOF_ENV' > .env
+  echo 'Создание файла .env'
+  cat << 'EOF_ENV' > .env
 GROQ_API_KEY=${GROQ_API_KEY}
 TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
 MISTRAL_API_KEY=${MISTRAL_API_KEY}
@@ -36,7 +37,8 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 POSTGRES_HOST=${POSTGRES_HOST}
 POSTGRES_PORT=${POSTGRES_PORT}
 EOF_ENV
-      echo 'Файл .env создан'
+  echo 'Файл .env создан'
+"
 
       echo 'Создание файла docker-compose.yml'
       cat << EOF_COMPOSE > docker-compose.yml
