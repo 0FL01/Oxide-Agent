@@ -218,7 +218,7 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
 
     # Проверяем скачивание файла (через мок get_file в фикстуре)
     mock_voice.get_file.assert_called_once()
-    handlers.audio_to_text.download_as_bytearray.assert_called_once() # Проверяем вызов скачивания
+    telegram.File.download_as_bytearray.assert_called_once()
 
     # Проверяем вызов audio_to_text
     expected_filename = f"tempvoice_{mock_update.effective_user.id}.ogg"
@@ -255,7 +255,7 @@ async def test_handle_video_message(mock_update, mock_context, mocker):
 
     # Проверяем скачивание файла
     mock_video.get_file.assert_called_once()
-    handlers.audio_to_text.download_as_bytearray.assert_called_once()
+    telegram.File.download_as_bytearray.assert_called_once()
 
     # Проверяем вызов audio_to_text
     expected_filename = f"tempvideo_{mock_update.effective_user.id}.mp4"
