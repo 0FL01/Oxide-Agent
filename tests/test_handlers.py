@@ -212,15 +212,19 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
     # Мок для process_message, чтобы проверить, что он вызывается с результатом транскрипции
     mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
     # Получаем мок audio_to_text из фикстуры
-    mock_audio_to_text = handlers.audio_to_text
+    mock_audio_to_text = handlers.audio_to_text # Этот мок остается из фикстуры
+
+    # Мокируем download_as_bytearray прямо здесь
+    mock_download_method = mocker.patch('telegram.File.download_as_bytearray', new_callable=AsyncMock, return_value=b'fake_file_content')
 
     await handle_voice(mock_update, mock_context)
 
-    # Проверяем скачивание файла (через мок get_file в фикстуре)
+    # Проверяем вызов get_file (мок из фикстуры)
     mock_voice.get_file.assert_called_once()
-    telegram.File.download_as_bytearray.assert_called_once()
+    # Проверяем вызов download_as_bytearray (мок, созданный в этом тесте)
+    mock_download_method.assert_called_once()
 
-    # Проверяем вызов audio_to_text
+    # Проверяем вызов audio_to_text (мок из фикстуры)
     expected_filename = f"tempvoice_{mock_update.effective_user.id}.ogg"
     mock_audio_to_text.assert_called_once_with(expected_filename, 'audio/ogg')
 
@@ -232,10 +236,10 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
         f"Распознано: \"Mocked transcription text\"\n\nОбрабатываю запрос..."
     )
 
-    # Проверяем вызов process_message с результатом транскрипции
+    # Проверяем вызов process_message (мок, созданный в этом тесте)
     mock_process_message.assert_called_once_with(mock_update, mock_context, "Mocked transcription text")
 
-    # Проверяем удаление временного файла
+    # Проверяем удаление временного файла (мок из фикстуры)
     handlers.os.remove.assert_called_once_with(expected_filename)
 
 # --- Тесты Обработки Видео (теперь с Gemini) ---
@@ -249,15 +253,19 @@ async def test_handle_video_message(mock_update, mock_context, mocker):
     # Мок для process_message
     mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
     # Получаем мок audio_to_text из фикстуры
-    mock_audio_to_text = handlers.audio_to_text
+    mock_audio_to_text = handlers.audio_to_text # Этот мок остается из фикстуры
+
+    # Мокируем download_as_bytearray прямо здесь
+    mock_download_method = mocker.patch('telegram.File.download_as_bytearray', new_callable=AsyncMock, return_value=b'fake_file_content')
 
     await handle_video(mock_update, mock_context)
 
-    # Проверяем скачивание файла
+    # Проверяем вызов get_file (мок из фикстуры)
     mock_video.get_file.assert_called_once()
-    telegram.File.download_as_bytearray.assert_called_once()
+    # Проверяем вызов download_as_bytearray (мок, созданный в этом тесте)
+    mock_download_method.assert_called_once()
 
-    # Проверяем вызов audio_to_text
+    # Проверяем вызов audio_to_text (мок из фикстуры)
     expected_filename = f"tempvideo_{mock_update.effective_user.id}.mp4"
     mock_audio_to_text.assert_called_once_with(expected_filename, 'video/mp4')
 
@@ -269,10 +277,10 @@ async def test_handle_video_message(mock_update, mock_context, mocker):
         f"Распознано из видео: \"Mocked transcription text\"\n\nОбрабатываю запрос..."
     )
 
-    # Проверяем вызов process_message
+    # Проверяем вызов process_message (мок, созданный в этом тесте)
     mock_process_message.assert_called_once_with(mock_update, mock_context, "Mocked transcription text")
 
-    # Проверяем удаление временного файла
+    # Проверяем удаление временного файла (мок из фикстуры)
     handlers.os.remove.assert_called_once_with(expected_filename)
 
 # --- Тесты Очистки Контекста ---
