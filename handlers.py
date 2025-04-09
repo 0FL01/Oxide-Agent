@@ -11,6 +11,7 @@ import os
 import re
 import asyncio
 from dotenv import load_dotenv
+import google.generativeai as genai # Добавлен импорт genai
 
 load_dotenv()
 
@@ -24,6 +25,119 @@ DEFAULT_SYSTEM_MESSAGE = """Ты - полезный ассистент с иск
 SYSTEM_MESSAGE = os.getenv('SYSTEM_MESSAGE', DEFAULT_SYSTEM_MESSAGE)
 
 logger = logging.getLogger(__name__)
+
+# --- Новая функция для транскрипции через Gemini ---
+async def audio_to_text(file_path: str, mime_type: str) -> str:
+    """Транскрибирует аудио/видео файл с помощью Google Gemini API."""
+    if not gemini_client:
+        raise Exception("Клиент Google Gemini не инициализирован (проверьте GEMINI_API_KEY).")
+
+    # Используем модель gemini-2.0-flash для транскрипции
+    # Модель должна быть способна обрабатывать аудио/видео
+    # Убедимся, что 'gemini-2.0-flash' определена в MODELS и имеет provider 'gemini'
+    transcription_model_name = "Gemini 2.0 Flash" # Или другая подходящая Gemini модель
+    if transcription_model_name not in MODELS or MODELS[transcription_model_name]['provider'] != 'gemini':
+         raise Exception(f"Модель '{transcription_model_name}' не найдена или не является моделью Gemini в конфигурации.")
+
+    model_id = MODELS[transcription_model_name]['id']
+    gemini_model_instance = gemini_client.GenerativeModel(model_id)
+    logger.info(f"Используется модель Gemini '{model_id}' для транскрипции.")
+
+
+    uploaded_file = None
+    try:
+        logger.info(f"Загрузка файла {file_path} (MIME: {mime_type}) в Google File API...")
+        # Используем asyncio.to_thread для синхронной функции upload_file
+        uploaded_file = await asyncio.to_thread(
+            lambda: genai.upload_file(path=file_path, mime_type=mime_type)
+        )
+        # Небольшая проверка, что файл загрузился
+        if not uploaded_file or not hasattr(uploaded_file, 'name') or not hasattr(uploaded_file, 'uri'):
+             logger.error(f"Не удалось получить корректный объект файла после загрузки {file_path}.")
+             raise Exception("Ошибка Google File API: Не удалось загрузить файл или получить его данные.")
+
+        logger.info(f"Файл успешно загружен: {uploaded_file.name}, URI: {uploaded_file.uri}")
+
+        # Небольшая задержка перед использованием файла (иногда API требует времени на обработку)
+        await asyncio.sleep(2)
+
+        logger.info(f"Запрос транскрипции для файла {uploaded_file.name} через Gemini API...")
+        # Пытаемся запросить транскрипцию на русском, но помним об ограничениях
+        prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
+
+        # Используем асинхронный вызов generate_content_async
+        response = await gemini_model_instance.generate_content_async(
+            contents=[prompt, uploaded_file], # Передаем промпт и загруженный файл
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.4
+            ),
+            safety_settings={'HARASSMENT':'block_none',
+                             'HATE_SPEECH':'block_none',
+                             'SEXUALLY_EXPLICIT':'block_none',}
+        )
+
+        logger.info(f"Получен ответ от Gemini API для транскрипции файла {uploaded_file.name}.")
+
+        # Обработка ответа
+        if response and hasattr(response, 'text') and response.text:
+            transcript_text = response.text.strip()
+            logger.info(f"Транскрипция для {uploaded_file.name} получена (длина: {len(transcript_text)}).")
+            # Дополнительная проверка: если Gemini вернул сообщение об ошибке или нерелевантный текст
+            if "не могу обработать" in transcript_text.lower() or "не содержит речи" in transcript_text.lower() or "не удалось извлечь аудио" in transcript_text.lower():
+                 logger.warning(f"Gemini вернул сообщение о невозможности транскрипции для {uploaded_file.name}: {transcript_text}")
+                 return f"(Gemini): {transcript_text}" # Возвращаем сообщение Gemini
+
+            return transcript_text
+        # Проверка на блокировку из-за безопасности или других причин
+        elif response and hasattr(response, 'prompt_feedback') and response.prompt_feedback and hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
+             block_reason = response.prompt_feedback.block_reason
+             block_reason_message = response.prompt_feedback.block_reason_message if hasattr(response.prompt_feedback, 'block_reason_message') else 'Нет деталей'
+             logger.warning(f"Транскрипция заблокирована Gemini по причине: {block_reason}. Детали: {block_reason_message}")
+             raise Exception(f"Ошибка Gemini API: Транскрипция заблокирована (причина: {block_reason}).")
+        # Попытка извлечь текст из candidates, если основной текст пуст
+        elif response and hasattr(response, 'candidates') and response.candidates:
+             try:
+                 candidate_text = response.candidates[0].content.parts[0].text
+                 if candidate_text:
+                     logger.warning(f"Основной текст ответа Gemini пуст, но найден текст в response.candidates для {uploaded_file.name}. Используется он.")
+                     return candidate_text.strip()
+                 else:
+                     raise AttributeError("Текст в candidates пуст")
+             except (AttributeError, IndexError, TypeError) as e:
+                 logger.warning(f"Не удалось извлечь текст транскрипции из response.candidates для {uploaded_file.name}. Ошибка: {e}. Ответ: {response}")
+                 raise Exception("Ошибка Gemini API: Не удалось получить транскрипцию (пустой или некорректный ответ).")
+        else:
+             logger.warning(f"Gemini API вернул пустой или неожиданный ответ для транскрипции файла {uploaded_file.name}: {response}")
+             raise Exception("Ошибка Gemini API: Не удалось получить транскрипцию (пустой или неожиданный ответ).")
+
+    except Exception as e:
+        logger.error(f"Ошибка при транскрипции файла {file_path} через Gemini: {e}", exc_info=True)
+        error_str = str(e)
+        # Добавляем специфичные ошибки Gemini, если нужно
+        if "API key not valid" in error_str:
+            raise Exception("Ошибка Gemini API: Неверный или неактивный ключ API.")
+        elif "quota" in error_str.lower() or "resource_exhausted" in error_str.lower():
+            raise Exception("Ошибка Gemini API: Превышена квота использования.")
+        elif "File processing failed" in error_str or "Unable to process the file" in error_str:
+             raise Exception("Ошибка Gemini API: Не удалось обработать загруженный файл (возможно, неподдерживаемый формат или поврежден).")
+        elif "Deadline exceeded" in error_str or "504" in error_str:
+             raise Exception("Ошибка Gemini API: Превышено время ожидания ответа от сервера.")
+        # Общая ошибка
+        raise Exception(f"Ошибка Gemini API при транскрипции: {error_str}")
+
+    finally:
+        # Удаляем загруженный файл из Google File API в любом случае
+        if uploaded_file and hasattr(uploaded_file, 'name'):
+            try:
+                logger.info(f"Удаление файла {uploaded_file.name} из Google File API...")
+                # Используем asyncio.to_thread для синхронной функции delete
+                await asyncio.to_thread(lambda: genai.delete_file(name=uploaded_file.name))
+                logger.info(f"Файл {uploaded_file.name} успешно удален.")
+            except Exception as delete_e:
+                # Логируем ошибку удаления, но не прерываем выполнение основной функции из-за этого
+                logger.error(f"Не удалось удалить файл {uploaded_file.name} из Google File API: {delete_e}")
+# --- Конец новой функции ---
+
 
 def get_main_keyboard():
     keyboard = [
@@ -264,23 +378,37 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 model_id,
                 system_instruction=system_message
             )
+            # Конвертируем историю для Gemini API
             converted_messages = []
             for message in chat_history_db:
-                 converted_messages.append({
-                     "role": "user" if message["role"] == "user" else "model",
-                     "parts": [message["content"]]
-                 })
+                 # Пропускаем системное сообщение, так как оно передается отдельно
+                 if message["role"] != "system":
+                     converted_messages.append({
+                         "role": "user" if message["role"] == "user" else "model",
+                         "parts": [message["content"]]
+                     })
+            # Добавляем текущее сообщение пользователя
             converted_messages.append({"role": "user", "parts": [full_message]})
 
             logger.info(f"Sending {len(converted_messages)} converted messages (plus system prompt) to Gemini for user {user_id}.")
-            response = model.generate_content(
-                converted_messages, 
+            response = await model.generate_content_async( # Используем async версию
+                converted_messages,
                 generation_config=gemini_client.types.GenerationConfig(
                     max_output_tokens=max_tokens,
                     temperature=1,
-                )
+                ),
+                safety_settings={'HARASSMENT':'block_none',
+                                 'HATE_SPEECH':'block_none',
+                                 'SEXUALLY_EXPLICIT':'block_none'}
             )
-            bot_response = response.text
+            # Проверка на блокировку ответа
+            if not response.text and hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
+                block_reason = response.prompt_feedback.block_reason
+                logger.warning(f"Ответ Gemini заблокирован по причине: {block_reason}")
+                bot_response = f"_(Ответ заблокирован Gemini по причине: {block_reason})_"
+            else:
+                bot_response = response.text
+
             logger.info(f"Received response from Gemini for user {user_id}.")
 
         else:
@@ -302,7 +430,14 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 await update.message.reply_text(part, parse_mode=ParseMode.HTML)
             except BadRequest as e:
                 logger.error(f"BadRequest error sending part {i+1} to user {user_id}: {str(e)}. Sending raw text.")
-                await update.message.reply_text(part, parse_mode=None)
+                # Попытка отправить без форматирования
+                raw_part = re.sub('<[^<]+?>', '', part) # Удаляем HTML теги
+                try:
+                    await update.message.reply_text(raw_part, parse_mode=None)
+                except Exception as inner_e:
+                    logger.error(f"Failed to send raw text part {i+1} as well for user {user_id}: {inner_e}")
+                    await update.message.reply_text(f"Ошибка при отправке части ответа (попытка 2): {str(inner_e)}")
+
             except Exception as e:
                  logger.error(f"Unexpected error sending part {i+1} to user {user_id}: {str(e)}", exc_info=True)
                  await update.message.reply_text(f"Ошибка при отправке части ответа: {str(e)}")
@@ -322,33 +457,43 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Preparing to download voice to {temp_filename}.")
 
     try:
+        await update.message.chat.send_action(action=ChatAction.TYPING) # Показываем индикатор работы
         voice = await update.message.voice.get_file()
         voice_file = await voice.download_as_bytearray()
         with open(temp_filename, "wb") as f:
             f.write(voice_file)
-        logger.info(f"Voice message downloaded to {temp_filename}. Transcribing...")
+        logger.info(f"Voice message downloaded to {temp_filename}. Transcribing using Gemini...")
 
-        with open(temp_filename, "rb") as audio_file:
-            if groq_client is None:
-                raise ValueError("Groq client is not initialized for transcription.")
-            transcription = await groq_client.audio.transcriptions.create(
-                file=(temp_filename, audio_file.read()),
-                model="whisper-large-v3",
-                language="ru"
-            )
+        # --- Замена Groq Whisper на Gemini ---
+        recognized_text = await audio_to_text(temp_filename, 'audio/ogg')
+        # --- Конец замены ---
 
-        recognized_text = transcription.text
-        logger.info(f"Voice message from user {user_id} ({user_name}) transcribed: '{recognized_text}'")
-        logger.info(f"Processing transcribed text for user {user_id}.")
-        await process_message(update, context, recognized_text)
+        logger.info(f"Voice message from user {user_id} ({user_name}) transcribed by Gemini: '{recognized_text}'")
+
+        # Проверяем, не вернула ли Gemini сообщение об ошибке
+        if recognized_text.startswith("(Gemini):"):
+            logger.warning(f"Gemini returned a notice for user {user_id}: {recognized_text}")
+            await update.message.reply_text(f"Не удалось распознать речь: {recognized_text}")
+        elif not recognized_text:
+             logger.warning(f"Transcription result is empty for user {user_id}.")
+             await update.message.reply_text("Не удалось распознать речь (пустой результат).")
+        else:
+            logger.info(f"Processing transcribed text for user {user_id}.")
+            # Отправляем распознанный текст пользователю для подтверждения (опционально)
+            await update.message.reply_text(f"Распознано: \"{recognized_text}\"\n\nОбрабатываю запрос...")
+            await process_message(update, context, recognized_text)
 
     except Exception as e:
         logger.error(f"Error processing voice message for user {user_id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка при обработке голосового сообщения: {str(e)}")
     finally:
         if os.path.exists(temp_filename):
-            os.remove(temp_filename)
-            logger.info(f"Temporary voice file {temp_filename} removed for user {user_id}.")
+            try:
+                os.remove(temp_filename)
+                logger.info(f"Temporary voice file {temp_filename} removed for user {user_id}.")
+            except Exception as e:
+                logger.error(f"Error removing temporary file {temp_filename}: {e}")
+
 
 @check_auth
 @admin_required
@@ -366,7 +511,7 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {new_user_id} успешно добавлен с ролью {role.value}.")
     except (ValueError, IndexError):
         logger.warning(f"Admin {admin_user_id} provided invalid arguments for add_user: {context.args}")
-        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя и роль (ADMIN или USER).")
+        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя и роль (ADMIN или USER). Пример: /add_user 123456789 USER")
     except Exception as e:
         logger.error(f"Error in add_user command initiated by admin {admin_user_id}: {e}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка при добавлении пользователя: {str(e)}")
@@ -385,7 +530,7 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
     except (ValueError, IndexError):
         logger.warning(f"Admin {admin_user_id} provided invalid arguments for remove_user: {context.args}")
-        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя. Пример: /remove_user 123456789")
     except Exception as e:
         logger.error(f"Error in remove_user command initiated by admin {admin_user_id}: {e}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка при удалении пользователя: {str(e)}")
@@ -405,25 +550,32 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Preparing to download video to {temp_filename}.")
 
     try:
+        await update.message.chat.send_action(action=ChatAction.TYPING) # Показываем индикатор работы
         video = await update.message.video.get_file()
         video_bytes = await video.download_as_bytearray()
         with open(temp_filename, "wb") as f:
             f.write(video_bytes)
-        logger.info(f"Video message downloaded to {temp_filename}. Transcribing audio track...")
+        logger.info(f"Video message downloaded to {temp_filename}. Transcribing audio track using Gemini...")
 
-        with open(temp_filename, "rb") as video_file:
-            if groq_client is None:
-                 raise ValueError("Groq client is not initialized for transcription.")
-            transcription = await groq_client.audio.transcriptions.create(
-                file=(temp_filename, video_file.read()),
-                model="whisper-large-v3",
-                language="ru"
-            )
+        # --- Замена Groq Whisper на Gemini ---
+        # Указываем MIME-тип для видео
+        recognized_text = await audio_to_text(temp_filename, 'video/mp4')
+        # --- Конец замены ---
 
-        recognized_text = transcription.text
-        logger.info(f"Video message from user {user_id} ({user_name}) transcribed: '{recognized_text}'")
-        logger.info(f"Processing transcribed text from video for user {user_id}.")
-        await process_message(update, context, recognized_text)
+        logger.info(f"Video message from user {user_id} ({user_name}) transcribed by Gemini: '{recognized_text}'")
+
+        # Проверяем, не вернула ли Gemini сообщение об ошибке
+        if recognized_text.startswith("(Gemini):"):
+            logger.warning(f"Gemini returned a notice for user {user_id}: {recognized_text}")
+            await update.message.reply_text(f"Не удалось распознать речь из видео: {recognized_text}")
+        elif not recognized_text:
+             logger.warning(f"Video transcription result is empty for user {user_id}.")
+             await update.message.reply_text("Не удалось распознать речь из видео (пустой результат).")
+        else:
+            logger.info(f"Processing transcribed text from video for user {user_id}.")
+            # Отправляем распознанный текст пользователю для подтверждения (опционально)
+            await update.message.reply_text(f"Распознано из видео: \"{recognized_text}\"\n\nОбрабатываю запрос...")
+            await process_message(update, context, recognized_text)
 
     except Exception as e:
         logger.error(f"Error processing video message for user {user_id}: {str(e)}", exc_info=True)
@@ -431,9 +583,13 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     finally:
         if os.path.exists(temp_filename):
-            os.remove(temp_filename)
-            logger.info(f"Temporary video file {temp_filename} removed for user {user_id}.")
+            try:
+                os.remove(temp_filename)
+                logger.info(f"Temporary video file {temp_filename} removed for user {user_id}.")
+            except Exception as e:
+                logger.error(f"Error removing temporary file {temp_filename}: {e}")
 
+# Класс SensitiveDataFilter остается без изменений, так как он не затрагивается задачей
 class SensitiveDataFilter(logging.Filter):
     def __init__(self):
         super().__init__()
@@ -448,3 +604,22 @@ class SensitiveDataFilter(logging.Filter):
             (r"'host': '[^']*'", "'host': '[MASKED]'"),
             (r"'port': '[^']*'", "'port': '[MASKED]'")
         ]
+
+    def filter(self, record):
+        # Реализация фильтрации остается прежней
+        if hasattr(record, 'msg'):
+            if isinstance(record.msg, str):
+                original_msg = record.msg
+                for pattern, replacement in self.patterns:
+                    record.msg = re.sub(pattern, replacement, record.msg)
+
+        if hasattr(record, 'args'):
+            if record.args:
+                args_list = list(record.args)
+                for i, arg in enumerate(args_list):
+                    if isinstance(arg, str):
+                        original_arg = arg
+                        for pattern, replacement in self.patterns:
+                            args_list[i] = re.sub(pattern, replacement, args_list[i])
+                record.args = tuple(args_list)
+        return True
