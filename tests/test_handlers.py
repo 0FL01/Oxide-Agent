@@ -3,14 +3,14 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch, mock_open, call
 import os
 import sys
-import google.api_core.exceptions
+import google.api_core.exceptions # Добавлено для тестов audio_to_text
 
 # Добавляем путь к корневой директории проекта, если тесты запускаются из папки tests
 # sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Импортируем необходимые компоненты telegram
 import telegram
-from telegram import Update, User, Message, Chat, Voice, Video
+from telegram import Update, User, Message, Chat, Voice, Video, File
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
 
@@ -89,15 +89,18 @@ def mock_api_clients_and_io(mocker):
     if mock_gemini_client_instance: # Проверка, что клиент существует перед моком метода
         mocker.patch('handlers.gemini_client.GenerativeModel', return_value=mock_generative_model_instance, create=True)
 
-    # --- Моки для транскрипции (общий мок для старых тестов) ---
+    # --- Моки для транскрипции (общий мок) ---
     # Этот мок будет переопределен в тестах для audio_to_text фикстурой mock_gemini_dependencies
     mocker.patch('handlers.audio_to_text', new_callable=AsyncMock, return_value="Mocked transcription text")
 
     # --- Моки для работы с файлами Telegram ---
+    # Создаем мок для метода download_as_bytearray
     mock_download_method = AsyncMock(return_value=b'fake_file_content')
-    mock_file_instance = MagicMock(spec=telegram.File)
+    # Создаем мок объекта File, который будет возвращаться get_file
+    mock_file_instance = MagicMock(spec=File)
     mock_file_instance.download_as_bytearray = mock_download_method
 
+    # Патчим get_file для Voice и Video, чтобы они возвращали наш мок файла
     mocker.patch('telegram.Voice.get_file', AsyncMock(return_value=mock_file_instance))
     mocker.patch('telegram.Video.get_file', AsyncMock(return_value=mock_file_instance))
 
@@ -185,13 +188,15 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
     mock_update.message.text = None
     mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
     # Используем общий мок audio_to_text из mock_api_clients_and_io
-    mock_audio_to_text = handlers.audio_to_text
+    mock_audio_to_text = handlers.audio_to_text # Это мок, созданный в mock_api_clients_and_io
+
+    # Этот мок создается и настраивается в mock_api_clients_and_io
+    mock_file_instance = await telegram.Voice.get_file() # Получаем тот же мок файла
 
     await handle_voice(mock_update, mock_context)
 
     mock_voice.get_file.assert_called_once()
-    mock_file_returned = await mock_voice.get_file()
-    mock_file_returned.download_as_bytearray.assert_called_once()
+    mock_file_instance.download_as_bytearray.assert_called_once()
 
     expected_filename = f"tempvoice_{mock_update.effective_user.id}.ogg"
     mock_audio_to_text.assert_called_once_with(expected_filename, 'audio/ogg')
@@ -202,6 +207,7 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
     mock_process_message.assert_called_once_with(mock_update, mock_context, "Mocked transcription text")
     handlers.os.remove.assert_called_once_with(expected_filename)
 
+
 async def test_handle_video_message(mock_update, mock_context, mocker):
     mock_video = MagicMock(spec=Video)
     mock_update.message.video = mock_video
@@ -209,13 +215,15 @@ async def test_handle_video_message(mock_update, mock_context, mocker):
     mock_update.message.caption = None
     mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
     # Используем общий мок audio_to_text из mock_api_clients_and_io
-    mock_audio_to_text = handlers.audio_to_text
+    mock_audio_to_text = handlers.audio_to_text # Это мок, созданный в mock_api_clients_and_io
+
+    # Этот мок создается и настраивается в mock_api_clients_and_io
+    mock_file_instance = await telegram.Video.get_file()
 
     await handle_video(mock_update, mock_context)
 
     mock_video.get_file.assert_called_once()
-    mock_file_returned = await mock_video.get_file()
-    mock_file_returned.download_as_bytearray.assert_called_once()
+    mock_file_instance.download_as_bytearray.assert_called_once()
 
     expected_filename = f"tempvideo_{mock_update.effective_user.id}.mp4"
     mock_audio_to_text.assert_called_once_with(expected_filename, 'video/mp4')
@@ -225,6 +233,7 @@ async def test_handle_video_message(mock_update, mock_context, mocker):
     )
     mock_process_message.assert_called_once_with(mock_update, mock_context, "Mocked transcription text")
     handlers.os.remove.assert_called_once_with(expected_filename)
+
 
 async def test_clear_context(mock_update, mock_context, mocker):
     mock_clear_history = mocker.patch('handlers.clear_chat_history')
@@ -388,11 +397,7 @@ async def test_handle_voice_transcription_error(mock_update, mock_context, mocke
     mocker.patch('handlers.audio_to_text', new_callable=AsyncMock, side_effect=Exception(error_message))
     mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
 
-    # Мокируем download_as_bytearray, чтобы он не мешал проверке ошибки транскрипции
-    mock_download_method = mocker.patch('telegram.File.download_as_bytearray', new_callable=AsyncMock, return_value=b'fake_file_content')
-    # Мокируем get_file, чтобы он возвращал объект с замоканным download_as_bytearray
-    mocker.patch('telegram.Voice.get_file', new_callable=AsyncMock, return_value=MagicMock(download_as_bytearray=mock_download_method))
-
+    mock_file_instance = await telegram.Voice.get_file() # Получаем настроенный мок файла
 
     await handle_voice(mock_update, mock_context)
 
@@ -402,10 +407,9 @@ async def test_handle_voice_transcription_error(mock_update, mock_context, mocke
     )
     expected_filename = f"tempvoice_{mock_update.effective_user.id}.ogg"
     handlers.os.remove.assert_called_once_with(expected_filename)
-    # Проверяем, что скачивание все равно было вызвано до ошибки
-    handlers.Voice.get_file.assert_called_once()
-    mock_file_returned = await handlers.Voice.get_file()
-    mock_file_returned.download_as_bytearray.assert_called_once()
+
+    mock_voice.get_file.assert_called_once()
+    mock_file_instance.download_as_bytearray.assert_called_once()
 
 
 @pytest.fixture
@@ -427,14 +431,11 @@ def mock_gemini_dependencies(mocker):
         func_str = str(func)
         if 'upload_file' in func_str:
             # Вызываем мок для upload_file
-            # Замечание: genai.upload_file не является async, поэтому вызываем синхронно
             return mock_upload_file(*args, **kwargs)
         elif 'delete_file' in func_str:
             # Вызываем мок для delete_file
-            # Замечание: genai.delete_file не является async, поэтому вызываем синхронно
             return mock_delete_file(*args, **kwargs)
         else:
-            # Для других вызовов to_thread, если они есть (например, из других частей кода)
             return await original_asyncio_to_thread(func, *args, **kwargs)
 
     # Применяем патч с исправленным side_effect
