@@ -184,14 +184,16 @@ async def test_handle_message_text_mistral(mock_update, mock_context, mocker):
 
 async def test_handle_voice_message(mock_update, mock_context, mocker):
     mock_voice = MagicMock(spec=Voice)
+
+    mock_file_instance = await telegram.Voice.get_file()
+
+    mock_voice.get_file = AsyncMock(return_value=mock_file_instance)
+
     mock_update.message.voice = mock_voice
     mock_update.message.text = None
-    mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
-    # Используем общий мок audio_to_text из mock_api_clients_and_io
-    mock_audio_to_text = handlers.audio_to_text # Это мок, созданный в mock_api_clients_and_io
 
-    # Этот мок создается и настраивается в mock_api_clients_and_io
-    mock_file_instance = await telegram.Voice.get_file() # Получаем тот же мок файла
+    mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
+    mock_audio_to_text = handlers.audio_to_text 
 
     await handle_voice(mock_update, mock_context)
 
@@ -210,15 +212,17 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
 
 async def test_handle_video_message(mock_update, mock_context, mocker):
     mock_video = MagicMock(spec=Video)
+
+    mock_file_instance = await telegram.Video.get_file() 
+
+    mock_video.get_file = AsyncMock(return_value=mock_file_instance)
+
     mock_update.message.video = mock_video
     mock_update.message.text = None
     mock_update.message.caption = None
-    mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
-    # Используем общий мок audio_to_text из mock_api_clients_and_io
-    mock_audio_to_text = handlers.audio_to_text # Это мок, созданный в mock_api_clients_and_io
 
-    # Этот мок создается и настраивается в mock_api_clients_and_io
-    mock_file_instance = await telegram.Video.get_file()
+    mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
+    mock_audio_to_text = handlers.audio_to_text 
 
     await handle_video(mock_update, mock_context)
 
