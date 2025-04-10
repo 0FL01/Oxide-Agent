@@ -394,14 +394,17 @@ async def test_handle_unsupported_document(mock_update, mock_context, mocker):
 
 async def test_handle_voice_transcription_error(mock_update, mock_context, mocker):
     mock_voice = MagicMock(spec=Voice)
+
+    mock_file_instance = await telegram.Voice.get_file() 
+
+    mock_voice.get_file = AsyncMock(return_value=mock_file_instance)
+
     mock_update.message.voice = mock_voice
     mock_update.message.text = None
+
     error_message = "Ошибка Gemini API: Квота"
-    # Используем общий мок audio_to_text и настраиваем его side_effect
     mocker.patch('handlers.audio_to_text', new_callable=AsyncMock, side_effect=Exception(error_message))
     mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
-
-    mock_file_instance = await telegram.Voice.get_file() # Получаем настроенный мок файла
 
     await handle_voice(mock_update, mock_context)
 
