@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch, mock_open, call
+from unittest.mock import AsyncMock, MagicMock, patch, mock_open, call, ANY
 import os
 import sys
 import google.api_core.exceptions
@@ -9,6 +9,9 @@ import telegram
 from telegram import Update, User, Message, Chat, Voice, Video, File
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
+
+# Добавляем импорт mock (или используем ANY напрямую из unittest.mock)
+from unittest import mock
 
 import handlers
 from handlers import (
@@ -139,8 +142,8 @@ async def test_handle_message_text_gemini(mock_update, mock_context, mocker):
     mock_save_message.assert_any_call(12345, "user", "Привет!")
     mock_save_message.assert_any_call(12345, "assistant", "Mocked Gemini Response")
     mock_gemini_generate_async.assert_called_once()
-    call_args, _ = mock_gemini_generate_async.call_args
-    assert call_args[0] == [{"role": "user", "parts": ["previous"]}, {"role": "user", "parts": ["Привет!"]}]
+    call_args, call_kwargs = mock_gemini_generate_async.call_args # Исправлено: call_args это объект, а не кортеж
+    assert call_args[0] == [{"role": "user", "parts": ["previous"]}, {"role": "user", "parts": ["Привет!"]}] # Исправлено: доступ к args через call_args[0] или call_args.args
     mock_update.message.reply_text.assert_called_once_with("Mocked Gemini Response", parse_mode=ParseMode.HTML)
     mock_update.message.chat.send_action.assert_called_once_with(action=ChatAction.TYPING)
 
@@ -161,7 +164,7 @@ async def test_handle_message_text_mistral(mock_update, mock_context, mocker):
     mock_save_message.assert_any_call(12345, "user", "Анекдот?")
     mock_save_message.assert_any_call(12345, "assistant", "Mocked Mistral Response")
     mock_mistral_complete.assert_called_once()
-    _, call_kwargs = mock_mistral_complete.call_args
+    call_args, call_kwargs = mock_mistral_complete.call_args # Исправлено: call_args это объект
     assert call_kwargs['messages'][0]['role'] == 'system'
     assert call_kwargs['messages'][1] == {"role": "assistant", "content": "prev bot"}
     assert call_kwargs['messages'][2] == {"role": "user", "content": "Анекдот?"}
@@ -418,7 +421,7 @@ def mock_gemini_dependencies(mocker):
 
 
 @pytest.mark.asyncio
-async def test_audio_to_text_success_no_retry(mock_gemini_dependencies):
+async def test_audio_to_text_success_no_retry(mock_gemini_dependencies, mocker): # Добавлен mocker
     mock_upload_func = mock_gemini_dependencies["mock_upload_file"]
     mock_gen_model = mock_gemini_dependencies["mock_gen_model"]
     mock_delete_func = mock_gemini_dependencies["mock_delete_file"]
@@ -431,12 +434,25 @@ async def test_audio_to_text_success_no_retry(mock_gemini_dependencies):
     result = await audio_to_text("fake_path.ogg", "audio/ogg")
 
     assert result == "Успешная транскрипция"
+
+    # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+    # Использовать assert_called_once_with для надежной проверки аргументов
+    expected_prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
+
+    # Использовать mock.ANY для сложных объектов, если точное значение не важно
+    mock_gen_model.generate_content_async.assert_called_once_with(
+        contents=[expected_prompt, mock_uploaded_file_obj],
+        generation_config=mock.ANY, # Используем mock.ANY
+        safety_settings={'HARASSMENT':'block_none',
+                         'HATE_SPEECH':'block_none',
+                         'SEXUALLY_EXPLICIT':'block_none'}
+    )
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
+    # Проверить вызовы upload и delete отдельно
     mock_upload_func.assert_called_once_with(path="fake_path.ogg", mime_type="audio/ogg")
-    mock_gen_model.generate_content_async.assert_called_once()
-    args, kwargs = mock_gen_model.generate_content_async.call_args
-    assert args[0][1] == mock_uploaded_file_obj
     mock_delete_func.assert_called_once_with(name="files/test_upload")
-    mock_sleep.assert_not_called()
+    mock_sleep.assert_not_called() # Убедиться, что повторных попыток не было
 
 @pytest.mark.asyncio
 async def test_audio_to_text_retry_on_upload_503(mock_gemini_dependencies):
