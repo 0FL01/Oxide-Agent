@@ -3,6 +3,9 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch, mock_open
 import os
 import sys
+import google.api_core.exceptions
+import handlers
+from handlers import audio_to_text
 
 # Добавляем путь к корневой директории проекта, если тесты запускаются из папки tests
 # sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -191,6 +194,219 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
     )
     mock_process_message.assert_called_once_with(mock_update, mock_context, "Mocked transcription text")
     handlers.os.remove.assert_called_once_with(expected_filename)
+
+import pytest
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch, call
+import google.api_core.exceptions
+import handlers # Убедитесь, что импортируете модуль handlers
+from handlers import audio_to_text # Импортируем саму функцию
+
+# --- Новые тесты для audio_to_text с логикой retry ---
+
+@pytest.fixture
+def mock_gemini_dependencies(mocker):
+    # Мокируем зависимости, специфичные для audio_to_text
+    mocker.patch('handlers.gemini_client', new_callable=MagicMock)
+    mock_gen_model_instance = MagicMock()
+    mock_gen_model_instance.generate_content_async = AsyncMock()
+    mocker.patch('handlers.gemini_client.GenerativeModel', return_value=mock_gen_model_instance)
+
+    # Мокируем работу с файлами Google API через asyncio.to_thread
+    mock_upload_file = MagicMock()
+    mock_delete_file = MagicMock()
+    # Настраиваем asyncio.to_thread для возврата моков или вызова ошибок
+    async def mock_to_thread(func, *args, **kwargs):
+        if 'upload_file' in str(func):
+            return mock_upload_file(*args, **kwargs)
+        elif 'delete_file' in str(func):
+            return mock_delete_file(*args, **kwargs)
+        else:
+            # Для других вызовов to_thread, если они есть
+            original_to_thread = asyncio.to_thread
+            return await original_to_thread(func, *args, **kwargs)
+
+    mocker.patch('asyncio.to_thread', side_effect=mock_to_thread)
+
+    # Мокируем asyncio.sleep
+    mock_sleep = mocker.patch('asyncio.sleep', new_callable=AsyncMock)
+
+    # Мокируем конфигурацию моделей
+    mocker.patch('handlers.MODELS', {
+        "Gemini 2.0 Flash": {"id": "gemini-2.0-flash", "provider": "gemini", "max_tokens": 1024},
+        # Добавьте другие модели, если они используются в тестах
+    })
+
+    return {
+        "mock_gen_model": mock_gen_model_instance,
+        "mock_upload_file": mock_upload_file,
+        "mock_delete_file": mock_delete_file,
+        "mock_sleep": mock_sleep
+    }
+
+@pytest.mark.asyncio
+async def test_audio_to_text_success_no_retry(mock_gemini_dependencies):
+    mock_upload_file = mock_gemini_dependencies["mock_upload_file"]
+    mock_gen_model = mock_gemini_dependencies["mock_gen_model"]
+    mock_delete_file = mock_gemini_dependencies["mock_delete_file"]
+    mock_sleep = mock_gemini_dependencies["mock_sleep"]
+
+    mock_uploaded_file_obj = MagicMock(name="files/test_upload", uri="http://example.com/file")
+    mock_upload_file.return_value = mock_uploaded_file_obj
+    mock_gen_model.generate_content_async.return_value = MagicMock(text="Успешная транскрипция")
+
+    result = await audio_to_text("fake_path.ogg", "audio/ogg")
+
+    assert result == "Успешная транскрипция"
+    mock_upload_file.assert_called_once_with(path="fake_path.ogg", mime_type="audio/ogg")
+    mock_gen_model.generate_content_async.assert_called_once()
+    mock_delete_file.assert_called_once_with(name="files/test_upload")
+    mock_sleep.assert_not_called() # Убеждаемся, что задержек не было
+
+@pytest.mark.asyncio
+async def test_audio_to_text_retry_on_upload_503(mock_gemini_dependencies):
+    mock_upload_file = mock_gemini_dependencies["mock_upload_file"]
+    mock_gen_model = mock_gemini_dependencies["mock_gen_model"]
+    mock_delete_file = mock_gemini_dependencies["mock_delete_file"]
+    mock_sleep = mock_gemini_dependencies["mock_sleep"]
+
+    mock_uploaded_file_obj = MagicMock(name="files/test_upload_retry", uri="http://example.com/file_retry")
+    mock_upload_file.side_effect = [
+        google.api_core.exceptions.ServiceUnavailable("503 Error on upload"),
+        mock_uploaded_file_obj # Успех со второй попытки
+    ]
+    mock_gen_model.generate_content_async.return_value = MagicMock(text="Транскрипция после ретрая загрузки")
+
+    result = await audio_to_text("retry_upload.ogg", "audio/ogg")
+
+    assert result == "Транскрипция после ретрая загрузки"
+    assert mock_upload_file.call_count == 2
+    mock_upload_file.assert_has_calls([
+        call(path="retry_upload.ogg", mime_type="audio/ogg"),
+        call(path="retry_upload.ogg", mime_type="audio/ogg")
+    ])
+    mock_sleep.assert_called_once_with(handlers.RETRY_DELAY_SECONDS * 1) # Проверяем задержку
+    mock_gen_model.generate_content_async.assert_called_once()
+    mock_delete_file.assert_called_once_with(name="files/test_upload_retry")
+
+@pytest.mark.asyncio
+async def test_audio_to_text_retry_on_generate_503(mock_gemini_dependencies):
+    mock_upload_file = mock_gemini_dependencies["mock_upload_file"]
+    mock_gen_model = mock_gemini_dependencies["mock_gen_model"]
+    mock_delete_file = mock_gemini_dependencies["mock_delete_file"]
+    mock_sleep = mock_gemini_dependencies["mock_sleep"]
+
+    mock_uploaded_file_obj = MagicMock(name="files/test_upload_gen_retry", uri="http://example.com/file_gen_retry")
+    mock_upload_file.return_value = mock_uploaded_file_obj
+    mock_gen_model.generate_content_async.side_effect = [
+        google.api_core.exceptions.ServiceUnavailable("503 Error on generate"),
+        MagicMock(text="Транскрипция после ретрая генерации") # Успех со второй попытки
+    ]
+
+    result = await audio_to_text("retry_generate.mp4", "video/mp4")
+
+    assert result == "Транскрипция после ретрая генерации"
+    mock_upload_file.assert_called_once_with(path="retry_generate.mp4", mime_type="video/mp4")
+    assert mock_gen_model.generate_content_async.call_count == 2
+    mock_sleep.assert_called_once_with(handlers.RETRY_DELAY_SECONDS * 1) # Проверяем задержку
+    mock_delete_file.assert_called_once_with(name="files/test_upload_gen_retry")
+
+@pytest.mark.asyncio
+async def test_audio_to_text_fail_after_max_retries_upload(mock_gemini_dependencies):
+    mock_upload_file = mock_gemini_dependencies["mock_upload_file"]
+    mock_gen_model = mock_gemini_dependencies["mock_gen_model"]
+    mock_delete_file = mock_gemini_dependencies["mock_delete_file"]
+    mock_sleep = mock_gemini_dependencies["mock_sleep"]
+
+    # Имитируем ошибку 503 на всех попытках загрузки
+    mock_upload_file.side_effect = google.api_core.exceptions.ServiceUnavailable("503 Error always")
+
+    with pytest.raises(Exception, match=f"Ошибка Gemini API: Сервис недоступен после {handlers.MAX_RETRIES} попыток"):
+        await audio_to_text("fail_upload.ogg", "audio/ogg")
+
+    assert mock_upload_file.call_count == handlers.MAX_RETRIES
+    assert mock_sleep.call_count == handlers.MAX_RETRIES - 1 # Задержка вызывается перед последней попыткой
+    # Проверяем задержки с увеличением времени
+    expected_sleep_calls = [call(handlers.RETRY_DELAY_SECONDS * i) for i in range(1, handlers.MAX_RETRIES)]
+    mock_sleep.assert_has_calls(expected_sleep_calls)
+    mock_gen_model.generate_content_async.assert_not_called()
+    mock_delete_file.assert_not_called() # Файл не был успешно загружен
+
+@pytest.mark.asyncio
+async def test_audio_to_text_fail_after_max_retries_generate(mock_gemini_dependencies):
+    mock_upload_file = mock_gemini_dependencies["mock_upload_file"]
+    mock_gen_model = mock_gemini_dependencies["mock_gen_model"]
+    mock_delete_file = mock_gemini_dependencies["mock_delete_file"]
+    mock_sleep = mock_gemini_dependencies["mock_sleep"]
+
+    mock_uploaded_file_obj = MagicMock(name="files/test_upload_fail_gen", uri="http://example.com/file_fail_gen")
+    mock_upload_file.return_value = mock_uploaded_file_obj
+    # Имитируем ошибку 503 на всех попытках генерации
+    mock_gen_model.generate_content_async.side_effect = google.api_core.exceptions.ServiceUnavailable("503 Error always")
+
+    with pytest.raises(Exception, match=f"Ошибка Gemini API: Сервис недоступен после {handlers.MAX_RETRIES} попыток"):
+        await audio_to_text("fail_generate.ogg", "audio/ogg")
+
+    mock_upload_file.assert_called_once()
+    assert mock_gen_model.generate_content_async.call_count == handlers.MAX_RETRIES
+    assert mock_sleep.call_count == handlers.MAX_RETRIES - 1
+    expected_sleep_calls = [call(handlers.RETRY_DELAY_SECONDS * i) for i in range(1, handlers.MAX_RETRIES)]
+    mock_sleep.assert_has_calls(expected_sleep_calls)
+    # Файл был загружен, поэтому должен быть удален в finally
+    mock_delete_file.assert_called_once_with(name="files/test_upload_fail_gen")
+
+@pytest.mark.asyncio
+async def test_audio_to_text_non_retryable_error_upload(mock_gemini_dependencies):
+    mock_upload_file = mock_gemini_dependencies["mock_upload_file"]
+    mock_sleep = mock_gemini_dependencies["mock_sleep"]
+    mock_delete_file = mock_gemini_dependencies["mock_delete_file"]
+
+    # Имитируем другую ошибку (не 503)
+    mock_upload_file.side_effect = ValueError("Invalid file format")
+
+    with pytest.raises(Exception, match="Ошибка Gemini API при транскрипции: Invalid file format"):
+        await audio_to_text("invalid.txt", "text/plain")
+
+    mock_upload_file.assert_called_once() # Только одна попытка
+    mock_sleep.assert_not_called()
+    mock_delete_file.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_audio_to_text_non_retryable_error_generate(mock_gemini_dependencies):
+    mock_upload_file = mock_gemini_dependencies["mock_upload_file"]
+    mock_gen_model = mock_gemini_dependencies["mock_gen_model"]
+    mock_sleep = mock_gemini_dependencies["mock_sleep"]
+    mock_delete_file = mock_gemini_dependencies["mock_delete_file"]
+
+    mock_uploaded_file_obj = MagicMock(name="files/test_upload_other_err", uri="http://example.com/file_other_err")
+    mock_upload_file.return_value = mock_uploaded_file_obj
+    # Имитируем другую ошибку (не 503)
+    mock_gen_model.generate_content_async.side_effect = google.api_core.exceptions.InvalidArgument("Bad request")
+
+    with pytest.raises(Exception, match="Ошибка Gemini API при транскрипции: 400 Bad request"):
+         await audio_to_text("other_error.ogg", "audio/ogg")
+
+    mock_upload_file.assert_called_once()
+    mock_gen_model.generate_content_async.assert_called_once() # Только одна попытка
+    mock_sleep.assert_not_called()
+    mock_delete_file.assert_called_once_with(name="files/test_upload_other_err") # Файл удаляется
+
+@pytest.mark.asyncio
+async def test_audio_to_text_handles_gemini_error_message(mock_gemini_dependencies):
+    mock_upload_file = mock_gemini_dependencies["mock_upload_file"]
+    mock_gen_model = mock_gemini_dependencies["mock_gen_model"]
+    mock_delete_file = mock_gemini_dependencies["mock_delete_file"]
+
+    mock_uploaded_file_obj = MagicMock(name="files/test_upload_no_speech", uri="http://example.com/file_no_speech")
+    mock_upload_file.return_value = mock_uploaded_file_obj
+    mock_gen_model.generate_content_async.return_value = MagicMock(text="В файле не обнаружено речи.")
+
+    result = await audio_to_text("no_speech.ogg", "audio/ogg")
+
+    assert result == "(Gemini): В файле не обнаружено речи."
+    mock_upload_file.assert_called_once()
+    mock_gen_model.generate_content_async.assert_called_once()
+    mock_delete_file.assert_called_once_with(name="files/test_upload_no_speech")
 
 async def test_handle_video_message(mock_update, mock_context, mocker):
     mock_video = MagicMock(spec=Video)

@@ -1,6 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
+import google.api_core.exceptions
 from config import chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client
 from utils import split_long_message, clean_html, format_text
 from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
@@ -11,7 +12,7 @@ import os
 import re
 import asyncio
 from dotenv import load_dotenv
-import google.generativeai as genai # Добавлен импорт genai
+import google.generativeai as genai
 
 load_dotenv()
 
@@ -26,16 +27,15 @@ SYSTEM_MESSAGE = os.getenv('SYSTEM_MESSAGE', DEFAULT_SYSTEM_MESSAGE)
 
 logger = logging.getLogger(__name__)
 
-# --- Новая функция для транскрипции через Gemini ---
+# --- Функция для транскрипции через Gemini ---
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 3
+
 async def audio_to_text(file_path: str, mime_type: str) -> str:
-    """Транскрибирует аудио/видео файл с помощью Google Gemini API."""
     if not gemini_client:
         raise Exception("Клиент Google Gemini не инициализирован (проверьте GEMINI_API_KEY).")
 
-    # Используем модель gemini-2.0-flash для транскрипции
-    # Модель должна быть способна обрабатывать аудио/видео
-    # Убедимся, что 'gemini-2.0-flash' определена в MODELS и имеет provider 'gemini'
-    transcription_model_name = "Gemini 2.0 Flash" # Или другая подходящая Gemini модель
+    transcription_model_name = "Gemini 2.0 Flash"
     if transcription_model_name not in MODELS or MODELS[transcription_model_name]['provider'] != 'gemini':
          raise Exception(f"Модель '{transcription_model_name}' не найдена или не является моделью Gemini в конфигурации.")
 
@@ -43,58 +43,93 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
     gemini_model_instance = gemini_client.GenerativeModel(model_id)
     logger.info(f"Используется модель Gemini '{model_id}' для транскрипции.")
 
-
     uploaded_file = None
+    last_exception = None
+
     try:
-        logger.info(f"Загрузка файла {file_path} (MIME: {mime_type}) в Google File API...")
-        # Используем asyncio.to_thread для синхронной функции upload_file
-        uploaded_file = await asyncio.to_thread(
-            lambda: genai.upload_file(path=file_path, mime_type=mime_type)
-        )
-        # Небольшая проверка, что файл загрузился
-        if not uploaded_file or not hasattr(uploaded_file, 'name') or not hasattr(uploaded_file, 'uri'):
-             logger.error(f"Не удалось получить корректный объект файла после загрузки {file_path}.")
-             raise Exception("Ошибка Google File API: Не удалось загрузить файл или получить его данные.")
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} загрузки файла {file_path} (MIME: {mime_type}) в Google File API...")
+                uploaded_file = await asyncio.to_thread(
+                    lambda: genai.upload_file(path=file_path, mime_type=mime_type)
+                )
+                if not uploaded_file or not hasattr(uploaded_file, 'name') or not hasattr(uploaded_file, 'uri'):
+                     logger.error(f"Не удалось получить корректный объект файла после загрузки {file_path} на попытке {attempt + 1}.")
+                     # Не бросаем исключение сразу, даем шанс следующей попытке, если это не последняя
+                     if attempt == MAX_RETRIES - 1:
+                         raise Exception("Ошибка Google File API: Не удалось загрузить файл или получить его данные после нескольких попыток.")
+                     last_exception = Exception("Ошибка Google File API: Некорректный ответ при загрузке файла.") # Сохраняем для последней попытки
+                     await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1)) # Задержка перед следующей попыткой
+                     continue # Переходим к следующей попытке
 
-        logger.info(f"Файл успешно загружен: {uploaded_file.name}, URI: {uploaded_file.uri}")
+                logger.info(f"Файл успешно загружен на попытке {attempt + 1}: {uploaded_file.name}, URI: {uploaded_file.uri}")
+                last_exception = None # Сбрасываем ошибку при успехе
+                break # Выходим из цикла при успешной загрузке
 
-        # Небольшая задержка перед использованием файла (иногда API требует времени на обработку)
+            except google.api_core.exceptions.ServiceUnavailable as e:
+                last_exception = e
+                logger.warning(f"Попытка загрузки {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
+                if attempt == MAX_RETRIES - 1:
+                    logger.error(f"Загрузка файла {file_path} не удалась после {MAX_RETRIES} попыток.")
+                    raise # Пробрасываем исключение после последней попытки
+                await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+            except Exception as e:
+                 logger.error(f"Неперехватываемая ошибка при загрузке файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
+                 raise # Пробрасываем другие ошибки немедленно
+
+        if last_exception: # Если цикл завершился из-за ошибок, но исключение не было проброшено (например, некорректный объект файла)
+            logger.error(f"Загрузка файла {file_path} окончательно не удалась.")
+            raise last_exception
+
         await asyncio.sleep(2)
 
-        logger.info(f"Запрос транскрипции для файла {uploaded_file.name} через Gemini API...")
-        # Пытаемся запросить транскрипцию на русском, но помним об ограничениях
-        prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
+        response = None
+        last_exception = None # Сбрасываем для следующего цикла
 
-        # Используем асинхронный вызов generate_content_async
-        response = await gemini_model_instance.generate_content_async(
-            contents=[prompt, uploaded_file], # Передаем промпт и загруженный файл
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.4
-            ),
-            safety_settings={'HARASSMENT':'block_none',
-                             'HATE_SPEECH':'block_none',
-                             'SEXUALLY_EXPLICIT':'block_none',}
-        )
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} запроса транскрипции для файла {uploaded_file.name} через Gemini API...")
+                prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
+                response = await gemini_model_instance.generate_content_async(
+                    contents=[prompt, uploaded_file],
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.4
+                    ),
+                    safety_settings={'HARASSMENT':'block_none',
+                                     'HATE_SPEECH':'block_none',
+                                     'SEXUALLY_EXPLICIT':'block_none',}
+                )
+                logger.info(f"Получен ответ от Gemini API для транскрипции файла {uploaded_file.name} на попытке {attempt + 1}.")
+                last_exception = None # Сбрасываем ошибку при успехе
+                break # Выходим из цикла при успешном получении ответа
 
-        logger.info(f"Получен ответ от Gemini API для транскрипции файла {uploaded_file.name}.")
+            except google.api_core.exceptions.ServiceUnavailable as e:
+                last_exception = e
+                logger.warning(f"Попытка транскрипции {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
+                if attempt == MAX_RETRIES - 1:
+                    logger.error(f"Транскрипция файла {uploaded_file.name} не удалась после {MAX_RETRIES} попыток.")
+                    raise # Пробрасываем исключение после последней попытки
+                await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+            except Exception as e:
+                 logger.error(f"Неперехватываемая ошибка при транскрипции файла {uploaded_file.name} на попытке {attempt + 1}: {e}", exc_info=True)
+                 raise # Пробрасываем другие ошибки немедленно
 
-        # Обработка ответа
+        if last_exception: # Если цикл завершился из-за ошибок
+             logger.error(f"Получение транскрипции для {uploaded_file.name} окончательно не удалось.")
+             raise last_exception
+
         if response and hasattr(response, 'text') and response.text:
             transcript_text = response.text.strip()
             logger.info(f"Транскрипция для {uploaded_file.name} получена (длина: {len(transcript_text)}).")
-            # Дополнительная проверка: если Gemini вернул сообщение об ошибке или нерелевантный текст
             if "не могу обработать" in transcript_text.lower() or "не содержит речи" in transcript_text.lower() or "не удалось извлечь аудио" in transcript_text.lower():
                  logger.warning(f"Gemini вернул сообщение о невозможности транскрипции для {uploaded_file.name}: {transcript_text}")
-                 return f"(Gemini): {transcript_text}" # Возвращаем сообщение Gemini
-
+                 return f"(Gemini): {transcript_text}"
             return transcript_text
-        # Проверка на блокировку из-за безопасности или других причин
         elif response and hasattr(response, 'prompt_feedback') and response.prompt_feedback and hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
              block_reason = response.prompt_feedback.block_reason
              block_reason_message = response.prompt_feedback.block_reason_message if hasattr(response.prompt_feedback, 'block_reason_message') else 'Нет деталей'
              logger.warning(f"Транскрипция заблокирована Gemini по причине: {block_reason}. Детали: {block_reason_message}")
              raise Exception(f"Ошибка Gemini API: Транскрипция заблокирована (причина: {block_reason}).")
-        # Попытка извлечь текст из candidates, если основной текст пуст
         elif response and hasattr(response, 'candidates') and response.candidates:
              try:
                  candidate_text = response.candidates[0].content.parts[0].text
@@ -113,8 +148,10 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
     except Exception as e:
         logger.error(f"Ошибка при транскрипции файла {file_path} через Gemini: {e}", exc_info=True)
         error_str = str(e)
-        # Добавляем специфичные ошибки Gemini, если нужно
-        if "API key not valid" in error_str:
+        if isinstance(e, google.api_core.exceptions.ServiceUnavailable):
+             # Если ошибка 503 проброшена после всех ретраев
+             raise Exception(f"Ошибка Gemini API: Сервис недоступен после {MAX_RETRIES} попыток (503).")
+        elif "API key not valid" in error_str:
             raise Exception("Ошибка Gemini API: Неверный или неактивный ключ API.")
         elif "quota" in error_str.lower() or "resource_exhausted" in error_str.lower():
             raise Exception("Ошибка Gemini API: Превышена квота использования.")
@@ -122,21 +159,16 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
              raise Exception("Ошибка Gemini API: Не удалось обработать загруженный файл (возможно, неподдерживаемый формат или поврежден).")
         elif "Deadline exceeded" in error_str or "504" in error_str:
              raise Exception("Ошибка Gemini API: Превышено время ожидания ответа от сервера.")
-        # Общая ошибка
         raise Exception(f"Ошибка Gemini API при транскрипции: {error_str}")
 
     finally:
-        # Удаляем загруженный файл из Google File API в любом случае
         if uploaded_file and hasattr(uploaded_file, 'name'):
             try:
                 logger.info(f"Удаление файла {uploaded_file.name} из Google File API...")
-                # Используем asyncio.to_thread для синхронной функции delete
                 await asyncio.to_thread(lambda: genai.delete_file(name=uploaded_file.name))
                 logger.info(f"Файл {uploaded_file.name} успешно удален.")
             except Exception as delete_e:
-                # Логируем ошибку удаления, но не прерываем выполнение основной функции из-за этого
                 logger.error(f"Не удалось удалить файл {uploaded_file.name} из Google File API: {delete_e}")
-# --- Конец новой функции ---
 
 
 def get_main_keyboard():
