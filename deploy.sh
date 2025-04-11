@@ -64,7 +64,6 @@ services:
     image: \${DOCKER_IMAGE}:\${CI_COMMIT_SHORT_SHA}
     container_name: another_chat_tg
     network_mode: \"bridge\"
-    # УБРАНА СЕКЦИЯ ENVIRONMENT, ЧТОБЫ НЕ ПЕРЕОПРЕДЕЛЯТЬ ПЕРЕМЕННЫЕ ИЗ .ENV
     restart: unless-stopped
     volumes:
       - ./.env:/app/.env:ro
