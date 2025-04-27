@@ -154,6 +154,7 @@ async def test_handle_message_text_mistral(mock_update, mock_context, mocker):
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "assistant", "content": "prev bot"}])
     mock_mistral_complete = handlers.mistral_client.chat.complete
     mock_update.message.text = "Анекдот?"
+    mock_update.message.photo = None # Explicitly set photo to None for text message test
     mock_context.user_data['model'] = "Mistral Large 128K"
 
     await handle_message(mock_update, mock_context)
