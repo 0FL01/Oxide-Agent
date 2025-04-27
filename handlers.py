@@ -289,7 +289,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.username or update.effective_user.first_name
     text = update.message.text or update.message.caption or ""
     document = update.message.document
-    logger.info(f"Handling message from user {user_id} ({user_name}). Text: '{text[:100]}...'. Document attached: {bool(document)}")
+    photo = update.message.photo # Add this line
+    logger.info(f"Handling message from user {user_id} ({user_name}). Text: '{text[:100]}...'. Document attached: {bool(document)}. Photo attached: {bool(photo)}") # Update log message
+
+    if photo: # Add this condition
+        logger.info(f"User {user_id} sent a photo.")
+        await handle_photo(update, context) # Call the new handler
+        return # Stop processing this message further
 
     if document:
         logger.warning(f"User {user_id} sent an unsupported document: {document.file_name}")
@@ -479,6 +485,84 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
+
+@check_auth
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_name = update.effective_user.username or update.effective_user.first_name
+    logger.info(f"Processing photo from user {user_id} ({user_name}).")
+
+    if not gemini_client:
+        logger.error("Gemini client is not initialized.")
+        await update.message.reply_text("Ошибка: Клиент Google Gemini не инициализирован.")
+        return
+
+    # Get the largest photo size
+    photo_sizes = update.message.photo
+    if not photo_sizes:
+        logger.warning(f"No photo sizes found in message from user {user_id}.")
+        await update.message.reply_text("Не удалось получить изображение.")
+        return
+
+    # The last photo size is usually the largest
+    largest_photo = photo_sizes[-1]
+
+    try:
+        await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO) # Show uploading photo action
+        photo_file = await largest_photo.get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        mime_type = "image/jpeg" # Assuming JPEG for simplicity
+
+        logger.info(f"Photo downloaded from user {user_id}. Size: {len(photo_bytes)} bytes.")
+
+        # Determine the text prompt. Use caption if available, otherwise a default prompt.
+        text_prompt = update.message.caption or "Опиши это изображение."
+        logger.info(f"Using text prompt for image analysis: '{text_prompt[:100]}...'")
+
+        await update.message.chat.send_action(action=ChatAction.TYPING) # Show typing action while processing
+
+        # Call Gemini API
+        model_name = "gemini-1.5-flash" # Using flash model as requested
+        logger.info(f"Sending image and prompt to Gemini model '{model_name}' for user {user_id}.")
+
+        response = await gemini_client.models.generate_content(
+            model=model_name,
+            contents=[
+                genai.types.Part.from_bytes(
+                    data=bytes(photo_bytes), # Convert bytearray to bytes
+                    mime_type=mime_type,
+                ),
+                text_prompt
+            ]
+        )
+
+        bot_response = response.text
+        logger.info(f"Received response from Gemini for image analysis for user {user_id}. Snippet: '{bot_response[:100]}...'")
+
+        # Send the response back to the user
+        formatted_response = format_text(bot_response) # Assuming format_text is available from utils
+        message_parts = split_long_message(formatted_response) # Assuming split_long_message is available from utils
+
+        for i, part in enumerate(message_parts):
+            try:
+                logger.info(f"Sending response part {i+1}/{len(message_parts)} to user {user_id}.")
+                await update.message.reply_text(part, parse_mode=ParseMode.HTML)
+            except BadRequest as e:
+                logger.error(f"BadRequest error sending response part {i+1} to user {user_id}: {str(e)}. Sending raw text.")
+                raw_part = re.sub('<[^<]+?>', '', part)
+                try:
+                    await update.message.reply_text(raw_part, parse_mode=None)
+                except Exception as inner_e:
+                    logger.error(f"Failed to send raw text part {i+1} as well for user {user_id}: {inner_e}")
+                    await update.message.reply_text(f"Ошибка при отправке части ответа (попытка 2): {str(inner_e)}")
+            except Exception as e:
+                 logger.error(f"Unexpected error sending response part {i+1} to user {user_id}: {str(e)}", exc_info=True)
+                 await update.message.reply_text(f"Ошибка при отправке части ответа: {str(e)}")
+
+
+    except Exception as e:
+        logger.error(f"Error processing photo for user {user_id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке изображения: <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
 @check_auth
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
