@@ -295,60 +295,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if photo: # Handle photos first
         logger.info(f"User {user_id} sent a photo.")
         await handle_photo(update, context) # Call the new handler
-        # Do not return here, allow further processing if needed (e.g., caption)
+        return # Stop processing this message further
+
+    if document: # Handle documents next
+        logger.warning(f"User {user_id} sent an unsupported document: {document.file_name}")
+        await update.message.reply_text("Данный файл не поддерживается.")
+        return # Stop processing this message further
 
     # If it's not a photo and not a document, process as a text message or command
-    elif not document: # Only process as text if no document is attached
-        if context.user_data.get('editing_prompt'):
-            logger.info(f"User {user_id} is in prompt editing mode.")
-            if text == "Назад":
-                context.user_data['editing_prompt'] = False
-                logger.info(f"User {user_id} cancelled prompt editing.")
-                await update.message.reply_text("Отмена обновления системного промпта.", reply_markup=get_main_keyboard())
-            else:
-                try:
-                    update_user_prompt(user_id, text)
-                    context.user_data['editing_prompt'] = False
-                    logger.info(f"System prompt updated for user {user_id}.")
-                    await update.message.reply_text("Системный промпт обновлен.", reply_markup=get_main_keyboard())
-                except Exception as e:
-                    logger.error(f"Error updating system prompt for user {user_id}: {e}", exc_info=True)
-                    await update.message.reply_text("Произошла ошибка при обновлении системного промпта.", reply_markup=get_main_keyboard())
-            return # Return after handling prompt editing
-
-        # Handle other text commands and regular messages
-        if text == "Очистить контекст":
-            logger.info(f"User {user_id} clicked 'Очистить контекст'.")
-            await clear(update, context)
-        elif text == "Сменить модель":
-            logger.info(f"User {user_id} clicked 'Сменить модель'.")
-            await change_model(update, context)
-        elif text == "Доп функции":
-            logger.info(f"User {user_id} clicked 'Доп функции'.")
-            await update.message.reply_text("Выберите действие:", reply_markup=get_extra_functions_keyboard())
-        elif text == "Изменить промпт":
-            context.user_data['editing_prompt'] = True
-            logger.info(f"User {user_id} clicked 'Изменить промпт', entering editing mode.")
-            await update.message.reply_text("Введите новый системный промпт. Для отмены введите 'Назад':", reply_markup=get_extra_functions_keyboard())
-        elif text == "Назад":
+    if context.user_data.get('editing_prompt'):
+        logger.info(f"User {user_id} is in prompt editing mode.")
+        if text == "Назад":
             context.user_data['editing_prompt'] = False
-            logger.info(f"User {user_id} clicked 'Назад' from extra functions menu.")
-            await update.message.reply_text(
-                'Выберите действие: (Или начните диалог)',
-                reply_markup=get_main_keyboard()
-            )
-        elif text in MODELS and not context.user_data.get('editing_prompt'):
-            logger.info(f"User {user_id} selected model '{text}' via text input.")
-            context.user_data['model'] = text
-            update_user_model(user_id, text)
-            await update.message.reply_text(
-                f'Модель изменена на <b>{text}</b>',
-                parse_mode=ParseMode.HTML,
-                reply_markup=get_main_keyboard()
-            )
+            logger.info(f"User {user_id} cancelled prompt editing.")
+            await update.message.reply_text("Отмена обновления системного промпта.", reply_markup=get_main_keyboard())
         else:
-            logger.info(f"Processing regular text message from user {user_id}.")
-            await process_message(update, context, text)
+            try:
+                update_user_prompt(user_id, text)
+                context.user_data['editing_prompt'] = False
+                logger.info(f"System prompt updated for user {user_id}.")
+                await update.message.reply_text("Системный промпт обновлен.", reply_markup=get_main_keyboard())
+            except Exception as e:
+                logger.error(f"Error updating system prompt for user {user_id}: {e}", exc_info=True)
+                await update.message.reply_text("Произошла ошибка при обновлении системного промпта.", reply_markup=get_main_keyboard())
+        return # Return after handling prompt editing
+
+    # Handle other text commands and regular messages
+    if text == "Очистить контекст":
+        logger.info(f"User {user_id} clicked 'Очистить контекст'.")
+        await clear(update, context)
+    elif text == "Сменить модель":
+        logger.info(f"User {user_id} clicked 'Сменить модель'.")
+        await change_model(update, context)
+    elif text == "Доп функции":
+        logger.info(f"User {user_id} clicked 'Доп функции'.")
+        await update.message.reply_text("Выберите действие:", reply_markup=get_extra_functions_keyboard())
+    elif text == "Изменить промпт":
+        context.user_data['editing_prompt'] = True
+        logger.info(f"User {user_id} clicked 'Изменить промпт', entering editing mode.")
+        await update.message.reply_text("Введите новый системный промпт. Для отмены введите 'Назад':", reply_markup=get_extra_functions_keyboard())
+    elif text == "Назад":
+        context.user_data['editing_prompt'] = False
+        logger.info(f"User {user_id} clicked 'Назад' from extra functions menu.")
+        await update.message.reply_text(
+            'Выберите действие: (Или начните диалог)',
+            reply_markup=get_main_keyboard()
+        )
+    elif text in MODELS and not context.user_data.get('editing_prompt'):
+        logger.info(f"User {user_id} selected model '{text}' via text input.")
+        context.user_data['model'] = text
+        update_user_model(user_id, text)
+        await update.message.reply_text(
+            f'Модель изменена на <b>{text}</b>',
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
+    else:
+        logger.info(f"Processing regular text message from user {user_id}.")
+        await process_message(update, context, text)
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
