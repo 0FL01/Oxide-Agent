@@ -133,6 +133,7 @@ async def test_handle_message_text_gemini(mock_update, mock_context, mocker):
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "user", "content": "previous"}])
     mock_gemini_generate_async = handlers.gemini_client.GenerativeModel.return_value.generate_content_async
     mock_update.message.text = "Привет!"
+    mock_update.message.photo = None # Explicitly set photo to None for text message test
     mock_context.user_data['model'] = "Gemini 2.0 Flash"
 
     await handle_message(mock_update, mock_context)
