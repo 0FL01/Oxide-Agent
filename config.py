@@ -39,7 +39,7 @@ MODELS = {
     "Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 32000, "provider": "groq"}
 }
 
-DEFAULT_MODEL = "Gemini 2.5 Flash"
+DEFAULT_MODEL = "Gemini 2.0 Flash"
 
 try:
     groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
