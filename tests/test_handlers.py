@@ -40,6 +40,7 @@ def mock_update():
     update.message.voice = None
     update.message.video = None
     update.message.document = None
+    update.message.photo = None
     update.message.text = ""
     update.message.caption = None
     return update
@@ -96,6 +97,11 @@ def mock_api_clients_and_io(mocker):
 
     mocker.patch('telegram.Voice.get_file', AsyncMock(return_value=mock_file_instance))
     mocker.patch('telegram.Video.get_file', AsyncMock(return_value=mock_file_instance))
+
+    # --- Моки для фотографий ---
+    mock_photo_instance = MagicMock()
+    mock_photo_instance.get_file = AsyncMock(return_value=mock_file_instance)
+    mocker.patch('telegram.PhotoSize', return_value=mock_photo_instance)
 
     # --- Моки для os и open ---
     mocker.patch('os.path.exists', return_value=True)
@@ -402,3 +408,30 @@ async def test_handle_voice_transcription_error(mock_update, mock_context, mocke
     mock_voice.get_file.assert_called_once()
     mock_file_returned = await mock_voice.get_file()
     mock_file_returned.download_as_bytearray.assert_called_once()
+
+async def test_handle_photo_message(mock_update, mock_context, mocker):
+    from handlers import handle_photo
+    # Создаем мок для фотографий
+    mock_photo_size = MagicMock()
+    mock_photo_size.get_file = AsyncMock()
+    mock_file = MagicMock()
+    mock_file.download_as_bytearray = AsyncMock(return_value=b'fake_image_data')
+    mock_photo_size.get_file.return_value = mock_file
+    
+    mock_update.message.photo = [mock_photo_size]  # Список с одной фотографией
+    mock_update.message.caption = "Что на картинке?"
+    mock_update.message.text = None
+    
+    # Мокируем gemini_client ответ
+    mock_gemini_response = MagicMock()
+    mock_gemini_response.text = "На картинке кот"
+    handlers.gemini_client.models.generate_content.return_value = mock_gemini_response
+
+    await handle_photo(mock_update, mock_context)
+
+    mock_photo_size.get_file.assert_called_once()
+    mock_file.download_as_bytearray.assert_called_once()
+    handlers.gemini_client.models.generate_content.assert_called_once()
+    mock_update.message.reply_text.assert_called_once_with("На картинке кот", parse_mode=ParseMode.HTML)
+    mock_update.message.chat.send_action.assert_any_call(action=ChatAction.UPLOAD_PHOTO)
+    mock_update.message.chat.send_action.assert_any_call(action=ChatAction.TYPING)
