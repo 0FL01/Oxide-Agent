@@ -12,7 +12,7 @@ import os
 import re
 import asyncio
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google.genai import types
 
 load_dotenv()
 
@@ -40,7 +40,6 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
          raise Exception(f"Модель '{transcription_model_name}' не найдена или не является моделью Gemini в конфигурации.")
 
     model_id = MODELS[transcription_model_name]['id']
-    gemini_model_instance = gemini_client.GenerativeModel(model_id)
     logger.info(f"Используется модель Gemini '{model_id}' для транскрипции.")
 
     uploaded_file = None
@@ -51,7 +50,7 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
             try:
                 logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} загрузки файла {file_path} (MIME: {mime_type}) в Google File API...")
                 uploaded_file = await asyncio.to_thread(
-                    lambda: genai.upload_file(path=file_path, mime_type=mime_type)
+                    lambda: gemini_client.files.upload(file=file_path)
                 )
                 if not uploaded_file or not hasattr(uploaded_file, 'name') or not hasattr(uploaded_file, 'uri'):
                      logger.error(f"Не удалось получить корректный объект файла после загрузки {file_path} на попытке {attempt + 1}.")
@@ -90,14 +89,19 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
             try:
                 logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} запроса транскрипции для файла {uploaded_file.name} через Gemini API...")
                 prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
-                response = await gemini_model_instance.generate_content_async(
-                    contents=[prompt, uploaded_file],
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.4
-                    ),
-                    safety_settings={'HARASSMENT':'block_none',
-                                     'HATE_SPEECH':'block_none',
-                                     'SEXUALLY_EXPLICIT':'block_none',}
+                response = await asyncio.to_thread(
+                    lambda: gemini_client.models.generate_content(
+                        model=model_id,
+                        contents=[prompt, uploaded_file],
+                        config=types.GenerateContentConfig(
+                            temperature=0.4,
+                            safety_settings=[
+                                types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                                types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                                types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                            ]
+                        )
+                    )
                 )
                 logger.info(f"Получен ответ от Gemini API для транскрипции файла {uploaded_file.name} на попытке {attempt + 1}.")
                 last_exception = None # Сбрасываем ошибку при успехе
@@ -165,7 +169,7 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
         if uploaded_file and hasattr(uploaded_file, 'name'):
             try:
                 logger.info(f"Удаление файла {uploaded_file.name} из Google File API...")
-                await asyncio.to_thread(lambda: genai.delete_file(name=uploaded_file.name))
+                await asyncio.to_thread(lambda: gemini_client.files.delete(name=uploaded_file.name))
                 logger.info(f"Файл {uploaded_file.name} успешно удален.")
             except Exception as delete_e:
                 logger.error(f"Не удалось удалить файл {uploaded_file.name} из Google File API: {delete_e}")
@@ -414,32 +418,34 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             if gemini_client is None:
                 raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
 
-            model = gemini_client.GenerativeModel(
-                model_id,
-                system_instruction=system_message
-            )
             # Конвертируем историю для Gemini API
-            converted_messages = []
+            contents = []
             for message in chat_history_db:
                  # Пропускаем системное сообщение, так как оно передается отдельно
                  if message["role"] != "system":
-                     converted_messages.append({
-                         "role": "user" if message["role"] == "user" else "model",
-                         "parts": [message["content"]]
-                     })
+                     if message["role"] == "user":
+                         contents.append(types.UserContent(parts=[types.Part.from_text(message["content"])]))
+                     else:  # assistant/model
+                         contents.append(types.ModelContent(parts=[types.Part.from_text(message["content"])]))
             # Добавляем текущее сообщение пользователя
-            converted_messages.append({"role": "user", "parts": [full_message]})
+            contents.append(types.UserContent(parts=[types.Part.from_text(full_message)]))
 
-            logger.info(f"Sending {len(converted_messages)} converted messages (plus system prompt) to Gemini for user {user_id}.")
-            response = await model.generate_content_async( # Используем async версию
-                converted_messages,
-                generation_config=gemini_client.types.GenerationConfig(
-                    max_output_tokens=max_tokens,
-                    temperature=1,
-                ),
-                safety_settings={'HARASSMENT':'block_none',
-                                 'HATE_SPEECH':'block_none',
-                                 'SEXUALLY_EXPLICIT':'block_none'}
+            logger.info(f"Sending {len(contents)} contents (plus system instruction) to Gemini for user {user_id}.")
+            response = await asyncio.to_thread(
+                lambda: gemini_client.models.generate_content(
+                    model=model_id,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_message,
+                        max_output_tokens=max_tokens,
+                        temperature=1.0,
+                        safety_settings=[
+                            types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                            types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                            types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                        ]
+                    )
+                )
             )
             # Проверка на блокировку ответа
             if not response.text and hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
@@ -524,18 +530,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.chat.send_action(action=ChatAction.TYPING) # Show typing action while processing
 
         # Call Gemini API
-        model_name = "gemini-1.5-flash" # Using flash model as requested
+        model_name = "gemini-2.0-flash-001" # Используем актуальную модель
         logger.info(f"Sending image and prompt to Gemini model '{model_name}' for user {user_id}.")
 
-        response = await gemini_client.models.generate_content(
-            model=model_name,
-            contents=[
-                genai.types.Part.from_bytes(
-                    data=bytes(photo_bytes), # Convert bytearray to bytes
-                    mime_type=mime_type,
-                ),
-                text_prompt
-            ]
+        response = await asyncio.to_thread(
+            lambda: gemini_client.models.generate_content(
+                model=model_name,
+                contents=[
+                    text_prompt,
+                    types.Part.from_bytes(
+                        data=bytes(photo_bytes), # Convert bytearray to bytes
+                        mime_type=mime_type,
+                    ),
+                ]
+            )
         )
 
         bot_response = response.text

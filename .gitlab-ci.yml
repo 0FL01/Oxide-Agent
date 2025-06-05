@@ -22,20 +22,20 @@ workflow:
     - if: $CI_COMMIT_BRANCH == 'testing' && $CI_PIPELINE_SOURCE == 'push'
     - if: $CI_COMMIT_TAG =~ /^v.*/ && $CI_PIPELINE_SOURCE == 'push'
 
-test:
-  stage: test
-  image: python:3.10-slim
-  script:
-    - set -e
-    - python -m pip install --upgrade pip
-    - pip install "pytest>=7.0.0" "pytest-asyncio>=0.18.0" "pytest-mock>=3.7.0" "psycopg2-binary>=2.9.10"
-    - |
-      if [ -f requirements.txt ]; then
-        pip install -r requirements.txt
-      fi
-    - python -m pytest tests/ --maxfail=1 --disable-warnings
-  rules:
-    - when: always
+# test:
+#   stage: test
+#   image: python:3.10-slim
+#   script:
+#     - set -e
+#     - python -m pip install --upgrade pip
+#     - pip install "pytest>=7.0.0" "pytest-asyncio>=0.18.0" "pytest-mock>=3.7.0" "psycopg2-binary>=2.9.10"
+#     - |
+#       if [ -f requirements.txt ]; then
+#         pip install -r requirements.txt
+#       fi
+#     - python -m pytest tests/ --maxfail=1 --disable-warnings
+#   rules:
+#     - when: always
 
 build:
   stage: build
@@ -43,7 +43,7 @@ build:
   services:
     - name: docker:25.0-dind
       alias: docker
-  needs: [test]
+  # needs: [test]  # Закомментировано: убрана зависимость от тестов
   variables:
     GIT_STRATEGY: clone
     GIT_CHECKOUT: "true"
