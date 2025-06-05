@@ -162,6 +162,10 @@ async def main():
         application.add_handler(MessageHandler(filters.VIDEO, handle_video))
         logger.info("Video message handler registered.")
 
+        # Добавляем обработчик для фотографий
+        application.add_handler(MessageHandler(filters.PHOTO, handle_message))
+        logger.info("Photo message handler registered.")
+
         logger.info("All handlers registered.")
 
         logger.info("Starting bot polling...")

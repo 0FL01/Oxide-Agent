@@ -268,9 +268,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
     photo = update.message.photo # Add this line
     logger.info(f"Handling message from user {user_id} ({user_name}). Text: '{text[:100]}...'. Document attached: {bool(document)}. Photo attached: {bool(photo)}") # Update log message
+    
+    # Дополнительное логирование для отладки
+    if photo:
+        logger.info(f"Photo details: {len(photo)} sizes available. Largest: {photo[-1].width}x{photo[-1].height}")
+    if update.message.caption:
+        logger.info(f"Photo caption: '{update.message.caption}'")
 
     if photo: # Handle photos first
-        logger.info(f"User {user_id} sent a photo.")
+        logger.info(f"User {user_id} sent a photo. Calling handle_photo function.")
         await handle_photo(update, context) # Call the new handler
         return # Stop processing this message further
 
