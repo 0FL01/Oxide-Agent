@@ -199,8 +199,8 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
     mock_file_returned = await mock_voice.get_file()
     mock_file_returned.download_as_bytearray.assert_called_once()
 
-    expected_filename = f"tempvoice_{mock_update.effective_user.id}.ogg"
-    mock_audio_to_text.assert_called_once_with(expected_filename, 'audio/ogg')
+    expected_filename = f"tempvoice_{mock_update.effective_user.id}.wav"
+    mock_audio_to_text.assert_called_once_with(expected_filename, 'audio/wav')
     mock_update.message.chat.send_action.assert_called_once_with(action=ChatAction.TYPING)
     mock_update.message.reply_text.assert_called_once_with(
         f"Распознано: \"Mocked transcription text\"\n\nОбрабатываю запрос..."
@@ -402,7 +402,7 @@ async def test_handle_voice_transcription_error(mock_update, mock_context, mocke
     mock_update.message.reply_text.assert_called_once_with(
         f"Произошла ошибка при обработке голосового сообщения: {error_message}"
     )
-    expected_filename = f"tempvoice_{mock_update.effective_user.id}.ogg"
+    expected_filename = f"tempvoice_{mock_update.effective_user.id}.wav"
     handlers.os.remove.assert_called_once_with(expected_filename)
     # Проверяем, что скачивание все равно было вызвано до ошибки
     mock_voice.get_file.assert_called_once()
