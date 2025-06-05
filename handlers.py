@@ -50,7 +50,7 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
             try:
                 logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} загрузки файла {file_path} (MIME: {mime_type}) в Google File API...")
                 uploaded_file = await asyncio.to_thread(
-                    lambda: gemini_client.files.upload(file=file_path)
+                    lambda: gemini_client.files.upload(file=file_path, mime_type=mime_type)
                 )
                 if not uploaded_file or not hasattr(uploaded_file, 'name') or not hasattr(uploaded_file, 'uri'):
                      logger.error(f"Не удалось получить корректный объект файла после загрузки {file_path} на попытке {attempt + 1}.")
