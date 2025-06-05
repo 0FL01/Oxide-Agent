@@ -1,7 +1,6 @@
-acwlc-1.0.1.tar
-allowed_users.txt
 .env
-acwlc_before.tar
 logs
 .dockerignore
 not_env
+fresh_docs.md
+MIGRATION_NOTES.md

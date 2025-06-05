@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-import google.api_core.exceptions
+from google.genai import errors as genai_errors
 from config import chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client
 from utils import split_long_message, clean_html, format_text
 from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
@@ -12,7 +12,7 @@ import os
 import re
 import asyncio
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google.genai import types
 
 load_dotenv()
 
@@ -40,89 +40,73 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
          raise Exception(f"Модель '{transcription_model_name}' не найдена или не является моделью Gemini в конфигурации.")
 
     model_id = MODELS[transcription_model_name]['id']
-    gemini_model_instance = gemini_client.GenerativeModel(model_id)
     logger.info(f"Используется модель Gemini '{model_id}' для транскрипции.")
 
-    uploaded_file = None
-    last_exception = None
-
     try:
-        for attempt in range(MAX_RETRIES):
-            try:
-                logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} загрузки файла {file_path} (MIME: {mime_type}) в Google File API...")
-                uploaded_file = await asyncio.to_thread(
-                    lambda: genai.upload_file(path=file_path, mime_type=mime_type)
-                )
-                if not uploaded_file or not hasattr(uploaded_file, 'name') or not hasattr(uploaded_file, 'uri'):
-                     logger.error(f"Не удалось получить корректный объект файла после загрузки {file_path} на попытке {attempt + 1}.")
-                     # Не бросаем исключение сразу, даем шанс следующей попытке, если это не последняя
-                     if attempt == MAX_RETRIES - 1:
-                         raise Exception("Ошибка Google File API: Не удалось загрузить файл или получить его данные после нескольких попыток.")
-                     last_exception = Exception("Ошибка Google File API: Некорректный ответ при загрузке файла.") # Сохраняем для последней попытки
-                     await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1)) # Задержка перед следующей попыткой
-                     continue # Переходим к следующей попытке
-
-                logger.info(f"Файл успешно загружен на попытке {attempt + 1}: {uploaded_file.name}, URI: {uploaded_file.uri}")
-                last_exception = None # Сбрасываем ошибку при успехе
-                break # Выходим из цикла при успешной загрузке
-
-            except google.api_core.exceptions.ServiceUnavailable as e:
-                last_exception = e
-                logger.warning(f"Попытка загрузки {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
-                if attempt == MAX_RETRIES - 1:
-                    logger.error(f"Загрузка файла {file_path} не удалась после {MAX_RETRIES} попыток.")
-                    raise # Пробрасываем исключение после последней попытки
-                await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
-            except Exception as e:
-                 logger.error(f"Неперехватываемая ошибка при загрузке файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
-                 raise # Пробрасываем другие ошибки немедленно
-
-        if last_exception: # Если цикл завершился из-за ошибок, но исключение не было проброшено (например, некорректный объект файла)
-            logger.error(f"Загрузка файла {file_path} окончательно не удалась.")
-            raise last_exception
-
-        await asyncio.sleep(2)
-
+        # Читаем аудиофайл как байты
+        with open(file_path, 'rb') as f:
+            audio_bytes = f.read()
+        
+        logger.info(f"Загружен аудиофайл {file_path} размером {len(audio_bytes)} байт. Отправляю на транскрипцию...")
+        
         response = None
-        last_exception = None # Сбрасываем для следующего цикла
+        last_exception = None
 
         for attempt in range(MAX_RETRIES):
             try:
-                logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} запроса транскрипции для файла {uploaded_file.name} через Gemini API...")
+                logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} запроса транскрипции для файла {file_path} через Gemini API...")
                 prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
-                response = await gemini_model_instance.generate_content_async(
-                    contents=[prompt, uploaded_file],
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.4
-                    ),
-                    safety_settings={'HARASSMENT':'block_none',
-                                     'HATE_SPEECH':'block_none',
-                                     'SEXUALLY_EXPLICIT':'block_none',}
+                
+                # Используем Part.from_bytes вместо загрузки через File API
+                audio_part = types.Part.from_bytes(
+                    data=audio_bytes,
+                    mime_type=mime_type,
                 )
-                logger.info(f"Получен ответ от Gemini API для транскрипции файла {uploaded_file.name} на попытке {attempt + 1}.")
+                
+                response = await asyncio.to_thread(
+                    lambda: gemini_client.models.generate_content(
+                        model=model_id,
+                        contents=[prompt, audio_part],
+                        config=types.GenerateContentConfig(
+                            temperature=0.4,
+                            safety_settings=[
+                                types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                                types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                                types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                            ]
+                        )
+                    )
+                )
+                logger.info(f"Получен ответ от Gemini API для транскрипции файла {file_path} на попытке {attempt + 1}.")
                 last_exception = None # Сбрасываем ошибку при успехе
                 break # Выходим из цикла при успешном получении ответа
 
-            except google.api_core.exceptions.ServiceUnavailable as e:
+            except genai_errors.APIError as e:
                 last_exception = e
-                logger.warning(f"Попытка транскрипции {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
-                if attempt == MAX_RETRIES - 1:
-                    logger.error(f"Транскрипция файла {uploaded_file.name} не удалась после {MAX_RETRIES} попыток.")
-                    raise # Пробрасываем исключение после последней попытки
-                await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+                # Проверяем статус код для определения типа ошибки
+                if hasattr(e, 'code') and e.code == 503:
+                    logger.warning(f"Попытка транскрипции {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
+                    if attempt == MAX_RETRIES - 1:
+                        logger.error(f"Транскрипция файла {file_path} не удалась после {MAX_RETRIES} попыток.")
+                        raise # Пробрасываем исключение после последней попытки
+                    await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+                else:
+                    # Для других ошибок API пробрасываем сразу
+                    logger.error(f"API ошибка при транскрипции файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
+                    raise
             except Exception as e:
-                 logger.error(f"Неперехватываемая ошибка при транскрипции файла {uploaded_file.name} на попытке {attempt + 1}: {e}", exc_info=True)
-                 raise # Пробрасываем другие ошибки немедленно
+                logger.error(f"Неперехватываемая ошибка при транскрипции файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
+                raise # Пробрасываем другие ошибки немедленно
 
         if last_exception: # Если цикл завершился из-за ошибок
-             logger.error(f"Получение транскрипции для {uploaded_file.name} окончательно не удалось.")
+             logger.error(f"Получение транскрипции для {file_path} окончательно не удалось.")
              raise last_exception
 
         if response and hasattr(response, 'text') and response.text:
             transcript_text = response.text.strip()
-            logger.info(f"Транскрипция для {uploaded_file.name} получена (длина: {len(transcript_text)}).")
+            logger.info(f"Транскрипция для {file_path} получена (длина: {len(transcript_text)}).")
             if "не могу обработать" in transcript_text.lower() or "не содержит речи" in transcript_text.lower() or "не удалось извлечь аудио" in transcript_text.lower():
-                 logger.warning(f"Gemini вернул сообщение о невозможности транскрипции для {uploaded_file.name}: {transcript_text}")
+                 logger.warning(f"Gemini вернул сообщение о невозможности транскрипции для {file_path}: {transcript_text}")
                  return f"(Gemini): {transcript_text}"
             return transcript_text
         elif response and hasattr(response, 'prompt_feedback') and response.prompt_feedback and hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
@@ -134,23 +118,26 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
              try:
                  candidate_text = response.candidates[0].content.parts[0].text
                  if candidate_text:
-                     logger.warning(f"Основной текст ответа Gemini пуст, но найден текст в response.candidates для {uploaded_file.name}. Используется он.")
+                     logger.warning(f"Основной текст ответа Gemini пуст, но найден текст в response.candidates для {file_path}. Используется он.")
                      return candidate_text.strip()
                  else:
                      raise AttributeError("Текст в candidates пуст")
              except (AttributeError, IndexError, TypeError) as e:
-                 logger.warning(f"Не удалось извлечь текст транскрипции из response.candidates для {uploaded_file.name}. Ошибка: {e}. Ответ: {response}")
+                 logger.warning(f"Не удалось извлечь текст транскрипции из response.candidates для {file_path}. Ошибка: {e}. Ответ: {response}")
                  raise Exception("Ошибка Gemini API: Не удалось получить транскрипцию (пустой или некорректный ответ).")
         else:
-             logger.warning(f"Gemini API вернул пустой или неожиданный ответ для транскрипции файла {uploaded_file.name}: {response}")
+             logger.warning(f"Gemini API вернул пустой или неожиданный ответ для транскрипции файла {file_path}: {response}")
              raise Exception("Ошибка Gemini API: Не удалось получить транскрипцию (пустой или неожиданный ответ).")
 
     except Exception as e:
         logger.error(f"Ошибка при транскрипции файла {file_path} через Gemini: {e}", exc_info=True)
         error_str = str(e)
-        if isinstance(e, google.api_core.exceptions.ServiceUnavailable):
-             # Если ошибка 503 проброшена после всех ретраев
-             raise Exception(f"Ошибка Gemini API: Сервис недоступен после {MAX_RETRIES} попыток (503).")
+        if isinstance(e, genai_errors.APIError):
+             # Если ошибка API - проверяем код ошибки
+             if hasattr(e, 'code') and e.code == 503:
+                 raise Exception(f"Ошибка Gemini API: Сервис недоступен после {MAX_RETRIES} попыток (503).")
+             else:
+                 raise Exception(f"Ошибка Gemini API: {e}")
         elif "API key not valid" in error_str:
             raise Exception("Ошибка Gemini API: Неверный или неактивный ключ API.")
         elif "quota" in error_str.lower() or "resource_exhausted" in error_str.lower():
@@ -160,16 +147,6 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
         elif "Deadline exceeded" in error_str or "504" in error_str:
              raise Exception("Ошибка Gemini API: Превышено время ожидания ответа от сервера.")
         raise Exception(f"Ошибка Gemini API при транскрипции: {error_str}")
-
-    finally:
-        if uploaded_file and hasattr(uploaded_file, 'name'):
-            try:
-                logger.info(f"Удаление файла {uploaded_file.name} из Google File API...")
-                await asyncio.to_thread(lambda: genai.delete_file(name=uploaded_file.name))
-                logger.info(f"Файл {uploaded_file.name} успешно удален.")
-            except Exception as delete_e:
-                logger.error(f"Не удалось удалить файл {uploaded_file.name} из Google File API: {delete_e}")
-
 
 def get_main_keyboard():
     keyboard = [
@@ -289,13 +266,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.username or update.effective_user.first_name
     text = update.message.text or update.message.caption or ""
     document = update.message.document
-    logger.info(f"Handling message from user {user_id} ({user_name}). Text: '{text[:100]}...'. Document attached: {bool(document)}")
+    photo = update.message.photo # Add this line
+    logger.info(f"Handling message from user {user_id} ({user_name}). Text: '{text[:100]}...'. Document attached: {bool(document)}. Photo attached: {bool(photo)}") # Update log message
+    
+    # Дополнительное логирование для отладки
+    if photo:
+        logger.info(f"Photo details: {len(photo)} sizes available. Largest: {photo[-1].width}x{photo[-1].height}")
+    if update.message.caption:
+        logger.info(f"Photo caption: '{update.message.caption}'")
 
-    if document:
+    if photo: # Handle photos first
+        logger.info(f"User {user_id} sent a photo. Calling handle_photo function.")
+        await handle_photo(update, context) # Call the new handler
+        return # Stop processing this message further
+
+    if document: # Handle documents next
         logger.warning(f"User {user_id} sent an unsupported document: {document.file_name}")
         await update.message.reply_text("Данный файл не поддерживается.")
-        return
+        return # Stop processing this message further
 
+    # If it's not a photo and not a document, process as a text message or command
     if context.user_data.get('editing_prompt'):
         logger.info(f"User {user_id} is in prompt editing mode.")
         if text == "Назад":
@@ -311,8 +301,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Error updating system prompt for user {user_id}: {e}", exc_info=True)
                 await update.message.reply_text("Произошла ошибка при обновлении системного промпта.", reply_markup=get_main_keyboard())
-        return
+        return # Return after handling prompt editing
 
+    # Handle other text commands and regular messages
     if text == "Очистить контекст":
         logger.info(f"User {user_id} clicked 'Очистить контекст'.")
         await clear(update, context)
@@ -406,32 +397,34 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             if gemini_client is None:
                 raise ValueError("Gemini client is not initialized. Please check your GEMINI_API_KEY.")
 
-            model = gemini_client.GenerativeModel(
-                model_id,
-                system_instruction=system_message
-            )
             # Конвертируем историю для Gemini API
-            converted_messages = []
+            contents = []
             for message in chat_history_db:
                  # Пропускаем системное сообщение, так как оно передается отдельно
                  if message["role"] != "system":
-                     converted_messages.append({
-                         "role": "user" if message["role"] == "user" else "model",
-                         "parts": [message["content"]]
-                     })
+                     if message["role"] == "user":
+                         contents.append(types.UserContent(parts=[types.Part.from_text(text=message["content"])]))
+                     else:  # assistant/model
+                         contents.append(types.ModelContent(parts=[types.Part.from_text(text=message["content"])]))
             # Добавляем текущее сообщение пользователя
-            converted_messages.append({"role": "user", "parts": [full_message]})
+            contents.append(types.UserContent(parts=[types.Part.from_text(text=full_message)]))
 
-            logger.info(f"Sending {len(converted_messages)} converted messages (plus system prompt) to Gemini for user {user_id}.")
-            response = await model.generate_content_async( # Используем async версию
-                converted_messages,
-                generation_config=gemini_client.types.GenerationConfig(
-                    max_output_tokens=max_tokens,
-                    temperature=1,
-                ),
-                safety_settings={'HARASSMENT':'block_none',
-                                 'HATE_SPEECH':'block_none',
-                                 'SEXUALLY_EXPLICIT':'block_none'}
+            logger.info(f"Sending {len(contents)} contents (plus system instruction) to Gemini for user {user_id}.")
+            response = await asyncio.to_thread(
+                lambda: gemini_client.models.generate_content(
+                    model=model_id,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_message,
+                        max_output_tokens=max_tokens,
+                        temperature=1.0,
+                        safety_settings=[
+                            types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                            types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                            types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                        ]
+                    )
+                )
             )
             # Проверка на блокировку ответа
             if not response.text and hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
@@ -481,11 +474,120 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 
 @check_auth
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_name = update.effective_user.username or update.effective_user.first_name
+    logger.info(f"Processing photo from user {user_id} ({user_name}).")
+
+    if not gemini_client:
+        logger.error("Gemini client is not initialized.")
+        await update.message.reply_text("Ошибка: Клиент Google Gemini не инициализирован.")
+        return
+
+    # Get the largest photo size
+    photo_sizes = update.message.photo
+    if not photo_sizes:
+        logger.warning(f"No photo sizes found in message from user {user_id}.")
+        await update.message.reply_text("Не удалось получить изображение.")
+        return
+
+    # The last photo size is usually the largest
+    largest_photo = photo_sizes[-1]
+
+    try:
+        await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO) # Show uploading photo action
+        photo_file = await largest_photo.get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        mime_type = "image/jpeg" # Assuming JPEG for simplicity
+
+        logger.info(f"Photo downloaded from user {user_id}. Size: {len(photo_bytes)} bytes.")
+
+        # Determine the text prompt. Use caption if available, otherwise a default prompt.
+        text_prompt = update.message.caption or "Опиши это изображение."
+        logger.info(f"Using text prompt for image analysis: '{text_prompt[:100]}...'")
+
+        # Получаем пользовательский системный промпт
+        user_prompt = get_user_prompt(user_id)
+        system_message = user_prompt if user_prompt else SYSTEM_MESSAGE
+        logger.info(f"Using system message for user {user_id}: '{system_message[:100]}...'")
+
+        await update.message.chat.send_action(action=ChatAction.TYPING) # Show typing action while processing
+
+        # Формируем contents согласно документации
+        contents = [
+            types.Part.from_text(text=text_prompt),
+            types.Part.from_bytes(
+                data=bytes(photo_bytes), # Convert bytearray to bytes
+                mime_type=mime_type,
+            ),
+        ]
+
+        # Call Gemini API
+        model_name = "gemini-2.0-flash-001" # Используем актуальную модель
+        logger.info(f"Sending image and prompt to Gemini model '{model_name}' for user {user_id}.")
+
+        response = await asyncio.to_thread(
+            lambda: gemini_client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_message,
+                    max_output_tokens=4000,
+                    temperature=0.7,
+                    safety_settings=[
+                        types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                        types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                        types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                    ]
+                )
+            )
+        )
+
+        # Проверка на блокировку ответа
+        if not response.text and hasattr(response, 'prompt_feedback') and response.prompt_feedback and hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
+            block_reason = response.prompt_feedback.block_reason
+            block_reason_message = response.prompt_feedback.block_reason_message if hasattr(response.prompt_feedback, 'block_reason_message') else 'Нет деталей'
+            logger.warning(f"Ответ Gemini заблокирован по причине: {block_reason}. Детали: {block_reason_message}")
+            bot_response = f"_(Ответ заблокирован Gemini по причине: {block_reason})_"
+        else:
+            bot_response = response.text
+
+        logger.info(f"Received response from Gemini for image analysis for user {user_id}. Snippet: '{bot_response[:100]}...'")
+
+        # Сохраняем сообщения в истории чата
+        save_message(user_id, "user", f"[Изображение] {text_prompt}")
+        save_message(user_id, "assistant", bot_response)
+
+        # Send the response back to the user
+        formatted_response = format_text(bot_response) # Assuming format_text is available from utils
+        message_parts = split_long_message(formatted_response) # Assuming split_long_message is available from utils
+
+        for i, part in enumerate(message_parts):
+            try:
+                logger.info(f"Sending response part {i+1}/{len(message_parts)} to user {user_id}.")
+                await update.message.reply_text(part, parse_mode=ParseMode.HTML)
+            except BadRequest as e:
+                logger.error(f"BadRequest error sending response part {i+1} to user {user_id}: {str(e)}. Sending raw text.")
+                raw_part = re.sub('<[^<]+?>', '', part)
+                try:
+                    await update.message.reply_text(raw_part, parse_mode=None)
+                except Exception as inner_e:
+                    logger.error(f"Failed to send raw text part {i+1} as well for user {user_id}: {inner_e}")
+                    await update.message.reply_text(f"Ошибка при отправке части ответа (попытка 2): {str(inner_e)}")
+            except Exception as e:
+                 logger.error(f"Unexpected error sending response part {i+1} to user {user_id}: {str(e)}", exc_info=True)
+                 await update.message.reply_text(f"Ошибка при отправке части ответа: {str(e)}")
+
+    except Exception as e:
+        logger.error(f"Error processing photo for user {user_id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке изображения: <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+
+@check_auth
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.username or update.effective_user.first_name
     logger.info(f"Received voice message from user {user_id} ({user_name}).")
-    temp_filename = f"tempvoice_{user_id}.ogg"
+    temp_filename = f"tempvoice_{user_id}.wav"
     logger.info(f"Preparing to download voice to {temp_filename}.")
 
     try:
@@ -497,7 +599,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Voice message downloaded to {temp_filename}. Transcribing using Gemini...")
 
         # --- Замена Groq Whisper на Gemini ---
-        recognized_text = await audio_to_text(temp_filename, 'audio/ogg')
+        recognized_text = await audio_to_text(temp_filename, 'audio/wav')
         # --- Конец замены ---
 
         logger.info(f"Voice message from user {user_id} ({user_name}) transcribed by Gemini: '{recognized_text}'")

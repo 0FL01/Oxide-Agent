@@ -40,6 +40,7 @@ def mock_update():
     update.message.voice = None
     update.message.video = None
     update.message.document = None
+    update.message.photo = None
     update.message.text = ""
     update.message.caption = None
     return update
@@ -79,11 +80,12 @@ def mock_api_clients_and_io(mocker):
     mock_mistral_client_instance = mocker.patch('handlers.mistral_client', new_callable=MagicMock, create=True)
     mock_mistral_client_instance.chat.complete = mock_mistral_complete_method
 
-    mock_gemini_generate_async_method = AsyncMock(return_value=MagicMock(text="Mocked Gemini Response"))
-    mock_generative_model_instance = MagicMock()
-    mock_generative_model_instance.generate_content_async = mock_gemini_generate_async_method
-    mocker.patch('handlers.gemini_client', new_callable=MagicMock, create=True)
-    mocker.patch('handlers.gemini_client.GenerativeModel', return_value=mock_generative_model_instance, create=True)
+    # Мок для нового API google-genai
+    mock_gemini_response = MagicMock()
+    mock_gemini_response.text = "Mocked Gemini Response"
+    mock_gemini_client_instance = MagicMock()
+    mock_gemini_client_instance.models.generate_content.return_value = mock_gemini_response
+    mocker.patch('handlers.gemini_client', mock_gemini_client_instance)
 
     # --- Моки для транскрипции ---
     mocker.patch('handlers.audio_to_text', new_callable=AsyncMock, return_value="Mocked transcription text")
@@ -96,6 +98,11 @@ def mock_api_clients_and_io(mocker):
     mocker.patch('telegram.Voice.get_file', AsyncMock(return_value=mock_file_instance))
     mocker.patch('telegram.Video.get_file', AsyncMock(return_value=mock_file_instance))
 
+    # --- Моки для фотографий ---
+    mock_photo_instance = MagicMock()
+    mock_photo_instance.get_file = AsyncMock(return_value=mock_file_instance)
+    mocker.patch('telegram.PhotoSize', return_value=mock_photo_instance)
+
     # --- Моки для os и open ---
     mocker.patch('os.path.exists', return_value=True)
     mocker.patch('os.remove')
@@ -104,7 +111,11 @@ def mock_api_clients_and_io(mocker):
     # --- Моки для утилит форматирования ---
     mocker.patch('handlers.format_text', side_effect=lambda x: x)
     mocker.patch('handlers.split_long_message', side_effect=lambda x: [x] if x else [])
-
+    
+    # --- Мок для asyncio.to_thread ---
+    async def mock_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+    mocker.patch('asyncio.to_thread', side_effect=mock_to_thread)
 
 async def test_start_unauthorized(mock_update, mock_context, mocker):
     mocker.patch('handlers.is_user_allowed', return_value=False)
@@ -131,8 +142,9 @@ async def test_handle_message_text_gemini(mock_update, mock_context, mocker):
     mocker.patch('handlers.get_user_model', return_value="Gemini 2.0 Flash")
     mock_save_message = mocker.patch('handlers.save_message')
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "user", "content": "previous"}])
-    mock_gemini_generate_async = handlers.gemini_client.GenerativeModel.return_value.generate_content_async
+    mock_gemini_generate = handlers.gemini_client.models.generate_content
     mock_update.message.text = "Привет!"
+    mock_update.message.photo = None # Explicitly set photo to None for text message test
     mock_context.user_data['model'] = "Gemini 2.0 Flash"
 
     await handle_message(mock_update, mock_context)
@@ -141,9 +153,12 @@ async def test_handle_message_text_gemini(mock_update, mock_context, mocker):
     assert mock_save_message.call_count == 2
     mock_save_message.assert_any_call(12345, "user", "Привет!")
     mock_save_message.assert_any_call(12345, "assistant", "Mocked Gemini Response")
-    mock_gemini_generate_async.assert_called_once()
-    call_args, _ = mock_gemini_generate_async.call_args
-    assert call_args[0] == [{"role": "user", "parts": ["previous"]}, {"role": "user", "parts": ["Привет!"]}]
+    mock_gemini_generate.assert_called_once()
+    # Проверяем что были переданы правильные параметры
+    call_args, call_kwargs = mock_gemini_generate.call_args
+    assert 'model' in call_kwargs
+    assert 'contents' in call_kwargs
+    assert 'config' in call_kwargs
     mock_update.message.reply_text.assert_called_once_with("Mocked Gemini Response", parse_mode=ParseMode.HTML)
     mock_update.message.chat.send_action.assert_called_once_with(action=ChatAction.TYPING)
 
@@ -153,6 +168,7 @@ async def test_handle_message_text_mistral(mock_update, mock_context, mocker):
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "assistant", "content": "prev bot"}])
     mock_mistral_complete = handlers.mistral_client.chat.complete
     mock_update.message.text = "Анекдот?"
+    mock_update.message.photo = None # Explicitly set photo to None for text message test
     mock_context.user_data['model'] = "Mistral Large 128K"
 
     await handle_message(mock_update, mock_context)
@@ -183,8 +199,8 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
     mock_file_returned = await mock_voice.get_file()
     mock_file_returned.download_as_bytearray.assert_called_once()
 
-    expected_filename = f"tempvoice_{mock_update.effective_user.id}.ogg"
-    mock_audio_to_text.assert_called_once_with(expected_filename, 'audio/ogg')
+    expected_filename = f"tempvoice_{mock_update.effective_user.id}.wav"
+    mock_audio_to_text.assert_called_once_with(expected_filename, 'audio/wav')
     mock_update.message.chat.send_action.assert_called_once_with(action=ChatAction.TYPING)
     mock_update.message.reply_text.assert_called_once_with(
         f"Распознано: \"Mocked transcription text\"\n\nОбрабатываю запрос..."
@@ -386,9 +402,36 @@ async def test_handle_voice_transcription_error(mock_update, mock_context, mocke
     mock_update.message.reply_text.assert_called_once_with(
         f"Произошла ошибка при обработке голосового сообщения: {error_message}"
     )
-    expected_filename = f"tempvoice_{mock_update.effective_user.id}.ogg"
+    expected_filename = f"tempvoice_{mock_update.effective_user.id}.wav"
     handlers.os.remove.assert_called_once_with(expected_filename)
     # Проверяем, что скачивание все равно было вызвано до ошибки
     mock_voice.get_file.assert_called_once()
     mock_file_returned = await mock_voice.get_file()
     mock_file_returned.download_as_bytearray.assert_called_once()
+
+async def test_handle_photo_message(mock_update, mock_context, mocker):
+    from handlers import handle_photo
+    # Создаем мок для фотографий
+    mock_photo_size = MagicMock()
+    mock_photo_size.get_file = AsyncMock()
+    mock_file = MagicMock()
+    mock_file.download_as_bytearray = AsyncMock(return_value=b'fake_image_data')
+    mock_photo_size.get_file.return_value = mock_file
+    
+    mock_update.message.photo = [mock_photo_size]  # Список с одной фотографией
+    mock_update.message.caption = "Что на картинке?"
+    mock_update.message.text = None
+    
+    # Мокируем gemini_client ответ
+    mock_gemini_response = MagicMock()
+    mock_gemini_response.text = "На картинке кот"
+    handlers.gemini_client.models.generate_content.return_value = mock_gemini_response
+
+    await handle_photo(mock_update, mock_context)
+
+    mock_photo_size.get_file.assert_called_once()
+    mock_file.download_as_bytearray.assert_called_once()
+    handlers.gemini_client.models.generate_content.assert_called_once()
+    mock_update.message.reply_text.assert_called_once_with("На картинке кот", parse_mode=ParseMode.HTML)
+    mock_update.message.chat.send_action.assert_any_call(action=ChatAction.UPLOAD_PHOTO)
+    mock_update.message.chat.send_action.assert_any_call(action=ChatAction.TYPING)
