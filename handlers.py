@@ -1,7 +1,7 @@
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
-import google.api_core.exceptions
+from google.genai import errors as genai_errors
 from config import chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client
 from utils import split_long_message, clean_html, format_text
 from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
@@ -65,16 +65,22 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
                 last_exception = None # Сбрасываем ошибку при успехе
                 break # Выходим из цикла при успешной загрузке
 
-            except google.api_core.exceptions.ServiceUnavailable as e:
+            except genai_errors.APIError as e:
                 last_exception = e
-                logger.warning(f"Попытка загрузки {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
-                if attempt == MAX_RETRIES - 1:
-                    logger.error(f"Загрузка файла {file_path} не удалась после {MAX_RETRIES} попыток.")
-                    raise # Пробрасываем исключение после последней попытки
-                await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+                # Проверяем статус код для определения типа ошибки
+                if hasattr(e, 'code') and e.code == 503:
+                    logger.warning(f"Попытка загрузки {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
+                    if attempt == MAX_RETRIES - 1:
+                        logger.error(f"Загрузка файла {file_path} не удалась после {MAX_RETRIES} попыток.")
+                        raise # Пробрасываем исключение после последней попытки
+                    await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+                else:
+                    # Для других ошибок API пробрасываем сразу
+                    logger.error(f"API ошибка при загрузке файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
+                    raise
             except Exception as e:
-                 logger.error(f"Неперехватываемая ошибка при загрузке файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
-                 raise # Пробрасываем другие ошибки немедленно
+                logger.error(f"Неперехватываемая ошибка при загрузке файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
+                raise # Пробрасываем другие ошибки немедленно
 
         if last_exception: # Если цикл завершился из-за ошибок, но исключение не было проброшено (например, некорректный объект файла)
             logger.error(f"Загрузка файла {file_path} окончательно не удалась.")
@@ -107,16 +113,22 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
                 last_exception = None # Сбрасываем ошибку при успехе
                 break # Выходим из цикла при успешном получении ответа
 
-            except google.api_core.exceptions.ServiceUnavailable as e:
+            except genai_errors.APIError as e:
                 last_exception = e
-                logger.warning(f"Попытка транскрипции {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
-                if attempt == MAX_RETRIES - 1:
-                    logger.error(f"Транскрипция файла {uploaded_file.name} не удалась после {MAX_RETRIES} попыток.")
-                    raise # Пробрасываем исключение после последней попытки
-                await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+                # Проверяем статус код для определения типа ошибки
+                if hasattr(e, 'code') and e.code == 503:
+                    logger.warning(f"Попытка транскрипции {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
+                    if attempt == MAX_RETRIES - 1:
+                        logger.error(f"Транскрипция файла {uploaded_file.name} не удалась после {MAX_RETRIES} попыток.")
+                        raise # Пробрасываем исключение после последней попытки
+                    await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+                else:
+                    # Для других ошибок API пробрасываем сразу
+                    logger.error(f"API ошибка при транскрипции файла {uploaded_file.name} на попытке {attempt + 1}: {e}", exc_info=True)
+                    raise
             except Exception as e:
-                 logger.error(f"Неперехватываемая ошибка при транскрипции файла {uploaded_file.name} на попытке {attempt + 1}: {e}", exc_info=True)
-                 raise # Пробрасываем другие ошибки немедленно
+                logger.error(f"Неперехватываемая ошибка при транскрипции файла {uploaded_file.name} на попытке {attempt + 1}: {e}", exc_info=True)
+                raise # Пробрасываем другие ошибки немедленно
 
         if last_exception: # Если цикл завершился из-за ошибок
              logger.error(f"Получение транскрипции для {uploaded_file.name} окончательно не удалось.")
@@ -152,9 +164,12 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
     except Exception as e:
         logger.error(f"Ошибка при транскрипции файла {file_path} через Gemini: {e}", exc_info=True)
         error_str = str(e)
-        if isinstance(e, google.api_core.exceptions.ServiceUnavailable):
-             # Если ошибка 503 проброшена после всех ретраев
-             raise Exception(f"Ошибка Gemini API: Сервис недоступен после {MAX_RETRIES} попыток (503).")
+        if isinstance(e, genai_errors.APIError):
+             # Если ошибка API - проверяем код ошибки
+             if hasattr(e, 'code') and e.code == 503:
+                 raise Exception(f"Ошибка Gemini API: Сервис недоступен после {MAX_RETRIES} попыток (503).")
+             else:
+                 raise Exception(f"Ошибка Gemini API: {e}")
         elif "API key not valid" in error_str:
             raise Exception("Ошибка Gemini API: Неверный или неактивный ключ API.")
         elif "quota" in error_str.lower() or "resource_exhausted" in error_str.lower():
