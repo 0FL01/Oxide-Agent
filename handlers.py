@@ -439,11 +439,11 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                  # Пропускаем системное сообщение, так как оно передается отдельно
                  if message["role"] != "system":
                      if message["role"] == "user":
-                         contents.append(types.UserContent(parts=[types.Part.from_text(message["content"])]))
+                         contents.append(types.UserContent(parts=[types.Part.from_text(text=message["content"])]))
                      else:  # assistant/model
-                         contents.append(types.ModelContent(parts=[types.Part.from_text(message["content"])]))
+                         contents.append(types.ModelContent(parts=[types.Part.from_text(text=message["content"])]))
             # Добавляем текущее сообщение пользователя
-            contents.append(types.UserContent(parts=[types.Part.from_text(full_message)]))
+            contents.append(types.UserContent(parts=[types.Part.from_text(text=full_message)]))
 
             logger.info(f"Sending {len(contents)} contents (plus system instruction) to Gemini for user {user_id}.")
             response = await asyncio.to_thread(
