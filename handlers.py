@@ -266,8 +266,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.username or update.effective_user.first_name
     text = update.message.text or update.message.caption or ""
     document = update.message.document
-    photo = update.message.photo # Add this line
-    logger.info(f"Handling message from user {user_id} ({user_name}). Text: '{text[:100]}...'. Document attached: {bool(document)}. Photo attached: {bool(photo)}") # Update log message
+    photo = update.message.photo
+    logger.info(f"Handling message from user {user_id} ({user_name}). Text: '{text[:100]}...'. Document attached: {bool(document)}. Photo attached: {bool(photo)}") # Обновите сообщение журнала
     
     # Дополнительное логирование для отладки
     if photo:
@@ -275,17 +275,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.caption:
         logger.info(f"Photo caption: '{update.message.caption}'")
 
-    if photo: # Handle photos first
+    if photo: # Сначала обработайте фотографии
         logger.info(f"User {user_id} sent a photo. Calling handle_photo function.")
-        await handle_photo(update, context) # Call the new handler
-        return # Stop processing this message further
+        await handle_photo(update, context)
+        return
 
-    if document: # Handle documents next
+    if document: # Далее обработайте документы
         logger.warning(f"User {user_id} sent an unsupported document: {document.file_name}")
         await update.message.reply_text("Данный файл не поддерживается.")
-        return # Stop processing this message further
+        return
 
-    # If it's not a photo and not a document, process as a text message or command
+    # Если это не фотография и не документ, обрабатывайте как текстовое сообщение или команду
     if context.user_data.get('editing_prompt'):
         logger.info(f"User {user_id} is in prompt editing mode.")
         if text == "Назад":
@@ -301,9 +301,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Error updating system prompt for user {user_id}: {e}", exc_info=True)
                 await update.message.reply_text("Произошла ошибка при обновлении системного промпта.", reply_markup=get_main_keyboard())
-        return # Return after handling prompt editing
+        return
 
-    # Handle other text commands and regular messages
+    # Обработка других текстовых команд и обычных сообщений
     if text == "Очистить контекст":
         logger.info(f"User {user_id} clicked 'Очистить контекст'.")
         await clear(update, context)
@@ -495,7 +495,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     largest_photo = photo_sizes[-1]
 
     try:
-        await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO) # Show uploading photo action
+        await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO) # Показать действие загрузки фотографии
         photo_file = await largest_photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         mime_type = "image/jpeg" # Assuming JPEG for simplicity
@@ -517,7 +517,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         contents = [
             types.Part.from_text(text=text_prompt),
             types.Part.from_bytes(
-                data=bytes(photo_bytes), # Convert bytearray to bytes
+                data=bytes(photo_bytes), # Преобразовать bytearray в байты
                 mime_type=mime_type,
             ),
         ]
@@ -558,9 +558,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_message(user_id, "user", f"[Изображение] {text_prompt}")
         save_message(user_id, "assistant", bot_response)
 
-        # Send the response back to the user
-        formatted_response = format_text(bot_response) # Assuming format_text is available from utils
-        message_parts = split_long_message(formatted_response) # Assuming split_long_message is available from utils
+        formatted_response = format_text(bot_response) # Предполагается, что format_text доступен из utils
+        message_parts = split_long_message(formatted_response) # Предполагается, что split_long_message доступен из utils
 
         for i, part in enumerate(message_parts):
             try:
