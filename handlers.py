@@ -500,7 +500,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_prompt = update.message.caption or "Опиши это изображение."
         logger.info(f"Using text prompt for image analysis: '{text_prompt[:100]}...'")
 
+        # Получаем пользовательский системный промпт
+        user_prompt = get_user_prompt(user_id)
+        system_message = user_prompt if user_prompt else SYSTEM_MESSAGE
+        logger.info(f"Using system message for user {user_id}: '{system_message[:100]}...'")
+
         await update.message.chat.send_action(action=ChatAction.TYPING) # Show typing action while processing
+
+        # Формируем contents согласно документации
+        contents = [
+            types.Part.from_text(text=text_prompt),
+            types.Part.from_bytes(
+                data=bytes(photo_bytes), # Convert bytearray to bytes
+                mime_type=mime_type,
+            ),
+        ]
 
         # Call Gemini API
         model_name = "gemini-2.0-flash-001" # Используем актуальную модель
@@ -509,18 +523,34 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await asyncio.to_thread(
             lambda: gemini_client.models.generate_content(
                 model=model_name,
-                contents=[
-                    text_prompt,
-                    types.Part.from_bytes(
-                        data=bytes(photo_bytes), # Convert bytearray to bytes
-                        mime_type=mime_type,
-                    ),
-                ]
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_message,
+                    max_output_tokens=4000,
+                    temperature=0.7,
+                    safety_settings=[
+                        types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                        types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                        types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                    ]
+                )
             )
         )
 
-        bot_response = response.text
+        # Проверка на блокировку ответа
+        if not response.text and hasattr(response, 'prompt_feedback') and response.prompt_feedback and hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
+            block_reason = response.prompt_feedback.block_reason
+            block_reason_message = response.prompt_feedback.block_reason_message if hasattr(response.prompt_feedback, 'block_reason_message') else 'Нет деталей'
+            logger.warning(f"Ответ Gemini заблокирован по причине: {block_reason}. Детали: {block_reason_message}")
+            bot_response = f"_(Ответ заблокирован Gemini по причине: {block_reason})_"
+        else:
+            bot_response = response.text
+
         logger.info(f"Received response from Gemini for image analysis for user {user_id}. Snippet: '{bot_response[:100]}...'")
+
+        # Сохраняем сообщения в истории чата
+        save_message(user_id, "user", f"[Изображение] {text_prompt}")
+        save_message(user_id, "assistant", bot_response)
 
         # Send the response back to the user
         formatted_response = format_text(bot_response) # Assuming format_text is available from utils
@@ -541,7 +571,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                  logger.error(f"Unexpected error sending response part {i+1} to user {user_id}: {str(e)}", exc_info=True)
                  await update.message.reply_text(f"Ошибка при отправке части ответа: {str(e)}")
-
 
     except Exception as e:
         logger.error(f"Error processing photo for user {user_id}: {str(e)}", exc_info=True)
