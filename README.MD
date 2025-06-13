@@ -35,7 +35,7 @@
 ## Необходимые условия
 
 *   **Docker:** [Установите Docker](https://docs.docker.com/engine/install/)
-*   **Docker Compose:** [Установите Docker Compose](https://docs.docker.com/compose/install/) (обычно идет вместе с Docker Desktop)
+*   **Docker Compose:** [Установите Docker Compose](https://docs.docker.com/compose/install/) (обычно идет вместе с Docker)
 *   **Git:** Для клонирования репозитория.
 *   **PostgreSQL:** Работающий экземпляр PostgreSQL, доступный для бота.
 *   **API Ключи:** Получите необходимые API ключи для сервисов, которые планируете использовать (см. раздел Конфигурация).
@@ -44,7 +44,7 @@
 
 1.  **Клонируйте репозиторий:**
     ```bash
-    git clone https://gitlab.com/mechuk/Another-Chat-with-LLM.git
+    git clone https://github.com/0FL01/Another-Chat-with-LLM.git
     cd Another-Chat-with-LLM
     ```
 
