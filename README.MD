@@ -44,8 +44,8 @@
 
 1.  **Клонируйте репозиторий:**
     ```bash
-    git clone <URL_вашего_репозитория>
-    cd <имя_папки_репозитория>
+    git clone https://gitlab.com/mechuk/Another-Chat-with-LLM.git
+    cd Another-Chat-with-LLM
     ```
 
 2.  **Создайте файл `.env`:**
@@ -105,6 +105,7 @@ GEMINI_API_KEY=ВАШ_GEMINI_API_КЛЮЧ # Необходим для улучш
 
 ## Доступные модели (на момент написания)
 
+*   **Gemini 2.5 Flash** (gemini)
 *   **Gemini 2.0 Flash** (gemini)
 *   **DeepSeek-R1-Distill-Llama-70B** (groq)
 *   **Mistral Large 128K** (mistral)
