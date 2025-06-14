@@ -4,6 +4,5 @@ groq==0.28.0
 python-dotenv==1.0.1
 watchdog==6.0.0
 mistralai==1.8.2
-pandas==2.3.0
 psycopg2-binary==2.9.10
 nest_asyncio==1.6.0
