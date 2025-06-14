@@ -13,6 +13,7 @@ import re
 import asyncio
 from dotenv import load_dotenv
 from google.genai import types
+from functools import wraps
 
 load_dotenv()
 
@@ -27,20 +28,65 @@ SYSTEM_MESSAGE = os.getenv('SYSTEM_MESSAGE', DEFAULT_SYSTEM_MESSAGE)
 
 logger = logging.getLogger(__name__)
 
-# --- Функция для транскрипции через Gemini ---
-MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 3
+# --- Декоратор с fallback на резервную модель ---
+def retry_with_model_fallback():
+    """Декоратор с fallback на резервную модель"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Сначала пытаемся с gemini-2.5-flash-preview-05-20
+            primary_model = 'gemini-2.5-flash-preview-05-20'
+            fallback_model = 'gemini-2.0-flash-001'
+            
+            # 3 попытки с основной моделью
+            for attempt in range(3):
+                try:
+                    logger.info(f"Attempting with {primary_model}, attempt {attempt + 1}/3")
+                    return await func(*args, model=primary_model, **kwargs)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    logger.warning(f"Error with {primary_model} on attempt {attempt + 1}: {str(e)}")
+                    
+                    if attempt < 2:  # Не последняя попытка с основной моделью
+                        await asyncio.sleep(2)
+                        continue
+                    else:
+                        logger.info(f"All attempts with {primary_model} failed, switching to {fallback_model}")
+                        break
+            
+            # Переключаемся на резервную модель с ретраями
+            last_exception = None
+            for attempt in range(5):
+                try:
+                    logger.info(f"Attempting with {fallback_model}, attempt {attempt + 1}/5")
+                    return await func(*args, model=fallback_model, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    error_str = str(e).lower()
+                    
+                    # Проверяем на временные ошибки API
+                    if any(code in error_str for code in ['503', '429', '500', 'overloaded', 'unavailable', 'timeout']):
+                        if attempt < 4:  # Не последняя попытка
+                            logger.warning(f"API error with {fallback_model} on attempt {attempt + 1}/5: {str(e)}. Retrying in 3 seconds...")
+                            await asyncio.sleep(3)
+                            continue
+                    
+                    # Если это не временная ошибка или последняя попытка, поднимаем исключение
+                    raise e
+            
+            # Если все попытки исчерпаны
+            raise last_exception
+        return wrapper
+    return decorator
 
-async def audio_to_text(file_path: str, mime_type: str) -> str:
+# --- Функция для транскрипции через Gemini с поддержкой fallback ---
+@retry_with_model_fallback()
+async def audio_to_text_with_model(file_path: str, mime_type: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
+    """Функция транскрипции с поддержкой fallback между моделями"""
     if not gemini_client:
         raise Exception("Клиент Google Gemini не инициализирован (проверьте GEMINI_API_KEY).")
 
-    transcription_model_name = "Gemini 2.0 Flash"
-    if transcription_model_name not in MODELS or MODELS[transcription_model_name]['provider'] != 'gemini':
-         raise Exception(f"Модель '{transcription_model_name}' не найдена или не является моделью Gemini в конфигурации.")
-
-    model_id = MODELS[transcription_model_name]['id']
-    logger.info(f"Используется модель Gemini '{model_id}' для транскрипции.")
+    logger.info(f"Используется модель Gemini '{model}' для транскрипции.")
 
     try:
         # Читаем аудиофайл как байты
@@ -49,104 +95,150 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
         
         logger.info(f"Загружен аудиофайл {file_path} размером {len(audio_bytes)} байт. Отправляю на транскрипцию...")
         
-        response = None
-        last_exception = None
-
-        for attempt in range(MAX_RETRIES):
-            try:
-                logger.info(f"Попытка {attempt + 1}/{MAX_RETRIES} запроса транскрипции для файла {file_path} через Gemini API...")
-                prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
-                
-                # Используем Part.from_bytes вместо загрузки через File API
-                audio_part = types.Part.from_bytes(
-                    data=audio_bytes,
-                    mime_type=mime_type,
+        prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
+        
+        # Используем Part.from_bytes вместо загрузки через File API
+        audio_part = types.Part.from_bytes(
+            data=audio_bytes,
+            mime_type=mime_type,
+        )
+        
+        response = await asyncio.to_thread(
+            lambda: gemini_client.models.generate_content(
+                model=model,
+                contents=[prompt, audio_part],
+                config=types.GenerateContentConfig(
+                    temperature=0.4,
+                    safety_settings=[
+                        types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                        types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                        types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                    ]
                 )
-                
-                response = await asyncio.to_thread(
-                    lambda: gemini_client.models.generate_content(
-                        model=model_id,
-                        contents=[prompt, audio_part],
-                        config=types.GenerateContentConfig(
-                            temperature=0.4,
-                            safety_settings=[
-                                types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
-                                types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
-                                types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
-                            ]
-                        )
-                    )
-                )
-                logger.info(f"Получен ответ от Gemini API для транскрипции файла {file_path} на попытке {attempt + 1}.")
-                last_exception = None # Сбрасываем ошибку при успехе
-                break # Выходим из цикла при успешном получении ответа
-
-            except genai_errors.APIError as e:
-                last_exception = e
-                # Проверяем статус код для определения типа ошибки
-                if hasattr(e, 'code') and e.code == 503:
-                    logger.warning(f"Попытка транскрипции {attempt + 1} не удалась (503 Service Unavailable): {e}. Повтор через {RETRY_DELAY_SECONDS * (attempt + 1)} сек...")
-                    if attempt == MAX_RETRIES - 1:
-                        logger.error(f"Транскрипция файла {file_path} не удалась после {MAX_RETRIES} попыток.")
-                        raise # Пробрасываем исключение после последней попытки
-                    await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
-                else:
-                    # Для других ошибок API пробрасываем сразу
-                    logger.error(f"API ошибка при транскрипции файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
-                    raise
-            except Exception as e:
-                logger.error(f"Неперехватываемая ошибка при транскрипции файла {file_path} на попытке {attempt + 1}: {e}", exc_info=True)
-                raise # Пробрасываем другие ошибки немедленно
-
-        if last_exception: # Если цикл завершился из-за ошибок
-             logger.error(f"Получение транскрипции для {file_path} окончательно не удалось.")
-             raise last_exception
+            )
+        )
+        logger.info(f"Получен ответ от Gemini API для транскрипции файла {file_path} с моделью {model}.")
 
         if response and hasattr(response, 'text') and response.text:
             transcript_text = response.text.strip()
             logger.info(f"Транскрипция для {file_path} получена (длина: {len(transcript_text)}).")
             if "не могу обработать" in transcript_text.lower() or "не содержит речи" in transcript_text.lower() or "не удалось извлечь аудио" in transcript_text.lower():
-                 logger.warning(f"Gemini вернул сообщение о невозможности транскрипции для {file_path}: {transcript_text}")
-                 return f"(Gemini): {transcript_text}"
+                logger.warning(f"Gemini вернул сообщение о невозможности транскрипции для {file_path}: {transcript_text}")
+                return f"(Gemini): {transcript_text}"
             return transcript_text
         elif response and hasattr(response, 'prompt_feedback') and response.prompt_feedback and hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
-             block_reason = response.prompt_feedback.block_reason
-             block_reason_message = response.prompt_feedback.block_reason_message if hasattr(response.prompt_feedback, 'block_reason_message') else 'Нет деталей'
-             logger.warning(f"Транскрипция заблокирована Gemini по причине: {block_reason}. Детали: {block_reason_message}")
-             raise Exception(f"Ошибка Gemini API: Транскрипция заблокирована (причина: {block_reason}).")
+            block_reason = response.prompt_feedback.block_reason
+            block_reason_message = response.prompt_feedback.block_reason_message if hasattr(response.prompt_feedback, 'block_reason_message') else 'Нет деталей'
+            logger.warning(f"Транскрипция заблокирована Gemini по причине: {block_reason}. Детали: {block_reason_message}")
+            raise Exception(f"Ошибка Gemini API: Транскрипция заблокирована (причина: {block_reason}).")
         elif response and hasattr(response, 'candidates') and response.candidates:
-             try:
-                 candidate_text = response.candidates[0].content.parts[0].text
-                 if candidate_text:
-                     logger.warning(f"Основной текст ответа Gemini пуст, но найден текст в response.candidates для {file_path}. Используется он.")
-                     return candidate_text.strip()
-                 else:
-                     raise AttributeError("Текст в candidates пуст")
-             except (AttributeError, IndexError, TypeError) as e:
-                 logger.warning(f"Не удалось извлечь текст транскрипции из response.candidates для {file_path}. Ошибка: {e}. Ответ: {response}")
-                 raise Exception("Ошибка Gemini API: Не удалось получить транскрипцию (пустой или некорректный ответ).")
+            try:
+                candidate_text = response.candidates[0].content.parts[0].text
+                if candidate_text:
+                    logger.warning(f"Основной текст ответа Gemini пуст, но найден текст в response.candidates для {file_path}. Используется он.")
+                    return candidate_text.strip()
+                else:
+                    raise AttributeError("Текст в candidates пуст")
+            except (AttributeError, IndexError, TypeError) as e:
+                logger.warning(f"Не удалось извлечь текст транскрипции из response.candidates для {file_path}. Ошибка: {e}. Ответ: {response}")
+                raise Exception("Ошибка Gemini API: Не удалось получить транскрипцию (пустой или некорректный ответ).")
         else:
-             logger.warning(f"Gemini API вернул пустой или неожиданный ответ для транскрипции файла {file_path}: {response}")
-             raise Exception("Ошибка Gemini API: Не удалось получить транскрипцию (пустой или неожиданный ответ).")
+            logger.warning(f"Gemini API вернул пустой или неожиданный ответ для транскрипции файла {file_path}: {response}")
+            raise Exception("Ошибка Gemini API: Не удалось получить транскрипцию (пустой или неожиданный ответ).")
 
     except Exception as e:
         logger.error(f"Ошибка при транскрипции файла {file_path} через Gemini: {e}", exc_info=True)
         error_str = str(e)
         if isinstance(e, genai_errors.APIError):
-             # Если ошибка API - проверяем код ошибки
-             if hasattr(e, 'code') and e.code == 503:
-                 raise Exception(f"Ошибка Gemini API: Сервис недоступен после {MAX_RETRIES} попыток (503).")
-             else:
-                 raise Exception(f"Ошибка Gemini API: {e}")
+            # Если ошибка API - проверяем код ошибки
+            if hasattr(e, 'code') and e.code == 503:
+                raise Exception(f"Ошибка Gemini API: Сервис недоступен (503).")
+            else:
+                raise Exception(f"Ошибка Gemini API: {e}")
         elif "API key not valid" in error_str:
             raise Exception("Ошибка Gemini API: Неверный или неактивный ключ API.")
         elif "quota" in error_str.lower() or "resource_exhausted" in error_str.lower():
             raise Exception("Ошибка Gemini API: Превышена квота использования.")
         elif "File processing failed" in error_str or "Unable to process the file" in error_str:
-             raise Exception("Ошибка Gemini API: Не удалось обработать загруженный файл (возможно, неподдерживаемый формат или поврежден).")
+            raise Exception("Ошибка Gemini API: Не удалось обработать загруженный файл (возможно, неподдерживаемый формат или поврежден).")
         elif "Deadline exceeded" in error_str or "504" in error_str:
-             raise Exception("Ошибка Gemini API: Превышено время ожидания ответа от сервера.")
+            raise Exception("Ошибка Gemini API: Превышено время ожидания ответа от сервера.")
         raise Exception(f"Ошибка Gemini API при транскрипции: {error_str}")
+
+# --- Функция для анализа изображений через Gemini с поддержкой fallback ---
+@retry_with_model_fallback()
+async def vision_analysis_with_model(photo_bytes: bytes, text_prompt: str, system_message: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
+    """Функция анализа изображений с поддержкой fallback между моделями"""
+    if not gemini_client:
+        raise Exception("Клиент Google Gemini не инициализирован (проверьте GEMINI_API_KEY).")
+
+    logger.info(f"Используется модель Gemini '{model}' для анализа изображения.")
+
+    try:
+        mime_type = "image/jpeg"  # Предполагаем JPEG для простоты
+        
+        # Формируем contents согласно документации
+        contents = [
+            types.Part.from_text(text=text_prompt),
+            types.Part.from_bytes(
+                data=photo_bytes,
+                mime_type=mime_type,
+            ),
+        ]
+
+        logger.info(f"Отправляю изображение и промпт на анализ в Gemini модель '{model}'.")
+
+        response = await asyncio.to_thread(
+            lambda: gemini_client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_message,
+                    max_output_tokens=4000,
+                    temperature=0.7,
+                    safety_settings=[
+                        types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                        types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                        types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                    ]
+                )
+            )
+        )
+
+        # Проверка на блокировку ответа
+        if not response.text and hasattr(response, 'prompt_feedback') and response.prompt_feedback and hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
+            block_reason = response.prompt_feedback.block_reason
+            block_reason_message = response.prompt_feedback.block_reason_message if hasattr(response.prompt_feedback, 'block_reason_message') else 'Нет деталей'
+            logger.warning(f"Ответ Gemini заблокирован по причине: {block_reason}. Детали: {block_reason_message}")
+            return f"_(Ответ заблокирован Gemini по причине: {block_reason})_"
+        else:
+            return response.text
+
+    except Exception as e:
+        logger.error(f"Ошибка при анализе изображения через Gemini: {e}", exc_info=True)
+        error_str = str(e)
+        if isinstance(e, genai_errors.APIError):
+            if hasattr(e, 'code') and e.code == 503:
+                raise Exception(f"Ошибка Gemini API: Сервис недоступен (503).")
+            else:
+                raise Exception(f"Ошибка Gemini API: {e}")
+        elif "API key not valid" in error_str:
+            raise Exception("Ошибка Gemini API: Неверный или неактивный ключ API.")
+        elif "quota" in error_str.lower() or "resource_exhausted" in error_str.lower():
+            raise Exception("Ошибка Gemini API: Превышена квота использования.")
+        raise Exception(f"Ошибка Gemini API при анализе изображения: {error_str}")
+
+# --- Функция для транскрипции через Gemini (обратная совместимость) ---
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 3
+
+async def audio_to_text(file_path: str, mime_type: str) -> str:
+    """Обертка для обратной совместимости - использует новую функцию с fallback"""
+    try:
+        return await audio_to_text_with_model(file_path, mime_type)
+    except Exception as e:
+        logger.error(f"Fallback transcription failed for {file_path}: {e}")
+        raise e
 
 def get_main_keyboard():
     keyboard = [
@@ -498,7 +590,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.chat.send_action(action=ChatAction.UPLOAD_PHOTO) # Показать действие загрузки фотографии
         photo_file = await largest_photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
-        mime_type = "image/jpeg" # Assuming JPEG for simplicity
 
         logger.info(f"Photo downloaded from user {user_id}. Size: {len(photo_bytes)} bytes.")
 
@@ -513,44 +604,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.chat.send_action(action=ChatAction.TYPING) # Show typing action while processing
 
-        # Формируем contents согласно документации
-        contents = [
-            types.Part.from_text(text=text_prompt),
-            types.Part.from_bytes(
-                data=bytes(photo_bytes), # Преобразовать bytearray в байты
-                mime_type=mime_type,
-            ),
-        ]
-
-        # Call Gemini API
-        model_name = "gemini-2.0-flash-001" # Используем актуальную модель
-        logger.info(f"Sending image and prompt to Gemini model '{model_name}' for user {user_id}.")
-
-        response = await asyncio.to_thread(
-            lambda: gemini_client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_message,
-                    max_output_tokens=4000,
-                    temperature=0.7,
-                    safety_settings=[
-                        types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
-                        types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
-                        types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
-                    ]
-                )
-            )
+        # Используем новую функцию с поддержкой fallback
+        logger.info(f"Sending image and prompt to Gemini with fallback support for user {user_id}.")
+        bot_response = await vision_analysis_with_model(
+            photo_bytes=bytes(photo_bytes),
+            text_prompt=text_prompt,
+            system_message=system_message
         )
-
-        # Проверка на блокировку ответа
-        if not response.text and hasattr(response, 'prompt_feedback') and response.prompt_feedback and hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
-            block_reason = response.prompt_feedback.block_reason
-            block_reason_message = response.prompt_feedback.block_reason_message if hasattr(response.prompt_feedback, 'block_reason_message') else 'Нет деталей'
-            logger.warning(f"Ответ Gemini заблокирован по причине: {block_reason}. Детали: {block_reason_message}")
-            bot_response = f"_(Ответ заблокирован Gemini по причине: {block_reason})_"
-        else:
-            bot_response = response.text
 
         logger.info(f"Received response from Gemini for image analysis for user {user_id}. Snippet: '{bot_response[:100]}...'")
 
