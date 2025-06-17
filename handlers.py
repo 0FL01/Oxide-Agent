@@ -34,8 +34,8 @@ def retry_with_model_fallback():
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            # Сначала пытаемся с gemini-2.5-flash-preview-05-20
-            primary_model = 'gemini-2.5-flash-preview-05-20'
+            # Сначала пытаемся с gemini-2.5-flash
+            primary_model = 'gemini-2.5-flash'
             fallback_model = 'gemini-2.0-flash-001'
             
             # 3 попытки с основной моделью
@@ -81,7 +81,7 @@ def retry_with_model_fallback():
 
 # --- Функция для транскрипции через Gemini с поддержкой fallback ---
 @retry_with_model_fallback()
-async def audio_to_text_with_model(file_path: str, mime_type: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
+async def audio_to_text_with_model(file_path: str, mime_type: str, model: str = 'gemini-2.5-flash') -> str:
     """Функция транскрипции с поддержкой fallback между моделями"""
     if not gemini_client:
         raise Exception("Клиент Google Gemini не инициализирован (проверьте GEMINI_API_KEY).")
@@ -167,7 +167,7 @@ async def audio_to_text_with_model(file_path: str, mime_type: str, model: str = 
 
 # --- Функция для анализа изображений через Gemini с поддержкой fallback ---
 @retry_with_model_fallback()
-async def vision_analysis_with_model(photo_bytes: bytes, text_prompt: str, system_message: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
+async def vision_analysis_with_model(photo_bytes: bytes, text_prompt: str, system_message: str, model: str = 'gemini-2.5-flash') -> str:
     """Функция анализа изображений с поддержкой fallback между моделями"""
     if not gemini_client:
         raise Exception("Клиент Google Gemini не инициализирован (проверьте GEMINI_API_KEY).")

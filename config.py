@@ -33,13 +33,13 @@ chat_history = {}
 
 MODELS = {
     "Gemini 2.0 Flash": {"id": "gemini-2.0-flash", "max_tokens": 64000, "provider": "gemini"},
-    "Gemini 2.5 Flash": {"id": "gemini-2.5-flash-preview-04-17", "max_tokens": 64000, "provider": "gemini"},
+    "Gemini 2.5 Flash": {"id": "gemini-2.5-flash", "max_tokens": 64000, "provider": "gemini"},
     "DeepSeek-R1-Distill-Llama-70B": {"id": "DeepSeek-R1-Distill-Llama-70B", "max_tokens": 128000, "provider": "groq"},
     "Mistral Large 128K": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
     "Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 32000, "provider": "groq"}
 }
 
-DEFAULT_MODEL = "Gemini 2.0 Flash"
+DEFAULT_MODEL = "Gemini 2.5 Flash"
 
 try:
     groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
