@@ -234,7 +234,7 @@ async def test_handle_video_message(mock_update, mock_context, mocker):
 
 async def test_clear_context(mock_update, mock_context, mocker):
     mock_clear_history = mocker.patch('handlers.clear_chat_history')
-    mocker.patch('handlers.get_user_model', return_value="Llama 3.3 70B 8K (groq)")
+    mocker.patch('handlers.get_user_model', return_value="GPT-OSS-120b")
     mock_update.message.text = "Очистить контекст"
     await handle_message(mock_update, mock_context)
     mock_clear_history.assert_called_once_with(12345)
@@ -266,7 +266,7 @@ async def test_change_model_select_valid(mock_update, mock_context, mocker):
     )
 
 async def test_change_model_direct_call(mock_update, mock_context, mocker):
-    selected_model = "Llama 3.3 70B 8K (groq)"
+    selected_model = "GPT-OSS-120b"
     mock_update_model_db = mocker.patch('handlers.update_user_model')
     mock_update.message.text = selected_model
     await change_model(mock_update, mock_context)
