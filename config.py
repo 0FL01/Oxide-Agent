@@ -34,7 +34,7 @@ chat_history = {}
 MODELS = {
     "Gemini 2.5 Flash": {"id": "gemini-2.5-flash", "max_tokens": 64000, "provider": "gemini"},
     "GPT-OSS-120b": {"id": "openai/gpt-oss-120b", "max_tokens": 64000, "provider": "groq"},
-    "Magistral Medium 1.2": {"id": "magistral-medium-2509", "max_tokens": 128000, "provider": "mistral"},
+    #"Magistral Medium 1.2": {"id": "magistral-medium-2509", "max_tokens": 128000, "provider": "mistral"},
     "Gemini 2.0 Flash": {"id": "gemini-2.0-flash", "max_tokens": 64000, "provider": "gemini"},
     #"Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 32000, "provider": "groq"}
 }
