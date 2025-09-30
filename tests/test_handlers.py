@@ -126,26 +126,26 @@ async def test_start_unauthorized(mock_update, mock_context, mocker):
 
 async def test_start_authorized(mock_update, mock_context, mocker):
     mocker.patch('handlers.is_user_allowed', return_value=True)
-    mocker.patch('handlers.get_user_model', return_value="Mistral Large 128K")
+    mocker.patch('handlers.get_user_model', return_value="Magistral Medium 1.2")
     mock_set_auth_state = mocker.patch('handlers.set_user_auth_state')
     await start(mock_update, mock_context)
-    expected_text = f'<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.\nТекущая модель: <b>Mistral Large 128K</b>'
+    expected_text = f'<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.\nТекущая модель: <b>Magistral Medium 1.2</b>'
     mock_update.message.reply_text.assert_called_once_with(
         expected_text,
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
-    assert mock_context.user_data['model'] == "Mistral Large 128K"
+    assert mock_context.user_data['model'] == "Magistral Medium 1.2"
     mock_set_auth_state.assert_called_once_with(12345, True)
 
 async def test_handle_message_text_gemini(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_model', return_value="Gemini 2.0 Flash")
+    mocker.patch('handlers.get_user_model', return_value="Gemini 2.5 Flash")
     mock_save_message = mocker.patch('handlers.save_message')
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "user", "content": "previous"}])
     mock_gemini_generate = handlers.gemini_client.models.generate_content
     mock_update.message.text = "Привет!"
     mock_update.message.photo = None # Explicitly set photo to None for text message test
-    mock_context.user_data['model'] = "Gemini 2.0 Flash"
+    mock_context.user_data['model'] = "Gemini 2.5 Flash"
 
     await handle_message(mock_update, mock_context)
 
@@ -163,13 +163,13 @@ async def test_handle_message_text_gemini(mock_update, mock_context, mocker):
     mock_update.message.chat.send_action.assert_called_once_with(action=ChatAction.TYPING)
 
 async def test_handle_message_text_mistral(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_model', return_value="Mistral Large 128K")
+    mocker.patch('handlers.get_user_model', return_value="Magistral Medium 1.2")
     mock_save_message = mocker.patch('handlers.save_message')
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "assistant", "content": "prev bot"}])
     mock_mistral_complete = handlers.mistral_client.chat.complete
     mock_update.message.text = "Анекдот?"
     mock_update.message.photo = None # Explicitly set photo to None for text message test
-    mock_context.user_data['model'] = "Mistral Large 128K"
+    mock_context.user_data['model'] = "Magistral Medium 1.2"
 
     await handle_message(mock_update, mock_context)
 
@@ -253,7 +253,7 @@ async def test_change_model_show_options(mock_update, mock_context, mocker):
     )
 
 async def test_change_model_select_valid(mock_update, mock_context, mocker):
-    selected_model = "Mistral Large 128K"
+    selected_model = "Magistral Medium 1.2"
     mock_update_model_db = mocker.patch('handlers.update_user_model')
     mock_update.message.text = selected_model
     await handle_message(mock_update, mock_context)
