@@ -104,11 +104,10 @@ GEMINI_API_KEY=ВАШ_GEMINI_API_КЛЮЧ # Необходим для транс
 
 ## Доступные модели
 
-*   **Gemini 2.0 Flash** (модель по умолчанию)
-*   **Gemini 2.5 Flash**
-*   **DeepSeek-R1-Distill-Llama-70B** (Groq)
-*   **Mistral Large 128K** (Mistral)
-*   **Llama 3.3 70B 8K** (Groq)
+*   **Gemini 2.5 Flash** (модель по умолчанию)
+*   **Gemini 2.0 Flash**
+*   **gpt-oss-120b** (Groq)
+*   **Magistral Medium 1.2** (Mistral)
 
 *(Список моделей и их параметры могут изменяться в `config.py`)*
 
