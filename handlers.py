@@ -34,9 +34,9 @@ def retry_with_model_fallback():
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            # Сначала пытаемся с gemini-2.5-flash
-            primary_model = 'gemini-2.5-flash'
-            fallback_model = 'gemini-2.0-flash-001'
+            # Сначала пытаемся с gemini-flash-latest
+            primary_model = 'gemini-flash-latest'
+            fallback_model = 'gemini-2.5-flash'
             
             # 3 попытки с основной моделью
             for attempt in range(3):
