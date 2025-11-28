@@ -71,7 +71,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-          
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
@@ -113,25 +112,18 @@ jobs:
           debug: true
           envs: DOCKER_IMAGE,SHORT_SHA_VALUE
           script: |
-            bash -c '
-            set -e
-
-            if [ -z "$SHORT_SHA_VALUE" ]; then
+            if test -z "$SHORT_SHA_VALUE"
               echo "Error: SHORT_SHA_VALUE environment variable is empty. Cannot proceed with deployment."
               exit 1
-            fi
+            end
 
             echo "Using Short SHA: $SHORT_SHA_VALUE for deployment"
             echo "Using Docker image: $DOCKER_IMAGE:$SHORT_SHA_VALUE"
 
-            # Create service directory
             mkdir -p ${{ secrets.SERVICE_DIR }}
             cd ${{ secrets.SERVICE_DIR }}
 
-            # Create .env file
-            echo "Creating .env file..."
-            cat > .env << '\''EOF'\''
-            GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
             TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
             MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}
@@ -147,64 +139,54 @@ jobs:
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}
-            POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
-            EOF
+            POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" > .env
+            
             echo ".env file created."
 
-            # Create docker-compose.yml file
-            echo "Creating docker-compose.yml file..."
-            cat > docker-compose.yml << EOF
-            services:
+            echo "services:
               another_chat_tg:
-                image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}
+                image: $DOCKER_IMAGE:$SHORT_SHA_VALUE
                 container_name: another_chat_tg
-                network_mode: "host"
+                network_mode: \"host\"
                 environment:
                   - POSTGRES_HOST=127.0.0.1
                 restart: unless-stopped
                 volumes:
                   - ./.env:/app/.env:ro
-                  - ./logs:/app/logs'
+                  - ./logs:/app/logs
                 logging:
                   driver: json-file
                   options:
-                    max-size: "1m"
-                    max-file: "3"
+                    max-size: \"1m\"
+                    max-file: \"3\"
             volumes:
-              logs: {}
-            EOF
+              logs: {}" > docker-compose.yml
+            
             echo "docker-compose.yml file created."
 
-            # Create logs directory
             mkdir -p ./logs
 
-            echo "Using Docker Image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}"
+            echo "Using Docker Image: $DOCKER_IMAGE:$SHORT_SHA_VALUE"
 
-            # Pull Docker image
             echo "Pulling Docker image..."
             docker compose pull
             echo "Image pulled successfully."
 
-            # Stop existing container
             echo "Stopping existing container (if any)..."
             docker compose down || true
 
-            # Start services
             echo "Starting services with docker compose up..."
             docker compose up -d
             echo "Services started successfully."
 
-            # Check container status
             echo "Current container status:"
             docker compose ps
 
-            # Prune unused Docker images
             echo "Pruning unused Docker images..."
-            docker images --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}" | grep "^0fl01/another-chat-tg" | awk '\''{print $2}'\'' | head -n -1 | xargs -r docker rmi -f || true
+            docker images --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}" | grep "^0fl01/another-chat-tg" | awk '{print $2}' | head -n -1 | xargs -r docker rmi -f || true
             echo "Docker images pruned."
 
             echo "Deployment completed successfully!"
-            '
 
       - name: Clean up local SHA artifact
         run: rm sha.txt
