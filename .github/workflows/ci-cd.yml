@@ -164,7 +164,12 @@ jobs:
                 restart: unless-stopped
                 volumes:
                   - ./.env:/app/.env:ro
-                  - ./logs:/app/logs
+                  - ./logs:/app/logs'
+                logging:
+                  driver: json-file
+                  options:
+                    max-size: "1m"
+                    max-file: "3"
             volumes:
               logs: {}
             EOF
