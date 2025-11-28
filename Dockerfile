@@ -1,5 +1,5 @@
 # Стадия сборки
-FROM python:3.10-slim AS builder
+FROM python:3.13-slim AS builder
 
 # Устанавливаем зависимости, необходимые для Pydub и компиляции
 RUN apt-get update && apt-get install -y \
@@ -19,7 +19,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Стадия выполнения
-FROM python:3.10-slim
+FROM python:3.13-slim
 
 # Устанавливаем зависимости, необходимые для Pydub в рантайме
 RUN apt-get update && apt-get install -y \
@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Копируем зависимости из стадии сборки
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 
 # Копируем файлы приложения
 COPY config.py handlers.py main.py utils.py database.py watchdog_runner.py ./
