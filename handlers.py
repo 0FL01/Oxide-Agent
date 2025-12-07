@@ -2,7 +2,10 @@ from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
 from google.genai import errors as genai_errors
-from config import chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client
+from config import (
+    chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client,
+    openrouter_client, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_SITE_URL, OPENROUTER_SITE_NAME
+)
 from utils import split_long_message, clean_html, format_text
 from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model, list_allowed_users, get_allowed_user
 from telegram.error import BadRequest
@@ -11,6 +14,7 @@ import logging
 import os
 import re
 import asyncio
+import base64
 from dotenv import load_dotenv
 from google.genai import types
 from functools import wraps
@@ -239,6 +243,153 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
     except Exception as e:
         logger.error(f"Fallback transcription failed for {file_path}: {e}")
         raise e
+
+# --- Функции для работы с OpenRouter API ---
+# Модели для ретраев OpenRouter
+OPENROUTER_PRIMARY_MODEL = "google/gemini-2.5-flash-preview-05-20"  # Основная модель
+OPENROUTER_FALLBACK_MODEL = "google/gemini-2.5-flash-lite"  # Резервная модель при недоступности основной
+
+async def openrouter_chat_completion(
+    messages: list,
+    model: str,
+    max_tokens: int = 64000,
+    temperature: float = 0.7,
+) -> str:
+    """Отправляет запрос в OpenRouter API"""
+    if not openrouter_client or not OPENROUTER_API_KEY:
+        raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    
+    if OPENROUTER_SITE_URL:
+        headers["HTTP-Referer"] = OPENROUTER_SITE_URL
+    if OPENROUTER_SITE_NAME:
+        headers["X-Title"] = OPENROUTER_SITE_NAME
+    
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    
+    logger.info(f"Sending request to OpenRouter with model {model}")
+    
+    response = await openrouter_client.post(
+        OPENROUTER_BASE_URL,
+        headers=headers,
+        json=payload,
+    )
+    
+    if response.status_code != 200:
+        error_text = response.text
+        logger.error(f"OpenRouter API error: {response.status_code} - {error_text}")
+        raise Exception(f"OpenRouter API error: {response.status_code} - {error_text}")
+    
+    result = response.json()
+    
+    if "choices" not in result or not result["choices"]:
+        logger.error(f"OpenRouter API returned empty choices: {result}")
+        raise Exception("OpenRouter API returned empty response")
+    
+    return result["choices"][0]["message"]["content"]
+
+async def openrouter_chat_with_retry(
+    messages: list,
+    max_tokens: int = 64000,
+    temperature: float = 0.7,
+) -> str:
+    """Отправляет запрос в OpenRouter с поддержкой ретраев и fallback модели"""
+    primary_model = OPENROUTER_PRIMARY_MODEL
+    fallback_model = OPENROUTER_FALLBACK_MODEL
+    
+    # 3 попытки с основной моделью
+    for attempt in range(3):
+        try:
+            logger.info(f"OpenRouter: Attempting with {primary_model}, attempt {attempt + 1}/3")
+            return await openrouter_chat_completion(messages, primary_model, max_tokens, temperature)
+        except Exception as e:
+            error_str = str(e).lower()
+            logger.warning(f"OpenRouter: Error with {primary_model} on attempt {attempt + 1}: {str(e)}")
+            
+            if attempt < 2:
+                await asyncio.sleep(2)
+                continue
+            else:
+                logger.info(f"OpenRouter: All attempts with {primary_model} failed, switching to {fallback_model}")
+                break
+    
+    # Переключаемся на резервную модель с ретраями
+    last_exception = None
+    for attempt in range(5):
+        try:
+            logger.info(f"OpenRouter: Attempting with {fallback_model}, attempt {attempt + 1}/5")
+            return await openrouter_chat_completion(messages, fallback_model, max_tokens, temperature)
+        except Exception as e:
+            last_exception = e
+            error_str = str(e).lower()
+            
+            if any(code in error_str for code in ['503', '429', '500', 'overloaded', 'unavailable', 'timeout']):
+                if attempt < 4:
+                    logger.warning(f"OpenRouter: API error with {fallback_model} on attempt {attempt + 1}/5: {str(e)}. Retrying in 3 seconds...")
+                    await asyncio.sleep(3)
+                    continue
+            
+            raise e
+    
+    raise last_exception
+
+def build_openrouter_content_with_image(text: str, image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
+    """Создаёт мультимодальный контент для OpenRouter с изображением"""
+    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+    data_url = f"data:{mime_type};base64,{image_base64}"
+    
+    return [
+        {"type": "text", "text": text},
+        {"type": "image_url", "image_url": {"url": data_url}}
+    ]
+
+def build_openrouter_content_with_audio(text: str, audio_bytes: bytes, audio_format: str = "wav") -> list:
+    """Создаёт мультимодальный контент для OpenRouter с аудио"""
+    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+    
+    return [
+        {"type": "text", "text": text},
+        {"type": "input_audio", "input_audio": {"data": audio_base64, "format": audio_format}}
+    ]
+
+async def openrouter_vision_analysis(
+    image_bytes: bytes,
+    text_prompt: str,
+    system_message: str,
+    mime_type: str = "image/jpeg"
+) -> str:
+    """Анализ изображения через OpenRouter с поддержкой ретраев"""
+    content = build_openrouter_content_with_image(text_prompt, image_bytes, mime_type)
+    
+    messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": content}
+    ]
+    
+    return await openrouter_chat_with_retry(messages, max_tokens=4000, temperature=0.7)
+
+async def openrouter_audio_transcription(
+    audio_bytes: bytes,
+    audio_format: str = "wav"
+) -> str:
+    """Транскрипция аудио через OpenRouter с поддержкой ретраев"""
+    prompt = "Сделай точную транскрипцию речи из этого аудио файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это."
+    content = build_openrouter_content_with_audio(prompt, audio_bytes, audio_format)
+    
+    messages = [
+        {"role": "user", "content": content}
+    ]
+    
+    return await openrouter_chat_with_retry(messages, max_tokens=8000, temperature=0.4)
 
 def get_main_keyboard():
     keyboard = [
@@ -528,6 +679,28 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
             logger.info(f"Received response from Gemini for user {user_id}.")
 
+        elif provider == "openrouter":
+            if openrouter_client is None or not OPENROUTER_API_KEY:
+                raise ValueError("OpenRouter client is not initialized. Please check your OPENROUTER_API_KEY.")
+
+            # Формируем сообщения для OpenRouter (формат OpenAI-совместимый)
+            openrouter_messages = [{"role": "system", "content": system_message}]
+            for message in chat_history_db:
+                if message["role"] != "system":
+                    openrouter_messages.append({
+                        "role": message["role"],
+                        "content": message["content"]
+                    })
+            openrouter_messages.append({"role": "user", "content": full_message})
+
+            logger.info(f"Sending {len(openrouter_messages)} messages to OpenRouter for user {user_id}.")
+            bot_response = await openrouter_chat_with_retry(
+                messages=openrouter_messages,
+                max_tokens=max_tokens,
+                temperature=0.7
+            )
+            logger.info(f"Received response from OpenRouter for user {user_id}.")
+
         else:
             logger.error(f"Unknown provider '{provider}' for model {selected_model} requested by user {user_id}.")
             raise ValueError(f"Unknown provider for model {selected_model}")
@@ -571,10 +744,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.username or update.effective_user.first_name
     logger.info(f"Processing photo from user {user_id} ({user_name}).")
 
-    if not gemini_client:
-        logger.error("Gemini client is not initialized.")
-        await update.message.reply_text("Ошибка: Клиент Google Gemini не инициализирован.")
-        return
+    # Определяем выбранную модель и провайдера
+    selected_model = context.user_data.get('model', DEFAULT_MODEL)
+    provider = MODELS[selected_model]["provider"]
+    logger.info(f"Using provider '{provider}' for photo analysis (model: {selected_model})")
+
+    # Проверяем доступность нужного клиента
+    if provider == "openrouter":
+        if not openrouter_client or not OPENROUTER_API_KEY:
+            logger.error("OpenRouter client is not initialized.")
+            await update.message.reply_text("Ошибка: Клиент OpenRouter не инициализирован.")
+            return
+    else:
+        # Для всех остальных провайдеров используем Gemini для анализа изображений
+        if not gemini_client:
+            logger.error("Gemini client is not initialized.")
+            await update.message.reply_text("Ошибка: Клиент Google Gemini не инициализирован.")
+            return
 
     # Get the largest photo size
     photo_sizes = update.message.photo
@@ -604,15 +790,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.chat.send_action(action=ChatAction.TYPING) # Show typing action while processing
 
-        # Используем новую функцию с поддержкой fallback
-        logger.info(f"Sending image and prompt to Gemini with fallback support for user {user_id}.")
-        bot_response = await vision_analysis_with_model(
-            photo_bytes=bytes(photo_bytes),
-            text_prompt=text_prompt,
-            system_message=system_message
-        )
-
-        logger.info(f"Received response from Gemini for image analysis for user {user_id}. Snippet: '{bot_response[:100]}...'")
+        if provider == "openrouter":
+            # Используем OpenRouter для анализа изображения
+            logger.info(f"Sending image and prompt to OpenRouter for user {user_id}.")
+            bot_response = await openrouter_vision_analysis(
+                image_bytes=bytes(photo_bytes),
+                text_prompt=text_prompt,
+                system_message=system_message,
+                mime_type="image/jpeg"
+            )
+            logger.info(f"Received response from OpenRouter for image analysis for user {user_id}. Snippet: '{bot_response[:100]}...'")
+        else:
+            # Используем Gemini с поддержкой fallback
+            logger.info(f"Sending image and prompt to Gemini with fallback support for user {user_id}.")
+            bot_response = await vision_analysis_with_model(
+                photo_bytes=bytes(photo_bytes),
+                text_prompt=text_prompt,
+                system_message=system_message
+            )
+            logger.info(f"Received response from Gemini for image analysis for user {user_id}. Snippet: '{bot_response[:100]}...'")
 
         # Сохраняем сообщения в истории чата
         save_message(user_id, "user", f"[Изображение] {text_prompt}")
@@ -646,6 +842,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.username or update.effective_user.first_name
     logger.info(f"Received voice message from user {user_id} ({user_name}).")
+    
+    # Определяем выбранную модель и провайдера
+    selected_model = context.user_data.get('model', DEFAULT_MODEL)
+    provider = MODELS[selected_model]["provider"]
+    logger.info(f"Using provider '{provider}' for voice processing (model: {selected_model})")
+    
     temp_filename = f"tempvoice_{user_id}.wav"
     logger.info(f"Preparing to download voice to {temp_filename}.")
 
@@ -655,17 +857,25 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         voice_file = await voice.download_as_bytearray()
         with open(temp_filename, "wb") as f:
             f.write(voice_file)
-        logger.info(f"Voice message downloaded to {temp_filename}. Transcribing using Gemini...")
+        logger.info(f"Voice message downloaded to {temp_filename}.")
 
-        # --- Замена Groq Whisper на Gemini ---
-        recognized_text = await audio_to_text(temp_filename, 'audio/wav')
-        # --- Конец замены ---
+        if provider == "openrouter" and openrouter_client and OPENROUTER_API_KEY:
+            # Используем OpenRouter для транскрипции аудио
+            logger.info(f"Transcribing using OpenRouter for user {user_id}...")
+            recognized_text = await openrouter_audio_transcription(
+                audio_bytes=bytes(voice_file),
+                audio_format="wav"
+            )
+            logger.info(f"Voice message from user {user_id} ({user_name}) transcribed by OpenRouter: '{recognized_text}'")
+        else:
+            # Используем Gemini для транскрипции
+            logger.info(f"Transcribing using Gemini for user {user_id}...")
+            recognized_text = await audio_to_text(temp_filename, 'audio/wav')
+            logger.info(f"Voice message from user {user_id} ({user_name}) transcribed by Gemini: '{recognized_text}'")
 
-        logger.info(f"Voice message from user {user_id} ({user_name}) transcribed by Gemini: '{recognized_text}'")
-
-        # Проверяем, не вернула ли Gemini сообщение об ошибке
-        if recognized_text.startswith("(Gemini):"):
-            logger.warning(f"Gemini returned a notice for user {user_id}: {recognized_text}")
+        # Проверяем, не вернула ли модель сообщение об ошибке
+        if recognized_text.startswith("(Gemini):") or recognized_text.startswith("(OpenRouter):"):
+            logger.warning(f"Transcription service returned a notice for user {user_id}: {recognized_text}")
             await update.message.reply_text(f"Не удалось распознать речь: {recognized_text}")
         elif not recognized_text:
              logger.warning(f"Transcription result is empty for user {user_id}.")
@@ -786,6 +996,12 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.username or update.effective_user.first_name
     logger.info(f"Received video message from user {user_id} ({user_name}).")
+    
+    # Определяем выбранную модель и провайдера
+    selected_model = context.user_data.get('model', DEFAULT_MODEL)
+    provider = MODELS[selected_model]["provider"]
+    logger.info(f"Using provider '{provider}' for video processing (model: {selected_model})")
+    
     temp_filename = f"tempvideo_{user_id}.mp4"
     logger.info(f"Preparing to download video to {temp_filename}.")
 
@@ -795,18 +1011,26 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_bytes = await video.download_as_bytearray()
         with open(temp_filename, "wb") as f:
             f.write(video_bytes)
-        logger.info(f"Video message downloaded to {temp_filename}. Transcribing audio track using Gemini...")
+        logger.info(f"Video message downloaded to {temp_filename}.")
 
-        # --- Замена Groq Whisper на Gemini ---
-        # Указываем MIME-тип для видео
-        recognized_text = await audio_to_text(temp_filename, 'video/mp4')
-        # --- Конец замены ---
+        if provider == "openrouter" and openrouter_client and OPENROUTER_API_KEY:
+            # Используем OpenRouter для транскрипции видео (аудио-дорожка)
+            # Примечание: OpenRouter через Gemini поддерживает mp4 напрямую
+            logger.info(f"Transcribing video audio using OpenRouter for user {user_id}...")
+            recognized_text = await openrouter_audio_transcription(
+                audio_bytes=bytes(video_bytes),
+                audio_format="mp4"
+            )
+            logger.info(f"Video message from user {user_id} ({user_name}) transcribed by OpenRouter: '{recognized_text}'")
+        else:
+            # Используем Gemini для транскрипции
+            logger.info(f"Transcribing video audio using Gemini for user {user_id}...")
+            recognized_text = await audio_to_text(temp_filename, 'video/mp4')
+            logger.info(f"Video message from user {user_id} ({user_name}) transcribed by Gemini: '{recognized_text}'")
 
-        logger.info(f"Video message from user {user_id} ({user_name}) transcribed by Gemini: '{recognized_text}'")
-
-        # Проверяем, не вернула ли Gemini сообщение об ошибке
-        if recognized_text.startswith("(Gemini):"):
-            logger.warning(f"Gemini returned a notice for user {user_id}: {recognized_text}")
+        # Проверяем, не вернула ли модель сообщение об ошибке
+        if recognized_text.startswith("(Gemini):") or recognized_text.startswith("(OpenRouter):"):
+            logger.warning(f"Transcription service returned a notice for user {user_id}: {recognized_text}")
             await update.message.reply_text(f"Не удалось распознать речь из видео: {recognized_text}")
         elif not recognized_text:
              logger.warning(f"Video transcription result is empty for user {user_id}.")
