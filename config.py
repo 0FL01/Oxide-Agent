@@ -39,7 +39,7 @@ else:
 chat_history = {}
 
 MODELS = {
-    "OR Gemini 2.5 Flash": {"id": "google/gemini-2.5-flash-preview-05-20", "max_tokens": 64000, "provider": "openrouter"},
+    "OR Gemini 2.5 Flash": {"id": "google/gemini-2.5-flash-preview-09-2025", "max_tokens": 64000, "provider": "openrouter"},
     "Gemini 2.5 Flash": {"id": "gemini-flash-latest", "max_tokens": 64000, "provider": "gemini"},
     #"Gemini 2.5 Flash": {"id": "gemini-2.5-flash", "max_tokens": 64000, "provider": "gemini"},
     "GPT-OSS-120b": {"id": "openai/gpt-oss-120b", "max_tokens": 64000, "provider": "groq"},

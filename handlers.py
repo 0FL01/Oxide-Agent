@@ -246,7 +246,7 @@ async def audio_to_text(file_path: str, mime_type: str) -> str:
 
 # --- Функции для работы с OpenRouter API ---
 # Модели для ретраев OpenRouter
-OPENROUTER_PRIMARY_MODEL = "google/gemini-2.5-flash-preview-05-20"  # Основная модель
+OPENROUTER_PRIMARY_MODEL = "google/gemini-2.5-flash-preview-09-2025"  # Основная модель
 OPENROUTER_FALLBACK_MODEL = "google/gemini-2.5-flash-lite"  # Резервная модель при недоступности основной
 
 async def openrouter_chat_completion(
