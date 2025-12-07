@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes
 from google.genai import errors as genai_errors
 from config import chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client
 from utils import split_long_message, clean_html, format_text
-from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
+from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model, list_allowed_users, get_allowed_user
 from telegram.error import BadRequest
 import html
 import logging
@@ -727,6 +727,53 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in remove_user command initiated by admin {admin_user_id}: {e}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка при удалении пользователя: {str(e)}")
+
+@check_auth
+@admin_required
+async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_user_id = update.effective_user.id
+    admin_user_name = update.effective_user.username or update.effective_user.first_name
+    logger.info(f"Admin user {admin_user_id} ({admin_user_name}) requested list_users.")
+
+    users = list_allowed_users()
+    if not users:
+        logger.info("No allowed users found.")
+        await update.message.reply_text("Список разрешенных пользователей пуст.")
+        return
+
+    lines = [f"{user['telegram_id']} - {user['role']}" for user in users]
+    message_text = "<b>Разрешенные пользователи:</b>\n" + "\n".join(lines)
+
+    logger.info(f"Sending {len(users)} users to admin {admin_user_id}.")
+    await update.message.reply_text(message_text, parse_mode=ParseMode.HTML)
+
+@check_auth
+@admin_required
+async def list_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_user_id = update.effective_user.id
+    admin_user_name = update.effective_user.username or update.effective_user.first_name
+    logger.info(f"Admin user {admin_user_id} ({admin_user_name}) requested list_user with args: {context.args}")
+
+    if not context.args:
+        await update.message.reply_text("Укажите ID пользователя. Пример: /list_user 123456789")
+        return
+
+    try:
+        target_user_id = int(context.args[0])
+    except ValueError:
+        logger.warning(f"Invalid telegram_id provided to list_user by admin {admin_user_id}: {context.args}")
+        await update.message.reply_text("ID пользователя должен быть числом. Пример: /list_user 123456789")
+        return
+
+    user_info = get_allowed_user(target_user_id)
+    if not user_info:
+        logger.info(f"User {target_user_id} not found in allowed list.")
+        await update.message.reply_text(f"Пользователь {target_user_id} не найден в списке доступа.")
+        return
+
+    message_text = f"<b>ID:</b> {user_info['telegram_id']}\n<b>Роль:</b> {user_info['role']}"
+    logger.info(f"Sending user info for {target_user_id} to admin {admin_user_id}.")
+    await update.message.reply_text(message_text, parse_mode=ParseMode.HTML)
 
 async def healthcheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id if update.effective_user else "Unknown"

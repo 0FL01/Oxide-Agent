@@ -84,6 +84,45 @@ def remove_allowed_user(user_id: int):
         logger.error(f"Database error in remove_allowed_user: {e}")
         raise
 
+def list_allowed_users(limit: int = 500) -> list:
+    """
+    Возвращает список пользователей, имеющих доступ к боту, с их ролями.
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT telegram_id, role
+                    FROM allowed_users
+                    ORDER BY telegram_id ASC
+                    LIMIT %s
+                    """,
+                    (limit,)
+                )
+                records = cur.fetchall()
+                return [{"telegram_id": row["telegram_id"], "role": row["role"]} for row in records]
+    except Exception as e:
+        logger.error(f"Database error in list_allowed_users: {e}")
+        return []
+
+def get_allowed_user(user_id: int) -> dict:
+    """
+    Возвращает информацию по конкретному пользователю, если он есть в списке доступа.
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cur:
+                cur.execute(
+                    "SELECT telegram_id, role FROM allowed_users WHERE telegram_id = %s",
+                    (user_id,)
+                )
+                record = cur.fetchone()
+                return {"telegram_id": record["telegram_id"], "role": record["role"]} if record else None
+    except Exception as e:
+        logger.error(f"Database error in get_allowed_user: {e}")
+        return None
+
 def check_postgres_connection():
     host = os.getenv('POSTGRES_HOST', '127.0.0.1')
     port = int(os.getenv('POSTGRES_PORT', '5432'))
