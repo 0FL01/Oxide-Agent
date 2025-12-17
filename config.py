@@ -1,7 +1,6 @@
 import os
 from groq import AsyncGroq
 from dotenv import load_dotenv
-from database import is_user_allowed, add_allowed_user, remove_allowed_user, UserRole
 from mistralai import Mistral
 from typing import Union
 import logging
