@@ -181,23 +181,12 @@ def get_chat_history(telegram_id: int, limit: int = 10) -> List[Dict]:
 def clear_chat_history(telegram_id: int):
     storage.delete_object(user_history_key(telegram_id))
 
-# --- Legacy/compatibility ---
-
-def create_chat_history_table():
-    pass # No-op for R2
-
-def create_user_models_table():
-    pass # No-op for R2
-
-def check_postgres_connection():
-    # Replace with R2 healthcheck
+def check_r2_connection() -> bool:
+    """Check connectivity to R2 storage."""
     try:
         storage.client.list_buckets()
         logger.info("Successfully connected to R2 storage.")
+        return True
     except Exception as e:
         logger.error(f"R2 connectivity test failed: {e}")
-
-def get_db_connection():
-    # This shouldn't be called anymore, but let's provide a dummy for compatibility if needed
-    # though it's better to remove all usages.
-    return None
+        return False

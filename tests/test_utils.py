@@ -1,5 +1,6 @@
-import pytest
-from utils import clean_html, format_text, split_long_message
+import logging
+import re
+from utils import clean_html, format_text, split_long_message, SensitiveDataFilter
 
 def test_clean_html():
     # Test basic HTML cleaning
@@ -44,3 +45,21 @@ def test_split_long_message():
     # Test edge cases
     assert split_long_message("") == []
     assert split_long_message(None) == []
+
+def test_sensitive_data_filter():
+    filt = SensitiveDataFilter()
+    
+    # Test Telegram Token masking
+    record = logging.LogRecord("test", logging.INFO, "path", 1, "Token: 123456789:ABCDefghIJKLmnopQRSTuvwxYZ123456789", None, None)
+    filt.filter(record)
+    assert "[TELEGRAM_TOKEN]" in record.msg
+    
+    # Test R2 Credential masking
+    record = logging.LogRecord("test", logging.INFO, "path", 1, "R2_ACCESS_KEY_ID=secret_key", None, None)
+    filt.filter(record)
+    assert "MASKED" in record.msg
+    
+    # Test complex object masking in args
+    record = logging.LogRecord("test", logging.INFO, "path", 1, "Config: %s", ("R2_SECRET_ACCESS_KEY=very_secret",), None)
+    filt.filter(record)
+    assert "MASKED" in record.args[0]

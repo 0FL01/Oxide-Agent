@@ -7,3 +7,4 @@ mistralai==1.8.2
 boto3==1.35.81
 nest_asyncio==1.6.0
 httpx==0.28.1
+pytest==8.3.4

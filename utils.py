@@ -1,14 +1,55 @@
 import html
 import re
 import os
-from typing import List, Dict, Tuple
-from enum import Enum
 import logging
-from typing import Union
+from typing import List, Dict, Tuple, Union, Optional, Any
 
 logger = logging.getLogger(__name__)
 
-def clean_html(text):
+class SensitiveDataFilter(logging.Filter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.patterns = [
+            (r'(https?:\/\/[^\/]+\/bot)([0-9]+:[A-Za-z0-9_-]+)(\/[^"\s]*)', r'\1[TELEGRAM_TOKEN]\3'),
+            (r'([0-9]{8,10}:[A-Za-z0-9_-]{35})', '[TELEGRAM_TOKEN]'),
+            (r'(bot[0-9]{8,10}:)[A-Za-z0-9_-]+', r'\1[TELEGRAM_TOKEN]')
+        ]
+        self.r2_patterns = [
+             (r"R2_ACCESS_KEY_ID=[^\s&]+", "R2_ACCESS_KEY_ID=[MASKED]"),
+             (r"R2_SECRET_ACCESS_KEY=[^\s&]+", "R2_SECRET_ACCESS_KEY=[MASKED]"),
+             (r"'aws_access_key_id': '[^']*'", "'aws_access_key_id': '[MASKED]'"),
+             (r"'aws_secret_access_key': '[^']*'", "'aws_secret_access_key': '[MASKED]'")
+        ]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if hasattr(record, 'msg'):
+            if isinstance(record.msg, str):
+                for pattern, replacement in self.patterns:
+                    record.msg = re.sub(pattern, replacement, record.msg)
+                for pattern, replacement in self.r2_patterns:
+                     record.msg = re.sub(pattern, replacement, record.msg)
+
+        if hasattr(record, 'args') and record.args:
+            args_list = list(record.args)
+            for i, arg in enumerate(args_list):
+                if isinstance(arg, str):
+                    for pattern, replacement in self.patterns:
+                        args_list[i] = re.sub(pattern, replacement, args_list[i])
+                    for pattern, replacement in self.r2_patterns:
+                        args_list[i] = re.sub(pattern, replacement, args_list[i])
+            record.args = tuple(args_list)
+        return True
+
+class TokenMaskingFormatter(logging.Formatter):
+    def __init__(self, fmt: Optional[str] = None, datefmt: Optional[str] = None) -> None:
+        super().__init__(fmt, datefmt)
+        self.sensitive_filter = SensitiveDataFilter()
+
+    def format(self, record: logging.LogRecord) -> str:
+        self.sensitive_filter.filter(record)
+        return super().format(record)
+
+def clean_html(text: str) -> str:
     code_blocks = []
 
     def replace_code_block(match):
@@ -25,7 +66,7 @@ def clean_html(text):
 
     return text
 
-def format_text(text):
+def format_text(text: str) -> str:
     text = clean_html(text)
 
     def code_block_replacer(match):

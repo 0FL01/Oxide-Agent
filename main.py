@@ -1,90 +1,24 @@
-import nest_asyncio
-nest_asyncio.apply()
-
 import logging
 import asyncio
-from logging.handlers import TimedRotatingFileHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck, handle_video, list_users, list_user
 from config import TELEGRAM_TOKEN, MODELS
 import os
 import re
-from database import check_postgres_connection as check_r2_connection, create_chat_history_table, create_user_models_table
+from database import check_r2_connection
+from utils import TokenMaskingFormatter, SensitiveDataFilter
 
 
-class SensitiveDataFilter(logging.Filter):
-    def __init__(self):
-        super().__init__()
-        self.patterns = [
-            (r'(https?:\/\/[^\/]+\/bot)([0-9]+:[A-Za-z0-9_-]+)(\/[^"\s]*)', r'\1[TELEGRAM_TOKEN]\3'),
-            (r'([0-9]{8,10}:[A-Za-z0-9_-]{35})', '[TELEGRAM_TOKEN]'),
-            (r'(bot[0-9]{8,10}:)[A-Za-z0-9_-]+', r'\1[TELEGRAM_TOKEN]')
-        ]
-        self.r2_patterns = [
-             (r"R2_ACCESS_KEY_ID=[^\s&]+", "R2_ACCESS_KEY_ID=[MASKED]"),
-             (r"R2_SECRET_ACCESS_KEY=[^\s&]+", "R2_SECRET_ACCESS_KEY=[MASKED]"),
-             (r"'aws_access_key_id': '[^']*'", "'aws_access_key_id': '[MASKED]'"),
-             (r"'aws_secret_access_key': '[^']*'", "'aws_secret_access_key': '[MASKED]'")
-        ]
-
-
-
-    def filter(self, record):
-        if hasattr(record, 'msg'):
-            if isinstance(record.msg, str):
-                original_msg = record.msg
-                for pattern, replacement in self.patterns:
-                    record.msg = re.sub(pattern, replacement, record.msg)
-                for pattern, replacement in self.r2_patterns:
-                     record.msg = re.sub(pattern, replacement, record.msg)
-
-
-        if hasattr(record, 'args'):
-            if record.args:
-                args_list = list(record.args)
-                for i, arg in enumerate(args_list):
-                    if isinstance(arg, str):
-                        original_arg = arg
-                        for pattern, replacement in self.patterns:
-                            args_list[i] = re.sub(pattern, replacement, args_list[i])
-                        for pattern, replacement in self.r2_patterns:
-                            args_list[i] = re.sub(pattern, replacement, args_list[i])
-
-                record.args = tuple(args_list)
-        return True
-
-
-class TokenMaskingFormatter(logging.Formatter):
-    def __init__(self, fmt=None, datefmt=None):
-        super().__init__(fmt, datefmt)
-        self.sensitive_filter = SensitiveDataFilter()
-
-    def format(self, record):
-        self.sensitive_filter.filter(record)
-        return super().format(record)
+# Removed legacy SensitiveDataFilter and TokenMaskingFormatter (moved to utils.py)
 
 def setup_logging():
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
-
     formatter = TokenMaskingFormatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
     sensitive_filter = SensitiveDataFilter()
-
-    file_handler = TimedRotatingFileHandler(
-        'logs/acwl.log',
-        when='h',
-        interval=1,
-        backupCount=72,
-        encoding='utf-8'
-    )
-    file_handler.setFormatter(formatter)
-    file_handler.addFilter(sensitive_filter)
-    file_handler.setLevel(logging.INFO) 
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
@@ -95,16 +29,15 @@ def setup_logging():
     root_logger.setLevel(logging.INFO) 
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
-    root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler) 
 
-    external_loggers = ['httpx', 'telegram', 'urllib3', 'psycopg2']
+    external_loggers = ['httpx', 'telegram', 'urllib3']
     for logger_name in external_loggers:
         ext_logger = logging.getLogger(logger_name)
         ext_logger.setLevel(logging.WARNING) 
         for handler in ext_logger.handlers[:]:
              ext_logger.removeHandler(handler)
-        ext_logger.addHandler(file_handler)
+        ext_logger.addHandler(console_handler)
         ext_logger.propagate = False
 
     return logging.getLogger(__name__)
@@ -116,12 +49,11 @@ async def main():
         logger.info("Starting the bot application")
 
         logger.info("Checking R2 storage connectivity...")
-        check_r2_connection()
+        if not check_r2_connection():
+            logger.critical("Could not connect to R2 storage. Exiting.")
+            return
 
-        logger.info("Initializing storage...")
-        create_chat_history_table()
-        create_user_models_table()
-        logger.info("Storage initialized.")
+        logger.info("R2 Storage connected.")
 
 
         logger.info(f"Initializing Telegram Bot Application with token.") 
