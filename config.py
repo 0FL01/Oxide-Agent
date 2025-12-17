@@ -39,16 +39,15 @@ else:
 chat_history = {}
 
 MODELS = {
-    "OR Gemini 2.5 Flash": {"id": "google/gemini-2.5-flash-preview-09-2025", "max_tokens": 64000, "provider": "openrouter"},
-    "Gemini 2.5 Flash": {"id": "gemini-flash-latest", "max_tokens": 64000, "provider": "gemini"},
-    #"Gemini 2.5 Flash": {"id": "gemini-2.5-flash", "max_tokens": 64000, "provider": "gemini"},
+    "OR Gemini 3 Flash": {"id": "google/gemini-3-flash-preview", "max_tokens": 64000, "provider": "openrouter"},
+    #"Gemini 2.5 Flash": {"id": "gemini-flash-latest", "max_tokens": 64000, "provider": "gemini"},
     "GPT-OSS-120b": {"id": "openai/gpt-oss-120b", "max_tokens": 64000, "provider": "groq"},
     "Mistral Large": {"id": "mistral-large-latest", "max_tokens": 128000, "provider": "mistral"},
     "Gemini 2.5 Flash Lite": {"id": "gemini-2.5-flash-lite", "max_tokens": 64000, "provider": "gemini"},
     #"Llama 3.3 70B 8K (groq)": {"id": "llama-3.3-70b-versatile", "max_tokens": 32000, "provider": "groq"}
 }
 
-DEFAULT_MODEL = "OR Gemini 2.5 Flash"
+DEFAULT_MODEL = "OR Gemini 3 Flash"
 
 try:
     groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
