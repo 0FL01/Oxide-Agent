@@ -25,23 +25,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: Build and Run Tests in Docker
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
         run: |
-          docker build --target builder -t test-image .
-          docker run --rm \
-            -e ADMIN_ID=$ADMIN_ID \
-            -e GEMINI_API_KEY=$GEMINI_API_KEY \
-            -e R2_ENDPOINT_URL=$R2_ENDPOINT_URL \
-            -e R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID \
-            -e R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY \
-            -e R2_BUCKET_NAME=$R2_BUCKET_NAME \
-            -v $(pwd)/tests:/app/tests \
-            -v $(pwd)/database.py:/app/database.py \
-            -v $(pwd)/config.py:/app/config.py \
-            -v $(pwd)/handlers.py:/app/handlers.py \
-            -v $(pwd)/utils.py:/app/utils.py \
-            test-image /bin/sh -c "pip install pytest pytest-asyncio pytest-mock && PYTHONPATH=. python -m pytest tests/ --maxfail=1 --disable-warnings"
+            python -m pip install --upgrade pip
+            pip install "pytest>=7.0.0" "pytest-asyncio>=0.18.0" "pytest-mock>=3.7.0"
+            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Run tests
+        run: PYTHONPATH=. python -m pytest tests/ --maxfail=1 --disable-warnings
 
 
   build:
@@ -160,11 +154,6 @@ jobs:
                 image: $DOCKER_IMAGE:$SHORT_SHA_VALUE
                 container_name: another_chat_tg
                 network_mode: \"host\"
-                environment:
-                  - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
-                  - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
-                  - R2_ENDPOINT_URL=${R2_ENDPOINT_URL}
-                  - R2_BUCKET_NAME=${R2_BUCKET_NAME}
 
                 restart: unless-stopped
                 volumes:
