@@ -55,9 +55,18 @@ def test_add_allowed_user(mock_storage):
     assert json.loads(kwargs['Body']) == {"12345": "ADMIN"}
 
 def test_is_user_allowed(mock_storage):
-    with patch('database.storage.load_json', return_value={"12345": "USER"}):
+    with patch('database.storage.load_json', return_value={"12345": "USER"}), \
+         patch('database.ADMIN_ID', 99999):
         assert is_user_allowed(12345) is True
-        assert is_user_allowed(999) is False
+        assert is_user_allowed(99999) is True
+        assert is_user_allowed(888) is False
+
+def test_get_user_role_admin_id():
+    with patch('database.storage.load_json', return_value={"12345": "USER"}), \
+         patch('database.ADMIN_ID', 99999):
+        assert get_user_role(99999) == UserRole.ADMIN
+        assert get_user_role(12345) == UserRole.USER
+        assert get_user_role(888) is None
 
 def test_save_and_get_history(mock_storage):
     history_key = "users/12345/history.json"

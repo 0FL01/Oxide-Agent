@@ -18,6 +18,7 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 
 # OpenRouter configuration
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"

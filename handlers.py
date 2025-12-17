@@ -2,9 +2,9 @@ from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
 from google.genai import errors as genai_errors
-from config import (
     chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client,
-    openrouter_client, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_SITE_URL, OPENROUTER_SITE_NAME
+    openrouter_client, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_SITE_URL, OPENROUTER_SITE_NAME,
+    ADMIN_ID
 )
 from utils import split_long_message, clean_html, format_text
 from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model, list_allowed_users, get_allowed_user
@@ -736,7 +736,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         logger.error(f"Error processing message for user {user_id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"<b>Ошибка:</b> Произошла ошибка при обработке вашего запроса: <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
-ADMIN_ID = int(os.getenv('ADMIN_ID'))
+# ADMIN_ID is now imported from config
 
 @check_auth
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -6,6 +6,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from enum import Enum
 from typing import Optional, List, Dict
+from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +106,13 @@ def _get_allowed_users_map() -> Dict[str, str]:
     return storage.load_json(ALLOWED_USERS_KEY, {})
 
 def is_user_allowed(user_id: int) -> bool:
+    if user_id == ADMIN_ID:
+        return True
     return str(user_id) in _get_allowed_users_map()
 
 def get_user_role(user_id: int) -> Optional[UserRole]:
+    if user_id == ADMIN_ID:
+        return UserRole.ADMIN
     role_str = _get_allowed_users_map().get(str(user_id))
     return UserRole(role_str) if role_str else None
 
