@@ -139,13 +139,13 @@ async def test_start_authorized(mock_update, mock_context, mocker):
     mock_set_auth_state.assert_called_once_with(12345, True)
 
 async def test_handle_message_text_gemini(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_model', return_value="Gemini 2.5 Flash")
+    mocker.patch('handlers.get_user_model', return_value="Gemini 2.5 Flash Lite")
     mock_save_message = mocker.patch('handlers.save_message')
     mock_get_history = mocker.patch('handlers.get_chat_history', return_value=[{"role": "user", "content": "previous"}])
     mock_gemini_generate = handlers.gemini_client.models.generate_content
     mock_update.message.text = "Привет!"
     mock_update.message.photo = None # Explicitly set photo to None for text message test
-    mock_context.user_data['model'] = "Gemini 2.5 Flash"
+    mock_context.user_data['model'] = "Gemini 2.5 Flash Lite"
 
     await handle_message(mock_update, mock_context)
 
@@ -422,16 +422,13 @@ async def test_handle_photo_message(mock_update, mock_context, mocker):
     mock_update.message.caption = "Что на картинке?"
     mock_update.message.text = None
     
-    # Мокируем gemini_client ответ
-    mock_gemini_response = MagicMock()
-    mock_gemini_response.text = "На картинке кот"
-    handlers.gemini_client.models.generate_content.return_value = mock_gemini_response
-
+    mock_context.user_data['model'] = "Gemini 2.5 Flash Lite"
+    
     await handle_photo(mock_update, mock_context)
 
     mock_photo_size.get_file.assert_called_once()
     mock_file.download_as_bytearray.assert_called_once()
     handlers.gemini_client.models.generate_content.assert_called_once()
-    mock_update.message.reply_text.assert_called_once_with("На картинке кот", parse_mode=ParseMode.HTML)
+    mock_update.message.reply_text.assert_called_once_with("Mocked Gemini Response", parse_mode=ParseMode.HTML)
     mock_update.message.chat.send_action.assert_any_call(action=ChatAction.UPLOAD_PHOTO)
     mock_update.message.chat.send_action.assert_any_call(action=ChatAction.TYPING)

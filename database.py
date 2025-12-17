@@ -19,8 +19,23 @@ class R2Storage:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(R2Storage, cls).__new__(cls)
-            cls._instance._init_client()
+            cls._instance._client = None
+            cls._instance.bucket = None
         return cls._instance
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._init_client()
+        return self._client
+
+    @client.setter
+    def client(self, value):
+        self._client = value
+
+    @client.deleter
+    def client(self):
+        self._client = None
 
     def _init_client(self):
         endpoint_url = os.getenv('R2_ENDPOINT_URL')
@@ -31,7 +46,7 @@ class R2Storage:
         if not all([endpoint_url, access_key, secret_key, self.bucket]):
             logger.error("R2 configuration is missing some environment variables.")
         
-        self.client = boto3.client(
+        self._client = boto3.client(
             's3',
             endpoint_url=endpoint_url,
             aws_access_key_id=access_key,
