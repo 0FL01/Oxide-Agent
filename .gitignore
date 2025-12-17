@@ -5,3 +5,6 @@ not_env
 fresh_docs.md
 MIGRATION_NOTES.md
 func_for_ad.md
+test/__pycache__
+__pycache__
+

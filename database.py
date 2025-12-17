@@ -1,9 +1,11 @@
 import os
-import psycopg2
-from psycopg2.extras import DictCursor
-from enum import Enum
+import json
 import logging
-import socket
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
+from enum import Enum
+from typing import Optional, List, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -11,275 +13,171 @@ class UserRole(Enum):
     ADMIN = "ADMIN"
     USER = "USER"
 
-def get_db_connection():
-    connection_params = {
-        'dbname': os.getenv('POSTGRES_DB'),
-        'user': os.getenv('POSTGRES_USER'),
-        'password': os.getenv('POSTGRES_PASSWORD'),
-        'host': os.getenv('POSTGRES_HOST', '127.0.0.1'),
-        'port': os.getenv('POSTGRES_PORT', '5432')
-    }
-    
-    # Создаем копию параметров для логирования
-    logging_params = {
-        'dbname': '[MASKED]',
-        'user': '[MASKED]',
-        'password': '[MASKED]',
-        'host': connection_params['host'],
-        'port': connection_params['port']
-    }
-    
-    logger.info(f"Attempting to connect to database with params: {logging_params}")
-    
-    try:
-        conn = psycopg2.connect(**connection_params)
-        logger.info("Successfully connected to database")
-        return conn
-    except psycopg2.Error as e:
-        logger.error(f"Failed to connect to database: {e}")
-        logger.error(f"Connection error details: {e.diag.message_detail if hasattr(e, 'diag') else 'No details'}")
-        raise
+class R2Storage:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(R2Storage, cls).__new__(cls)
+            cls._instance._init_client()
+        return cls._instance
+
+    def _init_client(self):
+        endpoint_url = os.getenv('R2_ENDPOINT_URL')
+        access_key = os.getenv('R2_ACCESS_KEY_ID')
+        secret_key = os.getenv('R2_SECRET_ACCESS_KEY')
+        self.bucket = os.getenv('R2_BUCKET_NAME')
+
+        if not all([endpoint_url, access_key, secret_key, self.bucket]):
+            logger.error("R2 configuration is missing some environment variables.")
+        
+        self.client = boto3.client(
+            's3',
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version='s3v4')
+        )
+
+    def save_json(self, key: str, data: any):
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=json.dumps(data, ensure_ascii=False, indent=2),
+                ContentType='application/json'
+            )
+        except Exception as e:
+            logger.error(f"Error saving to R2 (key: {key}): {e}")
+            raise
+
+    def load_json(self, key: str, default: any = None) -> any:
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+            return json.loads(response['Body'].read().decode('utf-8'))
+        except ClientError as e:
+            if e.response['Error']['Code'] == "NoSuchKey":
+                return default
+            logger.error(f"Error loading from R2 (key: {key}): {e}")
+            return default
+        except Exception as e:
+            logger.error(f"Error loading from R2 (key: {key}): {e}")
+            return default
+
+
+    def delete_object(self, key: str):
+        try:
+            self.client.delete_object(Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            if e.response['Error']['Code'] == "NoSuchKey":
+                pass
+            else:
+                logger.error(f"Error deleting from R2 (key: {key}): {e}")
+        except Exception as e:
+            logger.error(f"Error deleting from R2 (key: {key}): {e}")
+
+
+# Paths
+ALLOWED_USERS_KEY = "registry/allowed_users.json"
+def user_config_key(user_id: int) -> str: return f"users/{user_id}/config.json"
+def user_history_key(user_id: int) -> str: return f"users/{user_id}/history.json"
+
+storage = R2Storage()
+
+# --- Registry Functions ---
+
+def _get_allowed_users_map() -> Dict[str, str]:
+    return storage.load_json(ALLOWED_USERS_KEY, {})
 
 def is_user_allowed(user_id: int) -> bool:
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT EXISTS(SELECT 1 FROM allowed_users WHERE telegram_id = %s)", (user_id,))
-                return cur.fetchone()[0]
-    except Exception as e:
-        logger.error(f"Database error in is_user_allowed: {e}")
-        return False
+    return str(user_id) in _get_allowed_users_map()
 
-def get_user_role(user_id: int) -> UserRole:
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT role FROM allowed_users WHERE telegram_id = %s", (user_id,))
-                result = cur.fetchone()
-                return UserRole(result[0]) if result else None
-    except Exception as e:
-        logger.error(f"Database error in get_user_role: {e}")
-        return None
+def get_user_role(user_id: int) -> Optional[UserRole]:
+    role_str = _get_allowed_users_map().get(str(user_id))
+    return UserRole(role_str) if role_str else None
 
 def add_allowed_user(user_id: int, role: UserRole):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO allowed_users (telegram_id, role) VALUES (%s, %s) ON CONFLICT (telegram_id) DO UPDATE SET role = %s",
-                    (user_id, role.value, role.value)
-                )
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Database error in add_allowed_user: {e}")
-        raise
+    users = _get_allowed_users_map()
+    users[str(user_id)] = role.value
+    storage.save_json(ALLOWED_USERS_KEY, users)
 
 def remove_allowed_user(user_id: int):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM allowed_users WHERE telegram_id = %s", (user_id,))
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Database error in remove_allowed_user: {e}")
-        raise
+    users = _get_allowed_users_map()
+    uid_str = str(user_id)
+    if uid_str in users:
+        del users[uid_str]
+        storage.save_json(ALLOWED_USERS_KEY, users)
+        # Optionally clean up user data
+        storage.delete_object(user_config_key(user_id))
+        storage.delete_object(user_history_key(user_id))
 
-def list_allowed_users(limit: int = 500) -> list:
-    """
-    Возвращает список пользователей, имеющих доступ к боту, с их ролями.
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=DictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT telegram_id, role
-                    FROM allowed_users
-                    ORDER BY telegram_id ASC
-                    LIMIT %s
-                    """,
-                    (limit,)
-                )
-                records = cur.fetchall()
-                return [{"telegram_id": row["telegram_id"], "role": row["role"]} for row in records]
-    except Exception as e:
-        logger.error(f"Database error in list_allowed_users: {e}")
-        return []
+def list_allowed_users(limit: int = 500) -> List[Dict]:
+    users = _get_allowed_users_map()
+    # Sort and limit as previously done in SQL
+    sorted_ids = sorted([int(uid) for uid in users.keys()])[:limit]
+    return [{"telegram_id": uid, "role": users[str(uid)]} for uid in sorted_ids]
 
-def get_allowed_user(user_id: int) -> dict:
-    """
-    Возвращает информацию по конкретному пользователю, если он есть в списке доступа.
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=DictCursor) as cur:
-                cur.execute(
-                    "SELECT telegram_id, role FROM allowed_users WHERE telegram_id = %s",
-                    (user_id,)
-                )
-                record = cur.fetchone()
-                return {"telegram_id": record["telegram_id"], "role": record["role"]} if record else None
-    except Exception as e:
-        logger.error(f"Database error in get_allowed_user: {e}")
-        return None
+def get_allowed_user(user_id: int) -> Optional[Dict]:
+    role = get_user_role(user_id)
+    return {"telegram_id": user_id, "role": role.value} if role else None
 
-def check_postgres_connection():
-    host = os.getenv('POSTGRES_HOST', '127.0.0.1')
-    port = int(os.getenv('POSTGRES_PORT', '5432'))
-    
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        result = sock.connect_ex((host, port))
-        
-        if result == 0:
-            logger.info(f"Port {port} is open on host {host}")
-        else:
-            logger.error(f"Port {port} is closed on host {host}")
-            
-        sock.close()
-    except Exception as e:
-        logger.error(f"Network connectivity test failed: {e}")
+# --- User Config Functions ---
 
-def create_chat_history_table():
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS chat_history (
-                        id SERIAL PRIMARY KEY,
-                        telegram_id BIGINT NOT NULL,
-                        role VARCHAR(50) NOT NULL,
-                        content TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (telegram_id) REFERENCES allowed_users(telegram_id) ON DELETE CASCADE
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_telegram_id_created_at ON chat_history(telegram_id, created_at);
-                """)
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Error creating chat_history table: {e}")
-        raise
+def _get_user_config(user_id: int) -> Dict:
+    return storage.load_json(user_config_key(user_id), {})
 
-def save_message(telegram_id: int, role: str, content: str):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO chat_history (telegram_id, role, content) VALUES (%s, %s, %s)",
-                    (telegram_id, role, content)
-                )
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Error saving message: {e}")
-        raise
-
-def get_chat_history(telegram_id: int, limit: int = 10) -> list:
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=DictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT role, content 
-                    FROM chat_history 
-                    WHERE telegram_id = %s 
-                    ORDER BY created_at DESC 
-                    LIMIT %s
-                    """,
-                    (telegram_id, limit)
-                )
-                messages = cur.fetchall()
-                return [{"role": msg["role"], "content": msg["content"]} for msg in messages][::-1]
-    except Exception as e:
-        logger.error(f"Error getting chat history: {e}")
-        return []
-
-def clear_chat_history(telegram_id: int):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM chat_history WHERE telegram_id = %s", (telegram_id,))
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Error clearing chat history: {e}")
-        raise
+def _update_user_config(user_id: int, updates: Dict):
+    config = _get_user_config(user_id)
+    config.update(updates)
+    storage.save_json(user_config_key(user_id), config)
 
 def update_user_prompt(telegram_id: int, system_prompt: str):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO user_prompts (telegram_id, system_prompt)
-                    VALUES (%s, %s)
-                    ON CONFLICT (telegram_id) DO UPDATE
-                    SET system_prompt = EXCLUDED.system_prompt,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (telegram_id, system_prompt)
-                )
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Ошибка обновления пользовательского промпта для {telegram_id}: {e}")
-        raise
+    _update_user_config(telegram_id, {"system_prompt": system_prompt})
 
-def get_user_prompt(telegram_id: int) -> str:
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT system_prompt FROM user_prompts WHERE telegram_id = %s",
-                    (telegram_id,)
-                )
-                result = cur.fetchone()
-                return result[0] if result else None
-    except Exception as e:
-        logger.error(f"Ошибка получения пользовательского промпта для {telegram_id}: {e}")
-        return None
-
-def create_user_models_table():
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS user_models (
-                        telegram_id BIGINT PRIMARY KEY,
-                        model_name VARCHAR(100) NOT NULL,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (telegram_id) REFERENCES allowed_users(telegram_id) ON DELETE CASCADE
-                    );
-                """)
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Ошибка создания таблицы user_models: {e}")
-        raise
+def get_user_prompt(telegram_id: int) -> Optional[str]:
+    return _get_user_config(telegram_id).get("system_prompt")
 
 def update_user_model(telegram_id: int, model_name: str):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO user_models (telegram_id, model_name)
-                    VALUES (%s, %s)
-                    ON CONFLICT (telegram_id) DO UPDATE
-                    SET model_name = EXCLUDED.model_name,
-                        updated_at = CURRENT_TIMESTAMP
-                """, (telegram_id, model_name))
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Ошибка обновления модели пользователя {telegram_id}: {e}")
-        raise
+    _update_user_config(telegram_id, {"model_name": model_name})
 
-def get_user_model(telegram_id: int) -> str:
+def get_user_model(telegram_id: int) -> Optional[str]:
+    return _get_user_config(telegram_id).get("model_name")
+
+# --- History Functions ---
+
+def save_message(telegram_id: int, role: str, content: str):
+    history = storage.load_json(user_history_key(telegram_id), [])
+    history.append({
+        "role": role,
+        "content": content
+    })
+    # Keep it reasonable, e.g., last 100 messages if needed, but here we just append
+    storage.save_json(user_history_key(telegram_id), history)
+
+def get_chat_history(telegram_id: int, limit: int = 10) -> List[Dict]:
+    history = storage.load_json(user_history_key(telegram_id), [])
+    return history[-limit:]
+
+def clear_chat_history(telegram_id: int):
+    storage.delete_object(user_history_key(telegram_id))
+
+# --- Legacy/compatibility ---
+
+def create_chat_history_table():
+    pass # No-op for R2
+
+def create_user_models_table():
+    pass # No-op for R2
+
+def check_postgres_connection():
+    # Replace with R2 healthcheck
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT model_name FROM user_models WHERE telegram_id = %s",
-                    (telegram_id,)
-                )
-                result = cur.fetchone()
-                return result[0] if result else None
+        storage.client.list_buckets()
+        logger.info("Successfully connected to R2 storage.")
     except Exception as e:
-        logger.error(f"Ошибка получения модели пользователя {telegram_id}: {e}")
-        return None 
+        logger.error(f"R2 connectivity test failed: {e}")
+
+def get_db_connection():
+    # This shouldn't be called anymore, but let's provide a dummy for compatibility if needed
+    # though it's better to remove all usages.
+    return None

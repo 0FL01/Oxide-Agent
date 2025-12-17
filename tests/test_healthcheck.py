@@ -10,11 +10,11 @@ os.environ["GROQ_API_KEY"] = "dummy"
 os.environ["OPENROUTER_API_KEY"] = "dummy"
 os.environ["MISTRAL_API_KEY"] = "dummy"
 os.environ["GEMINI_API_KEY"] = "dummy"
-os.environ["POSTGRES_DB"] = "test_db"
-os.environ["POSTGRES_USER"] = "test_user"
-os.environ["POSTGRES_PASSWORD"] = "test_password"
-os.environ["POSTGRES_HOST"] = "localhost"
-os.environ["POSTGRES_PORT"] = "5432"
+os.environ["R2_ENDPOINT_URL"] = "http://localhost"
+os.environ["R2_ACCESS_KEY_ID"] = "test"
+os.environ["R2_SECRET_ACCESS_KEY"] = "test"
+os.environ["R2_BUCKET_NAME"] = "test"
+
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 

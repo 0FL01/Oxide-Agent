@@ -10,7 +10,8 @@ from handlers import start, clear, handle_message, handle_voice, change_model, a
 from config import TELEGRAM_TOKEN, MODELS
 import os
 import re
-from database import get_db_connection, check_postgres_connection, create_chat_history_table, create_user_models_table
+from database import check_postgres_connection as check_r2_connection, create_chat_history_table, create_user_models_table
+
 
 class SensitiveDataFilter(logging.Filter):
     def __init__(self):
@@ -20,13 +21,13 @@ class SensitiveDataFilter(logging.Filter):
             (r'([0-9]{8,10}:[A-Za-z0-9_-]{35})', '[TELEGRAM_TOKEN]'),
             (r'(bot[0-9]{8,10}:)[A-Za-z0-9_-]+', r'\1[TELEGRAM_TOKEN]')
         ]
-        self.db_patterns = [
-             (r"'user': '[^']*'", "'user': '[MASKED]'"),
-             (r"'password': '[^']*'", "'password': '[MASKED]'"),
-             (r"'dbname': '[^']*'", "'dbname': '[MASKED]'"),
-             (r"'host': '[^']*'", "'host': '[MASKED]'"),
-             (r"'port': '[^']*'", "'port': '[MASKED]'")
+        self.r2_patterns = [
+             (r"R2_ACCESS_KEY_ID=[^\s&]+", "R2_ACCESS_KEY_ID=[MASKED]"),
+             (r"R2_SECRET_ACCESS_KEY=[^\s&]+", "R2_SECRET_ACCESS_KEY=[MASKED]"),
+             (r"'aws_access_key_id': '[^']*'", "'aws_access_key_id': '[MASKED]'"),
+             (r"'aws_secret_access_key': '[^']*'", "'aws_secret_access_key': '[MASKED]'")
         ]
+
 
 
     def filter(self, record):
@@ -35,8 +36,9 @@ class SensitiveDataFilter(logging.Filter):
                 original_msg = record.msg
                 for pattern, replacement in self.patterns:
                     record.msg = re.sub(pattern, replacement, record.msg)
-                for pattern, replacement in self.db_patterns:
+                for pattern, replacement in self.r2_patterns:
                      record.msg = re.sub(pattern, replacement, record.msg)
+
 
         if hasattr(record, 'args'):
             if record.args:
@@ -46,8 +48,9 @@ class SensitiveDataFilter(logging.Filter):
                         original_arg = arg
                         for pattern, replacement in self.patterns:
                             args_list[i] = re.sub(pattern, replacement, args_list[i])
-                        for pattern, replacement in self.db_patterns:
+                        for pattern, replacement in self.r2_patterns:
                             args_list[i] = re.sub(pattern, replacement, args_list[i])
+
                 record.args = tuple(args_list)
         return True
 
@@ -112,23 +115,14 @@ async def main():
     try:
         logger.info("Starting the bot application")
 
-        logger.info("Checking PostgreSQL network connectivity...")
-        check_postgres_connection()
+        logger.info("Checking R2 storage connectivity...")
+        check_r2_connection()
 
-        logger.info("Initializing database tables...")
+        logger.info("Initializing storage...")
         create_chat_history_table()
         create_user_models_table()
-        logger.info("Database tables initialized.")
+        logger.info("Storage initialized.")
 
-        logger.info("Attempting test database connection...")
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT version();")
-                    version = cur.fetchone()
-                    logger.info(f"Successfully connected to PostgreSQL. Version: {version[0]}")
-        except Exception as e:
-            logger.error(f"Failed to establish test database connection during startup: {e}", exc_info=True)
 
         logger.info(f"Initializing Telegram Bot Application with token.") 
         application = Application.builder().token(TELEGRAM_TOKEN).build()

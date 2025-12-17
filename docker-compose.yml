@@ -4,7 +4,10 @@ services:
     container_name: another_chat_tg
     network_mode: "host"
     environment:
-      - POSTGRES_HOST=127.0.0.1
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_ENDPOINT_URL=${R2_ENDPOINT_URL}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME}
     restart: unless-stopped
     volumes:
       - ./.env:/app/.env:ro

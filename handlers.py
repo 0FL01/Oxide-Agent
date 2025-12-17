@@ -1062,11 +1062,11 @@ class SensitiveDataFilter(logging.Filter):
             (r'([0-9]{8,10}:[A-Za-z0-9_-]{35})', '[TELEGRAM_TOKEN]'),
             (r'(bot[0-9]{8,10}:)[A-Za-z0-9_-]+', r'\1[TELEGRAM_TOKEN]'),
 
-            (r"'user': '[^']*'", "'user': '[MASKED]'"),
-            (r"'password': '[^']*'", "'password': '[MASKED]'"),
-            (r"'dbname': '[^']*'", "'dbname': '[MASKED]'"),
-            (r"'host': '[^']*'", "'host': '[MASKED]'"),
-            (r"'port': '[^']*'", "'port': '[MASKED]'")
+            (r"R2_ACCESS_KEY_ID=[^\s&]+", "R2_ACCESS_KEY_ID=[MASKED]"),
+            (r"R2_SECRET_ACCESS_KEY=[^\s&]+", "R2_SECRET_ACCESS_KEY=[MASKED]"),
+            (r"'aws_access_key_id': '[^']*'", "'aws_access_key_id': '[MASKED]'"),
+            (r"'aws_secret_access_key': '[^']*'", "'aws_secret_access_key': '[MASKED]'")
+
         ]
 
     def filter(self, record):
