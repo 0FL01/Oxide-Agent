@@ -2,6 +2,7 @@ from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import ContextTypes
 from google.genai import errors as genai_errors
+from config import (
     chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client,
     openrouter_client, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_SITE_URL, OPENROUTER_SITE_NAME,
     ADMIN_ID
