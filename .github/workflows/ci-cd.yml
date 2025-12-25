@@ -159,7 +159,6 @@ jobs:
                 restart: unless-stopped
                 volumes:
                   - ./.env:/app/.env:ro
-                  - ./logs:/app/logs
                 logging:
                   driver: json-file
                   options:

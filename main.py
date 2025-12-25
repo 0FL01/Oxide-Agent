@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import re
@@ -46,8 +45,8 @@ def setup_logging():
 logger = setup_logging()
 
 
-async def main():
-    """Main async function for Python 3.13+ compatibility."""
+def main():
+    """Main function to run the Telegram bot."""
     try:
         logger.info("Starting the bot application")
 
@@ -94,7 +93,7 @@ async def main():
         logger.info("All handlers registered.")
 
         logger.info("Starting bot polling...")
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
         logger.info("Bot polling stopped.")
 
     except Exception as e:
@@ -104,4 +103,4 @@ async def main():
 
 if __name__ == '__main__':
     logger.info("Running main function...")
-    asyncio.run(main())
+    main()
