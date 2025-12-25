@@ -1,5 +1,4 @@
 import logging
-import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from handlers import start, clear, handle_message, handle_voice, change_model, healthcheck, handle_video
@@ -44,7 +43,7 @@ def setup_logging():
 
 logger = setup_logging()
 
-async def main():
+def main():
     try:
         logger.info("Starting the bot application")
 
@@ -92,7 +91,7 @@ async def main():
         logger.info("All handlers registered.")
 
         logger.info("Starting bot polling...")
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
         logger.info("Bot polling stopped.")
 
     except Exception as e:
@@ -101,4 +100,4 @@ async def main():
 
 if __name__ == '__main__':
     logger.info("Running main function...")
-    asyncio.run(main())
+    main()
