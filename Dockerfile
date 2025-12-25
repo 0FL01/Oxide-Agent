@@ -18,11 +18,12 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем файлы приложения
-COPY config.py handlers.py main.py utils.py database.py ./
+COPY src/ ./src/
 COPY tests/ ./tests/
 
 # Устанавливаем переменные окружения
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app/src
 
 # Запускаем бота
-CMD ["python", "main.py"]
+CMD ["python", "src/main.py"]

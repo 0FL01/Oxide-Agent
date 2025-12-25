@@ -185,6 +185,7 @@ async def test_handle_message_text_mistral(mock_update, mock_context, mocker):
 
 async def test_handle_voice_message(mock_update, mock_context, mocker):
     mock_voice = MagicMock(spec=Voice)
+    mock_context.user_data['model'] = "Gemini 2.5 Flash Lite"
     mock_update.message.voice = mock_voice
     mock_update.message.text = None
     mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)
@@ -208,6 +209,7 @@ async def test_handle_voice_message(mock_update, mock_context, mocker):
 
 async def test_handle_video_message(mock_update, mock_context, mocker):
     mock_video = MagicMock(spec=Video)
+    mock_context.user_data['model'] = "Gemini 2.5 Flash Lite"
     mock_update.message.video = mock_video
     mock_update.message.text = None
     mock_update.message.caption = None
@@ -339,8 +341,10 @@ async def test_handle_unsupported_document(mock_update, mock_context, mocker):
 
 async def test_handle_voice_transcription_error(mock_update, mock_context, mocker):
     mock_voice = MagicMock(spec=Voice)
+    mock_context.user_data['model'] = "Gemini 2.5 Flash Lite"
     mock_update.message.voice = mock_voice
     mock_update.message.text = None
+
     error_message = "Ошибка Gemini API: Квота"
     mocker.patch('handlers.audio_to_text', new_callable=AsyncMock, side_effect=Exception(error_message))
     mock_process_message = mocker.patch('handlers.process_message', new_callable=AsyncMock)

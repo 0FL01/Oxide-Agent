@@ -33,7 +33,7 @@ test:
       if [ -f requirements.txt ]; then
         pip install -r requirements.txt
       fi
-    - python -m pytest tests/ --maxfail=1 --disable-warnings
+    - PYTHONPATH=src python -m pytest tests/ --maxfail=1 --disable-warnings
   rules:
     - when: always
 

@@ -36,7 +36,7 @@ jobs:
             pip install "pytest>=7.0.0" "pytest-asyncio>=0.18.0" "pytest-mock>=3.7.0"
             if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       - name: Run tests
-        run: PYTHONPATH=. python -m pytest tests/ --maxfail=1 --disable-warnings
+        run: PYTHONPATH=src python -m pytest tests/ --maxfail=1 --disable-warnings
 
 
   build:
