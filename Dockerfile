@@ -18,11 +18,11 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем файлы приложения
-COPY config.py handlers.py main.py utils.py database.py watchdog_runner.py ./
+COPY config.py handlers.py main.py utils.py database.py ./
 COPY tests/ ./tests/
 
 # Устанавливаем переменные окружения
 ENV PYTHONUNBUFFERED=1
 
-# Запускаем скрипт
-CMD ["python", "watchdog_runner.py"]
+# Запускаем бота
+CMD ["python", "main.py"]

@@ -70,19 +70,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_SITE_URL = settings.openrouter_site_url
 OPENROUTER_SITE_NAME = settings.openrouter_site_name
 
-if MISTRAL_API_KEY:
-    mistral_client = Mistral(api_key=MISTRAL_API_KEY)
-else:
-    print("Warning: MISTRAL_API_KEY is not set in the environment variables.")
-    mistral_client = None
-
-if GEMINI_API_KEY:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-else:
-    print("Warning: GEMINI_API_KEY is not set in the environment variables.")
-    gemini_client = None
-
-chat_history = {}
+# Client initialization is done below in the try/except block
 
 MODELS = {
     "OR Gemini 3 Flash": {"id": "google/gemini-3-flash-preview", "max_tokens": 64000, "provider": "openrouter"},

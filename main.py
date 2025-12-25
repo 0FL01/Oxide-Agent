@@ -1,15 +1,16 @@
+import asyncio
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from handlers import start, clear, handle_message, handle_voice, change_model, healthcheck, handle_video
-from config import TELEGRAM_TOKEN, MODELS
 import os
 import re
+
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+
+from config import TELEGRAM_TOKEN, MODELS
 from database import check_r2_connection
+from handlers import start, clear, handle_message, handle_voice, change_model, healthcheck, handle_video
 from utils import TokenMaskingFormatter, SensitiveDataFilter
 
-
-# Removed legacy SensitiveDataFilter and TokenMaskingFormatter (moved to utils.py)
 
 def setup_logging():
     formatter = TokenMaskingFormatter(
@@ -22,28 +23,31 @@ def setup_logging():
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.addFilter(sensitive_filter)
-    console_handler.setLevel(logging.INFO) 
+    console_handler.setLevel(logging.INFO)
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO) 
+    root_logger.setLevel(logging.INFO)
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
-    root_logger.addHandler(console_handler) 
+    root_logger.addHandler(console_handler)
 
     external_loggers = ['httpx', 'telegram', 'urllib3']
     for logger_name in external_loggers:
         ext_logger = logging.getLogger(logger_name)
-        ext_logger.setLevel(logging.WARNING) 
+        ext_logger.setLevel(logging.WARNING)
         for handler in ext_logger.handlers[:]:
-             ext_logger.removeHandler(handler)
+            ext_logger.removeHandler(handler)
         ext_logger.addHandler(console_handler)
         ext_logger.propagate = False
 
     return logging.getLogger(__name__)
 
+
 logger = setup_logging()
 
-def main():
+
+async def main():
+    """Main async function for Python 3.13+ compatibility."""
     try:
         logger.info("Starting the bot application")
 
@@ -54,8 +58,7 @@ def main():
 
         logger.info("R2 Storage connected.")
 
-
-        logger.info(f"Initializing Telegram Bot Application with token.") 
+        logger.info("Initializing Telegram Bot Application with token.")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
         logger.info("Telegram Bot Application initialized.")
 
@@ -91,13 +94,14 @@ def main():
         logger.info("All handlers registered.")
 
         logger.info("Starting bot polling...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
         logger.info("Bot polling stopped.")
 
     except Exception as e:
         logger.critical(f"Critical error in main application loop: {e}", exc_info=True)
-        raise 
+        raise
+
 
 if __name__ == '__main__':
     logger.info("Running main function...")
-    main()
+    asyncio.run(main())
