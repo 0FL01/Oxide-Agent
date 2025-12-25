@@ -7,8 +7,8 @@ import logging
 from google import genai
 from google.genai import types
 import httpx
-from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, computed_field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ load_dotenv()
 class Settings(BaseSettings):
     """Application settings with validation"""
     telegram_token: str
-    allowed_users: Set[int] = set()
+    allowed_users_str: str = Field(default='', validation_alias='ALLOWED_USERS')
     
     # API Keys
     groq_api_key: Optional[str] = None
@@ -38,23 +38,22 @@ class Settings(BaseSettings):
     # System message
     system_message: Optional[str] = None
     
-    @field_validator('allowed_users', mode='before')
-    @classmethod
-    def parse_allowed_users(cls, v):
-        """Parse comma-separated user IDs"""
-        if isinstance(v, str):
-            if not v.strip():
-                return set()
-            return {int(x.strip()) for x in v.split(',') if x.strip()}
-        if isinstance(v, int):
-            return {v}
-        if isinstance(v, (list, set)):
-            return set(v)
-        return v
+    model_config = SettingsConfigDict(
+        env_file='.env',
+        case_sensitive=False,
+    )
     
-    class Config:
-        env_file = '.env'
-        case_sensitive = False
+    @computed_field
+    @property
+    def allowed_users(self) -> Set[int]:
+        """Parse comma-separated user IDs from string"""
+        if not self.allowed_users_str or not self.allowed_users_str.strip():
+            return set()
+        try:
+            return {int(x.strip()) for x in self.allowed_users_str.split(',') if x.strip()}
+        except ValueError as e:
+            logger.warning(f"Failed to parse allowed_users: {e}")
+            return set()
 
 # Initialize settings
 settings = Settings()

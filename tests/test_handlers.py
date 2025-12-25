@@ -55,8 +55,9 @@ def mock_context(mocker):
 
 @pytest.fixture(autouse=True)
 def mock_db_functions(mocker):
-    # Mock settings.allowed_users to include test user
-    mocker.patch.object(settings, 'allowed_users', {12345})
+    # Mock settings.allowed_users_str to include test user
+    # Note: allowed_users is now a computed_field so we mock the underlying string field
+    mocker.patch.object(settings, 'allowed_users_str', '12345')
     mocker.patch('handlers.clear_chat_history')
     mocker.patch('handlers.get_chat_history', return_value=[])
     mocker.patch('handlers.save_message')
@@ -115,14 +116,14 @@ def mock_api_clients_and_io(mocker):
     mocker.patch('asyncio.to_thread', side_effect=mock_to_thread)
 
 async def test_start_unauthorized(mock_update, mock_context, mocker):
-    mocker.patch.object(settings, 'allowed_users', set())  # Empty set
+    mocker.patch.object(settings, 'allowed_users_str', '')  # Empty string = no users
     mock_set_auth_state = mocker.patch('handlers.set_user_auth_state')
     await start(mock_update, mock_context)
     mock_update.message.reply_text.assert_called_once_with("Доступ запрещён.")
     mock_set_auth_state.assert_not_called()
 
 async def test_start_authorized(mock_update, mock_context, mocker):
-    mocker.patch.object(settings, 'allowed_users', {12345})
+    mocker.patch.object(settings, 'allowed_users_str', '12345')
     mocker.patch('handlers.get_user_model', return_value="Mistral Large")
     mock_set_auth_state = mocker.patch('handlers.set_user_auth_state')
     await start(mock_update, mock_context)
