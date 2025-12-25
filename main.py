@@ -2,7 +2,7 @@ import logging
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from handlers import start, clear, handle_message, handle_voice, change_model, add_user, remove_user, healthcheck, handle_video, list_users, list_user
+from handlers import start, clear, handle_message, handle_voice, change_model, healthcheck, handle_video
 from config import TELEGRAM_TOKEN, MODELS
 import os
 import re
@@ -63,10 +63,6 @@ async def main():
         logger.info("Registering command handlers...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("clear", clear))
-        application.add_handler(CommandHandler("add_user", add_user))
-        application.add_handler(CommandHandler("remove_user", remove_user))
-        application.add_handler(CommandHandler("list_users", list_users))
-        application.add_handler(CommandHandler("list_user", list_user))
         application.add_handler(CommandHandler("healthcheck", healthcheck))
         logger.info("Command handlers registered.")
 

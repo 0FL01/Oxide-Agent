@@ -17,11 +17,10 @@ from telegram.ext import ContextTypes
 import handlers
 from handlers import (
     start, clear, handle_message, handle_voice, handle_video, change_model,
-    add_user, remove_user, process_message, get_main_keyboard,
+    process_message, get_main_keyboard,
     get_model_keyboard, get_extra_functions_keyboard, audio_to_text
 )
-from database import UserRole
-from config import MODELS, DEFAULT_MODEL
+from config import MODELS, DEFAULT_MODEL, settings
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,10 +55,8 @@ def mock_context(mocker):
 
 @pytest.fixture(autouse=True)
 def mock_db_functions(mocker):
-    mocker.patch('handlers.is_user_allowed', return_value=True)
-    mocker.patch('handlers.get_user_role', return_value=UserRole.USER)
-    mocker.patch('handlers.add_allowed_user')
-    mocker.patch('handlers.remove_allowed_user')
+    # Mock settings.allowed_users to include test user
+    mocker.patch.object(settings, 'allowed_users', {12345})
     mocker.patch('handlers.clear_chat_history')
     mocker.patch('handlers.get_chat_history', return_value=[])
     mocker.patch('handlers.save_message')
@@ -118,14 +115,14 @@ def mock_api_clients_and_io(mocker):
     mocker.patch('asyncio.to_thread', side_effect=mock_to_thread)
 
 async def test_start_unauthorized(mock_update, mock_context, mocker):
-    mocker.patch('handlers.is_user_allowed', return_value=False)
+    mocker.patch.object(settings, 'allowed_users', set())  # Empty set
     mock_set_auth_state = mocker.patch('handlers.set_user_auth_state')
     await start(mock_update, mock_context)
-    mock_update.message.reply_text.assert_called_once_with("Пожалуйста, введите код авторизации:")
+    mock_update.message.reply_text.assert_called_once_with("Доступ запрещён.")
     mock_set_auth_state.assert_not_called()
 
 async def test_start_authorized(mock_update, mock_context, mocker):
-    mocker.patch('handlers.is_user_allowed', return_value=True)
+    mocker.patch.object(settings, 'allowed_users', {12345})
     mocker.patch('handlers.get_user_model', return_value="Mistral Large")
     mock_set_auth_state = mocker.patch('handlers.set_user_auth_state')
     await start(mock_update, mock_context)
@@ -278,53 +275,7 @@ async def test_change_model_direct_call(mock_update, mock_context, mocker):
         reply_markup=get_main_keyboard()
     )
 
-async def test_admin_add_user_success(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_role', return_value=UserRole.ADMIN)
-    mock_add_db = mocker.patch('handlers.add_allowed_user')
-    mock_context.args = ["54321", "USER"]
-    await add_user(mock_update, mock_context)
-    mock_add_db.assert_called_once_with(54321, UserRole.USER)
-    mock_update.message.reply_text.assert_called_once_with("Пользователь 54321 успешно добавлен с ролью USER.")
 
-async def test_admin_add_user_invalid_args(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_role', return_value=UserRole.ADMIN)
-    mock_add_db = mocker.patch('handlers.add_allowed_user')
-    mock_context.args = ["invalid_id"]
-    await add_user(mock_update, mock_context)
-    mock_add_db.assert_not_called()
-    mock_update.message.reply_text.assert_called_once_with("Пожалуйста, укажите корректный ID пользователя и роль (ADMIN или USER). Пример: /add_user 123456789 USER")
-
-async def test_admin_add_user_not_admin(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_role', return_value=UserRole.USER)
-    mock_add_db = mocker.patch('handlers.add_allowed_user')
-    mock_context.args = ["54321", "USER"]
-    await add_user(mock_update, mock_context)
-    mock_add_db.assert_not_called()
-    mock_update.message.reply_text.assert_called_once_with("У вас нет прав для выполнения этой команды.")
-
-async def test_admin_remove_user_success(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_role', return_value=UserRole.ADMIN)
-    mock_remove_db = mocker.patch('handlers.remove_allowed_user')
-    mock_context.args = ["54321"]
-    await remove_user(mock_update, mock_context)
-    mock_remove_db.assert_called_once_with(54321)
-    mock_update.message.reply_text.assert_called_once_with("Пользователь 54321 успешно удален.")
-
-async def test_admin_remove_user_invalid_args(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_role', return_value=UserRole.ADMIN)
-    mock_remove_db = mocker.patch('handlers.remove_allowed_user')
-    mock_context.args = []
-    await remove_user(mock_update, mock_context)
-    mock_remove_db.assert_not_called()
-    mock_update.message.reply_text.assert_called_once_with("Пожалуйста, укажите корректный ID пользователя. Пример: /remove_user 123456789")
-
-async def test_admin_remove_user_not_admin(mock_update, mock_context, mocker):
-    mocker.patch('handlers.get_user_role', return_value=UserRole.USER)
-    mock_remove_db = mocker.patch('handlers.remove_allowed_user')
-    mock_context.args = ["54321"]
-    await remove_user(mock_update, mock_context)
-    mock_remove_db.assert_not_called()
-    mock_update.message.reply_text.assert_called_once_with("У вас нет прав для выполнения этой команды.")
 
 async def test_handle_message_edit_prompt_start(mock_update, mock_context, mocker):
     mock_update.message.text = "Изменить промпт"

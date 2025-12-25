@@ -2,27 +2,74 @@ import os
 from groq import AsyncGroq
 from dotenv import load_dotenv
 from mistralai import Mistral
-from typing import Union
+from typing import Optional, Set
 import logging
 from google import genai
 from google.genai import types
 import httpx
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-GROQ_API_KEY = os.getenv('GROQ_API_KEY')
-MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
-ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
+class Settings(BaseSettings):
+    """Application settings with validation"""
+    telegram_token: str
+    allowed_users: Set[int] = set()
+    
+    # API Keys
+    groq_api_key: Optional[str] = None
+    mistral_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    
+    # R2 Storage
+    r2_access_key_id: Optional[str] = None
+    r2_secret_access_key: Optional[str] = None
+    r2_endpoint_url: Optional[str] = None
+    r2_bucket_name: Optional[str] = None
+    
+    # OpenRouter configuration
+    openrouter_site_url: str = ''
+    openrouter_site_name: str = 'Another Chat TG Bot'
+    
+    # System message
+    system_message: Optional[str] = None
+    
+    @field_validator('allowed_users', mode='before')
+    @classmethod
+    def parse_allowed_users(cls, v):
+        """Parse comma-separated user IDs"""
+        if isinstance(v, str):
+            if not v.strip():
+                return set()
+            return {int(x.strip()) for x in v.split(',') if x.strip()}
+        if isinstance(v, int):
+            return {v}
+        if isinstance(v, (list, set)):
+            return set(v)
+        return v
+    
+    class Config:
+        env_file = '.env'
+        case_sensitive = False
+
+# Initialize settings
+settings = Settings()
+
+# Legacy exports for backward compatibility
+TELEGRAM_TOKEN = settings.telegram_token
+GROQ_API_KEY = settings.groq_api_key
+MISTRAL_API_KEY = settings.mistral_api_key
+GEMINI_API_KEY = settings.gemini_api_key
+OPENROUTER_API_KEY = settings.openrouter_api_key
 
 # OpenRouter configuration
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_SITE_URL = os.getenv('OPENROUTER_SITE_URL', '')
-OPENROUTER_SITE_NAME = os.getenv('OPENROUTER_SITE_NAME', 'Another Chat TG Bot')
+OPENROUTER_SITE_URL = settings.openrouter_site_url
+OPENROUTER_SITE_NAME = settings.openrouter_site_name
 
 if MISTRAL_API_KEY:
     mistral_client = Mistral(api_key=MISTRAL_API_KEY)
@@ -64,3 +111,4 @@ except Exception as e:
 
 if not OPENROUTER_API_KEY:
     print("Warning: OPENROUTER_API_KEY is not set in the environment variables.")
+

@@ -39,10 +39,8 @@ class DummyContext:
 
 @pytest.mark.asyncio
 async def test_healthcheck():
-    with patch('database.get_db_connection'):
-        from handlers import healthcheck
-
-        update = DummyUpdate()
-        context = DummyContext()
-        await healthcheck(update, context)
-        assert update.message.replies == ["OK"]
+    from handlers import healthcheck
+    update = DummyUpdate()
+    context = DummyContext()
+    await healthcheck(update, context)
+    assert update.message.replies == ["OK"]

@@ -1,5 +1,6 @@
 services:
   another_chat_tg:
+    build: .
     image: ${DOCKER_IMAGE:-0fl01/another-chat-tg}:${TAG:-latest}
     container_name: another_chat_tg
     network_mode: "host"

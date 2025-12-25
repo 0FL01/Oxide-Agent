@@ -4,15 +4,9 @@ import logging
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from enum import Enum
 from typing import Optional, List, Dict
-from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
-
-class UserRole(Enum):
-    ADMIN = "ADMIN"
-    USER = "USER"
 
 class R2Storage:
     _instance = None
@@ -94,52 +88,10 @@ class R2Storage:
 
 
 # Paths
-ALLOWED_USERS_KEY = "registry/allowed_users.json"
 def user_config_key(user_id: int) -> str: return f"users/{user_id}/config.json"
 def user_history_key(user_id: int) -> str: return f"users/{user_id}/history.json"
 
 storage = R2Storage()
-
-# --- Registry Functions ---
-
-def _get_allowed_users_map() -> Dict[str, str]:
-    return storage.load_json(ALLOWED_USERS_KEY, {})
-
-def is_user_allowed(user_id: int) -> bool:
-    if user_id == ADMIN_ID:
-        return True
-    return str(user_id) in _get_allowed_users_map()
-
-def get_user_role(user_id: int) -> Optional[UserRole]:
-    if user_id == ADMIN_ID:
-        return UserRole.ADMIN
-    role_str = _get_allowed_users_map().get(str(user_id))
-    return UserRole(role_str) if role_str else None
-
-def add_allowed_user(user_id: int, role: UserRole):
-    users = _get_allowed_users_map()
-    users[str(user_id)] = role.value
-    storage.save_json(ALLOWED_USERS_KEY, users)
-
-def remove_allowed_user(user_id: int):
-    users = _get_allowed_users_map()
-    uid_str = str(user_id)
-    if uid_str in users:
-        del users[uid_str]
-        storage.save_json(ALLOWED_USERS_KEY, users)
-        # Optionally clean up user data
-        storage.delete_object(user_config_key(user_id))
-        storage.delete_object(user_history_key(user_id))
-
-def list_allowed_users(limit: int = 500) -> List[Dict]:
-    users = _get_allowed_users_map()
-    # Sort and limit as previously done in SQL
-    sorted_ids = sorted([int(uid) for uid in users.keys()])[:limit]
-    return [{"telegram_id": uid, "role": users[str(uid)]} for uid in sorted_ids]
-
-def get_allowed_user(user_id: int) -> Optional[Dict]:
-    role = get_user_role(user_id)
-    return {"telegram_id": user_id, "role": role.value} if role else None
 
 # --- User Config Functions ---
 

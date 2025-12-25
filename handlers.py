@@ -5,10 +5,10 @@ from google.genai import errors as genai_errors
 from config import (
     chat_history, groq_client, mistral_client, MODELS, DEFAULT_MODEL, gemini_client,
     openrouter_client, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_SITE_URL, OPENROUTER_SITE_NAME,
-    ADMIN_ID
+    settings
 )
 from utils import split_long_message, clean_html, format_text
-from database import UserRole, is_user_allowed, add_allowed_user, remove_allowed_user, get_user_role, clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model, list_allowed_users, get_allowed_user
+from database import clear_chat_history, get_chat_history, save_message, update_user_prompt, get_user_prompt, get_user_model, update_user_model
 from telegram.error import BadRequest
 import html
 import logging
@@ -414,10 +414,10 @@ def check_auth(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         logger.info(f"Checking auth for user {user_id} for function {func.__name__}")
-        if not is_user_allowed(user_id):
+        if user_id not in settings.allowed_users:
             set_user_auth_state(user_id, False)
             logger.warning(f"User {user_id} is not authorized.")
-            await update.message.reply_text("Вы не авторизованы. Пожалуйста, введите /start для авторизации.")
+            await update.message.reply_text("Доступ запрещён.")
             return
         set_user_auth_state(user_id, True)
         logger.info(f"User {user_id} is authorized.")
@@ -429,9 +429,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.username or update.effective_user.first_name
     logger.info(f"User {user_id} ({user_name}) initiated /start command.")
 
-    if not is_user_allowed(user_id):
-        logger.info(f"User {user_id} is not allowed, requesting authorization code.")
-        await update.message.reply_text("Пожалуйста, введите код авторизации:")
+    if user_id not in settings.allowed_users:
+        logger.info(f"User {user_id} is not allowed.")
+        await update.message.reply_text("Доступ запрещён.")
         return
 
     saved_model = get_user_model(user_id)
@@ -447,19 +447,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard()
     )
 
-def admin_required(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        user_name = update.effective_user.username or update.effective_user.first_name
-        logger.info(f"Checking admin privileges for user {user_id} ({user_name}) for function {func.__name__}.")
-        user_role = get_user_role(user_id)
-        if user_role != UserRole.ADMIN:
-            logger.warning(f"User {user_id} ({user_name}) does not have admin privileges for {func.__name__}.")
-            await update.message.reply_text("У вас нет прав для выполнения этой команды.")
-            return
-        logger.info(f"User {user_id} ({user_name}) has admin privileges.")
-        return await func(update, context)
-    return wrapper
+
 
 @check_auth
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -899,92 +887,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Error removing temporary file {temp_filename}: {e}")
 
 
-@check_auth
-@admin_required
-async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_user_id = update.effective_user.id
-    admin_user_name = update.effective_user.username or update.effective_user.first_name
-    logger.info(f"Admin user {admin_user_id} ({admin_user_name}) initiated add_user command.")
-    try:
-        new_user_id = int(context.args[0])
-        role_str = context.args[1].upper()
-        role = UserRole(role_str)
-        logger.info(f"Attempting to add user {new_user_id} with role {role.value} by admin {admin_user_id}.")
-        add_allowed_user(new_user_id, role)
-        logger.info(f"User {new_user_id} successfully added with role {role.value} by admin {admin_user_id}.")
-        await update.message.reply_text(f"Пользователь {new_user_id} успешно добавлен с ролью {role.value}.")
-    except (ValueError, IndexError):
-        logger.warning(f"Admin {admin_user_id} provided invalid arguments for add_user: {context.args}")
-        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя и роль (ADMIN или USER). Пример: /add_user 123456789 USER")
-    except Exception as e:
-        logger.error(f"Error in add_user command initiated by admin {admin_user_id}: {e}", exc_info=True)
-        await update.message.reply_text(f"Произошла ошибка при добавлении пользователя: {str(e)}")
 
-@check_auth
-@admin_required
-async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_user_id = update.effective_user.id
-    admin_user_name = update.effective_user.username or update.effective_user.first_name
-    logger.info(f"Admin user {admin_user_id} ({admin_user_name}) initiated remove_user command.")
-    try:
-        remove_user_id = int(context.args[0])
-        logger.info(f"Attempting to remove user {remove_user_id} by admin {admin_user_id}.")
-        remove_allowed_user(remove_user_id)
-        logger.info(f"User {remove_user_id} successfully removed by admin {admin_user_id}.")
-        await update.message.reply_text(f"Пользователь {remove_user_id} успешно удален.")
-    except (ValueError, IndexError):
-        logger.warning(f"Admin {admin_user_id} provided invalid arguments for remove_user: {context.args}")
-        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя. Пример: /remove_user 123456789")
-    except Exception as e:
-        logger.error(f"Error in remove_user command initiated by admin {admin_user_id}: {e}", exc_info=True)
-        await update.message.reply_text(f"Произошла ошибка при удалении пользователя: {str(e)}")
 
-@check_auth
-@admin_required
-async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_user_id = update.effective_user.id
-    admin_user_name = update.effective_user.username or update.effective_user.first_name
-    logger.info(f"Admin user {admin_user_id} ({admin_user_name}) requested list_users.")
 
-    users = list_allowed_users()
-    if not users:
-        logger.info("No allowed users found.")
-        await update.message.reply_text("Список разрешенных пользователей пуст.")
-        return
 
-    lines = [f"{user['telegram_id']} - {user['role']}" for user in users]
-    message_text = "<b>Разрешенные пользователи:</b>\n" + "\n".join(lines)
 
-    logger.info(f"Sending {len(users)} users to admin {admin_user_id}.")
-    await update.message.reply_text(message_text, parse_mode=ParseMode.HTML)
 
-@check_auth
-@admin_required
-async def list_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_user_id = update.effective_user.id
-    admin_user_name = update.effective_user.username or update.effective_user.first_name
-    logger.info(f"Admin user {admin_user_id} ({admin_user_name}) requested list_user with args: {context.args}")
 
-    if not context.args:
-        await update.message.reply_text("Укажите ID пользователя. Пример: /list_user 123456789")
-        return
-
-    try:
-        target_user_id = int(context.args[0])
-    except ValueError:
-        logger.warning(f"Invalid telegram_id provided to list_user by admin {admin_user_id}: {context.args}")
-        await update.message.reply_text("ID пользователя должен быть числом. Пример: /list_user 123456789")
-        return
-
-    user_info = get_allowed_user(target_user_id)
-    if not user_info:
-        logger.info(f"User {target_user_id} not found in allowed list.")
-        await update.message.reply_text(f"Пользователь {target_user_id} не найден в списке доступа.")
-        return
-
-    message_text = f"<b>ID:</b> {user_info['telegram_id']}\n<b>Роль:</b> {user_info['role']}"
-    logger.info(f"Sending user info for {target_user_id} to admin {admin_user_id}.")
-    await update.message.reply_text(message_text, parse_mode=ParseMode.HTML)
 
 async def healthcheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id if update.effective_user else "Unknown"
