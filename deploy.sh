@@ -7,7 +7,7 @@ if [ -z "$SSH_PORT" ] || [ -z "$SSH_USERNAME" ] || [ -z "$SSH_HOST" ] || [ -z "$
   echo "Ошибка: Не установлена одна или несколько обязательных переменных окружения (SSH_PORT, SSH_USERNAME, SSH_HOST, CI_COMMIT_SHORT_SHA, SERVICE_DIR, DOCKER_IMAGE)."
   exit 1
 fi
-if [ -z "$GROQ_API_KEY" ] || [ -z "$TELEGRAM_TOKEN" ] || [ -z "$MISTRAL_API_KEY" ] || [ -z "$GEMINI_API_KEY" ] || [ -z "$ADMIN_ID" ] || [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT_URL" ] || [ -z "$R2_BUCKET_NAME" ]; then
+if [ -z "$GROQ_API_KEY" ] || [ -z "$TELEGRAM_TOKEN" ] || [ -z "$MISTRAL_API_KEY" ] || [ -z "$GEMINI_API_KEY" ] || [ -z "$ALLOWED_USERS" ] || [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT_URL" ] || [ -z "$R2_BUCKET_NAME" ]; then
    echo "Ошибка: Не установлена одна или несколько переменных для .env файла."
    exit 1
 fi
@@ -27,7 +27,7 @@ ssh -p "$SSH_PORT" "$SSH_USERNAME@$SSH_HOST" "
   export TELEGRAM_TOKEN='${TELEGRAM_TOKEN}'
   export MISTRAL_API_KEY='${MISTRAL_API_KEY}'
   export GEMINI_API_KEY='${GEMINI_API_KEY}'
-  export ADMIN_ID='${ADMIN_ID}'
+  export ALLOWED_USERS='${ALLOWED_USERS}'
   export R2_ACCESS_KEY_ID='${R2_ACCESS_KEY_ID}'
   export R2_SECRET_ACCESS_KEY='${R2_SECRET_ACCESS_KEY}'
   export R2_ENDPOINT_URL='${R2_ENDPOINT_URL}'
@@ -48,7 +48,7 @@ GROQ_API_KEY=\${GROQ_API_KEY}
 TELEGRAM_TOKEN=\${TELEGRAM_TOKEN}
 MISTRAL_API_KEY=\${MISTRAL_API_KEY}
 GEMINI_API_KEY=\${GEMINI_API_KEY}
-ADMIN_ID=\${ADMIN_ID}
+ALLOWED_USERS=\${ALLOWED_USERS}
 R2_ACCESS_KEY_ID=\${R2_ACCESS_KEY_ID}
 R2_SECRET_ACCESS_KEY=\${R2_SECRET_ACCESS_KEY}
 R2_ENDPOINT_URL=\${R2_ENDPOINT_URL}
