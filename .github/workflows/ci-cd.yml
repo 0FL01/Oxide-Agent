@@ -222,8 +222,8 @@ jobs:
                 container_name: another_chat_tg
                 network_mode: \"host\"
                 restart: unless-stopped
-                volumes:
-                  - ./.env:/app/.env:ro
+                env_file:
+                  - .env
                 logging:
                   driver: json-file
                   options:
