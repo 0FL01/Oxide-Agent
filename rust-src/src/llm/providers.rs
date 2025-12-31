@@ -1,5 +1,4 @@
-use std::time::Duration;
-use async_trait::async_trait; // We might still need it if we want to use dyn LlmProvider easily or for consistency
+use async_trait::async_trait;
 use super::{LlmError, LlmProvider, Message};
 use async_openai::{
     config::OpenAIConfig,
@@ -12,7 +11,6 @@ use async_openai::{
 use reqwest::Client as HttpClient;
 use serde_json::json;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use tracing::{info, warn, error};
 
 pub struct GroqProvider {
     client: Client<OpenAIConfig>,
@@ -82,7 +80,7 @@ impl LlmProvider for GroqProvider {
         let response = self.client.chat().create(request).await
             .map_err(|e| LlmError::ApiError(e.to_string()))?;
 
-        response.choices.get(0)
+        response.choices.first()
             .and_then(|c| c.message.content.clone())
             .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }
@@ -165,7 +163,7 @@ impl LlmProvider for MistralProvider {
         let response = self.client.chat().create(request).await
             .map_err(|e| LlmError::ApiError(e.to_string()))?;
 
-        response.choices.get(0)
+        response.choices.first()
             .and_then(|c| c.message.content.clone())
             .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }

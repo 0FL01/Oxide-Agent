@@ -2,6 +2,7 @@ pub mod providers;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::{info, warn};
 
 #[derive(Debug, Error)]
 pub enum LlmError {
@@ -128,11 +129,11 @@ impl LlmClient {
         let fallback_model = "google/gemini-2.5-flash";
 
         for attempt in 1..=3 {
-            tracing::info!("OpenRouter: Attempting with {}, attempt {}/3", primary_model, attempt);
+            info!("OpenRouter: Attempting with {}, attempt {}/3", primary_model, attempt);
             match provider.chat_completion(system_prompt, history, user_message, primary_model, 64000).await {
                 Ok(res) => return Ok(res),
                 Err(e) => {
-                    tracing::warn!("OpenRouter: Error with {} on attempt {}: {}", primary_model, attempt, e);
+                    warn!("OpenRouter: Error with {} on attempt {}: {}", primary_model, attempt, e);
                     if attempt < 3 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
@@ -140,22 +141,21 @@ impl LlmClient {
             }
         }
 
-        tracing::info!("OpenRouter: All attempts with {} failed, switching to {}", primary_model, fallback_model);
+        info!("OpenRouter: All attempts with {} failed, switching to {}", primary_model, fallback_model);
 
         for attempt in 1..=5 {
-            tracing::info!("OpenRouter: Attempting with {}, attempt {}/5", fallback_model, attempt);
+            info!("OpenRouter: Attempting with {}, attempt {}/5", fallback_model, attempt);
             match provider.chat_completion(system_prompt, history, user_message, fallback_model, 64000).await {
                 Ok(res) => return Ok(res),
                 Err(e) => {
-                    tracing::warn!("OpenRouter: Error with {} on attempt {}: {}", fallback_model, attempt, e);
+                    warn!("OpenRouter: Error with {} on attempt {}: {}", fallback_model, attempt, e);
                     // Check if it's a retryable error
                     let err_str = e.to_string().to_lowercase();
-                    if err_str.contains("503") || err_str.contains("429") || err_str.contains("500") || 
-                       err_str.contains("overloaded") || err_str.contains("unavailable") || err_str.contains("timeout") {
-                        if attempt < 5 {
-                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                            continue;
-                        }
+                    if (err_str.contains("503") || err_str.contains("429") || err_str.contains("500") ||
+                       err_str.contains("overloaded") || err_str.contains("unavailable") || err_str.contains("timeout"))
+                       && attempt < 5 {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        continue;
                     }
                     return Err(e);
                 }
@@ -199,7 +199,7 @@ impl LlmClient {
             match provider.transcribe_audio(audio_bytes.clone(), mime_type, primary_model).await {
                 Ok(res) => return Ok(res),
                 Err(e) => {
-                    tracing::warn!("Gemini transcription error (primary {}): {}", primary_model, e);
+                    warn!("Gemini transcription error (primary {}): {}", primary_model, e);
                     if attempt < 3 { tokio::time::sleep(std::time::Duration::from_secs(2)).await; }
                 }
             }
@@ -209,7 +209,7 @@ impl LlmClient {
             match provider.transcribe_audio(audio_bytes.clone(), mime_type, fallback_model).await {
                 Ok(res) => return Ok(res),
                 Err(e) => {
-                    tracing::warn!("Gemini transcription error (fallback {}): {}", fallback_model, e);
+                    warn!("Gemini transcription error (fallback {}): {}", fallback_model, e);
                     if attempt < 5 { tokio::time::sleep(std::time::Duration::from_secs(3)).await; }
                     else { return Err(e); }
                 }

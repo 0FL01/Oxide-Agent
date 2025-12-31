@@ -1,17 +1,60 @@
-use std::borrow::Cow;
 use regex::Regex;
 use lazy_static::lazy_static;
 
 lazy_static! {
     static ref RE_CODE_BLOCK: Regex = Regex::new(r"```[\s\S]*?```").unwrap();
-    static ref RE_OPEN_BRACKET: Regex = Regex::new(r"<(?![/a-zA-Z])").unwrap();
-    static ref RE_CLOSE_BRACKET: Regex = Regex::new(r"(?<!>)>").unwrap();
     static ref RE_CODE_BLOCK_FENCE: Regex = Regex::new(r"```(\w+)?\n([\s\S]*?)```").unwrap();
     static ref RE_BULLET: Regex = Regex::new(r"(?m)^\* ").unwrap();
     static ref RE_BOLD: Regex = Regex::new(r"\*\*(.*?)\*\*").unwrap();
     static ref RE_ITALIC: Regex = Regex::new(r"\*(.*?)\*").unwrap();
     static ref RE_INLINE_CODE: Regex = Regex::new(r"`(.*?)`").unwrap();
     static ref RE_MULTI_NEWLINE: Regex = Regex::new(r"\n{3,}").unwrap();
+}
+
+/// Replace naked angle brackets with HTML entities, preserving HTML tags.
+/// Rust's regex doesn't support lookbehind/lookahead, so we iterate manually.
+fn escape_angle_brackets(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut result = String::with_capacity(text.len());
+    let mut in_tag = false;
+
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '<' => {
+                // Look ahead to see if this starts an HTML tag like </a or <b
+                let starts_tag = if i + 1 < chars.len() {
+                    let next1 = chars[i + 1];
+                    let next2 = if i + 2 < chars.len() { Some(chars[i + 2]) } else { None };
+                    match (next1, next2) {
+                        ('/', Some(ch)) if ch.is_ascii_alphabetic() => true,
+                        (ch, _) if ch.is_ascii_alphabetic() => true,
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
+
+                if starts_tag {
+                    result.push(c);
+                    in_tag = true;
+                } else {
+                    result.push_str("&lt;");
+                }
+            }
+            '>' => {
+                if in_tag {
+                    result.push(c);
+                    in_tag = false;
+                } else {
+                    result.push_str("&gt;");
+                }
+            }
+            _ => {
+                result.push(c);
+            }
+        }
+    }
+    result
 }
 
 pub fn clean_html(text: &str) -> String {
@@ -31,9 +74,8 @@ pub fn clean_html(text: &str) -> String {
     result.push_str(&text_owned[last_end..]);
     text_owned = result;
 
-    // Replace naked < and >
-    text_owned = RE_OPEN_BRACKET.replace_all(&text_owned, "&lt;").to_string();
-    text_owned = RE_CLOSE_BRACKET.replace_all(&text_owned, "&gt;").to_string();
+    // Replace naked < and > using our custom function
+    text_owned = escape_angle_brackets(&text_owned);
 
     // Restore code blocks
     for (i, block) in code_blocks.iter().enumerate() {

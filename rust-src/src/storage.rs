@@ -12,8 +12,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
-    #[error("S3 error: {0}")]
-    S3(String),
     #[error("S3 Get error: {0}")]
     S3Get(Box<SdkError<GetObjectError>>),
     #[error("S3 put error: {0}")]
