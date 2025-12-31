@@ -1,5 +1,6 @@
 mod config;
 mod storage;
+pub mod llm;
 
 use config::Settings;
 use dotenvy::dotenv;

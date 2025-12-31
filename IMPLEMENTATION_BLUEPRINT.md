@@ -65,12 +65,12 @@ This blueprint outlines the plan for porting the "Another Chat TG Bot" from Pyth
     - `reqwest::multipart` (For file uploads to Gemini/Mistral)
 
 **Steps**:
-1. [ ] **Context Analysis**: Study `src/handlers.py` to understand the exact JSON payloads sent to each provider (system prompts, chat history format) and the fallback logic.
-2. [ ] **Verify API**: Use `search_documentation_items` for `async-openai` to check compatibility with Groq and OpenRouter endpoints.
-3. [ ] **Verify API**: Check `reqwest` documentation for handling multipart requests required for Gemini audio/image uploads.
-4. [ ] **Implementation**: Define a `trait LlmProvider` with methods like `chat_completion`, `transcribe_audio`, `analyze_image`.
-5. [ ] **Implementation**: Implement the trait for `Groq`, `Mistral`, `Gemini` (via REST), and `OpenRouter`.
-6. [ ] **Logic Port**: Implement the retry and fallback logic (equivalent to Python's decorators) within the provider abstraction.
+1. [x] **Context Analysis**: Study `src/handlers.py` to understand the exact JSON payloads sent to each provider (system prompts, chat history format) and the fallback logic.
+2. [x] **Verify API**: Use `search_documentation_items` for `async-openai` to check compatibility with Groq and OpenRouter endpoints.
+3. [x] **Verify API**: Check `reqwest` documentation for handling multipart requests required for Gemini audio/image uploads.
+4. [x] **Implementation**: Define a `trait LlmProvider` with methods like `chat_completion`, `transcribe_audio`, `analyze_image`.
+5. [x] **Implementation**: Implement the trait for `Groq`, `Mistral`, `Gemini` (via REST), and `OpenRouter`.
+6. [x] **Logic Port**: Implement the retry and fallback logic (equivalent to Python's decorators) within the provider abstraction.
 
 ## Phase 4: Bot Handlers & Logic
 
