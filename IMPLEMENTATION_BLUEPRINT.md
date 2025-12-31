@@ -1,6 +1,7 @@
-# Implementation Blueprint: Another Chat TG Bot (Python -> Rust)
-
 This blueprint outlines the plan for porting the "Another Chat TG Bot" from Python to Rust. The goal is to achieve feature parity while ensuring type safety, performance, and maintainability.
+
+> [!IMPORTANT]
+> **CRITICAL AGENT GUIDELINE**: In every phase, the agent **MUST** strictly adhere to the rules defined in [GEMINI.md](./GEMINI.md). This includes using `mcp-rust-docs` instead of hallucinating APIs, avoiding direct `cargo` shell commands, and following the established documentation search workflow.
 
 ## Phase 1: Project Setup & Configuration Logic
 
@@ -11,6 +12,7 @@ This blueprint outlines the plan for porting the "Another Chat TG Bot" from Pyth
     - `src/config.py` (Environment variables, Pydantic settings)
     - `src/utils.py` (Logging filters/redaction logic)
     - `.env` (Environment variable structure)
+    - [GEMINI.md](./GEMINI.md) (Strict Rust workflow rules)
 - 📄 **Target Files**:
     - `src/config.rs`
     - `src/main.rs`
@@ -35,6 +37,7 @@ This blueprint outlines the plan for porting the "Another Chat TG Bot" from Pyth
 **Resource Context**:
 - 🔗 **References**:
     - `src/database.py` (R2Storage class, key generation logic)
+    - [GEMINI.md](./GEMINI.md) (Strict Rust workflow rules)
 - 📄 **Target Files**:
     - `src/storage.rs`
 - 📚 **Crate Documentation**:
@@ -57,6 +60,7 @@ This blueprint outlines the plan for porting the "Another Chat TG Bot" from Pyth
 - 🔗 **References**:
     - `src/config.py` (Client initialization)
     - `src/handlers.py` (API calls, retry logic, `retry_with_model_fallback` decorator)
+    - [GEMINI.md](./GEMINI.md) (Strict Rust workflow rules)
 - 📄 **Target Files**:
     - `src/llm/mod.rs`
     - `src/llm/providers.rs`
@@ -77,9 +81,10 @@ This blueprint outlines the plan for porting the "Another Chat TG Bot" from Pyth
 **Goal**: Port the Telegram bot command and message handlers using `teloxide`.
 
 **Resource Context**:
-- � **References**:
+- 🔗 **References**:
     - `src/handlers.py` (Command logic: `/start`, `/clear`, text/voice/photo handling)
     - `src/utils.py` (Text formatting helpers)
+    - [GEMINI.md](./GEMINI.md) (Strict Rust workflow rules)
 - 📄 **Target Files**:
     - `src/bot/handlers.rs`
     - `src/bot/state.rs`
@@ -88,23 +93,24 @@ This blueprint outlines the plan for porting the "Another Chat TG Bot" from Pyth
     - `teloxide::types::InputFile` (Sending files)
 
 **Steps**:
-1. [ ] **Context Analysis**: Analyze `auth` decorator in `handlers.py` to replicate the `ALLOWED_USERS` check middleware.
-2. [ ] **Verify API**: Use `search_documentation_items` for `teloxide` to understand the filter system (`dpt.filter(...)`) for routing updates.
-3. [ ] **Implementation**: Implement command handlers: `start`, `clear`, `healthcheck`.
-4. [ ] **Implementation**: Implement message handlers:
+1. [x] **Context Analysis**: Analyze `auth` decorator in `handlers.py` to replicate the `ALLOWED_USERS` check middleware.
+2. [x] **Verify API**: Use `search_documentation_items` for `teloxide` to understand the filter system (`dptree::filter(...)`) for routing updates.
+3. [x] **Implementation**: Implement command handlers: `start`, `clear`, `healthcheck`.
+4. [x] **Implementation**: Implement message handlers:
     - Text: Model switching, System prompt editing.
     - Voice: Transcription flow (using `LlmProvider`).
     - Photo: Vision analysis flow (using `LlmProvider`).
-5. [ ] **Implementation**: Port `split_long_message` helper from `src/utils.py` to Rust to handle Telegram message length limits.
+5. [x] **Implementation**: Port `split_long_message` helper from `src/utils.py` to Rust to handle Telegram message length limits.
 
 ## Phase 5: Final Integration
 
 **Goal**: Wire all components together in the main application loop and finalize dockerization.
 
 **Resource Context**:
-- � **References**:
+- 🔗 **References**:
     - `src/main.py` (Startup sequence, polling logic)
     - `Dockerfile` (Build process)
+    - [GEMINI.md](./GEMINI.md) (Strict Rust workflow rules)
 - 📄 **Target Files**:
     - `src/main.rs`
     - `Dockerfile`

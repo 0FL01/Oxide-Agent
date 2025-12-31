@@ -19,6 +19,9 @@ aws-config = "1.8.12"
 aws-credential-types = "1.2.11"
 aws-types = "1.3.11"
 async-openai = { version = "0.32.2", features = ["full"] }
-reqwest = { version = "0.13.1", features = ["json", "multipart"] }
+reqwest = { version = "0.13.1", features = ["cookies", "json", "multipart", "rustls", "stream"], default-features = false }
 base64 = "0.22.1"
 async-trait = "0.1.89"
+teloxide = { version = "0.17.0", features = ["ctrlc_handler", "macros", "rustls"], default-features = false }
+html-escape = "0.2.13"
+anyhow = "1.0.100"
