@@ -1,17 +1,17 @@
+use crate::bot::state::State;
+use crate::config::{DEFAULT_MODEL, MODELS};
+use crate::llm::{LlmClient, Message as LlmMessage};
+use crate::storage::R2Storage;
+use crate::utils;
+use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use teloxide::{
+    net::Download,
     prelude::*,
     types::{KeyboardButton, KeyboardMarkup, ParseMode},
     utils::command::BotCommands,
-    net::Download,
 };
-use crate::storage::R2Storage;
-use crate::llm::{LlmClient, Message as LlmMessage};
-use crate::config::{MODELS, DEFAULT_MODEL};
-use crate::bot::state::State;
-use crate::utils;
-use anyhow::{Result, anyhow};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 // Helper function to get user name from Message
 fn get_user_name(msg: &Message) -> String {
@@ -40,16 +40,20 @@ pub enum Command {
 
 pub fn get_main_keyboard() -> KeyboardMarkup {
     let keyboard = vec![
-        vec![KeyboardButton::new("Очистить контекст"), KeyboardButton::new("Сменить модель")],
+        vec![
+            KeyboardButton::new("Очистить контекст"),
+            KeyboardButton::new("Сменить модель"),
+        ],
         vec![KeyboardButton::new("Доп функции")],
     ];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
 pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
-    let keyboard = vec![
-        vec![KeyboardButton::new("Изменить промпт"), KeyboardButton::new("Назад")],
-    ];
+    let keyboard = vec![vec![
+        KeyboardButton::new("Изменить промпт"),
+        KeyboardButton::new("Назад"),
+    ]];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
@@ -62,11 +66,7 @@ pub fn get_model_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
-pub async fn start(
-    bot: Bot,
-    msg: Message,
-    storage: Arc<R2Storage>,
-) -> Result<()> {
+pub async fn start(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
     let user_id = msg.from.as_ref().unwrap().id.0 as i64;
     let user_name = get_user_name(&msg);
 
@@ -74,7 +74,10 @@ pub async fn start(
 
     let saved_model = storage.get_user_model(user_id).await.unwrap_or(None);
     let model = saved_model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    info!("User {} ({}) is allowed. Set model to {}", user_id, user_name, model);
+    info!(
+        "User {} ({}) is allowed. Set model to {}",
+        user_id, user_name, model
+    );
 
     let text = format!(
         "<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.\nТекущая модель: <b>{}</b>",
@@ -90,11 +93,7 @@ pub async fn start(
     Ok(())
 }
 
-pub async fn clear(
-    bot: Bot,
-    msg: Message,
-    storage: Arc<R2Storage>,
-) -> Result<()> {
+pub async fn clear(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
     let user_id = msg.from.as_ref().unwrap().id.0 as i64;
     let user_name = get_user_name(&msg);
 
@@ -110,7 +109,8 @@ pub async fn clear(
         }
         Err(e) => {
             error!("Error clearing chat history for user {}: {}", user_id, e);
-            bot.send_message(msg.chat.id, "Произошла ошибка при очистке истории чата.").await?;
+            bot.send_message(msg.chat.id, "Произошла ошибка при очистке истории чата.")
+                .await?;
         }
     }
 
@@ -137,8 +137,10 @@ pub async fn handle_text(
     let user_name = get_user_name(&msg);
 
     let photo = msg.photo().is_some();
-    info!("Handling message from user {} ({}). Text: '{}{:?}'. Photo attached: {}",
-        user_id, user_name,
+    info!(
+        "Handling message from user {} ({}). Text: '{}{:?}'. Photo attached: {}",
+        user_id,
+        user_name,
         if text.len() > 100 { &text[..100] } else { text },
         if text.len() > 100 { "..." } else { "" },
         photo
@@ -165,15 +167,27 @@ pub async fn handle_text(
             return Ok(());
         }
         "Изменить промпт" => {
-            info!("User {} clicked 'Изменить промпт', entering editing mode.", user_id);
-            dialogue.update(State::EditingPrompt).await.map_err(|e| anyhow!(e.to_string()))?;
-            bot.send_message(msg.chat.id, "Введите новый системный промпт. Для отмены введите 'Назад':")
-                .reply_markup(get_extra_functions_keyboard())
-                .await?;
+            info!(
+                "User {} clicked 'Изменить промпт', entering editing mode.",
+                user_id
+            );
+            dialogue
+                .update(State::EditingPrompt)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+            bot.send_message(
+                msg.chat.id,
+                "Введите новый системный промпт. Для отмены введите 'Назад':",
+            )
+            .reply_markup(get_extra_functions_keyboard())
+            .await?;
             return Ok(());
         }
         "Назад" => {
-            info!("User {} clicked 'Назад' from extra functions menu.", user_id);
+            info!(
+                "User {} clicked 'Назад' from extra functions menu.",
+                user_id
+            );
             bot.send_message(msg.chat.id, "Выберите действие: (Или начните диалог)")
                 .reply_markup(get_main_keyboard())
                 .await?;
@@ -212,7 +226,7 @@ pub async fn handle_editing_prompt(
     if text == "Назад" {
         info!("User {} cancelled prompt editing.", user_id);
         dialogue.exit().await.map_err(|e| anyhow!(e.to_string()))?;
-        bot.send_message(msg.chat.id, "Отмена обновления системного промпта.", )
+        bot.send_message(msg.chat.id, "Отмена обновления системного промпта.")
             .reply_markup(get_main_keyboard())
             .await?;
     } else {
@@ -226,9 +240,12 @@ pub async fn handle_editing_prompt(
             }
             Err(e) => {
                 error!("Error updating system prompt for user {}: {}", user_id, e);
-                bot.send_message(msg.chat.id, "Произошла ошибка при обновлении системного промпта.")
-                    .reply_markup(get_extra_functions_keyboard())
-                    .await?;
+                bot.send_message(
+                    msg.chat.id,
+                    "Произошла ошибка при обновлении системного промпта.",
+                )
+                .reply_markup(get_extra_functions_keyboard())
+                .await?;
             }
         }
     }
@@ -245,68 +262,152 @@ async fn process_llm_request(
     let user_id = msg.from.as_ref().unwrap().id.0 as i64;
     let user_name = get_user_name(&msg);
 
-    info!("Starting message processing for user {} ({}). Message snippet: '{:?}...'",
-        user_id, user_name,
-        if text.len() > 100 { &text[..100] } else { &text }
+    info!(
+        "Starting message processing for user {} ({}). Message snippet: '{:?}...'",
+        user_id,
+        user_name,
+        if text.len() > 100 {
+            &text[..100]
+        } else {
+            &text
+        }
     );
 
     // Get state
-    let system_prompt = storage.get_user_prompt(user_id).await?.unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
+    let system_prompt = storage
+        .get_user_prompt(user_id)
+        .await?
+        .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
     let history = storage.get_chat_history(user_id, 10).await?;
-    let model = storage.get_user_model(user_id).await?.unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let model = storage
+        .get_user_model(user_id)
+        .await?
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
-    info!("Using system message for user {}: '{:?}...'", user_id,
-        if system_prompt.len() > 100 { &system_prompt[..100] } else { &system_prompt }
+    info!(
+        "Using system message for user {}: '{:?}...'",
+        user_id,
+        if system_prompt.len() > 100 {
+            &system_prompt[..100]
+        } else {
+            &system_prompt
+        }
     );
-    info!("Retrieved {} messages from history for user {}.", history.len(), user_id);
+    info!(
+        "Retrieved {} messages from history for user {}.",
+        history.len(),
+        user_id
+    );
 
     // Get provider from model name
-    let provider_info = MODELS.iter()
+    let provider_info = MODELS
+        .iter()
         .find(|(name, _)| name == &model)
         .map(|(_, info)| info);
     let provider_name = provider_info.map(|p| p.provider).unwrap_or("unknown");
-    info!("Selected model for user {}: {} (Provider: {})", user_id, model, provider_name);
+    info!(
+        "Selected model for user {}: {} (Provider: {})",
+        user_id, model, provider_name
+    );
 
     // Pre-save message to history
-    info!("Saving user message for user {} ({}): '{:?}...'", user_id, user_name,
-        if text.len() > 100 { &text[..100] } else { &text }
+    info!(
+        "Saving user message for user {} ({}): '{:?}...'",
+        user_id,
+        user_name,
+        if text.len() > 100 {
+            &text[..100]
+        } else {
+            &text
+        }
     );
-    storage.save_message(user_id, "user".to_string(), text.clone()).await?;
+    storage
+        .save_message(user_id, "user".to_string(), text.clone())
+        .await?;
 
     // Show typing
-    info!("Sending typing action to chat {} for user {}.", msg.chat.id, user_id);
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await?;
+    info!(
+        "Sending typing action to chat {} for user {}.",
+        msg.chat.id, user_id
+    );
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
 
     // Prepare messages
-    let llm_history: Vec<LlmMessage> = history.into_iter().map(|m| LlmMessage { role: m.role, content: m.content }).collect();
+    let llm_history: Vec<LlmMessage> = history
+        .into_iter()
+        .map(|m| LlmMessage {
+            role: m.role,
+            content: m.content,
+        })
+        .collect();
     let total_messages = llm_history.len() + 2; // +2 for system and current message
-    info!("Prepared {} messages for API call for user {}.", total_messages, user_id);
-    info!("Making API call to {} with model {} for user {}.", provider_name, model, user_id);
+    info!(
+        "Prepared {} messages for API call for user {}.",
+        total_messages, user_id
+    );
+    info!(
+        "Making API call to {} with model {} for user {}.",
+        provider_name, model, user_id
+    );
 
     // Call LLM
-    match llm.chat_completion(&system_prompt, &llm_history, &text, &model).await {
+    match llm
+        .chat_completion(&system_prompt, &llm_history, &text, &model)
+        .await
+    {
         Ok(response) => {
-            info!("Received response from {} for user {}.", provider_name, user_id);
-            storage.save_message(user_id, "assistant".to_string(), response.clone()).await?;
-            info!("Saving assistant response for user {}. Snippet: '{:?}...'", user_id,
-                if response.len() > 100 { &response[..100] } else { &response }
+            info!(
+                "Received response from {} for user {}.",
+                provider_name, user_id
+            );
+            storage
+                .save_message(user_id, "assistant".to_string(), response.clone())
+                .await?;
+            info!(
+                "Saving assistant response for user {}. Snippet: '{:?}...'",
+                user_id,
+                if response.len() > 100 {
+                    &response[..100]
+                } else {
+                    &response
+                }
             );
 
             info!("Formatting response for Telegram for user {}.", user_id);
             let formatted = utils::format_text(&response);
-            info!("Splitting response into chunks if necessary for user {}.", user_id);
+            info!(
+                "Splitting response into chunks if necessary for user {}.",
+                user_id
+            );
             let parts = utils::split_long_message(&formatted, 4000);
-            info!("Sending response in {} part(s) to user {}.", parts.len(), user_id);
+            info!(
+                "Sending response in {} part(s) to user {}.",
+                parts.len(),
+                user_id
+            );
 
             for (i, part) in parts.iter().enumerate() {
-                info!("Sending part {}/{} to user {}.", i + 1, parts.len(), user_id);
-                match bot.send_message(msg.chat.id, part)
+                info!(
+                    "Sending part {}/{} to user {}.",
+                    i + 1,
+                    parts.len(),
+                    user_id
+                );
+                match bot
+                    .send_message(msg.chat.id, part)
                     .parse_mode(ParseMode::Html)
                     .await
                 {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(e) => {
-                        error!("Error sending part {}/{} to user {}: {}", i + 1, parts.len(), user_id, e);
+                        error!(
+                            "Error sending part {}/{} to user {}: {}",
+                            i + 1,
+                            parts.len(),
+                            user_id,
+                            e
+                        );
                     }
                 }
             }
@@ -331,19 +432,30 @@ pub async fn handle_voice(
     let user_id = msg.from.as_ref().unwrap().id.0 as i64;
     let user_name = get_user_name(&msg);
 
-    info!("Received voice message from user {} ({}).", user_id, user_name);
+    info!(
+        "Received voice message from user {} ({}).",
+        user_id, user_name
+    );
 
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
 
     // Determine provider
-    let model = storage.get_user_model(user_id).await?.unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let provider_info = MODELS.iter()
+    let model = storage
+        .get_user_model(user_id)
+        .await?
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let provider_info = MODELS
+        .iter()
         .find(|(name, _)| name == &model)
         .map(|(_, info)| info);
     let provider_name = provider_info.map(|p| p.provider).unwrap_or("unknown");
-    info!("Using provider '{}' for voice processing (model: {})", provider_name, model);
+    info!(
+        "Using provider '{}' for voice processing (model: {})",
+        provider_name, model
+    );
 
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await?;
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
 
     let file = bot.get_file(voice.file.id.clone()).await?;
     let mut buffer = Vec::new();
@@ -353,21 +465,37 @@ pub async fn handle_voice(
     match llm.transcribe_audio(buffer, "audio/wav", &model).await {
         Ok(text) => {
             if text.starts_with("(Gemini):") || text.starts_with("(OpenRouter):") {
-                warn!("Transcription service returned a notice for user {}: {}", user_id, text);
-                bot.send_message(msg.chat.id, format!("Не удалось распознать речь: {}", text)).await?;
+                warn!(
+                    "Transcription service returned a notice for user {}: {}",
+                    user_id, text
+                );
+                bot.send_message(msg.chat.id, format!("Не удалось распознать речь: {}", text))
+                    .await?;
             } else if text.is_empty() {
                 warn!("Transcription result is empty for user {}.", user_id);
-                bot.send_message(msg.chat.id, "Не удалось распознать речь (пустой результат).").await?;
+                bot.send_message(
+                    msg.chat.id,
+                    "Не удалось распознать речь (пустой результат).",
+                )
+                .await?;
             } else {
-                info!("Voice message from user {} ({}) transcribed: '{}'", user_id, user_name, text);
+                info!(
+                    "Voice message from user {} ({}) transcribed: '{}'",
+                    user_id, user_name, text
+                );
                 info!("Processing transcribed text for user {}.", user_id);
-                bot.send_message(msg.chat.id, format!("Распознано: \"{}\"\n\nОбрабатываю запрос...", text)).await?;
+                bot.send_message(
+                    msg.chat.id,
+                    format!("Распознано: \"{}\"\n\nОбрабатываю запрос...", text),
+                )
+                .await?;
                 process_llm_request(bot, msg, storage, llm, text).await?;
             }
         }
         Err(e) => {
             error!("Error transcribing audio for user {}: {}", user_id, e);
-            bot.send_message(msg.chat.id, format!("Ошибка распознавания: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("Ошибка распознавания: {}", e))
+                .await?;
         }
     }
 
@@ -385,7 +513,10 @@ pub async fn handle_photo(
 
     info!("Processing photo from user {} ({}).", user_id, user_name);
 
-    let photo = msg.photo().and_then(|p| p.last()).ok_or_else(|| anyhow!("No photo found"))?;
+    let photo = msg
+        .photo()
+        .and_then(|p| p.last())
+        .ok_or_else(|| anyhow!("No photo found"))?;
     if let Some(photo_sizes) = msg.photo() {
         info!("Photo details: {} sizes available.", photo_sizes.len());
         if let Some(largest) = photo_sizes.last() {
@@ -397,60 +528,120 @@ pub async fn handle_photo(
     info!("Photo caption: '{}'", caption);
 
     // Determine provider
-    let model = storage.get_user_model(user_id).await?.unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let provider_info = MODELS.iter()
+    let model = storage
+        .get_user_model(user_id)
+        .await?
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let provider_info = MODELS
+        .iter()
         .find(|(name, _)| name == &model)
         .map(|(_, info)| info);
     let provider_name = provider_info.map(|p| p.provider).unwrap_or("unknown");
-    info!("Using provider '{}' for photo analysis (model: {})", provider_name, model);
+    info!(
+        "Using provider '{}' for photo analysis (model: {})",
+        provider_name, model
+    );
 
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadPhoto).await?;
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadPhoto)
+        .await?;
 
     let file = bot.get_file(photo.file.id.clone()).await?;
     let mut buffer = Vec::new();
     bot.download_file(&file.path, &mut buffer).await?;
-    info!("Photo downloaded from user {}. Size: {} bytes.", user_id, buffer.len());
-
-    let system_prompt = storage.get_user_prompt(user_id).await?.unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
-    info!("Using system message for user {}: '{:?}...'", user_id,
-        if system_prompt.len() > 100 { &system_prompt[..100] } else { &system_prompt }
-    );
-    info!("Using text prompt for image analysis: '{}'",
-        if caption.len() > 100 { &caption[..100] } else { caption }
+    info!(
+        "Photo downloaded from user {}. Size: {} bytes.",
+        user_id,
+        buffer.len()
     );
 
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await?;
+    let system_prompt = storage
+        .get_user_prompt(user_id)
+        .await?
+        .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
+    info!(
+        "Using system message for user {}: '{:?}...'",
+        user_id,
+        if system_prompt.len() > 100 {
+            &system_prompt[..100]
+        } else {
+            &system_prompt
+        }
+    );
+    info!(
+        "Using text prompt for image analysis: '{}'",
+        if caption.len() > 100 {
+            &caption[..100]
+        } else {
+            caption
+        }
+    );
 
-    info!("Sending image and prompt to {} for user {}.", provider_name, user_id);
-    match llm.analyze_image(buffer, caption, &system_prompt, &model).await {
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
+
+    info!(
+        "Sending image and prompt to {} for user {}.",
+        provider_name, user_id
+    );
+    match llm
+        .analyze_image(buffer, caption, &system_prompt, &model)
+        .await
+    {
         Ok(response) => {
-            info!("Received response from {} for image analysis for user {}. Snippet: '{:?}...'",
-                provider_name, user_id,
-                if response.len() > 100 { &response[..100] } else { &response }
+            info!(
+                "Received response from {} for image analysis for user {}. Snippet: '{:?}...'",
+                provider_name,
+                user_id,
+                if response.len() > 100 {
+                    &response[..100]
+                } else {
+                    &response
+                }
             );
 
-            storage.save_message(user_id, "user".to_string(), format!("[Изображение] {}", caption)).await?;
-            storage.save_message(user_id, "assistant".to_string(), response.clone()).await?;
+            storage
+                .save_message(
+                    user_id,
+                    "user".to_string(),
+                    format!("[Изображение] {}", caption),
+                )
+                .await?;
+            storage
+                .save_message(user_id, "assistant".to_string(), response.clone())
+                .await?;
 
             let formatted = utils::format_text(&response);
             let parts = utils::split_long_message(&formatted, 4000);
 
             for (i, part) in parts.iter().enumerate() {
-                info!("Sending response part {}/{} to user {}.", i + 1, parts.len(), user_id);
-                match bot.send_message(msg.chat.id, part)
+                info!(
+                    "Sending response part {}/{} to user {}.",
+                    i + 1,
+                    parts.len(),
+                    user_id
+                );
+                match bot
+                    .send_message(msg.chat.id, part)
                     .parse_mode(ParseMode::Html)
                     .await
                 {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(e) => {
-                        error!("Error sending response part {}/{} to user {}: {}", i + 1, parts.len(), user_id, e);
+                        error!(
+                            "Error sending response part {}/{} to user {}: {}",
+                            i + 1,
+                            parts.len(),
+                            user_id,
+                            e
+                        );
                     }
                 }
             }
         }
         Err(e) => {
             error!("Error processing photo for user {}: {}", user_id, e);
-            bot.send_message(msg.chat.id, format!("Ошибка анализа изображения: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("Ошибка анализа изображения: {}", e))
+                .await?;
         }
     }
 

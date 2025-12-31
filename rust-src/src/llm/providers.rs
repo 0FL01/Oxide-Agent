@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use super::{LlmError, LlmProvider, Message};
 use async_openai::{
     config::OpenAIConfig,
@@ -8,9 +7,10 @@ use async_openai::{
     },
     Client,
 };
+use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client as HttpClient;
 use serde_json::json;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 pub struct GroqProvider {
     client: Client<OpenAIConfig>,
@@ -37,25 +37,27 @@ impl LlmProvider for GroqProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        let mut messages = vec![
-            ChatCompletionRequestSystemMessageArgs::default()
-                .content(system_prompt)
-                .build()
-                .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
-                .into(),
-        ];
+        let mut messages = vec![ChatCompletionRequestSystemMessageArgs::default()
+            .content(system_prompt)
+            .build()
+            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
+            .into()];
 
         for msg in history {
             let m = match msg.role.as_str() {
                 "user" => ChatCompletionRequestUserMessageArgs::default()
                     .content(msg.content.clone())
                     .build()
-                    .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
+                    .map_err(|e: async_openai::error::OpenAIError| {
+                        LlmError::Unknown(e.to_string())
+                    })?
                     .into(),
                 _ => ChatCompletionRequestAssistantMessageArgs::default()
                     .content(msg.content.clone())
                     .build()
-                    .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
+                    .map_err(|e: async_openai::error::OpenAIError| {
+                        LlmError::Unknown(e.to_string())
+                    })?
                     .into(),
             };
             messages.push(m);
@@ -77,19 +79,36 @@ impl LlmProvider for GroqProvider {
             .build()
             .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?;
 
-        let response = self.client.chat().create(request).await
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
             .map_err(|e| LlmError::ApiError(e.to_string()))?;
 
-        response.choices.first()
+        response
+            .choices
+            .first()
             .and_then(|c| c.message.content.clone())
             .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }
 
-    async fn transcribe_audio(&self, _audio_bytes: Vec<u8>, _mime_type: &str, _model_id: &str) -> Result<String, LlmError> {
+    async fn transcribe_audio(
+        &self,
+        _audio_bytes: Vec<u8>,
+        _mime_type: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
         Err(LlmError::Unknown("Not implemented for Groq".to_string()))
     }
 
-    async fn analyze_image(&self, _image_bytes: Vec<u8>, _text_prompt: &str, _system_prompt: &str, _model_id: &str) -> Result<String, LlmError> {
+    async fn analyze_image(
+        &self,
+        _image_bytes: Vec<u8>,
+        _text_prompt: &str,
+        _system_prompt: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
         Err(LlmError::Unknown("Not implemented for Groq".to_string()))
     }
 }
@@ -120,25 +139,27 @@ impl LlmProvider for MistralProvider {
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         // Implementation is identical to Groq due to OpenAI compatibility
-        let mut messages = vec![
-            ChatCompletionRequestSystemMessageArgs::default()
-                .content(system_prompt)
-                .build()
-                .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
-                .into(),
-        ];
+        let mut messages = vec![ChatCompletionRequestSystemMessageArgs::default()
+            .content(system_prompt)
+            .build()
+            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
+            .into()];
 
         for msg in history {
             let m = match msg.role.as_str() {
                 "user" => ChatCompletionRequestUserMessageArgs::default()
                     .content(msg.content.clone())
                     .build()
-                    .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
+                    .map_err(|e: async_openai::error::OpenAIError| {
+                        LlmError::Unknown(e.to_string())
+                    })?
                     .into(),
                 _ => ChatCompletionRequestAssistantMessageArgs::default()
                     .content(msg.content.clone())
                     .build()
-                    .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
+                    .map_err(|e: async_openai::error::OpenAIError| {
+                        LlmError::Unknown(e.to_string())
+                    })?
                     .into(),
             };
             messages.push(m);
@@ -160,19 +181,36 @@ impl LlmProvider for MistralProvider {
             .build()
             .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?;
 
-        let response = self.client.chat().create(request).await
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
             .map_err(|e| LlmError::ApiError(e.to_string()))?;
 
-        response.choices.first()
+        response
+            .choices
+            .first()
             .and_then(|c| c.message.content.clone())
             .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }
 
-    async fn transcribe_audio(&self, _audio_bytes: Vec<u8>, _mime_type: &str, _model_id: &str) -> Result<String, LlmError> {
+    async fn transcribe_audio(
+        &self,
+        _audio_bytes: Vec<u8>,
+        _mime_type: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
         Err(LlmError::Unknown("Not implemented for Mistral".to_string()))
     }
 
-    async fn analyze_image(&self, _image_bytes: Vec<u8>, _text_prompt: &str, _system_prompt: &str, _model_id: &str) -> Result<String, LlmError> {
+    async fn analyze_image(
+        &self,
+        _image_bytes: Vec<u8>,
+        _text_prompt: &str,
+        _system_prompt: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
         Err(LlmError::Unknown("Not implemented for Mistral".to_string()))
     }
 }
@@ -238,7 +276,9 @@ impl LlmProvider for GeminiProvider {
             ]
         });
 
-        let response = self.http_client.post(&url)
+        let response = self
+            .http_client
+            .post(&url)
             .json(&body)
             .send()
             .await
@@ -247,10 +287,15 @@ impl LlmProvider for GeminiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!("Gemini API error: {} - {}", status, error_text)));
+            return Err(LlmError::ApiError(format!(
+                "Gemini API error: {} - {}",
+                status, error_text
+            )));
         }
 
-        let res_json: serde_json::Value = response.json().await
+        let res_json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| LlmError::JsonError(e.to_string()))?;
 
         res_json["candidates"][0]["content"]["parts"][0]["text"]
@@ -271,7 +316,7 @@ impl LlmProvider for GeminiProvider {
         );
 
         let prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это.";
-        
+
         let body = json!({
             "contents": [{
                 "parts": [
@@ -289,7 +334,9 @@ impl LlmProvider for GeminiProvider {
             }
         });
 
-        let response = self.http_client.post(&url)
+        let response = self
+            .http_client
+            .post(&url)
             .json(&body)
             .send()
             .await
@@ -298,10 +345,15 @@ impl LlmProvider for GeminiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!("Gemini transcription error: {} - {}", status, error_text)));
+            return Err(LlmError::ApiError(format!(
+                "Gemini transcription error: {} - {}",
+                status, error_text
+            )));
         }
 
-        let res_json: serde_json::Value = response.json().await
+        let res_json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| LlmError::JsonError(e.to_string()))?;
 
         res_json["candidates"][0]["content"]["parts"][0]["text"]
@@ -343,7 +395,9 @@ impl LlmProvider for GeminiProvider {
             }
         });
 
-        let response = self.http_client.post(&url)
+        let response = self
+            .http_client
+            .post(&url)
             .json(&body)
             .send()
             .await
@@ -352,10 +406,15 @@ impl LlmProvider for GeminiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!("Gemini vision error: {} - {}", status, error_text)));
+            return Err(LlmError::ApiError(format!(
+                "Gemini vision error: {} - {}",
+                status, error_text
+            )));
         }
 
-        let res_json: serde_json::Value = response.json().await
+        let res_json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| LlmError::JsonError(e.to_string()))?;
 
         res_json["candidates"][0]["content"]["parts"][0]["text"]
@@ -408,7 +467,9 @@ impl LlmProvider for OpenRouterProvider {
             "temperature": 0.7
         });
 
-        let mut request = self.http_client.post(url)
+        let mut request = self
+            .http_client
+            .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json");
 
@@ -419,7 +480,8 @@ impl LlmProvider for OpenRouterProvider {
             request = request.header("X-Title", &self.site_name);
         }
 
-        let response = request.json(&body)
+        let response = request
+            .json(&body)
             .send()
             .await
             .map_err(|e| LlmError::NetworkError(e.to_string()))?;
@@ -427,10 +489,15 @@ impl LlmProvider for OpenRouterProvider {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!("OpenRouter API error: {} - {}", status, error_text)));
+            return Err(LlmError::ApiError(format!(
+                "OpenRouter API error: {} - {}",
+                status, error_text
+            )));
         }
 
-        let res_json: serde_json::Value = response.json().await
+        let res_json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| LlmError::JsonError(e.to_string()))?;
 
         res_json["choices"][0]["message"]["content"]
@@ -447,9 +514,9 @@ impl LlmProvider for OpenRouterProvider {
     ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
         let prompt = "Сделай точную транскрипцию речи из этого аудио файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это.";
-        
+
         let audio_base64 = BASE64.encode(&audio_bytes);
-        
+
         let body = json!({
             "model": model_id,
             "messages": [
@@ -471,7 +538,9 @@ impl LlmProvider for OpenRouterProvider {
             "temperature": 0.4
         });
 
-        let response = self.http_client.post(url)
+        let response = self
+            .http_client
+            .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&body)
             .send()
@@ -479,10 +548,15 @@ impl LlmProvider for OpenRouterProvider {
             .map_err(|e| LlmError::NetworkError(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(LlmError::ApiError(format!("OpenRouter transcription error: {}", response.status())));
+            return Err(LlmError::ApiError(format!(
+                "OpenRouter transcription error: {}",
+                response.status()
+            )));
         }
 
-        let res_json: serde_json::Value = response.json().await
+        let res_json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| LlmError::JsonError(e.to_string()))?;
 
         res_json["choices"][0]["message"]["content"]
@@ -521,7 +595,9 @@ impl LlmProvider for OpenRouterProvider {
             "temperature": 0.7
         });
 
-        let response = self.http_client.post(url)
+        let response = self
+            .http_client
+            .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&body)
             .send()
@@ -529,10 +605,15 @@ impl LlmProvider for OpenRouterProvider {
             .map_err(|e| LlmError::NetworkError(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(LlmError::ApiError(format!("OpenRouter vision error: {}", response.status())));
+            return Err(LlmError::ApiError(format!(
+                "OpenRouter vision error: {}",
+                response.status()
+            )));
         }
 
-        let res_json: serde_json::Value = response.json().await
+        let res_json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| LlmError::JsonError(e.to_string()))?;
 
         res_json["choices"][0]["message"]["content"]

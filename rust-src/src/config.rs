@@ -1,32 +1,32 @@
-use config::{Config, ConfigError, File, Environment};
+use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Settings {
     pub telegram_token: String,
-    
+
     #[serde(rename = "allowed_users")]
     pub allowed_users_str: Option<String>,
-    
+
     // API Keys
     pub groq_api_key: Option<String>,
     pub mistral_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
     pub openrouter_api_key: Option<String>,
-    
+
     // R2 Storage
     pub r2_access_key_id: Option<String>,
     pub r2_secret_access_key: Option<String>,
     pub r2_endpoint_url: Option<String>,
     pub r2_bucket_name: Option<String>,
-    
+
     // OpenRouter configuration
     #[serde(default = "default_openrouter_site_url")]
     pub openrouter_site_url: String,
     #[serde(default = "default_openrouter_site_name")]
     pub openrouter_site_name: String,
-    
+
     // System message
     pub system_message: Option<String>,
 }

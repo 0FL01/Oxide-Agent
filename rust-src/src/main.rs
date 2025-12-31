@@ -1,19 +1,20 @@
-mod config;
-mod storage;
-pub mod llm;
-mod utils;
 mod bot;
+mod config;
+pub mod llm;
+mod storage;
+mod utils;
 
 use config::Settings;
 use dotenvy::dotenv;
-use tracing::{info, error};
-use tracing_subscriber::{prelude::*, EnvFilter};
-use regex::Regex;
 use lazy_static::lazy_static;
+use regex::Regex;
 use std::io::{self, Write};
+use tracing::{error, info};
+use tracing_subscriber::{prelude::*, EnvFilter};
 
 lazy_static! {
-    static ref RE_TOKEN1: Regex = Regex::new(r"(https?://[^/]+/bot)([0-9]+:[A-Za-z0-9_-]+)(/[^'\s]*)").unwrap();
+    static ref RE_TOKEN1: Regex =
+        Regex::new(r"(https?://[^/]+/bot)([0-9]+:[A-Za-z0-9_-]+)(/[^'\s]*)").unwrap();
     static ref RE_TOKEN2: Regex = Regex::new(r"([0-9]{8,10}:[A-Za-z0-9_-]{35})").unwrap();
     static ref RE_TOKEN3: Regex = Regex::new(r"(bot[0-9]{8,10}:)[A-Za-z0-9_-]+").unwrap();
     static ref RE_R2_1: Regex = Regex::new(r"R2_ACCESS_KEY_ID=[^\s&]+").unwrap();
@@ -24,13 +25,27 @@ lazy_static! {
 
 fn redact(input: &str) -> String {
     let mut output = input.to_string();
-    output = RE_TOKEN1.replace_all(&output, "$1[TELEGRAM_TOKEN]$3").to_string();
-    output = RE_TOKEN2.replace_all(&output, "[TELEGRAM_TOKEN]").to_string();
-    output = RE_TOKEN3.replace_all(&output, "$1[TELEGRAM_TOKEN]").to_string();
-    output = RE_R2_1.replace_all(&output, "R2_ACCESS_KEY_ID=[MASKED]").to_string();
-    output = RE_R2_2.replace_all(&output, "R2_SECRET_ACCESS_KEY=[MASKED]").to_string();
-    output = RE_R2_3.replace_all(&output, "'aws_access_key_id': '[MASKED]'").to_string();
-    output = RE_R2_4.replace_all(&output, "'aws_secret_access_key': '[MASKED]'").to_string();
+    output = RE_TOKEN1
+        .replace_all(&output, "$1[TELEGRAM_TOKEN]$3")
+        .to_string();
+    output = RE_TOKEN2
+        .replace_all(&output, "[TELEGRAM_TOKEN]")
+        .to_string();
+    output = RE_TOKEN3
+        .replace_all(&output, "$1[TELEGRAM_TOKEN]")
+        .to_string();
+    output = RE_R2_1
+        .replace_all(&output, "R2_ACCESS_KEY_ID=[MASKED]")
+        .to_string();
+    output = RE_R2_2
+        .replace_all(&output, "R2_SECRET_ACCESS_KEY=[MASKED]")
+        .to_string();
+    output = RE_R2_3
+        .replace_all(&output, "'aws_access_key_id': '[MASKED]'")
+        .to_string();
+    output = RE_R2_4
+        .replace_all(&output, "'aws_secret_access_key': '[MASKED]'")
+        .to_string();
     output
 }
 
@@ -49,7 +64,7 @@ impl<W: Write> Write for RedactingWriter<W> {
         let s = String::from_utf8_lossy(buf);
         let redacted = redact(&s);
         self.inner.write_all(redacted.as_bytes())?;
-        // We return the original buffer length to satisfy the contract, 
+        // We return the original buffer length to satisfy the contract,
         // even if the redacted string length differs.
         Ok(buf.len())
     }
@@ -88,9 +103,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup logging with redaction
     let make_writer = RedactingMakeWriter::new(io::stderr);
-    
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
         .with(filter)
@@ -134,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Bot
     let bot = teloxide::Bot::from_env();
-    
+
     // Authorization filter
     let allowed_users = settings.allowed_users().clone();
     let auth_filter = move |msg: teloxide::types::Message| {
@@ -142,10 +156,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         allowed_users.contains(&user_id)
     };
 
-    use teloxide::dispatching::dialogue::InMemStorage;
-    use teloxide::prelude::*;
     use bot::handlers::Command;
     use bot::state::State;
+    use teloxide::dispatching::dialogue::InMemStorage;
+    use teloxide::prelude::*;
 
     let handler = Update::filter_message()
         .filter(auth_filter)
@@ -199,7 +213,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Bot is running...");
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![storage, llm_client, InMemStorage::<State>::new()])
+        .dependencies(dptree::deps![
+            storage,
+            llm_client,
+            InMemStorage::<State>::new()
+        ])
         .enable_ctrlc_handler()
         .build()
         .dispatch()

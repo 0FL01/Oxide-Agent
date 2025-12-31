@@ -1,5 +1,5 @@
-use regex::Regex;
 use lazy_static::lazy_static;
+use regex::Regex;
 
 lazy_static! {
     static ref RE_CODE_BLOCK: Regex = Regex::new(r"```[\s\S]*?```").unwrap();
@@ -24,7 +24,11 @@ fn escape_angle_brackets(text: &str) -> String {
                 // Look ahead to see if this starts an HTML tag like </a or <b
                 let starts_tag = if i + 1 < chars.len() {
                     let next1 = chars[i + 1];
-                    let next2 = if i + 2 < chars.len() { Some(chars[i + 2]) } else { None };
+                    let next2 = if i + 2 < chars.len() {
+                        Some(chars[i + 2])
+                    } else {
+                        None
+                    };
                     match (next1, next2) {
                         ('/', Some(ch)) if ch.is_ascii_alphabetic() => true,
                         (ch, _) if ch.is_ascii_alphabetic() => true,
@@ -90,12 +94,17 @@ pub fn format_text(text: &str) -> String {
     let mut text_owned = clean_html(text);
 
     // Replace blocks: ```language\ncode``` -> <pre><code class="language">code</code></pre>
-    text_owned = RE_CODE_BLOCK_FENCE.replace_all(&text_owned, |caps: &regex::Captures| {
-        let lang = caps.get(1).map_or("", |m| m.as_str());
-        let code = caps.get(2).map_or("", |m| m.as_str()).trim();
-        let escaped_code = html_escape::encode_text(code);
-        format!("<pre><code class=\"{}\">{}</code></pre>", lang, escaped_code)
-    }).to_string();
+    text_owned = RE_CODE_BLOCK_FENCE
+        .replace_all(&text_owned, |caps: &regex::Captures| {
+            let lang = caps.get(1).map_or("", |m| m.as_str());
+            let code = caps.get(2).map_or("", |m| m.as_str()).trim();
+            let escaped_code = html_escape::encode_text(code);
+            format!(
+                "<pre><code class=\"{}\">{}</code></pre>",
+                lang, escaped_code
+            )
+        })
+        .to_string();
 
     // Replace bullets: * -> •
     text_owned = RE_BULLET.replace_all(&text_owned, "• ").to_string();
@@ -107,14 +116,18 @@ pub fn format_text(text: &str) -> String {
     text_owned = RE_ITALIC.replace_all(&text_owned, "<i>$1</i>").to_string();
 
     // Replace inline code: `code` -> <code>code</code>
-    text_owned = RE_INLINE_CODE.replace_all(&text_owned, |caps: &regex::Captures| {
-        let code = caps.get(1).map_or("", |m| m.as_str());
-        let escaped_code = html_escape::encode_text(code);
-        format!("<code>{}</code>", escaped_code)
-    }).to_string();
+    text_owned = RE_INLINE_CODE
+        .replace_all(&text_owned, |caps: &regex::Captures| {
+            let code = caps.get(1).map_or("", |m| m.as_str());
+            let escaped_code = html_escape::encode_text(code);
+            format!("<code>{}</code>", escaped_code)
+        })
+        .to_string();
 
     // Replace 3+ newlines with 2
-    text_owned = RE_MULTI_NEWLINE.replace_all(&text_owned, "\n\n").to_string();
+    text_owned = RE_MULTI_NEWLINE
+        .replace_all(&text_owned, "\n\n")
+        .to_string();
 
     text_owned.trim().to_string()
 }
@@ -162,8 +175,8 @@ pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
                     current_message.push('\n');
                 }
             } else {
-                 current_message.push_str(line);
-                 current_message.push('\n');
+                current_message.push_str(line);
+                current_message.push('\n');
             }
         } else {
             current_message.push_str(line);
