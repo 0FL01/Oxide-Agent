@@ -1,16 +1,13 @@
-# Builder stage
-FROM rust:1.80-slim-bookworm as builder
+# Builder stage - Rust 1.92.0 (2025-12-08)
+FROM rust:1.92-slim-trixie AS builder
 
 WORKDIR /app
-# Pre-install dependencies to cache them
-# COPY Cargo.toml Cargo.lock ./
-# RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
 
 COPY . .
 RUN cargo build --release
 
-# Runtime stage
-FROM debian:bookworm-slim
+# Runtime stage - Debian Trixie (stable)
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
