@@ -215,15 +215,16 @@ impl R2Storage {
         self.delete_object(&user_history_key(user_id)).await
     }
 
-    pub async fn check_connection(&self) -> bool {
+    pub async fn check_connection(&self) -> Result<(), String> {
         match self.client.list_buckets().send().await {
             Ok(_) => {
                 info!("Successfully connected to R2 storage.");
-                true
+                Ok(())
             }
             Err(e) => {
-                error!("R2 connectivity test failed: {}", e);
-                false
+                let err_msg = format!("R2 connectivity test failed: {:#?}", e);
+                error!("{}", err_msg);
+                Err(err_msg)
             }
         }
     }

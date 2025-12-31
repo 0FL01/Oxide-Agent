@@ -35,12 +35,13 @@ async fn test_credentials_validation() {
         .await
         .expect("Failed to initialize R2 Storage struct");
 
-    let connected = storage.check_connection().await;
-    assert!(
-        connected,
-        "Failed to connect to R2 Storage with provided credentials"
-    );
-    info!("R2 Storage connection successful!");
+    match storage.check_connection().await {
+        Ok(_) => info!("R2 Storage connection successful!"),
+        Err(e) => panic!(
+            "Failed to connect to R2 Storage with provided credentials: {}",
+            e
+        ),
+    }
 
     // 3. Validate LLM Client (Static check of API keys presence)
     info!("Validating LLM Client configuration...");

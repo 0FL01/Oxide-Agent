@@ -128,10 +128,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = match storage::R2Storage::new(&settings).await {
         Ok(s) => {
             info!("R2 Storage initialized.");
-            if s.check_connection().await {
-                info!("R2 Storage connection verified.");
+            if s.check_connection().await.is_ok() {
+                // Success message already logged in check_connection
             } else {
-                error!("R2 Storage connection failed.");
+                // Error message already logged in check_connection
+                // We could choose to exit here if R2 is critical, but for now we continue
+                error!("R2 Storage connection check returned error.");
             }
             std::sync::Arc::new(s)
         }
