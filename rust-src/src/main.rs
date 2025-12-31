@@ -148,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("LLM Client initialized.");
 
     // Initialize Bot
-    let bot = teloxide::Bot::from_env();
+    let bot = teloxide::Bot::new(settings.telegram_token.clone());
 
     // Authorization filter
     let allowed_users = settings.allowed_users().clone();

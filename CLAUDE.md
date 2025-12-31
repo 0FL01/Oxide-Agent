@@ -1,12 +1,19 @@
 # Project: Another Chat with LLM (Rust Port)
 
-## ⚡ Commands
-- **Run**: `cd rust-src && cargo run`
-- **Test**: `cd rust-src && cargo test`
-- **Lint**: `cd rust-src && cargo clippy`
-- **Format**: `cd rust-src && cargo fmt`
-- **Check**: `cd rust-src && cargo check`
-- **Clean**: `cd rust-src && cargo clean`
+## ⚡ Rust Development (via MCP `rust-mcp-server`)
+
+**PREFER MCP TOOLS over shell commands** - they're faster, token-optimized, and filter noise:
+
+| Operation | MCP Tool | Why MCP is better |
+|-----------|----------|-------------------|
+| **Run** | `Bash(cargo run)` | Full output for debugging |
+| **Test** | `cargo-test` | Cleaner output, `no_run: true` option |
+| **Lint** | `cargo-clippy` | Use `no_deps: true` for speed |
+| **Format** | `Bash(cargo fmt)` | Standard formatting |
+| **Check** | `cargo-check` | Quick compilation check |
+| **Clean** | `Bash(cargo clean)` | Full cleanup when needed |
+
+**Shell fallback**: Only use shell commands when MCP tools aren't available or for operations not covered.
 
 ## 🏗 Project Structure (`rust-src/`)
 - `src/main.rs`: Entry point, initialization, and bot startup.
@@ -19,8 +26,8 @@
 ## 🧠 Rules and Tools (from GEMINI.md)
 
 ### 🚫 STRICT PROHIBITIONS
-1. **DO NOT HALLUCINATE APIs:** If unsure about a method signature or type name — use `mcp-rust-docs`.
-2. **DO NOT USE** shell/bash commands for `cargo` (e.g., `cargo build`) if it is possible to use native tools (although `run_command` in the terminal is often used for `run` and `test`).
+1. **DO NOT HALLUCINATE APIs:** If unsure about a method signature or type name — use `rust-mcp-server` or `mcp-rust-docs` MCP tools.
+2. **DO NOT USE** shell/bash commands for `cargo` (e.g., `cargo build`, `cargo test`, `cargo clippy`) if MCP `rust-mcp-server` tools are available.
 3. **DO NOT READ** `Cargo.lock` or huge `cargo-metadata` outputs directly.
 
 ### 🛠 MCP TOOL REFERENCE
