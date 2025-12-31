@@ -1,0 +1,39 @@
+# Build artifacts
+target/
+Cargo.lock
+
+# Git
+.git/
+.gitignore
+
+# CI/CD
+.github/
+
+# Documentation
+*.md
+README.md
+LICENSE
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python legacy (if any)
+src/
+tests/
+*.py
+requirements.txt
+.pytest_cache/
+__pycache__/
+
+# Environment
+.env
+.env.*
+*.local

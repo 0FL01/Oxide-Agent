@@ -1,20 +1,5 @@
 # Project: Another Chat with LLM (Rust Port)
 
-| Operation | MCP Tool | Why MCP is better |
-|-----------|----------|-------------------|
-| **Run** | `Bash(cargo run)` | Full output for debugging |
-| **Test** | `cargo-test` | Cleaner output, `no_run: true` option |
-| **Lint** | `cargo-clippy` | Use `no_deps: true` for speed |
-| **Format** | `Bash(cargo fmt)` | Standard formatting |
-| **Check** | `cargo-check` | Quick compilation check |
-| **Clean** | `Bash(cargo clean)` | Full cleanup when needed |
-
-## ⚡ Rust Development (via MCP `rust-mcp-server`)
-
-**PREFER MCP TOOLS over shell commands** - they're faster, token-optimized, and filter noise:
-
-**Shell fallback**: Only use shell commands when MCP tools aren't available or for operations not covered.
-
 ## 🏗 Project Structure (`rust-src/`)
 - `src/main.rs`: Entry point, initialization, and bot startup.
 - `src/bot/`: Telegram bot logic (handlers, states).
@@ -23,60 +8,59 @@
 - `src/config.rs`: Configuration and environment variable loading.
 - `src/utils.rs`: Helper functions (message splitting, formatting).
 
-## 🧠 Role & Persona
-You are a Principal Rust Engineer and Polymath. You write idiomatic, safe, and highly performant Rust code. You prioritize token efficiency and correctness. You NEVER guess about external crate APIs; you verify them using the provided tools.
+# Rust Development Context & Tooling Guidelines
 
-## 🛡️ Tool Usage Guidelines (CRITICAL)
+**PREFER MCP TOOLS over shell commands** - they're faster, token-optimized, and filter noise:
 
-**Core Principle:** NEVER use `sh` or `bash` to run `cargo` commands manually if a specific tool is available in the toolkit. Using the specific tool ensures structured output and saves context tokens.
+**Shell fallback**: Only use shell commands when MCP tools aren't available or for operations not covered.
 
-### 1. Project Structure & Metadata (Token Economy)
-*   **Preferred:** Use `workspace-info` to understand the project structure. It is lightweight.
-*   **Avoid:** Do not use `cargo-metadata` unless absolutely necessary for deep dependency graph analysis, as it consumes massive amounts of tokens.
-*   **Toolchain:** Use `rustup-show` to verify the active toolchain before suggesting generic fixes.
+## 🛡️ IMPORTANT: Tool Usage & Token Economy
+**DO NOT** run verbose shell commands (like `cargo metadata` or `ls -R`) unless absolutely necessary.
+**ALWAYS** prefer the specialized tools provided below. They return structured, concise data designed to save context window tokens.
 
-### 2. Dependency Management
-*   **Adding/Removing:** ALWAYS use `cargo-add` and `cargo-remove`. DO NOT edit `Cargo.toml` manually unless configuring complex features not supported by the CLI.
-*   **Searching:**
-    1.  Use `search_crate` to find packages.
-    2.  Use `cargo-info` to validate versions and features.
-    3.  Use `cargo-machete` periodically to identify unused dependencies.
+## 🛠️ Operational Guidelines
 
-### 3. Documentation & External APIs (Stop Hallucinating)
-*   **Workflow:** When using an external crate, DO NOT guess the API.
-    1.  `search_crate` to find the exact name/version.
-    2.  `retrieve_documentation_index_page` to get the overview.
-    3.  `search_documentation_items` to find specific structs/functions (fuzzy search).
-    4.  `retrieve_documentation_page` to get the exact signature and usage examples.
-    5.  **Fallback:** Use `retrieve_documentation_all_items` only if fuzzy search fails.
+### 1. Project Structure & Metadata
+- **Initial Context**: Use `workspace-info` immediately to understand the project topology (members, packages) without the heavy payload of `cargo metadata`.
+- **Dependency Info**: Use `cargo-info [crate]` to fetch details. Avoid reading `Cargo.toml` manually.
+- **Explain Errors**: If the compiler gives an error code (e.g., E0308), **always** run `rustc-explain [code]` before attempting a fix.
 
-### 4. Code Quality & Compilation
-*   **Check First:** Always run `cargo-check` before `cargo-build`. It's faster.
-*   **Linting:** Use `cargo-clippy` to ensure idiomatic code. Fix clippy warnings before considering a task complete.
-*   **Formatting:** Run `cargo-fmt` on changed files.
-*   **Error Analysis:** If a compilation error occurs with an error code (e.g., E0308), IMMEDIATELY use `rustc-explain` with that code to get context.
-*   **Safety:** Use `cargo-deny-check` to verify licenses and advisories before major releases.
+### 2. Building & Checking Code
+- **Quick Check**: Use `cargo-check`. This is faster and cheaper than build.
+- **Full Build**: Use `cargo-build` only when executables are required.
+- **Testing**:
+    - Use `cargo-test` for standard runs.
+    - Use `cargo-hack` to verify feature flag combinations if the issue might be feature-gated.
 
-### 5. Testing & Verification
-*   **Standard:** Use `cargo-test`.
-*   **Feature Combinations:** Use `cargo-hack` to verify feature flags if the crate uses conditional compilation (`#[cfg(feature = ...)]`).
+### 3. Documentation (CRITICAL)
+**Stop guessing APIs.** If you are unsure about a crate's usage:
+1.  **Find Crate**: Use `search_crate` to find the correct package name.
+2.  **Search Items**: Use `search_documentation_items` to find specific structs/functions (fuzzy search).
+3.  **Read Docs**: Use `retrieve_documentation_page` or `retrieve_documentation_index_page`.
+4.  **Fallback**: Use `retrieve_documentation_all_items` only if fuzzy search fails.
 
----
+### 4. Dependency Management
+- **Adding/Removing**: Use `cargo-add` and `cargo-remove`.
+- **Updates**: Use `cargo-update` to bump lockfile versions.
+- **Cleanup**: Use `cargo-machete` periodically to identify unused deps.
 
-## ⚡ Coding Standards
+### 5. Code Quality & Security
+- **Linting**: Run `cargo-clippy` before proposing final code changes.
+- **Formatting**: Run `cargo-fmt`.
+- **Security**: Use `cargo-deny-check` to audit licenses and advisories.
 
-1.  **Safety:** Prefer safe Rust. Use `unsafe` only when absolutely necessary and always wrap it in a safe abstraction with a `// SAFETY:` comment explaining invariants.
-2.  **Error Handling:** Use `Result` and `Option` combinators (`map`, `and_then`, `unwrap_or_else`). Avoid `unwrap()` and `expect()` in production code; use `?` operator and `thiserror`/`anyhow`.
-3.  **Async:** When writing async code, be mindful of `Send` + `Sync` bounds.
-4.  **Performance:** Prefer iterators over raw loops. Avoid unnecessary clones.
+## 📝 Coding Style & Etiquette
+- **Idiomatic Rust**: Prefer `Result`/`Option` combinators (`map`, `and_then`) over explicit `match` where readable.
+- **Error Handling**: Use `thiserror` for libraries and `anyhow` for applications unless specified otherwise.
+- **Async**: Assume `tokio` runtime unless `async-std` is present in `workspace-info`.
+- **Comments**: Write doc comments (`///`) for public APIs.
 
-## 📝 Workflow Protocol
-
-1.  **Analyze:** Use `workspace-info` to get context.
-2.  **Research:** Use `search_crate` and `retrieve_documentation_*` tools to understand dependencies.
-3.  **Implement:** Write code adhering to standards.
-4.  **Verify:**
-    *   `cargo-fmt`
-    *   `cargo-check` (if error -> `rustc-explain`)
-    *   `cargo-clippy`
-    *   `cargo-test`
+## ⚡ Tool Map (Intent -> Command)
+| Intent | Preferred Tool |
+| :--- | :--- |
+| "Does this code compile?" | `cargo-check` |
+| "What features does X have?" | `cargo-info X` |
+| "What is error E0xxx?" | `rustc-explain E0xxx` |
+| "Clean up unused deps" | `cargo-machete` |
+| "Check detailed compatibility" | `cargo-hack` |
+| "Find how to use Vec" | `search_documentation_items` -> `retrieve_documentation_page` |
