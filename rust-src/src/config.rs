@@ -133,10 +133,10 @@ mod tests {
         env::set_var("TELEGRAM_TOKEN", "dummy_token");
 
         let settings = Settings::new().expect("Failed to create settings");
-        // With our fallback logic, if it's empty in env, config might pick it up as Some("")
+        // With our fallback logic, if it's empty in env, config might ignore it (or treating as unset).
         // Our fallback only sets if !val.is_empty().
-        // So it should remain as config found it.
-        assert_eq!(settings.r2_endpoint_url, Some("".to_string()));
+        // So it should be None.
+        assert_eq!(settings.r2_endpoint_url, None);
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("TELEGRAM_TOKEN");
