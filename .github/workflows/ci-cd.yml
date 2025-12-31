@@ -2,11 +2,11 @@ name: CI/CD Pipeline (Rust)
 
 on:
   push:
-    branches: [ "testing", "rust" ]
+    branches: [ "main", "rust" ]
     tags:
       - 'v*'
   pull_request:
-    branches: [ "testing", "rust" ]
+    branches: [ "main", "rust" ]
 
 env:
   DOCKER_IMAGE: 0fl01/another-chat-tg
