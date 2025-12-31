@@ -26,8 +26,6 @@ Dockerfile
 *~
 
 # Python legacy (if any)
-src/
-tests/
 *.py
 requirements.txt
 .pytest_cache/
