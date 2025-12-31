@@ -117,8 +117,45 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
+  validate-credentials:
+    runs-on: ubuntu-latest
     needs: build
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download SHA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sha-artifact
+          path: .
+
+      - name: Read SHA from artifact file
+        run: echo "SHORT_SHA_VALUE=$(cat sha.txt)" >> $GITHUB_ENV
+
+      - name: Validate secrets
+        env:
+          DOCKER_IMAGE: ${{ env.DOCKER_IMAGE }}
+          SHORT_SHA_VALUE: ${{ env.SHORT_SHA_VALUE }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
+          SYSTEM_MESSAGE: ${{ secrets.SYSTEM_MESSAGE }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_SITE_URL: ${{ secrets.OPENROUTER_SITE_URL }}
+          OPENROUTER_SITE_NAME: ${{ secrets.OPENROUTER_SITE_NAME }}
+        run: python3 scripts/validate_secrets.py
+
+  deploy:
+    needs: validate-credentials
     runs-on: ubuntu-latest
     environment:
       name: production
