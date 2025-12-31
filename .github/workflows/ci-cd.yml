@@ -1,12 +1,12 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline (Rust)
 
 on:
   push:
-    branches: [ "testing" ]
+    branches: [ "testing", "rust" ]
     tags:
       - 'v*'
   pull_request:
-    branches: [ "testing" ]
+    branches: [ "testing", "rust" ]
 
 env:
   DOCKER_IMAGE: 0fl01/another-chat-tg
@@ -17,7 +17,10 @@ jobs:
     env:
       TELEGRAM_TOKEN: dummy_token
       ALLOWED_USERS: 123456789
+      GROQ_API_KEY: dummy
+      MISTRAL_API_KEY: dummy
       GEMINI_API_KEY: dummy
+      OPENROUTER_API_KEY: dummy
       R2_ENDPOINT_URL: https://dummy.r2.cloudflarestorage.com
       R2_ACCESS_KEY_ID: dummy
       R2_SECRET_ACCESS_KEY: dummy
@@ -25,31 +28,54 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: '3.10'
-      - name: Install dependencies
-        run: |
-            python -m pip install --upgrade pip
-            pip install "pytest>=7.0.0" "pytest-asyncio>=0.18.0" "pytest-mock>=3.7.0"
-            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-      - name: Run tests
-        run: PYTHONPATH=src python -m pytest tests/ --maxfail=1 --disable-warnings
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('rust-src/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: rust-src/target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('rust-src/Cargo.lock') }}
+
+      - name: Run cargo check
+        working-directory: ./rust-src
+        run: cargo check --verbose
+
+      - name: Run cargo clippy
+        working-directory: ./rust-src
+        run: cargo clippy --no-deps -- -D warnings
+
+      - name: Run cargo test
+        working-directory: ./rust-src
+        run: cargo test --verbose
+
+      - name: Run cargo fmt check
+        working-directory: ./rust-src
+        run: cargo fmt --all -- --check
 
 
   build:
-    runs-on: ubuntu-latest 
+    runs-on: ubuntu-latest
     needs: test
 
-    outputs: 
+    outputs:
       sha_short: ${{ steps.vars.outputs.sha_short }}
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0 
+          fetch-depth: 0
 
       - name: Set short SHA and create artifact file
         id: vars
@@ -62,28 +88,29 @@ jobs:
           echo "sha_short=${GIT_SHA}" >> $GITHUB_OUTPUT
           echo "${GIT_SHA}" > sha.txt
           echo "Short SHA: ${GIT_SHA}"
+
       - name: Upload SHA artifact
         uses: actions/upload-artifact@v4
         with:
           name: sha-artifact
           path: sha.txt
-          if-no-files-found: error 
+          if-no-files-found: error
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v5
         with:
-          context: .
+          context: rust-src
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ env.DOCKER_IMAGE }}:${{ steps.vars.outputs.sha_short }} 
+          tags: ${{ env.DOCKER_IMAGE }}:${{ steps.vars.outputs.sha_short }}
           labels: |
             org.opencontainers.image.source=${{ github.repositoryUrl }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -96,17 +123,18 @@ jobs:
     environment:
       name: production
     if: github.event_name != 'pull_request'
+
     steps:
       - name: Download SHA artifact
         uses: actions/download-artifact@v4
         with:
           name: sha-artifact
           path: .
-      
+
       - name: Read SHA from artifact file
         id: get_sha
         run: echo "SHORT_SHA_VALUE=$(cat sha.txt)" >> $GITHUB_ENV
-        
+
       - name: Deploy to server
         uses: appleboy/ssh-action@master
         with:
@@ -134,20 +162,16 @@ jobs:
             TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
             MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}
-            HYPERBOLIC_API_KEY=${{ secrets.HYPERBOLIC_API_KEY }}
-            TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
-            HF_API_KEY=${{ secrets.HF_API_KEY }}
-            GH_TOKEN=${{ secrets.GH_TOKEN }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             ALLOWED_USERS=${{ secrets.ALLOWED_USERS }}
-            PROMPT_IMPROVEMENT_SYSTEM_MESSAGE=${{ secrets.PROMPT_IMPROVEMENT_SYSTEM_MESSAGE }}
             SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE }}
             R2_ACCESS_KEY_ID=${{ secrets.R2_ACCESS_KEY_ID }}
             R2_SECRET_ACCESS_KEY=${{ secrets.R2_SECRET_ACCESS_KEY }}
             R2_ENDPOINT_URL=${{ secrets.R2_ENDPOINT_URL }}
-            R2_BUCKET_NAME=${{ secrets.R2_BUCKET_NAME }}" > .env
+            R2_BUCKET_NAME=${{ secrets.R2_BUCKET_NAME }}
+            OPENROUTER_SITE_URL=${{ secrets.OPENROUTER_SITE_URL }}
+            OPENROUTER_SITE_NAME=${{ secrets.OPENROUTER_SITE_NAME }}" > .env
 
-            
             echo ".env file created."
 
             echo "services:
@@ -155,7 +179,6 @@ jobs:
                 image: $DOCKER_IMAGE:$SHORT_SHA_VALUE
                 container_name: another_chat_tg
                 network_mode: \"host\"
-
                 restart: unless-stopped
                 volumes:
                   - ./.env:/app/.env:ro
@@ -166,7 +189,7 @@ jobs:
                     max-file: \"3\"
             volumes:
               logs: {}" > docker-compose.yml
-            
+
             echo "docker-compose.yml file created."
 
             mkdir -p ./logs
