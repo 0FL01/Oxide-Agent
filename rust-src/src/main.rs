@@ -100,34 +100,110 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting Another Chat TG Bot (Rust port)...");
 
     // Load settings
-    match Settings::new() {
-        Ok(settings) => {
+    let settings = match Settings::new() {
+        Ok(s) => {
             info!("Configuration loaded successfully.");
-            info!("Allowed users count: {}", settings.allowed_users().len());
-            
-            // Test redaction
-            info!("Testing token redaction: bot12345678:ABC-DEF1234ghIkl-zyx57W2v1u123ew11");
-
-            // Initialize storage
-            match storage::R2Storage::new(&settings).await {
-                Ok(storage) => {
-                    info!("R2 Storage initialized.");
-                    if storage.check_connection().await {
-                        info!("R2 Storage connection verified.");
-                    } else {
-                        error!("R2 Storage connection failed.");
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to initialize R2 Storage: {}", e);
-                }
-            }
+            s
         }
         Err(e) => {
             error!("Failed to load configuration: {}", e);
             std::process::exit(1);
         }
-    }
+    };
+
+    // Initialize storage
+    let storage = match storage::R2Storage::new(&settings).await {
+        Ok(s) => {
+            info!("R2 Storage initialized.");
+            if s.check_connection().await {
+                info!("R2 Storage connection verified.");
+            } else {
+                error!("R2 Storage connection failed.");
+            }
+            std::sync::Arc::new(s)
+        }
+        Err(e) => {
+            error!("Failed to initialize R2 Storage: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Initialize LLM Client
+    let llm_client = std::sync::Arc::new(llm::LlmClient::new(&settings));
+    info!("LLM Client initialized.");
+
+    // Initialize Bot
+    let bot = teloxide::Bot::from_env();
+    
+    // Authorization filter
+    let allowed_users = settings.allowed_users().clone();
+    let auth_filter = move |msg: teloxide::types::Message| {
+        let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+        allowed_users.contains(&user_id)
+    };
+
+    use teloxide::dispatching::dialogue::InMemStorage;
+    use teloxide::prelude::*;
+    use bot::handlers::Command;
+    use bot::state::State;
+
+    let handler = Update::filter_message()
+        .filter(auth_filter)
+        .enter_dialogue::<Message, InMemStorage<State>, State>()
+        .branch(
+            dptree::entry()
+                .filter_command::<Command>()
+                .endpoint(move |bot: Bot, msg: Message, cmd: Command, storage: std::sync::Arc<storage::R2Storage>| async move {
+                    let res = match cmd {
+                        Command::Start => bot::handlers::start(bot, msg, storage).await,
+                        Command::Clear => bot::handlers::clear(bot, msg, storage).await,
+                        Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
+                    };
+                    if let Err(e) = res {
+                        error!("Command error: {}", e);
+                    }
+                    respond(())
+                })
+        )
+        .branch(
+            dptree::case![State::Start]
+                .branch(Update::filter_message().filter(|msg: Message| msg.text().is_some()).endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>, dialogue: Dialogue<State, InMemStorage<State>>| async move {
+                    if let Err(e) = bot::handlers::handle_text(bot, msg, storage, llm, dialogue).await {
+                        error!("Text handler error: {}", e);
+                    }
+                    respond(())
+                }))
+                .branch(Update::filter_message().filter(|msg: Message| msg.voice().is_some()).endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>| async move {
+                    if let Err(e) = bot::handlers::handle_voice(bot, msg, storage, llm).await {
+                        error!("Voice handler error: {}", e);
+                    }
+                    respond(())
+                }))
+                .branch(Update::filter_message().filter(|msg: Message| msg.photo().is_some()).endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>| async move {
+                    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm).await {
+                        error!("Photo handler error: {}", e);
+                    }
+                    respond(())
+                }))
+        )
+        .branch(
+            dptree::case![State::EditingPrompt]
+                .endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, dialogue: Dialogue<State, InMemStorage<State>>| async move {
+                    if let Err(e) = bot::handlers::handle_editing_prompt(bot, msg, storage, dialogue).await {
+                        error!("Editing prompt handler error: {}", e);
+                    }
+                    respond(())
+                })
+        );
+
+    info!("Bot is running...");
+
+    Dispatcher::builder(bot, handler)
+        .dependencies(dptree::deps![storage, llm_client, InMemStorage::<State>::new()])
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
 
     Ok(())
 }

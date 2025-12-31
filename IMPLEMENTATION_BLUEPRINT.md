@@ -118,8 +118,8 @@ This blueprint outlines the plan for porting the "Another Chat TG Bot" from Pyth
     - `tokio::signal` (Graceful shutdown)
 
 **Steps**:
-1. [ ] **Implementation**: In `src/main.rs`, initialize `Settings`, `R2Storage`, and `LlmClient`.
-2. [ ] **Implementation**: Configure the `teloxide` Dispatcher with the handlers from Phase 4.
-3. [ ] **Implementation**: Add graceful shutdown handling.
-4. [ ] **Dockerization**: Create a multi-stage `Dockerfile` (build vs runtime) to produce a minimal image.
-5. [ ] **QA**: Perform full end-to-end testing (manual verification of all bot features).
+1. [x] **Implementation**: In `src/main.rs`, initialize `Settings`, `R2Storage`, and `LlmClient`.
+2. [x] **Implementation**: Configure the `teloxide` Dispatcher with the handlers from Phase 4.
+3. [x] **Implementation**: Add graceful shutdown handling.
+4. [x] **Dockerization**: Create a multi-stage `Dockerfile` (build vs runtime) to produce a minimal image.
+5. [x] **QA**: Perform full end-to-end testing (manual verification of all bot features).
