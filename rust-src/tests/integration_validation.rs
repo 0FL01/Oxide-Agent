@@ -36,14 +36,19 @@ async fn test_credentials_validation() {
             s.telegram_token,
             s.r2_endpoint_url.expect("R2_ENDPOINT_URL missing"),
             s.r2_access_key_id.expect("R2_ACCESS_KEY_ID missing"),
-            s.r2_secret_access_key.expect("R2_SECRET_ACCESS_KEY missing"),
+            s.r2_secret_access_key
+                .expect("R2_SECRET_ACCESS_KEY missing"),
             s.r2_bucket_name.expect("R2_BUCKET_NAME missing"),
         ),
         Err(e) => {
-            info!("Settings::new() failed (expected due to case sensitivity): {}", e);
+            info!(
+                "Settings::new() failed (expected due to case sensitivity): {}",
+                e
+            );
             info!("Falling back to direct environment variable read for test verification.");
             (
-                std::env::var("TELEGRAM_TOKEN").unwrap_or_else(|_| "dummy_token_for_s3_verification".to_string()),
+                std::env::var("TELEGRAM_TOKEN")
+                    .unwrap_or_else(|_| "dummy_token_for_s3_verification".to_string()),
                 std::env::var("R2_ENDPOINT_URL").expect("R2_ENDPOINT_URL missing"),
                 std::env::var("R2_ACCESS_KEY_ID").expect("R2_ACCESS_KEY_ID missing"),
                 std::env::var("R2_SECRET_ACCESS_KEY").expect("R2_SECRET_ACCESS_KEY missing"),
@@ -66,14 +71,17 @@ async fn test_credentials_validation() {
     info!("Validating R2 Storage credentials with manual client construction (Theory: Force Path Style)...");
     info!("R2 Endpoint: {}", r2_endpoint);
     info!("R2 Bucket: {}", _r2_bucket);
-    info!("R2 Access Key: {}...", &r2_access.chars().take(4).collect::<String>());
+    info!(
+        "R2 Access Key: {}...",
+        &r2_access.chars().take(4).collect::<String>()
+    );
 
     let credentials = Credentials::new(r2_access, r2_secret, None, None, "r2-storage");
 
     // Try 'us-east-1' instead of 'auto' - some SDKs/R2 interactions prefer this for signing
     let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .credentials_provider(credentials)
-        .region(Region::new("us-east-1")) 
+        .region(Region::new("us-east-1"))
         .load()
         .await;
 
@@ -85,27 +93,36 @@ async fn test_credentials_validation() {
 
     let client = Client::from_conf(s3_config);
 
-    // Try PutObject to verify Write access (and addressing). 
+    // Try PutObject to verify Write access (and addressing).
     // ListBuckets/HeadBucket might be denied by strict policies.
     let test_key = "integration_test_connectivity.txt";
     info!("Attempting PutObject to key: {}", test_key);
-    
-    match client.put_object()
+
+    match client
+        .put_object()
         .bucket(&_r2_bucket)
         .key(test_key)
-        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"test_connectivity"))
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(
+            b"test_connectivity",
+        ))
         .send()
-        .await 
+        .await
     {
         Ok(_) => {
             info!("PutObject successful! Theory verified: force_path_style works for writing.");
             info!("Cleaning up...");
-            if let Err(e) = client.delete_object().bucket(&_r2_bucket).key(test_key).send().await {
+            if let Err(e) = client
+                .delete_object()
+                .bucket(&_r2_bucket)
+                .key(test_key)
+                .send()
+                .await
+            {
                 info!("Cleanup failed (non-fatal): {:?}", e);
             } else {
                 info!("Cleanup successful.");
             }
-        },
+        }
         Err(e) => panic!(
             "Failed to connect to R2 Storage (PutObject failed). Error: {:#?}",
             e
