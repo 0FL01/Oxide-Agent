@@ -1,14 +1,13 @@
-mod bot;
-mod config;
-pub mod llm;
-mod storage;
-mod utils;
-
-use config::Settings;
+use another_chat_rs::config::Settings;
+use another_chat_rs::{bot, llm, storage};
+use bot::handlers::Command;
+use bot::state::State;
 use dotenvy::dotenv;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::io::{self, Write};
+use teloxide::dispatching::dialogue::InMemStorage;
+use teloxide::prelude::*;
 use tracing::{error, info};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
@@ -155,11 +154,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
         allowed_users.contains(&user_id)
     };
-
-    use bot::handlers::Command;
-    use bot::state::State;
-    use teloxide::dispatching::dialogue::InMemStorage;
-    use teloxide::prelude::*;
 
     let handler = Update::filter_message()
         .filter(auth_filter)

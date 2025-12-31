@@ -59,7 +59,40 @@ impl Settings {
             .add_source(Environment::default())
             .build()?;
 
-        s.try_deserialize()
+        let mut settings: Settings = s.try_deserialize()?;
+
+        // Fallback: Check environment variables directly if config didn't pick them up
+        // This handles cases where automatic mapping might fail or behavior differs
+        if settings.r2_endpoint_url.is_none() {
+            if let Ok(val) = std::env::var("R2_ENDPOINT_URL") {
+                if !val.is_empty() {
+                    settings.r2_endpoint_url = Some(val);
+                }
+            }
+        }
+        if settings.r2_access_key_id.is_none() {
+            if let Ok(val) = std::env::var("R2_ACCESS_KEY_ID") {
+                if !val.is_empty() {
+                    settings.r2_access_key_id = Some(val);
+                }
+            }
+        }
+        if settings.r2_secret_access_key.is_none() {
+            if let Ok(val) = std::env::var("R2_SECRET_ACCESS_KEY") {
+                if !val.is_empty() {
+                    settings.r2_secret_access_key = Some(val);
+                }
+            }
+        }
+        if settings.r2_bucket_name.is_none() {
+            if let Ok(val) = std::env::var("R2_BUCKET_NAME") {
+                if !val.is_empty() {
+                    settings.r2_bucket_name = Some(val);
+                }
+            }
+        }
+
+        Ok(settings)
     }
 
     pub fn allowed_users(&self) -> HashSet<i64> {
@@ -71,6 +104,55 @@ impl Settings {
                     .collect()
             })
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    // Tests run sequentially to avoid environment variable race conditions
+    #[test]
+    fn test_config_env_loading() {
+        // 1. Test standard loading
+        env::set_var("R2_ENDPOINT_URL", "https://example.com");
+        env::set_var("TELEGRAM_TOKEN", "dummy_token");
+
+        let settings = Settings::new().expect("Failed to create settings");
+        assert_eq!(
+            settings.r2_endpoint_url,
+            Some("https://example.com".to_string())
+        );
+
+        env::remove_var("R2_ENDPOINT_URL");
+        env::remove_var("TELEGRAM_TOKEN");
+
+        // 2. Test empty env var
+        env::set_var("R2_ENDPOINT_URL", "");
+        env::set_var("TELEGRAM_TOKEN", "dummy_token");
+
+        let settings = Settings::new().expect("Failed to create settings");
+        // With our fallback logic, if it's empty in env, config might pick it up as Some("")
+        // Our fallback only sets if !val.is_empty().
+        // So it should remain as config found it.
+        assert_eq!(settings.r2_endpoint_url, Some("".to_string()));
+
+        env::remove_var("R2_ENDPOINT_URL");
+        env::remove_var("TELEGRAM_TOKEN");
+
+        // 3. Test explicit mapping case (Upper to lower)
+        env::set_var("R2_ENDPOINT_URL", "https://mapping.test");
+        env::set_var("TELEGRAM_TOKEN", "dummy");
+
+        let settings = Settings::new().expect("Failed to create settings");
+        assert_eq!(
+            settings.r2_endpoint_url,
+            Some("https://mapping.test".to_string())
+        );
+
+        env::remove_var("R2_ENDPOINT_URL");
+        env::remove_var("TELEGRAM_TOKEN");
     }
 }
 
