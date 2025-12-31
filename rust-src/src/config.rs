@@ -55,8 +55,9 @@ impl Settings {
             // Eg.. `APP_DEBUG=1 ./target/app` would set the `debug` key
             .add_source(Environment::with_prefix("APP").separator("__"))
             // Also add settings from environment variables directly (without prefix)
-            // to match the Python behavior where they are often just uppercase
-            .add_source(Environment::default().convert_case(config::Case::UpperSnake))
+            // Note: Environment::default() auto-converts UPPER_SNAKE_CASE to snake_case
+            // ignore_empty treats empty env vars as unset
+            .add_source(Environment::default().ignore_empty(true))
             .build()?;
 
         let mut settings: Settings = s.try_deserialize()?;
