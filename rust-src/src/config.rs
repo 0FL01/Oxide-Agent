@@ -56,7 +56,7 @@ impl Settings {
             .add_source(Environment::with_prefix("APP").separator("__"))
             // Also add settings from environment variables directly (without prefix)
             // to match the Python behavior where they are often just uppercase
-            .add_source(Environment::default())
+            .add_source(Environment::default().convert_case(config::Case::UpperSnake))
             .build()?;
 
         let mut settings: Settings = s.try_deserialize()?;

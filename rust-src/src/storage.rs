@@ -62,14 +62,18 @@ impl R2Storage {
 
         let credentials = Credentials::new(access_key, secret_key, None, None, "r2-storage");
 
-        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
             .region(Region::new("auto"))
-            .endpoint_url(endpoint_url)
             .load()
             .await;
 
-        let client = Client::new(&config);
+        let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
+            .endpoint_url(endpoint_url)
+            .force_path_style(true)
+            .build();
+
+        let client = Client::from_conf(s3_config);
 
         Ok(Self {
             client,
