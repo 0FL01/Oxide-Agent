@@ -27,6 +27,19 @@ fn get_user_name(msg: &Message) -> String {
     "Unknown".to_string()
 }
 
+/// Safely truncates a string to a maximum character length (not bytes).
+/// This is UTF-8 safe and will not panic on multi-byte characters.
+fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
+    let s = s.as_ref();
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    // Find the byte position of the max_chars-th character
+    s.char_indices()
+        .nth(max_chars)
+        .map_or(s.to_string(), |(pos, _)| s[..pos].to_string())
+}
+
 #[derive(BotCommands, Clone)]
 #[command(rename_rule = "lowercase", description = "Поддерживаемые команды:")]
 pub enum Command {
@@ -138,11 +151,15 @@ pub async fn handle_text(
 
     let photo = msg.photo().is_some();
     info!(
-        "Handling message from user {} ({}). Text: '{}{:?}'. Photo attached: {}",
+        "Handling message from user {} ({}). Text: '{}{}'. Photo attached: {}",
         user_id,
         user_name,
-        if text.len() > 100 { &text[..100] } else { text },
-        if text.len() > 100 { "..." } else { "" },
+        truncate_str(&text, 100),
+        if text.chars().count() > 100 {
+            "..."
+        } else {
+            ""
+        },
         photo
     );
 
@@ -263,13 +280,14 @@ async fn process_llm_request(
     let user_name = get_user_name(&msg);
 
     info!(
-        "Starting message processing for user {} ({}). Message snippet: '{:?}...'",
+        "Starting message processing for user {} ({}). Message snippet: '{}{}'",
         user_id,
         user_name,
-        if text.len() > 100 {
-            &text[..100]
+        truncate_str(&text, 100),
+        if text.chars().count() > 100 {
+            "..."
         } else {
-            &text
+            ""
         }
     );
 
@@ -285,13 +303,9 @@ async fn process_llm_request(
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
     info!(
-        "Using system message for user {}: '{:?}...'",
+        "Using system message for user {}: '{}' (truncated)",
         user_id,
-        if system_prompt.len() > 100 {
-            &system_prompt[..100]
-        } else {
-            &system_prompt
-        }
+        truncate_str(&system_prompt, 100)
     );
     info!(
         "Retrieved {} messages from history for user {}.",
@@ -312,14 +326,10 @@ async fn process_llm_request(
 
     // Pre-save message to history
     info!(
-        "Saving user message for user {} ({}): '{:?}...'",
+        "Saving user message for user {} ({}): '{}' (truncated)",
         user_id,
         user_name,
-        if text.len() > 100 {
-            &text[..100]
-        } else {
-            &text
-        }
+        truncate_str(&text, 100)
     );
     storage
         .save_message(user_id, "user".to_string(), text.clone())
@@ -365,13 +375,9 @@ async fn process_llm_request(
                 .save_message(user_id, "assistant".to_string(), response.clone())
                 .await?;
             info!(
-                "Saving assistant response for user {}. Snippet: '{:?}...'",
+                "Saving assistant response for user {}. Snippet: '{}' (truncated)",
                 user_id,
-                if response.len() > 100 {
-                    &response[..100]
-                } else {
-                    &response
-                }
+                truncate_str(&response, 100)
             );
 
             info!("Formatting response for Telegram for user {}.", user_id);
@@ -559,21 +565,13 @@ pub async fn handle_photo(
         .await?
         .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
     info!(
-        "Using system message for user {}: '{:?}...'",
+        "Using system message for user {}: '{}' (truncated)",
         user_id,
-        if system_prompt.len() > 100 {
-            &system_prompt[..100]
-        } else {
-            &system_prompt
-        }
+        truncate_str(&system_prompt, 100)
     );
     info!(
-        "Using text prompt for image analysis: '{}'",
-        if caption.len() > 100 {
-            &caption[..100]
-        } else {
-            caption
-        }
+        "Using text prompt for image analysis: '{}' (truncated)",
+        truncate_str(&caption, 100)
     );
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
@@ -589,14 +587,10 @@ pub async fn handle_photo(
     {
         Ok(response) => {
             info!(
-                "Received response from {} for image analysis for user {}. Snippet: '{:?}...'",
+                "Received response from {} for image analysis for user {}. Snippet: '{}' (truncated)",
                 provider_name,
                 user_id,
-                if response.len() > 100 {
-                    &response[..100]
-                } else {
-                    &response
-                }
+                truncate_str(&response, 100)
             );
 
             storage
