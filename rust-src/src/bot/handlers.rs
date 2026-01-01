@@ -154,7 +154,7 @@ pub async fn handle_text(
         "Handling message from user {} ({}). Text: '{}{}'. Photo attached: {}",
         user_id,
         user_name,
-        truncate_str(&text, 100),
+        truncate_str(text, 100),
         if text.chars().count() > 100 {
             "..."
         } else {
@@ -571,7 +571,7 @@ pub async fn handle_photo(
     );
     info!(
         "Using text prompt for image analysis: '{}' (truncated)",
-        truncate_str(&caption, 100)
+        truncate_str(caption, 100)
     );
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
