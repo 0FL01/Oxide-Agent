@@ -193,5 +193,4 @@ jobs:
             echo "Services started successfully."
             docker compose ps
 
-            echo "Pruning unused Docker assets..."
-            docker system prune -f --volumes
+
