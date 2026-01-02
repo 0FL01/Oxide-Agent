@@ -2,6 +2,8 @@
 
 ## 🏗 Project Structure (`rust-src/`)
 - `src/main.rs`: Entry point, initialization, and bot startup.
+- `src/lib.rs`: Library root, module exports and shared functionality.
+- `src/agent/`: Agent Mode logic (session, executor, memory, preprocessor).
 - `src/bot/`: Telegram bot logic (handlers, states).
 - `src/llm/`: LLM clients (Groq, Mistral, Gemini, OpenRouter) and the `LlmProvider` trait.
 - `src/storage.rs`: Data storage layer (S3/R2 compatibility).
