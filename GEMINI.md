@@ -47,7 +47,7 @@
 
 ### 5. Code Quality & Security
 - **Linting**: Run `cargo-clippy` before proposing final code changes.
-- **Formatting**: Run `cargo-fmt`.
+- **Formatting**: MANDATORY. Run `cargo-fmt` (via `mcp:rust-mcp-server`) before ANY code submission to pass CI.
 - **Security**: Use `cargo-deny-check` to audit licenses and advisories.
 
 ## 📝 Coding Style & Etiquette

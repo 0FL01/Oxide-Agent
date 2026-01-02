@@ -126,7 +126,11 @@ impl LlmClient {
                 .await;
         }
 
-        debug!(model = model_name, provider = model_info.provider, "Sending request to LLM");
+        debug!(
+            model = model_name,
+            provider = model_info.provider,
+            "Sending request to LLM"
+        );
         trace!(
             system_prompt = system_prompt,
             history = ?history,
