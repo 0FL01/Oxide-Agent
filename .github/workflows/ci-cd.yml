@@ -197,11 +197,11 @@ jobs:
 
             # Build agent sandbox image for pre-warming
             echo "Building agent sandbox image..."
-            if [ -d "build_context/sandbox" ]; then
+            if test -d "build_context/sandbox"
               docker build -t agent-sandbox:latest -f build_context/sandbox/Dockerfile.sandbox build_context/sandbox/
               echo "Agent sandbox image built successfully."
             else
               echo "Warning: sandbox directory not found, skipping sandbox image build."
-            fi
+            end
 
 
