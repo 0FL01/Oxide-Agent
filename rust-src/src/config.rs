@@ -223,3 +223,10 @@ pub const AGENT_MODEL: &str = "Devstral 2512";
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
 pub const AGENT_MAX_TOKENS: usize = 200_000;
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
+
+// Sandbox configuration
+pub const SANDBOX_IMAGE: &str = "agent-sandbox:latest";
+pub const SANDBOX_MEMORY_LIMIT: i64 = 1024 * 1024 * 1024; // 1GB
+pub const SANDBOX_CPU_PERIOD: i64 = 100_000;
+pub const SANDBOX_CPU_QUOTA: i64 = 200_000; // 2 CPUs (200% of period)
+pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 60; // 1 minute per command

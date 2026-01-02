@@ -1,12 +1,15 @@
 //! Agent session management
 //!
 //! Manages the lifecycle of an agent session for a user, including
-//! timeout tracking, progress message tracking, and session state.
+//! timeout tracking, progress message tracking, session state, and sandbox.
 
 use super::memory::AgentMemory;
 use crate::config::{AGENT_MAX_TOKENS, AGENT_TIMEOUT_SECS};
+use crate::sandbox::SandboxManager;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
+use tracing::{debug, info, warn};
 
 /// Status of an agent session
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -34,6 +37,8 @@ pub struct AgentSession {
     pub progress_message_id: Option<i32>,
     /// Conversation memory with auto-compaction
     pub memory: AgentMemory,
+    /// Docker sandbox for code execution (lazily initialized)
+    sandbox: Option<SandboxManager>,
     /// When the current task started
     started_at: Option<Instant>,
     /// Current status
@@ -48,6 +53,7 @@ impl AgentSession {
             chat_id,
             progress_message_id: None,
             memory: AgentMemory::new(AGENT_MAX_TOKENS),
+            sandbox: None,
             started_at: None,
             status: AgentStatus::Idle,
         }
@@ -102,16 +108,62 @@ impl AgentSession {
         self.started_at = None;
     }
 
-    /// Reset the session (clear memory, reset status)
-    pub fn reset(&mut self) {
+    /// Reset the session (clear memory, reset status, destroy sandbox)
+    pub async fn reset(&mut self) {
         self.memory.clear();
         self.status = AgentStatus::Idle;
         self.started_at = None;
         self.progress_message_id = None;
+
+        // Destroy sandbox if exists
+        if let Some(mut sandbox) = self.sandbox.take() {
+            if let Err(e) = sandbox.destroy().await {
+                warn!(error = %e, "Failed to destroy sandbox during reset");
+            } else {
+                info!(user_id = self.user_id, "Sandbox destroyed on session reset");
+            }
+        }
     }
 
     /// Check if the session is currently processing a task
     pub fn is_processing(&self) -> bool {
         matches!(self.status, AgentStatus::Processing { .. })
+    }
+
+    /// Check if sandbox is available
+    pub fn has_sandbox(&self) -> bool {
+        self.sandbox.as_ref().is_some_and(|s| s.is_running())
+    }
+
+    /// Ensure sandbox is running, creating it if necessary
+    pub async fn ensure_sandbox(&mut self) -> Result<&mut SandboxManager> {
+        if self.sandbox.is_none() || !self.sandbox.as_ref().unwrap().is_running() {
+            debug!(user_id = self.user_id, "Creating new sandbox");
+            let mut sandbox = SandboxManager::new(self.user_id).await?;
+            sandbox.create_sandbox().await?;
+            self.sandbox = Some(sandbox);
+            info!(user_id = self.user_id, "Sandbox created for session");
+        }
+
+        Ok(self.sandbox.as_mut().unwrap())
+    }
+
+    /// Get sandbox reference if running
+    pub fn sandbox(&self) -> Option<&SandboxManager> {
+        self.sandbox.as_ref().filter(|s| s.is_running())
+    }
+
+    /// Get mutable sandbox reference if running
+    pub fn sandbox_mut(&mut self) -> Option<&mut SandboxManager> {
+        self.sandbox.as_mut().filter(|s| s.is_running())
+    }
+
+    /// Destroy sandbox if running
+    pub async fn destroy_sandbox(&mut self) -> Result<()> {
+        if let Some(mut sandbox) = self.sandbox.take() {
+            sandbox.destroy().await?;
+            info!(user_id = self.user_id, "Sandbox destroyed");
+        }
+        Ok(())
     }
 }

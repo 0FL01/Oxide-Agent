@@ -274,8 +274,8 @@ impl AgentExecutor {
     }
 
     /// Reset the executor and session
-    pub fn reset(&mut self) {
-        self.session.reset();
+    pub async fn reset(&mut self) {
+        self.session.reset().await;
     }
 
     /// Check if the session is timed out

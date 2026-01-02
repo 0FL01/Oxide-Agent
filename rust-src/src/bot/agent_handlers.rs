@@ -163,7 +163,7 @@ async fn execute_agent_task(user_id: i64, task: &str) -> Result<String> {
 
     // Check timeout
     if executor.is_timed_out() {
-        executor.reset();
+        executor.reset().await;
         return Err(anyhow::anyhow!(
             "Предыдущая сессия истекла по таймауту. Начинаю новую сессию."
         ));
@@ -275,7 +275,7 @@ pub async fn clear_agent_memory(bot: Bot, msg: Message) -> Result<()> {
     {
         let mut sessions = AGENT_SESSIONS.write().await;
         if let Some(executor) = sessions.get_mut(&user_id) {
-            executor.reset();
+            executor.reset().await;
         }
     }
 
