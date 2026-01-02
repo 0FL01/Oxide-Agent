@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client as HttpClient;
 use serde_json::json;
+use tracing::{info, warn};
 
 pub struct GroqProvider {
     client: Client<OpenAIConfig>,
@@ -240,6 +241,13 @@ impl LlmProvider for ZaiProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
+        info!(
+            "ZAI: Starting chat completion request (model: {}, max_tokens: {}, history_size: {})",
+            model_id,
+            max_tokens,
+            history.len()
+        );
+
         let mut messages = vec![ChatCompletionRequestSystemMessageArgs::default()
             .content(system_prompt)
             .build()
@@ -282,18 +290,27 @@ impl LlmProvider for ZaiProvider {
             .build()
             .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| LlmError::ApiError(e.to_string()))?;
+        info!("ZAI: Sending request to API (temperature: 1.0)",);
 
-        response
-            .choices
-            .first()
-            .and_then(|c| c.message.content.clone())
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+        match self.client.chat().create(request).await {
+            Ok(response) => {
+                info!(
+                    "ZAI: Received response (choices: {}, usage: {:?})",
+                    response.choices.len(),
+                    response.usage
+                );
+                response
+                    .choices
+                    .first()
+                    .and_then(|c| c.message.content.clone())
+                    .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                warn!("ZAI: API request failed: {}", error_msg);
+                Err(LlmError::ApiError(error_msg))
+            }
+        }
     }
 
     async fn transcribe_audio(
