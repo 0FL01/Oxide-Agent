@@ -139,10 +139,7 @@ impl AgentMemory {
 
         // Create a summary of the old messages (simple version)
         let summary = self.create_simple_summary(&to_summarize);
-        let summary_msg = AgentMessage::system(format!(
-            "[Предыдущий контекст сжат]\n{}",
-            summary
-        ));
+        let summary_msg = AgentMessage::system(format!("[Предыдущий контекст сжат]\n{}", summary));
 
         // Insert summary at the beginning
         self.messages.insert(0, summary_msg);

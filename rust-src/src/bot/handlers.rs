@@ -187,7 +187,10 @@ pub async fn handle_text(
             return Ok(());
         }
         "🤖 Режим Агента" => {
-            info!("User {} clicked 'Режим Агента', activating agent mode.", user_id);
+            info!(
+                "User {} clicked 'Режим Агента', activating agent mode.",
+                user_id
+            );
             return crate::bot::agent_handlers::activate_agent_mode(bot, msg, dialogue, llm).await;
         }
         "Изменить промпт" => {

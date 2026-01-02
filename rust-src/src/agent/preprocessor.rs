@@ -84,14 +84,13 @@ impl Preprocessor {
     pub async fn preprocess_input(&self, input: AgentInput) -> Result<String> {
         match input {
             AgentInput::Text(text) => Ok(text),
-            AgentInput::Voice { bytes, mime_type } => self.transcribe_voice(bytes, &mime_type).await,
+            AgentInput::Voice { bytes, mime_type } => {
+                self.transcribe_voice(bytes, &mime_type).await
+            }
             AgentInput::Image { bytes, context } => {
                 self.describe_image(bytes, context.as_deref()).await
             }
-            AgentInput::ImageWithText {
-                image_bytes,
-                text,
-            } => {
+            AgentInput::ImageWithText { image_bytes, text } => {
                 let description = self.describe_image(image_bytes, Some(&text)).await?;
                 Ok(format!(
                     "Пользователь отправил изображение с текстом: \"{}\"\n\nОписание изображения:\n{}",

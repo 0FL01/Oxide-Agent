@@ -29,7 +29,10 @@ pub struct AgentExecutor {
 impl AgentExecutor {
     /// Create a new agent executor
     pub fn new(llm_client: Arc<LlmClient>, session: AgentSession) -> Self {
-        Self { llm_client, session }
+        Self {
+            llm_client,
+            session,
+        }
     }
 
     /// Get a reference to the session
@@ -66,22 +69,27 @@ impl AgentExecutor {
         // Spawn the execution task
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            let result = Self::run_agent_loop(llm_client, task_str, memory_messages, tx_clone).await;
+            let result =
+                Self::run_agent_loop(llm_client, task_str, memory_messages, tx_clone).await;
 
             match result {
                 Ok(response) => {
-                    let _ = tx.send(ProgressUpdate {
-                        step: response,
-                        progress_percent: 100,
-                        is_final: true,
-                    }).await;
+                    let _ = tx
+                        .send(ProgressUpdate {
+                            step: response,
+                            progress_percent: 100,
+                            is_final: true,
+                        })
+                        .await;
                 }
                 Err(e) => {
-                    let _ = tx.send(ProgressUpdate {
-                        step: format!("❌ Ошибка: {}", e),
-                        progress_percent: 100,
-                        is_final: true,
-                    }).await;
+                    let _ = tx
+                        .send(ProgressUpdate {
+                            step: format!("❌ Ошибка: {}", e),
+                            progress_percent: 100,
+                            is_final: true,
+                        })
+                        .await;
                 }
             }
         });
@@ -106,12 +114,19 @@ impl AgentExecutor {
         // Execute with timeout
         let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);
 
-        match timeout(timeout_duration, self.call_agent(&system_prompt, &history, task)).await {
+        match timeout(
+            timeout_duration,
+            self.call_agent(&system_prompt, &history, task),
+        )
+        .await
+        {
             Ok(result) => {
                 match result {
                     Ok(response) => {
                         // Add assistant response to memory
-                        self.session.memory.add_message(AgentMessage::assistant(&response));
+                        self.session
+                            .memory
+                            .add_message(AgentMessage::assistant(&response));
                         self.session.complete();
                         Ok(response)
                     }
@@ -123,7 +138,10 @@ impl AgentExecutor {
             }
             Err(_) => {
                 self.session.timeout();
-                Err(anyhow!("Задача превысила лимит времени ({} минут)", AGENT_TIMEOUT_SECS / 60))
+                Err(anyhow!(
+                    "Задача превысила лимит времени ({} минут)",
+                    AGENT_TIMEOUT_SECS / 60
+                ))
             }
         }
     }
@@ -136,14 +154,16 @@ impl AgentExecutor {
         progress_tx: mpsc::Sender<ProgressUpdate>,
     ) -> Result<String> {
         // Send initial progress
-        let _ = progress_tx.send(ProgressUpdate {
-            step: "🔄 Анализирую задачу...".to_string(),
-            progress_percent: 10,
-            is_final: false,
-        }).await;
+        let _ = progress_tx
+            .send(ProgressUpdate {
+                step: "🔄 Анализирую задачу...".to_string(),
+                progress_percent: 10,
+                is_final: false,
+            })
+            .await;
 
         let system_prompt = Self::create_agent_system_prompt();
-        
+
         // Build LLM messages from memory
         let mut messages: Vec<crate::llm::Message> = Vec::new();
         for msg in &memory_messages {
@@ -159,11 +179,13 @@ impl AgentExecutor {
         }
 
         // Update progress
-        let _ = progress_tx.send(ProgressUpdate {
-            step: "🧠 Выполняю задачу...".to_string(),
-            progress_percent: 30,
-            is_final: false,
-        }).await;
+        let _ = progress_tx
+            .send(ProgressUpdate {
+                step: "🧠 Выполняю задачу...".to_string(),
+                progress_percent: 30,
+                is_final: false,
+            })
+            .await;
 
         // Call the LLM
         let response = llm_client
@@ -172,11 +194,13 @@ impl AgentExecutor {
             .map_err(|e| anyhow!("LLM call failed: {}", e))?;
 
         // Update progress before finalizing
-        let _ = progress_tx.send(ProgressUpdate {
-            step: "✅ Формирую ответ...".to_string(),
-            progress_percent: 90,
-            is_final: false,
-        }).await;
+        let _ = progress_tx
+            .send(ProgressUpdate {
+                step: "✅ Формирую ответ...".to_string(),
+                progress_percent: 90,
+                is_final: false,
+            })
+            .await;
 
         Ok(response)
     }
@@ -234,12 +258,14 @@ impl AgentExecutor {
 - Будь конкретным и практичным
 - Если нужна дополнительная информация - запроси её
 - При ошибках объясняй причину и предлагай альтернативы
-- Используй markdown для форматирования"#.to_string()
+- Используй markdown для форматирования"#
+            .to_string()
     }
 
     /// Cancel the current task
     pub fn cancel(&mut self) {
-        self.session.fail("Задача отменена пользователем".to_string());
+        self.session
+            .fail("Задача отменена пользователем".to_string());
     }
 
     /// Reset the executor and session

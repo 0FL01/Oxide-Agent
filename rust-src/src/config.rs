@@ -223,4 +223,3 @@ pub const AGENT_MODEL: &str = "Devstral 2512";
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
 pub const AGENT_MAX_TOKENS: usize = 200_000;
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
-

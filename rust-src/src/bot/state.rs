@@ -8,4 +8,3 @@ pub enum State {
     /// Agent mode for complex task execution
     AgentMode,
 }
-
