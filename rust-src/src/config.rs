@@ -175,6 +175,14 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         },
     ),
     (
+        "ZAI GLM-4.7",
+        ModelInfo {
+            id: "glm-4.7",
+            max_tokens: 131072,
+            provider: "zai",
+        },
+    ),
+    (
         "GPT-OSS-120b",
         ModelInfo {
             id: "openai/gpt-oss-120b",
@@ -188,14 +196,6 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
             id: "mistral-large-latest",
             max_tokens: 128000,
             provider: "mistral",
-        },
-    ),
-    (
-        "ZAI GLM-4.7",
-        ModelInfo {
-            id: "glm-4.7",
-            max_tokens: 131072,
-            provider: "zai",
         },
     ),
     (

@@ -239,7 +239,7 @@ impl LlmClient {
     }
 
     /// Transcribe audio with automatic fallback for text-only providers
-    /// If the provider returns ZAI_FALLBACK_TO_GEMINI error, use Gemini instead
+    /// If the provider returns ZAI_FALLBACK_TO_GEMINI error, use OpenRouter instead
     pub async fn transcribe_audio_with_fallback(
         &self,
         provider_name: &str,
@@ -254,15 +254,15 @@ impl LlmClient {
         {
             Ok(text) => Ok(text),
             Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_GEMINI" => {
-                // Fallback to Gemini for transcription
-                info!("ZAI does not support audio, falling back to Gemini");
-                let gemini = self
-                    .gemini
+                // Fallback to OpenRouter with Gemini 3 Flash for transcription
+                info!("ZAI does not support audio, falling back to OpenRouter with Gemini 3 Flash");
+                let openrouter = self
+                    .openrouter
                     .as_ref()
-                    .ok_or_else(|| LlmError::MissingConfig("gemini".to_string()))?;
-                let gemini_model = "google/gemini-3-flash-preview"; // or native gemini-2.0-flash-exp
-                gemini
-                    .transcribe_audio(audio_bytes, mime_type, gemini_model)
+                    .ok_or_else(|| LlmError::MissingConfig("openrouter".to_string()))?;
+                let fallback_model = "google/gemini-3-flash-preview";
+                openrouter
+                    .transcribe_audio(audio_bytes, mime_type, fallback_model)
                     .await
             }
             Err(e) => Err(e),
