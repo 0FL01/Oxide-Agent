@@ -206,6 +206,21 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
             provider: "gemini",
         },
     ),
+    (
+        "Devstral 2512",
+        ModelInfo {
+            id: "devstral-2512",
+            max_tokens: 128000,
+            provider: "mistral",
+        },
+    ),
 ];
 
 pub const DEFAULT_MODEL: &str = "OR Gemini 3 Flash";
+
+// Agent Mode configuration
+pub const AGENT_MODEL: &str = "Devstral 2512";
+pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
+pub const AGENT_MAX_TOKENS: usize = 200_000;
+pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
+

@@ -1,0 +1,310 @@
+//! Agent mode handlers for Telegram bot
+//!
+//! Provides handlers for activating agent mode, processing messages,
+//! and managing agent sessions.
+
+use crate::agent::{
+    executor::AgentExecutor,
+    preprocessor::{AgentInput, Preprocessor},
+    AgentSession,
+};
+use crate::bot::state::State;
+use crate::llm::LlmClient;
+use crate::storage::R2Storage;
+use anyhow::Result;
+use std::collections::HashMap;
+use std::sync::Arc;
+use teloxide::dispatching::dialogue::InMemStorage;
+use teloxide::net::Download;
+use teloxide::prelude::*;
+use teloxide::types::{KeyboardButton, KeyboardMarkup, MessageId, ParseMode};
+use tokio::sync::RwLock;
+use tracing::{info, warn};
+
+/// Type alias for dialogue
+pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
+
+/// Global agent sessions storage (user_id -> session)
+static AGENT_SESSIONS: once_cell::sync::Lazy<RwLock<HashMap<i64, AgentExecutor>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// Get the agent mode keyboard
+pub fn get_agent_keyboard() -> KeyboardMarkup {
+    KeyboardMarkup::new(vec![
+        vec![KeyboardButton::new("❌ Отменить задачу")],
+        vec![KeyboardButton::new("🗑 Очистить память")],
+        vec![KeyboardButton::new("⬅️ Выйти из режима агента")],
+    ])
+    .resize_keyboard()
+}
+
+/// Activate agent mode for a user
+pub async fn activate_agent_mode(
+    bot: Bot,
+    msg: Message,
+    dialogue: AgentDialogue,
+    llm: Arc<LlmClient>,
+) -> Result<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+    let chat_id = msg.chat.id.0;
+
+    info!("Activating agent mode for user {}", user_id);
+
+    // Create new session
+    let session = AgentSession::new(user_id, chat_id);
+    let executor = AgentExecutor::new(llm.clone(), session);
+
+    // Store session
+    {
+        let mut sessions = AGENT_SESSIONS.write().await;
+        sessions.insert(user_id, executor);
+    }
+
+    // Update dialogue state
+    dialogue.update(State::AgentMode).await?;
+
+    // Send welcome message
+    let welcome = r#"🤖 <b>Режим Агента активирован</b>
+
+Я готов помочь с решением сложных задач. Отправьте мне:
+• 📝 Текстовое описание задачи
+• 🎤 Голосовое сообщение
+• 🖼 Изображение с описанием
+
+Я буду анализировать задачу, декомпозировать её и выполнять пошагово, показывая прогресс.
+
+<i>Лимит времени: 30 минут на задачу</i>"#;
+
+    bot.send_message(msg.chat.id, welcome)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(get_agent_keyboard())
+        .await?;
+
+    Ok(())
+}
+
+/// Handle a message in agent mode
+pub async fn handle_agent_message(
+    bot: Bot,
+    msg: Message,
+    _storage: Arc<R2Storage>,
+    llm: Arc<LlmClient>,
+    dialogue: AgentDialogue,
+) -> Result<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+    let chat_id = msg.chat.id;
+
+    // Check for control commands
+    if let Some(text) = msg.text() {
+        match text {
+            "❌ Отменить задачу" => {
+                return cancel_agent_task(bot, msg, dialogue).await;
+            }
+            "🗑 Очистить память" => {
+                return clear_agent_memory(bot, msg).await;
+            }
+            "⬅️ Выйти из режима агента" => {
+                return exit_agent_mode(bot, msg, dialogue).await;
+            }
+            _ => {}
+        }
+    }
+
+    // Get or create session
+    let has_session = {
+        let sessions = AGENT_SESSIONS.read().await;
+        sessions.contains_key(&user_id)
+    };
+
+    if !has_session {
+        // Recreate session if needed
+        let session = AgentSession::new(user_id, chat_id.0);
+        let executor = AgentExecutor::new(llm.clone(), session);
+        let mut sessions = AGENT_SESSIONS.write().await;
+        sessions.insert(user_id, executor);
+    }
+
+    // Preprocess input
+    let preprocessor = Preprocessor::new(llm.clone());
+    let input = extract_agent_input(&bot, &msg).await?;
+    let task_text = preprocessor.preprocess_input(input).await?;
+
+    // Send initial progress message
+    let progress_msg = bot
+        .send_message(chat_id, "⏳ Обработка задачи...")
+        .parse_mode(ParseMode::Html)
+        .await?;
+
+    // Execute the task
+    let result = execute_agent_task(user_id, &task_text).await;
+
+    // Update the message with the result
+    match result {
+        Ok(response) => {
+            // Edit the progress message with the final response
+            let final_text = format!("✅ <b>Результат:</b>\n\n{}", response);
+            edit_message_safe(&bot, chat_id, progress_msg.id, &final_text).await;
+        }
+        Err(e) => {
+            let error_text = format!("❌ <b>Ошибка:</b>\n\n{}", e);
+            edit_message_safe(&bot, chat_id, progress_msg.id, &error_text).await;
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute an agent task and return the result
+async fn execute_agent_task(user_id: i64, task: &str) -> Result<String> {
+    let mut sessions = AGENT_SESSIONS.write().await;
+    let executor = sessions
+        .get_mut(&user_id)
+        .ok_or_else(|| anyhow::anyhow!("No agent session found"))?;
+
+    // Check timeout
+    if executor.is_timed_out() {
+        executor.reset();
+        return Err(anyhow::anyhow!(
+            "Предыдущая сессия истекла по таймауту. Начинаю новую сессию."
+        ));
+    }
+
+    // Execute the task
+    executor.execute(task).await
+}
+
+/// Extract input from a message
+async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
+    // Check for voice message
+    if let Some(voice) = msg.voice() {
+        let file = bot.get_file(voice.file.id.clone()).await?;
+        let mut buffer = Vec::new();
+        bot.download_file(&file.path, &mut buffer).await?;
+
+        let mime_type = voice
+            .mime_type
+            .as_ref()
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "audio/ogg".to_string());
+
+        return Ok(AgentInput::Voice {
+            bytes: buffer,
+            mime_type,
+        });
+    }
+
+    // Check for photo
+    if let Some(photos) = msg.photo() {
+        if let Some(photo) = photos.last() {
+            let file = bot.get_file(photo.file.id.clone()).await?;
+            let mut buffer = Vec::new();
+            bot.download_file(&file.path, &mut buffer).await?;
+
+            let caption = msg.caption().map(|s| s.to_string());
+
+            return Ok(AgentInput::Image {
+                bytes: buffer,
+                context: caption,
+            });
+        }
+    }
+
+    // Default to text
+    let text = msg
+        .text()
+        .or_else(|| msg.caption())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(AgentInput::Text(text))
+}
+
+/// Safely truncates a string to a maximum character length (not bytes).
+fn truncate_str_safe(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    s.char_indices()
+        .nth(max_chars)
+        .map_or(s.to_string(), |(pos, _)| s[..pos].to_string())
+}
+
+/// Edit a message safely (ignore errors)
+async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: &str) {
+    // Truncate if too long (Telegram limit)
+    let truncated = if text.chars().count() > 4000 {
+        format!(
+            "{}...\n\n<i>(сообщение обрезано)</i>",
+            truncate_str_safe(text, 4000)
+        )
+    } else {
+        text.to_string()
+    };
+
+    if let Err(e) = bot
+        .edit_message_text(chat_id, msg_id, truncated)
+        .parse_mode(ParseMode::Html)
+        .await
+    {
+        warn!("Failed to edit message: {}", e);
+    }
+}
+
+/// Cancel the current agent task
+pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue) -> Result<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+
+    {
+        let mut sessions = AGENT_SESSIONS.write().await;
+        if let Some(executor) = sessions.get_mut(&user_id) {
+            executor.cancel();
+        }
+    }
+
+    bot.send_message(msg.chat.id, "❌ Задача отменена")
+        .reply_markup(get_agent_keyboard())
+        .await?;
+
+    Ok(())
+}
+
+/// Clear agent memory
+pub async fn clear_agent_memory(bot: Bot, msg: Message) -> Result<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+
+    {
+        let mut sessions = AGENT_SESSIONS.write().await;
+        if let Some(executor) = sessions.get_mut(&user_id) {
+            executor.reset();
+        }
+    }
+
+    bot.send_message(msg.chat.id, "🗑 Память агента очищена")
+        .reply_markup(get_agent_keyboard())
+        .await?;
+
+    Ok(())
+}
+
+/// Exit agent mode
+pub async fn exit_agent_mode(bot: Bot, msg: Message, dialogue: AgentDialogue) -> Result<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+
+    // Remove session
+    {
+        let mut sessions = AGENT_SESSIONS.write().await;
+        sessions.remove(&user_id);
+    }
+
+    // Reset dialogue state
+    dialogue.update(State::Start).await?;
+
+    // Import the main keyboard
+    let keyboard = crate::bot::handlers::get_main_keyboard();
+
+    bot.send_message(msg.chat.id, "👋 Вышли из режима агента")
+        .reply_markup(keyboard)
+        .await?;
+
+    Ok(())
+}

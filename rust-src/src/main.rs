@@ -204,6 +204,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     respond(())
                 })
+        )
+        .branch(
+            dptree::case![State::AgentMode]
+                .endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>, dialogue: Dialogue<State, InMemStorage<State>>| async move {
+                    if let Err(e) = bot::agent_handlers::handle_agent_message(bot, msg, storage, llm, dialogue).await {
+                        error!("Agent mode handler error: {}", e);
+                    }
+                    respond(())
+                })
         );
 
     info!("Bot is running...");

@@ -57,7 +57,10 @@ pub fn get_main_keyboard() -> KeyboardMarkup {
             KeyboardButton::new("Очистить контекст"),
             KeyboardButton::new("Сменить модель"),
         ],
-        vec![KeyboardButton::new("Доп функции")],
+        vec![
+            KeyboardButton::new("🤖 Режим Агента"),
+            KeyboardButton::new("Доп функции"),
+        ],
     ];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
@@ -182,6 +185,10 @@ pub async fn handle_text(
                 .reply_markup(get_extra_functions_keyboard())
                 .await?;
             return Ok(());
+        }
+        "🤖 Режим Агента" => {
+            info!("User {} clicked 'Режим Агента', activating agent mode.", user_id);
+            return crate::bot::agent_handlers::activate_agent_mode(bot, msg, dialogue, llm).await;
         }
         "Изменить промпт" => {
             info!(

@@ -5,4 +5,7 @@ pub enum State {
     #[default]
     Start,
     EditingPrompt,
+    /// Agent mode for complex task execution
+    AgentMode,
 }
+

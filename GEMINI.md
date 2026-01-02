@@ -1,55 +1,65 @@
-# Rust MCP Server Guidelines
+# Project: Another Chat with LLM
 
-Ты — эксперт Rust, использующий связку `rust-mcp-server` и `mcp-rust-docs`. Твоя цель — писать безопасный, идиоматичный код, опираясь на **актуальную документацию** и используя MCP инструменты для взаимодействия с экосистемой.
+## 🏗 Project Structure (`rust-src/`)
+- `src/main.rs`: Entry point, initialization, and bot startup.
+- `src/bot/`: Telegram bot logic (handlers, states).
+- `src/llm/`: LLM clients (Groq, Mistral, Gemini, OpenRouter) and the `LlmProvider` trait.
+- `src/storage.rs`: Data storage layer (S3/R2 compatibility).
+- `src/config.rs`: Configuration and environment variable loading.
+- `src/utils.rs`: Helper functions (message splitting, formatting).
 
-## 🚫 СТРОГИЕ ЗАПРЕТЫ
-1. **НЕ ГАЛЛЮЦИНИРУЙ API:** Если не уверен в сигнатуре метода или названии типа — используй `mcp-rust-docs`.
-2. **НЕ ИСПОЛЬЗУЙ** shell/bash команды для `cargo` (напр. `cargo build`).
-3. **НЕ ЧИТАЙ** `Cargo.lock` или огромные `cargo-metadata` выводы напрямую.
+# Rust Development Context & Tooling Guidelines
 
-## ✅ РАБОЧИЙ ПРОЦЕСС (Workflow)
+**PREFER MCP TOOLS over shell commands** - they're faster, token-optimized, and filter noise:
 
-### 1. Исследование и Контекст (Discovery)
-- **Поиск решения:** Если задача требует новой зависимости, начни с `search_crate` для поиска подходящего крейта.
-- **Изучение API:** 
-    - Используй `retrieve_documentation_index_page` для чтения README и примеров крейта.
-    - Используй `search_documentation_items`, чтобы найти конкретную структуру или метод (напр. `ClientBuilder`).
-    - Если нужно понять структуру модуля, используй `retrieve_documentation_all_items`.
-- **Проект:** Используй `workspace-info` для понимания текущей структуры.
+**Shell fallback**: Only use shell commands when MCP tools aren't available or for operations not covered.
 
-### 2. Разработка
-- **Зависимости:** Добавь крейт через `cargo-add`.
-- **Код:** При написании реализации держи открытым контекст из `retrieve_documentation_page` для критически важных типов.
-- **Форматирование:** Всегда запускай `cargo-fmt` после правок.
+## 🛡️ IMPORTANT: Tool Usage & Token Economy
+**DO NOT** run verbose shell commands (like `cargo metadata` or `ls -R`) unless absolutely necessary.
+**ALWAYS** prefer the specialized tools provided below. They return structured, concise data designed to save context window tokens.
 
-### 3. Верификация (QA)
-1. **Синтаксис:** `cargo-check`.
-2. **Линтинг:** `cargo-clippy`.
-3. **Тесты:** `cargo-test`.
-4. **Чистка:** `cargo-machete`.
+## 🛠️ Operational Guidelines
 
-## 🛠 СПРАВОЧНИК ИНСТРУМЕНТОВ
+### 1. Project Structure & Metadata
+- **Initial Context**: Use `workspace-info` immediately to understand the project topology (members, packages) without the heavy payload of `cargo metadata`.
+- **Dependency Info**: Use `cargo-info [crate]` to fetch details. Avoid reading `Cargo.toml` manually.
+- **Explain Errors**: If the compiler gives an error code (e.g., E0308), **always** run `rustc-explain [code]` before attempting a fix.
 
-| Категория | Инструмент | Когда использовать | Оптимизация токенов |
-|-----------|------------|--------------------|---------------------|
-| **Docs** | `search_crate` | Поиск альтернатив крейтов | Выводит топ-10 по релевантности |
-| | `search_documentation_items` | Поиск конкретного метода/типа | **Лучший способ** не читать всю доку |
-| | `retrieve_documentation_page` | Глубокое изучение конкретного API | Используй только когда нашел `path` |
-| **Core** | `cargo-check` | Быстрая проверка компиляции | Используй `package: ["name"]` |
-| | `cargo-test` | Запуск тестов | `no_run: true` для проверки только логики тестов |
-| **Quality** | `cargo-clippy` | Поиск багов | `no_deps: true` критически важен для скорости |
-| | `workspace-info` | Обзор структуры | **ВСЕГДА** вместо чтения файлов вручную |
+### 2. Building & Checking Code
+- **Quick Check**: Use `cargo-check`. This is faster and cheaper than build.
+- **Full Build**: Use `cargo-build` only when executables are required.
+- **Testing**:
+    - Use `cargo-test` for standard runs.
+    - Use `cargo-hack` to verify feature flag combinations if the issue might be feature-gated.
 
-## 💡 СТРАТЕГИЯ ЭКОНОМИИ ТОКЕНОВ И ТОЧНОСТИ
+### 3. Web Search & Documentation (Tavily)
+**Stop guessing.** Use real-time data for both general info and library documentation:
+1.  **Search**: Use `tavily-search` for overall context, news, or specific library docs.
+2.  **Content**: Use `tavily-extract` to get clean markdown from relevant URLs.
+3.  **Site Analysis**: Use `tavily-crawl` to explore site hierarchies if needed.
 
-1. **Многоступенчатый поиск в документации:**
-   - Плохо: Сразу скачивать все элементы крейта `tokio`.
-   - Хорошо: `search_documentation_items(keyword: "TcpStream")` -> `retrieve_documentation_page(path: "/net/struct.TcpStream.html")`.
-2. **Актуальность:** Версии в Rust меняются быстро. Всегда указывай `version: "latest"` в инструментах документации, если в `Cargo.toml` не зафиксирована старая версия.
-3. **Ресурсы:** Если ты запутался в порядке вызовов, обратись к ресурсу `str://mcp-rust-docs/instruction` — там лежат системные напоминания по работе с докой.
-4. **Локальность:** В `cargo-check` и `clippy` всегда ограничивай область видимости конкретным пакетом через аргументы, если работаешь в workspace.
+### 4. Dependency Management
+- **Adding/Removing**: Use `cargo-add` and `cargo-remove`.
+- **Updates**: Use `cargo-update` to bump lockfile versions.
+- **Cleanup**: Use `cargo-machete` periodically to identify unused deps.
 
----
+### 5. Code Quality & Security
+- **Linting**: Run `cargo-clippy` before proposing final code changes.
+- **Formatting**: Run `cargo-fmt`.
+- **Security**: Use `cargo-deny-check` to audit licenses and advisories.
 
-### Инструкция по инициализации (System Prompt Addon)
-При получении доступа к этому файлу, прочти ресурс `str://mcp-rust-docs/instruction`. Это гарантирует, что ты будешь использовать инструменты поиска документации вместо попыток вспомнить API по памяти (которая ограничена датой твоего обучения).
+## 📝 Coding Style & Etiquette
+- **Idiomatic Rust**: Prefer `Result`/`Option` combinators (`map`, `and_then`) over explicit `match` where readable.
+- **Error Handling**: Use `thiserror` for libraries and `anyhow` for applications unless specified otherwise.
+- **Async**: Assume `tokio` runtime unless `async-std` is present in `workspace-info`.
+- **Comments**: Write doc comments (`///`) for public APIs.
+
+## ⚡ Tool Map (Intent -> Command)
+| Intent | Preferred Tool |
+| :--- | :--- |
+| "Does this code compile?" | `cargo-check` |
+| "What features does X have?" | `cargo-info X` |
+| "What is error E0xxx?" | `rustc-explain E0xxx` |
+| "Clean up unused deps" | `cargo-machete` |
+| "Check detailed compatibility" | `cargo-hack` |
+| "Research/Docs/Search" | `tavily-search` -> `tavily-extract` |

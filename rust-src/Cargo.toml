@@ -18,10 +18,15 @@ aws-sdk-s3 = "1.119.0"
 aws-config = "1.8.12"
 aws-credential-types = "1.2.11"
 aws-types = "1.3.11"
-async-openai = { version = "0.32.2", features = ["full"] }
-reqwest = { version = "0.13.1", features = ["cookies", "json", "multipart", "rustls", "stream"], default-features = false }
+async-openai = { version = "0.32.2", default-features = false, features = ["rustls", "chat-completion", "audio", "image"] }
+reqwest = { version = "0.12", features = ["cookies", "json", "multipart", "rustls-tls", "stream"], default-features = false }
 base64 = "0.22.1"
 async-trait = "0.1.89"
 teloxide = { version = "0.17.0", features = ["ctrlc_handler", "macros", "rustls"], default-features = false }
 html-escape = "0.2.13"
 anyhow = "1.0.100"
+rig-core = { version = "0.27.0", default-features = false, features = ["derive", "reqwest-rustls"] }
+tiktoken-rs = "0.9.1"
+once_cell = "1.21.3"
+
+
