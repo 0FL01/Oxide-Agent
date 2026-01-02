@@ -48,17 +48,9 @@ jobs:
           path: rust-src/target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('rust-src/Cargo.lock') }}
 
-      - name: Run cargo check
+      - name: Run cargo check/clippy/test
         working-directory: ./rust-src
-        run: cargo check --verbose
-
-      - name: Run cargo clippy
-        working-directory: ./rust-src
-        run: cargo clippy --no-deps -- -D warnings
-
-      - name: Run cargo test
-        working-directory: ./rust-src
-        run: cargo test --verbose
+        run: cargo check --tests && cargo clippy --tests -- -D warnings && cargo test
 
       - name: Run cargo fmt check
         working-directory: ./rust-src
