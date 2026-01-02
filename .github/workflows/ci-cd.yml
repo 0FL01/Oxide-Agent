@@ -2,11 +2,11 @@ name: CI/CD Pipeline (Rust)
 
 on:
   push:
-    branches: [ "main", "rust" ]
+    branches: [ "main", "testing" ]
     tags:
       - 'v*'
   pull_request:
-    branches: [ "main", "rust" ]
+    branches: [ "main", "testing" ]
 
 env:
   DOCKER_IMAGE: 0fl01/another-chat-tg
@@ -25,6 +25,7 @@ jobs:
       R2_ACCESS_KEY_ID: dummy
       R2_SECRET_ACCESS_KEY: dummy
       R2_BUCKET_NAME: dummy
+      ZAI_API_KEY: dummy
 
     steps:
       - name: Checkout code
@@ -160,6 +161,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           OPENROUTER_SITE_URL: ${{ secrets.OPENROUTER_SITE_URL }}
           OPENROUTER_SITE_NAME: ${{ secrets.OPENROUTER_SITE_NAME }}
           SYSTEM_MESSAGE: ${{ secrets.SYSTEM_MESSAGE }}
@@ -209,6 +211,7 @@ jobs:
             echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
             TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+            ZAI_API_KEY=${{ secrets.ZAI_API_KEY }}
             MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             ALLOWED_USERS=${{ secrets.ALLOWED_USERS }}

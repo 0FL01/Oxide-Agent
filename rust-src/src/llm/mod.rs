@@ -54,6 +54,7 @@ pub trait LlmProvider: Send + Sync {
 pub struct LlmClient {
     groq: Option<providers::GroqProvider>,
     mistral: Option<providers::MistralProvider>,
+    zai: Option<providers::ZaiProvider>,
     gemini: Option<providers::GeminiProvider>,
     openrouter: Option<providers::OpenRouterProvider>,
 }
@@ -69,6 +70,10 @@ impl LlmClient {
                 .mistral_api_key
                 .as_ref()
                 .map(|k| providers::MistralProvider::new(k.clone())),
+            zai: settings
+                .zai_api_key
+                .as_ref()
+                .map(|k| providers::ZaiProvider::new(k.clone())),
             gemini: settings
                 .gemini_api_key
                 .as_ref()
@@ -87,6 +92,7 @@ impl LlmClient {
         match provider_name {
             "groq" => self.groq.as_ref().map(|p| p as &dyn LlmProvider),
             "mistral" => self.mistral.as_ref().map(|p| p as &dyn LlmProvider),
+            "zai" => self.zai.as_ref().map(|p| p as &dyn LlmProvider),
             "gemini" => self.gemini.as_ref().map(|p| p as &dyn LlmProvider),
             "openrouter" => self.openrouter.as_ref().map(|p| p as &dyn LlmProvider),
             _ => None,
@@ -230,6 +236,37 @@ impl LlmClient {
         provider
             .transcribe_audio(audio_bytes, mime_type, model_info.id)
             .await
+    }
+
+    /// Transcribe audio with automatic fallback for text-only providers
+    /// If the provider returns ZAI_FALLBACK_TO_GEMINI error, use Gemini instead
+    pub async fn transcribe_audio_with_fallback(
+        &self,
+        provider_name: &str,
+        audio_bytes: Vec<u8>,
+        mime_type: &str,
+        model_id: &str,
+    ) -> Result<String, LlmError> {
+        let provider = self.get_provider(provider_name)?;
+        match provider
+            .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
+            .await
+        {
+            Ok(text) => Ok(text),
+            Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_GEMINI" => {
+                // Fallback to Gemini for transcription
+                info!("ZAI does not support audio, falling back to Gemini");
+                let gemini = self
+                    .gemini
+                    .as_ref()
+                    .ok_or_else(|| LlmError::MissingConfig("gemini".to_string()))?;
+                let gemini_model = "google/gemini-3-flash-preview"; // or native gemini-2.0-flash-exp
+                gemini
+                    .transcribe_audio(audio_bytes, mime_type, gemini_model)
+                    .await
+            }
+            Err(e) => Err(e),
+        }
     }
 
     async fn gemini_transcribe_with_fallback(

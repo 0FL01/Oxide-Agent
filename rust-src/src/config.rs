@@ -12,6 +12,7 @@ pub struct Settings {
     // API Keys
     pub groq_api_key: Option<String>,
     pub mistral_api_key: Option<String>,
+    pub zai_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
     pub openrouter_api_key: Option<String>,
 
@@ -187,6 +188,14 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
             id: "mistral-large-latest",
             max_tokens: 128000,
             provider: "mistral",
+        },
+    ),
+    (
+        "ZAI GLM-4.7",
+        ModelInfo {
+            id: "glm-4.7",
+            max_tokens: 131072,
+            provider: "zai",
         },
     ),
     (

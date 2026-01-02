@@ -468,7 +468,11 @@ pub async fn handle_voice(
     bot.download_file(&file.path, &mut buffer).await?;
     info!("Voice message downloaded. Size: {} bytes.", buffer.len());
 
-    match llm.transcribe_audio(buffer, "audio/wav", &model).await {
+    let model_id = provider_info.map(|p| p.id).unwrap_or("unknown");
+    match llm
+        .transcribe_audio_with_fallback(provider_name, buffer, "audio/wav", model_id)
+        .await
+    {
         Ok(text) => {
             if text.starts_with("(Gemini):") || text.starts_with("(OpenRouter):") {
                 warn!(

@@ -215,6 +215,109 @@ impl LlmProvider for MistralProvider {
     }
 }
 
+pub struct ZaiProvider {
+    client: Client<OpenAIConfig>,
+}
+
+impl ZaiProvider {
+    pub fn new(api_key: String) -> Self {
+        let config = OpenAIConfig::new()
+            .with_api_key(api_key)
+            .with_api_base("https://api.z.ai/api/paas/v4");
+        Self {
+            client: Client::with_config(config),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ZaiProvider {
+    async fn chat_completion(
+        &self,
+        system_prompt: &str,
+        history: &[Message],
+        user_message: &str,
+        model_id: &str,
+        max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        let mut messages = vec![ChatCompletionRequestSystemMessageArgs::default()
+            .content(system_prompt)
+            .build()
+            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
+            .into()];
+
+        for msg in history {
+            let m = match msg.role.as_str() {
+                "user" => ChatCompletionRequestUserMessageArgs::default()
+                    .content(msg.content.clone())
+                    .build()
+                    .map_err(|e: async_openai::error::OpenAIError| {
+                        LlmError::Unknown(e.to_string())
+                    })?
+                    .into(),
+                _ => ChatCompletionRequestAssistantMessageArgs::default()
+                    .content(msg.content.clone())
+                    .build()
+                    .map_err(|e: async_openai::error::OpenAIError| {
+                        LlmError::Unknown(e.to_string())
+                    })?
+                    .into(),
+            };
+            messages.push(m);
+        }
+
+        messages.push(
+            ChatCompletionRequestUserMessageArgs::default()
+                .content(user_message)
+                .build()
+                .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
+                .into(),
+        );
+
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(model_id)
+            .messages(messages)
+            .max_tokens(max_tokens)
+            .temperature(1.0)
+            .build()
+            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?;
+
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
+            .map_err(|e| LlmError::ApiError(e.to_string()))?;
+
+        response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+    }
+
+    async fn transcribe_audio(
+        &self,
+        _audio_bytes: Vec<u8>,
+        _mime_type: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown("ZAI_FALLBACK_TO_GEMINI".to_string()))
+    }
+
+    async fn analyze_image(
+        &self,
+        _image_bytes: Vec<u8>,
+        _text_prompt: &str,
+        _system_prompt: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown(
+            "Image analysis not supported by ZAI. GLM-4.7 is text-only.".to_string(),
+        ))
+    }
+}
+
 pub struct GeminiProvider {
     http_client: HttpClient,
     api_key: String,
