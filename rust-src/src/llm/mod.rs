@@ -2,7 +2,7 @@ pub mod providers;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 #[derive(Debug, Error)]
 pub enum LlmError {
@@ -100,6 +100,7 @@ impl LlmClient {
         .ok_or_else(|| LlmError::MissingConfig(provider_name.to_string()))
     }
 
+    #[instrument(skip(self, system_prompt, history))]
     pub async fn chat_completion(
         &self,
         system_prompt: &str,
@@ -119,12 +120,21 @@ impl LlmClient {
 
         // Special case for OpenRouter with retry/fallback as in Python
         if model_name == "OR Gemini 3 Flash" && model_info.provider == "openrouter" {
+            debug!("Using OpenRouter fallback logic for Gemini 3 Flash");
             return self
                 .openrouter_chat_with_fallback(system_prompt, history, user_message)
                 .await;
         }
 
-        provider
+        debug!(model = model_name, provider = model_info.provider, "Sending request to LLM");
+        trace!(
+            system_prompt = system_prompt,
+            history = ?history,
+            user_message = user_message,
+            "Full LLM Request"
+        );
+
+        let result = provider
             .chat_completion(
                 system_prompt,
                 history,
@@ -132,7 +142,19 @@ impl LlmClient {
                 model_info.id,
                 model_info.max_tokens,
             )
-            .await
+            .await;
+
+        match &result {
+            Ok(resp) => {
+                debug!("Received success response from LLM");
+                trace!(response = ?resp, "Full LLM Response");
+            }
+            Err(e) => {
+                warn!("Received error response from LLM: {}", e);
+            }
+        }
+
+        result
     }
 
     async fn openrouter_chat_with_fallback(

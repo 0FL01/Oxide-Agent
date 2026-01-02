@@ -11,6 +11,7 @@ use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
+use tracing::{debug, error, info, instrument, trace};
 
 /// Progress update sent during task execution
 #[derive(Debug, Clone)]
@@ -45,14 +46,13 @@ impl AgentExecutor {
         &mut self.session
     }
 
-    /// Execute a task with progress reporting
-    ///
-    /// Returns a channel receiver for progress updates and spawns the execution task.
     /// The final result is sent as the last update with `is_final = true`.
+    #[instrument(skip(self), fields(user_id = self.session.user_id, chat_id = self.session.chat_id))]
     pub async fn execute_with_progress(
         &mut self,
         task: &str,
     ) -> Result<mpsc::Receiver<ProgressUpdate>> {
+        info!("Starting agent task: {}", task);
         let (tx, rx) = mpsc::channel::<ProgressUpdate>(32);
 
         // Start the task
@@ -74,6 +74,7 @@ impl AgentExecutor {
 
             match result {
                 Ok(response) => {
+                    info!("Agent task completed successfully");
                     let _ = tx
                         .send(ProgressUpdate {
                             step: response,
@@ -83,6 +84,7 @@ impl AgentExecutor {
                         .await;
                 }
                 Err(e) => {
+                    error!("Agent task failed: {}", e);
                     let _ = tx
                         .send(ProgressUpdate {
                             step: format!("❌ Ошибка: {}", e),
@@ -147,12 +149,14 @@ impl AgentExecutor {
     }
 
     /// Run the agent loop with progress updates
+    #[instrument(skip(llm_client, memory_messages, progress_tx))]
     async fn run_agent_loop(
         llm_client: Arc<LlmClient>,
         task: String,
         memory_messages: Vec<AgentMessage>,
         progress_tx: mpsc::Sender<ProgressUpdate>,
     ) -> Result<String> {
+        debug!("Analyzing task via LLM");
         // Send initial progress
         let _ = progress_tx
             .send(ProgressUpdate {
@@ -202,6 +206,7 @@ impl AgentExecutor {
             })
             .await;
 
+        trace!(response = ?response, "LLM Response received");
         Ok(response)
     }
 
