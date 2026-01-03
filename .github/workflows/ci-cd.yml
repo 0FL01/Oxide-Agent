@@ -129,13 +129,30 @@ jobs:
 
       - name: Build and Deploy on Server
         uses: appleboy/ssh-action@master
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
+          AGENT_ACCESS_IDS: ${{ secrets.AGENT_ACCESS_IDS }}
+          SYSTEM_MESSAGE: ${{ secrets.SYSTEM_MESSAGE }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          OPENROUTER_SITE_URL: ${{ secrets.OPENROUTER_SITE_URL }}
+          OPENROUTER_SITE_NAME: ${{ secrets.OPENROUTER_SITE_NAME }}
         with:
           host: ${{ secrets.SSH_HOST }}
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: GROQ_API_KEY,TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,GEMINI_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,SYSTEM_MESSAGE,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_ENDPOINT_URL,R2_BUCKET_NAME,OPENROUTER_SITE_URL,OPENROUTER_SITE_NAME
           timeout: 60s
-          command_timeout: 30m # Increased timeout for building
+          command_timeout: 30m
           script: |
             mkdir -p ${{ secrets.SERVICE_DIR }}/build_context
             cd ${{ secrets.SERVICE_DIR }}
@@ -145,27 +162,27 @@ jobs:
             tar -xzf tmp/app-source.tar.gz -C build_context
             rm tmp/app-source.tar.gz
 
-            # Create .env file
-            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
-TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
-OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
-ZAI_API_KEY=${{ secrets.ZAI_API_KEY }}
-MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}
-GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-ALLOWED_USERS=${{ secrets.ALLOWED_USERS }}
-AGENT_ACCESS_IDS=${{ secrets.AGENT_ACCESS_IDS }}
-SYSTEM_MESSAGE=${{ secrets.SYSTEM_MESSAGE }}
-R2_ACCESS_KEY_ID=${{ secrets.R2_ACCESS_KEY_ID }}
-R2_SECRET_ACCESS_KEY=${{ secrets.R2_SECRET_ACCESS_KEY }}
-R2_ENDPOINT_URL=${{ secrets.R2_ENDPOINT_URL }}
-R2_BUCKET_NAME=${{ secrets.R2_BUCKET_NAME }}
-OPENROUTER_SITE_URL=${{ secrets.OPENROUTER_SITE_URL }}
-OPENROUTER_SITE_NAME=${{ secrets.OPENROUTER_SITE_NAME }}" > .env
-
+            # Create .env file using environment variables
+            echo "Creating .env file..."
+            printf "GROQ_API_KEY=%s\n" "$GROQ_API_KEY" > .env
+            printf "TELEGRAM_TOKEN=%s\n" "$TELEGRAM_TOKEN" >> .env
+            printf "OPENROUTER_API_KEY=%s\n" "$OPENROUTER_API_KEY" >> .env
+            printf "ZAI_API_KEY=%s\n" "$ZAI_API_KEY" >> .env
+            printf "MISTRAL_API_KEY=%s\n" "$MISTRAL_API_KEY" >> .env
+            printf "GEMINI_API_KEY=%s\n" "$GEMINI_API_KEY" >> .env
+            printf "ALLOWED_USERS=%s\n" "$ALLOWED_USERS" >> .env
+            printf "AGENT_ACCESS_IDS=%s\n" "$AGENT_ACCESS_IDS" >> .env
+            printf "SYSTEM_MESSAGE=%s\n" "$SYSTEM_MESSAGE" >> .env
+            printf "R2_ACCESS_KEY_ID=%s\n" "$R2_ACCESS_KEY_ID" >> .env
+            printf "R2_SECRET_ACCESS_KEY=%s\n" "$R2_SECRET_ACCESS_KEY" >> .env
+            printf "R2_ENDPOINT_URL=%s\n" "$R2_ENDPOINT_URL" >> .env
+            printf "R2_BUCKET_NAME=%s\n" "$R2_BUCKET_NAME" >> .env
+            printf "OPENROUTER_SITE_URL=%s\n" "$OPENROUTER_SITE_URL" >> .env
+            printf "OPENROUTER_SITE_NAME=%s\n" "$OPENROUTER_SITE_NAME" >> .env
             echo ".env file created."
 
             # Create docker-compose.yml
-            # Note: build context is './build_context' relative to docker-compose.yml
+            echo "Creating docker-compose.yml..."
             echo "services:
               another_chat_tg:
                 build:
@@ -184,21 +201,19 @@ OPENROUTER_SITE_NAME=${{ secrets.OPENROUTER_SITE_NAME }}" > .env
                     max-file: \"3\"
             volumes:
               logs: {}" > docker-compose.yml
-
-            echo "docker-compose.yml file created."
+            echo "docker-compose.yml created."
 
             mkdir -p ./logs
 
             echo "Building and starting services..."
-            # Build and recreate containers
             docker compose up -d --build --remove-orphans --force-recreate
             
             echo "Services started successfully."
             docker compose ps
 
-            # Build agent sandbox image for pre-warming
-            echo "Building agent sandbox image..."
+            # Build agent sandbox image for pre-warming (fish shell syntax)
             if test -d "build_context/sandbox"
+              echo "Building agent sandbox image..."
               docker build -t agent-sandbox:latest -f build_context/sandbox/Dockerfile.sandbox build_context/sandbox/
               echo "Agent sandbox image built successfully."
             else
