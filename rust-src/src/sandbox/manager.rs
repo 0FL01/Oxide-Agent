@@ -97,12 +97,14 @@ impl SandboxManager {
         let container_name = format!("agent-sandbox-{}", self.user_id);
 
         // Check if container already exists
-        let filter = HashMap::from([("name", vec![container_name.as_str()])]);
+        let mut filters = HashMap::new();
+        filters.insert("name".to_string(), vec![container_name.clone()]);
+
         let containers = self
             .docker
-            .list_containers(Some(bollard::container::ListContainersOptions {
+            .list_containers(Some(bollard::query_parameters::ListContainersOptions {
                 all: true,
-                filters: filter,
+                filters: Some(filters),
                 ..Default::default()
             }))
             .await
