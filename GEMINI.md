@@ -4,11 +4,15 @@
 - `src/main.rs`: Entry point, initialization, and bot startup.
 - `src/lib.rs`: Library root, module exports and shared functionality.
 - `src/agent/`: Agent Mode logic (session, executor, memory, preprocessor).
-- `src/bot/`: Telegram bot logic (handlers, states).
-- `src/llm/`: LLM clients (Groq, Mistral, Gemini, OpenRouter) and the `LlmProvider` trait.
+- `src/bot/`: Telegram bot logic (handlers, agent-specific handlers, states).
+- `src/llm/`: LLM provider implementations (Groq, Mistral, Gemini, OpenRouter, Zai) and Trait.
+- `src/sandbox/`: Docker-based execution sandbox manager and orchestration.
 - `src/storage.rs`: Data storage layer (S3/R2 compatibility).
 - `src/config.rs`: Configuration and environment variable loading.
 - `src/utils.rs`: Helper functions (message splitting, formatting).
+- `tests/`: Integration tests.
+- `sandbox/`: Docker resources for sandboxing (e.g., `Dockerfile.sandbox`).
+- `Dockerfile`: Main application Docker image definition.
 
 # Rust Development Context & Tooling Guidelines
 

@@ -47,16 +47,17 @@ impl AgentExecutor {
     }
 
     /// The final result is sent as the last update with `is_final = true`.
-    #[instrument(skip(self), fields(user_id = self.session.user_id, chat_id = self.session.chat_id))]
+    #[instrument(skip(self), fields(user_id = self.session.user_id, chat_id = self.session.chat_id, task_id = %self.session.current_task_id.as_deref().unwrap_or("none")))]
     pub async fn execute_with_progress(
         &mut self,
         task: &str,
     ) -> Result<mpsc::Receiver<ProgressUpdate>> {
-        info!("Starting agent task: {}", task);
-        let (tx, rx) = mpsc::channel::<ProgressUpdate>(32);
-
-        // Start the task
+        // Start the task (generates task_id)
         self.session.start_task();
+        let task_id = self.session.current_task_id.clone().unwrap_or_default();
+
+        info!(task = %task, task_id = %task_id, "Starting agent task with progress reporting");
+        let (tx, rx) = mpsc::channel::<ProgressUpdate>(32);
 
         // Add user message to memory
         self.session.memory.add_message(AgentMessage::user(task));
@@ -68,13 +69,22 @@ impl AgentExecutor {
 
         // Spawn the execution task
         let tx_clone = tx.clone();
+        let task_id_clone = task_id.clone();
         tokio::spawn(async move {
-            let result =
-                Self::run_agent_loop(llm_client, task_str, memory_messages, tx_clone).await;
+            let start = std::time::Instant::now();
+            let result = Self::run_agent_loop(
+                llm_client,
+                task_str,
+                memory_messages,
+                tx_clone,
+                task_id_clone.clone(),
+            )
+            .await;
 
+            let duration = start.elapsed();
             match result {
                 Ok(response) => {
-                    info!("Agent task completed successfully");
+                    info!(task_id = %task_id_clone, duration_ms = duration.as_millis(), "Agent task completed successfully");
                     let _ = tx
                         .send(ProgressUpdate {
                             step: response,
@@ -84,7 +94,7 @@ impl AgentExecutor {
                         .await;
                 }
                 Err(e) => {
-                    error!("Agent task failed: {}", e);
+                    error!(task_id = %task_id_clone, error = %e, duration_ms = duration.as_millis(), "Agent task failed");
                     let _ = tx
                         .send(ProgressUpdate {
                             step: format!("❌ Ошибка: {}", e),
@@ -149,14 +159,15 @@ impl AgentExecutor {
     }
 
     /// Run the agent loop with progress updates
-    #[instrument(skip(llm_client, memory_messages, progress_tx))]
+    #[instrument(skip(llm_client, memory_messages, progress_tx), fields(task_id = %task_id))]
     async fn run_agent_loop(
         llm_client: Arc<LlmClient>,
         task: String,
         memory_messages: Vec<AgentMessage>,
         progress_tx: mpsc::Sender<ProgressUpdate>,
+        task_id: String,
     ) -> Result<String> {
-        debug!("Analyzing task via LLM");
+        debug!(task_id = %task_id, "Analyzing task via LLM");
         // Send initial progress
         let _ = progress_tx
             .send(ProgressUpdate {
@@ -192,10 +203,18 @@ impl AgentExecutor {
             .await;
 
         // Call the LLM
+        let call_start = std::time::Instant::now();
         let response = llm_client
             .chat_completion(&system_prompt, &messages, &task, AGENT_MODEL)
             .await
             .map_err(|e| anyhow!("LLM call failed: {}", e))?;
+        let call_duration = call_start.elapsed();
+
+        debug!(
+            task_id = %task_id,
+            duration_ms = call_duration.as_millis(),
+            "LLM call completed"
+        );
 
         // Update progress before finalizing
         let _ = progress_tx

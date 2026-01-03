@@ -41,6 +41,8 @@ pub struct AgentSession {
     sandbox: Option<SandboxManager>,
     /// When the current task started
     started_at: Option<Instant>,
+    /// Unique ID for the current task execution (for log correlation)
+    pub current_task_id: Option<String>,
     /// Current status
     pub status: AgentStatus,
 }
@@ -55,13 +57,15 @@ impl AgentSession {
             memory: AgentMemory::new(AGENT_MAX_TOKENS),
             sandbox: None,
             started_at: None,
+            current_task_id: None,
             status: AgentStatus::Idle,
         }
     }
 
-    /// Start a new task, resetting the timer
+    /// Start a new task, resetting the timer and generating a task ID
     pub fn start_task(&mut self) {
         self.started_at = Some(Instant::now());
+        self.current_task_id = Some(uuid::Uuid::new_v4().to_string());
         self.status = AgentStatus::Processing {
             step: "Инициализация...".to_string(),
             progress_percent: 0,
@@ -113,6 +117,7 @@ impl AgentSession {
         self.memory.clear();
         self.status = AgentStatus::Idle;
         self.started_at = None;
+        self.current_task_id = None;
         self.progress_message_id = None;
 
         // Destroy sandbox if exists

@@ -138,6 +138,7 @@ impl LlmClient {
             "Full LLM Request"
         );
 
+        let start = std::time::Instant::now();
         let result = provider
             .chat_completion(
                 system_prompt,
@@ -147,14 +148,24 @@ impl LlmClient {
                 model_info.max_tokens,
             )
             .await;
+        let duration = start.elapsed();
 
         match &result {
             Ok(resp) => {
-                debug!("Received success response from LLM");
+                debug!(
+                    model = model_name,
+                    duration_ms = duration.as_millis(),
+                    "Received success response from LLM"
+                );
                 trace!(response = ?resp, "Full LLM Response");
             }
             Err(e) => {
-                warn!("Received error response from LLM: {}", e);
+                warn!(
+                    model = model_name,
+                    duration_ms = duration.as_millis(),
+                    error = %e,
+                    "Received error response from LLM"
+                );
             }
         }
 
@@ -177,6 +188,7 @@ impl LlmClient {
         let fallback_model = "google/gemini-2.5-flash";
 
         for attempt in 1..=3 {
+            let start = std::time::Instant::now();
             info!(
                 "OpenRouter: Attempting with {}, attempt {}/3",
                 primary_model, attempt
@@ -185,11 +197,22 @@ impl LlmClient {
                 .chat_completion(system_prompt, history, user_message, primary_model, 64000)
                 .await
             {
-                Ok(res) => return Ok(res),
+                Ok(res) => {
+                    info!(
+                        model = primary_model,
+                        duration_ms = start.elapsed().as_millis(),
+                        "OpenRouter: Success on attempt {}",
+                        attempt
+                    );
+                    return Ok(res);
+                }
                 Err(e) => {
                     warn!(
-                        "OpenRouter: Error with {} on attempt {}: {}",
-                        primary_model, attempt, e
+                        model = primary_model,
+                        duration_ms = start.elapsed().as_millis(),
+                        error = %e,
+                        "OpenRouter: Error on attempt {}",
+                        attempt
                     );
                     if attempt < 3 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;

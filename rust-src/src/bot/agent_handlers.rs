@@ -128,6 +128,11 @@ pub async fn handle_agent_message(
     let preprocessor = Preprocessor::new(llm.clone());
     let input = extract_agent_input(&bot, &msg).await?;
     let task_text = preprocessor.preprocess_input(input).await?;
+    info!(
+        user_id = user_id,
+        chat_id = chat_id.0,
+        "Input preprocessed, task text extracted"
+    );
 
     // Send initial progress message
     let progress_msg = bot
@@ -257,6 +262,7 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
     {
         let mut sessions = AGENT_SESSIONS.write().await;
         if let Some(executor) = sessions.get_mut(&user_id) {
+            info!(user_id = user_id, task_id = ?executor.session().current_task_id, "Cancelling agent task");
             executor.cancel();
         }
     }
@@ -292,6 +298,7 @@ pub async fn exit_agent_mode(bot: Bot, msg: Message, dialogue: AgentDialogue) ->
 
     // Remove session
     {
+        info!(user_id = user_id, "Exiting agent mode and removing session");
         let mut sessions = AGENT_SESSIONS.write().await;
         sessions.remove(&user_id);
     }
