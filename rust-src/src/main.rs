@@ -116,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = match Settings::new() {
         Ok(s) => {
             info!("Configuration loaded successfully.");
-            s
+            std::sync::Arc::new(s)
         }
         Err(e) => {
             error!("Failed to load configuration: {}", e);
@@ -177,8 +177,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .branch(
             dptree::case![State::Start]
-                .branch(Update::filter_message().filter(|msg: Message| msg.text().is_some()).endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>, dialogue: Dialogue<State, InMemStorage<State>>| async move {
-                    if let Err(e) = bot::handlers::handle_text(bot, msg, storage, llm, dialogue).await {
+                .branch(Update::filter_message().filter(|msg: Message| msg.text().is_some()).endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>, dialogue: Dialogue<State, InMemStorage<State>>, settings: std::sync::Arc<Settings>| async move {
+                    if let Err(e) = bot::handlers::handle_text(bot, msg, storage, llm, dialogue, settings).await {
                         error!("Text handler error: {}", e);
                     }
                     respond(())
@@ -230,6 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .dependencies(dptree::deps![
             storage,
             llm_client,
+            settings,
             InMemStorage::<State>::new()
         ])
         .enable_ctrlc_handler()

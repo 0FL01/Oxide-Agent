@@ -9,6 +9,9 @@ pub struct Settings {
     #[serde(rename = "allowed_users")]
     pub allowed_users_str: Option<String>,
 
+    #[serde(rename = "agent_access_ids")]
+    pub agent_allowed_users_str: Option<String>,
+
     // API Keys
     pub groq_api_key: Option<String>,
     pub mistral_api_key: Option<String>,
@@ -99,6 +102,17 @@ impl Settings {
 
     pub fn allowed_users(&self) -> HashSet<i64> {
         self.allowed_users_str
+            .as_ref()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|id| id.trim().parse::<i64>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn agent_allowed_users(&self) -> HashSet<i64> {
+        self.agent_allowed_users_str
             .as_ref()
             .map(|s| {
                 s.split(',')
