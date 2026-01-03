@@ -237,7 +237,7 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         "OR Gemini 3 Flash",
         ModelInfo {
             id: "google/gemini-3-flash-preview",
-            max_tokens: 64000,
+            max_tokens: 8192,
             provider: "openrouter",
         },
     ),
@@ -245,7 +245,7 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         "ZAI GLM-4.6-Flash",
         ModelInfo {
             id: "GLM-4.6V-Flash",
-            max_tokens: 64000,
+            max_tokens: 4095,
             provider: "zai",
         },
     ),
@@ -253,7 +253,7 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         "Mistral Large",
         ModelInfo {
             id: "mistral-large-latest",
-            max_tokens: 128000,
+            max_tokens: 4096,
             provider: "mistral",
         },
     ),
@@ -261,7 +261,7 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         "Gemini 2.5 Flash Lite",
         ModelInfo {
             id: "gemini-2.5-flash-lite",
-            max_tokens: 64000,
+            max_tokens: 8192,
             provider: "gemini",
         },
     ),
@@ -269,7 +269,7 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         "Devstral 2512",
         ModelInfo {
             id: "devstral-2512",
-            max_tokens: 128000,
+            max_tokens: 4096,
             provider: "mistral",
         },
     ),

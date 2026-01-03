@@ -348,7 +348,7 @@ impl LlmProvider for ZaiProvider {
             user_message,
             model_id,
             max_tokens,
-            1.0,
+            0.95,
         )
         .await
     }
