@@ -160,69 +160,118 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handler = Update::filter_message()
         .filter(auth_filter)
         .enter_dialogue::<Message, InMemStorage<State>, State>()
-        .branch(
-            dptree::entry()
-                .filter_command::<Command>()
-                .endpoint(move |bot: Bot, msg: Message, cmd: Command, storage: std::sync::Arc<storage::R2Storage>| async move {
-                    let res = match cmd {
-                        Command::Start => bot::handlers::start(bot, msg, storage).await,
-                        Command::Clear => bot::handlers::clear(bot, msg, storage).await,
-                        Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
-                    };
-                    if let Err(e) = res {
-                        error!("Command error: {}", e);
-                    }
-                    respond(())
-                })
-        )
+        .branch(dptree::entry().filter_command::<Command>().endpoint(
+            move |bot: Bot,
+                  msg: Message,
+                  cmd: Command,
+                  storage: std::sync::Arc<storage::R2Storage>| async move {
+                let res = match cmd {
+                    Command::Start => bot::handlers::start(bot, msg, storage).await,
+                    Command::Clear => bot::handlers::clear(bot, msg, storage).await,
+                    Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
+                };
+                if let Err(e) = res {
+                    error!("Command error: {}", e);
+                }
+                respond(())
+            },
+        ))
         .branch(
             dptree::case![State::Start]
-                .branch(Update::filter_message().filter(|msg: Message| msg.text().is_some()).endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>, dialogue: Dialogue<State, InMemStorage<State>>, settings: std::sync::Arc<Settings>| async move {
-                    if let Err(e) = bot::handlers::handle_text(bot, msg, storage, llm, dialogue, settings).await {
-                        error!("Text handler error: {}", e);
-                    }
-                    respond(())
-                }))
-                .branch(Update::filter_message().filter(|msg: Message| msg.voice().is_some()).endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>| async move {
-                    if let Err(e) = bot::handlers::handle_voice(bot, msg, storage, llm).await {
-                        error!("Voice handler error: {}", e);
-                    }
-                    respond(())
-                }))
-                .branch(Update::filter_message().filter(|msg: Message| msg.photo().is_some()).endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>| async move {
-                    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm).await {
-                        error!("Photo handler error: {}", e);
-                    }
-                    respond(())
-                }))
+                .branch(
+                    Update::filter_message()
+                        .filter(|msg: Message| msg.text().is_some())
+                        .endpoint(
+                            |bot: Bot,
+                             msg: Message,
+                             storage: std::sync::Arc<storage::R2Storage>,
+                             llm: std::sync::Arc<llm::LlmClient>,
+                             dialogue: Dialogue<State, InMemStorage<State>>,
+                             settings: std::sync::Arc<Settings>| async move {
+                                if let Err(e) = bot::handlers::handle_text(
+                                    bot, msg, storage, llm, dialogue, settings,
+                                )
+                                .await
+                                {
+                                    error!("Text handler error: {}", e);
+                                }
+                                respond(())
+                            },
+                        ),
+                )
+                .branch(
+                    Update::filter_message()
+                        .filter(|msg: Message| msg.voice().is_some())
+                        .endpoint(
+                            |bot: Bot,
+                             msg: Message,
+                             storage: std::sync::Arc<storage::R2Storage>,
+                             llm: std::sync::Arc<llm::LlmClient>| async move {
+                                if let Err(e) =
+                                    bot::handlers::handle_voice(bot, msg, storage, llm).await
+                                {
+                                    error!("Voice handler error: {}", e);
+                                }
+                                respond(())
+                            },
+                        ),
+                )
+                .branch(
+                    Update::filter_message()
+                        .filter(|msg: Message| msg.photo().is_some())
+                        .endpoint(
+                            |bot: Bot,
+                             msg: Message,
+                             storage: std::sync::Arc<storage::R2Storage>,
+                             llm: std::sync::Arc<llm::LlmClient>| async move {
+                                if let Err(e) =
+                                    bot::handlers::handle_photo(bot, msg, storage, llm).await
+                                {
+                                    error!("Photo handler error: {}", e);
+                                }
+                                respond(())
+                            },
+                        ),
+                ),
         )
-        .branch(
-            dptree::case![State::EditingPrompt]
-                .endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, dialogue: Dialogue<State, InMemStorage<State>>| async move {
-                    if let Err(e) = bot::handlers::handle_editing_prompt(bot, msg, storage, dialogue).await {
-                        error!("Editing prompt handler error: {}", e);
-                    }
-                    respond(())
-                })
-        )
-        .branch(
-            dptree::case![State::AgentMode]
-                .endpoint(|bot: Bot, msg: Message, storage: std::sync::Arc<storage::R2Storage>, llm: std::sync::Arc<llm::LlmClient>, dialogue: Dialogue<State, InMemStorage<State>>| async move {
-                    if let Err(e) = bot::agent_handlers::handle_agent_message(bot, msg, storage, llm, dialogue).await {
-                        error!("Agent mode handler error: {}", e);
-                    }
-                    respond(())
-                })
-        )
-        .branch(
-            dptree::case![State::AgentWipeConfirmation]
-                .endpoint(|bot: Bot, msg: Message, dialogue: Dialogue<State, InMemStorage<State>>| async move {
-                    if let Err(e) = bot::agent_handlers::handle_agent_wipe_confirmation(bot, msg, dialogue).await {
-                        error!("Agent wipe confirmation handler error: {}", e);
-                    }
-                    respond(())
-                })
-        );
+        .branch(dptree::case![State::EditingPrompt].endpoint(
+            |bot: Bot,
+             msg: Message,
+             storage: std::sync::Arc<storage::R2Storage>,
+             dialogue: Dialogue<State, InMemStorage<State>>| async move {
+                if let Err(e) =
+                    bot::handlers::handle_editing_prompt(bot, msg, storage, dialogue).await
+                {
+                    error!("Editing prompt handler error: {}", e);
+                }
+                respond(())
+            },
+        ))
+        .branch(dptree::case![State::AgentMode].endpoint(
+            |bot: Bot,
+             msg: Message,
+             storage: std::sync::Arc<storage::R2Storage>,
+             llm: std::sync::Arc<llm::LlmClient>,
+             dialogue: Dialogue<State, InMemStorage<State>>| async move {
+                if let Err(e) =
+                    bot::agent_handlers::handle_agent_message(bot, msg, storage, llm, dialogue)
+                        .await
+                {
+                    error!("Agent mode handler error: {}", e);
+                }
+                respond(())
+            },
+        ))
+        .branch(dptree::case![State::AgentWipeConfirmation].endpoint(
+            |bot: Bot, msg: Message, dialogue: Dialogue<State, InMemStorage<State>>| async move {
+                if let Err(e) =
+                    bot::agent_handlers::handle_agent_wipe_confirmation(bot, msg, dialogue).await
+                {
+                    error!("Agent wipe confirmation handler error: {}", e);
+                }
+                respond(())
+            },
+        ));
 
     info!("Bot is running...");
 

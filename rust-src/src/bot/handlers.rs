@@ -192,25 +192,31 @@ pub async fn handle_text(
                 "User {} clicked 'Режим Агента', checking permissions.",
                 user_id
             );
-            
+
             // Check authorization
             let agent_allowed = settings.agent_allowed_users();
             if !agent_allowed.contains(&user_id) && !agent_allowed.is_empty() {
                 warn!("User {} denied access to Agent Mode.", user_id);
-                bot.send_message(msg.chat.id, "⛔️ У вас нет прав для доступа к режиму агента.")
-                    .await?;
+                bot.send_message(
+                    msg.chat.id,
+                    "⛔️ У вас нет прав для доступа к режиму агента.",
+                )
+                .await?;
                 return Ok(());
             } else if agent_allowed.is_empty() {
-                 warn!("Agent Mode access denied for user {} (AGENT_ACCESS_IDS not configured).", user_id);
-                 bot.send_message(msg.chat.id, "⛔️ Режим агента временно недоступен (не настроен доступ).")
-                    .await?;
+                warn!(
+                    "Agent Mode access denied for user {} (AGENT_ACCESS_IDS not configured).",
+                    user_id
+                );
+                bot.send_message(
+                    msg.chat.id,
+                    "⛔️ Режим агента временно недоступен (не настроен доступ).",
+                )
+                .await?;
                 return Ok(());
             }
 
-            info!(
-                "User {} authorized for Agent Mode. Activating.",
-                user_id
-            );
+            info!("User {} authorized for Agent Mode. Activating.", user_id);
             return crate::bot::agent_handlers::activate_agent_mode(bot, msg, dialogue, llm).await;
         }
         "Изменить промпт" => {
