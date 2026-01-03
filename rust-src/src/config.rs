@@ -240,10 +240,10 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         },
     ),
     (
-        "ZAI GLM-4.7",
+        "ZAI GLM-4.6-Flash",
         ModelInfo {
-            id: "glm-4.7",
-            max_tokens: 131072,
+            id: "GLM-4.6V-Flash",
+            max_tokens: 64000,
             provider: "zai",
         },
     ),
