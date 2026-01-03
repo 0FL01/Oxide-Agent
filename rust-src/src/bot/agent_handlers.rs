@@ -147,7 +147,8 @@ pub async fn handle_agent_message(
     match result {
         Ok(response) => {
             // Edit the progress message with the final response
-            let final_text = format!("✅ <b>Результат:</b>\n\n{}", response);
+            let formatted_response = crate::utils::format_text(&response);
+            let final_text = format!("✅ <b>Результат:</b>\n\n{}", formatted_response);
             edit_message_safe(&bot, chat_id, progress_msg.id, &final_text).await;
         }
         Err(e) => {
