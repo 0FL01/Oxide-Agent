@@ -146,8 +146,7 @@ jobs:
             rm tmp/app-source.tar.gz
 
             # Create .env file
-            cat <<EOF > .env
-GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
 TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
 OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
 ZAI_API_KEY=${{ secrets.ZAI_API_KEY }}
@@ -161,8 +160,7 @@ R2_SECRET_ACCESS_KEY=${{ secrets.R2_SECRET_ACCESS_KEY }}
 R2_ENDPOINT_URL=${{ secrets.R2_ENDPOINT_URL }}
 R2_BUCKET_NAME=${{ secrets.R2_BUCKET_NAME }}
 OPENROUTER_SITE_URL=${{ secrets.OPENROUTER_SITE_URL }}
-OPENROUTER_SITE_NAME=${{ secrets.OPENROUTER_SITE_NAME }}
-EOF
+OPENROUTER_SITE_NAME=${{ secrets.OPENROUTER_SITE_NAME }}" > .env
 
             echo ".env file created."
 
@@ -200,11 +198,11 @@ EOF
 
             # Build agent sandbox image for pre-warming
             echo "Building agent sandbox image..."
-            if [ -d "build_context/sandbox" ]; then
+            if test -d "build_context/sandbox"
               docker build -t agent-sandbox:latest -f build_context/sandbox/Dockerfile.sandbox build_context/sandbox/
               echo "Agent sandbox image built successfully."
             else
               echo "Warning: sandbox directory not found, skipping sandbox image build."
-            fi
+            end
 
 
