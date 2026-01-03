@@ -1,0 +1,95 @@
+//! HTTP utilities for LLM providers
+//!
+//! Provides common HTTP request/response handling to eliminate
+//! code duplication across provider implementations.
+
+use crate::llm::LlmError;
+use reqwest::Client as HttpClient;
+use serde_json::Value;
+
+/// Sends an HTTP POST request with JSON body and returns parsed JSON response.
+///
+/// This function handles:
+/// - Sending the request with optional authorization and custom headers
+/// - Checking the response status
+/// - Parsing the JSON response
+///
+/// # Arguments
+/// * `client` - HTTP client to use
+/// * `url` - Target URL
+/// * `body` - JSON body to send
+/// * `auth_header` - Optional authorization header value (e.g., "Bearer token")
+/// * `extra_headers` - Additional headers as key-value pairs
+///
+/// # Returns
+/// Parsed JSON response or LlmError
+pub async fn send_json_request(
+    client: &HttpClient,
+    url: &str,
+    body: &Value,
+    auth_header: Option<&str>,
+    extra_headers: &[(&str, &str)],
+) -> Result<Value, LlmError> {
+    let mut request = client.post(url).json(body);
+
+    if let Some(auth) = auth_header {
+        request = request.header("Authorization", auth);
+    }
+
+    for (key, value) in extra_headers {
+        request = request.header(*key, *value);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| LlmError::NetworkError(e.to_string()))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(LlmError::ApiError(format!(
+            "API error: {} - {}",
+            status, error_text
+        )));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|e| LlmError::JsonError(e.to_string()))
+}
+
+/// Extracts text content from a JSON response by navigating a path.
+///
+/// # Arguments
+/// * `response` - JSON response to extract from
+/// * `path` - Path segments to navigate (supports string keys and numeric indices)
+///
+/// # Example
+/// ```ignore
+/// // For Gemini: ["candidates", "0", "content", "parts", "0", "text"]
+/// // For OpenRouter: ["choices", "0", "message", "content"]
+/// let content = extract_text_content(&response, &["choices", "0", "message", "content"])?;
+/// ```
+pub fn extract_text_content(response: &Value, path: &[&str]) -> Result<String, LlmError> {
+    let mut current = response;
+
+    for segment in path {
+        // Try to parse as index first
+        if let Ok(index) = segment.parse::<usize>() {
+            current = current.get(index).ok_or_else(|| {
+                LlmError::ApiError(format!("Invalid path: missing index {}", index))
+            })?;
+        } else {
+            current = current.get(*segment).ok_or_else(|| {
+                LlmError::ApiError(format!("Invalid path: missing key {}", segment))
+            })?;
+        }
+    }
+
+    current
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| LlmError::ApiError(format!("Expected string at path, got: {:?}", current)))
+}

@@ -194,3 +194,15 @@ pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
 
     parts
 }
+
+/// Safely truncates a string to a maximum character length (not bytes).
+/// This is UTF-8 safe and will not panic on multi-byte characters.
+pub fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
+    let s = s.as_ref();
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    s.char_indices()
+        .nth(max_chars)
+        .map_or(s.to_string(), |(pos, _)| s[..pos].to_string())
+}

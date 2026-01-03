@@ -1,4 +1,5 @@
 mod common;
+mod http_utils;
 mod openai_compat;
 pub mod providers;
 

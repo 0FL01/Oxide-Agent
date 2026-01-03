@@ -2,7 +2,7 @@ use crate::bot::state::State;
 use crate::config::{Settings, DEFAULT_MODEL, MODELS};
 use crate::llm::{LlmClient, Message as LlmMessage};
 use crate::storage::R2Storage;
-use crate::utils;
+use crate::utils::{self, truncate_str};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use teloxide::{
@@ -27,22 +27,8 @@ fn get_user_name(msg: &Message) -> String {
     "Unknown".to_string()
 }
 
-/// Safely extract user_id from Message.
-/// Returns 0 if user info is not available (e.g., channel messages).
 fn get_user_id_safe(msg: &Message) -> i64 {
     msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0)
-}
-
-/// Safely truncates a string to a maximum character length (not bytes).
-/// This is UTF-8 safe and will not panic on multi-byte characters.
-fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
-    let s = s.as_ref();
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    s.char_indices()
-        .nth(max_chars)
-        .map_or(s.to_string(), |(pos, _)| s[..pos].to_string())
 }
 
 /// Checks if the user has a persisted state and redirects if necessary.

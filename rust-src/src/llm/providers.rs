@@ -1,3 +1,4 @@
+use super::http_utils::{extract_text_content, send_json_request};
 use super::openai_compat;
 use super::{LlmError, LlmProvider, Message};
 use async_openai::{config::OpenAIConfig, Client};
@@ -436,32 +437,11 @@ impl LlmProvider for GeminiProvider {
             ]
         });
 
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!(
-                "Gemini API error: {} - {}",
-                status, error_text
-            )));
-        }
-
-        let res_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LlmError::JsonError(e.to_string()))?;
-
-        res_json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| LlmError::ApiError(format!("Invalid response format: {:?}", res_json)))
+        let res_json = send_json_request(&self.http_client, &url, &body, None, &[]).await?;
+        extract_text_content(
+            &res_json,
+            &["candidates", "0", "content", "parts", "0", "text"],
+        )
     }
 
     async fn transcribe_audio(
@@ -494,32 +474,11 @@ impl LlmProvider for GeminiProvider {
             }
         });
 
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!(
-                "Gemini transcription error: {} - {}",
-                status, error_text
-            )));
-        }
-
-        let res_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LlmError::JsonError(e.to_string()))?;
-
-        res_json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| LlmError::ApiError("Failed to get transcription".to_string()))
+        let res_json = send_json_request(&self.http_client, &url, &body, None, &[]).await?;
+        extract_text_content(
+            &res_json,
+            &["candidates", "0", "content", "parts", "0", "text"],
+        )
     }
 
     async fn analyze_image(
@@ -555,32 +514,11 @@ impl LlmProvider for GeminiProvider {
             }
         });
 
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!(
-                "Gemini vision error: {} - {}",
-                status, error_text
-            )));
-        }
-
-        let res_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LlmError::JsonError(e.to_string()))?;
-
-        res_json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| LlmError::ApiError("Failed to get vision analysis".to_string()))
+        let res_json = send_json_request(&self.http_client, &url, &body, None, &[]).await?;
+        extract_text_content(
+            &res_json,
+            &["candidates", "0", "content", "parts", "0", "text"],
+        )
     }
 }
 
@@ -674,7 +612,6 @@ impl LlmProvider for OpenRouterProvider {
     ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
         let prompt = "Сделай точную транскрипцию речи из этого аудио файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это.";
-
         let audio_base64 = BASE64.encode(&audio_bytes);
 
         let body = json!({
@@ -688,7 +625,7 @@ impl LlmProvider for OpenRouterProvider {
                             "type": "input_audio",
                             "input_audio": {
                                 "data": audio_base64,
-                                "format": "wav" // Default to wav as in Python
+                                "format": "wav"
                             }
                         }
                     ]
@@ -698,31 +635,9 @@ impl LlmProvider for OpenRouterProvider {
             "temperature": 0.4
         });
 
-        let response = self
-            .http_client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(LlmError::ApiError(format!(
-                "OpenRouter transcription error: {}",
-                response.status()
-            )));
-        }
-
-        let res_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LlmError::JsonError(e.to_string()))?;
-
-        res_json["choices"][0]["message"]["content"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| LlmError::ApiError("Failed to get transcription".to_string()))
+        let auth = format!("Bearer {}", self.api_key);
+        let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
+        extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
     async fn analyze_image(
@@ -755,30 +670,8 @@ impl LlmProvider for OpenRouterProvider {
             "temperature": 0.7
         });
 
-        let response = self
-            .http_client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(LlmError::ApiError(format!(
-                "OpenRouter vision error: {}",
-                response.status()
-            )));
-        }
-
-        let res_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LlmError::JsonError(e.to_string()))?;
-
-        res_json["choices"][0]["message"]["content"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| LlmError::ApiError("Failed to get vision analysis".to_string()))
+        let auth = format!("Bearer {}", self.api_key);
+        let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
+        extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 }

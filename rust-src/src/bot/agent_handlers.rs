@@ -253,23 +253,13 @@ async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
     Ok(AgentInput::Text(text))
 }
 
-/// Safely truncates a string to a maximum character length (not bytes).
-fn truncate_str_safe(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    s.char_indices()
-        .nth(max_chars)
-        .map_or(s.to_string(), |(pos, _)| s[..pos].to_string())
-}
-
 /// Edit a message safely (ignore errors)
 async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: &str) {
     // Truncate if too long (Telegram limit)
     let truncated = if text.chars().count() > 4000 {
         format!(
             "{}...\n\n<i>(сообщение обрезано)</i>",
-            truncate_str_safe(text, 4000)
+            crate::utils::truncate_str(text, 4000)
         )
     } else {
         text.to_string()
