@@ -1,17 +1,11 @@
+use super::openai_compat;
 use super::{LlmError, LlmProvider, Message};
-use async_openai::{
-    config::OpenAIConfig,
-    types::chat::{
-        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestSystemMessageArgs,
-        ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
-    },
-    Client,
-};
+use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client as HttpClient;
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::debug;
 
 pub struct GroqProvider {
     client: Client<OpenAIConfig>,
@@ -38,60 +32,16 @@ impl LlmProvider for GroqProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        let mut messages = vec![ChatCompletionRequestSystemMessageArgs::default()
-            .content(system_prompt)
-            .build()
-            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
-            .into()];
-
-        for msg in history {
-            let m = match msg.role.as_str() {
-                "user" => ChatCompletionRequestUserMessageArgs::default()
-                    .content(msg.content.clone())
-                    .build()
-                    .map_err(|e: async_openai::error::OpenAIError| {
-                        LlmError::Unknown(e.to_string())
-                    })?
-                    .into(),
-                _ => ChatCompletionRequestAssistantMessageArgs::default()
-                    .content(msg.content.clone())
-                    .build()
-                    .map_err(|e: async_openai::error::OpenAIError| {
-                        LlmError::Unknown(e.to_string())
-                    })?
-                    .into(),
-            };
-            messages.push(m);
-        }
-
-        messages.push(
-            ChatCompletionRequestUserMessageArgs::default()
-                .content(user_message)
-                .build()
-                .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
-                .into(),
-        );
-
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(model_id)
-            .messages(messages)
-            .max_tokens(max_tokens)
-            .temperature(0.7)
-            .build()
-            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?;
-
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| LlmError::ApiError(e.to_string()))?;
-
-        response
-            .choices
-            .first()
-            .and_then(|c| c.message.content.clone())
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+        openai_compat::chat_completion(
+            &self.client,
+            system_prompt,
+            history,
+            user_message,
+            model_id,
+            max_tokens,
+            0.7,
+        )
+        .await
     }
 
     async fn transcribe_audio(
@@ -328,61 +278,16 @@ impl LlmProvider for MistralProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        // Implementation is identical to Groq due to OpenAI compatibility
-        let mut messages = vec![ChatCompletionRequestSystemMessageArgs::default()
-            .content(system_prompt)
-            .build()
-            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
-            .into()];
-
-        for msg in history {
-            let m = match msg.role.as_str() {
-                "user" => ChatCompletionRequestUserMessageArgs::default()
-                    .content(msg.content.clone())
-                    .build()
-                    .map_err(|e: async_openai::error::OpenAIError| {
-                        LlmError::Unknown(e.to_string())
-                    })?
-                    .into(),
-                _ => ChatCompletionRequestAssistantMessageArgs::default()
-                    .content(msg.content.clone())
-                    .build()
-                    .map_err(|e: async_openai::error::OpenAIError| {
-                        LlmError::Unknown(e.to_string())
-                    })?
-                    .into(),
-            };
-            messages.push(m);
-        }
-
-        messages.push(
-            ChatCompletionRequestUserMessageArgs::default()
-                .content(user_message)
-                .build()
-                .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
-                .into(),
-        );
-
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(model_id)
-            .messages(messages)
-            .max_tokens(max_tokens)
-            .temperature(0.9)
-            .build()
-            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?;
-
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| LlmError::ApiError(e.to_string()))?;
-
-        response
-            .choices
-            .first()
-            .and_then(|c| c.message.content.clone())
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+        openai_compat::chat_completion(
+            &self.client,
+            system_prompt,
+            history,
+            user_message,
+            model_id,
+            max_tokens,
+            0.9,
+        )
+        .await
     }
 
     async fn transcribe_audio(
@@ -430,76 +335,22 @@ impl LlmProvider for ZaiProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        info!(
+        debug!(
             "ZAI: Starting chat completion request (model: {}, max_tokens: {}, history_size: {})",
             model_id,
             max_tokens,
             history.len()
         );
-
-        let mut messages = vec![ChatCompletionRequestSystemMessageArgs::default()
-            .content(system_prompt)
-            .build()
-            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
-            .into()];
-
-        for msg in history {
-            let m = match msg.role.as_str() {
-                "user" => ChatCompletionRequestUserMessageArgs::default()
-                    .content(msg.content.clone())
-                    .build()
-                    .map_err(|e: async_openai::error::OpenAIError| {
-                        LlmError::Unknown(e.to_string())
-                    })?
-                    .into(),
-                _ => ChatCompletionRequestAssistantMessageArgs::default()
-                    .content(msg.content.clone())
-                    .build()
-                    .map_err(|e: async_openai::error::OpenAIError| {
-                        LlmError::Unknown(e.to_string())
-                    })?
-                    .into(),
-            };
-            messages.push(m);
-        }
-
-        messages.push(
-            ChatCompletionRequestUserMessageArgs::default()
-                .content(user_message)
-                .build()
-                .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?
-                .into(),
-        );
-
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(model_id)
-            .messages(messages)
-            .max_tokens(max_tokens)
-            .temperature(1.0)
-            .build()
-            .map_err(|e: async_openai::error::OpenAIError| LlmError::Unknown(e.to_string()))?;
-
-        info!("ZAI: Sending request to API (temperature: 1.0)",);
-
-        match self.client.chat().create(request).await {
-            Ok(response) => {
-                info!(
-                    "ZAI: Received response (choices: {}, usage: {:?})",
-                    response.choices.len(),
-                    response.usage
-                );
-                response
-                    .choices
-                    .first()
-                    .and_then(|c| c.message.content.clone())
-                    .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-                warn!("ZAI: API request failed: {}", error_msg);
-                Err(LlmError::ApiError(error_msg))
-            }
-        }
+        openai_compat::chat_completion(
+            &self.client,
+            system_prompt,
+            history,
+            user_message,
+            model_id,
+            max_tokens,
+            1.0,
+        )
+        .await
     }
 
     async fn transcribe_audio(

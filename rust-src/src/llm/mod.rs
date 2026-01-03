@@ -1,3 +1,5 @@
+mod common;
+mod openai_compat;
 pub mod providers;
 
 use serde::{Deserialize, Serialize};
