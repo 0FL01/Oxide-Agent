@@ -26,6 +26,8 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 WORKDIR /app
 COPY --from=builder /app/target/release/another-chat-rs /app/another-chat-rs
+COPY AGENT.md /app/AGENT.md
+
 
 # Set environment variables
 ENV RUST_LOG=info

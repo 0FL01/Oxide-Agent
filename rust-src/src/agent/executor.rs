@@ -388,7 +388,19 @@ impl AgentExecutor {
 
     /// Create the system prompt for the agent
     fn create_agent_system_prompt() -> String {
-        r#"Ты - AI-агент с доступом к изолированной среде выполнения (sandbox).
+        // Попытка прочитать промпт из файла AGENT.md
+        match std::fs::read_to_string("AGENT.md") {
+            Ok(prompt) => {
+                debug!("Loaded agent system prompt from AGENT.md");
+                prompt
+            }
+            Err(e) => {
+                error!(
+                    "Failed to load AGENT.md: {}. Using default fallback prompt.",
+                    e
+                );
+                // Fallback prompt on error
+                r#"Ты - AI-агент с доступом к изолированной среде выполнения (sandbox).
 
 ## Доступные инструменты:
 - **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, curl, wget, date, cat, ls, grep и другие стандартные утилиты)
@@ -406,7 +418,9 @@ impl AgentExecutor {
 - Кратко опиши выполненные шаги
 - Дай чёткий результат
 - Используй markdown для форматирования"#
-            .to_string()
+                    .to_string()
+            }
+        }
     }
 
     /// Cancel the current task
