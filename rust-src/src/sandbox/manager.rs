@@ -90,11 +90,45 @@ impl SandboxManager {
     #[instrument(skip(self), fields(user_id = self.user_id))]
     pub async fn create_sandbox(&mut self) -> Result<()> {
         if self.container_id.is_some() {
-            warn!("Sandbox already exists, destroying old one first");
-            self.destroy().await?;
+            // Already tracked in this object
+            return Ok(());
         }
 
-        let container_name = format!("agent-sandbox-{}-{}", self.user_id, uuid::Uuid::new_v4());
+        let container_name = format!("agent-sandbox-{}", self.user_id);
+
+        // Check if container already exists
+        let filter = HashMap::from([("name", vec![container_name.as_str()])]);
+        let containers = self
+            .docker
+            .list_containers(Some(bollard::container::ListContainersOptions {
+                all: true,
+                filters: filter,
+                ..Default::default()
+            }))
+            .await
+            .context("Failed to list containers")?;
+
+        if let Some(container) = containers.first() {
+            let id = container.id.clone().unwrap_or_default();
+            info!(user_id = self.user_id, container_id = %id, "Found existing sandbox container");
+            self.container_id = Some(id.clone());
+
+            // Start if not running
+            // We use format! debug since StateEnum might not implement Display/AsRef<str> easily or we don't want to import the enum
+            let _state_str = format!("{:?}", container.state);
+
+            // Simpler: Just try to start it.
+            if let Err(e) = self
+                .docker
+                .start_container(&id, None::<StartContainerOptions>)
+                .await
+            {
+                // If it's already running, this might error or might not.
+                // We'll log debug and proceed.
+                debug!(error = %e, "Tried to start existing container (might already be running)");
+            }
+            return Ok(());
+        }
 
         // Container configuration with resource limits
         let host_config = HostConfig {
@@ -301,6 +335,34 @@ impl SandboxManager {
         }
 
         Ok(())
+    }
+
+    /// Recreate the sandbox container (wipe data)
+    #[instrument(skip(self), fields(user_id = self.user_id))]
+    pub async fn recreate(&mut self) -> Result<()> {
+        info!("Recreating sandbox");
+
+        // Force destroy current container
+        if self.container_id.is_some() {
+            self.destroy().await?;
+        } else {
+            // Even if not in memory, check docker for the named container
+            let container_name = format!("agent-sandbox-{}", self.user_id);
+            // Best effort cleanup by name if we lost the ID
+            let _ = self
+                .docker
+                .remove_container(
+                    &container_name,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await;
+        }
+
+        // Create new one
+        self.create_sandbox().await
     }
 }
 

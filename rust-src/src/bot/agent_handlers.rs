@@ -19,7 +19,7 @@ use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{KeyboardButton, KeyboardMarkup, MessageId, ParseMode};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Type alias for dialogue
 pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
@@ -33,6 +33,7 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![
         vec![KeyboardButton::new("❌ Отменить задачу")],
         vec![KeyboardButton::new("🗑 Очистить память")],
+        vec![KeyboardButton::new("🔄 Пересоздать контейнер")],
         vec![KeyboardButton::new("⬅️ Выйти из режима агента")],
     ])
     .resize_keyboard()
@@ -102,6 +103,9 @@ pub async fn handle_agent_message(
             }
             "🗑 Очистить память" => {
                 return clear_agent_memory(bot, msg).await;
+            }
+            "🔄 Пересоздать контейнер" => {
+                return confirm_agent_wipe(bot, msg, dialogue).await;
             }
             "⬅️ Выйти из режима агента" => {
                 return exit_agent_mode(bot, msg, dialogue).await;
@@ -312,6 +316,96 @@ pub async fn exit_agent_mode(bot: Bot, msg: Message, dialogue: AgentDialogue) ->
 
     bot.send_message(msg.chat.id, "👋 Вышли из режима агента")
         .reply_markup(keyboard)
+        .await?;
+
+    Ok(())
+}
+
+/// Ask for confirmation to recreate container
+pub async fn confirm_agent_wipe(bot: Bot, msg: Message, dialogue: AgentDialogue) -> Result<()> {
+    dialogue.update(State::AgentWipeConfirmation).await?;
+
+    let keyboard = KeyboardMarkup::new(vec![vec![
+        KeyboardButton::new("✅ Да"),
+        KeyboardButton::new("❌ Отмена"),
+    ]])
+    .resize_keyboard();
+
+    bot.send_message(
+        msg.chat.id,
+        "⚠️ <b>Внимание!</b>\n\nЭто действие удалит текущий контейнер агента и все файлы внутри него. История переписки сохранится.\n\nВы уверены?",
+    )
+    .parse_mode(ParseMode::Html)
+    .reply_markup(keyboard)
+    .await?;
+
+    Ok(())
+}
+
+/// Handle confirmation for wiping agent container
+pub async fn handle_agent_wipe_confirmation(
+    bot: Bot,
+    msg: Message,
+    dialogue: AgentDialogue,
+) -> Result<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+    let text = msg.text().unwrap_or("");
+
+    match text {
+        "✅ Да" => {
+            // Recreate container
+            let mut sessions = AGENT_SESSIONS.write().await;
+            if let Some(executor) = sessions.get_mut(&user_id) {
+                let session = executor.session_mut();
+                // Ensure sandbox exists first (might be none if not initialized)
+                // session.ensure_sandbox().await?; -- ensure_sandbox handles creation
+                // But we want to FORCE recreate.
+
+                // If we have a reference to the sandbox, call recreate
+                // If not, simply ensuring it creates a new one which is fine.
+                // However, we want to clear any existing container even if not in session struct?
+                // The implementation of recreate in manager handles "found by name" case.
+
+                // We'll use ensure_sandbox to get the manager instance, then call recreate on it.
+                match session.ensure_sandbox().await {
+                    Ok(sandbox) => {
+                        if let Err(e) = sandbox.recreate().await {
+                            error!("Failed to recreate sandbox: {}", e);
+                            bot.send_message(
+                                msg.chat.id,
+                                format!("Ошибка при пересоздании: {}", e),
+                            )
+                            .await?;
+                        } else {
+                            info!("Sandbox recreated for user {}", user_id);
+                            bot.send_message(msg.chat.id, "✅ Контейнер успешно пересоздан.")
+                                .await?;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to access sandbox manager: {}", e);
+                        bot.send_message(msg.chat.id, "Ошибка доступа к менеджеру песочницы.")
+                            .await?;
+                    }
+                }
+            } else {
+                bot.send_message(msg.chat.id, "Сессия не найдена.").await?;
+            }
+        }
+        "❌ Отмена" => {
+            bot.send_message(msg.chat.id, "Отменено.").await?;
+        }
+        _ => {
+            bot.send_message(msg.chat.id, "Пожалуйста, выберите вариант на клавиатуре.")
+                .await?;
+            return Ok(());
+        }
+    }
+
+    // Return to agent mode
+    dialogue.update(State::AgentMode).await?;
+    bot.send_message(msg.chat.id, "Готов к работе.")
+        .reply_markup(get_agent_keyboard())
         .await?;
 
     Ok(())

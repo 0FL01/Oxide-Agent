@@ -213,6 +213,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     respond(())
                 })
+        )
+        .branch(
+            dptree::case![State::AgentWipeConfirmation]
+                .endpoint(|bot: Bot, msg: Message, dialogue: Dialogue<State, InMemStorage<State>>| async move {
+                    if let Err(e) = bot::agent_handlers::handle_agent_wipe_confirmation(bot, msg, dialogue).await {
+                        error!("Agent wipe confirmation handler error: {}", e);
+                    }
+                    respond(())
+                })
         );
 
     info!("Bot is running...");

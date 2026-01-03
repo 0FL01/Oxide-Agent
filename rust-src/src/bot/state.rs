@@ -7,4 +7,6 @@ pub enum State {
     EditingPrompt,
     /// Agent mode for complex task execution
     AgentMode,
+    /// Confirmation for wiping agent memory/container
+    AgentWipeConfirmation,
 }

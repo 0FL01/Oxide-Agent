@@ -9,7 +9,7 @@ use crate::sandbox::SandboxManager;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Status of an agent session
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -120,14 +120,8 @@ impl AgentSession {
         self.current_task_id = None;
         self.progress_message_id = None;
 
-        // Destroy sandbox if exists
-        if let Some(mut sandbox) = self.sandbox.take() {
-            if let Err(e) = sandbox.destroy().await {
-                warn!(error = %e, "Failed to destroy sandbox during reset");
-            } else {
-                info!(user_id = self.user_id, "Sandbox destroyed on session reset");
-            }
-        }
+        // Sandbox is persistent, do NOT destroy it here
+        // if let Some(mut sandbox) = self.sandbox.take() { ... }
     }
 
     /// Check if the session is currently processing a task
