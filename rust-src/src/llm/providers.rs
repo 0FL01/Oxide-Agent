@@ -116,15 +116,19 @@ impl LlmProvider for GroqProvider {
 
 pub struct MistralProvider {
     client: Client<OpenAIConfig>,
+    http_client: HttpClient,
+    api_key: String,
 }
 
 impl MistralProvider {
     pub fn new(api_key: String) -> Self {
         let config = OpenAIConfig::new()
-            .with_api_key(api_key)
+            .with_api_key(api_key.clone())
             .with_api_base("https://api.mistral.ai/v1");
         Self {
             client: Client::with_config(config),
+            http_client: HttpClient::new(),
+            api_key,
         }
     }
 
@@ -137,87 +141,120 @@ impl MistralProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<super::ChatResponse, super::LlmError> {
-        use async_openai::types::chat::{
-            ChatCompletionMessageToolCalls, ChatCompletionRequestToolMessageArgs,
-            ChatCompletionTool, ChatCompletionTools, FunctionObject,
-        };
+        // Manually implement request to handle missing "type" field in tool_calls
+        // which async-openai strictly requires but Mistral/OpenRouter might omit.
 
-        let mut messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage> =
-            vec![ChatCompletionRequestSystemMessageArgs::default()
-                .content(system_prompt)
-                .build()
-                .map_err(|e: async_openai::error::OpenAIError| {
-                    super::LlmError::Unknown(e.to_string())
-                })?
-                .into()];
+        let url = "https://api.mistral.ai/v1/chat/completions";
 
-        // Build messages from history (including tool messages)
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": system_prompt
+        })];
+
         for msg in history {
-            let m: async_openai::types::chat::ChatCompletionRequestMessage = match msg.role.as_str()
-            {
-                "user" => ChatCompletionRequestUserMessageArgs::default()
-                    .content(msg.content.clone())
-                    .build()
-                    .map_err(|e: async_openai::error::OpenAIError| {
-                        super::LlmError::Unknown(e.to_string())
-                    })?
-                    .into(),
+            match msg.role.as_str() {
                 "tool" => {
-                    // Tool response message
-                    ChatCompletionRequestToolMessageArgs::default()
-                        .tool_call_id(msg.tool_call_id.clone().unwrap_or_default())
-                        .content(msg.content.clone())
-                        .build()
-                        .map_err(|e: async_openai::error::OpenAIError| {
-                            super::LlmError::Unknown(e.to_string())
-                        })?
-                        .into()
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content
+                    }));
                 }
-                _ => ChatCompletionRequestAssistantMessageArgs::default()
-                    .content(msg.content.clone())
-                    .build()
-                    .map_err(|e: async_openai::error::OpenAIError| {
-                        super::LlmError::Unknown(e.to_string())
-                    })?
-                    .into(),
-            };
-            messages.push(m);
+                _ => {
+                    let m = json!({
+                        "role": msg.role,
+                        "content": msg.content
+                    });
+                    if let Some(_tool_calls) = &msg.tool_call_id {
+                        // This is a bit hacky, but for assistant messages with tool calls
+                        // we usually don't have them in history in this exact struct format
+                        // The history stores flattened messages.
+                        // For now, standard history reconstruction:
+                    }
+                    messages.push(m);
+                }
+            }
         }
 
-        // Build tool definitions using the ChatCompletionTools enum
-        let openai_tools: Vec<ChatCompletionTools> = tools
+        // Add tool definitions
+        let openai_tools: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
-                ChatCompletionTools::Function(ChatCompletionTool {
-                    function: FunctionObject {
-                        name: t.name.clone(),
-                        description: Some(t.description.clone()),
-                        parameters: Some(t.parameters.clone()),
-                        strict: None,
-                    },
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
                 })
             })
             .collect();
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(model_id)
-            .messages(messages)
-            .tools(openai_tools)
-            .max_tokens(max_tokens)
-            .temperature(0.7)
-            .build()
-            .map_err(|e: async_openai::error::OpenAIError| {
-                super::LlmError::Unknown(e.to_string())
-            })?;
+        let body = json!({
+            "model": model_id,
+            "messages": messages,
+            "tools": openai_tools,
+            "max_tokens": max_tokens,
+            "temperature": 0.7
+        });
 
         let response = self
-            .client
-            .chat()
-            .create(request)
+            .http_client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&body)
+            .send()
             .await
-            .map_err(|e| super::LlmError::ApiError(e.to_string()))?;
+            .map_err(|e| super::LlmError::NetworkError(e.to_string()))?;
 
-        let choice = response
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(super::LlmError::ApiError(format!(
+                "Mistral API error: {} - {}",
+                status, error_text
+            )));
+        }
+
+        // Lenient parsing logic
+        #[derive(serde::Deserialize, Debug)]
+        struct LenientToolCallFunction {
+            name: String,
+            arguments: String,
+        }
+
+        #[derive(serde::Deserialize, Debug)]
+        struct LenientToolCall {
+            id: String,
+            #[serde(rename = "type")]
+            _type: Option<String>, // We don't care if it's missing
+            function: LenientToolCallFunction,
+        }
+
+        #[derive(serde::Deserialize, Debug)]
+        struct LenientMessage {
+            content: Option<String>,
+            tool_calls: Option<Vec<LenientToolCall>>,
+        }
+
+        #[derive(serde::Deserialize, Debug)]
+        struct LenientChoice {
+            message: LenientMessage,
+            finish_reason: Option<String>,
+        }
+
+        #[derive(serde::Deserialize, Debug)]
+        struct LenientResponse {
+            choices: Vec<LenientChoice>,
+        }
+
+        let res_json: LenientResponse = response
+            .json()
+            .await
+            .map_err(|e| super::LlmError::JsonError(e.to_string()))?;
+
+        let choice = res_json
             .choices
             .first()
             .ok_or_else(|| super::LlmError::ApiError("Empty response".to_string()))?;
@@ -225,29 +262,22 @@ impl MistralProvider {
         let content = choice.message.content.clone();
         let finish_reason = choice
             .finish_reason
-            .as_ref()
-            .map(|r| format!("{:?}", r))
+            .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Extract tool calls from the enum
-        let tool_calls: Vec<super::ToolCall> = choice
+        let tool_calls = choice
             .message
             .tool_calls
             .as_ref()
             .map(|calls| {
                 calls
                     .iter()
-                    .filter_map(|tc| match tc {
-                        ChatCompletionMessageToolCalls::Function(func_call) => {
-                            Some(super::ToolCall {
-                                id: func_call.id.clone(),
-                                function: super::ToolCallFunction {
-                                    name: func_call.function.name.clone(),
-                                    arguments: func_call.function.arguments.clone(),
-                                },
-                            })
-                        }
-                        _ => None, // Skip custom tools
+                    .map(|tc| super::ToolCall {
+                        id: tc.id.clone(),
+                        function: super::ToolCallFunction {
+                            name: tc.function.name.clone(),
+                            arguments: tc.function.arguments.clone(),
+                        },
                     })
                     .collect()
             })

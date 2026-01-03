@@ -220,6 +220,37 @@ pub async fn handle_text(
                 .await?;
             return Ok(());
         }
+        "⬅️ Выйти из режима агента" => {
+            info!(
+                "User {} clicked 'Exit Agent Mode' from global handler.",
+                user_id
+            );
+            // Even if we are not in agent mode, we should confirm exit and show main keyboard
+            bot.send_message(msg.chat.id, "👋 Вышли из режима агента")
+                .reply_markup(get_main_keyboard())
+                .await?;
+            return Ok(());
+        }
+        "❌ Отменить задачу" => {
+            info!(
+                "User {} clicked 'Cancel Task' from global handler.",
+                user_id
+            );
+            bot.send_message(msg.chat.id, "Нет активной задачи для отмены.")
+                .reply_markup(get_main_keyboard())
+                .await?;
+            return Ok(());
+        }
+        "🗑 Очистить память" => {
+            info!(
+                "User {} clicked 'Clear Memory' from global handler.",
+                user_id
+            );
+            bot.send_message(msg.chat.id, "Память агента не активна.")
+                .reply_markup(get_main_keyboard())
+                .await?;
+            return Ok(());
+        }
         _ => {}
     }
 
