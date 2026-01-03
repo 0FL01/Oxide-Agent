@@ -27,6 +27,12 @@ fn get_user_name(msg: &Message) -> String {
     "Unknown".to_string()
 }
 
+/// Safely extract user_id from Message.
+/// Returns 0 if user info is not available (e.g., channel messages).
+fn get_user_id_safe(msg: &Message) -> i64 {
+    msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0)
+}
+
 /// Safely truncates a string to a maximum character length (not bytes).
 /// This is UTF-8 safe and will not panic on multi-byte characters.
 fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
@@ -124,7 +130,7 @@ pub fn get_model_keyboard() -> KeyboardMarkup {
 }
 
 pub async fn start(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
-    let user_id = msg.from.as_ref().unwrap().id.0 as i64;
+    let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
     info!("User {} ({}) initiated /start command.", user_id, user_name);
@@ -151,7 +157,7 @@ pub async fn start(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()
 }
 
 pub async fn clear(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
-    let user_id = msg.from.as_ref().unwrap().id.0 as i64;
+    let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
     info!("User {} ({}) initiated context clear.", user_id, user_name);
@@ -191,7 +197,7 @@ pub async fn handle_text(
     settings: Arc<Settings>,
 ) -> Result<()> {
     let text = msg.text().unwrap_or("");
-    let user_id = msg.from.as_ref().unwrap().id.0 as i64;
+    let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
     let photo = msg.photo().is_some();
@@ -354,7 +360,7 @@ pub async fn handle_editing_prompt(
     dialogue: Dialogue<State, teloxide::dispatching::dialogue::InMemStorage<State>>,
 ) -> Result<()> {
     let text = msg.text().unwrap_or("");
-    let user_id = msg.from.as_ref().unwrap().id.0 as i64;
+    let user_id = get_user_id_safe(&msg);
 
     if text == "Назад" {
         info!("User {} cancelled prompt editing.", user_id);
@@ -392,7 +398,7 @@ async fn process_llm_request(
     llm: Arc<LlmClient>,
     text: String,
 ) -> Result<()> {
-    let user_id = msg.from.as_ref().unwrap().id.0 as i64;
+    let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
     info!(
@@ -555,7 +561,7 @@ pub async fn handle_voice(
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, teloxide::dispatching::dialogue::InMemStorage<State>>,
 ) -> Result<()> {
-    let user_id = msg.from.as_ref().unwrap().id.0 as i64;
+    let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
     info!(
@@ -644,7 +650,7 @@ pub async fn handle_photo(
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, teloxide::dispatching::dialogue::InMemStorage<State>>,
 ) -> Result<()> {
-    let user_id = msg.from.as_ref().unwrap().id.0 as i64;
+    let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
     info!("Processing photo from user {} ({}).", user_id, user_name);

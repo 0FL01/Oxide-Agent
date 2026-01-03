@@ -158,14 +158,27 @@ impl R2Storage {
         self.save_json(&user_config_key(user_id), &config).await
     }
 
+    /// Atomically modify user config using a closure.
+    /// This ensures read-modify-write happens in a single operation,
+    /// preventing race conditions when multiple fields are updated concurrently.
+    pub async fn modify_user_config<F>(&self, user_id: i64, modifier: F) -> Result<(), StorageError>
+    where
+        F: FnOnce(&mut UserConfig),
+    {
+        let mut config = self.get_user_config(user_id).await?;
+        modifier(&mut config);
+        self.update_user_config(user_id, config).await
+    }
+
     pub async fn update_user_prompt(
         &self,
         user_id: i64,
         system_prompt: String,
     ) -> Result<(), StorageError> {
-        let mut config = self.get_user_config(user_id).await?;
-        config.system_prompt = Some(system_prompt);
-        self.update_user_config(user_id, config).await
+        self.modify_user_config(user_id, |config| {
+            config.system_prompt = Some(system_prompt);
+        })
+        .await
     }
 
     pub async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError> {
@@ -178,9 +191,10 @@ impl R2Storage {
         user_id: i64,
         model_name: String,
     ) -> Result<(), StorageError> {
-        let mut config = self.get_user_config(user_id).await?;
-        config.model_name = Some(model_name);
-        self.update_user_config(user_id, config).await
+        self.modify_user_config(user_id, |config| {
+            config.model_name = Some(model_name);
+        })
+        .await
     }
 
     pub async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError> {
@@ -189,9 +203,10 @@ impl R2Storage {
     }
 
     pub async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
-        let mut config = self.get_user_config(user_id).await?;
-        config.state = Some(state);
-        self.update_user_config(user_id, config).await
+        self.modify_user_config(user_id, |config| {
+            config.state = Some(state);
+        })
+        .await
     }
 
     pub async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {

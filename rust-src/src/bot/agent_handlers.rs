@@ -171,22 +171,40 @@ pub async fn handle_agent_message(
 }
 
 /// Execute an agent task and return the result
+/// NOTE: Takes the executor out of the map during execution to avoid holding lock
 async fn execute_agent_task(user_id: i64, task: &str) -> Result<String> {
-    let mut sessions = AGENT_SESSIONS.write().await;
-    let executor = sessions
-        .get_mut(&user_id)
-        .ok_or_else(|| anyhow::anyhow!("No agent session found"))?;
+    // Take the executor out of the map to avoid holding lock during execution
+    let mut executor = {
+        let mut sessions = AGENT_SESSIONS.write().await;
+        sessions
+            .remove(&user_id)
+            .ok_or_else(|| anyhow::anyhow!("No agent session found"))?
+    };
+    // Lock is now released
 
     // Check timeout
     if executor.is_timed_out() {
         executor.reset().await;
+        // Put it back before returning error
+        {
+            let mut sessions = AGENT_SESSIONS.write().await;
+            sessions.insert(user_id, executor);
+        }
         return Err(anyhow::anyhow!(
             "Предыдущая сессия истекла по таймауту. Начинаю новую сессию."
         ));
     }
 
-    // Execute the task
-    executor.execute(task).await
+    // Execute the task without holding the lock
+    let result = executor.execute(task).await;
+
+    // Put the executor back
+    {
+        let mut sessions = AGENT_SESSIONS.write().await;
+        sessions.insert(user_id, executor);
+    }
+
+    result
 }
 
 /// Extract input from a message
