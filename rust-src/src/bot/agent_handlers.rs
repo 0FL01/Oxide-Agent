@@ -45,6 +45,7 @@ pub async fn activate_agent_mode(
     msg: Message,
     dialogue: AgentDialogue,
     llm: Arc<LlmClient>,
+    storage: Arc<R2Storage>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
     let chat_id = msg.chat.id.0;
@@ -60,6 +61,11 @@ pub async fn activate_agent_mode(
         let mut sessions = AGENT_SESSIONS.write().await;
         sessions.insert(user_id, executor);
     }
+
+    // Save state to DB
+    storage
+        .update_user_state(user_id, "agent_mode".to_string())
+        .await?;
 
     // Update dialogue state
     dialogue.update(State::AgentMode).await?;
@@ -108,7 +114,7 @@ pub async fn handle_agent_message(
                 return confirm_agent_wipe(bot, msg, dialogue).await;
             }
             "⬅️ Выйти из режима агента" => {
-                return exit_agent_mode(bot, msg, dialogue).await;
+                return exit_agent_mode(bot, msg, dialogue, _storage).await;
             }
             _ => {}
         }
@@ -298,7 +304,12 @@ pub async fn clear_agent_memory(bot: Bot, msg: Message) -> Result<()> {
 }
 
 /// Exit agent mode
-pub async fn exit_agent_mode(bot: Bot, msg: Message, dialogue: AgentDialogue) -> Result<()> {
+pub async fn exit_agent_mode(
+    bot: Bot,
+    msg: Message,
+    dialogue: AgentDialogue,
+    storage: Arc<R2Storage>,
+) -> Result<()> {
     let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
 
     // Remove session
@@ -306,6 +317,14 @@ pub async fn exit_agent_mode(bot: Bot, msg: Message, dialogue: AgentDialogue) ->
         info!(user_id = user_id, "Exiting agent mode and removing session");
         let mut sessions = AGENT_SESSIONS.write().await;
         sessions.remove(&user_id);
+    }
+
+    // Save state "chat_mode" (or clear it) - "chat_mode" is explicit
+    if let Err(e) = storage
+        .update_user_state(user_id, "chat_mode".to_string())
+        .await
+    {
+        error!("Failed to update user state on exit: {}", e);
     }
 
     // Reset dialogue state

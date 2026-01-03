@@ -34,10 +34,51 @@ fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_string();
     }
-    // Find the byte position of the max_chars-th character
     s.char_indices()
         .nth(max_chars)
         .map_or(s.to_string(), |(pos, _)| s[..pos].to_string())
+}
+
+/// Checks if the user has a persisted state and redirects if necessary.
+/// Returns true if redirected (handled), false otherwise.
+async fn check_state_and_redirect(
+    bot: &Bot,
+    msg: &Message,
+    storage: &Arc<R2Storage>,
+    llm: &Arc<LlmClient>,
+    dialogue: &Dialogue<State, teloxide::dispatching::dialogue::InMemStorage<State>>,
+) -> Result<bool> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+
+    // Only check if we are in Start state (which call site ensures typically, but good to know)
+    // Actually this is called from Start state handler, so we are good.
+
+    if let Ok(Some(state_str)) = storage.get_user_state(user_id).await {
+        if state_str == "agent_mode" {
+            info!(
+                "Restoring agent mode for user {} based on persisted state.",
+                user_id
+            );
+            dialogue
+                .update(State::AgentMode)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+
+            // Delegate to agent handler
+            // We need to clone things to pass them, or use refs if the handler took refs (it takes owned)
+            crate::bot::agent_handlers::handle_agent_message(
+                bot.clone(),
+                msg.clone(),
+                storage.clone(),
+                llm.clone(),
+                dialogue.clone(),
+            )
+            .await?;
+
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(BotCommands, Clone)]
@@ -167,6 +208,11 @@ pub async fn handle_text(
         photo
     );
 
+    // Check for state restoration
+    if check_state_and_redirect(&bot, &msg, &storage, &llm, &dialogue).await? {
+        return Ok(());
+    }
+
     match text {
         "Очистить контекст" => {
             info!("User {} clicked 'Очистить контекст'.", user_id);
@@ -217,7 +263,10 @@ pub async fn handle_text(
             }
 
             info!("User {} authorized for Agent Mode. Activating.", user_id);
-            return crate::bot::agent_handlers::activate_agent_mode(bot, msg, dialogue, llm).await;
+            return crate::bot::agent_handlers::activate_agent_mode(
+                bot, msg, dialogue, llm, storage,
+            )
+            .await;
         }
         "Изменить промпт" => {
             info!(
@@ -504,6 +553,7 @@ pub async fn handle_voice(
     msg: Message,
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
+    dialogue: Dialogue<State, teloxide::dispatching::dialogue::InMemStorage<State>>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().unwrap().id.0 as i64;
     let user_name = get_user_name(&msg);
@@ -512,6 +562,11 @@ pub async fn handle_voice(
         "Received voice message from user {} ({}).",
         user_id, user_name
     );
+
+    // Check for state restoration
+    if check_state_and_redirect(&bot, &msg, &storage, &llm, &dialogue).await? {
+        return Ok(());
+    }
 
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
 
@@ -587,11 +642,17 @@ pub async fn handle_photo(
     msg: Message,
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
+    dialogue: Dialogue<State, teloxide::dispatching::dialogue::InMemStorage<State>>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().unwrap().id.0 as i64;
     let user_name = get_user_name(&msg);
 
     info!("Processing photo from user {} ({}).", user_id, user_name);
+
+    // Check for state restoration
+    if check_state_and_redirect(&bot, &msg, &storage, &llm, &dialogue).await? {
+        return Ok(());
+    }
 
     let photo = msg
         .photo()

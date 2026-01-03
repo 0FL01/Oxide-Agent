@@ -206,9 +206,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             |bot: Bot,
                              msg: Message,
                              storage: std::sync::Arc<storage::R2Storage>,
-                             llm: std::sync::Arc<llm::LlmClient>| async move {
+                             llm: std::sync::Arc<llm::LlmClient>,
+                             dialogue: Dialogue<State, InMemStorage<State>>| async move {
                                 if let Err(e) =
-                                    bot::handlers::handle_voice(bot, msg, storage, llm).await
+                                    bot::handlers::handle_voice(bot, msg, storage, llm, dialogue)
+                                        .await
                                 {
                                     error!("Voice handler error: {}", e);
                                 }
@@ -223,9 +225,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             |bot: Bot,
                              msg: Message,
                              storage: std::sync::Arc<storage::R2Storage>,
-                             llm: std::sync::Arc<llm::LlmClient>| async move {
+                             llm: std::sync::Arc<llm::LlmClient>,
+                             dialogue: Dialogue<State, InMemStorage<State>>| async move {
                                 if let Err(e) =
-                                    bot::handlers::handle_photo(bot, msg, storage, llm).await
+                                    bot::handlers::handle_photo(bot, msg, storage, llm, dialogue)
+                                        .await
                                 {
                                     error!("Photo handler error: {}", e);
                                 }

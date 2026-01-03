@@ -28,6 +28,7 @@ pub enum StorageError {
 pub struct UserConfig {
     pub system_prompt: Option<String>,
     pub model_name: Option<String>,
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -185,6 +186,17 @@ impl R2Storage {
     pub async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError> {
         let config = self.get_user_config(user_id).await?;
         Ok(config.model_name)
+    }
+
+    pub async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
+        let mut config = self.get_user_config(user_id).await?;
+        config.state = Some(state);
+        self.update_user_config(user_id, config).await
+    }
+
+    pub async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
+        let config = self.get_user_config(user_id).await?;
+        Ok(config.state)
     }
 
     // --- History Functions ---
