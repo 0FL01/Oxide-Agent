@@ -12,7 +12,7 @@ use bollard::query_parameters::{
 use bollard::Docker;
 use futures_util::StreamExt;
 use std::collections::HashMap;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::config::{
     SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_IMAGE,
@@ -370,10 +370,10 @@ impl SandboxManager {
 
 impl Drop for SandboxManager {
     fn drop(&mut self) {
-        if self.container_id.is_some() {
-            error!(
-                container_id = ?self.container_id,
-                "SandboxManager dropped with active container! Call destroy() explicitly."
+        if let Some(ref id) = self.container_id {
+            info!(
+                container_id = %id,
+                "SandboxManager dropped. Container persists in Docker (intentional)."
             );
         }
     }
