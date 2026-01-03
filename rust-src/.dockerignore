@@ -11,6 +11,7 @@ Cargo.lock
 
 # Documentation
 *.md
+!AGENT.md
 README.md
 LICENSE
 

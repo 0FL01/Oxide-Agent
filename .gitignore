@@ -1,6 +1,5 @@
 .env
 logs
-.dockerignore
 not_env
 fresh_docs.md
 MIGRATION_NOTES.md
