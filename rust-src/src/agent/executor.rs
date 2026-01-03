@@ -111,7 +111,10 @@ impl AgentExecutor {
 
     /// Execute a task with iterative tool calling (agentic loop)
     pub async fn execute(&mut self, task: &str) -> Result<String> {
-        use super::tools::{execute_tool, get_agent_tools};
+        use super::providers::SandboxProvider;
+        #[cfg(feature = "tavily")]
+        use super::providers::TavilyProvider;
+        use super::registry::ToolRegistry;
         use crate::llm::Message;
 
         const MAX_ITERATIONS: usize = 10;
@@ -125,9 +128,27 @@ impl AgentExecutor {
         // Add user message to memory
         self.session.memory.add_message(AgentMessage::user(task));
 
-        // Create the system prompt and get tools
+        // Create the system prompt
         let system_prompt = Self::create_agent_system_prompt();
-        let tools = get_agent_tools();
+
+        // Build tool registry with providers
+        let mut registry = ToolRegistry::new();
+
+        // Add sandbox provider
+        registry.register(Box::new(SandboxProvider::new(self.session.user_id)));
+
+        // Add Tavily provider if API key is set (requires "tavily" feature)
+        #[cfg(feature = "tavily")]
+        if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
+            if !tavily_key.is_empty() {
+                match TavilyProvider::new(&tavily_key) {
+                    Ok(provider) => registry.register(Box::new(provider)),
+                    Err(e) => debug!("Failed to create Tavily provider: {}", e),
+                }
+            }
+        }
+
+        let tools = registry.all_tools();
 
         // Build initial messages from memory
         let mut messages: Vec<Message> = self
@@ -253,14 +274,7 @@ impl AgentExecutor {
                     response.tool_calls.clone(),
                 ));
 
-                // Ensure sandbox is running
-                let sandbox = self
-                    .session
-                    .ensure_sandbox()
-                    .await
-                    .map_err(|e| anyhow!("Failed to create sandbox: {}", e))?;
-
-                // Execute each tool call
+                // Execute each tool call via registry
                 for tool_call in &response.tool_calls {
                     info!(
                         task_id = %task_id,
@@ -268,12 +282,13 @@ impl AgentExecutor {
                         "Executing tool"
                     );
 
-                    let result = execute_tool(
-                        sandbox,
-                        &tool_call.function.name,
-                        &tool_call.function.arguments,
-                    )
-                    .await;
+                    let result = match registry
+                        .execute(&tool_call.function.name, &tool_call.function.arguments)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => format!("Ошибка выполнения инструмента: {}", e),
+                    };
 
                     debug!(
                         task_id = %task_id,

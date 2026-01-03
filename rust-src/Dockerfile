@@ -1,5 +1,9 @@
 # Chef stage - install cargo-chef for dependency caching
 FROM rust:1.92-slim-trixie AS chef
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef
 
 # Planner stage - create dependency recipe
@@ -13,16 +17,19 @@ FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 # Build dependencies - this layer is cached unless dependencies change
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --features tavily --recipe-path recipe.json
 
 # Build application - this layer is rebuilt when source changes
 COPY . .
-RUN cargo build --release
+RUN cargo build --release --features tavily
 
 # Runtime stage - Debian Trixie (stable)
 FROM debian:trixie-slim
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=builder /app/target/release/another-chat-rs /app/another-chat-rs

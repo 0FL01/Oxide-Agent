@@ -18,6 +18,7 @@ pub struct Settings {
     pub zai_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
     pub openrouter_api_key: Option<String>,
+    pub tavily_api_key: Option<String>,
 
     // R2 Storage
     pub r2_access_key_id: Option<String>,
@@ -184,6 +185,7 @@ mod tests {
             zai_api_key: None,
             gemini_api_key: None,
             openrouter_api_key: None,
+            tavily_api_key: None,
             r2_access_key_id: None,
             r2_secret_access_key: None,
             r2_endpoint_url: None,

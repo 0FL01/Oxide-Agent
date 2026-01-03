@@ -9,9 +9,13 @@
 pub mod executor;
 pub mod memory;
 pub mod preprocessor;
+pub mod provider;
+pub mod providers;
+pub mod registry;
 pub mod session;
-pub mod tools;
 
 pub use executor::AgentExecutor;
 pub use memory::AgentMemory;
+pub use provider::ToolProvider;
+pub use registry::ToolRegistry;
 pub use session::{AgentSession, AgentStatus};
