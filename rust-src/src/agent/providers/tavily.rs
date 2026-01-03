@@ -15,6 +15,7 @@ use tracing::debug;
 /// Provider for Tavily web search tools
 pub struct TavilyProvider {
     client: Tavily,
+    api_key: String,
 }
 
 impl TavilyProvider {
@@ -26,7 +27,10 @@ impl TavilyProvider {
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create Tavily client: {}", e))?;
 
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            api_key: api_key.to_string(),
+        })
     }
 }
 
@@ -106,8 +110,8 @@ impl ToolProvider for TavilyProvider {
 
                 debug!(query = %args.query, max_results = max_results, "Tavily web search");
 
-                let request = tavily::SearchRequest::new(&args.query)
-                    .max_results(max_results)
+                let request = tavily::SearchRequest::new(&self.api_key, &args.query)
+                    .max_results(max_results as i32)
                     .search_depth("basic");
 
                 match self.client.call(&request).await {
