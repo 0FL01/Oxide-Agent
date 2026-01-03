@@ -197,14 +197,6 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         },
     ),
     (
-        "GPT-OSS-120b",
-        ModelInfo {
-            id: "openai/gpt-oss-120b",
-            max_tokens: 64000,
-            provider: "groq",
-        },
-    ),
-    (
         "Mistral Large",
         ModelInfo {
             id: "mistral-large-latest",
