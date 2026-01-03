@@ -109,45 +109,155 @@ impl AgentExecutor {
         Ok(rx)
     }
 
-    /// Execute a task synchronously (blocking until complete or timeout)
+    /// Execute a task with iterative tool calling (agentic loop)
     pub async fn execute(&mut self, task: &str) -> Result<String> {
+        use super::tools::{execute_tool, get_agent_tools};
+        use crate::llm::Message;
+
+        const MAX_ITERATIONS: usize = 10;
+
         // Start the task
         self.session.start_task();
+        let task_id = self.session.current_task_id.clone().unwrap_or_default();
+
+        info!(task = %task, task_id = %task_id, "Starting agent task with tool calling");
 
         // Add user message to memory
         self.session.memory.add_message(AgentMessage::user(task));
 
-        // Create the system prompt for the agent
+        // Create the system prompt and get tools
         let system_prompt = Self::create_agent_system_prompt();
+        let tools = get_agent_tools();
 
-        // Build conversation history
-        let history = self.build_history_for_llm();
+        // Build initial messages from memory
+        let mut messages: Vec<Message> = self
+            .session
+            .memory
+            .get_messages()
+            .iter()
+            .map(|msg| {
+                let role = match msg.role {
+                    super::memory::MessageRole::User => "user",
+                    super::memory::MessageRole::Assistant => "assistant",
+                    super::memory::MessageRole::System => "system",
+                };
+                Message {
+                    role: role.to_string(),
+                    content: msg.content.clone(),
+                    tool_call_id: None,
+                    name: None,
+                }
+            })
+            .collect();
 
         // Execute with timeout
         let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);
 
-        match timeout(
-            timeout_duration,
-            self.call_agent(&system_prompt, &history, task),
-        )
-        .await
-        {
-            Ok(result) => {
-                match result {
-                    Ok(response) => {
-                        // Add assistant response to memory
-                        self.session
-                            .memory
-                            .add_message(AgentMessage::assistant(&response));
-                        self.session.complete();
-                        Ok(response)
-                    }
-                    Err(e) => {
-                        self.session.fail(e.to_string());
-                        Err(e)
-                    }
+        let result = timeout(timeout_duration, async {
+            // Agentic loop
+            for iteration in 0..MAX_ITERATIONS {
+                debug!(
+                    task_id = %task_id,
+                    iteration = iteration,
+                    messages_count = messages.len(),
+                    "Agent loop iteration"
+                );
+
+                // Call LLM with tools
+                let response = self
+                    .llm_client
+                    .chat_with_tools(&system_prompt, &messages, &tools, AGENT_MODEL)
+                    .await
+                    .map_err(|e| anyhow!("LLM call failed: {}", e))?;
+
+                debug!(
+                    task_id = %task_id,
+                    tool_calls_count = response.tool_calls.len(),
+                    finish_reason = %response.finish_reason,
+                    "LLM response received"
+                );
+
+                // Check if there are no tool calls - this means final answer
+                if response.tool_calls.is_empty() {
+                    let final_response = response
+                        .content
+                        .unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
+
+                    // Add assistant response to memory
+                    self.session
+                        .memory
+                        .add_message(AgentMessage::assistant(&final_response));
+                    self.session.complete();
+
+                    info!(
+                        task_id = %task_id,
+                        iterations = iteration + 1,
+                        "Agent task completed successfully"
+                    );
+                    return Ok(final_response);
+                }
+
+                // Add assistant message with tool calls placeholder
+                // (We need to record that assistant requested tools)
+                let tool_names: Vec<String> = response
+                    .tool_calls
+                    .iter()
+                    .map(|tc| tc.function.name.clone())
+                    .collect();
+                messages.push(Message::assistant(&format!(
+                    "[Вызов инструментов: {}]",
+                    tool_names.join(", ")
+                )));
+
+                // Ensure sandbox is running
+                let sandbox = self
+                    .session
+                    .ensure_sandbox()
+                    .await
+                    .map_err(|e| anyhow!("Failed to create sandbox: {}", e))?;
+
+                // Execute each tool call
+                for tool_call in &response.tool_calls {
+                    info!(
+                        task_id = %task_id,
+                        tool = %tool_call.function.name,
+                        "Executing tool"
+                    );
+
+                    let result = execute_tool(
+                        sandbox,
+                        &tool_call.function.name,
+                        &tool_call.function.arguments,
+                    )
+                    .await;
+
+                    debug!(
+                        task_id = %task_id,
+                        tool = %tool_call.function.name,
+                        result_len = result.len(),
+                        "Tool execution completed"
+                    );
+
+                    // Add tool result to messages
+                    messages.push(Message::tool(
+                        &tool_call.id,
+                        &tool_call.function.name,
+                        &result,
+                    ));
                 }
             }
+
+            // Max iterations reached
+            self.session.fail("Превышен лимит итераций".to_string());
+            Err(anyhow!(
+                "Агент превысил лимит итераций ({}). Возможно, задача слишком сложная.",
+                MAX_ITERATIONS
+            ))
+        })
+        .await;
+
+        match result {
+            Ok(inner_result) => inner_result,
             Err(_) => {
                 self.session.timeout();
                 Err(anyhow!(
@@ -190,6 +300,8 @@ impl AgentExecutor {
             messages.push(crate::llm::Message {
                 role: role.to_string(),
                 content: msg.content.clone(),
+                tool_call_id: None,
+                name: None,
             });
         }
 
@@ -229,59 +341,25 @@ impl AgentExecutor {
         Ok(response)
     }
 
-    /// Call the agent LLM
-    async fn call_agent(
-        &self,
-        system_prompt: &str,
-        history: &[crate::llm::Message],
-        user_message: &str,
-    ) -> Result<String> {
-        self.llm_client
-            .chat_completion(system_prompt, history, user_message, AGENT_MODEL)
-            .await
-            .map_err(|e| anyhow!("Agent LLM call failed: {}", e))
-    }
-
-    /// Build LLM message history from agent memory
-    fn build_history_for_llm(&self) -> Vec<crate::llm::Message> {
-        self.session
-            .memory
-            .get_messages()
-            .iter()
-            .map(|msg| {
-                let role = match msg.role {
-                    super::memory::MessageRole::User => "user",
-                    super::memory::MessageRole::Assistant => "assistant",
-                    super::memory::MessageRole::System => "system",
-                };
-                crate::llm::Message {
-                    role: role.to_string(),
-                    content: msg.content.clone(),
-                }
-            })
-            .collect()
-    }
-
     /// Create the system prompt for the agent
     fn create_agent_system_prompt() -> String {
-        r#"Ты - AI-агент, специализирующийся на решении сложных задач.
+        r#"Ты - AI-агент с доступом к изолированной среде выполнения (sandbox).
 
-## Твои возможности:
-- Декомпозиция сложных задач на подзадачи
-- Пошаговое решение с объяснениями
-- Анализ и структурирование информации
-- Генерация кода, текстов, планов
+## Доступные инструменты:
+- **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, curl, wget, date, cat, ls, grep и другие стандартные утилиты)
+- **write_file**: записать содержимое в файл
+- **read_file**: прочитать содержимое файла
 
-## Формат ответа:
-1. **Анализ задачи** - кратко опиши понимание задачи
-2. **План решения** - перечисли шаги (если задача сложная)
-3. **Решение** - выполни задачу пошагово
-4. **Итог** - краткое резюме результата
+## Важные правила:
+- Если нужны реальные данные (дата, время, сетевые запросы) - ИСПОЛЬЗУЙ ИНСТРУМЕНТЫ, не объясняй как это сделать
+- Если нужна текущая дата - вызови execute_command с командой `date`
+- Для вычислений используй Python: execute_command с `python3 -c "..."`
+- Результаты выполнения инструментов будут возвращены тебе автоматически
+- После получения результата инструмента - проанализируй его и дай окончательный ответ
 
-## Важно:
-- Будь конкретным и практичным
-- Если нужна дополнительная информация - запроси её
-- При ошибках объясняй причину и предлагай альтернативы
+## Формат ответа (когда даёшь окончательный ответ):
+- Кратко опиши выполненные шаги
+- Дай чёткий результат
 - Используй markdown для форматирования"#
             .to_string()
     }

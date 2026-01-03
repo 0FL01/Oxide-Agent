@@ -10,6 +10,7 @@ pub mod executor;
 pub mod memory;
 pub mod preprocessor;
 pub mod session;
+pub mod tools;
 
 pub use executor::AgentExecutor;
 pub use memory::AgentMemory;

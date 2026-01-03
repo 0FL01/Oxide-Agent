@@ -127,6 +127,138 @@ impl MistralProvider {
             client: Client::with_config(config),
         }
     }
+
+    /// Chat completion with tool calling support for agent mode
+    pub async fn chat_with_tools(
+        &self,
+        system_prompt: &str,
+        history: &[super::Message],
+        tools: &[super::ToolDefinition],
+        model_id: &str,
+        max_tokens: u32,
+    ) -> Result<super::ChatResponse, super::LlmError> {
+        use async_openai::types::chat::{
+            ChatCompletionMessageToolCalls, ChatCompletionRequestToolMessageArgs,
+            ChatCompletionTool, ChatCompletionTools, FunctionObject,
+        };
+
+        let mut messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage> =
+            vec![ChatCompletionRequestSystemMessageArgs::default()
+                .content(system_prompt)
+                .build()
+                .map_err(|e: async_openai::error::OpenAIError| {
+                    super::LlmError::Unknown(e.to_string())
+                })?
+                .into()];
+
+        // Build messages from history (including tool messages)
+        for msg in history {
+            let m: async_openai::types::chat::ChatCompletionRequestMessage = match msg.role.as_str()
+            {
+                "user" => ChatCompletionRequestUserMessageArgs::default()
+                    .content(msg.content.clone())
+                    .build()
+                    .map_err(|e: async_openai::error::OpenAIError| {
+                        super::LlmError::Unknown(e.to_string())
+                    })?
+                    .into(),
+                "tool" => {
+                    // Tool response message
+                    ChatCompletionRequestToolMessageArgs::default()
+                        .tool_call_id(msg.tool_call_id.clone().unwrap_or_default())
+                        .content(msg.content.clone())
+                        .build()
+                        .map_err(|e: async_openai::error::OpenAIError| {
+                            super::LlmError::Unknown(e.to_string())
+                        })?
+                        .into()
+                }
+                _ => ChatCompletionRequestAssistantMessageArgs::default()
+                    .content(msg.content.clone())
+                    .build()
+                    .map_err(|e: async_openai::error::OpenAIError| {
+                        super::LlmError::Unknown(e.to_string())
+                    })?
+                    .into(),
+            };
+            messages.push(m);
+        }
+
+        // Build tool definitions using the ChatCompletionTools enum
+        let openai_tools: Vec<ChatCompletionTools> = tools
+            .iter()
+            .map(|t| {
+                ChatCompletionTools::Function(ChatCompletionTool {
+                    function: FunctionObject {
+                        name: t.name.clone(),
+                        description: Some(t.description.clone()),
+                        parameters: Some(t.parameters.clone()),
+                        strict: None,
+                    },
+                })
+            })
+            .collect();
+
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(model_id)
+            .messages(messages)
+            .tools(openai_tools)
+            .max_tokens(max_tokens)
+            .temperature(0.7)
+            .build()
+            .map_err(|e: async_openai::error::OpenAIError| {
+                super::LlmError::Unknown(e.to_string())
+            })?;
+
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
+            .map_err(|e| super::LlmError::ApiError(e.to_string()))?;
+
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| super::LlmError::ApiError("Empty response".to_string()))?;
+
+        let content = choice.message.content.clone();
+        let finish_reason = choice
+            .finish_reason
+            .as_ref()
+            .map(|r| format!("{:?}", r))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Extract tool calls from the enum
+        let tool_calls: Vec<super::ToolCall> = choice
+            .message
+            .tool_calls
+            .as_ref()
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|tc| match tc {
+                        ChatCompletionMessageToolCalls::Function(func_call) => {
+                            Some(super::ToolCall {
+                                id: func_call.id.clone(),
+                                function: super::ToolCallFunction {
+                                    name: func_call.function.name.clone(),
+                                    arguments: func_call.function.arguments.clone(),
+                                },
+                            })
+                        }
+                        _ => None, // Skip custom tools
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(super::ChatResponse {
+            content,
+            tool_calls,
+            finish_reason,
+        })
+    }
 }
 
 #[async_trait]

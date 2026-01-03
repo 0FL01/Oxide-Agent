@@ -22,6 +22,71 @@ pub enum LlmError {
 pub struct Message {
     pub role: String,
     pub content: String,
+    /// Tool call ID (for tool responses)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Tool name (for tool responses)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Message {
+    pub fn user(content: &str) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    pub fn assistant(content: &str) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
+        Self {
+            role: "tool".to_string(),
+            content: content.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            name: Some(name.to_string()),
+        }
+    }
+}
+
+/// Tool definition for LLM function calling
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+/// Tool call from LLM response
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "function")]
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
+/// Chat response that may include tool calls
+#[derive(Debug, Clone)]
+pub struct ChatResponse {
+    pub content: Option<String>,
+    pub tool_calls: Vec<ToolCall>,
+    pub finish_reason: String,
 }
 
 #[async_trait::async_trait]
@@ -165,6 +230,79 @@ impl LlmClient {
                     duration_ms = duration.as_millis(),
                     error = %e,
                     "Received error response from LLM"
+                );
+            }
+        }
+
+        result
+    }
+
+    /// Chat completion with tool calling support (for agent mode)
+    /// Currently only supported by Mistral provider (Devstral model)
+    #[instrument(skip(self, system_prompt, messages, tools))]
+    pub async fn chat_with_tools(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model_name: &str,
+    ) -> Result<ChatResponse, LlmError> {
+        use crate::config::MODELS;
+
+        let model_info = MODELS
+            .iter()
+            .find(|(name, _)| *name == model_name)
+            .map(|(_, info)| info)
+            .ok_or_else(|| LlmError::Unknown(format!("Model {} not found", model_name)))?;
+
+        // Only Mistral provider supports tool calling currently
+        if model_info.provider != "mistral" {
+            return Err(LlmError::Unknown(format!(
+                "Tool calling not supported for provider: {}",
+                model_info.provider
+            )));
+        }
+
+        let mistral = self
+            .mistral
+            .as_ref()
+            .ok_or_else(|| LlmError::MissingConfig("mistral".to_string()))?;
+
+        debug!(
+            model = model_name,
+            tools_count = tools.len(),
+            messages_count = messages.len(),
+            "Sending tool-enabled request to LLM"
+        );
+
+        let start = std::time::Instant::now();
+        let result = mistral
+            .chat_with_tools(
+                system_prompt,
+                messages,
+                tools,
+                model_info.id,
+                model_info.max_tokens,
+            )
+            .await;
+        let duration = start.elapsed();
+
+        match &result {
+            Ok(resp) => {
+                debug!(
+                    model = model_name,
+                    duration_ms = duration.as_millis(),
+                    tool_calls_count = resp.tool_calls.len(),
+                    finish_reason = %resp.finish_reason,
+                    "Received tool response from LLM"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    model = model_name,
+                    duration_ms = duration.as_millis(),
+                    error = %e,
+                    "Tool-enabled LLM request failed"
                 );
             }
         }
