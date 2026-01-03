@@ -25,7 +25,6 @@ async-trait = "0.1.89"
 teloxide = { version = "0.17.0", features = ["ctrlc_handler", "macros", "rustls"], default-features = false }
 html-escape = "0.2.13"
 anyhow = "1.0.100"
-rig-core = { version = "0.27.0", default-features = false, features = ["derive", "reqwest-rustls"] }
 tiktoken-rs = "0.9.1"
 once_cell = "1.21.3"
 bollard = "0.19.4"
