@@ -1,71 +1,71 @@
-# Project: Another Chat with LLM
+# Проект: Another Chat with LLM
 
-## 🏗 Project Structure (`rust-src/`)
-- `src/main.rs`: Entry point, initialization, and bot startup.
-- `src/lib.rs`: Library root, module exports and shared functionality.
-- `src/agent/`: Agent Mode logic (session, executor, memory, preprocessor).
-- `src/bot/`: Telegram bot logic (handlers, agent-specific handlers, states).
-- `src/llm/`: LLM provider implementations (Groq, Mistral, Gemini, OpenRouter, Zai) and Trait.
-- `src/sandbox/`: Docker-based execution sandbox manager and orchestration.
-- `src/storage.rs`: Data storage layer (S3/R2 compatibility).
-- `src/config.rs`: Configuration and environment variable loading.
-- `src/utils.rs`: Helper functions (message splitting, formatting).
-- `tests/`: Integration tests.
-- `sandbox/`: Docker resources for sandboxing (e.g., `Dockerfile.sandbox`).
-- `Dockerfile`: Main application Docker image definition.
+## 🏗 Структура проекта (`rust-src/`)
+- `src/main.rs`: Точка входа, инициализация и запуск бота.
+- `src/lib.rs`: Корень библиотеки, экспорт модулей и общий функционал.
+- `src/agent/`: Логика режима Агента (сессия, исполнитель, память, препроцессор).
+- `src/bot/`: Логика Telegram-бота (обработчики, специфичные для агента обработчики, состояния).
+- `src/llm/`: Реализации провайдеров LLM (Groq, Mistral, Gemini, OpenRouter, Zai) и трейт.
+- `src/sandbox/`: Менеджер и оркестрация песочницы для выполнения кода на базе Docker.
+- `src/storage.rs`: Слой хранения данных (совместимость с S3/R2).
+- `src/config.rs`: Конфигурация и загрузка переменных окружения.
+- `src/utils.rs`: Вспомогательные функции (разделение сообщений, форматирование).
+- `tests/`: Интеграционные тесты.
+- `sandbox/`: Ресурсы Docker для песочницы (например, `Dockerfile.sandbox`).
+- `Dockerfile`: Определение Docker-образа основного приложения.
 
-# Rust Development Context & Tooling Guidelines
+# Контекст разработки на Rust и рекомендации по инструментам
 
-**PREFER MCP TOOLS over shell commands** - they're faster, token-optimized, and filter noise:
+**ПРЕДПОЧИТАЙТЕ ИНСТРУМЕНТЫ MCP командам оболочки** — они быстрее, оптимизированы по токенам и фильтруют лишний шум:
 
-**Shell fallback**: Only use shell commands when MCP tools aren't available or for operations not covered.
+**Запасной вариант (Shell)**: Используйте команды оболочки только тогда, когда инструменты MCP недоступны или для операций, которые ими не охвачены.
 
-## 🛡️ IMPORTANT: Tool Usage & Token Economy
-**DO NOT** run verbose shell commands (like `cargo metadata` or `ls -R`) unless absolutely necessary.
-**ALWAYS** prefer the specialized tools provided below. They return structured, concise data designed to save context window tokens.
+## 🛡️ ВАЖНО: Использование инструментов и экономия токенов
+**НЕ ЗАПУСКАЙТЕ** громоздкие команды оболочки (такие как `cargo metadata` или `ls -R`), если в этом нет крайней необходимости.
+**ВСЕГДА** отдавайте предпочтение специализированным инструментам, указанным ниже. Они возвращают структурированные, краткие данные, предназначенные для экономии токенов окна контекста.
 
-## 🛠️ Operational Guidelines
+## 🛠️ Операционные рекомендации
 
-### 1. Project Structure & Metadata
-- **Initial Context**: Use `workspace-info` immediately to understand the project topology (members, packages) without the heavy payload of `cargo metadata`.
-- **Dependency Info**: Use `cargo-info [crate]` to fetch details. Avoid reading `Cargo.toml` manually.
-- **Explain Errors**: If the compiler gives an error code (e.g., E0308), **always** run `rustc-explain [code]` before attempting a fix.
+### 1. Структура проекта и метаданные
+- **Начальный контекст**: Немедленно используйте `workspace-info`, чтобы понять топологию проекта (члены, пакеты) без тяжелой нагрузки `cargo metadata`.
+- **Информация о зависимостях**: Используйте `cargo-info [crate]` для получения подробностей. Избегайте ручного чтения `Cargo.toml`.
+- **Объяснение ошибок**: Если компилятор выдает код ошибки (например, E0308), **всегда** запускайте `rustc-explain [code]`, прежде чем пытаться исправить её.
 
-### 2. Building & Checking Code
-- **Quick Check**: Use `cargo-check`. This is faster and cheaper than build.
-- **Full Build**: Use `cargo-build` only when executables are required.
-- **Testing**:
-    - Use `cargo-test` for standard runs.
-    - Use `cargo-hack` to verify feature flag combinations if the issue might be feature-gated.
+### 2. Сборка и проверка кода
+- **Быстрая проверка**: Используйте `cargo-check`. Это быстрее и дешевле, чем сборка.
+- **Полная сборка**: Используйте `cargo-build` только тогда, когда требуются исполняемые файлы.
+- **Тестирование**:
+    - Используйте `cargo-test` для стандартных запусков.
+    - Используйте `cargo-hack` для проверки комбинаций флагов функций (feature flags), если проблема может быть связана с ними.
 
-### 3. Web Search & Documentation (Tavily)
-**Stop guessing.** Use real-time data for both general info and library documentation:
-1.  **Search**: Use `tavily-search` for overall context, news, or specific library docs.
-2.  **Content**: Use `tavily-extract` to get clean markdown from relevant URLs.
-3.  **Site Analysis**: Use `tavily-crawl` to explore site hierarchies if needed.
+### 3. Веб-поиск и документация (Tavily)
+**Хватит гадать.** Используйте данные в реальном времени как для общей информации, так и для документации библиотек:
+1.  **Поиск**: Используйте `tavily-search` для общего контекста, новостей или документации конкретных библиотек.
+2.  **Контент**: Используйте `tavily-extract`, чтобы получить чистый markdown из релевантных URL.
+3.  **Анализ сайта**: Используйте `tavily-crawl` для изучения иерархии сайтов, если это необходимо.
 
-### 4. Dependency Management
-- **Adding/Removing**: Use `cargo-add` and `cargo-remove`.
-- **Updates**: Use `cargo-update` to bump lockfile versions.
-- **Cleanup**: Use `cargo-machete` periodically to identify unused deps.
+### 4. Управление зависимостями
+- **Добавление/удаление**: Используйте `cargo-add` и `cargo-remove`.
+- **Обновления**: Используйте `cargo-update` для поднятия версий в lock-файле.
+- **Очистка**: Периодически используйте `cargo-machete` для выявления неиспользуемых зависимостей.
 
-### 5. Code Quality & Security
-- **Linting**: Run `cargo-clippy` before proposing final code changes.
-- **Formatting**: MANDATORY. Run `cargo-fmt` (via `mcp:rust-mcp-server`) before ANY code submission to pass CI.
-- **Security**: Use `cargo-deny-check` to audit licenses and advisories.
+### 5. Качество кода и безопасность
+- **Линтинг**: Запустите `cargo-clippy` перед предложением окончательных изменений кода.
+- **Форматирование**: ОБЯЗАТЕЛЬНО. Запустите `cargo-fmt` (через `mcp:rust-mcp-server`) перед ЛЮБОЙ отправкой кода для прохождения CI.
+- **Безопасность**: Используйте `cargo-deny-check` для аудита лицензий и уязвимостей.
 
-## 📝 Coding Style & Etiquette
-- **Idiomatic Rust**: Prefer `Result`/`Option` combinators (`map`, `and_then`) over explicit `match` where readable.
-- **Error Handling**: Use `thiserror` for libraries and `anyhow` for applications unless specified otherwise.
-- **Async**: Assume `tokio` runtime unless `async-std` is present in `workspace-info`.
-- **Comments**: Write doc comments (`///`) for public APIs.
+## 📝 Стиль кодирования и этикет
+- **Идиоматичный Rust**: Предпочитайте комбинаторы `Result`/`Option` (`map`, `and_then`) явному `match`, где это читаемо.
+- **Обработка ошибок**: Используйте `thiserror` для библиотек и `anyhow` для приложений, если не указано иное.
+- **Async**: Предполагайте использование рантайма `tokio`, если в `workspace-info` не указан `async-std`.
+- **Комментарии**: Пишите документационные комментарии (`///`) для публичных API.
 
-## ⚡ Tool Map (Intent -> Command)
-| Intent | Preferred Tool |
+## ⚡ Карта инструментов (Намерение -> Команда)
+| Намерение | Предпочтительный инструмент |
 | :--- | :--- |
-| "Does this code compile?" | `cargo-check` |
-| "What features does X have?" | `cargo-info X` |
-| "What is error E0xxx?" | `rustc-explain E0xxx` |
-| "Clean up unused deps" | `cargo-machete` |
-| "Check detailed compatibility" | `cargo-hack` |
-| "Research/Docs/Search" | `tavily-search` -> `tavily-extract` |
+| "Компилируется ли этот код?" | `cargo-check` |
+| "Какие функции (features) есть у X?" | `cargo-info X` |
+| "Что за ошибка E0xxx?" | `rustc-explain E0xxx` |
+| "Очистить неиспользуемые зависимости" | `cargo-machete` |
+| "Проверить детальную совместимость" | `cargo-hack` |
+| "Поиск/Документация/Веб" | `tavily-search` -> `tavily-extract` |

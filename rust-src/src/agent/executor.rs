@@ -146,6 +146,50 @@ impl AgentExecutor {
                     content: msg.content.clone(),
                     tool_call_id: None,
                     name: None,
+                    tool_calls: None, // We don't have tool calls in AgentMessage yet, but we will add them manually in the loop if needed?
+                                      // Actually, for history reconstruction from memory, we need to handle potential tool calls if we store them in memory.
+                                      // But currently AgentMessage doesn't store tool calls structure, only content.
+                                      // However, the `messages` vector here is for the CURRENT request.
+                                      // The history in `session.memory` is simple.
+                                      // If we want to support multi-turn with tools, we DO need to reconstruct the `tool_calls` structure from memory
+                                      // OR we just rely on the fact that we're adding them to the `messages` vector in the loop below.
+                                      //
+                                      // WAIT: `messages` vector IS the history sent to LLM.
+                                      // If we restart the loop (e.g. 2nd iteration), `messages` will be rebuilt from memory.
+                                      // BUT `memory` only stores `AgentMessage` which is simple text.
+                                      // PROBLEM: `AgentMessage` loses the `tool_calls` structure.
+                                      //
+                                      // If we want to persist the correct history for the NEXT API call (iteration 2),
+                                      // we need to make sure `messages` vector preserves it.
+                                      // The `messages` vector is initialized OUTSIDE the loop.
+                                      // But inside the loop we push new messages to it.
+                                      //
+                                      // Oh, I see. `messages` is initialized from `memory` once.
+                                      // Then inside the loop we push to `messages` AND `memory`.
+                                      //
+                                      // When we push to `messages` (Line 207), we were pushing a text placeholder.
+                                      // Now we must push `Message::assistant_with_tools`.
+                                      //
+                                      // When we push to `memory` (Line 242... wait, where do we push the assistant message to memory?),
+                                      // We DO NOT push the assistant tool call message to memory in the current code?
+                                      // Line 207: `messages.push(...)` -> pushes to local vector.
+                                      // Line 242: `messages.push(...)` -> pushes tool result to local vector.
+                                      //
+                                      // We NEVER pushed the intermediate assistant/tool messages to `session.memory`?
+                                      // Let's check `session.memory.add_message` calls.
+                                      // Line 63: adds User message.
+                                      // Line 189: adds Final Assistant response.
+                                      //
+                                      // So `session.memory` only stores User -> Final Answer.
+                                      // It does NOT store the intermediate reasoning steps (Tools).
+                                      // This means if the agent crashes or we want to inspect history later, we lose the tool calls?
+                                      //
+                                      // BUT, `messages` (local vec) ACCUMULATES the history for the *current* task execution session.
+                                      // So as long as `messages` has the correct structure, the API calls within the loop will be fine.
+                                      //
+                                      // So, the fix in `Executor` is indeed just updating what we push to `messages`.
+                                      // We don't need to update `AgentMessage` struct unless we want to persist it in DB.
+                                      // For now, let's just fix the `Message` construction in `messages.push`.
                 }
             })
             .collect();
@@ -204,10 +248,10 @@ impl AgentExecutor {
                     .iter()
                     .map(|tc| tc.function.name.clone())
                     .collect();
-                messages.push(Message::assistant(&format!(
-                    "[Вызов инструментов: {}]",
-                    tool_names.join(", ")
-                )));
+                messages.push(Message::assistant_with_tools(
+                    &format!("[Вызов инструментов: {}]", tool_names.join(", ")),
+                    response.tool_calls.clone(),
+                ));
 
                 // Ensure sandbox is running
                 let sandbox = self
@@ -302,6 +346,7 @@ impl AgentExecutor {
                 content: msg.content.clone(),
                 tool_call_id: None,
                 name: None,
+                tool_calls: None,
             });
         }
 

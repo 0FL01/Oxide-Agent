@@ -28,6 +28,9 @@ pub struct Message {
     /// Tool name (for tool responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Tool calls made by the assistant
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 impl Message {
@@ -37,6 +40,7 @@ impl Message {
             content: content.to_string(),
             tool_call_id: None,
             name: None,
+            tool_calls: None,
         }
     }
 
@@ -46,6 +50,17 @@ impl Message {
             content: content.to_string(),
             tool_call_id: None,
             name: None,
+            tool_calls: None,
+        }
+    }
+
+    pub fn assistant_with_tools(content: &str, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: Some(tool_calls),
         }
     }
 
@@ -55,6 +70,7 @@ impl Message {
             content: content.to_string(),
             tool_call_id: Some(tool_call_id.to_string()),
             name: Some(name.to_string()),
+            tool_calls: None,
         }
     }
 }
@@ -68,14 +84,14 @@ pub struct ToolDefinition {
 }
 
 /// Tool call from LLM response
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     #[serde(rename = "function")]
     pub function: ToolCallFunction,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallFunction {
     pub name: String,
     pub arguments: String,

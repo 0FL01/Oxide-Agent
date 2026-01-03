@@ -160,17 +160,44 @@ impl MistralProvider {
                         "content": msg.content
                     }));
                 }
+                "assistant" => {
+                    let mut m = json!({
+                        "role": "assistant",
+                        "content": msg.content
+                    });
+
+                    // If we have tool calls, include them
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        // Map internal ToolCall to the structure expected by API (if needed)
+                        // Our ToolCall struct matches what we want to send usually,
+                        // but we need to make sure it has "type": "function" if Mistral requires it.
+                        // Mistral API usually expects:
+                        // "tool_calls": [ { "id": "...", "type": "function", "function": { "name": "...", "arguments": "..." } } ]
+
+                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        m["tool_calls"] = json!(api_tool_calls);
+                    }
+
+                    messages.push(m);
+                }
                 _ => {
                     let m = json!({
                         "role": msg.role,
                         "content": msg.content
                     });
-                    if let Some(_tool_calls) = &msg.tool_call_id {
-                        // This is a bit hacky, but for assistant messages with tool calls
-                        // we usually don't have them in history in this exact struct format
-                        // The history stores flattened messages.
-                        // For now, standard history reconstruction:
-                    }
                     messages.push(m);
                 }
             }

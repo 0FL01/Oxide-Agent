@@ -392,6 +392,7 @@ async fn process_llm_request(
             content: m.content,
             tool_call_id: None,
             name: None,
+            tool_calls: None,
         })
         .collect();
     let total_messages = llm_history.len() + 2; // +2 for system and current message
