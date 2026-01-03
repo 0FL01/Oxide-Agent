@@ -1,25 +1,15 @@
-//! Agent executor using Rig framework
+//! Agent executor module
 //!
-//! Handles the iterative execution of tasks using Devstral model
-//! with progress reporting and timeout management.
+//! Handles the iterative execution of tasks using LLM with tool calling.
 
 use super::memory::AgentMessage;
 use super::session::AgentSession;
 use crate::config::{AGENT_MODEL, AGENT_TIMEOUT_SECS};
-use crate::llm::LlmClient;
+use crate::llm::{LlmClient, Message};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
-use tracing::{debug, error, info, instrument, trace};
-
-/// Progress update sent during task execution
-#[derive(Debug, Clone)]
-pub struct ProgressUpdate {
-    pub step: String,
-    pub progress_percent: u8,
-    pub is_final: bool,
-}
+use tracing::{debug, error, info, instrument};
 
 /// Agent executor that runs tasks iteratively
 pub struct AgentExecutor {
@@ -46,76 +36,34 @@ impl AgentExecutor {
         &mut self.session
     }
 
-    /// The final result is sent as the last update with `is_final = true`.
-    #[instrument(skip(self), fields(user_id = self.session.user_id, chat_id = self.session.chat_id, task_id = %self.session.current_task_id.as_deref().unwrap_or("none")))]
-    pub async fn execute_with_progress(
-        &mut self,
-        task: &str,
-    ) -> Result<mpsc::Receiver<ProgressUpdate>> {
-        // Start the task (generates task_id)
-        self.session.start_task();
-        let task_id = self.session.current_task_id.clone().unwrap_or_default();
-
-        info!(task = %task, task_id = %task_id, "Starting agent task with progress reporting");
-        let (tx, rx) = mpsc::channel::<ProgressUpdate>(32);
-
-        // Add user message to memory
-        self.session.memory.add_message(AgentMessage::user(task));
-
-        // Clone what we need for the async task
-        let llm_client = self.llm_client.clone();
-        let task_str = task.to_string();
-        let memory_messages = self.session.memory.get_messages().to_vec();
-
-        // Spawn the execution task
-        let tx_clone = tx.clone();
-        let task_id_clone = task_id.clone();
-        tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            let result = Self::run_agent_loop(
-                llm_client,
-                task_str,
-                memory_messages,
-                tx_clone,
-                task_id_clone.clone(),
-            )
-            .await;
-
-            let duration = start.elapsed();
-            match result {
-                Ok(response) => {
-                    info!(task_id = %task_id_clone, duration_ms = duration.as_millis(), "Agent task completed successfully");
-                    let _ = tx
-                        .send(ProgressUpdate {
-                            step: response,
-                            progress_percent: 100,
-                            is_final: true,
-                        })
-                        .await;
+    /// Convert AgentMessage history to LLM Message format
+    fn convert_memory_to_messages(messages: &[AgentMessage]) -> Vec<Message> {
+        messages
+            .iter()
+            .map(|msg| {
+                let role = match msg.role {
+                    super::memory::MessageRole::User => "user",
+                    super::memory::MessageRole::Assistant => "assistant",
+                    super::memory::MessageRole::System => "system",
+                };
+                Message {
+                    role: role.to_string(),
+                    content: msg.content.clone(),
+                    tool_call_id: None,
+                    name: None,
+                    tool_calls: None,
                 }
-                Err(e) => {
-                    error!(task_id = %task_id_clone, error = %e, duration_ms = duration.as_millis(), "Agent task failed");
-                    let _ = tx
-                        .send(ProgressUpdate {
-                            step: format!("❌ Ошибка: {}", e),
-                            progress_percent: 100,
-                            is_final: true,
-                        })
-                        .await;
-                }
-            }
-        });
-
-        Ok(rx)
+            })
+            .collect()
     }
 
     /// Execute a task with iterative tool calling (agentic loop)
+    #[instrument(skip(self), fields(user_id = self.session.user_id, chat_id = self.session.chat_id))]
     pub async fn execute(&mut self, task: &str) -> Result<String> {
         use super::providers::SandboxProvider;
         #[cfg(feature = "tavily")]
         use super::providers::TavilyProvider;
         use super::registry::ToolRegistry;
-        use crate::llm::Message;
 
         const MAX_ITERATIONS: usize = 10;
 
@@ -150,70 +98,8 @@ impl AgentExecutor {
 
         let tools = registry.all_tools();
 
-        // Build initial messages from memory
-        let mut messages: Vec<Message> = self
-            .session
-            .memory
-            .get_messages()
-            .iter()
-            .map(|msg| {
-                let role = match msg.role {
-                    super::memory::MessageRole::User => "user",
-                    super::memory::MessageRole::Assistant => "assistant",
-                    super::memory::MessageRole::System => "system",
-                };
-                Message {
-                    role: role.to_string(),
-                    content: msg.content.clone(),
-                    tool_call_id: None,
-                    name: None,
-                    tool_calls: None, // We don't have tool calls in AgentMessage yet, but we will add them manually in the loop if needed?
-                                      // Actually, for history reconstruction from memory, we need to handle potential tool calls if we store them in memory.
-                                      // But currently AgentMessage doesn't store tool calls structure, only content.
-                                      // However, the `messages` vector here is for the CURRENT request.
-                                      // The history in `session.memory` is simple.
-                                      // If we want to support multi-turn with tools, we DO need to reconstruct the `tool_calls` structure from memory
-                                      // OR we just rely on the fact that we're adding them to the `messages` vector in the loop below.
-                                      //
-                                      // WAIT: `messages` vector IS the history sent to LLM.
-                                      // If we restart the loop (e.g. 2nd iteration), `messages` will be rebuilt from memory.
-                                      // BUT `memory` only stores `AgentMessage` which is simple text.
-                                      // PROBLEM: `AgentMessage` loses the `tool_calls` structure.
-                                      //
-                                      // If we want to persist the correct history for the NEXT API call (iteration 2),
-                                      // we need to make sure `messages` vector preserves it.
-                                      // The `messages` vector is initialized OUTSIDE the loop.
-                                      // But inside the loop we push new messages to it.
-                                      //
-                                      // Oh, I see. `messages` is initialized from `memory` once.
-                                      // Then inside the loop we push to `messages` AND `memory`.
-                                      //
-                                      // When we push to `messages` (Line 207), we were pushing a text placeholder.
-                                      // Now we must push `Message::assistant_with_tools`.
-                                      //
-                                      // When we push to `memory` (Line 242... wait, where do we push the assistant message to memory?),
-                                      // We DO NOT push the assistant tool call message to memory in the current code?
-                                      // Line 207: `messages.push(...)` -> pushes to local vector.
-                                      // Line 242: `messages.push(...)` -> pushes tool result to local vector.
-                                      //
-                                      // We NEVER pushed the intermediate assistant/tool messages to `session.memory`?
-                                      // Let's check `session.memory.add_message` calls.
-                                      // Line 63: adds User message.
-                                      // Line 189: adds Final Assistant response.
-                                      //
-                                      // So `session.memory` only stores User -> Final Answer.
-                                      // It does NOT store the intermediate reasoning steps (Tools).
-                                      // This means if the agent crashes or we want to inspect history later, we lose the tool calls?
-                                      //
-                                      // BUT, `messages` (local vec) ACCUMULATES the history for the *current* task execution session.
-                                      // So as long as `messages` has the correct structure, the API calls within the loop will be fine.
-                                      //
-                                      // So, the fix in `Executor` is indeed just updating what we push to `messages`.
-                                      // We don't need to update `AgentMessage` struct unless we want to persist it in DB.
-                                      // For now, let's just fix the `Message` construction in `messages.push`.
-                }
-            })
-            .collect();
+        // Build initial messages from memory using helper
+        let mut messages = Self::convert_memory_to_messages(self.session.memory.get_messages());
 
         // Execute with timeout
         let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);
@@ -325,80 +211,6 @@ impl AgentExecutor {
                 ))
             }
         }
-    }
-
-    /// Run the agent loop with progress updates
-    #[instrument(skip(llm_client, memory_messages, progress_tx), fields(task_id = %task_id))]
-    async fn run_agent_loop(
-        llm_client: Arc<LlmClient>,
-        task: String,
-        memory_messages: Vec<AgentMessage>,
-        progress_tx: mpsc::Sender<ProgressUpdate>,
-        task_id: String,
-    ) -> Result<String> {
-        debug!(task_id = %task_id, "Analyzing task via LLM");
-        // Send initial progress
-        let _ = progress_tx
-            .send(ProgressUpdate {
-                step: "🔄 Анализирую задачу...".to_string(),
-                progress_percent: 10,
-                is_final: false,
-            })
-            .await;
-
-        let system_prompt = Self::create_agent_system_prompt();
-
-        // Build LLM messages from memory
-        let mut messages: Vec<crate::llm::Message> = Vec::new();
-        for msg in &memory_messages {
-            let role = match msg.role {
-                super::memory::MessageRole::User => "user",
-                super::memory::MessageRole::Assistant => "assistant",
-                super::memory::MessageRole::System => "system",
-            };
-            messages.push(crate::llm::Message {
-                role: role.to_string(),
-                content: msg.content.clone(),
-                tool_call_id: None,
-                name: None,
-                tool_calls: None,
-            });
-        }
-
-        // Update progress
-        let _ = progress_tx
-            .send(ProgressUpdate {
-                step: "🧠 Выполняю задачу...".to_string(),
-                progress_percent: 30,
-                is_final: false,
-            })
-            .await;
-
-        // Call the LLM
-        let call_start = std::time::Instant::now();
-        let response = llm_client
-            .chat_completion(&system_prompt, &messages, &task, AGENT_MODEL)
-            .await
-            .map_err(|e| anyhow!("LLM call failed: {}", e))?;
-        let call_duration = call_start.elapsed();
-
-        debug!(
-            task_id = %task_id,
-            duration_ms = call_duration.as_millis(),
-            "LLM call completed"
-        );
-
-        // Update progress before finalizing
-        let _ = progress_tx
-            .send(ProgressUpdate {
-                step: "✅ Формирую ответ...".to_string(),
-                progress_percent: 90,
-                is_final: false,
-            })
-            .await;
-
-        trace!(response = ?response, "LLM Response received");
-        Ok(response)
     }
 
     /// Create the system prompt for the agent
