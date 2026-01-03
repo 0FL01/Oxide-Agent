@@ -6,6 +6,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     git \
     ca-certificates \
+    dnsutils \
+    iputils-ping \
+    procps \
+    net-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Install common Python packages
