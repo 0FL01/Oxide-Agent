@@ -104,8 +104,9 @@ impl Settings {
         self.allowed_users_str
             .as_ref()
             .map(|s| {
-                s.split(',')
-                    .filter_map(|id| id.trim().parse::<i64>().ok())
+                s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+                    .filter(|token| !token.is_empty())
+                    .filter_map(|id| id.parse::<i64>().ok())
                     .collect()
             })
             .unwrap_or_default()
@@ -115,8 +116,9 @@ impl Settings {
         self.agent_allowed_users_str
             .as_ref()
             .map(|s| {
-                s.split(',')
-                    .filter_map(|id| id.trim().parse::<i64>().ok())
+                s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+                    .filter(|token| !token.is_empty())
+                    .filter_map(|id| id.parse::<i64>().ok())
                     .collect()
             })
             .unwrap_or_default()
@@ -169,6 +171,55 @@ mod tests {
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("TELEGRAM_TOKEN");
+    }
+
+    #[test]
+    fn test_list_parsing() {
+        let mut settings = Settings {
+            telegram_token: "dummy".to_string(),
+            allowed_users_str: None,
+            agent_allowed_users_str: None,
+            groq_api_key: None,
+            mistral_api_key: None,
+            zai_api_key: None,
+            gemini_api_key: None,
+            openrouter_api_key: None,
+            r2_access_key_id: None,
+            r2_secret_access_key: None,
+            r2_endpoint_url: None,
+            r2_bucket_name: None,
+            openrouter_site_url: "".to_string(),
+            openrouter_site_name: "".to_string(),
+            system_message: None,
+        };
+
+        // Test comma
+        settings.allowed_users_str = Some("123,456".to_string());
+        let allowed = settings.allowed_users();
+        assert!(allowed.contains(&123));
+        assert!(allowed.contains(&456));
+        assert_eq!(allowed.len(), 2);
+
+        // Test space
+        settings.allowed_users_str = Some("111 222".to_string());
+        let allowed = settings.allowed_users();
+        assert!(allowed.contains(&111));
+        assert!(allowed.contains(&222));
+        assert_eq!(allowed.len(), 2);
+
+        // Test semicolon and mixed
+        settings.allowed_users_str = Some("333; 444, 555".to_string());
+        let allowed = settings.allowed_users();
+        assert!(allowed.contains(&333));
+        assert!(allowed.contains(&444));
+        assert!(allowed.contains(&555));
+        assert_eq!(allowed.len(), 3);
+
+        // Test empty/bad parsing
+        settings.allowed_users_str = Some("abc, 777".to_string());
+        let allowed = settings.allowed_users();
+        assert!(allowed.contains(&777));
+        assert_eq!(allowed.len(), 1);
     }
 }
 

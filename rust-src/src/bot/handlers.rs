@@ -205,7 +205,7 @@ pub async fn handle_text(
                 return Ok(());
             } else if agent_allowed.is_empty() {
                 warn!(
-                    "Agent Mode access denied for user {} (AGENT_ACCESS_IDS not configured).",
+                    "Agent Mode access denied for user {} (AGENT_ACCESS_IDS not configured or parsed empty).",
                     user_id
                 );
                 bot.send_message(
