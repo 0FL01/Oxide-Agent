@@ -22,7 +22,12 @@ use serde_json::Value;
 /// * `extra_headers` - Additional headers as key-value pairs
 ///
 /// # Returns
-/// Parsed JSON response or LlmError
+/// Parsed JSON response or `LlmError`
+///
+/// # Errors
+///
+/// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` on non-success status codes,
+/// or `LlmError::JsonError` if parsing fails.
 pub async fn send_json_request(
     client: &HttpClient,
     url: &str,
@@ -49,8 +54,7 @@ pub async fn send_json_request(
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
         return Err(LlmError::ApiError(format!(
-            "API error: {} - {}",
-            status, error_text
+            "API error: {status} - {error_text}"
         )));
     }
 
@@ -72,6 +76,10 @@ pub async fn send_json_request(
 /// // For OpenRouter: ["choices", "0", "message", "content"]
 /// let content = extract_text_content(&response, &["choices", "0", "message", "content"])?;
 /// ```
+///
+/// # Errors
+///
+/// Returns `LlmError::ApiError` if the path is invalid or the target is not a string.
 pub fn extract_text_content(response: &Value, path: &[&str]) -> Result<String, LlmError> {
     let mut current = response;
 
@@ -79,17 +87,17 @@ pub fn extract_text_content(response: &Value, path: &[&str]) -> Result<String, L
         // Try to parse as index first
         if let Ok(index) = segment.parse::<usize>() {
             current = current.get(index).ok_or_else(|| {
-                LlmError::ApiError(format!("Invalid path: missing index {}", index))
+                LlmError::ApiError(format!("Invalid path: missing index {index}"))
             })?;
         } else {
             current = current.get(*segment).ok_or_else(|| {
-                LlmError::ApiError(format!("Invalid path: missing key {}", segment))
+                LlmError::ApiError(format!("Invalid path: missing key {segment}"))
             })?;
         }
     }
 
     current
         .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| LlmError::ApiError(format!("Expected string at path, got: {:?}", current)))
+        .map(ToString::to_string)
+        .ok_or_else(|| LlmError::ApiError(format!("Expected string at path, got: {current:?}")))
 }

@@ -1,15 +1,20 @@
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    static ref RE_CODE_BLOCK: Regex = Regex::new(r"```[\s\S]*?```").unwrap();
-    static ref RE_CODE_BLOCK_FENCE: Regex = Regex::new(r"```(\w+)?\n([\s\S]*?)```").unwrap();
-    static ref RE_BULLET: Regex = Regex::new(r"(?m)^\* ").unwrap();
-    static ref RE_BOLD: Regex = Regex::new(r"\*\*(.*?)\*\*").unwrap();
-    static ref RE_ITALIC: Regex = Regex::new(r"\*(.*?)\*").unwrap();
-    static ref RE_INLINE_CODE: Regex = Regex::new(r"`(.*?)`").unwrap();
-    static ref RE_MULTI_NEWLINE: Regex = Regex::new(r"\n{3,}").unwrap();
-}
+static RE_CODE_BLOCK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"```[\s\S]*?```").expect("valid RE_CODE_BLOCK"));
+static RE_CODE_BLOCK_FENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"```(\w+)?\n([\s\S]*?)```").expect("valid RE_CODE_BLOCK_FENCE"));
+static RE_BULLET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\* ").expect("valid RE_BULLET"));
+static RE_BOLD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\*\*(.*?)\*\*").expect("valid RE_BOLD"));
+static RE_ITALIC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\*(.*?)\*").expect("valid RE_ITALIC"));
+static RE_INLINE_CODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"`(.*?)`").expect("valid RE_INLINE_CODE"));
+static RE_MULTI_NEWLINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\n{3,}").expect("valid RE_MULTI_NEWLINE"));
 
 /// Replace naked angle brackets with HTML entities, preserving HTML tags.
 /// Rust's regex doesn't support lookbehind/lookahead, so we iterate manually.
@@ -83,7 +88,7 @@ pub fn clean_html(text: &str) -> String {
 
     // Restore code blocks
     for (i, block) in code_blocks.iter().enumerate() {
-        let placeholder = format!("__CODE_BLOCK_{}__", i);
+        let placeholder = format!("__CODE_BLOCK_{i}__");
         text_owned = text_owned.replace(&placeholder, block);
     }
 
@@ -99,10 +104,7 @@ pub fn format_text(text: &str) -> String {
             let lang = caps.get(1).map_or("", |m| m.as_str());
             let code = caps.get(2).map_or("", |m| m.as_str()).trim();
             let escaped_code = html_escape::encode_text(code);
-            format!(
-                "<pre><code class=\"{}\">{}</code></pre>",
-                lang, escaped_code
-            )
+            format!("<pre><code class=\"{lang}\">{escaped_code}</code></pre>")
         })
         .to_string();
 
@@ -120,7 +122,7 @@ pub fn format_text(text: &str) -> String {
         .replace_all(&text_owned, |caps: &regex::Captures| {
             let code = caps.get(1).map_or("", |m| m.as_str());
             let escaped_code = html_escape::encode_text(code);
-            format!("<code>{}</code>", escaped_code)
+            format!("<code>{escaped_code}</code>")
         })
         .to_string();
 
@@ -204,7 +206,7 @@ pub fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
     }
     s.char_indices()
         .nth(max_chars)
-        .map_or(s.to_string(), |(pos, _)| s[..pos].to_string())
+        .map_or_else(|| s.to_string(), |(pos, _)| s[..pos].to_string())
 }
 
 #[cfg(test)]

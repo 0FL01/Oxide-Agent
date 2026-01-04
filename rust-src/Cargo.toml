@@ -35,6 +35,7 @@ html-escape = "0.2.13"
 anyhow = "1.0.100"
 tiktoken-rs = "0.9.1"
 once_cell = "1.21.3"
+num-conv = "0.1"
 bollard = "0.19.4"
 futures-util = "0.3.31"
 uuid = { version = "1.19.0", features = ["v4"] }

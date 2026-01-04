@@ -1,6 +1,6 @@
 //! Tavily Provider - web search and content extraction
 //!
-//! Provides web_search and web_extract tools using native Tavily Rust SDK.
+//! Provides `web_search` and `web_extract` tools using native Tavily Rust SDK.
 
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
@@ -20,12 +20,16 @@ pub struct TavilyProvider {
 
 impl TavilyProvider {
     /// Create a new Tavily provider with the given API key
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Tavily client cannot be created.
     pub fn new(api_key: &str) -> Result<Self> {
         let client = Tavily::builder(api_key)
             .timeout(Duration::from_secs(30))
             .max_retries(2)
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create Tavily client: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create Tavily client: {e}"))?;
 
         Ok(Self {
             client,
@@ -34,7 +38,7 @@ impl TavilyProvider {
     }
 }
 
-/// Arguments for web_search tool
+/// Arguments for `web_search` tool
 #[derive(Debug, Deserialize)]
 struct WebSearchArgs {
     query: String,
@@ -42,11 +46,11 @@ struct WebSearchArgs {
     max_results: u8,
 }
 
-fn default_max_results() -> u8 {
+const fn default_max_results() -> u8 {
     5
 }
 
-/// Arguments for web_extract tool
+/// Arguments for `web_extract` tool
 #[derive(Debug, Deserialize)]
 struct WebExtractArgs {
     urls: Vec<String>,
@@ -54,7 +58,7 @@ struct WebExtractArgs {
 
 #[async_trait]
 impl ToolProvider for TavilyProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "tavily"
     }
 
@@ -101,17 +105,18 @@ impl ToolProvider for TavilyProvider {
     }
 
     async fn execute(&self, tool_name: &str, arguments: &str) -> Result<String> {
+        use std::fmt::Write;
         debug!(tool = tool_name, "Executing Tavily tool");
 
         match tool_name {
             "web_search" => {
                 let args: WebSearchArgs = serde_json::from_str(arguments)?;
-                let max_results = args.max_results.min(10).max(1);
+                let max_results = args.max_results.clamp(1, 10);
 
                 debug!(query = %args.query, max_results = max_results, "Tavily web search");
 
                 let request = tavily::SearchRequest::new(&self.api_key, &args.query)
-                    .max_results(max_results as i32)
+                    .max_results(i32::from(max_results))
                     .search_depth("basic");
 
                 match self.client.call(&request).await {
@@ -122,26 +127,27 @@ impl ToolProvider for TavilyProvider {
                             output.push_str("Ничего не найдено по данному запросу.\n");
                         } else {
                             for (i, result) in response.results.iter().enumerate() {
-                                output.push_str(&format!(
+                                let _ = write!(
+                                    output,
                                     "### {}. {}\n**URL**: {}\n\n{}\n\n---\n\n",
                                     i + 1,
                                     result.title,
                                     result.url,
                                     result.content
-                                ));
+                                );
                             }
                         }
 
                         Ok(output)
                     }
-                    Err(e) => Ok(format!("Ошибка поиска: {}", e)),
+                    Err(e) => Ok(format!("Ошибка поиска: {e}")),
                 }
             }
             "web_extract" => {
                 let args: WebExtractArgs = serde_json::from_str(arguments)?;
 
                 // Limit to 5 URLs
-                let urls: Vec<&str> = args.urls.iter().take(5).map(|s| s.as_str()).collect();
+                let urls: Vec<&str> = args.urls.iter().take(5).map(String::as_str).collect();
 
                 debug!(urls = ?urls, "Tavily extract");
 
@@ -153,19 +159,20 @@ impl ToolProvider for TavilyProvider {
                             output.push_str("Не удалось извлечь контент из указанных URL.\n");
                         } else {
                             for result in response.results {
-                                output.push_str(&format!(
+                                let _ = write!(
+                                    output,
                                     "## {}\n\n{}\n\n---\n\n",
                                     result.url, result.raw_content
-                                ));
+                                );
                             }
                         }
 
                         Ok(output)
                     }
-                    Err(e) => Ok(format!("Ошибка извлечения контента: {}", e)),
+                    Err(e) => Ok(format!("Ошибка извлечения контента: {e}")),
                 }
             }
-            _ => anyhow::bail!("Unknown Tavily tool: {}", tool_name),
+            _ => anyhow::bail!("Unknown Tavily tool: {tool_name}"),
         }
     }
 }

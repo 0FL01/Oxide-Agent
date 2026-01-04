@@ -9,14 +9,15 @@ use tracing::info;
 
 /// Hook that checks if all todos are completed
 ///
-/// When the agent tries to finish (AfterAgent event), this hook checks
+/// When the agent tries to finish (`AfterAgent` event), this hook checks
 /// the todo list. If there are incomplete items and we haven't exceeded
 /// the continuation limit, it forces another iteration.
 pub struct CompletionCheckHook;
 
 impl CompletionCheckHook {
     /// Create a new completion check hook
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -28,7 +29,7 @@ impl Default for CompletionCheckHook {
 }
 
 impl Hook for CompletionCheckHook {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "completion_check"
     }
 
@@ -69,8 +70,7 @@ impl Hook for CompletionCheckHook {
         let completed = context.todos.completed_count();
 
         let reason = format!(
-            "Не все задачи выполнены ({}/{} завершено, {} осталось). Продолжи работу над оставшимися задачами.",
-            completed, total, pending
+            "Не все задачи выполнены ({completed}/{total} завершено, {pending} осталось). Продолжи работу над оставшимися задачами."
         );
 
         let todo_context = context.todos.to_context_string();

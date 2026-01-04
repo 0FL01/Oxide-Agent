@@ -45,6 +45,7 @@ dependencies = [
  "futures-util",
  "html-escape",
  "lazy_static",
+ "num-conv",
  "once_cell",
  "regex",
  "reqwest",

@@ -54,7 +54,7 @@ pub enum HookResult {
         context: Option<String>,
     },
 
-    /// Block the action (for BeforeTool hooks)
+    /// Block the action (for `BeforeTool` hooks)
     Block {
         /// Reason for blocking
         reason: String,
@@ -75,7 +75,8 @@ pub struct HookContext<'a> {
 
 impl<'a> HookContext<'a> {
     /// Create a new hook context
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         todos: &'a TodoList,
         iteration: usize,
         continuation_count: usize,
@@ -90,7 +91,8 @@ impl<'a> HookContext<'a> {
     }
 
     /// Check if we've reached the continuation limit
-    pub fn at_continuation_limit(&self) -> bool {
+    #[must_use]
+    pub const fn at_continuation_limit(&self) -> bool {
         self.continuation_count >= self.max_continuations
     }
 }

@@ -50,6 +50,7 @@ pub struct AgentSession {
 
 impl AgentSession {
     /// Create a new agent session for a user
+    #[must_use]
     pub fn new(user_id: i64, chat_id: i64) -> Self {
         Self {
             user_id,
@@ -74,17 +75,17 @@ impl AgentSession {
     }
 
     /// Check if the session has exceeded the timeout limit
+    #[must_use]
     pub fn is_timed_out(&self) -> bool {
         self.started_at
-            .map(|start| start.elapsed().as_secs() > AGENT_TIMEOUT_SECS)
-            .unwrap_or(false)
+            .is_some_and(|start| start.elapsed().as_secs() > AGENT_TIMEOUT_SECS)
     }
 
     /// Get elapsed time in seconds since task start
+    #[must_use]
     pub fn elapsed_secs(&self) -> u64 {
         self.started_at
-            .map(|start| start.elapsed().as_secs())
-            .unwrap_or(0)
+            .map_or(0, |start| start.elapsed().as_secs())
     }
 
     /// Update the progress status
@@ -115,7 +116,7 @@ impl AgentSession {
 
     /// Reset the session (clear memory, todos, reset status)
     /// Note: Sandbox is persistent and not destroyed here
-    pub async fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.memory.clear();
         self.status = AgentStatus::Idle;
         self.started_at = None;
@@ -132,18 +133,26 @@ impl AgentSession {
     }
 
     /// Check if the session is currently processing a task
-    pub fn is_processing(&self) -> bool {
+    #[must_use]
+    pub const fn is_processing(&self) -> bool {
         matches!(self.status, AgentStatus::Processing { .. })
     }
 
     /// Check if sandbox is available
+    #[must_use]
     pub fn has_sandbox(&self) -> bool {
-        self.sandbox.as_ref().is_some_and(|s| s.is_running())
+        self.sandbox.as_ref().is_some_and(SandboxManager::is_running)
     }
 
     /// Ensure sandbox is running, creating it if necessary
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox creation fails.
     pub async fn ensure_sandbox(&mut self) -> Result<&mut SandboxManager> {
-        if self.sandbox.is_none() || !self.sandbox.as_ref().unwrap().is_running() {
+        let needs_new = self.sandbox.as_ref().is_none_or(|s| !s.is_running());
+
+        if needs_new {
             debug!(user_id = self.user_id, "Creating new sandbox");
             let mut sandbox = SandboxManager::new(self.user_id).await?;
             sandbox.create_sandbox().await?;
@@ -151,10 +160,13 @@ impl AgentSession {
             info!(user_id = self.user_id, "Sandbox created for session");
         }
 
-        Ok(self.sandbox.as_mut().unwrap())
+        self.sandbox
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
     }
 
     /// Get sandbox reference if running
+    #[must_use]
     pub fn sandbox(&self) -> Option<&SandboxManager> {
         self.sandbox.as_ref().filter(|s| s.is_running())
     }
@@ -165,6 +177,10 @@ impl AgentSession {
     }
 
     /// Destroy sandbox if running
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox destruction fails.
     pub async fn destroy_sandbox(&mut self) -> Result<()> {
         if let Some(mut sandbox) = self.sandbox.take() {
             sandbox.destroy().await?;

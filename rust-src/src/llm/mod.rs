@@ -37,6 +37,7 @@ pub struct Message {
 }
 
 impl Message {
+    #[must_use]
     pub fn user(content: &str) -> Self {
         Self {
             role: "user".to_string(),
@@ -47,6 +48,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn assistant(content: &str) -> Self {
         Self {
             role: "assistant".to_string(),
@@ -57,6 +59,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn assistant_with_tools(content: &str, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: "assistant".to_string(),
@@ -67,6 +70,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
         Self {
             role: "tool".to_string(),
@@ -77,6 +81,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn system(content: &str) -> Self {
         Self {
             role: "system".to_string(),
@@ -154,6 +159,7 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
+    #[must_use]
     pub fn new(settings: &crate::config::Settings) -> Self {
         Self {
             groq: settings
@@ -182,6 +188,11 @@ impl LlmClient {
         }
     }
 
+    /// Returns the provider for the given name
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` if the provider is not configured.
     fn get_provider(&self, provider_name: &str) -> Result<&dyn LlmProvider, LlmError> {
         match provider_name {
             "groq" => self.groq.as_ref().map(|p| p as &dyn LlmProvider),
@@ -194,6 +205,11 @@ impl LlmClient {
         .ok_or_else(|| LlmError::MissingConfig(provider_name.to_string()))
     }
 
+    /// Perform a chat completion request
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::Unknown` if the model is not found, or any error from the provider.
     #[instrument(skip(self, system_prompt, history))]
     pub async fn chat_completion(
         &self,
@@ -208,7 +224,7 @@ impl LlmClient {
             .iter()
             .find(|(name, _)| *name == model_name)
             .map(|(_, info)| info)
-            .ok_or_else(|| LlmError::Unknown(format!("Model {} not found", model_name)))?;
+            .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))?;
 
         let provider = self.get_provider(model_info.provider)?;
 
@@ -244,23 +260,20 @@ impl LlmClient {
             .await;
         let duration = start.elapsed();
 
-        match &result {
-            Ok(resp) => {
-                debug!(
-                    model = model_name,
-                    duration_ms = duration.as_millis(),
-                    "Received success response from LLM"
-                );
-                trace!(response = ?resp, "Full LLM Response");
-            }
-            Err(e) => {
-                warn!(
-                    model = model_name,
-                    duration_ms = duration.as_millis(),
-                    error = %e,
-                    "Received error response from LLM"
-                );
-            }
+        if let Ok(resp) = &result {
+            debug!(
+                model = model_name,
+                duration_ms = duration.as_millis(),
+                "Received success response from LLM"
+            );
+            trace!(response = ?resp, "Full LLM Response");
+        } else if let Err(e) = &result {
+            warn!(
+                model = model_name,
+                duration_ms = duration.as_millis(),
+                error = %e,
+                "Received error response from LLM"
+            );
         }
 
         result
@@ -268,6 +281,11 @@ impl LlmClient {
 
     /// Chat completion with tool calling support (for agent mode)
     /// Currently only supported by Mistral provider (Devstral model)
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::Unknown` if the model is not found, if tool calling is not supported for the provider,
+    /// or any error from the provider.
     #[instrument(skip(self, system_prompt, messages, tools))]
     pub async fn chat_with_tools(
         &self,
@@ -282,13 +300,13 @@ impl LlmClient {
             .iter()
             .find(|(name, _)| *name == model_name)
             .map(|(_, info)| info)
-            .ok_or_else(|| LlmError::Unknown(format!("Model {} not found", model_name)))?;
+            .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))?;
 
         // Only Mistral provider supports tool calling currently
         if model_info.provider != "mistral" {
+            let provider = model_info.provider;
             return Err(LlmError::Unknown(format!(
-                "Tool calling not supported for provider: {}",
-                model_info.provider
+                "Tool calling not supported for provider: {provider}"
             )));
         }
 
@@ -316,29 +334,29 @@ impl LlmClient {
             .await;
         let duration = start.elapsed();
 
-        match &result {
-            Ok(resp) => {
-                debug!(
-                    model = model_name,
-                    duration_ms = duration.as_millis(),
-                    tool_calls_count = resp.tool_calls.len(),
-                    finish_reason = %resp.finish_reason,
-                    "Received tool response from LLM"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    model = model_name,
-                    duration_ms = duration.as_millis(),
-                    error = %e,
-                    "Tool-enabled LLM request failed"
-                );
-            }
+        if let Ok(resp) = &result {
+            debug!(
+                model = model_name,
+                duration_ms = duration.as_millis(),
+                tool_calls_count = resp.tool_calls.len(),
+                finish_reason = %resp.finish_reason,
+                "Received tool response from LLM"
+            );
+        } else if let Err(e) = &result {
+            warn!(
+                model = model_name,
+                duration_ms = duration.as_millis(),
+                error = %e,
+                "Tool-enabled LLM request failed"
+            );
         }
 
         result
     }
 
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` if `OpenRouter` is not configured, or any error from the provider.
     async fn openrouter_chat_with_fallback(
         &self,
         system_prompt: &str,
@@ -356,10 +374,7 @@ impl LlmClient {
 
         for attempt in 1..=3 {
             let start = std::time::Instant::now();
-            info!(
-                "OpenRouter: Attempting with {}, attempt {}/3",
-                primary_model, attempt
-            );
+            info!("OpenRouter: Attempting with {primary_model}, attempt {attempt}/3");
             match provider
                 .chat_completion(system_prompt, history, user_message, primary_model, 64000)
                 .await
@@ -368,8 +383,7 @@ impl LlmClient {
                     info!(
                         model = primary_model,
                         duration_ms = start.elapsed().as_millis(),
-                        "OpenRouter: Success on attempt {}",
-                        attempt
+                        "OpenRouter: Success on attempt {attempt}"
                     );
                     return Ok(res);
                 }
@@ -378,8 +392,7 @@ impl LlmClient {
                         model = primary_model,
                         duration_ms = start.elapsed().as_millis(),
                         error = %e,
-                        "OpenRouter: Error on attempt {}",
-                        attempt
+                        "OpenRouter: Error on attempt {attempt}"
                     );
                     if attempt < 3 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -388,26 +401,17 @@ impl LlmClient {
             }
         }
 
-        info!(
-            "OpenRouter: All attempts with {} failed, switching to {}",
-            primary_model, fallback_model
-        );
+        info!("OpenRouter: All attempts with {primary_model} failed, switching to {fallback_model}");
 
         for attempt in 1..=5 {
-            info!(
-                "OpenRouter: Attempting with {}, attempt {}/5",
-                fallback_model, attempt
-            );
+            info!("OpenRouter: Attempting with {fallback_model}, attempt {attempt}/5");
             match provider
                 .chat_completion(system_prompt, history, user_message, fallback_model, 64000)
                 .await
             {
                 Ok(res) => return Ok(res),
                 Err(e) => {
-                    warn!(
-                        "OpenRouter: Error with {} on attempt {}: {}",
-                        fallback_model, attempt, e
-                    );
+                    warn!("OpenRouter: Error with {fallback_model} on attempt {attempt}: {e}");
                     // Check if it's a retryable error
                     let err_str = e.to_string().to_lowercase();
                     if (err_str.contains("503")
@@ -431,6 +435,11 @@ impl LlmClient {
         ))
     }
 
+    /// Transcribe audio to text
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from the provider.
     pub async fn transcribe_audio(
         &self,
         audio_bytes: Vec<u8>,
@@ -447,7 +456,7 @@ impl LlmClient {
                 .await;
         }
 
-        let model_info = self.get_model_info(model_name)?;
+        let model_info = Self::get_model_info(model_name)?;
         let provider = self.get_provider(model_info.provider)?;
         provider
             .transcribe_audio(audio_bytes, mime_type, model_info.id)
@@ -455,7 +464,11 @@ impl LlmClient {
     }
 
     /// Transcribe audio with automatic fallback for text-only providers
-    /// If the provider returns ZAI_FALLBACK_TO_GEMINI error, use OpenRouter instead
+    /// If the provider returns `ZAI_FALLBACK_TO_GEMINI` error, use `OpenRouter` instead
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from the provider.
     pub async fn transcribe_audio_with_fallback(
         &self,
         provider_name: &str,
@@ -485,6 +498,9 @@ impl LlmClient {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` if Gemini is not configured, or any error from the provider.
     async fn gemini_transcribe_with_fallback(
         &self,
         audio_bytes: Vec<u8>,
@@ -505,10 +521,7 @@ impl LlmClient {
             {
                 Ok(res) => return Ok(res),
                 Err(e) => {
-                    warn!(
-                        "Gemini transcription error (primary {}): {}",
-                        primary_model, e
-                    );
+                    warn!("Gemini transcription error (primary {primary_model}): {e}");
                     if attempt < 3 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
@@ -523,10 +536,7 @@ impl LlmClient {
             {
                 Ok(res) => return Ok(res),
                 Err(e) => {
-                    warn!(
-                        "Gemini transcription error (fallback {}): {}",
-                        fallback_model, e
-                    );
+                    warn!("Gemini transcription error (fallback {fallback_model}): {e}");
                     if attempt < 5 {
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     } else {
@@ -540,6 +550,11 @@ impl LlmClient {
         ))
     }
 
+    /// Analyze an image with a text prompt
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from the provider.
     pub async fn analyze_image(
         &self,
         image_bytes: Vec<u8>,
@@ -547,21 +562,25 @@ impl LlmClient {
         system_prompt: &str,
         model_name: &str,
     ) -> Result<String, LlmError> {
-        let model_info = self.get_model_info(model_name)?;
+        let model_info = Self::get_model_info(model_name)?;
         let provider = self.get_provider(model_info.provider)?;
         provider
             .analyze_image(image_bytes, text_prompt, system_prompt, model_info.id)
             .await
     }
 
+    /// Returns the model info for the given name
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::Unknown` if the model is not found.
     fn get_model_info(
-        &self,
         model_name: &str,
     ) -> Result<&'static crate::config::ModelInfo, LlmError> {
         crate::config::MODELS
             .iter()
             .find(|(name, _)| *name == model_name)
             .map(|(_, info)| info)
-            .ok_or_else(|| LlmError::Unknown(format!("Model {} not found", model_name)))
+            .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))
     }
 }

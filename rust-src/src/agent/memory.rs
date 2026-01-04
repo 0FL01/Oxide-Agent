@@ -5,10 +5,9 @@
 
 use crate::agent::providers::TodoList;
 use crate::config::AGENT_COMPACT_THRESHOLD;
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tiktoken_rs::cl100k_base;
-use tracing::{info, warn};
+use tracing::info;
 
 /// A message in the agent's conversation memory
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +59,7 @@ pub struct AgentMemory {
 
 impl AgentMemory {
     /// Create a new agent memory with the specified maximum token limit
+    #[must_use]
     pub fn new(max_tokens: usize) -> Self {
         Self {
             messages: Vec::new(),
@@ -72,25 +72,25 @@ impl AgentMemory {
 
     /// Add a message to memory, triggering compaction if needed
     pub fn add_message(&mut self, msg: AgentMessage) {
-        let msg_tokens = self.count_tokens(&msg.content);
+        let msg_tokens = Self::count_tokens(&msg.content);
         self.token_count += msg_tokens;
         self.messages.push(msg);
 
         // Check if we need to compact
         if self.token_count > self.compact_threshold {
-            if let Err(e) = self.compact() {
-                warn!("Failed to compact agent memory: {}", e);
-            }
+            self.compact();
         }
     }
 
     /// Get all messages in memory
+    #[must_use]
     pub fn get_messages(&self) -> &[AgentMessage] {
         &self.messages
     }
 
     /// Get current token count
-    pub fn token_count(&self) -> usize {
+    #[must_use]
+    pub const fn token_count(&self) -> usize {
         self.token_count
     }
 
@@ -102,14 +102,10 @@ impl AgentMemory {
     }
 
     /// Count tokens in a string using cl100k tokenizer (GPT-4/Claude compatible)
-    fn count_tokens(&self, text: &str) -> usize {
-        match cl100k_base() {
-            Ok(bpe) => bpe.encode_with_special_tokens(text).len(),
-            Err(_) => {
-                // Fallback: rough estimate of 4 chars per token
-                text.len() / 4
-            }
-        }
+    fn count_tokens(text: &str) -> usize {
+        cl100k_base().map_or(text.len() / 4, |bpe| {
+            bpe.encode_with_special_tokens(text).len()
+        })
     }
 
     /// Compact memory by summarizing older messages
@@ -120,9 +116,9 @@ impl AgentMemory {
     ///
     /// Note: In this iteration, we use a simple truncation strategy.
     /// Full LLM-based summarization will be added when MCP tools are integrated.
-    fn compact(&mut self) -> Result<()> {
+    fn compact(&mut self) {
         if self.messages.len() < 5 {
-            return Ok(()); // Not enough messages to compact
+            return; // Not enough messages to compact
         }
 
         info!(
@@ -132,19 +128,19 @@ impl AgentMemory {
         );
 
         // Calculate split point (keep last 20%)
-        let keep_count = (self.messages.len() as f64 * 0.2).ceil() as usize;
+        let keep_count = (self.messages.len() * 2).div_ceil(10);
         let split_at = self.messages.len().saturating_sub(keep_count);
 
         if split_at == 0 {
-            return Ok(());
+            return;
         }
 
         // Extract messages to summarize
         let to_summarize: Vec<_> = self.messages.drain(..split_at).collect();
 
         // Create a summary of the old messages (simple version)
-        let summary = self.create_simple_summary(&to_summarize);
-        let summary_msg = AgentMessage::system(format!("[Предыдущий контекст сжат]\n{}", summary));
+        let summary = Self::create_simple_summary(&to_summarize);
+        let summary_msg = AgentMessage::system(format!("[Предыдущий контекст сжат]\n{summary}"));
 
         // Insert summary at the beginning
         self.messages.insert(0, summary_msg);
@@ -153,7 +149,7 @@ impl AgentMemory {
         self.token_count = self
             .messages
             .iter()
-            .map(|m| self.count_tokens(&m.content))
+            .map(|m| Self::count_tokens(&m.content))
             .sum();
 
         info!(
@@ -161,12 +157,10 @@ impl AgentMemory {
             self.token_count,
             self.messages.len()
         );
-
-        Ok(())
     }
 
     /// Create a simple summary of messages (no LLM, just extraction of key points)
-    fn create_simple_summary(&self, messages: &[AgentMessage]) -> String {
+    fn create_simple_summary(messages: &[AgentMessage]) -> String {
         let mut summary_parts = Vec::new();
 
         // Extract user requests and assistant conclusions
@@ -178,7 +172,7 @@ impl AgentMemory {
                     } else {
                         msg.content.clone()
                     };
-                    summary_parts.push(format!("• Запрос: {}", truncated));
+                    summary_parts.push(format!("• Запрос: {truncated}"));
                 }
                 MessageRole::Assistant => {
                     // Extract first sentence or first 150 chars
@@ -191,7 +185,7 @@ impl AgentMemory {
                         .take(150)
                         .collect::<String>();
                     if !first_part.is_empty() {
-                        summary_parts.push(format!("• Ответ: {}...", first_part));
+                        summary_parts.push(format!("• Ответ: {first_part}..."));
                     }
                 }
                 MessageRole::System => {
@@ -201,18 +195,29 @@ impl AgentMemory {
         }
 
         // Limit summary to last 10 items
-        let items: Vec<_> = summary_parts.into_iter().rev().take(10).collect();
-        items.into_iter().rev().collect::<Vec<_>>().join("\n")
+        summary_parts
+            .into_iter()
+            .rev()
+            .take(10)
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Check if memory needs compaction soon
-    pub fn needs_compaction(&self) -> bool {
+    #[must_use]
+    pub const fn needs_compaction(&self) -> bool {
         self.token_count > self.compact_threshold
     }
 
     /// Get percentage of memory used
+    #[must_use]
     pub fn usage_percent(&self) -> u8 {
-        ((self.token_count as f64 / self.max_tokens as f64) * 100.0).min(100.0) as u8
+        if self.max_tokens == 0 {
+            return 100;
+        }
+        let percent = (self.token_count * 100) / self.max_tokens;
+        u8::try_from(percent.min(100)).unwrap_or(100)
     }
 }
 

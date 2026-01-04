@@ -1,6 +1,6 @@
 //! Todos Provider - manages agent task lists
 //!
-//! Provides write_todos tool for creating and managing task lists,
+//! Provides `write_todos` tool for creating and managing task lists,
 //! enabling proactive agent behavior for complex multi-step requests.
 
 use crate::agent::provider::ToolProvider;
@@ -32,10 +32,10 @@ pub enum TodoStatus {
 impl std::fmt::Display for TodoStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TodoStatus::Pending => write!(f, "⏳"),
-            TodoStatus::InProgress => write!(f, "🔄"),
-            TodoStatus::Completed => write!(f, "✅"),
-            TodoStatus::Cancelled => write!(f, "❌"),
+            Self::Pending => write!(f, "⏳"),
+            Self::InProgress => write!(f, "🔄"),
+            Self::Completed => write!(f, "✅"),
+            Self::Cancelled => write!(f, "❌"),
         }
     }
 }
@@ -59,7 +59,8 @@ impl TodoItem {
     }
 
     /// Check if this item is completed or cancelled
-    pub fn is_done(&self) -> bool {
+    #[must_use]
+    pub const fn is_done(&self) -> bool {
         matches!(self.status, TodoStatus::Completed | TodoStatus::Cancelled)
     }
 }
@@ -76,16 +77,19 @@ pub struct TodoList {
 
 impl TodoList {
     /// Create a new empty todo list
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Check if all todos are completed or cancelled
+    #[must_use]
     pub fn is_complete(&self) -> bool {
-        !self.items.is_empty() && self.items.iter().all(|item| item.is_done())
+        !self.items.is_empty() && self.items.iter().all(TodoItem::is_done)
     }
 
     /// Get the current in-progress task
+    #[must_use]
     pub fn current_task(&self) -> Option<&TodoItem> {
         self.items
             .iter()
@@ -93,11 +97,13 @@ impl TodoList {
     }
 
     /// Count pending and in-progress items
+    #[must_use]
     pub fn pending_count(&self) -> usize {
         self.items.iter().filter(|item| !item.is_done()).count()
     }
 
     /// Count completed items
+    #[must_use]
     pub fn completed_count(&self) -> usize {
         self.items
             .iter()
@@ -106,6 +112,7 @@ impl TodoList {
     }
 
     /// Format todos as a context string for injection into prompts
+    #[must_use]
     pub fn to_context_string(&self) -> String {
         if self.items.is_empty() {
             return String::new();
@@ -119,7 +126,7 @@ impl TodoList {
 
         let completed = self.completed_count();
         let total = self.items.len();
-        lines.push(format!("\nПрогресс: {}/{} выполнено", completed, total));
+        lines.push(format!("\nПрогресс: {completed}/{total} выполнено"));
 
         lines.join("\n")
     }
@@ -137,7 +144,7 @@ impl TodoList {
     }
 }
 
-/// Arguments for write_todos tool
+/// Arguments for `write_todos` tool
 #[derive(Debug, Deserialize)]
 struct WriteTodosArgs {
     todos: Vec<TodoItemArg>,
@@ -157,7 +164,7 @@ pub struct TodosProvider {
 
 impl TodosProvider {
     /// Create a new todos provider with shared state
-    pub fn new(todos: Arc<Mutex<TodoList>>) -> Self {
+    pub const fn new(todos: Arc<Mutex<TodoList>>) -> Self {
         Self { todos }
     }
 
@@ -169,7 +176,7 @@ impl TodosProvider {
 
 #[async_trait]
 impl ToolProvider for TodosProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "todos"
     }
 
@@ -217,7 +224,7 @@ impl ToolProvider for TodosProvider {
         debug!(tool = tool_name, "Executing todos tool");
 
         if tool_name != "write_todos" {
-            anyhow::bail!("Unknown todos tool: {}", tool_name);
+            anyhow::bail!("Unknown todos tool: {tool_name}");
         }
 
         let args: WriteTodosArgs = serde_json::from_str(arguments)?;
@@ -240,6 +247,7 @@ impl ToolProvider for TodosProvider {
             let total = todos.items.len();
             let current = todos.current_task().map(|t| t.description.clone());
             let is_all_complete = todos.is_complete();
+            drop(todos);
             (completed, total, current, is_all_complete)
         };
 
@@ -250,19 +258,20 @@ impl ToolProvider for TodosProvider {
             "Todos updated"
         );
 
-        let response = if let Some(current_task) = current {
-            format!(
-                "✅ Список задач обновлён ({}/{} выполнено)\n🔄 Текущая задача: {}",
-                completed, total, current_task
-            )
-        } else if is_all_complete {
-            format!("✅ Все задачи выполнены! ({}/{})", completed, total)
-        } else {
-            format!(
-                "✅ Список задач обновлён ({}/{} выполнено)",
-                completed, total
-            )
-        };
+        let response = current.map_or_else(
+            || {
+                if is_all_complete {
+                    format!("✅ Все задачи выполнены! ({completed}/{total})")
+                } else {
+                    format!("✅ Список задач обновлён ({completed}/{total} выполнено)")
+                }
+            },
+            |current_task| {
+                format!(
+                    "✅ Список задач обновлён ({completed}/{total} выполнено)\n🔄 Текущая задача: {current_task}"
+                )
+            },
+        );
 
         Ok(response)
     }
@@ -369,7 +378,7 @@ mod tests {
             ]
         }"#;
 
-        let result = provider.execute("write_todos", args).await.unwrap();
+        let result = provider.execute("write_todos", args).await.expect("Failed to execute todos tool");
         assert!(result.contains("Список задач обновлён"));
         assert!(result.contains("1/3 выполнено"));
         assert!(result.contains("Task 2"));
@@ -377,5 +386,6 @@ mod tests {
         let list = todos.lock().await;
         assert_eq!(list.items.len(), 3);
         assert_eq!(list.pending_count(), 2);
+        drop(list);
     }
 }

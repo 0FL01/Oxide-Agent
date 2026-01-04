@@ -13,6 +13,7 @@ pub struct GroqProvider {
 }
 
 impl GroqProvider {
+    #[must_use]
     pub fn new(api_key: String) -> Self {
         let config = OpenAIConfig::new()
             .with_api_key(api_key)
@@ -65,6 +66,37 @@ impl LlmProvider for GroqProvider {
     }
 }
 
+#[derive(serde::Deserialize, Debug)]
+struct LenientToolCallFunction {
+    name: String,
+    arguments: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct LenientToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    _type: Option<String>, // We don't care if it's missing
+    function: LenientToolCallFunction,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct LenientMessage {
+    content: Option<String>,
+    tool_calls: Option<Vec<LenientToolCall>>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct LenientChoice {
+    message: LenientMessage,
+    finish_reason: Option<String>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct LenientResponse {
+    choices: Vec<LenientChoice>,
+}
+
 pub struct MistralProvider {
     client: Client<OpenAIConfig>,
     http_client: HttpClient,
@@ -72,6 +104,7 @@ pub struct MistralProvider {
 }
 
 impl MistralProvider {
+    #[must_use]
     pub fn new(api_key: String) -> Self {
         let config = OpenAIConfig::new()
             .with_api_key(api_key.clone())
@@ -84,6 +117,11 @@ impl MistralProvider {
     }
 
     /// Chat completion with tool calling support for agent mode
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` on non-success status codes,
+    /// or `LlmError::JsonError` if parsing fails.
     pub async fn chat_with_tools(
         &self,
         system_prompt: &str,
@@ -97,62 +135,7 @@ impl MistralProvider {
 
         let url = "https://api.mistral.ai/v1/chat/completions";
 
-        let mut messages = vec![json!({
-            "role": "system",
-            "content": system_prompt
-        })];
-
-        for msg in history {
-            match msg.role.as_str() {
-                "tool" => {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": msg.tool_call_id,
-                        "content": msg.content
-                    }));
-                }
-                "assistant" => {
-                    let mut m = json!({
-                        "role": "assistant",
-                        "content": msg.content
-                    });
-
-                    // If we have tool calls, include them
-                    if let Some(tool_calls) = &msg.tool_calls {
-                        // Map internal ToolCall to the structure expected by API (if needed)
-                        // Our ToolCall struct matches what we want to send usually,
-                        // but we need to make sure it has "type": "function" if Mistral requires it.
-                        // Mistral API usually expects:
-                        // "tool_calls": [ { "id": "...", "type": "function", "function": { "name": "...", "arguments": "..." } } ]
-
-                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
-                            .iter()
-                            .map(|tc| {
-                                json!({
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments
-                                    }
-                                })
-                            })
-                            .collect();
-
-                        m["tool_calls"] = json!(api_tool_calls);
-                    }
-
-                    messages.push(m);
-                }
-                _ => {
-                    let m = json!({
-                        "role": msg.role,
-                        "content": msg.content
-                    });
-                    messages.push(m);
-                }
-            }
-        }
+        let messages = Self::prepare_messages(system_prompt, history);
 
         // Add tool definitions
         let openai_tools: Vec<serde_json::Value> = tools
@@ -190,41 +173,8 @@ impl MistralProvider {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(super::LlmError::ApiError(format!(
-                "Mistral API error: {} - {}",
-                status, error_text
+                "Mistral API error: {status} - {error_text}"
             )));
-        }
-
-        // Lenient parsing logic
-        #[derive(serde::Deserialize, Debug)]
-        struct LenientToolCallFunction {
-            name: String,
-            arguments: String,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct LenientToolCall {
-            id: String,
-            #[serde(rename = "type")]
-            _type: Option<String>, // We don't care if it's missing
-            function: LenientToolCallFunction,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct LenientMessage {
-            content: Option<String>,
-            tool_calls: Option<Vec<LenientToolCall>>,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct LenientChoice {
-            message: LenientMessage,
-            finish_reason: Option<String>,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct LenientResponse {
-            choices: Vec<LenientChoice>,
         }
 
         let res_json: LenientResponse = response
@@ -232,6 +182,66 @@ impl MistralProvider {
             .await
             .map_err(|e| super::LlmError::JsonError(e.to_string()))?;
 
+        Self::parse_mistral_response(&res_json)
+    }
+
+    fn prepare_messages(system_prompt: &str, history: &[super::Message]) -> Vec<serde_json::Value> {
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": system_prompt
+        })];
+
+        for msg in history {
+            match msg.role.as_str() {
+                "tool" => {
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content
+                    }));
+                }
+                "assistant" => {
+                    let mut m = json!({
+                        "role": "assistant",
+                        "content": msg.content
+                    });
+
+                    // If we have tool calls, include them
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        m["tool_calls"] = json!(api_tool_calls);
+                    }
+
+                    messages.push(m);
+                }
+                _ => {
+                    let m = json!({
+                        "role": msg.role,
+                        "content": msg.content
+                    });
+                    messages.push(m);
+                }
+            }
+        }
+        messages
+    }
+
+    fn parse_mistral_response(
+        res_json: &LenientResponse,
+    ) -> Result<super::ChatResponse, super::LlmError> {
         let choice = res_json
             .choices
             .first()
@@ -316,6 +326,7 @@ pub struct ZaiProvider {
 }
 
 impl ZaiProvider {
+    #[must_use]
     pub fn new(api_key: String) -> Self {
         let config = OpenAIConfig::new()
             .with_api_key(api_key)
@@ -337,9 +348,7 @@ impl LlmProvider for ZaiProvider {
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         debug!(
-            "ZAI: Starting chat completion request (model: {}, max_tokens: {}, history_size: {})",
-            model_id,
-            max_tokens,
+            "ZAI: Starting chat completion request (model: {model_id}, max_tokens: {max_tokens}, history_size: {})",
             history.len()
         );
         openai_compat::chat_completion(
@@ -382,6 +391,7 @@ pub struct GeminiProvider {
 }
 
 impl GeminiProvider {
+    #[must_use]
     pub fn new(api_key: String) -> Self {
         Self {
             http_client: HttpClient::new(),
@@ -401,8 +411,8 @@ impl LlmProvider for GeminiProvider {
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            model_id, self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={}",
+            self.api_key
         );
 
         let mut contents = Vec::new();
@@ -451,8 +461,8 @@ impl LlmProvider for GeminiProvider {
         model_id: &str,
     ) -> Result<String, LlmError> {
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            model_id, self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={}",
+            self.api_key
         );
 
         let prompt = "Сделай точную транскрипцию речи из этого аудио/видео файла на русском языке. Если в файле нет речи, язык не русский или файл не содержит аудиодорожку, укажи это.";
@@ -489,8 +499,8 @@ impl LlmProvider for GeminiProvider {
         model_id: &str,
     ) -> Result<String, LlmError> {
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            model_id, self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={}",
+            self.api_key
         );
 
         let body = json!({
@@ -530,6 +540,7 @@ pub struct OpenRouterProvider {
 }
 
 impl OpenRouterProvider {
+    #[must_use]
     pub fn new(api_key: String, site_url: String, site_name: String) -> Self {
         Self {
             http_client: HttpClient::new(),
@@ -588,8 +599,7 @@ impl LlmProvider for OpenRouterProvider {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(LlmError::ApiError(format!(
-                "OpenRouter API error: {} - {}",
-                status, error_text
+                "OpenRouter API error: {status} - {error_text}"
             )));
         }
 
@@ -600,7 +610,7 @@ impl LlmProvider for OpenRouterProvider {
 
         res_json["choices"][0]["message"]["content"]
             .as_str()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }
 
@@ -649,7 +659,7 @@ impl LlmProvider for OpenRouterProvider {
     ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
         let image_base64 = BASE64.encode(&image_bytes);
-        let data_url = format!("data:image/jpeg;base64,{}", image_base64);
+        let data_url = format!("data:image/jpeg;base64,{image_base64}");
 
         let body = json!({
             "model": model_id,

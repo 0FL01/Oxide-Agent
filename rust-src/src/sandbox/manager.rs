@@ -29,11 +29,13 @@ pub struct ExecResult {
 
 impl ExecResult {
     /// Check if the command succeeded (exit code 0)
-    pub fn success(&self) -> bool {
+    #[must_use]
+    pub const fn success(&self) -> bool {
         self.exit_code == 0
     }
 
     /// Get combined output (stdout + stderr)
+    #[must_use]
     pub fn combined_output(&self) -> String {
         if self.stderr.is_empty() {
             self.stdout.clone()
@@ -46,6 +48,7 @@ impl ExecResult {
 }
 
 /// Docker sandbox manager for isolated code execution
+#[derive(Clone)]
 pub struct SandboxManager {
     docker: Docker,
     container_id: Option<String>,
@@ -55,6 +58,10 @@ pub struct SandboxManager {
 
 impl SandboxManager {
     /// Create a new sandbox manager
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connection to Docker daemon fails or ping fails.
     #[instrument(skip_all, fields(user_id))]
     pub async fn new(user_id: i64) -> Result<Self> {
         let docker =
@@ -77,16 +84,22 @@ impl SandboxManager {
     }
 
     /// Check if sandbox container is running
-    pub fn is_running(&self) -> bool {
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
         self.container_id.is_some()
     }
 
     /// Get container ID if running
+    #[must_use]
     pub fn container_id(&self) -> Option<&str> {
         self.container_id.as_deref()
     }
 
     /// Create and start a new sandbox container
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if container creation or starting fails.
     #[instrument(skip(self), fields(user_id = self.user_id))]
     pub async fn create_sandbox(&mut self) -> Result<()> {
         if self.container_id.is_some() {
@@ -114,10 +127,6 @@ impl SandboxManager {
             let id = container.id.clone().unwrap_or_default();
             info!(user_id = self.user_id, container_id = %id, "Found existing sandbox container");
             self.container_id = Some(id.clone());
-
-            // Start if not running
-            // We use format! debug since StateEnum might not implement Display/AsRef<str> easily or we don't want to import the enum
-            let _state_str = format!("{:?}", container.state);
 
             // Simpler: Just try to start it.
             if let Err(e) = self
@@ -186,6 +195,10 @@ impl SandboxManager {
     }
 
     /// Execute a command in the sandbox
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox is not running, exec creation fails, or execution times out.
     #[instrument(skip(self), fields(container_id = ?self.container_id))]
     pub async fn exec_command(&self, cmd: &str) -> Result<ExecResult> {
         let container_id = self
@@ -217,8 +230,7 @@ impl SandboxManager {
         .await
         .map_err(|_| {
             anyhow!(
-                "Command execution timed out after {}s",
-                SANDBOX_EXEC_TIMEOUT_SECS
+                "Command execution timed out after {SANDBOX_EXEC_TIMEOUT_SECS}s"
             )
         })?
         .context("Command execution failed")?;
@@ -266,6 +278,10 @@ impl SandboxManager {
     }
 
     /// Write content to a file in the sandbox
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox is not running or file writing fails.
     #[instrument(skip(self, content), fields(path = %path, content_len = content.len()))]
     pub async fn write_file(&self, path: &str, content: &[u8]) -> Result<()> {
         if self.container_id.is_none() {
@@ -292,6 +308,10 @@ impl SandboxManager {
     }
 
     /// Read content from a file in the sandbox
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file reading or decoding fails.
     #[instrument(skip(self), fields(path = %path))]
     pub async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
         let cmd = format!("base64 {}", shell_escape::escape(path.into()));
@@ -311,6 +331,10 @@ impl SandboxManager {
     }
 
     /// Destroy the sandbox container
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if container removal fails.
     #[instrument(skip(self), fields(container_id = ?self.container_id))]
     pub async fn destroy(&mut self) -> Result<()> {
         if let Some(container_id) = self.container_id.take() {
@@ -321,18 +345,15 @@ impl SandboxManager {
                 ..Default::default()
             };
 
-            match self
+            if let Err(e) = self
                 .docker
                 .remove_container(&container_id, Some(options))
                 .await
             {
-                Ok(_) => {
-                    info!(container_id = %container_id, "Sandbox container destroyed");
-                }
-                Err(e) => {
-                    // Container might already be removed (auto_remove)
-                    warn!(container_id = %container_id, error = %e, "Failed to remove container (may already be removed)");
-                }
+                // Container might already be removed (auto_remove)
+                warn!(container_id = %container_id, error = %e, "Failed to remove container (may already be removed)");
+            } else {
+                info!(container_id = %container_id, "Sandbox container destroyed");
             }
         }
 
@@ -340,6 +361,10 @@ impl SandboxManager {
     }
 
     /// Recreate the sandbox container (wipe data)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if destruction or creation fails.
     #[instrument(skip(self), fields(user_id = self.user_id))]
     pub async fn recreate(&mut self) -> Result<()> {
         info!("Recreating sandbox");
@@ -387,14 +412,14 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker daemon"]
     async fn test_sandbox_lifecycle() {
-        let mut sandbox = SandboxManager::new(12345).await.unwrap();
+        let mut sandbox = SandboxManager::new(12345).await.expect("Failed to create SandboxManager");
 
         // Create sandbox
-        sandbox.create_sandbox().await.unwrap();
+        sandbox.create_sandbox().await.expect("Failed to create sandbox container");
         assert!(sandbox.is_running());
 
         // Execute command
-        let result = sandbox.exec_command("echo 'Hello, World!'").await.unwrap();
+        let result = sandbox.exec_command("echo 'Hello, World!'").await.expect("Failed to execute command");
         assert!(result.success());
         assert!(result.stdout.contains("Hello, World!"));
 
@@ -402,12 +427,12 @@ mod tests {
         let result = sandbox
             .exec_command("python3 -c \"print(2 + 2)\"")
             .await
-            .unwrap();
+            .expect("Failed to execute python command");
         assert!(result.success());
-        assert!(result.stdout.contains("4"));
+        assert!(result.stdout.contains('4'));
 
         // Cleanup
-        sandbox.destroy().await.unwrap();
+        sandbox.destroy().await.expect("Failed to destroy sandbox");
         assert!(!sandbox.is_running());
     }
 }

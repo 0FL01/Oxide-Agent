@@ -44,6 +44,11 @@ pub struct R2Storage {
 }
 
 impl R2Storage {
+    /// Create a new R2 storage instance
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if R2 configuration is missing.
     pub async fn new(settings: &Settings) -> Result<Self, StorageError> {
         let endpoint_url = settings
             .r2_endpoint_url
@@ -83,7 +88,12 @@ impl R2Storage {
         })
     }
 
-    pub async fn save_json<T: serde::Serialize>(
+    /// Save data as JSON to R2
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JSON serialization or S3 upload fails.
+    pub async fn save_json<T: serde::Serialize + Sync>(
         &self,
         key: &str,
         data: &T,
@@ -103,6 +113,11 @@ impl R2Storage {
         Ok(())
     }
 
+    /// Load data from JSON in R2
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if S3 download or JSON deserialization fails.
     pub async fn load_json<T: serde::de::DeserializeOwned>(
         &self,
         key: &str,
@@ -130,6 +145,11 @@ impl R2Storage {
         }
     }
 
+    /// Delete object from R2
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if S3 deletion fails.
     pub async fn delete_object(&self, key: &str) -> Result<(), StorageError> {
         self.client
             .delete_object()
@@ -144,6 +164,11 @@ impl R2Storage {
 
     // --- High-level User Config Functions ---
 
+    /// Get user configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if configuration loading fails.
     pub async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError> {
         Ok(self
             .load_json(&user_config_key(user_id))
@@ -151,6 +176,11 @@ impl R2Storage {
             .unwrap_or_default())
     }
 
+    /// Update user configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if saving fails.
     pub async fn update_user_config(
         &self,
         user_id: i64,
@@ -160,8 +190,10 @@ impl R2Storage {
     }
 
     /// Atomically modify user config using a closure.
-    /// This ensures read-modify-write happens in a single operation,
-    /// preventing race conditions when multiple fields are updated concurrently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if modification or saving fails.
     pub async fn modify_user_config<F>(&self, user_id: i64, modifier: F) -> Result<(), StorageError>
     where
         F: FnOnce(&mut UserConfig),
@@ -171,6 +203,11 @@ impl R2Storage {
         self.update_user_config(user_id, config).await
     }
 
+    /// Update user system prompt
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if saving fails.
     pub async fn update_user_prompt(
         &self,
         user_id: i64,
@@ -182,11 +219,21 @@ impl R2Storage {
         .await
     }
 
+    /// Get user system prompt
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if configuration loading fails.
     pub async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError> {
         let config = self.get_user_config(user_id).await?;
         Ok(config.system_prompt)
     }
 
+    /// Update user model
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if saving fails.
     pub async fn update_user_model(
         &self,
         user_id: i64,
@@ -198,11 +245,21 @@ impl R2Storage {
         .await
     }
 
+    /// Get user model
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if configuration loading fails.
     pub async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError> {
         let config = self.get_user_config(user_id).await?;
         Ok(config.model_name)
     }
 
+    /// Update user state
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if saving fails.
     pub async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
         self.modify_user_config(user_id, |config| {
             config.state = Some(state);
@@ -210,6 +267,11 @@ impl R2Storage {
         .await
     }
 
+    /// Get user state
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if configuration loading fails.
     pub async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
         let config = self.get_user_config(user_id).await?;
         Ok(config.state)
@@ -217,6 +279,11 @@ impl R2Storage {
 
     // --- History Functions ---
 
+    /// Save message to chat history
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if history loading or saving fails.
     pub async fn save_message(
         &self,
         user_id: i64,
@@ -226,10 +293,14 @@ impl R2Storage {
         let key = user_history_key(user_id);
         let mut history: Vec<Message> = self.load_json(&key).await?.unwrap_or_default();
         history.push(Message { role, content });
-        // Optional: truncate history if too large
         self.save_json(&key, &history).await
     }
 
+    /// Get chat history for a user
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if history loading fails.
     pub async fn get_chat_history(
         &self,
         user_id: i64,
@@ -243,12 +314,22 @@ impl R2Storage {
         Ok(history[start..].to_vec())
     }
 
+    /// Clear chat history for a user
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deletion fails.
     pub async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError> {
         self.delete_object(&user_history_key(user_id)).await
     }
 
     // --- Agent Memory Functions ---
 
+    /// Save agent memory to storage
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if saving fails.
     pub async fn save_agent_memory(
         &self,
         user_id: i64,
@@ -258,6 +339,11 @@ impl R2Storage {
             .await
     }
 
+    /// Load agent memory from storage
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading fails.
     pub async fn load_agent_memory(
         &self,
         user_id: i64,
@@ -265,16 +351,31 @@ impl R2Storage {
         self.load_json(&user_agent_memory_key(user_id)).await
     }
 
+    /// Clear agent memory for a user
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deletion fails.
     pub async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError> {
         self.delete_object(&user_agent_memory_key(user_id)).await
     }
 
+    /// Clear all context (history and memory) for a user
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if clearing history or memory fails.
     pub async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
         self.clear_chat_history(user_id).await?;
         self.clear_agent_memory(user_id).await?;
         Ok(())
     }
 
+    /// Check connection to R2 storage
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if listing buckets fails.
     pub async fn check_connection(&self) -> Result<(), String> {
         match self.client.list_buckets().send().await {
             Ok(_) => {
@@ -282,7 +383,7 @@ impl R2Storage {
                 Ok(())
             }
             Err(e) => {
-                let err_msg = format!("R2 connectivity test failed: {:#?}", e);
+                let err_msg = format!("R2 connectivity test failed: {e:#?}");
                 error!("{}", err_msg);
                 Err(err_msg)
             }
@@ -290,14 +391,17 @@ impl R2Storage {
     }
 }
 
+#[must_use]
 pub fn user_config_key(user_id: i64) -> String {
-    format!("users/{}/config.json", user_id)
+    format!("users/{user_id}/config.json")
 }
 
+#[must_use]
 pub fn user_history_key(user_id: i64) -> String {
-    format!("users/{}/history.json", user_id)
+    format!("users/{user_id}/history.json")
 }
 
+#[must_use]
 pub fn user_agent_memory_key(user_id: i64) -> String {
-    format!("users/{}/agent_memory.json", user_id)
+    format!("users/{user_id}/agent_memory.json")
 }

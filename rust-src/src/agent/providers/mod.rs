@@ -1,6 +1,6 @@
 //! Tool providers module
 //!
-//! Contains implementations of ToolProvider for different tool sources.
+//! Contains implementations of `ToolProvider` for different tool sources.
 
 pub mod sandbox;
 pub mod todos;

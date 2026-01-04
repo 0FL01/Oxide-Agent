@@ -14,8 +14,9 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     /// Create a new empty registry
-    pub fn new() -> Self {
-        Self { providers: vec![] }
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { providers: Vec::new() }
     }
 
     /// Register a new tool provider
@@ -25,11 +26,16 @@ impl ToolRegistry {
     }
 
     /// Get all tools from all registered providers
+    #[must_use]
     pub fn all_tools(&self) -> Vec<ToolDefinition> {
         self.providers.iter().flat_map(|p| p.tools()).collect()
     }
 
     /// Find a provider and execute the tool
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no provider can handle the tool or if execution fails.
     pub async fn execute(&self, tool_name: &str, arguments: &str) -> Result<String> {
         debug!(tool = tool_name, "Looking for provider to handle tool");
 
@@ -45,15 +51,17 @@ impl ToolRegistry {
         }
 
         warn!(tool = tool_name, "No provider found for tool");
-        Err(anyhow!("Unknown tool: {}", tool_name))
+        Err(anyhow!("Unknown tool: {tool_name}"))
     }
 
     /// Check if any provider can handle the tool
+    #[must_use]
     pub fn can_handle(&self, tool_name: &str) -> bool {
         self.providers.iter().any(|p| p.can_handle(tool_name))
     }
 
     /// Get provider names
+    #[must_use]
     pub fn provider_names(&self) -> Vec<&str> {
         self.providers.iter().map(|p| p.name()).collect()
     }

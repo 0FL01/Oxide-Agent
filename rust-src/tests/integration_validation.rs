@@ -8,7 +8,8 @@ use tracing::info;
 use tracing_subscriber::{prelude::*, EnvFilter};
 
 #[tokio::test]
-#[ignore] // Ignored by default as it requires real credentials
+#[ignore = "Requires real credentials"]
+#[allow(clippy::too_many_lines)]
 async fn test_credentials_validation() {
     // 1. Load .env file correctly
     // Rust tests run from the package root (rust-src), so .env is one level up
@@ -31,7 +32,7 @@ async fn test_credentials_validation() {
     // 2. Validate Settings Load (with fallback for case sensitivity issues)
     // We try Settings::new(), but if it fails (due to case sensitivity in config-rs),
     // we fallback to reading env vars directly to verify the S3 theory.
-    let (telegram_token, r2_endpoint, r2_access, r2_secret, _r2_bucket) = match Settings::new() {
+    let (telegram_token, r2_endpoint, r2_access, r2_secret, r2_bucket) = match Settings::new() {
         Ok(s) => (
             s.telegram_token,
             s.r2_endpoint_url.expect("R2_ENDPOINT_URL missing"),
@@ -70,7 +71,7 @@ async fn test_credentials_validation() {
     // 3. Validate R2 Storage (THEORY VERIFICATION: FORCE PATH STYLE)
     info!("Validating R2 Storage credentials with manual client construction (Theory: Force Path Style)...");
     info!("R2 Endpoint: {}", r2_endpoint);
-    info!("R2 Bucket: {}", _r2_bucket);
+    info!("R2 Bucket: {}", r2_bucket);
     info!(
         "R2 Access Key: {}...",
         &r2_access.chars().take(4).collect::<String>()
@@ -100,7 +101,7 @@ async fn test_credentials_validation() {
 
     match client
         .put_object()
-        .bucket(&_r2_bucket)
+        .bucket(&r2_bucket)
         .key(test_key)
         .body(aws_sdk_s3::primitives::ByteStream::from_static(
             b"test_connectivity",
@@ -113,7 +114,7 @@ async fn test_credentials_validation() {
             info!("Cleaning up...");
             if let Err(e) = client
                 .delete_object()
-                .bucket(&_r2_bucket)
+                .bucket(&r2_bucket)
                 .key(test_key)
                 .send()
                 .await
@@ -124,8 +125,7 @@ async fn test_credentials_validation() {
             }
         }
         Err(e) => panic!(
-            "Failed to connect to R2 Storage (PutObject failed). Error: {:#?}",
-            e
+            "Failed to connect to R2 Storage (PutObject failed). Error: {e:#?}"
         ),
     }
 

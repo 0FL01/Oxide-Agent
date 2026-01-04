@@ -36,8 +36,8 @@ pub struct Settings {
     pub system_message: Option<String>,
 }
 
-fn default_openrouter_site_url() -> String {
-    "".to_string()
+const fn default_openrouter_site_url() -> String {
+    String::new()
 }
 
 fn default_openrouter_site_name() -> String {
@@ -45,6 +45,11 @@ fn default_openrouter_site_name() -> String {
 }
 
 impl Settings {
+    /// Create new settings by loading from environment and files
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ConfigError` if loading fails.
     pub fn new() -> Result<Self, ConfigError> {
         let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
 
@@ -52,7 +57,7 @@ impl Settings {
             // Start off by merging in the "default" configuration file
             .add_source(File::with_name("config/default").required(false))
             // Add in the current environment file
-            .add_source(File::with_name(&format!("config/{}", run_mode)).required(false))
+            .add_source(File::with_name(&format!("config/{run_mode}")).required(false))
             // Add in a local configuration file
             // This file shouldn't be checked into git
             .add_source(File::with_name("config/local").required(false))
@@ -65,7 +70,7 @@ impl Settings {
             .add_source(Environment::default().ignore_empty(true))
             .build()?;
 
-        let mut settings: Settings = s.try_deserialize()?;
+        let mut settings: Self = s.try_deserialize()?;
 
         // Fallback: Check environment variables directly if config didn't pick them up
         // This handles cases where automatic mapping might fail or behavior differs
@@ -101,6 +106,7 @@ impl Settings {
         Ok(settings)
     }
 
+    #[must_use]
     pub fn allowed_users(&self) -> HashSet<i64> {
         self.allowed_users_str
             .as_ref()
@@ -113,6 +119,7 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    #[must_use]
     pub fn agent_allowed_users(&self) -> HashSet<i64> {
         self.agent_allowed_users_str
             .as_ref()
@@ -190,8 +197,8 @@ mod tests {
             r2_secret_access_key: None,
             r2_endpoint_url: None,
             r2_bucket_name: None,
-            openrouter_site_url: "".to_string(),
-            openrouter_site_name: "".to_string(),
+            openrouter_site_url: String::new(),
+            openrouter_site_name: String::new(),
             system_message: None,
         };
 

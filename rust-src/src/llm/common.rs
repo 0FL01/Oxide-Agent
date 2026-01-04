@@ -12,6 +12,10 @@ use async_openai::types::chat::{
 use reqwest::StatusCode;
 
 /// Build a list of chat messages for OpenAI-compatible APIs
+///
+/// # Errors
+///
+/// Returns `LlmError::Unknown` if message building fails.
 pub fn build_openai_messages(
     system_prompt: &str,
     history: &[Message],
@@ -51,6 +55,10 @@ pub fn build_openai_messages(
 }
 
 /// Extract text content from an OpenAI-compatible chat completion response
+///
+/// # Errors
+///
+/// Returns `LlmError::ApiError` if the response is empty.
 pub fn extract_openai_response(
     response: &CreateChatCompletionResponse,
 ) -> Result<String, LlmError> {
@@ -61,10 +69,10 @@ pub fn extract_openai_response(
         .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
 }
 
-/// Create an LlmError from HTTP response status and body
+/// Create an `LlmError` from HTTP response status and body
 #[allow(dead_code)]
 pub fn handle_http_error(provider: &str, status: StatusCode, body: &str) -> LlmError {
-    LlmError::ApiError(format!("{} API error: {} - {}", provider, status, body))
+    LlmError::ApiError(format!("{provider} API error: {status} - {body}"))
 }
 
 /// Extract text content from a JSON response using a path
@@ -72,6 +80,10 @@ pub fn handle_http_error(provider: &str, status: StatusCode, body: &str) -> LlmE
 /// # Arguments
 /// * `response` - The JSON value to extract from
 /// * `path` - Array of keys to traverse (e.g., `["choices", "0", "message", "content"]`)
+///
+/// # Errors
+///
+/// Returns `LlmError::ApiError` if the path does not exist or content is not a string.
 ///
 /// # Example
 /// ```ignore
@@ -85,17 +97,15 @@ pub fn extract_json_content(
     let mut current = response;
 
     for key in path {
-        current = if let Ok(index) = key.parse::<usize>() {
-            &current[index]
-        } else {
-            &current[key]
-        };
+        current = key
+            .parse::<usize>()
+            .map_or_else(|_| &current[key], |index| &current[index]);
     }
 
     current
         .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| LlmError::ApiError(format!("Invalid response format: {:?}", response)))
+        .map(ToString::to_string)
+        .ok_or_else(|| LlmError::ApiError(format!("Invalid response format: {response:?}")))
 }
 
 #[cfg(test)]
@@ -114,7 +124,7 @@ mod tests {
         });
 
         let result = extract_json_content(&response, &["choices", "0", "message", "content"]);
-        assert_eq!(result.unwrap(), "Hello, world!");
+        assert_eq!(result.expect("Failed to extract content"), "Hello, world!");
     }
 
     #[test]
@@ -133,7 +143,10 @@ mod tests {
             &response,
             &["candidates", "0", "content", "parts", "0", "text"],
         );
-        assert_eq!(result.unwrap(), "Gemini response");
+        assert_eq!(
+            result.expect("Failed to extract Gemini content"),
+            "Gemini response"
+        );
     }
 
     #[test]

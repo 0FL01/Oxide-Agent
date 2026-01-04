@@ -19,14 +19,14 @@
 3. **Option Safety**: `unwrap()` on `Option` is strictly forbidden in logic flow (use `if let`, `match`, or `map_or`).
 
 **Steps**:
-1. [ ] **Verify Thread Safety**: Analyze `src/storage.rs` to confirm that adding `Sync` bound to `save_json<T>` generic solves the `future cannot be sent between threads` error.
-2. [ ] **Fix Storage Concurrency**: Update `save_json` signature in `src/storage.rs` to require `T: serde::Serialize + Sync`.
-3. [ ] **Fix Sandbox Safety**: Refactor `ensure_sandbox` in `src/agent/providers/sandbox.rs` and `src/agent/session.rs` to use pattern matching (`if let`) instead of `is_none()` + `unwrap()`.
-4. [ ] **Modernize Lazy Statics**:
+1. [x] **Verify Thread Safety**: Analyze `src/storage.rs` to confirm that adding `Sync` bound to `save_json<T>` generic solves the `future cannot be sent between threads` error.
+2. [x] **Fix Storage Concurrency**: Update `save_json` signature in `src/storage.rs` to require `T: serde::Serialize + Sync`.
+3. [x] **Fix Sandbox Safety**: Refactor `ensure_sandbox` in `src/agent/providers/sandbox.rs` and `src/agent/session.rs` to use pattern matching (`if let`) instead of `is_none()` + `unwrap()`.
+4. [x] **Modernize Lazy Statics**:
     - Verify `std::sync::LazyLock` availability (Rust 1.80+).
     - Refactor `src/utils.rs` to replace `lazy_static!` macros with `std::sync::LazyLock`.
     - Replace `unwrap()` in regex compilation with `expect("valid regex pattern")` to satisfy linter while maintaining distinct panic messages.
-5. [ ] **QA**: Run `cargo check` to ensure the project compiles without errors.
+5. [x] **QA**: Run `cargo check` to ensure the project compiles without errors.
 
 ## Phase 2: Performance & Resource Safety
 
@@ -40,10 +40,10 @@
 - 📚 **Docs**: `std::boxed::Box`, `std::pin::Pin`, `tokio::sync::Mutex`
 
 **Steps**:
-1. [ ] **Verify Future Sizes**: Identify specific calls in `src/bot/handlers.rs` causing `large_futures` warning (>20KB).
-2. [ ] **Heap Allocation**: Wrap `handle_agent_message` and `check_state_and_redirect` calls in `Box::pin(...)` within `src/bot/handlers.rs`.
-3. [ ] **Lock Scoping**: Refactor `src/agent/executor.rs` and `src/agent/providers/sandbox.rs` to strictly scope `MutexGuard` lifetimes (using explicit blocks `{}` or `drop()`) before `.await` points to prevent deadlocks and silence `significant_drop_tightening`.
-4. [ ] **Safe Arithmetic**: Rewrite percentage calculations in `src/agent/memory.rs`. Replace unsafe `as f64` -> `as usize` casts with integer arithmetic (e.g., `(len * 20) / 100`) to avoid precision loss and truncation warnings.
+1. [x] **Verify Future Sizes**: Identify specific calls in `src/bot/handlers.rs` causing `large_futures` warning (>20KB).
+2. [x] **Heap Allocation**: Wrap `handle_agent_message` and `check_state_and_redirect` calls in `Box::pin(...)` within `src/bot/handlers.rs`.
+3. [x] **Lock Scoping**: Refactor `src/agent/executor.rs` and `src/agent/providers/sandbox.rs` to strictly scope `MutexGuard` lifetimes (using explicit blocks `{}` or `drop()`) before `.await` points to prevent deadlocks and silence `significant_drop_tightening`.
+4. [x] **Safe Arithmetic**: Rewrite percentage calculations in `src/agent/memory.rs`. Replace unsafe `as f64` -> `as usize` casts with integer arithmetic (e.g., `(len * 20) / 100`) to avoid precision loss and truncation warnings.
 
 ## Phase 3: Idiomatic Rust & Code Quality
 
@@ -54,18 +54,18 @@
 - 📚 **Docs**: `std::fmt`, `clippy::uninlined_format_args`
 
 **Steps**:
-1. [ ] **Format Strings**: Batch apply `uninlined_format_args` (change `format!("v: {}", v)` to `format!("v: {v}")`) across all files.
-2. [ ] **Attributes**:
+1. [x] **Format Strings**: Batch apply `uninlined_format_args` (change `format!("v: {}", v)` to `format!("v: {v}")`) across all files.
+2. [x] **Attributes**:
     - Add `#[must_use]` to getters and pure functions (e.g., `new`, `is_running`).
     - Convert eligible functions to `const fn`.
-3. [ ] **Documentation**:
+3. [x] **Documentation**:
     - Add missing backticks to doc comments (e.g., refer to \`Struct\` instead of Struct).
     - Add `# Errors` section to doc comments for functions returning `Result`.
-4. [ ] **Logic Simplification**:
+4. [x] **Logic Simplification**:
     - Replace `match` with `if let` where applicable.
     - Replace `option.map(...).unwrap_or(...)` with `option.map_or(...)`.
     - Remove redundant closures (e.g., `.map(|s| s.to_string())` -> `.map(ToString::to_string)`).
-5. [ ] **Final QA**: Run `cargo clippy --all-targets --all-features` to confirm zero warnings.
+5. [x] **Final QA**: Run `cargo clippy --all-targets --all-features` to confirm zero warnings.
 
 [!NOTE]
 Do not remove `#[allow(...)]` attributes if they are protecting intentionally unused code that is planned for future features.

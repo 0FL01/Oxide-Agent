@@ -41,7 +41,7 @@ pub struct Step {
     pub status: StepStatus,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StepStatus {
     Pending,
     InProgress,
@@ -50,6 +50,7 @@ pub enum StepStatus {
 }
 
 impl ProgressState {
+    #[must_use]
     pub fn new(max_iterations: usize) -> Self {
         Self {
             max_iterations,
@@ -81,7 +82,7 @@ impl ProgressState {
                     }
                 }
                 self.steps.push(Step {
-                    description: format!("Выполнение: {}", name),
+                    description: format!("Выполнение: {name}"),
                     status: StepStatus::InProgress,
                 });
             }
@@ -118,7 +119,7 @@ impl ProgressState {
                     // Update step description with current task
                     if let Some(last) = self.steps.last_mut() {
                         if last.status == StepStatus::InProgress {
-                            last.description = format!("📋 {} ({}/{})", task, completed, total);
+                            last.description = format!("📋 {task} ({completed}/{total})");
                         }
                     }
                 }
@@ -142,6 +143,7 @@ impl ProgressState {
         }
     }
 
+    #[must_use]
     pub fn format_telegram(&self) -> String {
         let mut lines = Vec::new();
         lines.push("🤖 <b>Работа агента</b>\n".to_string());
@@ -168,13 +170,13 @@ impl ProgressState {
                 StepStatus::Completed => "✅",
                 StepStatus::Failed => "❌",
             };
-            lines.push(format!("{} {}", icon, step.description));
+            lines.push(format!("{icon} {}", step.description));
         }
 
         if self.is_finished {
             lines.push("\n✅ <b>Задача завершена</b>".to_string());
         } else if let Some(ref e) = self.error {
-            lines.push(format!("\n❌ <b>Ошибка:</b> {}", e));
+            lines.push(format!("\n❌ <b>Ошибка:</b> {e}"));
         } else {
             lines.push("\n<i>Агент подбирает инструменты...</i>".to_string());
         }

@@ -1,6 +1,6 @@
 //! Hook Registry - manages and executes hooks
 //!
-//! Provides the Hook trait and HookRegistry for registering and
+//! Provides the `Hook` trait and `HookRegistry` for registering and
 //! executing hooks at various points in the agent lifecycle.
 
 use super::types::{HookContext, HookEvent, HookResult};
@@ -9,7 +9,7 @@ use tracing::{debug, info};
 /// Trait for implementing hooks
 pub trait Hook: Send + Sync {
     /// Name of the hook for logging and debugging
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// Handle a hook event and return the result
     ///
@@ -25,7 +25,8 @@ pub struct HookRegistry {
 
 impl HookRegistry {
     /// Create a new empty hook registry
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { hooks: Vec::new() }
     }
 
@@ -78,11 +79,13 @@ impl HookRegistry {
     }
 
     /// Check if any hooks are registered
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.hooks.is_empty()
     }
 
     /// Get the number of registered hooks
+    #[must_use]
     pub fn len(&self) -> usize {
         self.hooks.len()
     }
@@ -105,7 +108,7 @@ mod tests {
     }
 
     impl Hook for TestHook {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             self.name
         }
 

@@ -1,6 +1,6 @@
 //! Sandbox Provider - executes tools in Docker sandbox
 //!
-//! Provides execute_command, read_file, write_file tools.
+//! Provides `execute_command`, `read_file`, `write_file` tools.
 
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
@@ -21,6 +21,7 @@ pub struct SandboxProvider {
 
 impl SandboxProvider {
     /// Create a new sandbox provider (sandbox is lazily initialized)
+    #[must_use]
     pub fn new(user_id: i64) -> Self {
         Self {
             sandbox: Arc::new(Mutex::new(None)),
@@ -36,31 +37,33 @@ impl SandboxProvider {
 
     /// Get or create the sandbox
     async fn ensure_sandbox(&self) -> Result<()> {
-        let mut guard = self.sandbox.lock().await;
-        if guard.is_none() || !guard.as_ref().unwrap().is_running() {
-            debug!(user_id = self.user_id, "Creating new sandbox for provider");
-            let mut sandbox = SandboxManager::new(self.user_id).await?;
-            sandbox.create_sandbox().await?;
-            *guard = Some(sandbox);
+        if self.sandbox.lock().await.as_ref().is_some_and(SandboxManager::is_running) {
+            return Ok(());
         }
+
+        debug!(user_id = self.user_id, "Creating new sandbox for provider");
+        let mut sandbox = SandboxManager::new(self.user_id).await?;
+        sandbox.create_sandbox().await?;
+        
+        *self.sandbox.lock().await = Some(sandbox);
         Ok(())
     }
 }
 
-/// Arguments for execute_command tool
+/// Arguments for `execute_command` tool
 #[derive(Debug, Deserialize)]
 struct ExecuteCommandArgs {
     command: String,
 }
 
-/// Arguments for write_file tool
+/// Arguments for `write_file` tool
 #[derive(Debug, Deserialize)]
 struct WriteFileArgs {
     path: String,
     content: String,
 }
 
-/// Arguments for read_file tool
+/// Arguments for `read_file` tool
 #[derive(Debug, Deserialize)]
 struct ReadFileArgs {
     path: String,
@@ -68,7 +71,7 @@ struct ReadFileArgs {
 
 #[async_trait]
 impl ToolProvider for SandboxProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "sandbox"
     }
 
@@ -133,8 +136,13 @@ impl ToolProvider for SandboxProvider {
         // Ensure sandbox is running
         self.ensure_sandbox().await?;
 
-        let guard = self.sandbox.lock().await;
-        let sandbox = guard.as_ref().unwrap();
+        let sandbox = {
+            let guard = self.sandbox.lock().await;
+            guard
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))?
+        };
 
         match tool_name {
             "execute_command" => {
@@ -155,7 +163,7 @@ impl ToolProvider for SandboxProvider {
                             ))
                         }
                     }
-                    Err(e) => Ok(format!("Ошибка выполнения команды: {}", e)),
+                    Err(e) => Ok(format!("Ошибка выполнения команды: {e}")),
                 }
             }
             "write_file" => {
@@ -164,18 +172,18 @@ impl ToolProvider for SandboxProvider {
                     .write_file(&args.path, args.content.as_bytes())
                     .await
                 {
-                    Ok(_) => Ok(format!("Файл {} успешно записан", args.path)),
-                    Err(e) => Ok(format!("Ошибка записи файла: {}", e)),
+                    Ok(()) => Ok(format!("Файл {} успешно записан", args.path)),
+                    Err(e) => Ok(format!("Ошибка записи файла: {e}")),
                 }
             }
             "read_file" => {
                 let args: ReadFileArgs = serde_json::from_str(arguments)?;
                 match sandbox.read_file(&args.path).await {
                     Ok(content) => Ok(String::from_utf8_lossy(&content).to_string()),
-                    Err(e) => Ok(format!("Ошибка чтения файла: {}", e)),
+                    Err(e) => Ok(format!("Ошибка чтения файла: {e}")),
                 }
             }
-            _ => anyhow::bail!("Unknown sandbox tool: {}", tool_name),
+            _ => anyhow::bail!("Unknown sandbox tool: {tool_name}"),
         }
     }
 }
