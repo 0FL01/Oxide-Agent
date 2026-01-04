@@ -150,10 +150,17 @@ pub async fn handle_agent_message(
     let preprocessor = Preprocessor::new(llm.clone());
     let input = extract_agent_input(&bot, &msg).await?;
     let task_text = preprocessor.preprocess_input(input).await?;
-    info!(user_id = user_id, chat_id = chat_id.0, "Input preprocessed, task text extracted");
+    info!(
+        user_id = user_id,
+        chat_id = chat_id.0,
+        "Input preprocessed, task text extracted"
+    );
 
     // Send initial progress message
-    let progress_msg = bot.send_message(chat_id, "⏳ Обработка задачи...").parse_mode(ParseMode::Html).await?;
+    let progress_msg = bot
+        .send_message(chat_id, "⏳ Обработка задачи...")
+        .parse_mode(ParseMode::Html)
+        .await?;
 
     // Create progress tracking channel
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
@@ -200,7 +207,9 @@ pub async fn handle_agent_message(
         Ok(response) => {
             edit_message_safe(&bot, chat_id, progress_msg.id, &progress_text).await;
             let formatted_response = crate::utils::format_text(&response);
-            bot.send_message(chat_id, formatted_response).parse_mode(ParseMode::Html).await?;
+            bot.send_message(chat_id, formatted_response)
+                .parse_mode(ParseMode::Html)
+                .await?;
         }
         Err(e) => {
             let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{e}");
@@ -228,7 +237,9 @@ async fn ensure_session_exists(user_id: i64, chat_id: i64, llm: &Arc<LlmClient>)
 async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
     let sessions = AGENT_SESSIONS.read().await;
     if let Some(executor) = sessions.get(&user_id) {
-        let _ = storage.save_agent_memory(user_id, &executor.session().memory).await;
+        let _ = storage
+            .save_agent_memory(user_id, &executor.session().memory)
+            .await;
     }
 }
 
@@ -251,7 +262,9 @@ async fn execute_agent_task(
     if executor.is_timed_out() {
         executor.reset();
         AGENT_SESSIONS.write().await.insert(user_id, executor);
-        return Err(anyhow::anyhow!("Предыдущая сессия истекла по таймауту. Начинаю новую сессию."));
+        return Err(anyhow::anyhow!(
+            "Предыдущая сессия истекла по таймауту. Начинаю новую сессию."
+        ));
     }
 
     // Execute the task without holding the lock
@@ -272,8 +285,14 @@ async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
         let file = bot.get_file(voice.file.id.clone()).await?;
         let mut buffer = Vec::new();
         bot.download_file(&file.path, &mut buffer).await?;
-        let mime_type = voice.mime_type.as_ref().map_or_else(|| "audio/ogg".to_string(), ToString::to_string);
-        return Ok(AgentInput::Voice { bytes: buffer, mime_type });
+        let mime_type = voice
+            .mime_type
+            .as_ref()
+            .map_or_else(|| "audio/ogg".to_string(), ToString::to_string);
+        return Ok(AgentInput::Voice {
+            bytes: buffer,
+            mime_type,
+        });
     }
 
     if let Some(photos) = msg.photo() {
@@ -282,11 +301,18 @@ async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
             let mut buffer = Vec::new();
             bot.download_file(&file.path, &mut buffer).await?;
             let caption = msg.caption().map(ToString::to_string);
-            return Ok(AgentInput::Image { bytes: buffer, context: caption });
+            return Ok(AgentInput::Image {
+                bytes: buffer,
+                context: caption,
+            });
         }
     }
 
-    let text = msg.text().or_else(|| msg.caption()).unwrap_or("").to_string();
+    let text = msg
+        .text()
+        .or_else(|| msg.caption())
+        .unwrap_or("")
+        .to_string();
     Ok(AgentInput::Text(text))
 }
 
@@ -302,7 +328,11 @@ async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: 
         text.to_string()
     };
 
-    if let Err(e) = bot.edit_message_text(chat_id, msg_id, truncated).parse_mode(ParseMode::Html).await {
+    if let Err(e) = bot
+        .edit_message_text(chat_id, msg_id, truncated)
+        .parse_mode(ParseMode::Html)
+        .await
+    {
         let err_msg = e.to_string();
         if !err_msg.contains(ERROR_NOT_MODIFIED) && !err_msg.contains(ERROR_NOT_FOUND) {
             warn!("Failed to edit message: {e}");
@@ -327,7 +357,9 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
         }
     }
 
-    bot.send_message(msg.chat.id, "❌ Задача отменена").reply_markup(get_agent_keyboard()).await?;
+    bot.send_message(msg.chat.id, "❌ Задача отменена")
+        .reply_markup(get_agent_keyboard())
+        .await?;
     Ok(())
 }
 
@@ -346,7 +378,8 @@ pub async fn clear_agent_todos(bot: Bot, msg: Message) -> Result<()> {
         }
     }
 
-    bot.send_message(msg.chat.id, "📋 Список задач очищен").await?;
+    bot.send_message(msg.chat.id, "📋 Список задач очищен")
+        .await?;
     Ok(())
 }
 
@@ -366,7 +399,9 @@ pub async fn clear_agent_memory(bot: Bot, msg: Message, storage: Arc<R2Storage>)
     }
 
     let _ = storage.clear_agent_memory(user_id).await;
-    bot.send_message(msg.chat.id, "🗑 Память агента очищена").reply_markup(get_agent_keyboard()).await?;
+    bot.send_message(msg.chat.id, "🗑 Память агента очищена")
+        .reply_markup(get_agent_keyboard())
+        .await?;
     Ok(())
 }
 
@@ -390,11 +425,15 @@ pub async fn exit_agent_mode(
         sessions.remove(&user_id);
     }
 
-    let _ = storage.update_user_state(user_id, "chat_mode".to_string()).await;
+    let _ = storage
+        .update_user_state(user_id, "chat_mode".to_string())
+        .await;
     dialogue.update(State::Start).await?;
 
     let keyboard = crate::bot::handlers::get_main_keyboard();
-    bot.send_message(msg.chat.id, "👋 Вышли из режима агента").reply_markup(keyboard).await?;
+    bot.send_message(msg.chat.id, "👋 Вышли из режима агента")
+        .reply_markup(keyboard)
+        .await?;
     Ok(())
 }
 
@@ -405,8 +444,11 @@ pub async fn exit_agent_mode(
 /// Returns an error if the confirmation message cannot be sent.
 pub async fn confirm_agent_wipe(bot: Bot, msg: Message, dialogue: AgentDialogue) -> Result<()> {
     dialogue.update(State::AgentWipeConfirmation).await?;
-    let keyboard = KeyboardMarkup::new(vec![vec![KeyboardButton::new("✅ Да"), KeyboardButton::new("❌ Отмена")]])
-        .resize_keyboard();
+    let keyboard = KeyboardMarkup::new(vec![vec![
+        KeyboardButton::new("✅ Да"),
+        KeyboardButton::new("❌ Отмена"),
+    ]])
+    .resize_keyboard();
     bot.send_message(msg.chat.id, "⚠️ <b>Внимание!</b>\n\nЭто действие удалит текущий контейнер агента и все файлы внутри него. История переписки сохранится.\n\nВы уверены?")
         .parse_mode(ParseMode::Html).reply_markup(keyboard).await?;
     Ok(())
@@ -432,13 +474,16 @@ pub async fn handle_agent_wipe_confirmation(
                 match executor.session_mut().ensure_sandbox().await {
                     Ok(sandbox) => {
                         if let Err(e) = sandbox.recreate().await {
-                            bot.send_message(msg.chat.id, format!("Ошибка при пересоздании: {e}")).await?;
+                            bot.send_message(msg.chat.id, format!("Ошибка при пересоздании: {e}"))
+                                .await?;
                         } else {
-                            bot.send_message(msg.chat.id, "✅ Контейнер успешно пересоздан.").await?;
+                            bot.send_message(msg.chat.id, "✅ Контейнер успешно пересоздан.")
+                                .await?;
                         }
                     }
                     Err(_) => {
-                        bot.send_message(msg.chat.id, "Ошибка доступа к менеджеру песочницы.").await?;
+                        bot.send_message(msg.chat.id, "Ошибка доступа к менеджеру песочницы.")
+                            .await?;
                     }
                 }
             }
@@ -447,12 +492,15 @@ pub async fn handle_agent_wipe_confirmation(
             bot.send_message(msg.chat.id, "Отменено.").await?;
         }
         _ => {
-            bot.send_message(msg.chat.id, "Пожалуйста, выберите вариант на клавиатуре.").await?;
+            bot.send_message(msg.chat.id, "Пожалуйста, выберите вариант на клавиатуре.")
+                .await?;
             return Ok(());
         }
     }
 
     dialogue.update(State::AgentMode).await?;
-    bot.send_message(msg.chat.id, "Готов к работе.").reply_markup(get_agent_keyboard()).await?;
+    bot.send_message(msg.chat.id, "Готов к работе.")
+        .reply_markup(get_agent_keyboard())
+        .await?;
     Ok(())
 }

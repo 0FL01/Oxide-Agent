@@ -5,10 +5,10 @@ use bot::state::State;
 use dotenvy::dotenv;
 use regex::Regex;
 use std::io::{self, Write};
+use std::sync::Arc;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::UpdateHandler;
 use teloxide::prelude::*;
-use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
@@ -18,24 +18,18 @@ static RE_TOKEN1: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(https?://[^/]+/bot)([0-9]+:[A-Za-z0-9_-]+)(/[^'\s]*)")
         .expect("valid regex pattern")
 });
-static RE_TOKEN2: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([0-9]{8,10}:[A-Za-z0-9_-]{35})").expect("valid regex pattern")
-});
-static RE_TOKEN3: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(bot[0-9]{8,10}:)[A-Za-z0-9_-]+").expect("valid regex pattern")
-});
-static RE_R2_1: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"R2_ACCESS_KEY_ID=[^\s&]+").expect("valid regex pattern")
-});
-static RE_R2_2: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"R2_SECRET_ACCESS_KEY=[^\s&]+").expect("valid regex pattern")
-});
-static RE_R2_3: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"'aws_access_key_id': '[^']*'").expect("valid regex pattern")
-});
-static RE_R2_4: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"'aws_secret_access_key': '[^']*'").expect("valid regex pattern")
-});
+static RE_TOKEN2: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([0-9]{8,10}:[A-Za-z0-9_-]{35})").expect("valid regex pattern"));
+static RE_TOKEN3: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(bot[0-9]{8,10}:)[A-Za-z0-9_-]+").expect("valid regex pattern"));
+static RE_R2_1: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"R2_ACCESS_KEY_ID=[^\s&]+").expect("valid regex pattern"));
+static RE_R2_2: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"R2_SECRET_ACCESS_KEY=[^\s&]+").expect("valid regex pattern"));
+static RE_R2_3: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"'aws_access_key_id': '[^']*'").expect("valid regex pattern"));
+static RE_R2_4: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"'aws_secret_access_key': '[^']*'").expect("valid regex pattern"));
 
 fn redact(input: &str) -> String {
     let mut output = input.to_string();
@@ -142,12 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Bot is running...");
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![
-            storage,
-            llm_client,
-            settings,
-            bot_state
-        ])
+        .dependencies(dptree::deps![storage, llm_client, settings, bot_state])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
@@ -211,7 +200,11 @@ fn setup_handler(settings: &Arc<Settings>) -> UpdateHandler<teloxide::RequestErr
     Update::filter_message()
         .filter(auth_filter)
         .enter_dialogue::<Message, InMemStorage<State>, State>()
-        .branch(dptree::entry().filter_command::<Command>().endpoint(handle_command))
+        .branch(
+            dptree::entry()
+                .filter_command::<Command>()
+                .endpoint(handle_command),
+        )
         .branch(
             dptree::case![State::Start]
                 .branch(
@@ -232,7 +225,9 @@ fn setup_handler(settings: &Arc<Settings>) -> UpdateHandler<teloxide::RequestErr
         )
         .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
         .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
-        .branch(dptree::case![State::AgentWipeConfirmation].endpoint(handle_agent_wipe_confirmation))
+        .branch(
+            dptree::case![State::AgentWipeConfirmation].endpoint(handle_agent_wipe_confirmation),
+        )
 }
 
 async fn handle_command(
@@ -260,7 +255,11 @@ async fn handle_start_text(
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = Box::pin(bot::handlers::handle_text(bot, msg, storage, llm, dialogue, settings)).await {
+    if let Err(e) = Box::pin(bot::handlers::handle_text(
+        bot, msg, storage, llm, dialogue, settings,
+    ))
+    .await
+    {
         error!("Text handler error: {}", e);
     }
     respond(())
@@ -273,7 +272,11 @@ async fn handle_start_voice(
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = Box::pin(bot::handlers::handle_voice(bot, msg, storage, llm, dialogue)).await {
+    if let Err(e) = Box::pin(bot::handlers::handle_voice(
+        bot, msg, storage, llm, dialogue,
+    ))
+    .await
+    {
         error!("Voice handler error: {}", e);
     }
     respond(())
@@ -311,7 +314,11 @@ async fn handle_agent_message(
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = Box::pin(bot::agent_handlers::handle_agent_message(bot, msg, storage, llm, dialogue)).await {
+    if let Err(e) = Box::pin(bot::agent_handlers::handle_agent_message(
+        bot, msg, storage, llm, dialogue,
+    ))
+    .await
+    {
         error!("Agent mode handler error: {}", e);
     }
     respond(())

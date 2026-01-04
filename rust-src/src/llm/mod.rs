@@ -401,7 +401,9 @@ impl LlmClient {
             }
         }
 
-        info!("OpenRouter: All attempts with {primary_model} failed, switching to {fallback_model}");
+        info!(
+            "OpenRouter: All attempts with {primary_model} failed, switching to {fallback_model}"
+        );
 
         for attempt in 1..=5 {
             info!("OpenRouter: Attempting with {fallback_model}, attempt {attempt}/5");
@@ -574,9 +576,7 @@ impl LlmClient {
     /// # Errors
     ///
     /// Returns `LlmError::Unknown` if the model is not found.
-    fn get_model_info(
-        model_name: &str,
-    ) -> Result<&'static crate::config::ModelInfo, LlmError> {
+    fn get_model_info(model_name: &str) -> Result<&'static crate::config::ModelInfo, LlmError> {
         crate::config::MODELS
             .iter()
             .find(|(name, _)| *name == model_name)

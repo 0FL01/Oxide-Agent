@@ -228,11 +228,7 @@ impl SandboxManager {
             self.run_exec(&exec.id),
         )
         .await
-        .map_err(|_| {
-            anyhow!(
-                "Command execution timed out after {SANDBOX_EXEC_TIMEOUT_SECS}s"
-            )
-        })?
+        .map_err(|_| anyhow!("Command execution timed out after {SANDBOX_EXEC_TIMEOUT_SECS}s"))?
         .context("Command execution failed")?;
 
         debug!(
@@ -412,14 +408,22 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker daemon"]
     async fn test_sandbox_lifecycle() {
-        let mut sandbox = SandboxManager::new(12345).await.expect("Failed to create SandboxManager");
+        let mut sandbox = SandboxManager::new(12345)
+            .await
+            .expect("Failed to create SandboxManager");
 
         // Create sandbox
-        sandbox.create_sandbox().await.expect("Failed to create sandbox container");
+        sandbox
+            .create_sandbox()
+            .await
+            .expect("Failed to create sandbox container");
         assert!(sandbox.is_running());
 
         // Execute command
-        let result = sandbox.exec_command("echo 'Hello, World!'").await.expect("Failed to execute command");
+        let result = sandbox
+            .exec_command("echo 'Hello, World!'")
+            .await
+            .expect("Failed to execute command");
         assert!(result.success());
         assert!(result.stdout.contains("Hello, World!"));
 

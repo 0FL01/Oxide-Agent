@@ -84,8 +84,7 @@ impl AgentSession {
     /// Get elapsed time in seconds since task start
     #[must_use]
     pub fn elapsed_secs(&self) -> u64 {
-        self.started_at
-            .map_or(0, |start| start.elapsed().as_secs())
+        self.started_at.map_or(0, |start| start.elapsed().as_secs())
     }
 
     /// Update the progress status
@@ -141,7 +140,9 @@ impl AgentSession {
     /// Check if sandbox is available
     #[must_use]
     pub fn has_sandbox(&self) -> bool {
-        self.sandbox.as_ref().is_some_and(SandboxManager::is_running)
+        self.sandbox
+            .as_ref()
+            .is_some_and(SandboxManager::is_running)
     }
 
     /// Ensure sandbox is running, creating it if necessary

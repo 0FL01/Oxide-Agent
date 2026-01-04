@@ -208,7 +208,11 @@ pub async fn handle_text(
         truncate_str(&text, 100)
     );
 
-    if Box::pin(check_state_and_redirect(&bot, &msg, &storage, &llm, &dialogue)).await? {
+    if Box::pin(check_state_and_redirect(
+        &bot, &msg, &storage, &llm, &dialogue,
+    ))
+    .await?
+    {
         return Ok(());
     }
 
@@ -259,48 +263,79 @@ async fn handle_menu_commands(
         "🤖 Режим Агента" => {
             if check_agent_access(bot, msg, settings, user_id).await? {
                 crate::bot::agent_handlers::activate_agent_mode(
-                    bot.clone(), msg.clone(), dialogue.clone(), llm.clone(), storage.clone(),
-                ).await?;
+                    bot.clone(),
+                    msg.clone(),
+                    dialogue.clone(),
+                    llm.clone(),
+                    storage.clone(),
+                )
+                .await?;
             }
             Ok(true)
         }
         "Изменить промпт" => {
-            dialogue.update(State::EditingPrompt).await.map_err(|e| anyhow!(e.to_string()))?;
-            bot.send_message(msg.chat.id, "Введите новый системный промпт. Для отмены введите 'Назад':")
-                .reply_markup(get_extra_functions_keyboard()).await?;
+            dialogue
+                .update(State::EditingPrompt)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+            bot.send_message(
+                msg.chat.id,
+                "Введите новый системный промпт. Для отмены введите 'Назад':",
+            )
+            .reply_markup(get_extra_functions_keyboard())
+            .await?;
             Ok(true)
         }
         "Назад" => {
             bot.send_message(msg.chat.id, "Выберите действие: (Или начните диалог)")
-                .reply_markup(get_main_keyboard()).await?;
+                .reply_markup(get_main_keyboard())
+                .await?;
             Ok(true)
         }
-        "⬅️ Выйти из режима агента" | "❌ Отменить задачу" | "🗑 Очистить память" => {
+        "⬅️ Выйти из режима агента" | "❌ Отменить задачу" | "🗑 Очистить память" =>
+        {
             let response = match text {
                 "⬅️ Выйти из режима агента" => "👋 Вышли из режима агента",
                 "❌ Отменить задачу" => "Нет активной задачи для отмены.",
                 _ => "Память агента не активна.",
             };
-            bot.send_message(msg.chat.id, response).reply_markup(get_main_keyboard()).await?;
+            bot.send_message(msg.chat.id, response)
+                .reply_markup(get_main_keyboard())
+                .await?;
             Ok(true)
         }
         "🗑 Очистить всё" => {
             storage.clear_all_context(user_id).await?;
             bot.send_message(msg.chat.id, "<b>🗑 Весь контекст очищен</b>")
-                .parse_mode(ParseMode::Html).reply_markup(get_main_keyboard()).await?;
+                .parse_mode(ParseMode::Html)
+                .reply_markup(get_main_keyboard())
+                .await?;
             Ok(true)
         }
         _ => Ok(false),
     }
 }
 
-async fn check_agent_access(bot: &Bot, msg: &Message, settings: &Arc<Settings>, user_id: i64) -> Result<bool> {
+async fn check_agent_access(
+    bot: &Bot,
+    msg: &Message,
+    settings: &Arc<Settings>,
+    user_id: i64,
+) -> Result<bool> {
     let agent_allowed = settings.agent_allowed_users();
     if !agent_allowed.contains(&user_id) && !agent_allowed.is_empty() {
-        bot.send_message(msg.chat.id, "⛔️ У вас нет прав для доступа к режиму агента.").await?;
+        bot.send_message(
+            msg.chat.id,
+            "⛔️ У вас нет прав для доступа к режиму агента.",
+        )
+        .await?;
         return Ok(false);
     } else if agent_allowed.is_empty() {
-        bot.send_message(msg.chat.id, "⛔️ Режим агента временно недоступен (не настроен доступ).").await?;
+        bot.send_message(
+            msg.chat.id,
+            "⛔️ Режим агента временно недоступен (не настроен доступ).",
+        )
+        .await?;
         return Ok(false);
     }
     Ok(true)
@@ -323,12 +358,16 @@ pub async fn handle_editing_prompt(
     if text == "Назад" {
         dialogue.exit().await.map_err(|e| anyhow!(e.to_string()))?;
         bot.send_message(msg.chat.id, "Отмена обновления системного промпта.")
-            .reply_markup(get_main_keyboard()).await?;
+            .reply_markup(get_main_keyboard())
+            .await?;
     } else {
-        storage.update_user_prompt(user_id, text.to_string()).await?;
+        storage
+            .update_user_prompt(user_id, text.to_string())
+            .await?;
         dialogue.exit().await.map_err(|e| anyhow!(e.to_string()))?;
         bot.send_message(msg.chat.id, "Системный промпт обновлен.")
-            .reply_markup(get_main_keyboard()).await?;
+            .reply_markup(get_main_keyboard())
+            .await?;
     }
     Ok(())
 }
@@ -341,24 +380,47 @@ async fn process_llm_request(
     text: String,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
-    let system_prompt = storage.get_user_prompt(user_id).await?.unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
+    let system_prompt = storage
+        .get_user_prompt(user_id)
+        .await?
+        .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
     let history = storage.get_chat_history(user_id, 10).await?;
-    let model = storage.get_user_model(user_id).await?.unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let model = storage
+        .get_user_model(user_id)
+        .await?
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
-    storage.save_message(user_id, "user".to_string(), text.clone()).await?;
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await?;
+    storage
+        .save_message(user_id, "user".to_string(), text.clone())
+        .await?;
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
 
-    let llm_history: Vec<LlmMessage> = history.into_iter().map(|m| LlmMessage {
-        role: m.role, content: m.content, tool_call_id: None, name: None, tool_calls: None,
-    }).collect();
+    let llm_history: Vec<LlmMessage> = history
+        .into_iter()
+        .map(|m| LlmMessage {
+            role: m.role,
+            content: m.content,
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
+        })
+        .collect();
 
-    match llm.chat_completion(&system_prompt, &llm_history, &text, &model).await {
+    match llm
+        .chat_completion(&system_prompt, &llm_history, &text, &model)
+        .await
+    {
         Ok(response) => {
-            storage.save_message(user_id, "assistant".to_string(), response.clone()).await?;
+            storage
+                .save_message(user_id, "assistant".to_string(), response.clone())
+                .await?;
             send_long_message(&bot, msg.chat.id, &response).await?;
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("<b>Ошибка:</b> {e}")).parse_mode(ParseMode::Html).await?;
+            bot.send_message(msg.chat.id, format!("<b>Ошибка:</b> {e}"))
+                .parse_mode(ParseMode::Html)
+                .await?;
         }
     }
     Ok(())
@@ -368,7 +430,9 @@ async fn send_long_message(bot: &Bot, chat_id: ChatId, text: &str) -> Result<()>
     let formatted = utils::format_text(text);
     let parts = utils::split_long_message(&formatted, 4000);
     for part in parts {
-        bot.send_message(chat_id, part).parse_mode(ParseMode::Html).await?;
+        bot.send_message(chat_id, part)
+            .parse_mode(ParseMode::Html)
+            .await?;
     }
     Ok(())
 }
@@ -386,32 +450,53 @@ pub async fn handle_voice(
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
-    if Box::pin(check_state_and_redirect(&bot, &msg, &storage, &llm, &dialogue)).await? {
+    if Box::pin(check_state_and_redirect(
+        &bot, &msg, &storage, &llm, &dialogue,
+    ))
+    .await?
+    {
         return Ok(());
     }
 
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
-    let model = storage.get_user_model(user_id).await?.unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let provider_info = MODELS.iter().find(|(name, _)| name == &model).map(|(_, info)| info);
+    let model = storage
+        .get_user_model(user_id)
+        .await?
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let provider_info = MODELS
+        .iter()
+        .find(|(name, _)| name == &model)
+        .map(|(_, info)| info);
     let provider_name = provider_info.map_or("unknown", |p| p.provider);
 
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await?;
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
     let file = bot.get_file(voice.file.id.clone()).await?;
     let mut buffer = Vec::new();
     bot.download_file(&file.path, &mut buffer).await?;
 
     let model_id = provider_info.map_or("unknown", |p| p.id);
-    match llm.transcribe_audio_with_fallback(provider_name, buffer, "audio/wav", model_id).await {
+    match llm
+        .transcribe_audio_with_fallback(provider_name, buffer, "audio/wav", model_id)
+        .await
+    {
         Ok(text) => {
-            if text.starts_with("(Gemini):") || text.starts_with("(OpenRouter):") || text.is_empty() {
-                bot.send_message(msg.chat.id, "Не удалось распознать речь.").await?;
+            if text.starts_with("(Gemini):") || text.starts_with("(OpenRouter):") || text.is_empty()
+            {
+                bot.send_message(msg.chat.id, "Не удалось распознать речь.")
+                    .await?;
             } else {
-                bot.send_message(msg.chat.id, format!("Распознано: \"{text}\"\n\nОбрабатываю запрос...")).await?;
+                bot.send_message(
+                    msg.chat.id,
+                    format!("Распознано: \"{text}\"\n\nОбрабатываю запрос..."),
+                )
+                .await?;
                 process_llm_request(bot, msg, storage, llm, text).await?;
             }
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Ошибка распознавания: {e}")).await?;
+            bot.send_message(msg.chat.id, format!("Ошибка распознавания: {e}"))
+                .await?;
         }
     }
     Ok(())
@@ -430,29 +515,56 @@ pub async fn handle_photo(
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
-    if Box::pin(check_state_and_redirect(&bot, &msg, &storage, &llm, &dialogue)).await? {
+    if Box::pin(check_state_and_redirect(
+        &bot, &msg, &storage, &llm, &dialogue,
+    ))
+    .await?
+    {
         return Ok(());
     }
 
-    let photo = msg.photo().and_then(|p| p.last()).ok_or_else(|| anyhow!("No photo found"))?;
+    let photo = msg
+        .photo()
+        .and_then(|p| p.last())
+        .ok_or_else(|| anyhow!("No photo found"))?;
     let caption = msg.caption().unwrap_or("Опиши это изображение.");
-    let model = storage.get_user_model(user_id).await?.unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let system_prompt = storage.get_user_prompt(user_id).await?.unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
+    let model = storage
+        .get_user_model(user_id)
+        .await?
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let system_prompt = storage
+        .get_user_prompt(user_id)
+        .await?
+        .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
 
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadPhoto).await?;
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadPhoto)
+        .await?;
     let file = bot.get_file(photo.file.id.clone()).await?;
     let mut buffer = Vec::new();
     bot.download_file(&file.path, &mut buffer).await?;
 
-    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await?;
-    match llm.analyze_image(buffer, caption, &system_prompt, &model).await {
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
+    match llm
+        .analyze_image(buffer, caption, &system_prompt, &model)
+        .await
+    {
         Ok(response) => {
-            storage.save_message(user_id, "user".to_string(), format!("[Изображение] {caption}")).await?;
-            storage.save_message(user_id, "assistant".to_string(), response.clone()).await?;
+            storage
+                .save_message(
+                    user_id,
+                    "user".to_string(),
+                    format!("[Изображение] {caption}"),
+                )
+                .await?;
+            storage
+                .save_message(user_id, "assistant".to_string(), response.clone())
+                .await?;
             send_long_message(&bot, msg.chat.id, &response).await?;
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Ошибка анализа изображения: {e}")).await?;
+            bot.send_message(msg.chat.id, format!("Ошибка анализа изображения: {e}"))
+                .await?;
         }
     }
     Ok(())

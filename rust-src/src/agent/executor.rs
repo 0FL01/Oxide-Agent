@@ -4,8 +4,8 @@
 
 use super::hooks::{CompletionCheckHook, HookContext, HookEvent, HookRegistry, HookResult};
 use super::memory::AgentMessage;
-use crate::agent::providers::TodoList;
 use super::session::AgentSession;
+use crate::agent::providers::TodoList;
 use crate::config::{
     AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_MODEL, AGENT_TIMEOUT_SECS,
 };
@@ -175,9 +175,9 @@ impl AgentExecutor {
         task: &str,
         progress_tx: Option<tokio::sync::mpsc::Sender<super::progress::AgentEvent>>,
     ) -> Result<String> {
-        use super::providers::{SandboxProvider, TodosProvider};
         #[cfg(feature = "tavily")]
         use super::providers::TavilyProvider;
+        use super::providers::{SandboxProvider, TodosProvider};
         use super::registry::ToolRegistry;
 
         self.session.start_task();
@@ -221,14 +221,14 @@ impl AgentExecutor {
             inner
         } else {
             self.session.timeout();
-            Err(anyhow!("Задача превысила лимит времени ({} минут)", AGENT_TIMEOUT_SECS / 60))
+            Err(anyhow!(
+                "Задача превысила лимит времени ({} минут)",
+                AGENT_TIMEOUT_SECS / 60
+            ))
         }
     }
 
-    async fn run_loop(
-        &mut self,
-        ctx: &mut AgentLoopContext<'_>,
-    ) -> Result<String> {
+    async fn run_loop(&mut self, ctx: &mut AgentLoopContext<'_>) -> Result<String> {
         use super::progress::AgentEvent;
         let mut continuation_count: usize = 0;
 
@@ -239,18 +239,31 @@ impl AgentExecutor {
                 let _ = tx.send(AgentEvent::Thinking).await;
             }
 
-            let response = self.llm_client.chat_with_tools(ctx.system_prompt, ctx.messages, ctx.tools, AGENT_MODEL).await;
+            let response = self
+                .llm_client
+                .chat_with_tools(ctx.system_prompt, ctx.messages, ctx.tools, AGENT_MODEL)
+                .await;
 
             if let Err(ref e) = response {
                 if let Some(tx) = ctx.progress_tx {
-                    let _ = tx.send(AgentEvent::Error(format!("LLM call failed: {e}"))).await;
+                    let _ = tx
+                        .send(AgentEvent::Error(format!("LLM call failed: {e}")))
+                        .await;
                 }
             }
 
             let response = response.map_err(|e| anyhow!("LLM call failed: {e}"))?;
 
             if response.tool_calls.is_empty() {
-                match self.handle_final_response(response.content, iteration, &mut continuation_count, ctx).await? {
+                match self
+                    .handle_final_response(
+                        response.content,
+                        iteration,
+                        &mut continuation_count,
+                        ctx,
+                    )
+                    .await?
+                {
                     Some(res) => return Ok(res),
                     None => continue,
                 }
@@ -260,7 +273,9 @@ impl AgentExecutor {
         }
 
         self.session.fail("Превышен лимит итераций".to_string());
-        Err(anyhow!("Агент превысил лимит итераций ({AGENT_MAX_ITERATIONS})."))
+        Err(anyhow!(
+            "Агент превысил лимит итераций ({AGENT_MAX_ITERATIONS})."
+        ))
     }
 
     async fn handle_final_response(
@@ -271,27 +286,48 @@ impl AgentExecutor {
         ctx: &mut AgentLoopContext<'_>,
     ) -> Result<Option<String>> {
         use super::progress::AgentEvent;
-        let final_response = content.unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
+        let final_response =
+            content.unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
 
         {
             let current_todos = ctx.todos_arc.lock().await;
             self.session.memory.todos = (*current_todos).clone();
         }
 
-        let hook_context = HookContext::new(&self.session.memory.todos, iteration, *continuation_count, AGENT_CONTINUATION_LIMIT);
-        let hook_result = self.hook_registry.execute(&HookEvent::AfterAgent { response: final_response.clone() }, &hook_context);
+        let hook_context = HookContext::new(
+            &self.session.memory.todos,
+            iteration,
+            *continuation_count,
+            AGENT_CONTINUATION_LIMIT,
+        );
+        let hook_result = self.hook_registry.execute(
+            &HookEvent::AfterAgent {
+                response: final_response.clone(),
+            },
+            &hook_context,
+        );
 
         if let HookResult::ForceIteration { reason, context } = hook_result {
             *continuation_count += 1;
             if let Some(tx) = ctx.progress_tx {
-                let _ = tx.send(AgentEvent::Continuation { reason: reason.clone(), count: *continuation_count }).await;
+                let _ = tx
+                    .send(AgentEvent::Continuation {
+                        reason: reason.clone(),
+                        count: *continuation_count,
+                    })
+                    .await;
             }
             ctx.messages.push(Message::assistant(&final_response));
-            ctx.messages.push(Message::system(&format!("[СИСТЕМА: {reason}]\n\n{}", context.unwrap_or_default())));
+            ctx.messages.push(Message::system(&format!(
+                "[СИСТЕМА: {reason}]\n\n{}",
+                context.unwrap_or_default()
+            )));
             return Ok(None);
         }
 
-        self.session.memory.add_message(AgentMessage::assistant(&final_response));
+        self.session
+            .memory
+            .add_message(AgentMessage::assistant(&final_response));
         self.session.complete();
         if let Some(tx) = ctx.progress_tx {
             let _ = tx.send(AgentEvent::Finished).await;
@@ -305,13 +341,25 @@ impl AgentExecutor {
         ctx: &mut AgentLoopContext<'_>,
     ) -> Result<()> {
         use super::progress::AgentEvent;
-        let tool_names: Vec<String> = tool_calls.iter().map(|tc| tc.function.name.clone()).collect();
-        ctx.messages.push(Message::assistant_with_tools(&format!("[Вызов инструментов: {}]", tool_names.join(", ")), tool_calls.clone()));
+        let tool_names: Vec<String> = tool_calls
+            .iter()
+            .map(|tc| tc.function.name.clone())
+            .collect();
+        ctx.messages.push(Message::assistant_with_tools(
+            &format!("[Вызов инструментов: {}]", tool_names.join(", ")),
+            tool_calls.clone(),
+        ));
 
         for tool_call in tool_calls {
-            let (name, args) = Self::sanitize_tool_call(&tool_call.function.name, &tool_call.function.arguments);
+            let (name, args) =
+                Self::sanitize_tool_call(&tool_call.function.name, &tool_call.function.arguments);
             if let Some(tx) = ctx.progress_tx {
-                let _ = tx.send(AgentEvent::ToolCall { name: name.clone(), input: args.clone() }).await;
+                let _ = tx
+                    .send(AgentEvent::ToolCall {
+                        name: name.clone(),
+                        input: args.clone(),
+                    })
+                    .await;
             }
 
             let result = match ctx.registry.execute(&name, &args).await {
@@ -325,14 +373,24 @@ impl AgentExecutor {
                     self.session.memory.todos = current_todos.clone();
                 }
                 if let Some(tx) = ctx.progress_tx {
-                    let _ = tx.send(AgentEvent::TodosUpdated { todos: self.session.memory.todos.clone() }).await;
+                    let _ = tx
+                        .send(AgentEvent::TodosUpdated {
+                            todos: self.session.memory.todos.clone(),
+                        })
+                        .await;
                 }
             }
 
             if let Some(tx) = ctx.progress_tx {
-                let _ = tx.send(AgentEvent::ToolResult { name: name.clone(), output: result.clone() }).await;
+                let _ = tx
+                    .send(AgentEvent::ToolResult {
+                        name: name.clone(),
+                        output: result.clone(),
+                    })
+                    .await;
             }
-            ctx.messages.push(Message::tool(&tool_call.id, &name, &result));
+            ctx.messages
+                .push(Message::tool(&tool_call.id, &name, &result));
         }
         Ok(())
     }
@@ -378,7 +436,8 @@ impl AgentExecutor {
 ## Формат ответа:
 - Кратко опиши выполненные шаги
 - Дай чёткий результат
-- Используй markdown".to_string()
+- Используй markdown"
+                    .to_string()
             }
         };
 
@@ -387,7 +446,8 @@ impl AgentExecutor {
 
     /// Cancel the current task
     pub fn cancel(&mut self) {
-        self.session.fail("Задача отменена пользователем".to_string());
+        self.session
+            .fail("Задача отменена пользователем".to_string());
     }
 
     /// Reset the executor and session

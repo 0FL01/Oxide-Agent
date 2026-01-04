@@ -378,7 +378,10 @@ mod tests {
             ]
         }"#;
 
-        let result = provider.execute("write_todos", args).await.expect("Failed to execute todos tool");
+        let result = provider
+            .execute("write_todos", args)
+            .await
+            .expect("Failed to execute todos tool");
         assert!(result.contains("Список задач обновлён"));
         assert!(result.contains("1/3 выполнено"));
         assert!(result.contains("Task 2"));

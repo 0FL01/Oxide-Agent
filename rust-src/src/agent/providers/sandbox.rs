@@ -37,14 +37,20 @@ impl SandboxProvider {
 
     /// Get or create the sandbox
     async fn ensure_sandbox(&self) -> Result<()> {
-        if self.sandbox.lock().await.as_ref().is_some_and(SandboxManager::is_running) {
+        if self
+            .sandbox
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(SandboxManager::is_running)
+        {
             return Ok(());
         }
 
         debug!(user_id = self.user_id, "Creating new sandbox for provider");
         let mut sandbox = SandboxManager::new(self.user_id).await?;
         sandbox.create_sandbox().await?;
-        
+
         *self.sandbox.lock().await = Some(sandbox);
         Ok(())
     }

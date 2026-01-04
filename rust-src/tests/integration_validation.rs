@@ -124,9 +124,7 @@ async fn test_credentials_validation() {
                 info!("Cleanup successful.");
             }
         }
-        Err(e) => panic!(
-            "Failed to connect to R2 Storage (PutObject failed). Error: {e:#?}"
-        ),
+        Err(e) => panic!("Failed to connect to R2 Storage (PutObject failed). Error: {e:#?}"),
     }
 
     // 4. Validate LLM Providers (Static check)
