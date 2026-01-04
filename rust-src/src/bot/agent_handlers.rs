@@ -214,10 +214,12 @@ pub async fn handle_agent_message(
     // Update the message with the result
     match result {
         Ok(response) => {
-            // Edit the progress message with the final response, keeping progress log
+            edit_message_safe(&bot, chat_id, progress_msg.id, &progress_text).await;
+
             let formatted_response = crate::utils::format_text(&response);
-            let final_text = format!("{}\n\n{}", progress_text, formatted_response);
-            edit_message_safe(&bot, chat_id, progress_msg.id, &final_text).await;
+            bot.send_message(chat_id, formatted_response)
+                .parse_mode(ParseMode::Html)
+                .await?;
         }
         Err(e) => {
             let error_text = format!("{}\n\n❌ <b>Ошибка:</b>\n\n{}", progress_text, e);
