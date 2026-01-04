@@ -10,10 +10,11 @@ use crate::config::{
 };
 use crate::llm::{LlmClient, Message};
 use anyhow::{anyhow, Result};
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Agent executor that runs tasks iteratively
 pub struct AgentExecutor {
@@ -65,6 +66,91 @@ impl AgentExecutor {
                 }
             })
             .collect()
+    }
+
+    /// Sanitize tool call by detecting malformed LLM responses where JSON arguments are placed in tool name
+    /// Returns (corrected_name, corrected_arguments)
+    fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
+        let trimmed_name = name.trim();
+
+        // Check if name looks like it contains JSON (starts with { and has "todos" key)
+        if trimmed_name.starts_with('{') && trimmed_name.contains("\"todos\"") {
+            warn!(
+                tool_name = %name,
+                "Detected malformed tool call: JSON arguments in tool name field"
+            );
+
+            // Try to extract first valid JSON object from name
+            let json_str = match Self::extract_first_json(trimmed_name) {
+                Some(json) => json,
+                None => {
+                    // If we can't parse, fall back to original
+                    warn!("Failed to extract JSON from malformed tool name");
+                    return (name.to_string(), arguments.to_string());
+                }
+            };
+
+            // Parse JSON to check structure
+            if let Ok(parsed) = serde_json::from_str::<Value>(&json_str) {
+                if parsed.is_object() && parsed.get("todos").is_some() {
+                    warn!(
+                        "Correcting malformed tool call to 'write_todos' with extracted arguments"
+                    );
+                    return ("write_todos".to_string(), json_str);
+                }
+            }
+        }
+
+        // Return unchanged if no issues detected
+        (name.to_string(), arguments.to_string())
+    }
+
+    /// Extract first valid JSON object from a string
+    /// This handles cases where JSON is followed by extra text
+    fn extract_first_json(input: &str) -> Option<String> {
+        let mut depth = 0;
+        let mut start_idx = None;
+        let mut in_string = false;
+        let mut escaped = false;
+
+        for (i, ch) in input.char_indices() {
+            match ch {
+                '{' if !in_string => {
+                    if start_idx.is_none() {
+                        start_idx = Some(i);
+                    }
+                    depth += 1;
+                }
+                '}' if !in_string => {
+                    if depth == 1 {
+                        if let Some(start) = start_idx {
+                            // Found complete object
+                            let json_str = input[start..=i].trim();
+                            // Validate it's actually JSON
+                            if serde_json::from_str::<Value>(json_str).is_ok() {
+                                return Some(json_str.to_string());
+                            }
+                        }
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        start_idx = None;
+                    }
+                }
+                '"' if !escaped => {
+                    in_string = !in_string;
+                }
+                '\\' if in_string => {
+                    escaped = !escaped;
+                }
+                _ => {}
+            }
+            if ch != '\\' {
+                escaped = false;
+            }
+        }
+
+        None
     }
 
     /// Execute a task with iterative tool calling (agentic loop)
@@ -260,31 +346,35 @@ impl AgentExecutor {
 
                 // Execute each tool call via registry
                 for tool_call in &response.tool_calls {
+                    // Sanitize tool call to handle malformed LLM responses
+                    let (sanitized_name, sanitized_args) = Self::sanitize_tool_call(
+                        &tool_call.function.name,
+                        &tool_call.function.arguments,
+                    );
+
                     info!(
                         task_id = %task_id,
-                        tool = %tool_call.function.name,
+                        tool = %sanitized_name,
+                        original_tool = %tool_call.function.name,
                         "Executing tool"
                     );
 
                     if let Some(ref tx) = progress_tx {
                         let _ = tx
                             .send(AgentEvent::ToolCall {
-                                name: tool_call.function.name.clone(),
-                                input: tool_call.function.arguments.clone(),
+                                name: sanitized_name.clone(),
+                                input: sanitized_args.clone(),
                             })
                             .await;
                     }
 
-                    let result = match registry
-                        .execute(&tool_call.function.name, &tool_call.function.arguments)
-                        .await
-                    {
+                    let result = match registry.execute(&sanitized_name, &sanitized_args).await {
                         Ok(r) => r,
                         Err(e) => format!("Ошибка выполнения инструмента: {}", e),
                     };
 
                     // If this was a write_todos call, sync todos and send event
-                    if tool_call.function.name == "write_todos" {
+                    if sanitized_name == "write_todos" {
                         let current_todos = todos_arc.lock().await;
                         self.session.memory.todos = current_todos.clone();
 
@@ -300,7 +390,7 @@ impl AgentExecutor {
                     if let Some(ref tx) = progress_tx {
                         let _ = tx
                             .send(AgentEvent::ToolResult {
-                                name: tool_call.function.name.clone(),
+                                name: sanitized_name.clone(),
                                 output: result.clone(),
                             })
                             .await;
@@ -308,17 +398,13 @@ impl AgentExecutor {
 
                     debug!(
                         task_id = %task_id,
-                        tool = %tool_call.function.name,
+                        tool = %sanitized_name,
                         result_len = result.len(),
                         "Tool execution completed"
                     );
 
                     // Add tool result to messages
-                    messages.push(Message::tool(
-                        &tool_call.id,
-                        &tool_call.function.name,
-                        &result,
-                    ));
+                    messages.push(Message::tool(&tool_call.id, &sanitized_name, &result));
                 }
             }
 
