@@ -17,7 +17,7 @@ pub struct AgentMessage {
 }
 
 /// Role of a message sender
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageRole {
     System,
     User,
@@ -48,6 +48,7 @@ impl AgentMessage {
 }
 
 /// Agent memory with auto-compaction support
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMemory {
     messages: Vec<AgentMessage>,
     token_count: usize,

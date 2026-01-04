@@ -53,7 +53,14 @@ pub async fn activate_agent_mode(
     info!("Activating agent mode for user {}", user_id);
 
     // Create new session
-    let session = AgentSession::new(user_id, chat_id);
+    let mut session = AgentSession::new(user_id, chat_id);
+
+    // Load saved agent memory if exists
+    if let Ok(Some(saved_memory)) = storage.load_agent_memory(user_id).await {
+        session.memory = saved_memory;
+        info!("Loaded agent memory for user {}", user_id);
+    }
+
     let executor = AgentExecutor::new(llm.clone(), session);
 
     // Store session
@@ -94,7 +101,7 @@ pub async fn activate_agent_mode(
 pub async fn handle_agent_message(
     bot: Bot,
     msg: Message,
-    _storage: Arc<R2Storage>,
+    storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
     dialogue: AgentDialogue,
 ) -> Result<()> {
@@ -108,13 +115,13 @@ pub async fn handle_agent_message(
                 return cancel_agent_task(bot, msg, dialogue).await;
             }
             "🗑 Очистить память" => {
-                return clear_agent_memory(bot, msg).await;
+                return clear_agent_memory(bot, msg, storage).await;
             }
             "🔄 Пересоздать контейнер" => {
                 return confirm_agent_wipe(bot, msg, dialogue).await;
             }
             "⬅️ Выйти из режима агента" => {
-                return exit_agent_mode(bot, msg, dialogue, _storage).await;
+                return exit_agent_mode(bot, msg, dialogue, storage).await;
             }
             _ => {}
         }
@@ -153,6 +160,15 @@ pub async fn handle_agent_message(
     // Execute the task
     let result = execute_agent_task(user_id, &task_text).await;
 
+    // Save agent memory after task execution
+    {
+        let sessions = AGENT_SESSIONS.read().await;
+        if let Some(executor) = sessions.get(&user_id) {
+            let _ = storage
+                .save_agent_memory(user_id, &executor.session().memory)
+                .await;
+        }
+    }
     // Update the message with the result
     match result {
         Ok(response) => {
@@ -294,7 +310,7 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
 }
 
 /// Clear agent memory
-pub async fn clear_agent_memory(bot: Bot, msg: Message) -> Result<()> {
+pub async fn clear_agent_memory(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
     let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
 
     {
@@ -303,6 +319,9 @@ pub async fn clear_agent_memory(bot: Bot, msg: Message) -> Result<()> {
             executor.reset().await;
         }
     }
+
+    // Clear from storage
+    let _ = storage.clear_agent_memory(user_id).await;
 
     bot.send_message(msg.chat.id, "🗑 Память агента очищена")
         .reply_markup(get_agent_keyboard())
@@ -319,6 +338,16 @@ pub async fn exit_agent_mode(
     storage: Arc<R2Storage>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+
+    // Save agent memory before exit
+    {
+        let sessions = AGENT_SESSIONS.read().await;
+        if let Some(executor) = sessions.get(&user_id) {
+            let _ = storage
+                .save_agent_memory(user_id, &executor.session().memory)
+                .await;
+        }
+    }
 
     // Remove session
     {

@@ -1,3 +1,4 @@
+use crate::agent::memory::AgentMemory;
 use crate::config::Settings;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::error::SdkError;
@@ -246,6 +247,34 @@ impl R2Storage {
         self.delete_object(&user_history_key(user_id)).await
     }
 
+    // --- Agent Memory Functions ---
+
+    pub async fn save_agent_memory(
+        &self,
+        user_id: i64,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError> {
+        self.save_json(&user_agent_memory_key(user_id), memory)
+            .await
+    }
+
+    pub async fn load_agent_memory(
+        &self,
+        user_id: i64,
+    ) -> Result<Option<AgentMemory>, StorageError> {
+        self.load_json(&user_agent_memory_key(user_id)).await
+    }
+
+    pub async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError> {
+        self.delete_object(&user_agent_memory_key(user_id)).await
+    }
+
+    pub async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
+        self.clear_chat_history(user_id).await?;
+        self.clear_agent_memory(user_id).await?;
+        Ok(())
+    }
+
     pub async fn check_connection(&self) -> Result<(), String> {
         match self.client.list_buckets().send().await {
             Ok(_) => {
@@ -267,4 +296,8 @@ pub fn user_config_key(user_id: i64) -> String {
 
 pub fn user_history_key(user_id: i64) -> String {
     format!("users/{}/history.json", user_id)
+}
+
+pub fn user_agent_memory_key(user_id: i64) -> String {
+    format!("users/{}/agent_memory.json", user_id)
 }

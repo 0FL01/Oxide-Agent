@@ -94,6 +94,7 @@ pub fn get_main_keyboard() -> KeyboardMarkup {
             KeyboardButton::new("🤖 Режим Агента"),
             KeyboardButton::new("Доп функции"),
         ],
+        vec![KeyboardButton::new("🗑 Очистить всё")],
     ];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
@@ -316,6 +317,24 @@ pub async fn handle_text(
             bot.send_message(msg.chat.id, "Память агента не активна.")
                 .reply_markup(get_main_keyboard())
                 .await?;
+            return Ok(());
+        }
+        "🗑 Очистить всё" => {
+            info!("User {} clicked 'Clear All' from global handler.", user_id);
+            match storage.clear_all_context(user_id).await {
+                Ok(_) => {
+                    info!("All context successfully cleared for user {}.", user_id);
+                    bot.send_message(msg.chat.id, "<b>🗑 Весь контекст очищен</b>")
+                        .parse_mode(ParseMode::Html)
+                        .reply_markup(get_main_keyboard())
+                        .await?;
+                }
+                Err(e) => {
+                    error!("Error clearing all context for user {}: {}", user_id, e);
+                    bot.send_message(msg.chat.id, "Произошла ошибка при очистке контекста.")
+                        .await?;
+                }
+            }
             return Ok(());
         }
         _ => {}
