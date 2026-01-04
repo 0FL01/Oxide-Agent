@@ -319,6 +319,9 @@ async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
 
 /// Edit a message safely (ignore errors)
 async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: &str) {
+    const ERROR_NOT_MODIFIED: &str = "message is not modified";
+    const ERROR_NOT_FOUND: &str = "message to edit not found";
+
     // Truncate if too long (Telegram limit)
     let truncated = if text.chars().count() > 4000 {
         format!(
@@ -335,8 +338,10 @@ async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: 
         .await
     {
         let err_msg = e.to_string();
-        if err_msg.contains("message is not modified") {
+        if err_msg.contains(ERROR_NOT_MODIFIED) {
             debug!("Message update skipped (content unchanged): {}", err_msg);
+        } else if err_msg.contains(ERROR_NOT_FOUND) {
+            info!("Message to edit not found (deleted by user): {}", err_msg);
         } else {
             warn!("Failed to edit message: {}", e);
         }
