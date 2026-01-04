@@ -34,6 +34,7 @@ static AGENT_SESSIONS: once_cell::sync::Lazy<RwLock<HashMap<i64, AgentExecutor>>
 pub fn get_agent_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![
         vec![KeyboardButton::new("❌ Отменить задачу")],
+        vec![KeyboardButton::new("🗑 Очистить задачи")],
         vec![KeyboardButton::new("🗑 Очистить память")],
         vec![KeyboardButton::new("🔄 Пересоздать контейнер")],
         vec![KeyboardButton::new("⬅️ Выйти из режима агента")],
@@ -115,6 +116,9 @@ pub async fn handle_agent_message(
         match text {
             "❌ Отменить задачу" => {
                 return cancel_agent_task(bot, msg, dialogue).await;
+            }
+            "/cleartodos" | "🗑 Очистить задачи" => {
+                return clear_agent_todos(bot, msg).await;
             }
             "🗑 Очистить память" => {
                 return clear_agent_memory(bot, msg, storage).await;
@@ -346,6 +350,23 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
 
     bot.send_message(msg.chat.id, "❌ Задача отменена")
         .reply_markup(get_agent_keyboard())
+        .await?;
+
+    Ok(())
+}
+
+/// Clear agent todos
+pub async fn clear_agent_todos(bot: Bot, msg: Message) -> Result<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+
+    {
+        let mut sessions = AGENT_SESSIONS.write().await;
+        if let Some(executor) = sessions.get_mut(&user_id) {
+            executor.session_mut().clear_todos();
+        }
+    }
+
+    bot.send_message(msg.chat.id, "📋 Список задач очищен")
         .await?;
 
     Ok(())

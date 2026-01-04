@@ -5,11 +5,19 @@
 - `src/lib.rs`: Корень библиотеки, экспорт модулей и общий функционал.
 - `src/agent/`: Логика режима Агента (сессия, исполнитель, память, препроцессор).
   - `src/agent/memory.rs`: Память агента с автосжатием (персистируется в R2).
+  - `src/agent/hooks/`: Реестр и логика хуков выполнения.
   - `src/agent/provider.rs`: Трейт `ToolProvider`.
-  - `src/agent/registry.rs`: Реестр `ToolRegistry` для управления провайдерами инструментов.
-  - `src/agent/providers/`: Реализации провайдеров (Sandbox, Tavily).
-- `src/bot/`: Логика Telegram-бота (обработчики, специфичные для агента обработчики, состояния).
-- `src/llm/`: Реализации провайдеров LLM (Groq, Mistral, Gemini, OpenRouter, Zai) и трейт.
+  - `src/agent/registry.rs`: Реестр `ToolRegistry` для управления инструментами.
+  - `src/agent/providers/`: Реализации инструментов (Sandbox, Tavily, Todos).
+  - `src/agent/progress.rs`: Отслеживание прогресса выполнения задач.
+- `src/bot/`: Логика Telegram-бота.
+  - `src/bot/handlers.rs`: Обработчики команд и сообщений.
+  - `src/bot/agent_handlers.rs`: Обработчики для режима Агента.
+  - `src/bot/state.rs`: Сохранение состояния пользователя (режим чата/агента).
+- `src/llm/`: Провайдеры LLM и сетевые утилиты.
+  - `src/llm/providers.rs`: Традиционные провайдеры (Groq, Gemini, etc).
+  - `src/llm/openai_compat.rs`: OpenAI-совместимый интерфейс.
+  - `src/llm/http_utils.rs`: Общие утилиты для HTTP-запросов.
 - `src/sandbox/`: Менеджер и оркестрация песочницы для выполнения кода на базе Docker.
 - `src/storage.rs`: Слой хранения данных (совместимость с S3/R2).
   - История чата: `users/{id}/history.json`

@@ -3,6 +3,7 @@
 //! Provides conversation memory for the agent with automatic compaction
 //! when token count approaches the limit. Uses tiktoken for token counting.
 
+use crate::agent::providers::TodoList;
 use crate::config::AGENT_COMPACT_THRESHOLD;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,7 @@ impl AgentMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMemory {
     messages: Vec<AgentMessage>,
+    pub todos: TodoList,
     token_count: usize,
     max_tokens: usize,
     compact_threshold: usize,
@@ -61,6 +63,7 @@ impl AgentMemory {
     pub fn new(max_tokens: usize) -> Self {
         Self {
             messages: Vec::new(),
+            todos: TodoList::new(),
             token_count: 0,
             max_tokens,
             compact_threshold: AGENT_COMPACT_THRESHOLD,
@@ -94,6 +97,7 @@ impl AgentMemory {
     /// Clear all messages from memory
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.todos.clear();
         self.token_count = 0;
     }
 

@@ -93,7 +93,7 @@ impl AgentExecutor {
         let system_prompt = Self::create_agent_system_prompt();
 
         // Create shared todos state for the TodosProvider
-        let todos_arc = Arc::new(Mutex::new(self.session.todos.clone()));
+        let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
 
         // Build tool registry with providers
         let mut registry = ToolRegistry::new();
@@ -174,12 +174,12 @@ impl AgentExecutor {
                     // Sync todos from shared state before hook check
                     {
                         let current_todos = todos_arc.lock().await;
-                        self.session.todos = current_todos.clone();
+                        self.session.memory.todos = current_todos.clone();
                     }
 
                     // Run AfterAgent hooks to check if we should continue
                     let hook_context = HookContext::new(
-                        &self.session.todos,
+                        &self.session.memory.todos,
                         iteration,
                         continuation_count,
                         AGENT_CONTINUATION_LIMIT,
@@ -286,18 +286,12 @@ impl AgentExecutor {
                     // If this was a write_todos call, sync todos and send event
                     if tool_call.function.name == "write_todos" {
                         let current_todos = todos_arc.lock().await;
-                        self.session.todos = current_todos.clone();
+                        self.session.memory.todos = current_todos.clone();
 
                         if let Some(ref tx) = progress_tx {
                             let _ = tx
                                 .send(AgentEvent::TodosUpdated {
-                                    current_task: self
-                                        .session
-                                        .todos
-                                        .current_task()
-                                        .map(|t| t.description.clone()),
-                                    completed: self.session.todos.completed_count(),
-                                    total: self.session.todos.items.len(),
+                                    todos: self.session.memory.todos.clone(),
                                 })
                                 .await;
                         }

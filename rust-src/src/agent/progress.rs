@@ -1,3 +1,4 @@
+use super::providers::TodoList;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,9 +19,7 @@ pub enum AgentEvent {
     },
     /// Todos list was updated
     TodosUpdated {
-        current_task: Option<String>,
-        completed: usize,
-        total: usize,
+        todos: TodoList,
     },
     Finished,
     Error(String),
@@ -31,6 +30,7 @@ pub struct ProgressState {
     pub current_iteration: usize,
     pub max_iterations: usize,
     pub steps: Vec<Step>,
+    pub current_todos: Option<TodoList>,
     pub is_finished: bool,
     pub error: Option<String>,
 }
@@ -111,11 +111,13 @@ impl ProgressState {
                     status: StepStatus::InProgress,
                 });
             }
-            AgentEvent::TodosUpdated {
-                current_task,
-                completed,
-                total,
-            } => {
+            AgentEvent::TodosUpdated { todos } => {
+                let current_task = todos.current_task().map(|t| t.description.clone());
+                let completed = todos.completed_count();
+                let total = todos.items.len();
+
+                self.current_todos = Some(todos);
+
                 if let Some(task) = current_task {
                     // Update step description with current task
                     if let Some(last) = self.steps.last_mut() {
@@ -147,6 +149,21 @@ impl ProgressState {
     pub fn format_telegram(&self) -> String {
         let mut lines = Vec::new();
         lines.push("🤖 <b>Работа агента</b>\n".to_string());
+
+        // Todos status if available
+        if let Some(ref todos) = self.current_todos {
+            if !todos.items.is_empty() {
+                lines.push(format!(
+                    "<b>План задач ({}/{}):</b>",
+                    todos.completed_count(),
+                    todos.items.len()
+                ));
+                for (i, item) in todos.items.iter().enumerate() {
+                    lines.push(format!("{}. {} {}", i + 1, item.status, item.description));
+                }
+                lines.push(String::new()); // Empty line separator
+            }
+        }
 
         for step in &self.steps {
             let icon = match step.status {
