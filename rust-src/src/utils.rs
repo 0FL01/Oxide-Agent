@@ -206,3 +206,15 @@ pub fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
         .nth(max_chars)
         .map_or(s.to_string(), |(pos, _)| s[..pos].to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_str_unicode() {
+        let s = "Привет, мир!";
+        assert_eq!(truncate_str(s, 6), "Привет");
+        assert_eq!(truncate_str(s, 50), "Привет, мир!");
+    }
+}

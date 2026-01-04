@@ -102,11 +102,7 @@ impl ProgressState {
                     description: format!(
                         "🔄 Продолжение ({}/5): {}",
                         count,
-                        if reason.len() > 50 {
-                            &reason[..50]
-                        } else {
-                            &reason
-                        }
+                        crate::utils::truncate_str(reason, 50)
                     ),
                     status: StepStatus::InProgress,
                 });
