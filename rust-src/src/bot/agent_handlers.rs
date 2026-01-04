@@ -21,7 +21,7 @@ use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{KeyboardButton, KeyboardMarkup, MessageId, ParseMode};
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Type alias for dialogue
 pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
@@ -334,7 +334,12 @@ async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: 
         .parse_mode(ParseMode::Html)
         .await
     {
-        warn!("Failed to edit message: {}", e);
+        let err_msg = e.to_string();
+        if err_msg.contains("message is not modified") {
+            debug!("Message update skipped (content unchanged): {}", err_msg);
+        } else {
+            warn!("Failed to edit message: {}", e);
+        }
     }
 }
 
