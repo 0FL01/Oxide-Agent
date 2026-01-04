@@ -3,6 +3,14 @@ name = "another-chat-rs"
 version = "0.1.0"
 edition = "2021"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+
 [dependencies]
 tokio = { version = "1.48", features = ["full"] }
 tracing = "0.1"
