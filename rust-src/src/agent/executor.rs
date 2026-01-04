@@ -2,12 +2,16 @@
 //!
 //! Handles the iterative execution of tasks using LLM with tool calling.
 
+use super::hooks::{CompletionCheckHook, HookContext, HookEvent, HookRegistry, HookResult};
 use super::memory::AgentMessage;
 use super::session::AgentSession;
-use crate::config::{AGENT_MAX_ITERATIONS, AGENT_MODEL, AGENT_TIMEOUT_SECS};
+use crate::config::{
+    AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_MODEL, AGENT_TIMEOUT_SECS,
+};
 use crate::llm::{LlmClient, Message};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, instrument};
 
@@ -15,14 +19,20 @@ use tracing::{debug, error, info, instrument};
 pub struct AgentExecutor {
     llm_client: Arc<LlmClient>,
     session: AgentSession,
+    hook_registry: HookRegistry,
 }
 
 impl AgentExecutor {
     /// Create a new agent executor
     pub fn new(llm_client: Arc<LlmClient>, session: AgentSession) -> Self {
+        // Initialize hook registry with default hooks
+        let mut hook_registry = HookRegistry::new();
+        hook_registry.register(Box::new(CompletionCheckHook::new()));
+
         Self {
             llm_client,
             session,
+            hook_registry,
         }
     }
 
@@ -65,9 +75,9 @@ impl AgentExecutor {
         progress_tx: Option<tokio::sync::mpsc::Sender<super::progress::AgentEvent>>,
     ) -> Result<String> {
         use super::progress::AgentEvent;
-        use super::providers::SandboxProvider;
         #[cfg(feature = "tavily")]
         use super::providers::TavilyProvider;
+        use super::providers::{SandboxProvider, TodosProvider};
         use super::registry::ToolRegistry;
 
         // Start the task
@@ -82,8 +92,14 @@ impl AgentExecutor {
         // Create the system prompt
         let system_prompt = Self::create_agent_system_prompt();
 
+        // Create shared todos state for the TodosProvider
+        let todos_arc = Arc::new(Mutex::new(self.session.todos.clone()));
+
         // Build tool registry with providers
         let mut registry = ToolRegistry::new();
+
+        // Add todos provider (must be first to track todos)
+        registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
 
         // Add sandbox provider
         registry.register(Box::new(SandboxProvider::new(self.session.user_id)));
@@ -104,6 +120,9 @@ impl AgentExecutor {
         // Build initial messages from memory using helper
         let mut messages = Self::convert_memory_to_messages(self.session.memory.get_messages());
 
+        // Continuation tracking
+        let mut continuation_count: usize = 0;
+
         // Execute with timeout
         let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);
 
@@ -113,6 +132,7 @@ impl AgentExecutor {
                 debug!(
                     task_id = %task_id,
                     iteration = iteration,
+                    continuation_count = continuation_count,
                     messages_count = messages.len(),
                     "Agent loop iteration"
                 );
@@ -145,29 +165,85 @@ impl AgentExecutor {
                     "LLM response received"
                 );
 
-                // Check if there are no tool calls - this means final answer
+                // Check if there are no tool calls - this means potential final answer
                 if response.tool_calls.is_empty() {
                     let final_response = response
                         .content
                         .unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
 
-                    // Add assistant response to memory
-                    self.session
-                        .memory
-                        .add_message(AgentMessage::assistant(&final_response));
-                    self.session.complete();
-
-                    info!(
-                        task_id = %task_id,
-                        iterations = iteration + 1,
-                        "Agent task completed successfully"
-                    );
-
-                    if let Some(ref tx) = progress_tx {
-                        let _ = tx.send(AgentEvent::Finished).await;
+                    // Sync todos from shared state before hook check
+                    {
+                        let current_todos = todos_arc.lock().await;
+                        self.session.todos = current_todos.clone();
                     }
 
-                    return Ok(final_response);
+                    // Run AfterAgent hooks to check if we should continue
+                    let hook_context = HookContext::new(
+                        &self.session.todos,
+                        iteration,
+                        continuation_count,
+                        AGENT_CONTINUATION_LIMIT,
+                    );
+
+                    let hook_result = self.hook_registry.execute(
+                        &HookEvent::AfterAgent {
+                            response: final_response.clone(),
+                        },
+                        &hook_context,
+                    );
+
+                    match hook_result {
+                        HookResult::ForceIteration { reason, context } => {
+                            continuation_count += 1;
+                            info!(
+                                task_id = %task_id,
+                                continuation = continuation_count,
+                                reason = %reason,
+                                "Hook forcing iteration"
+                            );
+
+                            // Send continuation event
+                            if let Some(ref tx) = progress_tx {
+                                let _ = tx
+                                    .send(AgentEvent::Continuation {
+                                        reason: reason.clone(),
+                                        count: continuation_count,
+                                    })
+                                    .await;
+                            }
+
+                            // Add assistant's attempted response
+                            messages.push(Message::assistant(&final_response));
+
+                            // Inject continuation prompt
+                            let continuation_prompt =
+                                format!("[СИСТЕМА: {}]\n\n{}", reason, context.unwrap_or_default());
+                            messages.push(Message::system(&continuation_prompt));
+
+                            // Continue the loop instead of returning
+                            continue;
+                        }
+                        _ => {
+                            // Normal completion
+                            self.session
+                                .memory
+                                .add_message(AgentMessage::assistant(&final_response));
+                            self.session.complete();
+
+                            info!(
+                                task_id = %task_id,
+                                iterations = iteration + 1,
+                                continuations = continuation_count,
+                                "Agent task completed successfully"
+                            );
+
+                            if let Some(ref tx) = progress_tx {
+                                let _ = tx.send(AgentEvent::Finished).await;
+                            }
+
+                            return Ok(final_response);
+                        }
+                    }
                 }
 
                 // Add assistant message with tool calls placeholder
@@ -206,6 +282,26 @@ impl AgentExecutor {
                         Ok(r) => r,
                         Err(e) => format!("Ошибка выполнения инструмента: {}", e),
                     };
+
+                    // If this was a write_todos call, sync todos and send event
+                    if tool_call.function.name == "write_todos" {
+                        let current_todos = todos_arc.lock().await;
+                        self.session.todos = current_todos.clone();
+
+                        if let Some(ref tx) = progress_tx {
+                            let _ = tx
+                                .send(AgentEvent::TodosUpdated {
+                                    current_task: self
+                                        .session
+                                        .todos
+                                        .current_task()
+                                        .map(|t| t.description.clone()),
+                                    completed: self.session.todos.completed_count(),
+                                    total: self.session.todos.items.len(),
+                                })
+                                .await;
+                        }
+                    }
 
                     if let Some(ref tx) = progress_tx {
                         let _ = tx
@@ -296,6 +392,7 @@ impl AgentExecutor {
 - **read_file**: прочитать содержимое файла
 - **web_search**: поиск информации в интернете
 - **web_extract**: извлечение текста из веб-страниц
+- **write_todos**: создать или обновить список задач
 
 ## Важные правила:
 - Если нужны реальные данные (дата, время, сетевые запросы) - ИСПОЛЬЗУЙ ИНСТРУМЕНТЫ, не объясняй как это сделать
@@ -303,6 +400,7 @@ impl AgentExecutor {
 - Для вычислений используй Python: execute_command с `python3 -c "..."`
 - Результаты выполнения инструментов будут возвращены тебе автоматически
 - После получения результата инструмента - проанализируй его и дай окончательный ответ
+- Для СЛОЖНЫХ запросов ОБЯЗАТЕЛЬНО используй write_todos для создания плана
 
 ## Формат ответа (когда даёшь окончательный ответ):
 - Кратко опиши выполненные шаги

@@ -3,8 +3,25 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
     Thinking,
-    ToolCall { name: String, input: String },
-    ToolResult { name: String, output: String },
+    ToolCall {
+        name: String,
+        input: String,
+    },
+    ToolResult {
+        name: String,
+        output: String,
+    },
+    /// Agent is continuing work due to incomplete todos
+    Continuation {
+        reason: String,
+        count: usize,
+    },
+    /// Todos list was updated
+    TodosUpdated {
+        current_task: Option<String>,
+        completed: usize,
+        total: usize,
+    },
     Finished,
     Error(String),
 }
@@ -72,6 +89,39 @@ impl ProgressState {
                 if let Some(last) = self.steps.last_mut() {
                     if last.status == StepStatus::InProgress {
                         last.status = StepStatus::Completed;
+                    }
+                }
+            }
+            AgentEvent::Continuation { reason, count } => {
+                if let Some(last) = self.steps.last_mut() {
+                    if last.status == StepStatus::InProgress {
+                        last.status = StepStatus::Completed;
+                    }
+                }
+                self.steps.push(Step {
+                    description: format!(
+                        "🔄 Продолжение ({}/5): {}",
+                        count,
+                        if reason.len() > 50 {
+                            &reason[..50]
+                        } else {
+                            &reason
+                        }
+                    ),
+                    status: StepStatus::InProgress,
+                });
+            }
+            AgentEvent::TodosUpdated {
+                current_task,
+                completed,
+                total,
+            } => {
+                if let Some(task) = current_task {
+                    // Update step description with current task
+                    if let Some(last) = self.steps.last_mut() {
+                        if last.status == StepStatus::InProgress {
+                            last.description = format!("📋 {} ({}/{})", task, completed, total);
+                        }
                     }
                 }
             }

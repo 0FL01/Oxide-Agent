@@ -283,6 +283,7 @@ pub const AGENT_MAX_ITERATIONS: usize = 10;
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
 pub const AGENT_MAX_TOKENS: usize = 200_000;
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
+pub const AGENT_CONTINUATION_LIMIT: usize = 5; // Max forced continuations when todos incomplete
 
 // Sandbox configuration
 pub const SANDBOX_IMAGE: &str = "agent-sandbox:latest";

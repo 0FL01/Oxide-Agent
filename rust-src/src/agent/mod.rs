@@ -7,6 +7,7 @@
 //! - Manage conversation memory with auto-compaction
 
 pub mod executor;
+pub mod hooks;
 pub mod memory;
 pub mod preprocessor;
 pub mod provider;
@@ -17,8 +18,10 @@ pub mod session;
 pub mod progress;
 
 pub use executor::AgentExecutor;
+pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
 pub use memory::AgentMemory;
 pub use progress::{AgentEvent, ProgressState};
 pub use provider::ToolProvider;
+pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use registry::ToolRegistry;
 pub use session::{AgentSession, AgentStatus};

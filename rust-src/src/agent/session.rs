@@ -4,6 +4,7 @@
 //! timeout tracking, progress message tracking, session state, and sandbox.
 
 use super::memory::AgentMemory;
+use super::providers::TodoList;
 use crate::config::{AGENT_MAX_TOKENS, AGENT_TIMEOUT_SECS};
 use crate::sandbox::SandboxManager;
 use anyhow::Result;
@@ -37,6 +38,8 @@ pub struct AgentSession {
     pub progress_message_id: Option<i32>,
     /// Conversation memory with auto-compaction
     pub memory: AgentMemory,
+    /// Todo list for multi-step tasks
+    pub todos: TodoList,
     /// Docker sandbox for code execution (lazily initialized)
     sandbox: Option<SandboxManager>,
     /// When the current task started
@@ -55,6 +58,7 @@ impl AgentSession {
             chat_id,
             progress_message_id: None,
             memory: AgentMemory::new(AGENT_MAX_TOKENS),
+            todos: TodoList::new(),
             sandbox: None,
             started_at: None,
             current_task_id: None,
@@ -112,9 +116,11 @@ impl AgentSession {
         self.started_at = None;
     }
 
-    /// Reset the session (clear memory, reset status, destroy sandbox)
+    /// Reset the session (clear memory, todos, reset status)
+    /// Note: Sandbox is persistent and not destroyed here
     pub async fn reset(&mut self) {
         self.memory.clear();
+        self.todos.clear();
         self.status = AgentStatus::Idle;
         self.started_at = None;
         self.current_task_id = None;
@@ -122,6 +128,11 @@ impl AgentSession {
 
         // Sandbox is persistent, do NOT destroy it here
         // if let Some(mut sandbox) = self.sandbox.take() { ... }
+    }
+
+    /// Clear only the todos list (keeps memory intact)
+    pub fn clear_todos(&mut self) {
+        self.todos.clear();
     }
 
     /// Check if the session is currently processing a task

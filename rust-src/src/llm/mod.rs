@@ -76,6 +76,16 @@ impl Message {
             tool_calls: None,
         }
     }
+
+    pub fn system(content: &str) -> Self {
+        Self {
+            role: "system".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
+        }
+    }
 }
 
 /// Tool definition for LLM function calling
