@@ -4,7 +4,7 @@
 
 use super::memory::AgentMessage;
 use super::session::AgentSession;
-use crate::config::{AGENT_MODEL, AGENT_TIMEOUT_SECS};
+use crate::config::{AGENT_MAX_ITERATIONS, AGENT_MODEL, AGENT_TIMEOUT_SECS};
 use crate::llm::{LlmClient, Message};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
@@ -58,14 +58,17 @@ impl AgentExecutor {
     }
 
     /// Execute a task with iterative tool calling (agentic loop)
-    #[instrument(skip(self), fields(user_id = self.session.user_id, chat_id = self.session.chat_id))]
-    pub async fn execute(&mut self, task: &str) -> Result<String> {
+    #[instrument(skip(self, progress_tx), fields(user_id = self.session.user_id, chat_id = self.session.chat_id))]
+    pub async fn execute(
+        &mut self,
+        task: &str,
+        progress_tx: Option<tokio::sync::mpsc::Sender<super::progress::AgentEvent>>,
+    ) -> Result<String> {
+        use super::progress::AgentEvent;
         use super::providers::SandboxProvider;
         #[cfg(feature = "tavily")]
         use super::providers::TavilyProvider;
         use super::registry::ToolRegistry;
-
-        const MAX_ITERATIONS: usize = 10;
 
         // Start the task
         self.session.start_task();
@@ -106,7 +109,7 @@ impl AgentExecutor {
 
         let result = timeout(timeout_duration, async {
             // Agentic loop
-            for iteration in 0..MAX_ITERATIONS {
+            for iteration in 0..AGENT_MAX_ITERATIONS {
                 debug!(
                     task_id = %task_id,
                     iteration = iteration,
@@ -114,12 +117,26 @@ impl AgentExecutor {
                     "Agent loop iteration"
                 );
 
+                if let Some(ref tx) = progress_tx {
+                    let _ = tx.send(AgentEvent::Thinking).await;
+                }
+
                 // Call LLM with tools
-                let response = self
+                let response = match self
                     .llm_client
                     .chat_with_tools(&system_prompt, &messages, &tools, AGENT_MODEL)
                     .await
-                    .map_err(|e| anyhow!("LLM call failed: {}", e))?;
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if let Some(ref tx) = progress_tx {
+                            let _ = tx
+                                .send(AgentEvent::Error(format!("LLM call failed: {}", e)))
+                                .await;
+                        }
+                        return Err(anyhow!("LLM call failed: {}", e));
+                    }
+                };
 
                 debug!(
                     task_id = %task_id,
@@ -145,6 +162,11 @@ impl AgentExecutor {
                         iterations = iteration + 1,
                         "Agent task completed successfully"
                     );
+
+                    if let Some(ref tx) = progress_tx {
+                        let _ = tx.send(AgentEvent::Finished).await;
+                    }
+
                     return Ok(final_response);
                 }
 
@@ -168,6 +190,15 @@ impl AgentExecutor {
                         "Executing tool"
                     );
 
+                    if let Some(ref tx) = progress_tx {
+                        let _ = tx
+                            .send(AgentEvent::ToolCall {
+                                name: tool_call.function.name.clone(),
+                                input: tool_call.function.arguments.clone(),
+                            })
+                            .await;
+                    }
+
                     let result = match registry
                         .execute(&tool_call.function.name, &tool_call.function.arguments)
                         .await
@@ -175,6 +206,15 @@ impl AgentExecutor {
                         Ok(r) => r,
                         Err(e) => format!("Ошибка выполнения инструмента: {}", e),
                     };
+
+                    if let Some(ref tx) = progress_tx {
+                        let _ = tx
+                            .send(AgentEvent::ToolResult {
+                                name: tool_call.function.name.clone(),
+                                output: result.clone(),
+                            })
+                            .await;
+                    }
 
                     debug!(
                         task_id = %task_id,
@@ -196,7 +236,7 @@ impl AgentExecutor {
             self.session.fail("Превышен лимит итераций".to_string());
             Err(anyhow!(
                 "Агент превысил лимит итераций ({}). Возможно, задача слишком сложная.",
-                MAX_ITERATIONS
+                AGENT_MAX_ITERATIONS
             ))
         })
         .await;

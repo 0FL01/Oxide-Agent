@@ -14,8 +14,11 @@ pub mod providers;
 pub mod registry;
 pub mod session;
 
+pub mod progress;
+
 pub use executor::AgentExecutor;
 pub use memory::AgentMemory;
+pub use progress::{AgentEvent, ProgressState};
 pub use provider::ToolProvider;
 pub use registry::ToolRegistry;
 pub use session::{AgentSession, AgentStatus};

@@ -6,9 +6,11 @@
 use crate::agent::{
     executor::AgentExecutor,
     preprocessor::{AgentInput, Preprocessor},
+    progress::{AgentEvent, ProgressState},
     AgentSession,
 };
 use crate::bot::state::State;
+use crate::config::AGENT_MAX_ITERATIONS;
 use crate::llm::LlmClient;
 use crate::storage::R2Storage;
 use anyhow::Result;
@@ -157,8 +159,44 @@ pub async fn handle_agent_message(
         .parse_mode(ParseMode::Html)
         .await?;
 
+    // Create progress tracking channel
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
+
+    // Spawn progress updater task with throttling
+    let bot_clone = bot.clone();
+    let chat_id_clone = chat_id;
+    let msg_id = progress_msg.id;
+
+    let progress_handle = tokio::spawn(async move {
+        let mut state = ProgressState::new(AGENT_MAX_ITERATIONS);
+        let mut last_update = std::time::Instant::now();
+        let mut needs_update = false;
+        let throttle_duration = std::time::Duration::from_millis(1500);
+
+        while let Some(event) = rx.recv().await {
+            state.update(event);
+            needs_update = true;
+
+            if last_update.elapsed() >= throttle_duration {
+                let text = state.format_telegram();
+                edit_message_safe(&bot_clone, chat_id_clone, msg_id, &text).await;
+                last_update = std::time::Instant::now();
+                needs_update = false;
+            }
+        }
+
+        let final_text = state.format_telegram();
+        if needs_update {
+            edit_message_safe(&bot_clone, chat_id_clone, msg_id, &final_text).await;
+        }
+        final_text
+    });
+
     // Execute the task
-    let result = execute_agent_task(user_id, &task_text).await;
+    let result = execute_agent_task(user_id, &task_text, Some(tx)).await;
+
+    // Wait for progress handle to finish and get the final progress text
+    let progress_text = progress_handle.await.unwrap_or_default();
 
     // Save agent memory after task execution
     {
@@ -172,13 +210,13 @@ pub async fn handle_agent_message(
     // Update the message with the result
     match result {
         Ok(response) => {
-            // Edit the progress message with the final response
+            // Edit the progress message with the final response, keeping progress log
             let formatted_response = crate::utils::format_text(&response);
-            let final_text = format!("✅ <b>Результат:</b>\n\n{}", formatted_response);
+            let final_text = format!("{}\n\n{}", progress_text, formatted_response);
             edit_message_safe(&bot, chat_id, progress_msg.id, &final_text).await;
         }
         Err(e) => {
-            let error_text = format!("❌ <b>Ошибка:</b>\n\n{}", e);
+            let error_text = format!("{}\n\n❌ <b>Ошибка:</b>\n\n{}", progress_text, e);
             edit_message_safe(&bot, chat_id, progress_msg.id, &error_text).await;
         }
     }
@@ -188,7 +226,11 @@ pub async fn handle_agent_message(
 
 /// Execute an agent task and return the result
 /// NOTE: Takes the executor out of the map during execution to avoid holding lock
-async fn execute_agent_task(user_id: i64, task: &str) -> Result<String> {
+async fn execute_agent_task(
+    user_id: i64,
+    task: &str,
+    progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+) -> Result<String> {
     // Take the executor out of the map to avoid holding lock during execution
     let mut executor = {
         let mut sessions = AGENT_SESSIONS.write().await;
@@ -212,7 +254,7 @@ async fn execute_agent_task(user_id: i64, task: &str) -> Result<String> {
     }
 
     // Execute the task without holding the lock
-    let result = executor.execute(task).await;
+    let result = executor.execute(task, progress_tx).await;
 
     // Put the executor back
     {
