@@ -255,8 +255,11 @@ impl AgentExecutor {
 
     /// Create the system prompt for the agent
     fn create_agent_system_prompt() -> String {
+        let current_date = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let date_context = format!("\n\nТекущая дата и время: {}\n", current_date);
+
         // Попытка прочитать промпт из файла AGENT.md
-        match std::fs::read_to_string("AGENT.md") {
+        let base_prompt = match std::fs::read_to_string("AGENT.md") {
             Ok(prompt) => {
                 debug!("Loaded agent system prompt from AGENT.md");
                 prompt
@@ -267,7 +270,7 @@ impl AgentExecutor {
                     e
                 );
                 // Fallback prompt on error
-                r#"Ты - AI-агент с доступом к изолированной среде выполнения (sandbox).
+                r#"Ты - AI-агент с доступом к изолированной среде выполнения (sandbox) и веб-поиску.
 
 ## Доступные инструменты:
 - **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, curl, wget, date, cat, ls, grep и другие стандартные утилиты)
@@ -284,10 +287,11 @@ impl AgentExecutor {
 ## Формат ответа (когда даёшь окончательный ответ):
 - Кратко опиши выполненные шаги
 - Дай чёткий результат
-- Используй markdown для форматирования"#
-                    .to_string()
+- Используй markdown для форматирования"#.to_string()
             }
-        }
+        };
+
+        format!("{}{}", base_prompt, date_context)
     }
 
     /// Cancel the current task
