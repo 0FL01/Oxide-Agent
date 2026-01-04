@@ -255,8 +255,26 @@ impl AgentExecutor {
 
     /// Create the system prompt for the agent
     fn create_agent_system_prompt() -> String {
-        let current_date = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let date_context = format!("\n\nТекущая дата и время: {}\n", current_date);
+        let now = chrono::Local::now();
+        let current_date = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let current_day = now.format("%A").to_string();
+
+        // Russian translation for the day of the week
+        let current_day_ru = match current_day.as_str() {
+            "Monday" => "понедельник",
+            "Tuesday" => "вторник",
+            "Wednesday" => "среда",
+            "Thursday" => "четверг",
+            "Friday" => "пятница",
+            "Saturday" => "суббота",
+            "Sunday" => "воскресенье",
+            _ => &current_day,
+        };
+
+        let date_context = format!(
+            "### ТЕКУЩАЯ ДАТА И ВРЕМЯ\nСегодня: {}, {}\nВАЖНО: Всегда используй эту дату как текущую. Если результаты поиска (web_search) содержат фразы 'сегодня', 'завтра' или даты, которые противоречат этой, считай результаты поиска устаревшими и интерпретируй их относительно указанной выше даты.\n\n",
+            current_date, current_day_ru
+        );
 
         // Попытка прочитать промпт из файла AGENT.md
         let base_prompt = match std::fs::read_to_string("AGENT.md") {
@@ -276,6 +294,8 @@ impl AgentExecutor {
 - **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, curl, wget, date, cat, ls, grep и другие стандартные утилиты)
 - **write_file**: записать содержимое в файл
 - **read_file**: прочитать содержимое файла
+- **web_search**: поиск информации в интернете
+- **web_extract**: извлечение текста из веб-страниц
 
 ## Важные правила:
 - Если нужны реальные данные (дата, время, сетевые запросы) - ИСПОЛЬЗУЙ ИНСТРУМЕНТЫ, не объясняй как это сделать
@@ -291,7 +311,7 @@ impl AgentExecutor {
             }
         };
 
-        format!("{}{}", base_prompt, date_context)
+        format!("{}{}", date_context, base_prompt)
     }
 
     /// Cancel the current task
