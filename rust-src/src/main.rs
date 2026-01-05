@@ -43,13 +43,34 @@ impl RedactionPatterns {
 
     fn redact(&self, input: &str) -> String {
         let mut output = input.to_string();
-        output = self.token1.replace_all(&output, "$1[TELEGRAM_TOKEN]$3").to_string();
-        output = self.token2.replace_all(&output, "[TELEGRAM_TOKEN]").to_string();
-        output = self.token3.replace_all(&output, "$1[TELEGRAM_TOKEN]").to_string();
-        output = self.r2_1.replace_all(&output, "R2_ACCESS_KEY_ID=[MASKED]").to_string();
-        output = self.r2_2.replace_all(&output, "R2_SECRET_ACCESS_KEY=[MASKED]").to_string();
-        output = self.r2_3.replace_all(&output, "'aws_access_key_id': '[MASKED]'").to_string();
-        output = self.r2_4.replace_all(&output, "'aws_secret_access_key': '[MASKED]'").to_string();
+        output = self
+            .token1
+            .replace_all(&output, "$1[TELEGRAM_TOKEN]$3")
+            .to_string();
+        output = self
+            .token2
+            .replace_all(&output, "[TELEGRAM_TOKEN]")
+            .to_string();
+        output = self
+            .token3
+            .replace_all(&output, "$1[TELEGRAM_TOKEN]")
+            .to_string();
+        output = self
+            .r2_1
+            .replace_all(&output, "R2_ACCESS_KEY_ID=[MASKED]")
+            .to_string();
+        output = self
+            .r2_2
+            .replace_all(&output, "R2_SECRET_ACCESS_KEY=[MASKED]")
+            .to_string();
+        output = self
+            .r2_3
+            .replace_all(&output, "'aws_access_key_id': '[MASKED]'")
+            .to_string();
+        output = self
+            .r2_4
+            .replace_all(&output, "'aws_secret_access_key': '[MASKED]'")
+            .to_string();
         output
     }
 }
@@ -87,7 +108,10 @@ struct RedactingMakeWriter<F> {
 
 impl<F> RedactingMakeWriter<F> {
     const fn new(make_inner: F, patterns: Arc<RedactionPatterns>) -> Self {
-        Self { make_inner, patterns }
+        Self {
+            make_inner,
+            patterns,
+        }
     }
 }
 
