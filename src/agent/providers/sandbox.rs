@@ -13,7 +13,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Provider for Docker sandbox tools
 pub struct SandboxProvider {
@@ -225,6 +225,7 @@ impl ToolProvider for SandboxProvider {
             }
             "send_file_to_user" => {
                 let args: SendFileArgs = serde_json::from_str(arguments)?;
+                info!(path = %args.path, "send_file_to_user called");
 
                 // Extract file name from path
                 let file_name = std::path::Path::new(&args.path)
@@ -243,7 +244,7 @@ impl ToolProvider for SandboxProvider {
                                 .await
                             {
                                 Ok(()) => {
-                                    debug!(file_name = %file_name, "FileToSend event sent successfully");
+                                    info!(file_name = %file_name, "FileToSend event sent successfully");
                                     Ok(format!("✅ Файл '{file_name}' отправлен пользователю"))
                                 }
                                 Err(e) => {

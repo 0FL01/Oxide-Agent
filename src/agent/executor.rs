@@ -358,6 +358,13 @@ impl AgentExecutor {
         for tool_call in tool_calls {
             let (name, args) =
                 Self::sanitize_tool_call(&tool_call.function.name, &tool_call.function.arguments);
+
+            info!(
+                tool_name = %name,
+                tool_args = %crate::utils::truncate_str(&args, 200),
+                "Executing tool call"
+            );
+
             if let Some(tx) = ctx.progress_tx {
                 let _ = tx
                     .send(AgentEvent::ToolCall {
