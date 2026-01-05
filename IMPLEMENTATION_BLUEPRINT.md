@@ -21,7 +21,7 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 
 ---
 
-## Phase 2: Preprocessor Fixes 
+## Phase 2: Preprocessor Fixes ✅
 
 **Goal**: Fix 10 lints in `preprocessor.rs`: `uninlined_format_args`, `cast_precision_loss`, `branches_sharing_code`.
 
@@ -29,14 +29,14 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 - 📄 `src/agent/preprocessor.rs`
 
 **Steps**:
-1. [ ] **Line 117**: Inline `safe_name` → `format!("/workspace/uploads/{safe_name}")`.
-2. [ ] **Line 132**: Add `#[allow(clippy::cast_precision_loss)]` above the function or on the specific line (acceptable precision for human-readable size display).
-3. [ ] **Line 148**: Inline `mime` → `format!("   Тип: {mime}")`.
-4. [ ] **Lines 154-160**: Refactor `branches_sharing_code` by moving `parts.push(String::new())` before the `if let`.
-5. [ ] **Line 156**: Inline `msg` → `format!("**Сообщение:** {msg}")`.
-6. [ ] **Lines 190, 192**: Add `#[allow(clippy::cast_precision_loss)]` to `format_file_size` function (acceptable for human-readable sizes).
-7. [ ] **Line 194**: Inline `bytes` → `format!("{bytes} B")`.
-8. [ ] Run `cargo-check`.
+1. [x] **Line 117**: Inline `safe_name` → `format!("/workspace/uploads/{safe_name}")`.
+2. [x] **Line 132**: Add `#[allow(clippy::cast_precision_loss)]` above the function or on the specific line (acceptable precision for human-readable size display).
+3. [x] **Line 148**: Inline `mime` → `format!("   Тип: {mime}")`.
+4. [x] **Lines 154-160**: Refactor `branches_sharing_code` by moving `parts.push(String::new())` before the `if let`.
+5. [x] **Line 156**: Inline `msg` → `format!("**Сообщение:** {msg}")`.
+6. [x] **Lines 190, 192**: Add `#[allow(clippy::cast_precision_loss)]` to `format_file_size` function (acceptable for human-readable sizes).
+7. [x] **Line 194**: Inline `bytes` → `format!("{bytes} B")`.
+8. [x] Run `cargo-check`.
 
 ---
 

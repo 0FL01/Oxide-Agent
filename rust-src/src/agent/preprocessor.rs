@@ -20,6 +20,19 @@ pub struct Preprocessor {
 
 impl Preprocessor {
     /// Create a new preprocessor with the given LLM client and user ID
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use another_chat_rs::llm::LlmClient;
+    /// use another_chat_rs::agent::preprocessor::Preprocessor;
+    /// use another_chat_rs::config::Settings;
+    ///
+    /// let settings = Settings::new().unwrap();
+    /// let llm_client = Arc::new(LlmClient::new(&settings));
+    /// let preprocessor = Preprocessor::new(llm_client, 123456789);
+    /// ```
     #[must_use]
     pub const fn new(llm_client: Arc<LlmClient>, user_id: i64) -> Self {
         Self {
@@ -31,6 +44,24 @@ impl Preprocessor {
     /// Transcribe voice audio to text using Gemini Flash
     ///
     /// Uses the existing transcription infrastructure with `OpenRouter` Gemini
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use another_chat_rs::llm::LlmClient;
+    /// # use another_chat_rs::agent::preprocessor::Preprocessor;
+    /// # use another_chat_rs::config::Settings;
+    /// # #[tokio::main]
+    /// # async fn main() -> anyhow::Result<()> {
+    /// # let settings = Settings::new().unwrap();
+    /// # let llm_client = Arc::new(LlmClient::new(&settings));
+    /// let preprocessor = Preprocessor::new(llm_client, 123456789);
+    /// let audio_bytes = vec![0; 100];
+    /// let text = preprocessor.transcribe_voice(audio_bytes, "audio/ogg").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     ///
@@ -55,6 +86,24 @@ impl Preprocessor {
     /// Describe an image for the agent context
     ///
     /// Generates a detailed description that the agent can use
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use another_chat_rs::llm::LlmClient;
+    /// # use another_chat_rs::agent::preprocessor::Preprocessor;
+    /// # use another_chat_rs::config::Settings;
+    /// # #[tokio::main]
+    /// # async fn main() -> anyhow::Result<()> {
+    /// # let settings = Settings::new().unwrap();
+    /// # let llm_client = Arc::new(LlmClient::new(&settings));
+    /// let preprocessor = Preprocessor::new(llm_client, 123456789);
+    /// let image_bytes = vec![0; 100];
+    /// let description = preprocessor.describe_image(image_bytes, Some("Explain this chart")).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     ///
@@ -106,6 +155,7 @@ impl Preprocessor {
     /// # Errors
     ///
     /// Returns an error if file upload fails or limit is exceeded.
+    #[allow(clippy::cast_precision_loss)] // Reason: Precision loss is acceptable for display purposes in GB/MB/KB
     async fn process_document(
         &self,
         bytes: Vec<u8>,
@@ -113,8 +163,7 @@ impl Preprocessor {
         mime_type: Option<String>,
         caption: Option<String>,
     ) -> Result<String> {
-        let safe_name = Self::sanitize_filename(&file_name);
-        let upload_path = format!("/workspace/uploads/{}", safe_name);
+        let upload_path = format!("/workspace/uploads/{}", Self::sanitize_filename(&file_name));
 
         // Lazy-create sandbox
         let mut manager = SandboxManager::new(self.user_id).await?;
@@ -144,18 +193,17 @@ impl Preprocessor {
             format!("   Размер: {}", size_str),
         ];
 
-        if let Some(mime) = &mime_type {
-            parts.push(format!("   Тип: {}", mime));
+        if let Some(mime_type) = &mime_type {
+            parts.push(format!("   Тип: {mime_type}"));
         }
 
         parts.push(String::new());
         parts.push(hint);
 
-        if let Some(msg) = caption {
-            parts.push(String::new());
-            parts.push(format!("**Сообщение:** {}", msg));
+        parts.push(String::new());
+        if let Some(caption) = caption {
+            parts.push(format!("**Сообщение:** {caption}"));
         } else {
-            parts.push(String::new());
             parts.push("_Пользователь не оставил комментарий._".to_string());
         }
 
@@ -182,6 +230,7 @@ impl Preprocessor {
 
     /// Format file size in human-readable format
     #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Reason: Precision loss is acceptable for human-readable file sizes
     fn format_file_size(bytes: usize) -> String {
         const KB: usize = 1024;
         const MB: usize = KB * 1024;
@@ -191,7 +240,7 @@ impl Preprocessor {
         } else if bytes >= KB {
             format!("{:.1} KB", bytes as f64 / KB as f64)
         } else {
-            format!("{} B", bytes)
+            format!("{bytes} B")
         }
     }
 
@@ -227,6 +276,25 @@ impl Preprocessor {
     }
 
     /// Preprocess any input type and return text suitable for the agent
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use another_chat_rs::llm::LlmClient;
+    /// # use another_chat_rs::agent::preprocessor::{Preprocessor, AgentInput};
+    /// # use another_chat_rs::config::Settings;
+    /// # #[tokio::main]
+    /// # async fn main() -> anyhow::Result<()> {
+    /// # let settings = Settings::new().unwrap();
+    /// # let llm_client = Arc::new(LlmClient::new(&settings));
+    /// let preprocessor = Preprocessor::new(llm_client, 123456789);
+    /// let input = AgentInput::Text("Hello".to_string());
+    /// let result = preprocessor.preprocess_input(input).await?;
+    /// assert_eq!(result, "Hello");
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     ///
@@ -349,10 +417,10 @@ mod tests {
     #[test]
     fn test_format_file_size() {
         assert_eq!(Preprocessor::format_file_size(500), "500 B");
-        assert_eq!(Preprocessor::format_file_size(1024), "1.0 KB");
-        assert_eq!(Preprocessor::format_file_size(1536), "1.5 KB");
-        assert_eq!(Preprocessor::format_file_size(1048576), "1.0 MB");
-        assert_eq!(Preprocessor::format_file_size(1572864), "1.5 MB");
+        assert_eq!(Preprocessor::format_file_size(1_024), "1.0 KB");
+        assert_eq!(Preprocessor::format_file_size(1_536), "1.5 KB");
+        assert_eq!(Preprocessor::format_file_size(1_048_576), "1.0 MB");
+        assert_eq!(Preprocessor::format_file_size(1_572_864), "1.5 MB");
     }
 
     #[test]
@@ -363,7 +431,7 @@ mod tests {
     #[test]
     fn test_format_file_size_large() {
         // 1 GB
-        assert_eq!(Preprocessor::format_file_size(1073741824), "1024.0 MB");
+        assert_eq!(Preprocessor::format_file_size(1_073_741_824), "1024.0 MB");
     }
 
     #[test]

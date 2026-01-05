@@ -86,7 +86,7 @@ fn escape_angle_brackets(text: &str) -> String {
 
 /// Cleans HTML content by escaping naked angle brackets while preserving code blocks and valid HTML tags.
 ///
-/// This function uses `RE_CODE_BLOCK` (a compile-time validated regex via `lazy_regex!`) 
+/// This function uses `RE_CODE_BLOCK` (a compile-time validated regex via `lazy_regex!`)
 /// to identify and protect code blocks from escaping.
 ///
 /// # Examples
@@ -272,7 +272,7 @@ pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
 }
 
 /// Safely truncates a string to a maximum character length (not bytes).
-/// 
+///
 /// This is UTF-8 safe and will not panic on multi-byte characters.
 ///
 /// # Examples
@@ -305,10 +305,11 @@ mod tests {
 
     #[test]
     fn test_clean_html_preserves_code_blocks() {
-        // We use `< 3` instead of `<tag>` to ensure it's treated as a naked bracket, 
+        // We use `< 3` instead of `<tag>` to ensure it's treated as a naked bracket,
         // not a potential HTML tag (which clean_html preserves).
         let input = "Start\n```rust\nfn main() {\n    println!(\"<hello>\");\n}\n```\nEnd < 3";
-        let expected = "Start\n```rust\nfn main() {\n    println!(\"<hello>\");\n}\n```\nEnd &lt; 3";
+        let expected =
+            "Start\n```rust\nfn main() {\n    println!(\"<hello>\");\n}\n```\nEnd &lt; 3";
         assert_eq!(clean_html(input), expected);
     }
 
@@ -323,7 +324,8 @@ mod tests {
     fn test_format_text_markdown() {
         // Note: Bullets must be at start of line
         let input = "* Bullet\nAnd **bold** text\nAnd *italic*\nAnd `inline code`";
-        let expected = "• Bullet\nAnd <b>bold</b> text\nAnd <i>italic</i>\nAnd <code>inline code</code>";
+        let expected =
+            "• Bullet\nAnd <b>bold</b> text\nAnd <i>italic</i>\nAnd <code>inline code</code>";
         assert_eq!(format_text(input), expected);
     }
 
@@ -353,7 +355,7 @@ mod tests {
     fn test_split_long_message_with_code_block() {
         let input = "Start\n```\nLine 1\nLine 2\n```\nEnd";
         let parts = split_long_message(input, 15);
-        
+
         assert!(parts.len() > 1);
         assert!(parts[0].ends_with("```"));
         assert!(parts[1].starts_with("```"));
