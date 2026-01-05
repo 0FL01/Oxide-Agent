@@ -110,7 +110,8 @@ jobs:
 
       - name: Create source archive
         run: |
-          tar -czf app-source.tar.gz --exclude='app-source.tar.gz' --exclude='.github' --exclude='tests' --exclude='backlog' --exclude='.git' .
+          tar -czf /tmp/app-source.tar.gz --exclude='.github' --exclude='tests' --exclude='backlog' --exclude='.git' .
+          mv /tmp/app-source.tar.gz ./app-source.tar.gz
           echo "Source archive created."
 
       - name: Copy source code to server
