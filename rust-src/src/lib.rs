@@ -16,4 +16,4 @@ pub mod llm;
 pub mod sandbox;
 /// Storage layer (R2/S3)
 pub mod storage;
-mod utils;
+pub mod utils;

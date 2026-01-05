@@ -40,7 +40,7 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 
 ---
 
-## Phase 3: Bot Handlers Fixes 
+## Phase 3: Bot Handlers Fixes ✅
 
 **Goal**: Fix 3 lints in `handlers.rs` and `agent_handlers.rs`.
 
@@ -49,10 +49,10 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 - 📄 `src/bot/agent_handlers.rs`
 
 **Steps**:
-1. [ ] **`agent_handlers.rs` line 348**: Replace `doc.mime_type.as_ref().map(|m| m.to_string())` with `doc.mime_type.as_ref().map(ToString::to_string)`.
-2. [ ] **`handlers.rs` lines 595-608**: Refactor `match state` → `if let State::AgentMode = state { ... } else { ... }`.
-3. [ ] **`handlers.rs` line 597**: Wrap the `handle_agent_message` future in `Box::pin(...)` to fix `large_futures`.
-4. [ ] Run `cargo-check`.
+1. [x] **`agent_handlers.rs` line 348**: Replace `doc.mime_type.as_ref().map(|m| m.to_string())` with `doc.mime_type.as_ref().map(ToString::to_string)`.
+2. [x] **`handlers.rs` lines 595-608**: Refactor `match state` → `if let State::AgentMode = state { ... } else { ... }`.
+3. [x] **`handlers.rs` line 597**: Wrap the `handle_agent_message` future in `Box::pin(...)` to fix `large_futures`.
+4. [x] Run `cargo-check`.
 
 ---
 

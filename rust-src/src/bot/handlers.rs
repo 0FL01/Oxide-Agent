@@ -86,6 +86,14 @@ pub enum Command {
 }
 
 /// Create the main menu keyboard
+///
+/// # Examples
+///
+/// ```
+/// use another_chat_rs::bot::handlers::get_main_keyboard;
+/// let keyboard = get_main_keyboard();
+/// assert!(!keyboard.keyboard.is_empty());
+/// ```
 #[must_use]
 pub fn get_main_keyboard() -> KeyboardMarkup {
     let keyboard = vec![
@@ -103,6 +111,14 @@ pub fn get_main_keyboard() -> KeyboardMarkup {
 }
 
 /// Create the extra functions keyboard
+///
+/// # Examples
+///
+/// ```
+/// use another_chat_rs::bot::handlers::get_extra_functions_keyboard;
+/// let keyboard = get_extra_functions_keyboard();
+/// assert!(!keyboard.keyboard.is_empty());
+/// ```
 #[must_use]
 pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
     let keyboard = vec![vec![
@@ -113,6 +129,14 @@ pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
 }
 
 /// Create the model selection keyboard
+///
+/// # Examples
+///
+/// ```
+/// use another_chat_rs::bot::handlers::get_model_keyboard;
+/// let keyboard = get_model_keyboard();
+/// assert!(!keyboard.keyboard.is_empty());
+/// ```
 #[must_use]
 pub fn get_model_keyboard() -> KeyboardMarkup {
     let mut keyboard = Vec::new();
@@ -592,18 +616,18 @@ pub async fn handle_document(
 ) -> Result<()> {
     let state = dialogue.get().await?.unwrap_or(State::Start);
 
-    match state {
-        State::AgentMode => {
-            super::agent_handlers::handle_agent_message(bot, msg, storage, llm, dialogue).await
-        }
-        _ => {
-            bot.send_message(
-                msg.chat.id,
-                "📁 Загрузка файлов доступна только в режиме Агента.\n\n\
-                 Используйте /agent для активации.",
-            )
-            .await?;
-            Ok(())
-        }
+    if let State::AgentMode = state {
+        Box::pin(super::agent_handlers::handle_agent_message(
+            bot, msg, storage, llm, dialogue,
+        ))
+        .await
+    } else {
+        bot.send_message(
+            msg.chat.id,
+            "📁 Загрузка файлов доступна только в режиме Агента.\n\n\
+             Используйте /agent для активации.",
+        )
+        .await?;
+        Ok(())
     }
 }

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 3 - Bot Handlers Fixes:
+  - ✅ Рефакторинг closure `.map(|m| m.to_string())` → `.map(ToString::to_string)` в `agent_handlers.rs`.
+  - ✅ Замена `match state` → `if let State::AgentMode` в `handle_document`.
+  - ✅ Использование `Box::pin(...)` для предотвращения `large_futures` в асинхронных хендлерах.
+  - ✅ Пройдены все тесты (49/49).
+
 - Phase 2 - Preprocessor Fixes:
   - ✅ Исправлены 10 lints в `src/agent/preprocessor.rs`.
   - ✅ Inline переменных в format! (safe_name, mime, bytes, msg).

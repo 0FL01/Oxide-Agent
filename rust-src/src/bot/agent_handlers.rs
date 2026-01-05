@@ -32,6 +32,14 @@ static AGENT_SESSIONS: LazyLock<RwLock<HashMap<i64, AgentExecutor>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Get the agent mode keyboard
+///
+/// # Examples
+///
+/// ```
+/// use another_chat_rs::bot::agent_handlers::get_agent_keyboard;
+/// let keyboard = get_agent_keyboard();
+/// assert!(!keyboard.keyboard.is_empty());
+/// ```
 #[must_use]
 pub fn get_agent_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![
@@ -345,7 +353,7 @@ async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
         return Ok(AgentInput::Document {
             bytes: buffer,
             file_name: doc.file_name.clone().unwrap_or_else(|| "file".to_string()),
-            mime_type: doc.mime_type.as_ref().map(|m| m.to_string()),
+            mime_type: doc.mime_type.as_ref().map(ToString::to_string),
             caption: msg.caption().map(String::from),
         });
     }
