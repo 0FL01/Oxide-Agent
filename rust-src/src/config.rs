@@ -24,11 +24,11 @@ pub struct Settings {
     pub groq_api_key: Option<String>,
     /// Mistral API key
     pub mistral_api_key: Option<String>,
-    /// ZeroAI API key
+    /// `ZeroAI` API key
     pub zai_api_key: Option<String>,
     /// Gemini API key
     pub gemini_api_key: Option<String>,
-    /// OpenRouter API key
+    /// `OpenRouter` API key
     pub openrouter_api_key: Option<String>,
     /// Tavily API key
     pub tavily_api_key: Option<String>,
@@ -42,10 +42,10 @@ pub struct Settings {
     /// R2 Storage bucket name
     pub r2_bucket_name: Option<String>,
 
-    /// Site URL for OpenRouter identification
+    /// Site URL for `OpenRouter` identification
     #[serde(default = "default_openrouter_site_url")]
     pub openrouter_site_url: String,
-    /// Site name for OpenRouter identification
+    /// Site name for `OpenRouter` identification
     #[serde(default = "default_openrouter_site_name")]
     pub openrouter_site_name: String,
 
@@ -63,6 +63,14 @@ fn default_openrouter_site_name() -> String {
 
 impl Settings {
     /// Create new settings by loading from environment and files
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use another_chat_rs::config::Settings;
+    ///
+    /// let settings = Settings::new().expect("Failed to load configuration");
+    /// ```
     ///
     /// # Errors
     ///

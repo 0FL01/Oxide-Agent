@@ -56,7 +56,7 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 
 ---
 
-## Phase 4: Config Docs Fixes 
+## Phase 4: Config Docs Fixes ✅
 
 **Goal**: Fix 4 `doc_markdown` lints in `config.rs`.
 
@@ -64,11 +64,11 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 - 📄 `src/config.rs`
 
 **Steps**:
-1. [ ] **Line 27**: `/// ZeroAI API key` → `/// \`ZeroAI\` API key`.
-2. [ ] **Line 31**: `/// OpenRouter API key` → `/// \`OpenRouter\` API key`.
-3. [ ] **Line 45**: `/// Site URL for OpenRouter identification` → `/// Site URL for \`OpenRouter\` identification`.
-4. [ ] **Line 48**: `/// Site name for OpenRouter identification` → `/// Site name for \`OpenRouter\` identification`.
-5. [ ] Run `cargo-check`.
+1. [x] **Line 27**: `/// ZeroAI API key` → `/// \`ZeroAI\` API key`.
+2. [x] **Line 31**: `/// OpenRouter API key` → `/// \`OpenRouter\` API key`.
+3. [x] **Line 45**: `/// Site URL for OpenRouter identification` → `/// Site URL for \`OpenRouter\` identification`.
+4. [x] **Line 48**: `/// Site name for OpenRouter identification` → `/// Site name for \`OpenRouter\` identification`.
+5. [x] Run `cargo-check`.
 
 ---
 

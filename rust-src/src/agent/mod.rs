@@ -6,13 +6,21 @@
 //! - Report progress via Telegram message updates
 //! - Manage conversation memory with auto-compaction
 
+/// Executor for iterative task processing
 pub mod executor;
+/// Hook system for intercepting agent events
 pub mod hooks;
+/// Memory management with auto-compaction
 pub mod memory;
+/// Preprocessor for different input types (voice, photo, etc)
 pub mod preprocessor;
+/// Tool provider trait
 pub mod provider;
+/// Built-in tool providers (Sandbox, Tavily, Todos)
 pub mod providers;
+/// Registry for managing available tools
 pub mod registry;
+/// Agent session management
 pub mod session;
 
 /// Progress tracking and Telegram status updates

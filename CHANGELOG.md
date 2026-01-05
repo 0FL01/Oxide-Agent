@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 4 - Config Docs Fixes:
+  - ✅ Исправлены 4 `doc_markdown` lints в `src/config.rs`.
+  - ✅ Добавлены backticks для `ZeroAI` и `OpenRouter` в документационных комментариях.
+  - ✅ Пройдены все тесты (51/51).
+
 - Phase 3 - Bot Handlers Fixes:
   - ✅ Рефакторинг closure `.map(|m| m.to_string())` → `.map(ToString::to_string)` в `agent_handlers.rs`.
   - ✅ Замена `match state` → `if let State::AgentMode` в `handle_document`.
