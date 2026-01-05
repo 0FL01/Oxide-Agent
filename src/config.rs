@@ -282,10 +282,10 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         },
     ),
     (
-        "ZAI GLM-4.6-Flash",
+        "ZAI GLM-4.7",
         ModelInfo {
-            id: "GLM-4.6V-Flash",
-            max_tokens: 4095,
+            id: "zai-coding-plan/glm-4.7",
+            max_tokens: 8192,
             provider: "zai",
         },
     ),

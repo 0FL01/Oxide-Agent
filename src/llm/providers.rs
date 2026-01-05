@@ -327,18 +327,17 @@ impl LlmProvider for MistralProvider {
 
 /// LLM provider implementation for Zai (`ZeroAI`)
 pub struct ZaiProvider {
-    client: Client<OpenAIConfig>,
+    http_client: HttpClient,
+    api_key: String,
 }
 
 impl ZaiProvider {
     /// Create a new Zai provider instance
     #[must_use]
     pub fn new(api_key: String) -> Self {
-        let config = OpenAIConfig::new()
-            .with_api_key(api_key)
-            .with_api_base("https://api.z.ai/api/paas/v4");
         Self {
-            client: Client::with_config(config),
+            http_client: HttpClient::new(),
+            api_key,
         }
     }
 }
@@ -357,16 +356,55 @@ impl LlmProvider for ZaiProvider {
             "ZAI: Starting chat completion request (model: {model_id}, max_tokens: {max_tokens}, history_size: {})",
             history.len()
         );
-        openai_compat::chat_completion(
-            &self.client,
-            system_prompt,
-            history,
-            user_message,
-            model_id,
-            max_tokens,
-            0.95,
-        )
-        .await
+
+        let url = "https://api.z.ai/api/paas/v4/chat/completions";
+
+        let mut messages = vec![json!({"role": "system", "content": system_prompt})];
+        for msg in history {
+            messages.push(json!({"role": msg.role, "content": msg.content}));
+        }
+        messages.push(json!({"role": "user", "content": user_message}));
+
+        let body = json!({
+            "model": model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.95
+        });
+
+        let response = self
+            .http_client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://opencode.ai/")
+            .header("X-Title", "opencode")
+            .header(
+                "User-Agent",
+                "Opencode/0.1.0 (compatible; ai-sdk/openai-compatible)",
+            )
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::ApiError(format!(
+                "ZAI API error: {status} - {error_text}"
+            )));
+        }
+
+        let res_json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| LlmError::JsonError(e.to_string()))?;
+
+        res_json["choices"][0]["message"]["content"]
+            .as_str()
+            .map(ToString::to_string)
+            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }
 
     async fn transcribe_audio(
