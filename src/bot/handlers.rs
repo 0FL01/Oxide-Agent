@@ -152,11 +152,27 @@ pub fn get_model_keyboard() -> KeyboardMarkup {
 /// # Errors
 ///
 /// Returns an error if the welcome message cannot be sent.
-pub async fn start(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
+pub async fn start(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<R2Storage>,
+    dialogue: Dialogue<State, InMemStorage<State>>,
+) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
     info!("User {user_id} ({user_name}) initiated /start command.");
+
+    // Reset dialogue state to Start (exit agent mode if active)
+    dialogue
+        .update(State::Start)
+        .await
+        .map_err(|e| anyhow!(e.to_string()))?;
+
+    // Reset persisted state in storage to chat_mode
+    let _ = storage
+        .update_user_state(user_id, "chat_mode".to_string())
+        .await;
 
     let saved_model = storage.get_user_model(user_id).await.unwrap_or(None);
     let model = saved_model.unwrap_or_else(|| DEFAULT_MODEL.to_string());

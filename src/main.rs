@@ -268,9 +268,10 @@ async fn handle_command(
     msg: Message,
     cmd: Command,
     storage: Arc<storage::R2Storage>,
+    dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<(), teloxide::RequestError> {
     let res = match cmd {
-        Command::Start => bot::handlers::start(bot, msg, storage).await,
+        Command::Start => bot::handlers::start(bot, msg, storage, dialogue).await,
         Command::Clear => bot::handlers::clear(bot, msg, storage).await,
         Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
     };
