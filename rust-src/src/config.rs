@@ -123,6 +123,7 @@ impl Settings {
         Ok(settings)
     }
 
+    /// Returns a set of Telegram IDs that are allowed to use the bot
     #[must_use]
     pub fn allowed_users(&self) -> HashSet<i64> {
         self.allowed_users_str
@@ -136,6 +137,7 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    /// Returns a set of Telegram IDs that are allowed to use Agent Mode
     #[must_use]
     pub fn agent_allowed_users(&self) -> HashSet<i64> {
         self.agent_allowed_users_str
@@ -249,13 +251,18 @@ mod tests {
     }
 }
 
+/// Information about a supported LLM model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
+    /// Internal model identifier
     pub id: &'static str,
+    /// Maximum allowed output tokens
     pub max_tokens: u32,
+    /// Provider name
     pub provider: &'static str,
 }
 
+/// List of all supported models and their configurations
 pub const MODELS: &[(&str, ModelInfo)] = &[
     (
         "OR Gemini 3 Flash",

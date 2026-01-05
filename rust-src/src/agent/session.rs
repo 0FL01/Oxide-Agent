@@ -19,7 +19,12 @@ pub enum AgentStatus {
     #[default]
     Idle,
     /// Agent is processing a task
-    Processing { step: String, progress_percent: u8 },
+    Processing {
+        /// Current step description
+        step: String,
+        /// Estimated progress percentage (0-100)
+        progress_percent: u8,
+    },
     /// Agent has completed the task
     Completed,
     /// Agent timed out (30 minute limit)

@@ -409,16 +409,19 @@ impl R2Storage {
     }
 }
 
+/// Returns the R2 key for a user's configuration file
 #[must_use]
 pub fn user_config_key(user_id: i64) -> String {
     format!("users/{user_id}/config.json")
 }
 
+/// Returns the R2 key for a user's chat history file
 #[must_use]
 pub fn user_history_key(user_id: i64) -> String {
     format!("users/{user_id}/history.json")
 }
 
+/// Returns the R2 key for a user's agent memory file
 #[must_use]
 pub fn user_agent_memory_key(user_id: i64) -> String {
     format!("users/{user_id}/agent_memory.json")

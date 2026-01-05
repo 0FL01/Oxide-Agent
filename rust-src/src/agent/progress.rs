@@ -1,24 +1,35 @@
 use super::providers::TodoList;
 use serde::{Deserialize, Serialize};
 
+/// Events that can occur during agent execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
+    /// Agent is thinking about the next step
     Thinking,
+    /// Agent is calling a tool
     ToolCall {
+        /// Tool name
         name: String,
+        /// Tool input arguments
         input: String,
     },
+    /// Agent received a tool result
     ToolResult {
+        /// Tool name
         name: String,
+        /// Tool execution output
         output: String,
     },
     /// Agent is continuing work due to incomplete todos
     Continuation {
+        /// Reason for continuation
         reason: String,
+        /// Number of continuations so far
         count: usize,
     },
     /// Todos list was updated
     TodosUpdated {
+        /// Updated list of tasks
         todos: TodoList,
     },
     /// File to send to user via Telegram
@@ -29,35 +40,53 @@ pub enum AgentEvent {
         #[serde(with = "serde_bytes")]
         content: Vec<u8>,
     },
+    /// Agent has finished the task
     Finished,
+    /// Agent encountered an error
     Error(String),
 }
 
+/// Current state of the agent's progress
 #[derive(Debug, Clone, Default)]
 pub struct ProgressState {
+    /// Index of current iteration
     pub current_iteration: usize,
+    /// Maximum allowed iterations
     pub max_iterations: usize,
+    /// List of steps executed so far
     pub steps: Vec<Step>,
+    /// Optional list of todos/tasks
     pub current_todos: Option<TodoList>,
+    /// Whether the agent has finished
     pub is_finished: bool,
+    /// Optional error message
     pub error: Option<String>,
 }
 
+/// A single step in the agent's execution process
 #[derive(Debug, Clone)]
 pub struct Step {
+    /// Human-readable description of the step
     pub description: String,
+    /// Current status of the step
     pub status: StepStatus,
 }
 
+/// Possible statuses for an execution step
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StepStatus {
+    /// Step is waiting to be executed
     Pending,
+    /// Step is currently being executed
     InProgress,
+    /// Step was completed successfully
     Completed,
+    /// Step failed
     Failed,
 }
 
 impl ProgressState {
+    /// Creates a new empty progress state
     #[must_use]
     pub fn new(max_iterations: usize) -> Self {
         Self {
@@ -66,6 +95,7 @@ impl ProgressState {
         }
     }
 
+    /// Updates the progress state based on an agent event
     pub fn update(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Thinking => {
@@ -157,6 +187,7 @@ impl ProgressState {
         }
     }
 
+    /// Formats the progress state into a HTML message for Telegram
     #[must_use]
     pub fn format_telegram(&self) -> String {
         let mut lines = Vec::new();

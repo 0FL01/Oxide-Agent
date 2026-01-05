@@ -15,12 +15,13 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 - 📄 `src/utils.rs` (lines 4-17)
 
 **Steps**:
-1. [ ] Add `#[allow(clippy::expect_used)]` above each `static` Regex declaration. This is safe because these are compile-time constant regex patterns verified by tests.
-2. [ ] Run `cargo-check` to verify compilation.
+1. [x] Add `#[allow(clippy::expect_used)]` above each `static` Regex declaration. This is safe because these are compile-time constant regex patterns verified by tests.
+   > **Реализация**: Использован `lazy_regex!` макрос для compile-time проверки вместо `#[allow(...)]`.
+2. [x] Run `cargo-check` to verify compilation.
 
 ---
 
-## Phase 2: Preprocessor Fixes ✅
+## Phase 2: Preprocessor Fixes 
 
 **Goal**: Fix 10 lints in `preprocessor.rs`: `uninlined_format_args`, `cast_precision_loss`, `branches_sharing_code`.
 
@@ -39,7 +40,7 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 
 ---
 
-## Phase 3: Bot Handlers Fixes ✅
+## Phase 3: Bot Handlers Fixes 
 
 **Goal**: Fix 3 lints in `handlers.rs` and `agent_handlers.rs`.
 
@@ -55,7 +56,7 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 
 ---
 
-## Phase 4: Config Docs Fixes ✅
+## Phase 4: Config Docs Fixes 
 
 **Goal**: Fix 4 `doc_markdown` lints in `config.rs`.
 
@@ -71,7 +72,7 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 
 ---
 
-## Phase 5: Sandbox Manager Fixes ✅
+## Phase 5: Sandbox Manager Fixes 
 
 **Goal**: Fix 4 lints in `sandbox/manager.rs`: `map_unwrap_or`, `uninlined_format_args`.
 
@@ -87,7 +88,7 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 
 ---
 
-## Phase 6: Final Verification ✅
+## Phase 6: Final Verification 
 
 **Goal**: Ensure all clippy errors are resolved.
 

@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Another Chat with LLM - Rust implementation
 //!
 //! A Telegram bot that supports multiple LLM providers, multimodal input,

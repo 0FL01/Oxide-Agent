@@ -1,20 +1,38 @@
-use regex::Regex;
-use std::sync::LazyLock;
+//! Utility functions for text processing, HTML cleaning, and message formatting.
+//!
+//! This module uses the `lazy-regex` crate for efficient and safe regular expression handling.
+//! Key benefits include:
+//! - **Compile-time validation**: Regex patterns are checked during compilation, preventing runtime panics due to syntax errors.
+//! - **Lazy initialization**: Regex objects are initialized only when first used, improving startup performance.
+//! - **Static integration**: Patterns are stored in static variables using the `lazy_regex!` macro.
 
-static RE_CODE_BLOCK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"```[\s\S]*?```").expect("valid RE_CODE_BLOCK"));
-static RE_CODE_BLOCK_FENCE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"```(\w+)?\n([\s\S]*?)```").expect("valid RE_CODE_BLOCK_FENCE"));
-static RE_BULLET: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^\* ").expect("valid RE_BULLET"));
-static RE_BOLD: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\*\*(.*?)\*\*").expect("valid RE_BOLD"));
-static RE_ITALIC: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\*(.*?)\*").expect("valid RE_ITALIC"));
-static RE_INLINE_CODE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"`(.*?)`").expect("valid RE_INLINE_CODE"));
-static RE_MULTI_NEWLINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\n{3,}").expect("valid RE_MULTI_NEWLINE"));
+// Allow non_std_lazy_statics because we use lazy_regex! macro which uses once_cell internally
+// This is intentional and safe - lazy_regex! validates regex at compile time
+#![allow(clippy::non_std_lazy_statics)]
+
+use lazy_regex::lazy_regex;
+
+/// Match code blocks: ```...```
+static RE_CODE_BLOCK: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"```[\s\S]*?```");
+
+/// Match code blocks with optional language: ```language\ncode```
+static RE_CODE_BLOCK_FENCE: lazy_regex::Lazy<regex::Regex> =
+    lazy_regex!(r"```(\w+)?\n([\s\S]*?)```");
+
+/// Match bullet points at start of line: *
+static RE_BULLET: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"(?m)^\* ");
+
+/// Match bold text: **text**
+static RE_BOLD: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"\*\*(.*?)\*\*");
+
+/// Match italic text: *text*
+static RE_ITALIC: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"\*(.*?)\*");
+
+/// Match inline code: `code`
+static RE_INLINE_CODE: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"`(.*?)`");
+
+/// Match 3+ consecutive newlines
+static RE_MULTI_NEWLINE: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"\n{3,}");
 
 /// Replace naked angle brackets with HTML entities, preserving HTML tags.
 /// Rust's regex doesn't support lookbehind/lookahead, so we iterate manually.
@@ -66,6 +84,19 @@ fn escape_angle_brackets(text: &str) -> String {
     result
 }
 
+/// Cleans HTML content by escaping naked angle brackets while preserving code blocks and valid HTML tags.
+///
+/// This function uses `RE_CODE_BLOCK` (a compile-time validated regex via `lazy_regex!`) 
+/// to identify and protect code blocks from escaping.
+///
+/// # Examples
+///
+/// ```
+/// use crate::utils::clean_html;
+/// let input = "Check this: 1 < 2 but <b>bold</b> works";
+/// let cleaned = clean_html(input);
+/// assert_eq!(cleaned, "Check this: 1 &lt; 2 but <b>bold</b> works");
+/// ```
 pub fn clean_html(text: &str) -> String {
     let mut code_blocks = Vec::new();
     let mut text_owned = text.to_string();
@@ -95,6 +126,27 @@ pub fn clean_html(text: &str) -> String {
     text_owned
 }
 
+/// Formats markdown-like text into Telegram-compatible HTML.
+///
+/// Supported formatting:
+/// - Code blocks: ` ```language\ncode``` ` -> `<pre><code class="language">code</code></pre>`
+/// - Bullets: `* ` at the start of a line -> `• `
+/// - Bold: `**text**` -> `<b>text</b>`
+/// - Italic: `*text*` -> `<i>text</i>`
+/// - Inline code: `` `code` `` -> `<code>code</code>`
+/// - Multiple newlines (3+) are collapsed into two.
+///
+/// All regex patterns used here are compile-time validated using the `lazy_regex!` macro
+/// to ensure safety and performance.
+///
+/// # Examples
+///
+/// ```
+/// use crate::utils::format_text;
+/// let input = "**Bold** and *italic* with `code`";
+/// let formatted = format_text(input);
+/// assert_eq!(formatted, "<b>Bold</b> and <i>italic</i> with <code>code</code>");
+/// ```
 pub fn format_text(text: &str) -> String {
     let mut text_owned = clean_html(text);
 
@@ -134,6 +186,28 @@ pub fn format_text(text: &str) -> String {
     text_owned.trim().to_string()
 }
 
+/// Splits a long message into multiple parts that fit within Telegram's message limit.
+///
+/// This function respects code blocks (```) and tries to close/reopen them
+/// across message boundaries to maintain proper formatting in Telegram.
+///
+/// # Arguments
+///
+/// * `message` - The string to split.
+/// * `max_length` - Maximum allowed length for each part.
+///
+/// # Returns
+///
+/// A vector of strings, each within the specified length limit.
+///
+/// # Examples
+///
+/// ```
+/// use crate::utils::split_long_message;
+/// let long_msg = "A very long message...".repeat(100);
+/// let parts = split_long_message(&long_msg, 4096);
+/// assert!(parts.len() > 1);
+/// ```
 pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
     if message.is_empty() {
         return Vec::new();
@@ -198,7 +272,16 @@ pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
 }
 
 /// Safely truncates a string to a maximum character length (not bytes).
+/// 
 /// This is UTF-8 safe and will not panic on multi-byte characters.
+///
+/// # Examples
+///
+/// ```
+/// use crate::utils::truncate_str;
+/// let s = "Привет, мир!";
+/// assert_eq!(truncate_str(s, 6), "Привет");
+/// ```
 pub fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
     let s = s.as_ref();
     if s.chars().count() <= max_chars {
@@ -218,5 +301,61 @@ mod tests {
         let s = "Привет, мир!";
         assert_eq!(truncate_str(s, 6), "Привет");
         assert_eq!(truncate_str(s, 50), "Привет, мир!");
+    }
+
+    #[test]
+    fn test_clean_html_preserves_code_blocks() {
+        // We use `< 3` instead of `<tag>` to ensure it's treated as a naked bracket, 
+        // not a potential HTML tag (which clean_html preserves).
+        let input = "Start\n```rust\nfn main() {\n    println!(\"<hello>\");\n}\n```\nEnd < 3";
+        let expected = "Start\n```rust\nfn main() {\n    println!(\"<hello>\");\n}\n```\nEnd &lt; 3";
+        assert_eq!(clean_html(input), expected);
+    }
+
+    #[test]
+    fn test_clean_html_escapes_naked_brackets() {
+        let input = "1 < 2 and 3 > 1 but <b>bold</b> and <a href=''>link</a>";
+        let expected = "1 &lt; 2 and 3 &gt; 1 but <b>bold</b> and <a href=''>link</a>";
+        assert_eq!(clean_html(input), expected);
+    }
+
+    #[test]
+    fn test_format_text_markdown() {
+        // Note: Bullets must be at start of line
+        let input = "* Bullet\nAnd **bold** text\nAnd *italic*\nAnd `inline code`";
+        let expected = "• Bullet\nAnd <b>bold</b> text\nAnd <i>italic</i>\nAnd <code>inline code</code>";
+        assert_eq!(format_text(input), expected);
+    }
+
+    #[test]
+    fn test_format_text_code_blocks() {
+        let input = "Code:\n```rust\nlet x = 1;\n```";
+        let expected = "Code:\n<pre><code class=\"rust\">let x = 1;</code></pre>";
+        assert_eq!(format_text(input), expected);
+    }
+
+    #[test]
+    fn test_format_text_multi_newline() {
+        let input = "Line 1\n\n\n\nLine 2";
+        let expected = "Line 1\n\nLine 2";
+        assert_eq!(format_text(input), expected);
+    }
+
+    #[test]
+    fn test_split_long_message_simple() {
+        let input = "Line 1\nLine 2\nLine 3";
+        // Max length 13. "Line 1\n" is 7. "Line 2\n" is 7. 7+7=14 > 13.
+        let parts = split_long_message(input, 13);
+        assert_eq!(parts, vec!["Line 1", "Line 2", "Line 3"]);
+    }
+
+    #[test]
+    fn test_split_long_message_with_code_block() {
+        let input = "Start\n```\nLine 1\nLine 2\n```\nEnd";
+        let parts = split_long_message(input, 15);
+        
+        assert!(parts.len() > 1);
+        assert!(parts[0].ends_with("```"));
+        assert!(parts[1].starts_with("```"));
     }
 }

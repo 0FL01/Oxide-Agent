@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 1 - Utils: `expect_used` Lints fixes
+  - Исправлены `expect_used` lints в `src/utils.rs` для повышения надежности.
+  - Добавлена зависимость `lazy-regex` для compile-time проверки регулярных выражений.
+  - Добавлено 7 новых unit-тестов в `src/utils.rs` (общее количество тестов: 38/38).
 - File upload support: users can now send documents to the agent in Telegram
 - Files are automatically saved to `/workspace/uploads/` in the sandbox
 - 1 GB total upload limit per session

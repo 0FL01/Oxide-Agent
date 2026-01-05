@@ -15,6 +15,7 @@ pub mod providers;
 pub mod registry;
 pub mod session;
 
+/// Progress tracking and Telegram status updates
 pub mod progress;
 
 pub use executor::AgentExecutor;

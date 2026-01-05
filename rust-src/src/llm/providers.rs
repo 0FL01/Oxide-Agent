@@ -8,11 +8,13 @@ use reqwest::Client as HttpClient;
 use serde_json::json;
 use tracing::debug;
 
+/// LLM provider implementation for Groq
 pub struct GroqProvider {
     client: Client<OpenAIConfig>,
 }
 
 impl GroqProvider {
+    /// Create a new Groq provider instance
     #[must_use]
     pub fn new(api_key: String) -> Self {
         let config = OpenAIConfig::new()
@@ -97,6 +99,7 @@ struct LenientResponse {
     choices: Vec<LenientChoice>,
 }
 
+/// LLM provider implementation for Mistral AI
 pub struct MistralProvider {
     client: Client<OpenAIConfig>,
     http_client: HttpClient,
@@ -104,6 +107,7 @@ pub struct MistralProvider {
 }
 
 impl MistralProvider {
+    /// Create a new Mistral provider instance
     #[must_use]
     pub fn new(api_key: String) -> Self {
         let config = OpenAIConfig::new()
@@ -321,11 +325,13 @@ impl LlmProvider for MistralProvider {
     }
 }
 
+/// LLM provider implementation for Zai (ZeroAI)
 pub struct ZaiProvider {
     client: Client<OpenAIConfig>,
 }
 
 impl ZaiProvider {
+    /// Create a new Zai provider instance
     #[must_use]
     pub fn new(api_key: String) -> Self {
         let config = OpenAIConfig::new()
@@ -385,12 +391,14 @@ impl LlmProvider for ZaiProvider {
     }
 }
 
+/// LLM provider implementation for Google Gemini
 pub struct GeminiProvider {
     http_client: HttpClient,
     api_key: String,
 }
 
 impl GeminiProvider {
+    /// Create a new Gemini provider instance
     #[must_use]
     pub fn new(api_key: String) -> Self {
         Self {
@@ -534,6 +542,7 @@ impl LlmProvider for GeminiProvider {
     }
 }
 
+/// LLM provider implementation for OpenRouter
 pub struct OpenRouterProvider {
     http_client: HttpClient,
     api_key: String,
@@ -542,6 +551,7 @@ pub struct OpenRouterProvider {
 }
 
 impl OpenRouterProvider {
+    /// Create a new OpenRouter provider instance
     #[must_use]
     pub fn new(api_key: String, site_url: String, site_name: String) -> Self {
         Self {
