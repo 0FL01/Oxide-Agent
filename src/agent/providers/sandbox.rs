@@ -13,7 +13,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Provider for Docker sandbox tools
 pub struct SandboxProvider {
@@ -235,13 +235,24 @@ impl ToolProvider for SandboxProvider {
                     Ok(content) => {
                         // Send file via progress channel
                         if let Some(ref tx) = self.progress_tx {
-                            let _ = tx
+                            match tx
                                 .send(AgentEvent::FileToSend {
                                     file_name: file_name.clone(),
                                     content,
                                 })
-                                .await;
-                            Ok(format!("✅ Файл '{file_name}' отправлен пользователю"))
+                                .await
+                            {
+                                Ok(()) => {
+                                    debug!(file_name = %file_name, "FileToSend event sent successfully");
+                                    Ok(format!("✅ Файл '{file_name}' отправлен пользователю"))
+                                }
+                                Err(e) => {
+                                    warn!(file_name = %file_name, error = %e, "Failed to send FileToSend event");
+                                    Ok(format!(
+                                        "⚠️ Файл '{file_name}' прочитан, но не удалось отправить событие: {e}"
+                                    ))
+                                }
+                            }
                         } else {
                             Ok(format!(
                                 "⚠️ Файл '{file_name}' прочитан, но канал отправки недоступен"

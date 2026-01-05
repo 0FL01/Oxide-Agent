@@ -202,7 +202,12 @@ impl ProgressState {
                     todos.items.len()
                 ));
                 for (i, item) in todos.items.iter().enumerate() {
-                    lines.push(format!("{}. {} {}", i + 1, item.status, item.description));
+                    lines.push(format!(
+                        "{}. {} {}",
+                        i + 1,
+                        item.status,
+                        html_escape::encode_text(&item.description)
+                    ));
                 }
                 lines.push(String::new()); // Empty line separator
             }
@@ -215,13 +220,19 @@ impl ProgressState {
                 StepStatus::Completed => "✅",
                 StepStatus::Failed => "❌",
             };
-            lines.push(format!("{icon} {}", step.description));
+            lines.push(format!(
+                "{icon} {}",
+                html_escape::encode_text(&step.description)
+            ));
         }
 
         if self.is_finished {
             lines.push("\n✅ <b>Задача завершена</b>".to_string());
         } else if let Some(ref e) = self.error {
-            lines.push(format!("\n❌ <b>Ошибка:</b> {e}"));
+            lines.push(format!(
+                "\n❌ <b>Ошибка:</b> {}",
+                html_escape::encode_text(e)
+            ));
         } else {
             lines.push("\n<i>Агент подбирает инструменты...</i>".to_string());
         }
