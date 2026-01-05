@@ -284,8 +284,8 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
     (
         "ZAI GLM-4.7",
         ModelInfo {
-            id: "zai-coding-plan/glm-4.7",
-            max_tokens: 8192,
+            id: "glm-4.7",
+            max_tokens: 128000,
             provider: "zai",
         },
     ),
