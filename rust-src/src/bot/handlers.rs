@@ -70,17 +70,22 @@ async fn check_state_and_redirect(
     Ok(false)
 }
 
+/// Supported commands for the bot
 #[derive(BotCommands, Clone)]
 #[command(rename_rule = "lowercase", description = "Поддерживаемые команды:")]
 pub enum Command {
+    /// Start the bot and show welcome message
     #[command(description = "Начать работу.")]
     Start,
+    /// Clear chat history
     #[command(description = "Очистить историю чата.")]
     Clear,
+    /// Check bot health
     #[command(description = "Проверка работоспособности.")]
     Healthcheck,
 }
 
+/// Create the main menu keyboard
 #[must_use]
 pub fn get_main_keyboard() -> KeyboardMarkup {
     let keyboard = vec![
@@ -97,6 +102,7 @@ pub fn get_main_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
+/// Create the extra functions keyboard
 #[must_use]
 pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
     let keyboard = vec![vec![
@@ -106,6 +112,7 @@ pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
+/// Create the model selection keyboard
 #[must_use]
 pub fn get_model_keyboard() -> KeyboardMarkup {
     let mut keyboard = Vec::new();
@@ -568,4 +575,35 @@ pub async fn handle_photo(
         }
     }
     Ok(())
+}
+
+/// Handle document messages
+/// Routes to agent mode if active, otherwise informs user
+///
+/// # Errors
+///
+/// Returns an error if document handling fails.
+pub async fn handle_document(
+    bot: Bot,
+    msg: Message,
+    dialogue: Dialogue<State, InMemStorage<State>>,
+    storage: Arc<R2Storage>,
+    llm: Arc<LlmClient>,
+) -> Result<()> {
+    let state = dialogue.get().await?.unwrap_or(State::Start);
+
+    match state {
+        State::AgentMode => {
+            super::agent_handlers::handle_agent_message(bot, msg, storage, llm, dialogue).await
+        }
+        _ => {
+            bot.send_message(
+                msg.chat.id,
+                "📁 Загрузка файлов доступна только в режиме Агента.\n\n\
+                 Используйте /agent для активации.",
+            )
+            .await?;
+            Ok(())
+        }
+    }
 }

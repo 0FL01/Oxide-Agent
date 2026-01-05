@@ -4,20 +4,28 @@
 //! before passing to the agent for execution.
 
 use crate::llm::LlmClient;
+use crate::sandbox::SandboxManager;
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;
 
+/// Upload limit: 1 GB per session
+const UPLOAD_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// Preprocessor for converting multimodal inputs to text
 pub struct Preprocessor {
     llm_client: Arc<LlmClient>,
+    user_id: i64,
 }
 
 impl Preprocessor {
-    /// Create a new preprocessor with the given LLM client
+    /// Create a new preprocessor with the given LLM client and user ID
     #[must_use]
-    pub const fn new(llm_client: Arc<LlmClient>) -> Self {
-        Self { llm_client }
+    pub const fn new(llm_client: Arc<LlmClient>, user_id: i64) -> Self {
+        Self {
+            llm_client,
+            user_id,
+        }
     }
 
     /// Transcribe voice audio to text using Gemini Flash
@@ -91,6 +99,133 @@ impl Preprocessor {
         Ok(description)
     }
 
+    /// Process a document uploaded by the user
+    ///
+    /// Uploads the file to the sandbox and returns a formatted description
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file upload fails or limit is exceeded.
+    async fn process_document(
+        &self,
+        bytes: Vec<u8>,
+        file_name: String,
+        mime_type: Option<String>,
+        caption: Option<String>,
+    ) -> Result<String> {
+        let safe_name = Self::sanitize_filename(&file_name);
+        let upload_path = format!("/workspace/uploads/{}", safe_name);
+
+        // Lazy-create sandbox
+        let mut manager = SandboxManager::new(self.user_id).await?;
+        if !manager.is_running() {
+            manager.create_sandbox().await?;
+        }
+
+        // Check upload limit
+        let current_size = manager.get_uploads_size().await.unwrap_or(0);
+        let new_size = current_size + bytes.len() as u64;
+
+        if new_size > UPLOAD_LIMIT_BYTES {
+            anyhow::bail!(
+                "Превышен лимит загрузки: {:.1} GB / 1 GB. Пересоздайте контейнер.",
+                new_size as f64 / 1024.0 / 1024.0 / 1024.0
+            );
+        }
+
+        manager.upload_file(&upload_path, &bytes).await?;
+
+        let size_str = Self::format_file_size(bytes.len());
+        let hint = Self::get_file_type_hint(&file_name);
+
+        let mut parts = vec![
+            "📎 **Пользователь загрузил файл:**".to_string(),
+            format!("   Путь: `{}`", upload_path),
+            format!("   Размер: {}", size_str),
+        ];
+
+        if let Some(mime) = &mime_type {
+            parts.push(format!("   Тип: {}", mime));
+        }
+
+        parts.push(String::new());
+        parts.push(hint);
+
+        if let Some(msg) = caption {
+            parts.push(String::new());
+            parts.push(format!("**Сообщение:** {}", msg));
+        } else {
+            parts.push(String::new());
+            parts.push("_Пользователь не оставил комментарий._".to_string());
+        }
+
+        Ok(parts.join("\n"))
+    }
+
+    /// Sanitize a filename by replacing dangerous characters
+    #[must_use]
+    fn sanitize_filename(name: &str) -> String {
+        // Manually extract file name handling both / and \ as separators
+        // This is necessary because Path::new uses OS-specific separators,
+        // but we might receive paths from different OSs (e.g. Windows path on Linux container)
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+
+        let name = if name.is_empty() { "file" } else { name };
+
+        name.chars()
+            .map(|c| match c {
+                '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | ' ' => '_',
+                _ => c,
+            })
+            .collect()
+    }
+
+    /// Format file size in human-readable format
+    #[must_use]
+    fn format_file_size(bytes: usize) -> String {
+        const KB: usize = 1024;
+        const MB: usize = KB * 1024;
+
+        if bytes >= MB {
+            format!("{:.1} MB", bytes as f64 / MB as f64)
+        } else if bytes >= KB {
+            format!("{:.1} KB", bytes as f64 / KB as f64)
+        } else {
+            format!("{} B", bytes)
+        }
+    }
+
+    /// Get a hint about how to handle the file based on its extension
+    #[must_use]
+    fn get_file_type_hint(file_name: &str) -> String {
+        let ext = std::path::Path::new(file_name)
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase());
+
+        match ext.as_deref() {
+            Some("py" | "rs" | "js" | "ts" | "go" | "java" | "cpp" | "c" | "h") => {
+                "💡 Исходный код. Используй `read_file` или выполни.".into()
+            }
+            Some("json" | "yaml" | "yml" | "toml" | "xml") => {
+                "💡 Структурированные данные. Читай через `read_file`.".into()
+            }
+            Some("csv") => "💡 CSV. Обработай через Python pandas.".into(),
+            Some("xlsx" | "xls") => "💡 Excel. Используй Python openpyxl/pandas.".into(),
+            Some("zip" | "tar" | "gz" | "7z" | "rar") => {
+                "💡 Архив. Распакуй: `unzip`, `tar -xf`, etc.".into()
+            }
+            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg") => {
+                "💡 Изображение. Обработай через Python PIL.".into()
+            }
+            Some("txt" | "md" | "log" | "ini" | "cfg") => {
+                "💡 Текст. Читай через `read_file`.".into()
+            }
+            Some("pdf") => "💡 PDF. Используй Python PyPDF2/pdfplumber.".into(),
+            Some("sql" | "db" | "sqlite") => "💡 База данных. Используй Python sqlite3.".into(),
+            _ => "💡 Используй подходящие инструменты.".into(),
+        }
+    }
+
     /// Preprocess any input type and return text suitable for the agent
     ///
     /// # Errors
@@ -111,6 +246,15 @@ impl Preprocessor {
                     "Пользователь отправил изображение с текстом: \"{text}\"\n\nОписание изображения:\n{description}"
                 ))
             }
+            AgentInput::Document {
+                bytes,
+                file_name,
+                mime_type,
+                caption,
+            } => {
+                self.process_document(bytes, file_name, mime_type, caption)
+                    .await
+            }
         }
     }
 }
@@ -120,12 +264,114 @@ pub enum AgentInput {
     /// Plain text message
     Text(String),
     /// Voice message to be transcribed
-    Voice { bytes: Vec<u8>, mime_type: String },
+    Voice {
+        /// Raw audio bytes
+        bytes: Vec<u8>,
+        /// MIME type of the audio
+        mime_type: String,
+    },
     /// Image to be described
     Image {
+        /// Raw image bytes
         bytes: Vec<u8>,
+        /// Optional context from the user (caption)
         context: Option<String>,
     },
     /// Image with accompanying text
-    ImageWithText { image_bytes: Vec<u8>, text: String },
+    ImageWithText {
+        /// Raw image bytes
+        image_bytes: Vec<u8>,
+        /// Accompanying text
+        text: String,
+    },
+    /// Document uploaded by user
+    Document {
+        /// Raw file bytes
+        bytes: Vec<u8>,
+        /// Original filename
+        file_name: String,
+        /// MIME type of the file
+        mime_type: Option<String>,
+        /// Optional caption from the user
+        caption: Option<String>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_filename_basic() {
+        assert_eq!(Preprocessor::sanitize_filename("file.txt"), "file.txt");
+        assert_eq!(
+            Preprocessor::sanitize_filename("my file.txt"),
+            "my_file.txt"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_filename_path_traversal() {
+        assert_eq!(
+            Preprocessor::sanitize_filename("../../../etc/passwd"),
+            "passwd"
+        );
+        assert_eq!(Preprocessor::sanitize_filename("/etc/passwd"), "passwd");
+        assert_eq!(
+            Preprocessor::sanitize_filename("..\\..\\windows\\system32"),
+            "system32"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_filename_special_chars() {
+        assert_eq!(
+            Preprocessor::sanitize_filename("file:name?.txt"),
+            "file_name_.txt"
+        );
+        assert_eq!(
+            Preprocessor::sanitize_filename("test<>|file"),
+            "test___file"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_empty_filename() {
+        // Empty name should become "file"
+        assert_eq!(Preprocessor::sanitize_filename(""), "file");
+    }
+
+    #[test]
+    fn test_sanitize_only_extension() {
+        assert_eq!(Preprocessor::sanitize_filename(".gitignore"), ".gitignore");
+    }
+
+    #[test]
+    fn test_format_file_size() {
+        assert_eq!(Preprocessor::format_file_size(500), "500 B");
+        assert_eq!(Preprocessor::format_file_size(1024), "1.0 KB");
+        assert_eq!(Preprocessor::format_file_size(1536), "1.5 KB");
+        assert_eq!(Preprocessor::format_file_size(1048576), "1.0 MB");
+        assert_eq!(Preprocessor::format_file_size(1572864), "1.5 MB");
+    }
+
+    #[test]
+    fn test_format_file_size_zero() {
+        assert_eq!(Preprocessor::format_file_size(0), "0 B");
+    }
+
+    #[test]
+    fn test_format_file_size_large() {
+        // 1 GB
+        assert_eq!(Preprocessor::format_file_size(1073741824), "1024.0 MB");
+    }
+
+    #[test]
+    fn test_get_file_type_hint() {
+        assert!(Preprocessor::get_file_type_hint("script.py").contains("код"));
+        assert!(Preprocessor::get_file_type_hint("data.csv").contains("pandas"));
+        assert!(Preprocessor::get_file_type_hint("archive.zip").contains("Архив"));
+        assert!(Preprocessor::get_file_type_hint("image.png").contains("PIL"));
+        assert!(Preprocessor::get_file_type_hint("unknown.xyz").contains("инструменты"));
+    }
 }

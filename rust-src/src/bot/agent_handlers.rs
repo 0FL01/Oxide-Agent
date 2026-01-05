@@ -147,7 +147,7 @@ pub async fn handle_agent_message(
     ensure_session_exists(user_id, chat_id.0, &llm).await;
 
     // Preprocess input
-    let preprocessor = Preprocessor::new(llm.clone());
+    let preprocessor = Preprocessor::new(llm.clone(), user_id);
     let input = extract_agent_input(&bot, &msg).await?;
     let task_text = preprocessor.preprocess_input(input).await?;
     info!(
@@ -306,6 +306,36 @@ async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
                 context: caption,
             });
         }
+    }
+
+    // Document
+    if let Some(doc) = msg.document() {
+        const MAX_FILE_SIZE: u32 = 20 * 1024 * 1024; // 20 MB
+
+        if doc.file.size > MAX_FILE_SIZE {
+            anyhow::bail!(
+                "Файл слишком большой: {:.1} MB (максимум 20 MB)",
+                f64::from(doc.file.size) / 1024.0 / 1024.0
+            );
+        }
+
+        let file = bot.get_file(doc.file.id.clone()).await?;
+        let mut buffer = Vec::new();
+        bot.download_file(&file.path, &mut buffer).await?;
+
+        info!(
+            file_name = ?doc.file_name,
+            mime_type = ?doc.mime_type,
+            size = buffer.len(),
+            "Downloaded document from Telegram"
+        );
+
+        return Ok(AgentInput::Document {
+            bytes: buffer,
+            file_name: doc.file_name.clone().unwrap_or_else(|| "file".to_string()),
+            mime_type: doc.mime_type.as_ref().map(|m| m.to_string()),
+            caption: msg.caption().map(String::from),
+        });
     }
 
     let text = msg

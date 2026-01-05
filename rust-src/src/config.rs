@@ -1,38 +1,55 @@
+//! Configuration and settings management
+//!
+//! Loads settings from environment variables and defines model constants.
+
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+/// Application settings loaded from environment variables
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Settings {
+    /// Telegram Bot API token
     pub telegram_token: String,
 
+    /// Comma-separated list of allowed user IDs for normal chat
     #[serde(rename = "allowed_users")]
     pub allowed_users_str: Option<String>,
 
+    /// Comma-separated list of allowed user IDs for agent mode
     #[serde(rename = "agent_access_ids")]
     pub agent_allowed_users_str: Option<String>,
 
-    // API Keys
+    /// Groq API key
     pub groq_api_key: Option<String>,
+    /// Mistral API key
     pub mistral_api_key: Option<String>,
+    /// ZeroAI API key
     pub zai_api_key: Option<String>,
+    /// Gemini API key
     pub gemini_api_key: Option<String>,
+    /// OpenRouter API key
     pub openrouter_api_key: Option<String>,
+    /// Tavily API key
     pub tavily_api_key: Option<String>,
 
-    // R2 Storage
+    /// R2 Storage access key ID
     pub r2_access_key_id: Option<String>,
+    /// R2 Storage secret access key
     pub r2_secret_access_key: Option<String>,
+    /// R2 Storage endpoint URL
     pub r2_endpoint_url: Option<String>,
+    /// R2 Storage bucket name
     pub r2_bucket_name: Option<String>,
 
-    // OpenRouter configuration
+    /// Site URL for OpenRouter identification
     #[serde(default = "default_openrouter_site_url")]
     pub openrouter_site_url: String,
+    /// Site name for OpenRouter identification
     #[serde(default = "default_openrouter_site_name")]
     pub openrouter_site_name: String,
 
-    // System message
+    /// Default system message
     pub system_message: Option<String>,
 }
 
@@ -282,19 +299,31 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
     ),
 ];
 
+/// Default model for chat
 pub const DEFAULT_MODEL: &str = "OR Gemini 3 Flash";
 
 // Agent Mode configuration
+/// Model used for agent tasks
 pub const AGENT_MODEL: &str = "Devstral 2512";
+/// Maximum iterations for agent loop
 pub const AGENT_MAX_ITERATIONS: usize = 100;
+/// Agent task timeout in seconds
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
+/// Agent memory token limit
 pub const AGENT_MAX_TOKENS: usize = 200_000;
+/// Threshold to trigger memory compaction
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
+/// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 5; // Max forced continuations when todos incomplete
 
 // Sandbox configuration
+/// Docker image for the sandbox
 pub const SANDBOX_IMAGE: &str = "agent-sandbox:latest";
+/// Memory limit for sandbox container (1GB)
 pub const SANDBOX_MEMORY_LIMIT: i64 = 1024 * 1024 * 1024; // 1GB
+/// CPU period for sandbox container
 pub const SANDBOX_CPU_PERIOD: i64 = 100_000;
+/// CPU quota for sandbox container (2 CPUs)
 pub const SANDBOX_CPU_QUOTA: i64 = 200_000; // 2 CPUs (200% of period)
+/// Timeout for individual command execution in sandbox
 pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 60; // 1 minute per command

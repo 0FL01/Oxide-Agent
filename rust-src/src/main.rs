@@ -221,6 +221,10 @@ fn setup_handler(settings: &Arc<Settings>) -> UpdateHandler<teloxide::RequestErr
                     Update::filter_message()
                         .filter(|msg: Message| msg.photo().is_some())
                         .endpoint(handle_start_photo),
+                )
+                .branch(
+                    dptree::filter(|msg: Message| msg.document().is_some())
+                        .endpoint(handle_start_document),
                 ),
         )
         .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
@@ -291,6 +295,19 @@ async fn handle_start_photo(
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue).await {
         error!("Photo handler error: {}", e);
+    }
+    respond(())
+}
+
+async fn handle_start_document(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<storage::R2Storage>,
+    llm: Arc<llm::LlmClient>,
+    dialogue: Dialogue<State, InMemStorage<State>>,
+) -> Result<(), teloxide::RequestError> {
+    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm).await {
+        error!("Document handler error: {}", e);
     }
     respond(())
 }

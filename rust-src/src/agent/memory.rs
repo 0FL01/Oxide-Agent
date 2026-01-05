@@ -12,19 +12,25 @@ use tracing::info;
 /// A message in the agent's conversation memory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMessage {
+    /// Role of the message sender
     pub role: MessageRole,
+    /// Text content of the message
     pub content: String,
 }
 
-/// Role of a message sender
+/// Role of a message sender in agent memory
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageRole {
+    /// System message for core instructions
     System,
+    /// Message from the user
     User,
+    /// Response from the assistant/agent
     Assistant,
 }
 
 impl AgentMessage {
+    /// Create a new system message
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::System,
@@ -32,6 +38,7 @@ impl AgentMessage {
         }
     }
 
+    /// Create a new user message
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::User,
@@ -39,6 +46,7 @@ impl AgentMessage {
         }
     }
 
+    /// Create a new assistant message
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Assistant,
@@ -51,6 +59,7 @@ impl AgentMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMemory {
     messages: Vec<AgentMessage>,
+    /// Task list for the agent
     pub todos: TodoList,
     token_count: usize,
     max_tokens: usize,

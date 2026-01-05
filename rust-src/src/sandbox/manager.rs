@@ -7,10 +7,12 @@ use base64::Engine;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
-    CreateContainerOptions, RemoveContainerOptions, StartContainerOptions,
+    CreateContainerOptions, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
 };
 use bollard::Docker;
+use bytes::Bytes;
 use futures_util::StreamExt;
+use http_body_util::{Either, Full};
 use std::collections::HashMap;
 use tracing::{debug, info, instrument, warn};
 
@@ -22,8 +24,11 @@ use crate::config::{
 /// Result of executing a command in the sandbox
 #[derive(Debug, Clone)]
 pub struct ExecResult {
+    /// Standard output of the command
     pub stdout: String,
+    /// Standard error of the command
     pub stderr: String,
+    /// Exit code of the command
     pub exit_code: i64,
 }
 
@@ -324,6 +329,92 @@ impl SandboxManager {
 
         debug!(path = %path, size = content.len(), "File read from sandbox");
         Ok(content)
+    }
+
+    /// Upload a file to the container using Docker's copy API
+    ///
+    /// Uses tar archive format as required by Docker API.
+    /// Creates parent directories automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox is not running, directory creation fails, or upload fails.
+    #[instrument(skip(self, content), fields(path = %container_path, content_len = content.len()))]
+    pub async fn upload_file(&self, container_path: &str, content: &[u8]) -> Result<()> {
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow!("Sandbox not running"))?;
+
+        let path = std::path::Path::new(container_path);
+        let parent = path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/workspace".to_string());
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+
+        // Ensure parent directory exists
+        self.exec_command(&format!("mkdir -p '{}'", parent)).await?;
+
+        // Create tar archive in memory
+        let mut tar_buffer = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buffer);
+            let mut header = tar::Header::new_gnu();
+            header.set_path(&file_name)?;
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            );
+            header.set_cksum();
+            builder.append(&header, content)?;
+            builder.finish()?;
+        }
+
+        self.docker
+            .upload_to_container(
+                container_id,
+                Some(UploadToContainerOptions {
+                    path: parent,
+                    ..Default::default()
+                }),
+                Either::Left(Full::new(Bytes::from(tar_buffer))),
+            )
+            .await
+            .context("Failed to upload file to container")?;
+
+        info!(
+            container_id = %container_id,
+            path = %container_path,
+            size = content.len(),
+            "File uploaded to sandbox"
+        );
+
+        Ok(())
+    }
+
+    /// Get total size of uploaded files in /workspace/uploads/
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command execution fails or the output cannot be parsed.
+    #[instrument(skip(self))]
+    pub async fn get_uploads_size(&self) -> Result<u64> {
+        let result = self
+            .exec_command("du -sb /workspace/uploads 2>/dev/null || echo '0'")
+            .await?;
+
+        let size_str = result.stdout.split_whitespace().next().unwrap_or("0");
+        size_str
+            .parse::<u64>()
+            .map_err(|e| anyhow!("Failed to parse uploads size: {}", e))
     }
 
     /// Destroy the sandbox container

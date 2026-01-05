@@ -19,6 +19,7 @@
   - `src/llm/openai_compat.rs`: OpenAI-совместимый интерфейс.
   - `src/llm/http_utils.rs`: Общие утилиты для HTTP-запросов.
 - `src/sandbox/`: Менеджер и оркестрация песочницы для выполнения кода на базе Docker.
+  - Файлы загружаются в `/workspace/uploads/` с лимитом 1 ГБ на сессию.
 - `src/storage.rs`: Слой хранения данных (совместимость с S3/R2).
   - История чата: `users/{id}/history.json`
   - Память агента: `users/{id}/agent_memory.json` (отдельно от истории чата)

@@ -1,3 +1,7 @@
+//! Storage layer for user data and chat history
+//!
+//! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
+
 use crate::agent::memory::AgentMemory;
 use crate::config::Settings;
 use aws_credential_types::Credentials;
@@ -11,33 +15,47 @@ use tracing::{error, info};
 
 use serde::{Deserialize, Serialize};
 
+/// Errors that can occur during storage operations
 #[derive(Error, Debug)]
 pub enum StorageError {
+    /// Error retrieving object from S3
     #[error("S3 Get error: {0}")]
     S3Get(Box<SdkError<GetObjectError>>),
+    /// Error putting object into S3
     #[error("S3 put error: {0}")]
     S3Put(String),
+    /// Error during JSON serialization or deserialization
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    /// Standard I/O error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Configuration error (missing credentials, etc.)
     #[error("Configuration error: {0}")]
     Config(String),
 }
 
+/// User-specific configuration persisted in storage
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct UserConfig {
+    /// Custom system prompt
     pub system_prompt: Option<String>,
+    /// Selected LLM model name
     pub model_name: Option<String>,
+    /// Current dialogue state
     pub state: Option<String>,
 }
 
+/// A message in the chat history
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
+    /// Role of the message sender (user or assistant)
     pub role: String,
+    /// Text content of the message
     pub content: String,
 }
 
+/// R2-backed storage implementation
 pub struct R2Storage {
     client: Client,
     bucket: String,

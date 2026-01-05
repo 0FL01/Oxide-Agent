@@ -1,29 +1,43 @@
+//! LLM providers and client
+//!
+//! Provides a unified interface to various LLM providers (Groq, Mistral, Gemini, OpenRouter).
+
 mod common;
 mod http_utils;
 mod openai_compat;
+/// Implementations of specific LLM providers
 pub mod providers;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info, instrument, trace, warn};
 
+/// Errors that can occur during LLM operations
 #[derive(Debug, Error)]
 pub enum LlmError {
+    /// Error returned by the provider's API
     #[error("API error: {0}")]
     ApiError(String),
+    /// Error during network communication
     #[error("Network error: {0}")]
     NetworkError(String),
+    /// Error during JSON serialization or deserialization
     #[error("JSON error: {0}")]
     JsonError(String),
+    /// Missing provider configuration or API key
     #[error("Missing client/API key: {0}")]
     MissingConfig(String),
+    /// Any other unexpected error
     #[error("Unknown error: {0}")]
     Unknown(String),
 }
 
+/// A message in an LLM conversation
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
+    /// Role of the message sender (user, assistant, system, tool)
     pub role: String,
+    /// Text content of the message
     pub content: String,
     /// Tool call ID (for tool responses)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,6 +51,7 @@ pub struct Message {
 }
 
 impl Message {
+    /// Create a new user message
     #[must_use]
     pub fn user(content: &str) -> Self {
         Self {
@@ -48,6 +63,7 @@ impl Message {
         }
     }
 
+    /// Create a new assistant message
     #[must_use]
     pub fn assistant(content: &str) -> Self {
         Self {
@@ -59,6 +75,7 @@ impl Message {
         }
     }
 
+    /// Create a new assistant message with tool calls
     #[must_use]
     pub fn assistant_with_tools(content: &str, tool_calls: Vec<ToolCall>) -> Self {
         Self {
@@ -70,6 +87,7 @@ impl Message {
         }
     }
 
+    /// Create a new tool response message
     #[must_use]
     pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
         Self {
@@ -81,6 +99,7 @@ impl Message {
         }
     }
 
+    /// Create a new system message
     #[must_use]
     pub fn system(content: &str) -> Self {
         Self {
@@ -96,35 +115,48 @@ impl Message {
 /// Tool definition for LLM function calling
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
+    /// Name of the tool
     pub name: String,
+    /// Description of what the tool does
     pub description: String,
+    /// JSON schema for tool parameters
     pub parameters: serde_json::Value,
 }
 
 /// Tool call from LLM response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// Unique identifier for the tool call
     pub id: String,
+    /// Function to be called
     #[serde(rename = "function")]
     pub function: ToolCallFunction,
 }
 
+/// Function details within a tool call
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallFunction {
+    /// Name of the function being called
     pub name: String,
+    /// Arguments for the function call (JSON string)
     pub arguments: String,
 }
 
 /// Chat response that may include tool calls
 #[derive(Debug, Clone)]
 pub struct ChatResponse {
+    /// Optional text content of the response
     pub content: Option<String>,
+    /// List of tool calls requested by the model
     pub tool_calls: Vec<ToolCall>,
+    /// Reason why the model stopped generating
     pub finish_reason: String,
 }
 
+/// Interface for all LLM providers
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
+    /// Generate a chat completion
     async fn chat_completion(
         &self,
         system_prompt: &str,
@@ -134,6 +166,7 @@ pub trait LlmProvider: Send + Sync {
         max_tokens: u32,
     ) -> Result<String, LlmError>;
 
+    /// Transcribe audio content
     async fn transcribe_audio(
         &self,
         audio_bytes: Vec<u8>,
@@ -141,6 +174,7 @@ pub trait LlmProvider: Send + Sync {
         model_id: &str,
     ) -> Result<String, LlmError>;
 
+    /// Analyze an image
     async fn analyze_image(
         &self,
         image_bytes: Vec<u8>,
@@ -150,6 +184,7 @@ pub trait LlmProvider: Send + Sync {
     ) -> Result<String, LlmError>;
 }
 
+/// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     groq: Option<providers::GroqProvider>,
     mistral: Option<providers::MistralProvider>,
@@ -159,6 +194,7 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
+    /// Create a new LLM client with providers configured from settings
     #[must_use]
     pub fn new(settings: &crate::config::Settings) -> Self {
         Self {
