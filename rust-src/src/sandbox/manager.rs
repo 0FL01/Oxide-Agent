@@ -7,13 +7,15 @@ use base64::Engine;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
-    CreateContainerOptions, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
+    CreateContainerOptions, DownloadFromContainerOptions, RemoveContainerOptions,
+    StartContainerOptions, UploadToContainerOptions,
 };
 use bollard::Docker;
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{Either, Full};
 use std::collections::HashMap;
+use std::io::Read;
 use tracing::{debug, info, instrument, warn};
 
 use crate::config::{
@@ -398,6 +400,82 @@ impl SandboxManager {
         );
 
         Ok(())
+    }
+
+    /// Download a file from the container
+    ///
+    /// Returns the raw file content as bytes.
+    /// Uses Docker's download API with tar extraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox is not running, file doesn't exist, file is too large, or download/extraction fails.
+    #[instrument(skip(self), fields(path = %container_path))]
+    pub async fn download_file(&self, container_path: &str) -> Result<Vec<u8>> {
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow!("Sandbox not running"))?;
+
+        // Check if file exists first
+        let check = self
+            .exec_command(&format!("test -f '{container_path}' && echo 'exists'"))
+            .await?;
+        if !check.stdout.contains("exists") {
+            anyhow::bail!("File not found: {container_path}");
+        }
+
+        // Get file size to check limits (50MB max for Telegram)
+        let size_check = self
+            .exec_command(&format!("stat -c %s '{container_path}'"))
+            .await?;
+        let file_size: u64 = size_check.stdout.trim().parse().unwrap_or(0);
+
+        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
+        if file_size > MAX_FILE_SIZE {
+            anyhow::bail!(
+                "File too large: {} bytes (max {} MB)",
+                file_size,
+                MAX_FILE_SIZE / 1024 / 1024
+            );
+        }
+
+        // Download file as tar archive
+        let stream = self
+            .docker
+            .download_from_container(
+                container_id,
+                Some(DownloadFromContainerOptions {
+                    path: container_path.to_string(),
+                }),
+            )
+            .try_collect::<Vec<_>>()
+            .await
+            .context("Failed to download file from container")?;
+
+        // Combine chunks into single buffer
+        let tar_data: Vec<u8> = stream.into_iter().flatten().collect();
+
+        // Extract file from tar
+        let mut archive = tar::Archive::new(tar_data.as_slice());
+        let mut entries = archive.entries()?;
+
+        if let Some(entry_result) = entries.next() {
+            let mut entry = entry_result?;
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)?;
+
+            info!(
+                container_id = %container_id,
+                path = %container_path,
+                size = content.len(),
+                "File downloaded from sandbox"
+            );
+
+            Ok(content)
+        } else {
+            anyhow::bail!("Empty tar archive received")
+        }
     }
 
     /// Get total size of uploaded files in /workspace/uploads/

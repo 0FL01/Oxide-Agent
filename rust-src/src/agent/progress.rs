@@ -21,6 +21,14 @@ pub enum AgentEvent {
     TodosUpdated {
         todos: TodoList,
     },
+    /// File to send to user via Telegram
+    FileToSend {
+        /// Original file name
+        file_name: String,
+        /// Raw file content
+        #[serde(with = "serde_bytes")]
+        content: Vec<u8>,
+    },
     Finished,
     Error(String),
 }
@@ -123,6 +131,12 @@ impl ProgressState {
                         }
                     }
                 }
+            }
+            AgentEvent::FileToSend { file_name, .. } => {
+                self.steps.push(Step {
+                    description: format!("📤 Отправка файла: {file_name}"),
+                    status: StepStatus::Completed,
+                });
             }
             AgentEvent::Finished => {
                 self.is_finished = true;

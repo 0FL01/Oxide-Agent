@@ -20,7 +20,7 @@ use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::net::Download;
 use teloxide::prelude::*;
-use teloxide::types::{KeyboardButton, KeyboardMarkup, MessageId, ParseMode};
+use teloxide::types::{InputFile, KeyboardButton, KeyboardMarkup, MessageId, ParseMode};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -177,6 +177,18 @@ pub async fn handle_agent_message(
         let throttle_duration = std::time::Duration::from_millis(1500);
 
         while let Some(event) = rx.recv().await {
+            // Handle file sending separately (side effect)
+            if let AgentEvent::FileToSend {
+                ref file_name,
+                ref content,
+            } = event
+            {
+                let input_file = InputFile::memory(content.clone()).file_name(file_name.clone());
+                if let Err(e) = bot_clone.send_document(chat_id_clone, input_file).await {
+                    tracing::error!("Failed to send file {}: {}", file_name, e);
+                }
+            }
+
             state.update(event);
             needs_update = true;
 

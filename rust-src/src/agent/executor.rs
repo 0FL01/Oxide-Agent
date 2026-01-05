@@ -190,7 +190,12 @@ impl AgentExecutor {
 
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
-        registry.register(Box::new(SandboxProvider::new(self.session.user_id)));
+        let sandbox_provider = if let Some(ref tx) = progress_tx {
+            SandboxProvider::new(self.session.user_id).with_progress_tx(tx.clone())
+        } else {
+            SandboxProvider::new(self.session.user_id)
+        };
+        registry.register(Box::new(sandbox_provider));
 
         #[cfg(feature = "tavily")]
         if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {

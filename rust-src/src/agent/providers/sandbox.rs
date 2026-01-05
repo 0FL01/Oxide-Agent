@@ -1,7 +1,8 @@
 //! Sandbox Provider - executes tools in Docker sandbox
 //!
-//! Provides `execute_command`, `read_file`, `write_file` tools.
+//! Provides `execute_command`, `read_file`, `write_file`, `send_file_to_user` tools.
 
+use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::SandboxManager;
@@ -10,6 +11,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -17,6 +19,7 @@ use tracing::debug;
 pub struct SandboxProvider {
     sandbox: Arc<Mutex<Option<SandboxManager>>>,
     user_id: i64,
+    progress_tx: Option<Sender<AgentEvent>>,
 }
 
 impl SandboxProvider {
@@ -26,7 +29,15 @@ impl SandboxProvider {
         Self {
             sandbox: Arc::new(Mutex::new(None)),
             user_id,
+            progress_tx: None,
         }
+    }
+
+    /// Set the progress channel for sending events (like file transfers)
+    #[must_use]
+    pub fn with_progress_tx(mut self, tx: Sender<AgentEvent>) -> Self {
+        self.progress_tx = Some(tx);
+        self
     }
 
     /// Set the sandbox manager (for when sandbox is created externally)
@@ -72,6 +83,12 @@ struct WriteFileArgs {
 /// Arguments for `read_file` tool
 #[derive(Debug, Deserialize)]
 struct ReadFileArgs {
+    path: String,
+}
+
+/// Arguments for `send_file_to_user` tool
+#[derive(Debug, Deserialize)]
+struct SendFileArgs {
     path: String,
 }
 
@@ -129,11 +146,28 @@ impl ToolProvider for SandboxProvider {
                     "required": ["path"]
                 }),
             },
+            ToolDefinition {
+                name: "send_file_to_user".to_string(),
+                description: "Send a file from the sandbox to the user via Telegram. Use this when you need to deliver generated files, images, documents, or any output to the user.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file in the sandbox to send to the user"
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            },
         ]
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(tool_name, "execute_command" | "read_file" | "write_file")
+        matches!(
+            tool_name,
+            "execute_command" | "read_file" | "write_file" | "send_file_to_user"
+        )
     }
 
     async fn execute(&self, tool_name: &str, arguments: &str) -> Result<String> {
@@ -187,6 +221,34 @@ impl ToolProvider for SandboxProvider {
                 match sandbox.read_file(&args.path).await {
                     Ok(content) => Ok(String::from_utf8_lossy(&content).to_string()),
                     Err(e) => Ok(format!("Ошибка чтения файла: {e}")),
+                }
+            }
+            "send_file_to_user" => {
+                let args: SendFileArgs = serde_json::from_str(arguments)?;
+
+                // Extract file name from path
+                let file_name = std::path::Path::new(&args.path)
+                    .file_name()
+                    .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
+
+                match sandbox.download_file(&args.path).await {
+                    Ok(content) => {
+                        // Send file via progress channel
+                        if let Some(ref tx) = self.progress_tx {
+                            let _ = tx
+                                .send(AgentEvent::FileToSend {
+                                    file_name: file_name.clone(),
+                                    content,
+                                })
+                                .await;
+                            Ok(format!("✅ Файл '{file_name}' отправлен пользователю"))
+                        } else {
+                            Ok(format!(
+                                "⚠️ Файл '{file_name}' прочитан, но канал отправки недоступен"
+                            ))
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Ошибка отправки файла: {e}")),
                 }
             }
             _ => anyhow::bail!("Unknown sandbox tool: {tool_name}"),
