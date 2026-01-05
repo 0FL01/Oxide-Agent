@@ -43,6 +43,7 @@ dependencies = [
  "chrono",
  "config",
  "dotenvy",
+ "eventsource-stream",
  "futures-util",
  "html-escape",
  "http-body-util",

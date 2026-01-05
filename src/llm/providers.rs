@@ -478,6 +478,7 @@ impl LlmProvider for ZaiProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<super::ChatResponse, super::LlmError> {
+        use eventsource_stream::Eventsource;
         use futures_util::StreamExt;
         use std::collections::HashMap;
 
@@ -589,26 +590,26 @@ impl LlmProvider for ZaiProvider {
             )));
         }
 
-        // Process streaming response
-        let mut stream = response.bytes_stream();
+        // Process streaming response using eventsource-stream
+        let mut stream = response.bytes_stream().eventsource();
         let mut reasoning_content = String::new();
         let mut content = String::new();
         let mut final_tool_calls: HashMap<usize, super::ToolCall> = HashMap::new();
         let mut finish_reason = String::from("unknown");
 
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| LlmError::NetworkError(e.to_string()))?;
-
-            // Parse SSE format: "data: {json}\n\n"
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            for line in chunk_str.lines() {
-                if let Some(json_str) = line.strip_prefix("data: ") {
-                    if json_str.trim() == "[DONE]" {
+        while let Some(event_result) = stream.next().await {
+            match event_result {
+                Ok(event) => {
+                    // Check for [DONE] marker
+                    if event.data.trim() == "[DONE]" {
                         break;
                     }
 
-                    let parsed: ZaiStreamChunk = serde_json::from_str(json_str)
-                        .map_err(|e| LlmError::JsonError(format!("Failed to parse chunk: {e}")))?;
+                    // Parse JSON from event data
+                    let parsed: ZaiStreamChunk =
+                        serde_json::from_str(&event.data).map_err(|e| {
+                            LlmError::JsonError(format!("Failed to parse event data: {e}"))
+                        })?;
 
                     if let Some(choice) = parsed.choices.first() {
                         let delta = &choice.delta;
@@ -662,6 +663,9 @@ impl LlmProvider for ZaiProvider {
                             finish_reason = reason.clone();
                         }
                     }
+                }
+                Err(e) => {
+                    return Err(LlmError::NetworkError(format!("SSE stream error: {e}")));
                 }
             }
         }
