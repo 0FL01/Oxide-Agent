@@ -1,29 +1,42 @@
-FROM python:3.13-slim
+# Chef stage - install cargo-chef for dependency caching
+FROM rust:1.92-slim-trixie AS chef
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef
 
-# Устанавливаем зависимости, необходимые для Pydub и компиляции
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libasound2 \
-    libasound2-dev \
-    build-essential \
+# Planner stage - create dependency recipe
+FROM chef AS planner
+WORKDIR /app
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Builder stage - build dependencies first (cached layer)
+FROM chef AS builder
+WORKDIR /app
+COPY --from=planner /app/recipe.json recipe.json
+# Build dependencies - this layer is cached unless dependencies change
+RUN cargo chef cook --release --features tavily --recipe-path recipe.json
+
+# Build application - this layer is rebuilt when source changes
+COPY . .
+RUN cargo build --release --features tavily
+
+# Runtime stage - Debian Trixie (stable)
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Создаем рабочую директорию
 WORKDIR /app
+COPY --from=builder /app/target/release/another-chat-rs /app/another-chat-rs
+COPY AGENT.md /app/AGENT.md
 
-# Копируем файлы зависимостей
-COPY requirements.txt ./
 
-# Устанавливаем зависимости
-RUN pip install --no-cache-dir -r requirements.txt
+# Set environment variables
+ENV RUST_LOG=info
 
-# Копируем файлы приложения
-COPY src/ ./src/
-COPY tests/ ./tests/
-
-# Устанавливаем переменные окружения
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app/src
-
-# Запускаем бота
-CMD ["python", "src/main.py"]
+CMD ["./another-chat-rs"]

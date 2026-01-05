@@ -1,6 +1,6 @@
 # Clippy Error Fixes Blueprint
 
-Fix 28 clippy errors across 5 files in `rust-src/`.
+Fix 28 clippy errors across 5 files.
 
 > [!NOTE]
 > All errors are straightforward fixes recommended by clippy itself. No external API verification needed.
@@ -103,7 +103,7 @@ Fix 28 clippy errors across 5 files in `rust-src/`.
 
 ### Automated Tests
 ```bash
-# Run from rust-src/
+# Run from project root
 cargo fmt
 cargo clippy
 cargo test

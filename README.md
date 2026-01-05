@@ -51,9 +51,9 @@
 
 3.  **Соберите образ песочницы:**
     ```bash
-    cd rust-src/sandbox
+    cd sandbox
     docker build -t agent-sandbox:latest -f Dockerfile.sandbox .
-    cd ../..
+    cd ..
     ```
 
 4.  **Соберите и запустите бота:**
@@ -95,19 +95,20 @@ TAVILY_API_KEY=... # Ключ Tavily для веб-поиска в режиме 
 
 ```text
 .
-├── rust-src/
-│   ├── src/
-│   │   ├── agent/    # Логика Агента (сессии, память)
-│   │   │   ├── providers/ # Провайдеры инструментов (Sandbox, Tavily)
-│   │   │   ├── provider.rs # Трейт ToolProvider
-│   │   │   └── registry.rs # Реестр инструментов
-│   │   ├── bot/      # Обработчики Telegram (handlers, state)
-│   │   ├── llm/      # Провайдеры ИИ (Mistral, Gemini, Zai и др.)
-│   │   ├── sandbox/  # Управление Docker-песочницей
-│   │   ├── storage.rs # Работа с S3/R2
-│   │   ├── config.rs # Настройки и список моделей
-│   │   └── main.rs   # Точка входа
-│   └── sandbox/      # Ресурсы для образа песочницы
+├── src/
+│   ├── agent/        # Логика Агента (сессии, память)
+│   │   ├── providers/ # Провайдеры инструментов (Sandbox, Tavily)
+│   │   ├── provider.rs # Трейт ToolProvider
+│   │   └── registry.rs # Реестр инструментов
+│   ├── bot/          # Обработчики Telegram (handlers, state)
+│   ├── llm/          # Провайдеры ИИ (Mistral, Gemini, Zai и др.)
+│   ├── sandbox/      # Управление Docker-песочницей
+│   ├── storage.rs    # Работа с S3/R2
+│   ├── config.rs     # Настройки и список моделей
+│   └── main.rs       # Точка входа
+├── tests/            # Интеграционные тесты
+├── sandbox/          # Ресурсы для образа песочницы
+├── Cargo.toml        # Зависимости проекта
 ├── Dockerfile        # Dockerfile основного приложения
 └── docker-compose.yml
 ```
@@ -126,7 +127,6 @@ TAVILY_API_KEY=... # Ключ Tavily для веб-поиска в режиме 
 
 Для локальной разработки (требуется установленный Rust):
 ```bash
-cd rust-src
 cargo run
 ```
 

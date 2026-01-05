@@ -40,20 +40,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('rust-src/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
-          path: rust-src/target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('rust-src/Cargo.lock') }}
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock') }}
 
       - name: Run cargo check/clippy/test
-        working-directory: ./rust-src
         run: cargo check --tests && cargo clippy --tests -- -D warnings && cargo test
 
       - name: Run cargo fmt check
-        working-directory: ./rust-src
         run: cargo fmt --all -- --check
 
 
@@ -73,16 +71,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('rust-src/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
-          path: rust-src/target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('rust-src/Cargo.lock') }}
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock') }}
 
       - name: Run credentials validation test
-        working-directory: ./rust-src
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
@@ -113,7 +110,7 @@ jobs:
 
       - name: Create source archive
         run: |
-          tar -czf app-source.tar.gz --exclude='app-source.tar.gz' --exclude='.github' --exclude='tests' rust-src
+          tar -czf app-source.tar.gz --exclude='app-source.tar.gz' --exclude='.github' --exclude='tests' --exclude='backlog' --exclude='.git' .
           echo "Source archive created."
 
       - name: Copy source code to server
@@ -215,9 +212,9 @@ jobs:
             docker compose ps
 
             # Build agent sandbox image for pre-warming (fish shell syntax)
-            if test -d "build_context/rust-src/sandbox"
+            if test -d "build_context/sandbox"
               echo "Building agent sandbox image..."
-              docker build -t agent-sandbox:latest -f build_context/rust-src/sandbox/Dockerfile.sandbox build_context/rust-src/sandbox/
+              docker build -t agent-sandbox:latest -f build_context/sandbox/Dockerfile.sandbox build_context/sandbox/
               echo "Agent sandbox image built successfully."
             else
               echo "Warning: sandbox directory not found, skipping sandbox image build."
