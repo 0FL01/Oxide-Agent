@@ -257,12 +257,23 @@ async fn ensure_session_exists(
         // Load saved agent memory if exists
         if let Ok(Some(saved_memory)) = storage.load_agent_memory(user_id).await {
             session.memory = saved_memory;
-            info!("Loaded agent memory for user {user_id} in ensure_session_exists");
+            info!(
+                user_id = user_id,
+                messages_count = session.memory.get_messages().len(),
+                "Loaded agent memory for user in ensure_session_exists"
+            );
+        } else {
+            info!(
+                user_id = user_id,
+                "No saved agent memory found, starting fresh"
+            );
         }
 
         let executor = AgentExecutor::new(llm.clone(), session);
         let mut sessions = AGENT_SESSIONS.write().await;
         sessions.insert(user_id, executor);
+    } else {
+        debug!(user_id = user_id, "Session already exists in cache");
     }
 }
 
@@ -289,6 +300,12 @@ async fn execute_agent_task(
             .remove(&user_id)
             .ok_or_else(|| anyhow::anyhow!("No agent session found"))?
     };
+
+    debug!(
+        user_id = user_id,
+        memory_messages = executor.session().memory.get_messages().len(),
+        "Executor taken from cache for task execution"
+    );
 
     // Check timeout
     if executor.is_timed_out() {

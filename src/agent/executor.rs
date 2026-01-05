@@ -182,7 +182,13 @@ impl AgentExecutor {
 
         self.session.start_task();
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
-        info!(task = %task, task_id = %task_id, "Starting agent task");
+        info!(
+            task = %task,
+            task_id = %task_id,
+            memory_messages = self.session.memory.get_messages().len(),
+            memory_tokens = self.session.memory.token_count(),
+            "Starting agent task"
+        );
 
         self.session.memory.add_message(AgentMessage::user(task));
         let system_prompt = Self::create_agent_system_prompt();
