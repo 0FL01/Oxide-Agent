@@ -10,10 +10,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+use shell_escape::escape;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Provider for Docker sandbox tools
 pub struct SandboxProvider {
@@ -64,6 +65,52 @@ impl SandboxProvider {
 
         *self.sandbox.lock().await = Some(sandbox);
         Ok(())
+    }
+
+    /// Resolve relative path to absolute path in sandbox
+    /// Searches for file if not found at expected location
+    async fn resolve_file_path(sandbox: &SandboxManager, path: &str) -> Result<String> {
+        if path.starts_with('/') {
+            return Ok(path.to_string());
+        }
+
+        let workspace_path = format!("/workspace/{path}");
+        let check = sandbox
+            .exec_command(&format!(
+                "test -f '{}' && echo 'exists'",
+                escape(workspace_path.as_str().into())
+            ))
+            .await?;
+
+        if check.stdout.contains("exists") {
+            info!(original_path = %path, resolved_path = %workspace_path, "Resolved file path");
+            return Ok(workspace_path);
+        }
+
+        info!(path = %path, "File not found at /workspace/{path}, searching...");
+        let find_cmd = format!("find /workspace -name '{}' -type f", escape(path.into()));
+        let result = sandbox.exec_command(&find_cmd).await?;
+
+        let found_paths: Vec<&str> = result.stdout.lines().filter(|l| !l.is_empty()).collect();
+
+        match found_paths.len() {
+            0 => anyhow::bail!(
+                "Файл '{}' не найден в песочнице. Используйте инструмент 'list_files' для просмотра доступных файлов.",
+                path
+            ),
+            1 => {
+                let resolved = found_paths[0].to_string();
+                info!(original_path = %path, resolved_path = %resolved, "Found file");
+                Ok(resolved)
+            }
+            _ => {
+                let paths_list = found_paths.join("\n  - ");
+                anyhow::bail!(
+                    "Найдено несколько файлов с именем '{}':\n  - {}\n\nПожалуйста, укажите полный путь к нужному файлу.",
+                    path, paths_list
+                )
+            }
+        }
     }
 }
 
@@ -148,16 +195,29 @@ impl ToolProvider for SandboxProvider {
             },
             ToolDefinition {
                 name: "send_file_to_user".to_string(),
-                description: "Send a file from the sandbox to the user via Telegram. Use this when you need to deliver generated files, images, documents, or any output to the user.".to_string(),
+                description: "Send a file from the sandbox to the user via Telegram. Use this when you need to deliver generated files, images, documents, or any output to the user. Supports both absolute paths (/workspace/file.txt) and relative paths (file.txt) - will automatically search in /workspace if not found.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Path to the file in the sandbox to send to the user"
+                            "description": "Path to the file in the sandbox to send to the user (relative or absolute)"
                         }
                     },
                     "required": ["path"]
+                }),
+            },
+            ToolDefinition {
+                name: "list_files".to_string(),
+                description: "List files in the sandbox workspace. Returns a tree-like structure of files and directories. Useful for finding file paths before using send_file_to_user.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Optional path to list (defaults to /workspace)"
+                        }
+                    }
                 }),
             },
         ]
@@ -166,7 +226,7 @@ impl ToolProvider for SandboxProvider {
     fn can_handle(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "execute_command" | "read_file" | "write_file" | "send_file_to_user"
+            "execute_command" | "read_file" | "write_file" | "send_file_to_user" | "list_files"
         )
     }
 
@@ -227,14 +287,20 @@ impl ToolProvider for SandboxProvider {
                 let args: SendFileArgs = serde_json::from_str(arguments)?;
                 info!(path = %args.path, "send_file_to_user called");
 
-                // Extract file name from path
-                let file_name = std::path::Path::new(&args.path)
+                let resolved_path = match Self::resolve_file_path(&sandbox, &args.path).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(path = %args.path, error = %e, "Failed to resolve file path");
+                        return Ok(format!("❌ {e}"));
+                    }
+                };
+
+                let file_name = std::path::Path::new(&resolved_path)
                     .file_name()
                     .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
 
-                match sandbox.download_file(&args.path).await {
+                match sandbox.download_file(&resolved_path).await {
                     Ok(content) => {
-                        // Send file via progress channel
                         if let Some(ref tx) = self.progress_tx {
                             match tx
                                 .send(AgentEvent::FileToSend {
@@ -244,23 +310,69 @@ impl ToolProvider for SandboxProvider {
                                 .await
                             {
                                 Ok(()) => {
-                                    info!(file_name = %file_name, "FileToSend event sent successfully");
+                                    info!(file_name = %file_name, resolved_path = %resolved_path, "File sent successfully");
                                     Ok(format!("✅ Файл '{file_name}' отправлен пользователю"))
                                 }
                                 Err(e) => {
                                     warn!(file_name = %file_name, error = %e, "Failed to send FileToSend event");
                                     Ok(format!(
-                                        "⚠️ Файл '{file_name}' прочитан, но не удалось отправить событие: {e}"
+                                        "⚠️ Файл '{file_name}' прочитан из песочницы, но не удалось отправить: {e}"
                                     ))
                                 }
                             }
                         } else {
+                            warn!(file_name = %file_name, "Progress channel not available");
                             Ok(format!(
                                 "⚠️ Файл '{file_name}' прочитан, но канал отправки недоступен"
                             ))
                         }
                     }
-                    Err(e) => Ok(format!("❌ Ошибка отправки файла: {e}")),
+                    Err(e) => {
+                        error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
+                        Ok(format!("❌ Ошибка загрузки файла: {e}"))
+                    }
+                }
+            }
+            "list_files" => {
+                #[derive(Debug, Deserialize)]
+                struct ListFilesArgs {
+                    #[serde(default = "default_workspace_path")]
+                    path: String,
+                }
+
+                fn default_workspace_path() -> String {
+                    "/workspace".to_string()
+                }
+
+                let args: ListFilesArgs = serde_json::from_str(arguments)?;
+                let cmd = format!(
+                    "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
+                    escape(args.path.as_str().into()),
+                    escape(args.path.as_str().into())
+                );
+
+                match sandbox.exec_command(&cmd).await {
+                    Ok(result) => {
+                        if result.success() {
+                            if result.stdout.is_empty() {
+                                Ok(format!(
+                                    "Директория '{}' пуста или не существует",
+                                    args.path
+                                ))
+                            } else {
+                                Ok(format!(
+                                    "📁 Содержимое '{}':\n\n```\n{}\n```",
+                                    args.path, result.stdout
+                                ))
+                            }
+                        } else {
+                            Ok(format!(
+                                "❌ Ошибка при чтении директории: {}",
+                                result.stderr
+                            ))
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Ошибка выполнения команды: {e}")),
                 }
             }
             _ => anyhow::bail!("Unknown sandbox tool: {tool_name}"),
