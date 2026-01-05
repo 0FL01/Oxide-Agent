@@ -319,13 +319,31 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
 pub const DEFAULT_MODEL: &str = "OR Gemini 3 Flash";
 
 // Agent Mode configuration
-/// Model used for agent tasks
-pub const AGENT_MODEL: &str = "Devstral 2512";
+/// Model used for agent tasks (ZAI GLM-4.7)
+pub const AGENT_MODEL_ZAI: &str = "ZAI GLM-4.7";
+/// Model used for agent tasks (Mistral Devstral 2512)
+pub const AGENT_MODEL_MISTRAL: &str = "Devstral 2512";
+
+/// Get the agent model based on environment variable or default to ZAI
+///
+/// Set `AGENT_MODEL_PROVIDER=mistral` to use Devstral 2512 instead of GLM-4.7
+#[must_use]
+pub fn get_agent_model() -> &'static str {
+    match std::env::var("AGENT_MODEL_PROVIDER") {
+        Ok(ref val) if val == "mistral" => AGENT_MODEL_MISTRAL,
+        _ => AGENT_MODEL_ZAI, // Default to ZAI GLM-4.7
+    }
+}
+
+/// Default agent model constant (deprecated, use `get_agent_model()` instead)
+#[deprecated(since = "0.2.0", note = "Use `get_agent_model()` instead")]
+pub const AGENT_MODEL: &str = "ZAI GLM-4.7";
+
 /// Maximum iterations for agent loop
 pub const AGENT_MAX_ITERATIONS: usize = 100;
 /// Agent task timeout in seconds
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
-/// Agent memory token limit
+/// Agent memory token limit (increased to 200k for GLM-4.7)
 pub const AGENT_MAX_TOKENS: usize = 200_000;
 /// Threshold to trigger memory compaction
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact

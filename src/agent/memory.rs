@@ -16,6 +16,9 @@ pub struct AgentMessage {
     pub role: MessageRole,
     /// Text content of the message
     pub content: String,
+    /// Optional reasoning/thinking content (for models that support it, e.g., GLM-4.7)
+    /// This is counted towards token limits but not shown to user
+    pub reasoning: Option<String>,
 }
 
 /// Role of a message sender in agent memory
@@ -35,6 +38,7 @@ impl AgentMessage {
         Self {
             role: MessageRole::System,
             content: content.into(),
+            reasoning: None,
         }
     }
 
@@ -43,6 +47,7 @@ impl AgentMessage {
         Self {
             role: MessageRole::User,
             content: content.into(),
+            reasoning: None,
         }
     }
 
@@ -51,6 +56,19 @@ impl AgentMessage {
         Self {
             role: MessageRole::Assistant,
             content: content.into(),
+            reasoning: None,
+        }
+    }
+
+    /// Create a new assistant message with reasoning/thinking
+    pub fn assistant_with_reasoning(
+        content: impl Into<String>,
+        reasoning: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+            reasoning: Some(reasoning.into()),
         }
     }
 }
@@ -81,7 +99,13 @@ impl AgentMemory {
 
     /// Add a message to memory, triggering compaction if needed
     pub fn add_message(&mut self, msg: AgentMessage) {
-        let msg_tokens = Self::count_tokens(&msg.content);
+        let mut msg_tokens = Self::count_tokens(&msg.content);
+
+        // Also count reasoning tokens (GLM-4.7 thinking process)
+        if let Some(ref reasoning) = msg.reasoning {
+            msg_tokens += Self::count_tokens(reasoning);
+        }
+
         self.token_count += msg_tokens;
         self.messages.push(msg);
 
@@ -158,7 +182,14 @@ impl AgentMemory {
         self.token_count = self
             .messages
             .iter()
-            .map(|m| Self::count_tokens(&m.content))
+            .map(|m| {
+                let mut tokens = Self::count_tokens(&m.content);
+                // Also count reasoning tokens (GLM-4.7 thinking process)
+                if let Some(ref reasoning) = m.reasoning {
+                    tokens += Self::count_tokens(reasoning);
+                }
+                tokens
+            })
             .sum();
 
         info!(

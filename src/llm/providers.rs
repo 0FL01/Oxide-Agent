@@ -120,75 +120,6 @@ impl MistralProvider {
         }
     }
 
-    /// Chat completion with tool calling support for agent mode
-    ///
-    /// # Errors
-    ///
-    /// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` on non-success status codes,
-    /// or `LlmError::JsonError` if parsing fails.
-    pub async fn chat_with_tools(
-        &self,
-        system_prompt: &str,
-        history: &[super::Message],
-        tools: &[super::ToolDefinition],
-        model_id: &str,
-        max_tokens: u32,
-    ) -> Result<super::ChatResponse, super::LlmError> {
-        // Manually implement request to handle missing "type" field in tool_calls
-        // which async-openai strictly requires but Mistral/OpenRouter might omit.
-
-        let url = "https://api.mistral.ai/v1/chat/completions";
-
-        let messages = Self::prepare_messages(system_prompt, history);
-
-        // Add tool definitions
-        let openai_tools: Vec<serde_json::Value> = tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters
-                    }
-                })
-            })
-            .collect();
-
-        let body = json!({
-            "model": model_id,
-            "messages": messages,
-            "tools": openai_tools,
-            "max_tokens": max_tokens,
-            "temperature": 0.7
-        });
-
-        let response = self
-            .http_client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| super::LlmError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(super::LlmError::ApiError(format!(
-                "Mistral API error: {status} - {error_text}"
-            )));
-        }
-
-        let res_json: LenientResponse = response
-            .json()
-            .await
-            .map_err(|e| super::LlmError::JsonError(e.to_string()))?;
-
-        Self::parse_mistral_response(&res_json)
-    }
-
     fn prepare_messages(system_prompt: &str, history: &[super::Message]) -> Vec<serde_json::Value> {
         let mut messages = vec![json!({
             "role": "system",
@@ -279,6 +210,7 @@ impl MistralProvider {
             content,
             tool_calls,
             finish_reason,
+            reasoning_content: None, // Mistral doesn't support reasoning
         })
     }
 }
@@ -323,12 +255,115 @@ impl LlmProvider for MistralProvider {
     ) -> Result<String, LlmError> {
         Err(LlmError::Unknown("Not implemented for Mistral".to_string()))
     }
+
+    /// Chat completion with tool calling support for agent mode
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` on non-success status codes,
+    /// or `LlmError::JsonError` if parsing fails.
+    async fn chat_with_tools(
+        &self,
+        system_prompt: &str,
+        history: &[super::Message],
+        tools: &[super::ToolDefinition],
+        model_id: &str,
+        max_tokens: u32,
+    ) -> Result<super::ChatResponse, super::LlmError> {
+        // Manually implement request to handle missing "type" field in tool_calls
+        // which async-openai strictly requires but Mistral/OpenRouter might omit.
+
+        let url = "https://api.mistral.ai/v1/chat/completions";
+
+        let messages = MistralProvider::prepare_messages(system_prompt, history);
+
+        // Add tool definitions
+        let openai_tools: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
+            })
+            .collect();
+
+        let body = json!({
+            "model": model_id,
+            "messages": messages,
+            "tools": openai_tools,
+            "max_tokens": max_tokens,
+            "temperature": 0.7
+        });
+
+        let response = self
+            .http_client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| super::LlmError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(super::LlmError::ApiError(format!(
+                "Mistral API error: {status} - {error_text}"
+            )));
+        }
+
+        let res_json: LenientResponse = response
+            .json()
+            .await
+            .map_err(|e| super::LlmError::JsonError(e.to_string()))?;
+
+        MistralProvider::parse_mistral_response(&res_json)
+    }
 }
 
 /// LLM provider implementation for Zai (`ZeroAI`)
 pub struct ZaiProvider {
     http_client: HttpClient,
     api_key: String,
+}
+
+// Streaming structures for ZAI tool calling with reasoning
+#[derive(serde::Deserialize, Debug)]
+struct ZaiStreamChunk {
+    choices: Vec<ZaiStreamChoice>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ZaiStreamChoice {
+    delta: ZaiStreamDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ZaiStreamDelta {
+    content: Option<String>,
+    reasoning_content: Option<String>,
+    tool_calls: Option<Vec<ZaiStreamToolCall>>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ZaiStreamToolCall {
+    index: usize,
+    id: Option<String>,
+    #[serde(rename = "type")]
+    _type: Option<String>,
+    function: Option<ZaiStreamFunction>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ZaiStreamFunction {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 impl ZaiProvider {
@@ -426,6 +461,237 @@ impl LlmProvider for ZaiProvider {
         Err(LlmError::Unknown(
             "Image analysis not supported by ZAI. GLM-4.7 is text-only.".to_string(),
         ))
+    }
+
+    /// Chat completion with tool calling support for agent mode
+    /// Supports streaming tool calls and thinking/reasoning (always enabled for GLM-4.7)
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` on non-success status codes,
+    /// or `LlmError::JsonError` if parsing fails.
+    async fn chat_with_tools(
+        &self,
+        system_prompt: &str,
+        history: &[super::Message],
+        tools: &[super::ToolDefinition],
+        model_id: &str,
+        max_tokens: u32,
+    ) -> Result<super::ChatResponse, super::LlmError> {
+        use futures_util::StreamExt;
+        use std::collections::HashMap;
+
+        debug!(
+            "ZAI: Starting tool-enabled chat completion (model: {model_id}, tools: {}, history: {})",
+            tools.len(),
+            history.len()
+        );
+
+        let url = "https://api.z.ai/api/paas/v4/chat/completions";
+
+        // Prepare messages
+        let mut messages = vec![json!({"role": "system", "content": system_prompt})];
+        for msg in history {
+            match msg.role.as_str() {
+                "tool" => {
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content
+                    }));
+                }
+                "assistant" => {
+                    let mut m = json!({
+                        "role": "assistant",
+                        "content": msg.content
+                    });
+
+                    // If we have tool calls, include them
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        m["tool_calls"] = json!(api_tool_calls);
+                    }
+
+                    messages.push(m);
+                }
+                _ => {
+                    messages.push(json!({
+                        "role": msg.role,
+                        "content": msg.content
+                    }));
+                }
+            }
+        }
+
+        // Prepare tools in OpenAI format
+        let openai_tools: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
+            })
+            .collect();
+
+        let body = json!({
+            "model": model_id,
+            "messages": messages,
+            "tools": openai_tools,
+            "max_tokens": max_tokens,
+            "temperature": 0.95,
+            "stream": true,
+            "tool_stream": true,
+            "thinking": {
+                "type": "enabled",
+                "clear_thinking": true
+            }
+        });
+
+        let response = self
+            .http_client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://opencode.ai/")
+            .header("X-Title", "opencode")
+            .header(
+                "User-Agent",
+                "Opencode/0.1.0 (compatible; ai-sdk/openai-compatible)",
+            )
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::ApiError(format!(
+                "ZAI API error: {status} - {error_text}"
+            )));
+        }
+
+        // Process streaming response
+        let mut stream = response.bytes_stream();
+        let mut reasoning_content = String::new();
+        let mut content = String::new();
+        let mut final_tool_calls: HashMap<usize, super::ToolCall> = HashMap::new();
+        let mut finish_reason = String::from("unknown");
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.map_err(|e| LlmError::NetworkError(e.to_string()))?;
+
+            // Parse SSE format: "data: {json}\n\n"
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            for line in chunk_str.lines() {
+                if let Some(json_str) = line.strip_prefix("data: ") {
+                    if json_str.trim() == "[DONE]" {
+                        break;
+                    }
+
+                    let parsed: ZaiStreamChunk = serde_json::from_str(json_str)
+                        .map_err(|e| LlmError::JsonError(format!("Failed to parse chunk: {e}")))?;
+
+                    if let Some(choice) = parsed.choices.first() {
+                        let delta = &choice.delta;
+
+                        // Collect reasoning/thinking
+                        if let Some(ref reasoning) = delta.reasoning_content {
+                            reasoning_content.push_str(reasoning);
+                        }
+
+                        // Collect content
+                        if let Some(ref text) = delta.content {
+                            content.push_str(text);
+                        }
+
+                        // Collect tool calls
+                        if let Some(ref tool_calls) = delta.tool_calls {
+                            for tc in tool_calls {
+                                let index = tc.index;
+                                if let Some(existing) = final_tool_calls.get_mut(&index) {
+                                    // Append to existing tool call
+                                    if let Some(ref func) = tc.function {
+                                        if let Some(ref args) = func.arguments {
+                                            existing.function.arguments.push_str(args);
+                                        }
+                                    }
+                                } else {
+                                    // New tool call
+                                    if let (Some(id), Some(func)) = (&tc.id, &tc.function) {
+                                        if let Some(ref name) = func.name {
+                                            final_tool_calls.insert(
+                                                index,
+                                                super::ToolCall {
+                                                    id: id.clone(),
+                                                    function: super::ToolCallFunction {
+                                                        name: name.clone(),
+                                                        arguments: func
+                                                            .arguments
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                    },
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Update finish reason
+                        if let Some(ref reason) = choice.finish_reason {
+                            finish_reason = reason.clone();
+                        }
+                    }
+                }
+            }
+        }
+
+        debug!(
+            "ZAI: Tool call completed (tool_calls: {}, reasoning_len: {}, content_len: {})",
+            final_tool_calls.len(),
+            reasoning_content.len(),
+            content.len()
+        );
+
+        // Convert HashMap to Vec, sorted by index
+        let mut tool_calls_vec: Vec<_> = final_tool_calls.into_iter().collect();
+        tool_calls_vec.sort_by_key(|(index, _)| *index);
+        let tool_calls = tool_calls_vec.into_iter().map(|(_, tc)| tc).collect();
+
+        Ok(super::ChatResponse {
+            content: if content.is_empty() {
+                None
+            } else {
+                Some(content)
+            },
+            tool_calls,
+            finish_reason,
+            reasoning_content: if reasoning_content.is_empty() {
+                None
+            } else {
+                Some(reasoning_content)
+            },
+        })
     }
 }
 

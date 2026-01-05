@@ -151,6 +151,8 @@ pub struct ChatResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Reason why the model stopped generating
     pub finish_reason: String,
+    /// Optional reasoning/thinking process (for models that support it, e.g., GLM-4.7)
+    pub reasoning_content: Option<String>,
 }
 
 /// Interface for all LLM providers
@@ -182,6 +184,23 @@ pub trait LlmProvider: Send + Sync {
         system_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError>;
+
+    /// Chat completion with tool calling support (optional, not all providers support it)
+    ///
+    /// Default implementation returns an error indicating tool calling is not supported.
+    /// Providers that support tool calling (e.g., Mistral, ZAI) should override this method.
+    async fn chat_with_tools(
+        &self,
+        _system_prompt: &str,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _model_id: &str,
+        _max_tokens: u32,
+    ) -> Result<ChatResponse, LlmError> {
+        Err(LlmError::Unknown(
+            "Tool calling not supported by this provider".to_string(),
+        ))
+    }
 }
 
 /// Unified client for interacting with multiple LLM providers
@@ -316,7 +335,6 @@ impl LlmClient {
     }
 
     /// Chat completion with tool calling support (for agent mode)
-    /// Currently only supported by Mistral provider (Devstral model)
     ///
     /// # Errors
     ///
@@ -338,28 +356,19 @@ impl LlmClient {
             .map(|(_, info)| info)
             .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))?;
 
-        // Only Mistral provider supports tool calling currently
-        if model_info.provider != "mistral" {
-            let provider = model_info.provider;
-            return Err(LlmError::Unknown(format!(
-                "Tool calling not supported for provider: {provider}"
-            )));
-        }
-
-        let mistral = self
-            .mistral
-            .as_ref()
-            .ok_or_else(|| LlmError::MissingConfig("mistral".to_string()))?;
+        // Get provider and call its chat_with_tools method (via trait)
+        let provider = self.get_provider(model_info.provider)?;
 
         debug!(
             model = model_name,
+            provider = model_info.provider,
             tools_count = tools.len(),
             messages_count = messages.len(),
             "Sending tool-enabled request to LLM"
         );
 
         let start = std::time::Instant::now();
-        let result = mistral
+        let result = provider
             .chat_with_tools(
                 system_prompt,
                 messages,
@@ -376,6 +385,7 @@ impl LlmClient {
                 duration_ms = duration.as_millis(),
                 tool_calls_count = resp.tool_calls.len(),
                 finish_reason = %resp.finish_reason,
+                has_reasoning = resp.reasoning_content.is_some(),
                 "Received tool response from LLM"
             );
         } else if let Err(e) = &result {

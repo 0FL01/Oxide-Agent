@@ -7,7 +7,7 @@ use super::memory::AgentMessage;
 use super::session::AgentSession;
 use crate::agent::providers::TodoList;
 use crate::config::{
-    AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_MODEL, AGENT_TIMEOUT_SECS,
+    get_agent_model, AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_TIMEOUT_SECS,
 };
 use crate::llm::{LlmClient, Message, ToolCall, ToolDefinition};
 use anyhow::{anyhow, Result};
@@ -246,7 +246,12 @@ impl AgentExecutor {
 
             let response = self
                 .llm_client
-                .chat_with_tools(ctx.system_prompt, ctx.messages, ctx.tools, AGENT_MODEL)
+                .chat_with_tools(
+                    ctx.system_prompt,
+                    ctx.messages,
+                    ctx.tools,
+                    get_agent_model(),
+                )
                 .await;
 
             if let Err(ref e) = response {
@@ -259,10 +264,16 @@ impl AgentExecutor {
 
             let response = response.map_err(|e| anyhow!("LLM call failed: {e}"))?;
 
+            // Log reasoning/thinking if present
+            if let Some(ref reasoning) = response.reasoning_content {
+                debug!(reasoning_len = reasoning.len(), "Model reasoning received");
+            }
+
             if response.tool_calls.is_empty() {
                 match self
                     .handle_final_response(
                         response.content,
+                        response.reasoning_content,
                         iteration,
                         &mut continuation_count,
                         ctx,
@@ -286,6 +297,7 @@ impl AgentExecutor {
     async fn handle_final_response(
         &mut self,
         content: Option<String>,
+        reasoning: Option<String>,
         iteration: usize,
         continuation_count: &mut usize,
         ctx: &mut AgentLoopContext<'_>,
@@ -330,9 +342,20 @@ impl AgentExecutor {
             return Ok(None);
         }
 
-        self.session
-            .memory
-            .add_message(AgentMessage::assistant(&final_response));
+        // Save to memory with reasoning (if present)
+        if let Some(reasoning_content) = reasoning {
+            self.session
+                .memory
+                .add_message(AgentMessage::assistant_with_reasoning(
+                    &final_response,
+                    reasoning_content,
+                ));
+        } else {
+            self.session
+                .memory
+                .add_message(AgentMessage::assistant(&final_response));
+        }
+
         self.session.complete();
         if let Some(tx) = ctx.progress_tx {
             let _ = tx.send(AgentEvent::Finished).await;
