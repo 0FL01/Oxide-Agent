@@ -152,7 +152,7 @@ pub async fn handle_agent_message(
     }
 
     // Get or create session
-    ensure_session_exists(user_id, chat_id.0, &llm).await;
+    ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
 
     // Preprocess input
     let preprocessor = Preprocessor::new(llm.clone(), user_id);
@@ -240,14 +240,26 @@ pub async fn handle_agent_message(
     Ok(())
 }
 
-async fn ensure_session_exists(user_id: i64, chat_id: i64, llm: &Arc<LlmClient>) {
+async fn ensure_session_exists(
+    user_id: i64,
+    chat_id: i64,
+    llm: &Arc<LlmClient>,
+    storage: &Arc<R2Storage>,
+) {
     let has_session = {
         let sessions = AGENT_SESSIONS.read().await;
         sessions.contains_key(&user_id)
     };
 
     if !has_session {
-        let session = AgentSession::new(user_id, chat_id);
+        let mut session = AgentSession::new(user_id, chat_id);
+
+        // Load saved agent memory if exists
+        if let Ok(Some(saved_memory)) = storage.load_agent_memory(user_id).await {
+            session.memory = saved_memory;
+            info!("Loaded agent memory for user {user_id} in ensure_session_exists");
+        }
+
         let executor = AgentExecutor::new(llm.clone(), session);
         let mut sessions = AGENT_SESSIONS.write().await;
         sessions.insert(user_id, executor);
