@@ -325,7 +325,7 @@ impl LlmProvider for MistralProvider {
     }
 }
 
-/// LLM provider implementation for Zai (ZeroAI)
+/// LLM provider implementation for Zai (`ZeroAI`)
 pub struct ZaiProvider {
     client: Client<OpenAIConfig>,
 }
@@ -542,7 +542,7 @@ impl LlmProvider for GeminiProvider {
     }
 }
 
-/// LLM provider implementation for OpenRouter
+/// LLM provider implementation for `OpenRouter`
 pub struct OpenRouterProvider {
     http_client: HttpClient,
     api_key: String,
@@ -551,7 +551,7 @@ pub struct OpenRouterProvider {
 }
 
 impl OpenRouterProvider {
-    /// Create a new OpenRouter provider instance
+    /// Create a new `OpenRouter` provider instance
     #[must_use]
     pub fn new(api_key: String, site_url: String, site_name: String) -> Self {
         Self {

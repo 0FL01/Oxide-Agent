@@ -616,7 +616,7 @@ pub async fn handle_document(
 ) -> Result<()> {
     let state = dialogue.get().await?.unwrap_or(State::Start);
 
-    if let State::AgentMode = state {
+    if matches!(state, State::AgentMode) {
         Box::pin(super::agent_handlers::handle_agent_message(
             bot, msg, storage, llm, dialogue,
         ))

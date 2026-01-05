@@ -1,0 +1,12 @@
+[target.'cfg(all())']
+rustflags = [
+    "-F", "clippy::too_many_arguments",
+    "-D", "clippy::type_complexity",
+    "-F", "clippy::cognitive_complexity",
+
+    "-W", "clippy::pedantic",
+    "-W", "clippy::nursery",
+    "-D", "clippy::unwrap_used",
+    "-W", "clippy::expect_used",
+    "-D", "warnings",
+]

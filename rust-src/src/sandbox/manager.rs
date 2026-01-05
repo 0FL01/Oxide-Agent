@@ -349,17 +349,16 @@ impl SandboxManager {
             .ok_or_else(|| anyhow!("Sandbox not running"))?;
 
         let path = std::path::Path::new(container_path);
-        let parent = path
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/workspace".to_string());
+        let parent = path.parent().map_or_else(
+            || "/workspace".to_string(),
+            |p| p.to_string_lossy().to_string(),
+        );
         let file_name = path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "file".to_string());
+            .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
 
         // Ensure parent directory exists
-        self.exec_command(&format!("mkdir -p '{}'", parent)).await?;
+        self.exec_command(&format!("mkdir -p '{parent}'")).await?;
 
         // Create tar archive in memory
         let mut tar_buffer = Vec::new();
@@ -492,7 +491,7 @@ impl SandboxManager {
         let size_str = result.stdout.split_whitespace().next().unwrap_or("0");
         size_str
             .parse::<u64>()
-            .map_err(|e| anyhow!("Failed to parse uploads size: {}", e))
+            .map_err(|e| anyhow!("Failed to parse uploads size: {e}"))
     }
 
     /// Destroy the sandbox container

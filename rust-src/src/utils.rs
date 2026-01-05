@@ -188,7 +188,7 @@ pub fn format_text(text: &str) -> String {
 
 /// Splits a long message into multiple parts that fit within Telegram's message limit.
 ///
-/// This function respects code blocks (```) and tries to close/reopen them
+/// This function respects code blocks (triple backticks) and tries to close/reopen them
 /// across message boundaries to maintain proper formatting in Telegram.
 ///
 /// # Arguments
@@ -208,6 +208,7 @@ pub fn format_text(text: &str) -> String {
 /// let parts = split_long_message(&long_msg, 4096);
 /// assert!(parts.len() > 1);
 /// ```
+#[must_use]
 pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
     if message.is_empty() {
         return Vec::new();

@@ -12,65 +12,63 @@ use teloxide::prelude::*;
 use tracing::{error, info};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
-use std::sync::LazyLock;
+/// Regex patterns for redacting sensitive data
+struct RedactionPatterns {
+    token1: Regex,
+    token2: Regex,
+    token3: Regex,
+    r2_1: Regex,
+    r2_2: Regex,
+    r2_3: Regex,
+    r2_4: Regex,
+}
 
-static RE_TOKEN1: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(https?://[^/]+/bot)([0-9]+:[A-Za-z0-9_-]+)(/[^'\s]*)")
-        .expect("valid regex pattern")
-});
-static RE_TOKEN2: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([0-9]{8,10}:[A-Za-z0-9_-]{35})").expect("valid regex pattern"));
-static RE_TOKEN3: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(bot[0-9]{8,10}:)[A-Za-z0-9_-]+").expect("valid regex pattern"));
-static RE_R2_1: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"R2_ACCESS_KEY_ID=[^\s&]+").expect("valid regex pattern"));
-static RE_R2_2: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"R2_SECRET_ACCESS_KEY=[^\s&]+").expect("valid regex pattern"));
-static RE_R2_3: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"'aws_access_key_id': '[^']*'").expect("valid regex pattern"));
-static RE_R2_4: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"'aws_secret_access_key': '[^']*'").expect("valid regex pattern"));
+impl RedactionPatterns {
+    /// Initialize all regex patterns
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any regex pattern is invalid
+    fn new() -> Result<Self, regex::Error> {
+        Ok(Self {
+            token1: Regex::new(r"(https?://[^/]+/bot)([0-9]+:[A-Za-z0-9_-]+)(/['\s]*)")?,
+            token2: Regex::new(r"([0-9]{8,10}:[A-Za-z0-9_-]{35})")?,
+            token3: Regex::new(r"(bot[0-9]{8,10}:)[A-Za-z0-9_-]+")?,
+            r2_1: Regex::new(r"R2_ACCESS_KEY_ID=[^\s&]+")?,
+            r2_2: Regex::new(r"R2_SECRET_ACCESS_KEY=[^\s&]+")?,
+            r2_3: Regex::new(r"'aws_access_key_id': '[^']*'")?,
+            r2_4: Regex::new(r"'aws_secret_access_key': '[^']*'")?,
+        })
+    }
 
-fn redact(input: &str) -> String {
-    let mut output = input.to_string();
-    output = RE_TOKEN1
-        .replace_all(&output, "$1[TELEGRAM_TOKEN]$3")
-        .to_string();
-    output = RE_TOKEN2
-        .replace_all(&output, "[TELEGRAM_TOKEN]")
-        .to_string();
-    output = RE_TOKEN3
-        .replace_all(&output, "$1[TELEGRAM_TOKEN]")
-        .to_string();
-    output = RE_R2_1
-        .replace_all(&output, "R2_ACCESS_KEY_ID=[MASKED]")
-        .to_string();
-    output = RE_R2_2
-        .replace_all(&output, "R2_SECRET_ACCESS_KEY=[MASKED]")
-        .to_string();
-    output = RE_R2_3
-        .replace_all(&output, "'aws_access_key_id': '[MASKED]'")
-        .to_string();
-    output = RE_R2_4
-        .replace_all(&output, "'aws_secret_access_key': '[MASKED]'")
-        .to_string();
-    output
+    fn redact(&self, input: &str) -> String {
+        let mut output = input.to_string();
+        output = self.token1.replace_all(&output, "$1[TELEGRAM_TOKEN]$3").to_string();
+        output = self.token2.replace_all(&output, "[TELEGRAM_TOKEN]").to_string();
+        output = self.token3.replace_all(&output, "$1[TELEGRAM_TOKEN]").to_string();
+        output = self.r2_1.replace_all(&output, "R2_ACCESS_KEY_ID=[MASKED]").to_string();
+        output = self.r2_2.replace_all(&output, "R2_SECRET_ACCESS_KEY=[MASKED]").to_string();
+        output = self.r2_3.replace_all(&output, "'aws_access_key_id': '[MASKED]'").to_string();
+        output = self.r2_4.replace_all(&output, "'aws_secret_access_key': '[MASKED]'").to_string();
+        output
+    }
 }
 
 struct RedactingWriter<W: Write> {
     inner: W,
+    patterns: Arc<RedactionPatterns>,
 }
 
 impl<W: Write> RedactingWriter<W> {
-    const fn new(inner: W) -> Self {
-        Self { inner }
+    const fn new(inner: W, patterns: Arc<RedactionPatterns>) -> Self {
+        Self { inner, patterns }
     }
 }
 
 impl<W: Write> Write for RedactingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let s = String::from_utf8_lossy(buf);
-        let redacted = redact(&s);
+        let redacted = self.patterns.redact(&s);
         self.inner.write_all(redacted.as_bytes())?;
         // We return the original buffer length to satisfy the contract,
         // even if the redacted string length differs.
@@ -84,11 +82,12 @@ impl<W: Write> Write for RedactingWriter<W> {
 
 struct RedactingMakeWriter<F> {
     make_inner: F,
+    patterns: Arc<RedactionPatterns>,
 }
 
 impl<F> RedactingMakeWriter<F> {
-    const fn new(make_inner: F) -> Self {
-        Self { make_inner }
+    const fn new(make_inner: F, patterns: Arc<RedactionPatterns>) -> Self {
+        Self { make_inner, patterns }
     }
 }
 
@@ -100,7 +99,7 @@ where
     type Writer = RedactingWriter<W>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        RedactingWriter::new((self.make_inner)())
+        RedactingWriter::new((self.make_inner)(), self.patterns.clone())
     }
 }
 
@@ -109,8 +108,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load .env file
     dotenv().ok();
 
+    // Initialize redaction patterns early (before logging)
+    let patterns = Arc::new(RedactionPatterns::new().map_err(|e| {
+        eprintln!("Failed to compile regex patterns: {e}");
+        e
+    })?);
+
     // Setup logging with redaction
-    init_logging();
+    init_logging(patterns);
 
     info!("Starting Another Chat TG Bot (Rust port)...");
 
@@ -145,8 +150,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn init_logging() {
-    let make_writer = RedactingMakeWriter::new(io::stderr);
+fn init_logging(patterns: Arc<RedactionPatterns>) {
+    let make_writer = RedactingMakeWriter::new(io::stderr, patterns);
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
