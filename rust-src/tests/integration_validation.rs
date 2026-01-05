@@ -10,7 +10,7 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 #[tokio::test]
 #[ignore = "Requires real credentials"]
 #[allow(clippy::too_many_lines)]
-async fn test_credentials_validation() {
+async fn test_credentials_validation() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load .env file correctly
     // Rust tests run from the package root (rust-src), so .env is one level up
     let env_path = Path::new("../.env");
@@ -35,11 +35,11 @@ async fn test_credentials_validation() {
     let (telegram_token, r2_endpoint, r2_access, r2_secret, r2_bucket) = match Settings::new() {
         Ok(s) => (
             s.telegram_token,
-            s.r2_endpoint_url.expect("R2_ENDPOINT_URL missing"),
-            s.r2_access_key_id.expect("R2_ACCESS_KEY_ID missing"),
+            s.r2_endpoint_url.ok_or("R2_ENDPOINT_URL missing")?,
+            s.r2_access_key_id.ok_or("R2_ACCESS_KEY_ID missing")?,
             s.r2_secret_access_key
-                .expect("R2_SECRET_ACCESS_KEY missing"),
-            s.r2_bucket_name.expect("R2_BUCKET_NAME missing"),
+                .ok_or("R2_SECRET_ACCESS_KEY missing")?,
+            s.r2_bucket_name.ok_or("R2_BUCKET_NAME missing")?,
         ),
         Err(e) => {
             info!(
@@ -50,10 +50,10 @@ async fn test_credentials_validation() {
             (
                 std::env::var("TELEGRAM_TOKEN")
                     .unwrap_or_else(|_| "dummy_token_for_s3_verification".to_string()),
-                std::env::var("R2_ENDPOINT_URL").expect("R2_ENDPOINT_URL missing"),
-                std::env::var("R2_ACCESS_KEY_ID").expect("R2_ACCESS_KEY_ID missing"),
-                std::env::var("R2_SECRET_ACCESS_KEY").expect("R2_SECRET_ACCESS_KEY missing"),
-                std::env::var("R2_BUCKET_NAME").expect("R2_BUCKET_NAME missing"),
+                std::env::var("R2_ENDPOINT_URL")?,
+                std::env::var("R2_ACCESS_KEY_ID")?,
+                std::env::var("R2_SECRET_ACCESS_KEY")?,
+                std::env::var("R2_BUCKET_NAME")?,
             )
         }
     };
@@ -141,4 +141,5 @@ async fn test_credentials_validation() {
     info!("LLM Client configuration looks valid.");
 
     info!("Credentials validation test passed successfully.");
+    Ok(())
 }

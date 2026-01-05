@@ -114,7 +114,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_extract_json_content_simple() {
+    fn test_extract_json_content_simple() -> Result<(), Box<dyn std::error::Error>> {
         let response = json!({
             "choices": [{
                 "message": {
@@ -123,12 +123,13 @@ mod tests {
             }]
         });
 
-        let result = extract_json_content(&response, &["choices", "0", "message", "content"]);
-        assert_eq!(result.expect("Failed to extract content"), "Hello, world!");
+        let result = extract_json_content(&response, &["choices", "0", "message", "content"])?;
+        assert_eq!(result, "Hello, world!");
+        Ok(())
     }
 
     #[test]
-    fn test_extract_json_content_gemini_format() {
+    fn test_extract_json_content_gemini_format() -> Result<(), Box<dyn std::error::Error>> {
         let response = json!({
             "candidates": [{
                 "content": {
@@ -142,11 +143,9 @@ mod tests {
         let result = extract_json_content(
             &response,
             &["candidates", "0", "content", "parts", "0", "text"],
-        );
-        assert_eq!(
-            result.expect("Failed to extract Gemini content"),
-            "Gemini response"
-        );
+        )?;
+        assert_eq!(result, "Gemini response");
+        Ok(())
     }
 
     #[test]

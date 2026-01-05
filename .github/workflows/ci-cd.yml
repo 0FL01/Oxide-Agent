@@ -127,6 +127,7 @@ jobs:
           target: "${{ secrets.SERVICE_DIR }}/tmp/"
           strip_components: 0
 
+    # Раннер использует fish shell by default
       - name: Build and Deploy on Server
         uses: appleboy/ssh-action@master
         env:

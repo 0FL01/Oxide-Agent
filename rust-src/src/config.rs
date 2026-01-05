@@ -167,12 +167,12 @@ mod tests {
 
     // Tests run sequentially to avoid environment variable race conditions
     #[test]
-    fn test_config_env_loading() {
+    fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
         // 1. Test standard loading
         env::set_var("R2_ENDPOINT_URL", "https://example.com");
         env::set_var("TELEGRAM_TOKEN", "dummy_token");
 
-        let settings = Settings::new().expect("Failed to create settings");
+        let settings = Settings::new()?;
         assert_eq!(
             settings.r2_endpoint_url,
             Some("https://example.com".to_string())
@@ -185,7 +185,7 @@ mod tests {
         env::set_var("R2_ENDPOINT_URL", "");
         env::set_var("TELEGRAM_TOKEN", "dummy_token");
 
-        let settings = Settings::new().expect("Failed to create settings");
+        let settings = Settings::new()?;
         // With our fallback logic, if it's empty in env, config might ignore it (or treating as unset).
         // Our fallback only sets if !val.is_empty().
         // So it should be None.
@@ -198,7 +198,7 @@ mod tests {
         env::set_var("R2_ENDPOINT_URL", "https://mapping.test");
         env::set_var("TELEGRAM_TOKEN", "dummy");
 
-        let settings = Settings::new().expect("Failed to create settings");
+        let settings = Settings::new()?;
         assert_eq!(
             settings.r2_endpoint_url,
             Some("https://mapping.test".to_string())
@@ -206,6 +206,7 @@ mod tests {
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("TELEGRAM_TOKEN");
+        Ok(())
     }
 
     #[test]

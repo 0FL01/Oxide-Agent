@@ -575,36 +575,26 @@ mod tests {
     // Integration test - requires Docker
     #[tokio::test]
     #[ignore = "Requires Docker daemon"]
-    async fn test_sandbox_lifecycle() {
-        let mut sandbox = SandboxManager::new(12345)
-            .await
-            .expect("Failed to create SandboxManager");
+    async fn test_sandbox_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
+        let mut sandbox = SandboxManager::new(12345).await?;
 
         // Create sandbox
-        sandbox
-            .create_sandbox()
-            .await
-            .expect("Failed to create sandbox container");
+        sandbox.create_sandbox().await?;
         assert!(sandbox.is_running());
 
         // Execute command
-        let result = sandbox
-            .exec_command("echo 'Hello, World!'")
-            .await
-            .expect("Failed to execute command");
+        let result = sandbox.exec_command("echo 'Hello, World!'").await?;
         assert!(result.success());
         assert!(result.stdout.contains("Hello, World!"));
 
         // Python test
-        let result = sandbox
-            .exec_command("python3 -c \"print(2 + 2)\"")
-            .await
-            .expect("Failed to execute python command");
+        let result = sandbox.exec_command("python3 -c \"print(2 + 2)\"").await?;
         assert!(result.success());
         assert!(result.stdout.contains('4'));
 
         // Cleanup
-        sandbox.destroy().await.expect("Failed to destroy sandbox");
+        sandbox.destroy().await?;
         assert!(!sandbox.is_running());
+        Ok(())
     }
 }

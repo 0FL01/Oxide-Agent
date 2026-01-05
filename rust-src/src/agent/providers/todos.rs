@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_todos_provider_execute() {
+    async fn test_todos_write() -> Result<(), Box<dyn std::error::Error>> {
         let todos = Arc::new(Mutex::new(TodoList::new()));
         let provider = TodosProvider::new(todos.clone());
 
@@ -378,10 +378,7 @@ mod tests {
             ]
         }"#;
 
-        let result = provider
-            .execute("write_todos", args)
-            .await
-            .expect("Failed to execute todos tool");
+        let result = provider.execute("write_todos", args).await?;
         assert!(result.contains("Список задач обновлён"));
         assert!(result.contains("1/3 выполнено"));
         assert!(result.contains("Task 2"));
@@ -390,5 +387,6 @@ mod tests {
         assert_eq!(list.items.len(), 3);
         assert_eq!(list.pending_count(), 2);
         drop(list);
+        Ok(())
     }
 }
