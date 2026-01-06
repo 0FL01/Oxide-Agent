@@ -4,13 +4,12 @@
 
 #[cfg(test)]
 mod xml_sanitization_tests {
-    use another_chat_rs::agent::executor::AgentExecutor;
 
     #[test]
     fn test_sanitize_xml_tags_basic() {
         // Test basic XML tag removal
         let input = "Some text &lt;tool_call&gt;content&lt;/tool_call&gt; more text";
-        let expected = "Some text content more text";
+        let _expected = "Some text content more text";
 
         // Access via reflection or make function pub(crate)
         // For now, we'll test the integration through handle_final_response
