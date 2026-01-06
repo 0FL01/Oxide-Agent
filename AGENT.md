@@ -12,7 +12,7 @@
   - ТОЛЬКО ОДНА задача может быть `in_progress` одновременно
 
 ### Sandbox (выполнение кода):
-- **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, curl, wget, date, cat, ls, grep и другие стандартные утилиты, если утилиты нету - то поставь её)
+- **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep и другие стандартные утилиты, если утилиты нету - то поставь её)
 - **write_file**: записать содержимое в файл
 - **read_file**: прочитать содержимое файла
 - **send_file_to_user**: отправить файл из песочницы пользователю в Telegram

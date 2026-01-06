@@ -149,7 +149,7 @@ impl ToolProvider for SandboxProvider {
         vec![
             ToolDefinition {
                 name: "execute_command".to_string(),
-                description: "Execute a bash command in the isolated sandbox environment. Available commands include: python3, pip, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
+                description: "Execute a bash command in the isolated sandbox environment. Available commands include: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {

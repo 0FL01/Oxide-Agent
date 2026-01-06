@@ -1,6 +1,6 @@
-FROM python:3.12-slim
+FROM debian:trixie-slim
 
-# Install basic tools
+# Install system packages including ffmpeg and Python
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     jq \
@@ -10,10 +10,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iputils-ping \
     procps \
     net-tools \
+    ffmpeg \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+# Install yt-dlp (latest version via pip)
+RUN pip install --no-cache-dir --break-system-packages yt-dlp
+
 # Install common Python packages
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
     requests \
     httpx \
     beautifulsoup4 \

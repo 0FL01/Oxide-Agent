@@ -667,7 +667,7 @@ impl AgentExecutor {
                 error!("Failed to load AGENT.md: {e}. Using default fallback prompt.");
                 r"Ты - AI-агент с доступом к изолированной среде выполнения (sandbox) и веб-поиску.
 ## Доступные инструменты:
-- **execute_command**: выполнить bash-команду в sandbox
+- **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep и другие стандартные утилиты)
 - **write_file**: записать содержимое в файл
 - **read_file**: прочитать содержимое файла
 - **web_search**: поиск информации в интернете
