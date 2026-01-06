@@ -9,7 +9,7 @@ use crate::agent::providers::TodoList;
 use crate::config::{
     get_agent_model, AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_TIMEOUT_SECS,
 };
-use crate::llm::{LlmClient, Message, ToolCall, ToolDefinition};
+use crate::llm::{LlmClient, Message, ToolCall, ToolCallFunction, ToolDefinition};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::sync::Arc;
@@ -165,6 +165,135 @@ impl AgentExecutor {
         None
     }
 
+    /// Sanitize XML-like tags from response text
+    ///
+    /// This removes any XML-like tags that may have leaked from malformed LLM responses.
+    /// Examples: `<tool_call>`, `</tool_call>`, `<filepath>`, `<arg_key>`, etc.
+    fn sanitize_xml_tags(text: &str) -> String {
+        use lazy_regex::regex;
+
+        // Pattern to match opening and closing XML tags: <tag_name> or </tag_name>
+        // Matches lowercase letters, digits, underscores in tag names
+        let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
+
+        xml_tag_pattern.replace_all(text, "").to_string()
+    }
+
+    /// Try to parse a malformed tool call from content text
+    ///
+    /// This handles cases where the LLM generates XML-like syntax instead of proper JSON tool calls.
+    /// Example inputs:
+    /// - "read_file<filepath>/workspace/docker-compose.yml</tool_call>"
+    /// - "[Вызов инструментов: read_file]read_filepath..."
+    /// - "execute_command<command>ls -la</command>"
+    fn try_parse_malformed_tool_call(content: &str) -> Option<ToolCall> {
+        use lazy_regex::regex;
+        use uuid::Uuid;
+
+        // List of known tool names to look for
+        let tool_names = [
+            "read_file",
+            "write_file",
+            "execute_command",
+            "web_search",
+            "web_extract",
+            "list_files",
+            "send_file_to_user",
+            "write_todos",
+        ];
+
+        // Try to find a tool name in the content
+        for tool_name in &tool_names {
+            if !content.contains(tool_name) {
+                continue;
+            }
+
+            // Try different patterns to extract arguments
+            let arguments = match *tool_name {
+                "read_file" => {
+                    // Pattern: read_file<filepath>PATH</filepath> or read_filePATH</tool_call>
+                    if let Some(caps) = regex!(r"read_file.*?<filepath>(.*?)</").captures(content) {
+                        serde_json::json!({"filepath": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) =
+                        regex!(r"read_file(?:path)?([^\s<]+)").captures(content)
+                    {
+                        serde_json::json!({"filepath": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                "write_file" => {
+                    // Pattern: write_file<filepath>PATH</filepath><content>CONTENT</content>
+                    let filepath = regex!(r"<filepath>(.*?)</")
+                        .captures(content)
+                        .and_then(|c| c.get(1))
+                        .map(|m| m.as_str())
+                        .unwrap_or("");
+                    let file_content = regex!(r"<content>(.*?)</")
+                        .captures(content)
+                        .and_then(|c| c.get(1))
+                        .map(|m| m.as_str())
+                        .unwrap_or("");
+
+                    if !filepath.is_empty() {
+                        serde_json::json!({"filepath": filepath, "content": file_content})
+                    } else {
+                        continue;
+                    }
+                }
+                "execute_command" => {
+                    // Pattern: execute_command<command>CMD</command>
+                    if let Some(caps) = regex!(r"<command>(.*?)</").captures(content) {
+                        serde_json::json!({"command": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) =
+                        regex!(r"execute_command(?:command)?([^\s<]+)").captures(content)
+                    {
+                        serde_json::json!({"command": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                "list_files" => {
+                    // Pattern: list_files<directory>PATH</directory>
+                    if let Some(caps) = regex!(r"<directory>(.*?)</").captures(content) {
+                        serde_json::json!({"directory": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        // Default to current directory
+                        serde_json::json!({"directory": ""})
+                    }
+                }
+                "send_file_to_user" => {
+                    // Pattern: send_file_to_user<filepath>PATH</filepath>
+                    if let Some(caps) = regex!(r"<filepath>(.*?)</").captures(content) {
+                        serde_json::json!({"filepath": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+
+            // Construct a valid ToolCall
+            let arguments_str = serde_json::to_string(&arguments).ok()?;
+
+            warn!(
+                tool_name = tool_name,
+                arguments = %arguments_str,
+                "Recovered malformed tool call from content"
+            );
+
+            return Some(ToolCall {
+                id: format!("recovered_{}", Uuid::new_v4()),
+                function: ToolCallFunction {
+                    name: tool_name.to_string(),
+                    arguments: arguments_str,
+                },
+            });
+        }
+
+        None
+    }
+
     /// Execute a task with iterative tool calling (agentic loop)
     ///
     /// # Errors
@@ -269,11 +398,28 @@ impl AgentExecutor {
                 }
             }
 
-            let response = response.map_err(|e| anyhow!("LLM call failed: {e}"))?;
+            let mut response = response.map_err(|e| anyhow!("LLM call failed: {e}"))?;
 
             // Log reasoning/thinking if present
             if let Some(ref reasoning) = response.reasoning_content {
                 debug!(reasoning_len = reasoning.len(), "Model reasoning received");
+            }
+
+            // RECOVERY: Try to parse malformed tool calls from content
+            // This handles cases where LLM generates XML-like syntax instead of proper JSON tool calls
+            if response.tool_calls.is_empty() && response.content.is_some() {
+                if let Some(content_str) = response.content.as_ref() {
+                    if let Some(recovered_call) = Self::try_parse_malformed_tool_call(content_str) {
+                        warn!(
+                            model = %get_agent_model(),
+                            tool_name = %recovered_call.function.name,
+                            "METRIC: Recovered malformed tool call from content"
+                        );
+                        response.tool_calls.push(recovered_call);
+                        response.content =
+                            Some("[Tool call recovered from malformed response]".to_string());
+                    }
+                }
             }
 
             if response.tool_calls.is_empty() {
@@ -313,19 +459,27 @@ impl AgentExecutor {
         let mut final_response =
             content.unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
 
-        // ANTI-LEAK PROTECTION: Detect tool_call syntax leaking into final response
-        if final_response.contains("<arg_key>")
-            || final_response.contains("<arg_value>")
-            || final_response.contains("</arg_key>")
-            || final_response.contains("</arg_value>")
-        {
-            warn!("Detected leaked tool_call XML syntax in final response, sanitizing output");
-            // Remove tool_call artifacts from response
-            final_response = final_response
-                .replace("<arg_key>", "")
-                .replace("</arg_key>", "")
-                .replace("<arg_value>", "")
-                .replace("</arg_value>", "");
+        // ANTI-LEAK PROTECTION: Detect and sanitize XML-like syntax leaking into final response
+        // This handles malformed LLM responses where XML tags appear instead of proper tool calls
+        use lazy_regex::regex;
+        let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
+
+        if xml_tag_pattern.is_match(&final_response) {
+            let original_len = final_response.len();
+            warn!(
+                model = %crate::config::get_agent_model(),
+                iteration = iteration,
+                "Detected leaked XML syntax in final response, sanitizing output"
+            );
+
+            // Remove all XML-like tags
+            final_response = Self::sanitize_xml_tags(&final_response);
+
+            debug!(
+                original_len = original_len,
+                sanitized_len = final_response.len(),
+                "XML tags removed from response"
+            );
 
             // If response is now empty or too short, force continuation
             if final_response.trim().len() < 10 {
@@ -342,7 +496,13 @@ impl AgentExecutor {
                         .await;
                 }
                 ctx.messages.push(Message::system(
-                    "[СИСТЕМА: Ваш предыдущий ответ содержал служебный синтаксис вместо нормального текста. Пожалуйста, предоставьте полноценный текстовый ответ на запрос пользователя, используя результаты уже выполненных инструментов.]"
+                    "[СИСТЕМА: Ваш предыдущий ответ содержал служебный XML-синтаксис вместо нормального текста. \
+                    ВАЖНО: \
+                    1. НЕ используйте XML-теги (<tool_call>, <filepath>, <arg_key> и т.д.) \
+                    2. НЕ повторяйте вызовы инструментов - они уже выполнены \
+                    3. Используйте ТОЛЬКО результаты уже выполненных инструментов \
+                    4. Отформатируйте ответ в виде обычного текста или markdown \
+                    Пожалуйста, предоставьте полноценный текстовый ответ на запрос пользователя.]"
                 ));
                 return Ok(None);
             }
