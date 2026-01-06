@@ -375,6 +375,231 @@ impl ZaiProvider {
             api_key,
         }
     }
+
+    fn prepare_zai_messages(
+        system_prompt: &str,
+        history: &[super::Message],
+    ) -> Vec<serde_json::Value> {
+        let mut messages = vec![json!({"role": "system", "content": system_prompt})];
+        for msg in history {
+            match msg.role.as_str() {
+                "tool" => {
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content
+                    }));
+                }
+                "assistant" => {
+                    let mut m = json!({
+                        "role": "assistant",
+                        "content": msg.content
+                    });
+
+                    // If we have tool calls, include them
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        m["tool_calls"] = json!(api_tool_calls);
+                    }
+
+                    messages.push(m);
+                }
+                _ => {
+                    messages.push(json!({
+                        "role": msg.role,
+                        "content": msg.content
+                    }));
+                }
+            }
+        }
+        messages
+    }
+
+    fn prepare_tools_json(tools: &[super::ToolDefinition]) -> Vec<serde_json::Value> {
+        tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
+            })
+            .collect()
+    }
+
+    async fn send_zai_request(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, LlmError> {
+        let response = self
+            .http_client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://opencode.ai/")
+            .header("X-Title", "opencode")
+            .header(
+                "User-Agent",
+                "Opencode/0.1.0 (compatible; ai-sdk/openai-compatible)",
+            )
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::ApiError(format!(
+                "ZAI API error: {status} - {error_text}"
+            )));
+        }
+
+        Ok(response)
+    }
+
+    async fn process_zai_stream(
+        mut stream: impl futures_util::Stream<
+                Item = Result<
+                    eventsource_stream::Event,
+                    eventsource_stream::EventStreamError<reqwest::Error>,
+                >,
+            > + Unpin,
+    ) -> Result<super::ChatResponse, LlmError> {
+        use futures_util::StreamExt;
+        use std::collections::HashMap;
+
+        let mut reasoning_content = String::new();
+        let mut content = String::new();
+        let mut final_tool_calls: HashMap<usize, super::ToolCall> = HashMap::new();
+        let mut finish_reason = String::from("unknown");
+
+        while let Some(event_result) = stream.next().await {
+            match event_result {
+                Ok(event) => {
+                    // Check for [DONE] marker
+                    if event.data.trim() == "[DONE]" {
+                        break;
+                    }
+
+                    // Parse JSON from event data
+                    let parsed: ZaiStreamChunk =
+                        serde_json::from_str(&event.data).map_err(|e| {
+                            LlmError::JsonError(format!("Failed to parse event data: {e}"))
+                        })?;
+
+                    if let Some(choice) = parsed.choices.first() {
+                        let delta = &choice.delta;
+                        Self::process_stream_delta(
+                            delta,
+                            &mut reasoning_content,
+                            &mut content,
+                            &mut final_tool_calls,
+                        );
+
+                        // Update finish reason
+                        if let Some(ref reason) = choice.finish_reason {
+                            finish_reason = reason.clone();
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(LlmError::NetworkError(format!("SSE stream error: {e}")));
+                }
+            }
+        }
+
+        debug!(
+            "ZAI: Tool call completed (tool_calls: {}, reasoning_len: {}, content_len: {})",
+            final_tool_calls.len(),
+            reasoning_content.len(),
+            content.len()
+        );
+
+        // Convert HashMap to Vec, sorted by index
+        let mut tool_calls_vec: Vec<_> = final_tool_calls.into_iter().collect();
+        tool_calls_vec.sort_by_key(|(index, _)| *index);
+        let tool_calls = tool_calls_vec.into_iter().map(|(_, tc)| tc).collect();
+
+        Ok(super::ChatResponse {
+            content: if content.is_empty() {
+                None
+            } else {
+                Some(content)
+            },
+            tool_calls,
+            finish_reason,
+            reasoning_content: if reasoning_content.is_empty() {
+                None
+            } else {
+                Some(reasoning_content)
+            },
+        })
+    }
+
+    fn process_stream_delta(
+        delta: &ZaiStreamDelta,
+        reasoning_content: &mut String,
+        content: &mut String,
+        final_tool_calls: &mut std::collections::HashMap<usize, super::ToolCall>,
+    ) {
+        // Collect reasoning/thinking
+        if let Some(ref reasoning) = delta.reasoning_content {
+            reasoning_content.push_str(reasoning);
+        }
+
+        // Collect content
+        if let Some(ref text) = delta.content {
+            content.push_str(text);
+        }
+
+        // Collect tool calls
+        if let Some(ref tool_calls) = delta.tool_calls {
+            for tc in tool_calls {
+                let index = tc.index;
+                if let Some(existing) = final_tool_calls.get_mut(&index) {
+                    // Append to existing tool call
+                    if let Some(ref func) = tc.function {
+                        if let Some(ref args) = func.arguments {
+                            existing.function.arguments.push_str(args);
+                        }
+                    }
+                } else if let (Some(id), Some(func)) = (&tc.id, &tc.function) {
+                    // New tool call
+                    if let Some(ref name) = func.name {
+                        final_tool_calls.insert(
+                            index,
+                            super::ToolCall {
+                                id: id.clone(),
+                                function: super::ToolCallFunction {
+                                    name: name.clone(),
+                                    arguments: func.arguments.clone().unwrap_or_default(),
+                                },
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -479,8 +704,6 @@ impl LlmProvider for ZaiProvider {
         max_tokens: u32,
     ) -> Result<super::ChatResponse, super::LlmError> {
         use eventsource_stream::Eventsource;
-        use futures_util::StreamExt;
-        use std::collections::HashMap;
 
         debug!(
             "ZAI: Starting tool-enabled chat completion (model: {model_id}, tools: {}, history: {})",
@@ -490,67 +713,9 @@ impl LlmProvider for ZaiProvider {
 
         let url = "https://api.z.ai/api/paas/v4/chat/completions";
 
-        // Prepare messages
-        let mut messages = vec![json!({"role": "system", "content": system_prompt})];
-        for msg in history {
-            match msg.role.as_str() {
-                "tool" => {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": msg.tool_call_id,
-                        "content": msg.content
-                    }));
-                }
-                "assistant" => {
-                    let mut m = json!({
-                        "role": "assistant",
-                        "content": msg.content
-                    });
-
-                    // If we have tool calls, include them
-                    if let Some(tool_calls) = &msg.tool_calls {
-                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
-                            .iter()
-                            .map(|tc| {
-                                json!({
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments
-                                    }
-                                })
-                            })
-                            .collect();
-
-                        m["tool_calls"] = json!(api_tool_calls);
-                    }
-
-                    messages.push(m);
-                }
-                _ => {
-                    messages.push(json!({
-                        "role": msg.role,
-                        "content": msg.content
-                    }));
-                }
-            }
-        }
-
-        // Prepare tools in OpenAI format
-        let openai_tools: Vec<serde_json::Value> = tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters
-                    }
-                })
-            })
-            .collect();
+        // Prepare messages and tools
+        let messages = Self::prepare_zai_messages(system_prompt, history);
+        let openai_tools = Self::prepare_tools_json(tools);
 
         let body = json!({
             "model": model_id,
@@ -566,136 +731,11 @@ impl LlmProvider for ZaiProvider {
             }
         });
 
-        let response = self
-            .http_client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .header("HTTP-Referer", "https://opencode.ai/")
-            .header("X-Title", "opencode")
-            .header(
-                "User-Agent",
-                "Opencode/0.1.0 (compatible; ai-sdk/openai-compatible)",
-            )
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
+        let response = self.send_zai_request(url, &body).await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!(
-                "ZAI API error: {status} - {error_text}"
-            )));
-        }
-
-        // Process streaming response using eventsource-stream
-        let mut stream = response.bytes_stream().eventsource();
-        let mut reasoning_content = String::new();
-        let mut content = String::new();
-        let mut final_tool_calls: HashMap<usize, super::ToolCall> = HashMap::new();
-        let mut finish_reason = String::from("unknown");
-
-        while let Some(event_result) = stream.next().await {
-            match event_result {
-                Ok(event) => {
-                    // Check for [DONE] marker
-                    if event.data.trim() == "[DONE]" {
-                        break;
-                    }
-
-                    // Parse JSON from event data
-                    let parsed: ZaiStreamChunk =
-                        serde_json::from_str(&event.data).map_err(|e| {
-                            LlmError::JsonError(format!("Failed to parse event data: {e}"))
-                        })?;
-
-                    if let Some(choice) = parsed.choices.first() {
-                        let delta = &choice.delta;
-
-                        // Collect reasoning/thinking
-                        if let Some(ref reasoning) = delta.reasoning_content {
-                            reasoning_content.push_str(reasoning);
-                        }
-
-                        // Collect content
-                        if let Some(ref text) = delta.content {
-                            content.push_str(text);
-                        }
-
-                        // Collect tool calls
-                        if let Some(ref tool_calls) = delta.tool_calls {
-                            for tc in tool_calls {
-                                let index = tc.index;
-                                if let Some(existing) = final_tool_calls.get_mut(&index) {
-                                    // Append to existing tool call
-                                    if let Some(ref func) = tc.function {
-                                        if let Some(ref args) = func.arguments {
-                                            existing.function.arguments.push_str(args);
-                                        }
-                                    }
-                                } else {
-                                    // New tool call
-                                    if let (Some(id), Some(func)) = (&tc.id, &tc.function) {
-                                        if let Some(ref name) = func.name {
-                                            final_tool_calls.insert(
-                                                index,
-                                                super::ToolCall {
-                                                    id: id.clone(),
-                                                    function: super::ToolCallFunction {
-                                                        name: name.clone(),
-                                                        arguments: func
-                                                            .arguments
-                                                            .clone()
-                                                            .unwrap_or_default(),
-                                                    },
-                                                },
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Update finish reason
-                        if let Some(ref reason) = choice.finish_reason {
-                            finish_reason = reason.clone();
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(LlmError::NetworkError(format!("SSE stream error: {e}")));
-                }
-            }
-        }
-
-        debug!(
-            "ZAI: Tool call completed (tool_calls: {}, reasoning_len: {}, content_len: {})",
-            final_tool_calls.len(),
-            reasoning_content.len(),
-            content.len()
-        );
-
-        // Convert HashMap to Vec, sorted by index
-        let mut tool_calls_vec: Vec<_> = final_tool_calls.into_iter().collect();
-        tool_calls_vec.sort_by_key(|(index, _)| *index);
-        let tool_calls = tool_calls_vec.into_iter().map(|(_, tc)| tc).collect();
-
-        Ok(super::ChatResponse {
-            content: if content.is_empty() {
-                None
-            } else {
-                Some(content)
-            },
-            tool_calls,
-            finish_reason,
-            reasoning_content: if reasoning_content.is_empty() {
-                None
-            } else {
-                Some(reasoning_content)
-            },
-        })
+        // Process streaming response
+        let stream = response.bytes_stream().eventsource();
+        Self::process_zai_stream(stream).await
     }
 }
 

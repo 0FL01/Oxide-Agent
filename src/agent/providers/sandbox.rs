@@ -112,6 +112,141 @@ impl SandboxProvider {
             }
         }
     }
+
+    async fn handle_execute_command(sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+        let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
+        match sandbox.exec_command(&args.command).await {
+            Ok(result) => {
+                if result.success() {
+                    if result.stdout.is_empty() {
+                        Ok("(команда выполнена успешно, вывод пуст)".to_string())
+                    } else {
+                        Ok(result.stdout)
+                    }
+                } else {
+                    Ok(format!(
+                        "Ошибка (код {}): {}",
+                        result.exit_code,
+                        result.combined_output()
+                    ))
+                }
+            }
+            Err(e) => Ok(format!("Ошибка выполнения команды: {e}")),
+        }
+    }
+
+    async fn handle_write_file(sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+        let args: WriteFileArgs = serde_json::from_str(arguments)?;
+        match sandbox
+            .write_file(&args.path, args.content.as_bytes())
+            .await
+        {
+            Ok(()) => Ok(format!("Файл {} успешно записан", args.path)),
+            Err(e) => Ok(format!("Ошибка записи файла: {e}")),
+        }
+    }
+
+    async fn handle_read_file(sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+        let args: ReadFileArgs = serde_json::from_str(arguments)?;
+        match sandbox.read_file(&args.path).await {
+            Ok(content) => Ok(String::from_utf8_lossy(&content).to_string()),
+            Err(e) => Ok(format!("Ошибка чтения файла: {e}")),
+        }
+    }
+
+    async fn handle_send_file(&self, sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+        let args: SendFileArgs = serde_json::from_str(arguments)?;
+        info!(path = %args.path, "send_file_to_user called");
+
+        let resolved_path = match Self::resolve_file_path(sandbox, &args.path).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(path = %args.path, error = %e, "Failed to resolve file path");
+                return Ok(format!("❌ {e}"));
+            }
+        };
+
+        let file_name = std::path::Path::new(&resolved_path)
+            .file_name()
+            .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
+
+        match sandbox.download_file(&resolved_path).await {
+            Ok(content) => {
+                if let Some(ref tx) = self.progress_tx {
+                    match tx
+                        .send(AgentEvent::FileToSend {
+                            file_name: file_name.clone(),
+                            content,
+                        })
+                        .await
+                    {
+                        Ok(()) => {
+                            info!(file_name = %file_name, resolved_path = %resolved_path, "File sent successfully");
+                            Ok(format!("✅ Файл '{file_name}' отправлен пользователю"))
+                        }
+                        Err(e) => {
+                            warn!(file_name = %file_name, error = %e, "Failed to send FileToSend event");
+                            Ok(format!(
+                                "⚠️ Файл '{file_name}' прочитан из песочницы, но не удалось отправить: {e}"
+                            ))
+                        }
+                    }
+                } else {
+                    warn!(file_name = %file_name, "Progress channel not available");
+                    Ok(format!(
+                        "⚠️ Файл '{file_name}' прочитан, но канал отправки недоступен"
+                    ))
+                }
+            }
+            Err(e) => {
+                error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
+                Ok(format!("❌ Ошибка загрузки файла: {e}"))
+            }
+        }
+    }
+
+    async fn handle_list_files(sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+        #[derive(Debug, Deserialize)]
+        struct ListFilesArgs {
+            #[serde(default = "default_workspace_path")]
+            path: String,
+        }
+
+        fn default_workspace_path() -> String {
+            "/workspace".to_string()
+        }
+
+        let args: ListFilesArgs = serde_json::from_str(arguments)?;
+        let cmd = format!(
+            "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
+            escape(args.path.as_str().into()),
+            escape(args.path.as_str().into())
+        );
+
+        match sandbox.exec_command(&cmd).await {
+            Ok(result) => {
+                if result.success() {
+                    if result.stdout.is_empty() {
+                        Ok(format!(
+                            "Директория '{}' пуста или не существует",
+                            args.path
+                        ))
+                    } else {
+                        Ok(format!(
+                            "📁 Содержимое '{}':\n\n```\n{}\n```",
+                            args.path, result.stdout
+                        ))
+                    }
+                } else {
+                    Ok(format!(
+                        "❌ Ошибка при чтении директории: {}",
+                        result.stderr
+                    ))
+                }
+            }
+            Err(e) => Ok(format!("❌ Ошибка выполнения команды: {e}")),
+        }
+    }
 }
 
 /// Arguments for `execute_command` tool
@@ -245,136 +380,11 @@ impl ToolProvider for SandboxProvider {
         };
 
         match tool_name {
-            "execute_command" => {
-                let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
-                match sandbox.exec_command(&args.command).await {
-                    Ok(result) => {
-                        if result.success() {
-                            if result.stdout.is_empty() {
-                                Ok("(команда выполнена успешно, вывод пуст)".to_string())
-                            } else {
-                                Ok(result.stdout)
-                            }
-                        } else {
-                            Ok(format!(
-                                "Ошибка (код {}): {}",
-                                result.exit_code,
-                                result.combined_output()
-                            ))
-                        }
-                    }
-                    Err(e) => Ok(format!("Ошибка выполнения команды: {e}")),
-                }
-            }
-            "write_file" => {
-                let args: WriteFileArgs = serde_json::from_str(arguments)?;
-                match sandbox
-                    .write_file(&args.path, args.content.as_bytes())
-                    .await
-                {
-                    Ok(()) => Ok(format!("Файл {} успешно записан", args.path)),
-                    Err(e) => Ok(format!("Ошибка записи файла: {e}")),
-                }
-            }
-            "read_file" => {
-                let args: ReadFileArgs = serde_json::from_str(arguments)?;
-                match sandbox.read_file(&args.path).await {
-                    Ok(content) => Ok(String::from_utf8_lossy(&content).to_string()),
-                    Err(e) => Ok(format!("Ошибка чтения файла: {e}")),
-                }
-            }
-            "send_file_to_user" => {
-                let args: SendFileArgs = serde_json::from_str(arguments)?;
-                info!(path = %args.path, "send_file_to_user called");
-
-                let resolved_path = match Self::resolve_file_path(&sandbox, &args.path).await {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!(path = %args.path, error = %e, "Failed to resolve file path");
-                        return Ok(format!("❌ {e}"));
-                    }
-                };
-
-                let file_name = std::path::Path::new(&resolved_path)
-                    .file_name()
-                    .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
-
-                match sandbox.download_file(&resolved_path).await {
-                    Ok(content) => {
-                        if let Some(ref tx) = self.progress_tx {
-                            match tx
-                                .send(AgentEvent::FileToSend {
-                                    file_name: file_name.clone(),
-                                    content,
-                                })
-                                .await
-                            {
-                                Ok(()) => {
-                                    info!(file_name = %file_name, resolved_path = %resolved_path, "File sent successfully");
-                                    Ok(format!("✅ Файл '{file_name}' отправлен пользователю"))
-                                }
-                                Err(e) => {
-                                    warn!(file_name = %file_name, error = %e, "Failed to send FileToSend event");
-                                    Ok(format!(
-                                        "⚠️ Файл '{file_name}' прочитан из песочницы, но не удалось отправить: {e}"
-                                    ))
-                                }
-                            }
-                        } else {
-                            warn!(file_name = %file_name, "Progress channel not available");
-                            Ok(format!(
-                                "⚠️ Файл '{file_name}' прочитан, но канал отправки недоступен"
-                            ))
-                        }
-                    }
-                    Err(e) => {
-                        error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
-                        Ok(format!("❌ Ошибка загрузки файла: {e}"))
-                    }
-                }
-            }
-            "list_files" => {
-                #[derive(Debug, Deserialize)]
-                struct ListFilesArgs {
-                    #[serde(default = "default_workspace_path")]
-                    path: String,
-                }
-
-                fn default_workspace_path() -> String {
-                    "/workspace".to_string()
-                }
-
-                let args: ListFilesArgs = serde_json::from_str(arguments)?;
-                let cmd = format!(
-                    "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
-                    escape(args.path.as_str().into()),
-                    escape(args.path.as_str().into())
-                );
-
-                match sandbox.exec_command(&cmd).await {
-                    Ok(result) => {
-                        if result.success() {
-                            if result.stdout.is_empty() {
-                                Ok(format!(
-                                    "Директория '{}' пуста или не существует",
-                                    args.path
-                                ))
-                            } else {
-                                Ok(format!(
-                                    "📁 Содержимое '{}':\n\n```\n{}\n```",
-                                    args.path, result.stdout
-                                ))
-                            }
-                        } else {
-                            Ok(format!(
-                                "❌ Ошибка при чтении директории: {}",
-                                result.stderr
-                            ))
-                        }
-                    }
-                    Err(e) => Ok(format!("❌ Ошибка выполнения команды: {e}")),
-                }
-            }
+            "execute_command" => Self::handle_execute_command(&sandbox, arguments).await,
+            "write_file" => Self::handle_write_file(&sandbox, arguments).await,
+            "read_file" => Self::handle_read_file(&sandbox, arguments).await,
+            "send_file_to_user" => self.handle_send_file(&sandbox, arguments).await,
+            "list_files" => Self::handle_list_files(&sandbox, arguments).await,
             _ => anyhow::bail!("Unknown sandbox tool: {tool_name}"),
         }
     }
