@@ -19,6 +19,61 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
+/// Patterns indicating fatal, unrecoverable yt-dlp errors
+/// that should stop execution immediately
+const FATAL_ERROR_PATTERNS: &[&str] = &[
+    "Video unavailable",
+    "Private video",
+    "This video is not available",
+    "Sign in to confirm your age",
+    "age-restricted",
+    "members-only",
+    "This video is private",
+    "removed by the uploader",
+    "no longer available",
+    "blocked it in your country",
+    "geo-restricted",
+    "who has blocked it on copyright grounds",
+    "copyright claim",
+    "terminated account",
+    "This video has been removed",
+    "ERROR: Unsupported URL",
+    "is not a valid URL",
+    "Unable to extract video data",
+    "Premieres in",
+    "This live event will begin",
+    "Join this channel to get access",
+    "HTTP Error 403",
+    "HTTP Error 404",
+    "Sign in to view this video",
+];
+
+/// Patterns indicating transient errors that might be resolved with retry
+const RETRYABLE_ERROR_PATTERNS: &[&str] = &[
+    "Connection reset",
+    "Connection timed out",
+    "Unable to download webpage",
+    "HTTP Error 429", // Too Many Requests
+    "HTTP Error 503", // Service Unavailable
+    "Read timed out",
+    "network is unreachable",
+    "Temporary failure in name resolution",
+];
+
+/// Check if error message indicates a fatal, unrecoverable error
+fn is_fatal_ytdlp_error(error_msg: &str) -> bool {
+    FATAL_ERROR_PATTERNS
+        .iter()
+        .any(|pattern| error_msg.contains(pattern))
+}
+
+/// Check if error message indicates a retryable error
+fn is_retryable_ytdlp_error(error_msg: &str) -> bool {
+    RETRYABLE_ERROR_PATTERNS
+        .iter()
+        .any(|pattern| error_msg.contains(pattern))
+}
+
 /// Maximum character limit for transcript output (to avoid LLM context overflow)
 const MAX_TRANSCRIPT_LENGTH: usize = 50_000;
 
@@ -102,13 +157,29 @@ impl YtdlpProvider {
         if result.success() {
             Ok(result.stdout)
         } else {
-            // Return stderr as error message but don't fail completely
             let error_msg = if result.stderr.is_empty() {
-                result.stdout
+                result.stdout.clone()
             } else {
-                result.stderr
+                result.stderr.clone()
             };
-            Ok(format!("yt-dlp error: {error_msg}"))
+
+            // Check if this is a fatal, unrecoverable error
+            if is_fatal_ytdlp_error(&error_msg) {
+                warn!(error = %error_msg, "Fatal yt-dlp error detected");
+                anyhow::bail!("yt-dlp фатальная ошибка: {error_msg}")
+            }
+
+            // Check if this is a retryable error (network issues, etc.)
+            if is_retryable_ytdlp_error(&error_msg) {
+                warn!(error = %error_msg, "Retryable yt-dlp error detected");
+                return Ok(format!(
+                    "⚠️ Временная ошибка yt-dlp (возможен повтор): {error_msg}"
+                ));
+            }
+
+            // Non-fatal, non-retryable errors (e.g., format not available)
+            // return as Ok with warning so agent can adjust
+            Ok(format!("yt-dlp предупреждение: {error_msg}"))
         }
     }
 
@@ -135,7 +206,17 @@ impl YtdlpProvider {
             args.url.replace('\'', "'\\''")
         );
 
-        let output = self.exec_ytdlp(&ytdlp_args, cancellation_token).await?;
+        let output = match self.exec_ytdlp(&ytdlp_args, cancellation_token).await {
+            Ok(out) => out,
+            Err(e) => {
+                return Ok(format!(
+                    "❌ **Не удалось получить метаданные видео**\n\n\
+                     Причина: {e}\n\n\
+                     Это может означать, что видео недоступно, приватное, \
+                     заблокировано в вашем регионе или требует авторизации."
+                ));
+            }
+        };
 
         // Truncate if too long
         let truncated = if output.len() > MAX_METADATA_LENGTH {
@@ -170,7 +251,13 @@ impl YtdlpProvider {
              --no-warnings '{url_escaped}'"
         );
 
-        self.exec_ytdlp(&ytdlp_args, cancellation_token).await?;
+        if let Err(e) = self.exec_ytdlp(&ytdlp_args, cancellation_token).await {
+            return Ok(format!(
+                "❌ **Не удалось скачать транскрипт**\n\n\
+                 Причина: {e}\n\n\
+                 Возможно, видео недоступно или не имеет субтитров."
+            ));
+        }
 
         // Read and clean transcript
         let sandbox = self.get_sandbox().await?;
@@ -234,9 +321,19 @@ impl YtdlpProvider {
         let ytdlp_args =
             format!("-j --flat-playlist --no-warnings 'ytsearch{max_results}:{query_escaped}'");
 
-        let output = self.exec_ytdlp(&ytdlp_args, cancellation_token).await?;
+        let output = match self.exec_ytdlp(&ytdlp_args, cancellation_token).await {
+            Ok(out) => out,
+            Err(e) => {
+                return Ok(format!(
+                    "❌ **Не удалось выполнить поиск видео**\n\n\
+                     Причина: {e}\n\n\
+                     Возможно, временные проблемы с доступом к YouTube."
+                ));
+            }
+        };
 
-        if output.starts_with("yt-dlp error:") {
+        if output.starts_with("yt-dlp error:") || output.starts_with("yt-dlp предупреждение:")
+        {
             return Ok(output);
         }
 
@@ -313,7 +410,16 @@ impl YtdlpProvider {
             ytdlp_args = ytdlp_args.replace(&format!("'*{start}-'"), &format!("'*{start}-{end}'"));
         }
 
-        let output = self.exec_ytdlp(&ytdlp_args, cancellation_token).await?;
+        let output = match self.exec_ytdlp(&ytdlp_args, cancellation_token).await {
+            Ok(out) => out,
+            Err(e) => {
+                return Ok(format!(
+                    "❌ **Не удалось скачать видео**\n\n\
+                     Причина: {e}\n\n\
+                     Видео может быть недоступно, приватное или заблокировано."
+                ));
+            }
+        };
 
         if output.contains("yt-dlp error:") || output.contains("ERROR") {
             return Ok(format!("Download failed: {output}"));
@@ -373,7 +479,16 @@ impl YtdlpProvider {
              --no-warnings --progress '{url_escaped}'"
         );
 
-        let output = self.exec_ytdlp(&ytdlp_args, cancellation_token).await?;
+        let output = match self.exec_ytdlp(&ytdlp_args, cancellation_token).await {
+            Ok(out) => out,
+            Err(e) => {
+                return Ok(format!(
+                    "❌ **Не удалось извлечь аудио**\n\n\
+                     Причина: {e}\n\n\
+                     Видео может быть недоступно, приватное или заблокировано."
+                ));
+            }
+        };
 
         if output.contains("yt-dlp error:") || output.contains("ERROR") {
             return Ok(format!("Audio extraction failed: {output}"));
