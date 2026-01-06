@@ -94,11 +94,12 @@ impl AgentExecutor {
     fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
         let trimmed_name = name.trim();
 
-        // Check if name looks like it contains JSON (starts with { and has "todos" key)
+        // PATTERN 1: Check if name looks like it contains JSON object (starts with { and has "todos" key)
+        // Example: `{"todos": [{"description": "...", "status": "..."}]}`
         if trimmed_name.starts_with('{') && trimmed_name.contains("\"todos\"") {
             warn!(
                 tool_name = %name,
-                "Detected malformed tool call: JSON arguments in tool name field"
+                "Detected malformed tool call: JSON object in tool name field"
             );
 
             // Try to extract first valid JSON object from name
@@ -115,6 +116,52 @@ impl AgentExecutor {
                         "Correcting malformed tool call to 'write_todos' with extracted arguments"
                     );
                     return ("write_todos".to_string(), json_str);
+                }
+            }
+        }
+
+        // PATTERN 2: Check if name contains "todos" followed by JSON array
+        // Example: `"todos [{"description": "...", "status": "in_progress"}, ...]"`
+        // Example: `"write_todos [...]"`
+        if (trimmed_name.contains("todos") || trimmed_name.contains("write_todos"))
+            && trimmed_name.contains('[')
+        {
+            // Extract the base tool name (everything before '[')
+            if let Some(bracket_pos) = trimmed_name.find('[') {
+                let base_name = trimmed_name[..bracket_pos].trim();
+                let json_part = trimmed_name[bracket_pos..].trim();
+
+                // Validate base name is one of the expected variants
+                if base_name == "todos" || base_name == "write_todos" {
+                    warn!(
+                        tool_name = %name,
+                        base_name = %base_name,
+                        "Detected malformed tool call: JSON array appended to tool name"
+                    );
+
+                    // Try to parse the JSON array part and wrap it in the expected structure
+                    if let Ok(parsed_array) = serde_json::from_str::<Value>(json_part) {
+                        if parsed_array.is_array() {
+                            // Construct the proper arguments structure: {"todos": [...]}
+                            let corrected_args = serde_json::json!({
+                                "todos": parsed_array
+                            });
+
+                            if let Ok(args_str) = serde_json::to_string(&corrected_args) {
+                                warn!(
+                                    corrected_name = "write_todos",
+                                    "Correcting malformed tool call: extracted array and wrapped in proper structure"
+                                );
+                                return ("write_todos".to_string(), args_str);
+                            }
+                        }
+                    }
+
+                    // If JSON parsing failed, log and fall back
+                    warn!(
+                        json_part = %json_part,
+                        "Failed to parse JSON array from malformed tool name"
+                    );
                 }
             }
         }
@@ -839,5 +886,131 @@ impl AgentExecutor {
     #[must_use]
     pub fn is_timed_out(&self) -> bool {
         self.session.is_timed_out()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_tool_call_normal() {
+        let (name, args) = AgentExecutor::sanitize_tool_call("write_todos", "{}");
+        assert_eq!(name, "write_todos");
+        assert_eq!(args, "{}");
+    }
+
+    #[test]
+    fn test_sanitize_tool_call_json_object_in_name() {
+        let malformed_name = r#"{"todos": [{"description": "Task 1", "status": "pending"}]}"#;
+        let (name, args) = AgentExecutor::sanitize_tool_call(malformed_name, "{}");
+
+        assert_eq!(name, "write_todos");
+        // Should extract the JSON and use it as arguments
+        assert!(args.contains("\"todos\""));
+        assert!(args.contains("Task 1"));
+    }
+
+    #[test]
+    fn test_sanitize_tool_call_array_appended_to_todos() {
+        let malformed_name = r#"todos [{"description": "Task 1", "status": "in_progress"}]"#;
+        let (name, args) = AgentExecutor::sanitize_tool_call(malformed_name, "{}");
+
+        assert_eq!(name, "write_todos");
+        // Should wrap array in proper structure
+        let parsed = serde_json::from_str::<serde_json::Value>(&args)
+            .expect("Failed to parse corrected arguments");
+        assert!(parsed.get("todos").is_some());
+        assert!(parsed["todos"].is_array());
+    }
+
+    #[test]
+    fn test_sanitize_tool_call_array_appended_to_write_todos() {
+        let malformed_name =
+            r#"write_todos [{"description": "Update deps", "status": "completed"}]"#;
+        let (name, args) = AgentExecutor::sanitize_tool_call(malformed_name, "{}");
+
+        assert_eq!(name, "write_todos");
+        let parsed = serde_json::from_str::<serde_json::Value>(&args)
+            .expect("Failed to parse corrected arguments");
+        assert!(parsed.get("todos").is_some());
+        assert!(parsed["todos"].is_array());
+        assert_eq!(parsed["todos"][0]["description"], "Update deps");
+    }
+
+    #[test]
+    fn test_sanitize_tool_call_complex_array() {
+        let malformed_name = r#"todos [
+            {"description": "Обновление yt-dlp до последней версии", "status": "in_progress"},
+            {"description": "Тестирование новой версии", "status": "pending"},
+            {"description": "Документирование изменений", "status": "pending"}
+        ]"#;
+        let (name, args) = AgentExecutor::sanitize_tool_call(malformed_name, "{}");
+
+        assert_eq!(name, "write_todos");
+        let parsed = serde_json::from_str::<serde_json::Value>(&args)
+            .expect("Failed to parse corrected arguments");
+        assert!(parsed["todos"].is_array());
+        let array = parsed["todos"]
+            .as_array()
+            .expect("todos should be an array");
+        assert_eq!(array.len(), 3);
+    }
+
+    #[test]
+    fn test_sanitize_tool_call_invalid_json() {
+        let malformed_name = "todos [invalid json}";
+        let (name, args) = AgentExecutor::sanitize_tool_call(malformed_name, "{}");
+
+        // Should fall back to original when JSON is invalid
+        assert_eq!(name, "todos [invalid json}");
+        assert_eq!(args, "{}");
+    }
+
+    #[test]
+    fn test_sanitize_tool_call_other_tools_unchanged() {
+        let (name, args) =
+            AgentExecutor::sanitize_tool_call("execute_command", r#"{"command": "ls"}"#);
+        assert_eq!(name, "execute_command");
+        assert_eq!(args, r#"{"command": "ls"}"#);
+    }
+
+    #[test]
+    fn test_extract_first_json_simple() {
+        let input = r#"{"key": "value"}"#;
+        let result = AgentExecutor::extract_first_json(input);
+        assert!(result.is_some());
+        if let Some(json) = result {
+            assert_eq!(json, r#"{"key": "value"}"#);
+        }
+    }
+
+    #[test]
+    fn test_extract_first_json_with_trailing_text() {
+        let input = r#"{"key": "value"} some extra text"#;
+        let result = AgentExecutor::extract_first_json(input);
+        assert!(result.is_some());
+        if let Some(json) = result {
+            assert_eq!(json, r#"{"key": "value"}"#);
+        }
+    }
+
+    #[test]
+    fn test_extract_first_json_nested() {
+        let input = r#"{"outer": {"inner": "value"}}"#;
+        let result = AgentExecutor::extract_first_json(input);
+        assert!(result.is_some());
+        if let Some(json) = result {
+            let parsed = serde_json::from_str::<serde_json::Value>(&json)
+                .expect("Failed to parse extracted JSON");
+            assert_eq!(parsed["outer"]["inner"], "value");
+        }
+    }
+
+    #[test]
+    fn test_extract_first_json_invalid() {
+        let input = "not json at all";
+        let result = AgentExecutor::extract_first_json(input);
+        assert!(result.is_none());
     }
 }
