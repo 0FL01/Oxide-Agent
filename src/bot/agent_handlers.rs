@@ -27,6 +27,14 @@ use tracing::{debug, info, warn};
 /// Type alias for dialogue
 pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
 
+/// Context for running an agent task without blocking the update handler
+struct AgentTaskContext {
+    bot: Bot,
+    msg: Message,
+    storage: Arc<R2Storage>,
+    llm: Arc<LlmClient>,
+}
+
 /// Global agent sessions storage (`user_id` -> Arc<RwLock<AgentExecutor>>)
 /// Using Arc<RwLock> to allow concurrent access without removing executors during execution
 static AGENT_SESSIONS: LazyLock<RwLock<HashMap<i64, Arc<RwLock<AgentExecutor>>>>> =
@@ -167,88 +175,37 @@ pub async fn handle_agent_message(
     // Get or create session
     ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
 
-    // Preprocess input
-    let preprocessor = Preprocessor::new(llm.clone(), user_id);
-    let input = extract_agent_input(&bot, &msg).await?;
-    let task_text = preprocessor.preprocess_input(input).await?;
-    info!(
-        user_id = user_id,
-        chat_id = chat_id.0,
-        "Input preprocessed, task text extracted"
-    );
-
-    // Send initial progress message
-    let progress_msg = bot
-        .send_message(chat_id, "⏳ Обработка задачи...")
-        .parse_mode(ParseMode::Html)
+    if is_agent_task_running(user_id).await {
+        bot.send_message(
+            chat_id,
+            "⏳ Задача уже выполняется. Нажмите ❌ Отменить задачу, если нужно прекратить.",
+        )
+        .reply_markup(get_agent_keyboard())
         .await?;
-
-    // Create progress tracking channel
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-
-    // Spawn progress updater task
-    let bot_clone = bot.clone();
-    let chat_id_clone = chat_id;
-    let msg_id = progress_msg.id;
-
-    let progress_handle = tokio::spawn(async move {
-        let mut state = ProgressState::new(AGENT_MAX_ITERATIONS);
-        let mut last_update = std::time::Instant::now();
-        let mut needs_update = false;
-        let throttle_duration = std::time::Duration::from_millis(1500);
-
-        while let Some(event) = rx.recv().await {
-            // Handle file sending separately (side effect)
-            if let AgentEvent::FileToSend {
-                ref file_name,
-                ref content,
-            } = event
-            {
-                let input_file = InputFile::memory(content.clone()).file_name(file_name.clone());
-                if let Err(e) = bot_clone.send_document(chat_id_clone, input_file).await {
-                    tracing::error!("Failed to send file {}: {}", file_name, e);
-                }
-            }
-
-            state.update(event);
-            needs_update = true;
-
-            if last_update.elapsed() >= throttle_duration {
-                let text = state.format_telegram();
-                edit_message_safe(&bot_clone, chat_id_clone, msg_id, &text).await;
-                last_update = std::time::Instant::now();
-                needs_update = false;
-            }
-        }
-
-        let final_text = state.format_telegram();
-        if needs_update {
-            edit_message_safe(&bot_clone, chat_id_clone, msg_id, &final_text).await;
-        }
-        final_text
-    });
-
-    // Execute the task
-    let result = execute_agent_task(user_id, &task_text, Some(tx)).await;
-    let progress_text = progress_handle.await.unwrap_or_default();
-
-    // Save agent memory after task execution
-    save_memory_after_task(user_id, &storage).await;
-
-    // Update the message with the result
-    match result {
-        Ok(response) => {
-            edit_message_safe(&bot, chat_id, progress_msg.id, &progress_text).await;
-            let formatted_response = crate::utils::format_text(&response);
-            bot.send_message(chat_id, formatted_response)
-                .parse_mode(ParseMode::Html)
-                .await?;
-        }
-        Err(e) => {
-            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{e}");
-            edit_message_safe(&bot, chat_id, progress_msg.id, &error_text).await;
-        }
+        return Ok(());
     }
+
+    renew_cancellation_token(user_id).await;
+
+    let task_bot = bot.clone();
+    let task_msg = msg.clone();
+    let task_storage = storage.clone();
+    let task_llm = llm.clone();
+
+    tokio::spawn(async move {
+        let ctx = AgentTaskContext {
+            bot: task_bot.clone(),
+            msg: task_msg.clone(),
+            storage: task_storage,
+            llm: task_llm,
+        };
+
+        if let Err(e) = run_agent_task(ctx).await {
+            let _ = task_bot
+                .send_message(task_msg.chat.id, format!("❌ Ошибка: {e}"))
+                .await;
+        }
+    });
 
     Ok(())
 }
@@ -297,6 +254,26 @@ async fn ensure_session_exists(
     }
 }
 
+async fn is_agent_task_running(user_id: i64) -> bool {
+    let sessions = AGENT_SESSIONS.read().await;
+    let Some(executor_arc) = sessions.get(&user_id) else {
+        return false;
+    };
+
+    match executor_arc.try_read() {
+        Ok(executor) => executor.session().is_processing(),
+        Err(_) => true,
+    }
+}
+
+async fn renew_cancellation_token(user_id: i64) {
+    let mut tokens = CANCELLATION_TOKENS.write().await;
+    tokens.insert(
+        user_id,
+        Arc::new(tokio_util::sync::CancellationToken::new()),
+    );
+}
+
 async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
     let sessions = AGENT_SESSIONS.read().await;
     if let Some(executor_arc) = sessions.get(&user_id) {
@@ -307,22 +284,104 @@ async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
     }
 }
 
+async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
+    let user_id = ctx.msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    let chat_id = ctx.msg.chat.id;
+
+    // Preprocess input
+    let preprocessor = Preprocessor::new(ctx.llm.clone(), user_id);
+    let input = extract_agent_input(&ctx.bot, &ctx.msg).await?;
+    let task_text = preprocessor.preprocess_input(input).await?;
+    info!(
+        user_id = user_id,
+        chat_id = chat_id.0,
+        "Input preprocessed, task text extracted"
+    );
+
+    // Send initial progress message
+    let progress_msg = ctx
+        .bot
+        .send_message(chat_id, "⏳ Обработка задачи...")
+        .parse_mode(ParseMode::Html)
+        .await?;
+
+    // Create progress tracking channel
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
+
+    // Spawn progress updater task
+    let bot_clone = ctx.bot.clone();
+    let chat_id_clone = chat_id;
+    let msg_id = progress_msg.id;
+
+    let progress_handle = tokio::spawn(async move {
+        let mut state = ProgressState::new(AGENT_MAX_ITERATIONS);
+        let mut last_update = std::time::Instant::now();
+        let mut needs_update = false;
+        let throttle_duration = std::time::Duration::from_millis(1500);
+
+        while let Some(event) = rx.recv().await {
+            // Handle file sending separately (side effect)
+            if let AgentEvent::FileToSend {
+                ref file_name,
+                ref content,
+            } = event
+            {
+                let input_file = InputFile::memory(content.clone()).file_name(file_name.clone());
+                if let Err(e) = bot_clone.send_document(chat_id_clone, input_file).await {
+                    tracing::error!("Failed to send file {}: {}", file_name, e);
+                }
+            }
+
+            state.update(event);
+            needs_update = true;
+
+            if last_update.elapsed() >= throttle_duration {
+                let text = state.format_telegram();
+                edit_message_safe(&bot_clone, chat_id_clone, msg_id, &text).await;
+                last_update = std::time::Instant::now();
+                needs_update = false;
+            }
+        }
+
+        let final_text = state.format_telegram();
+        if needs_update {
+            edit_message_safe(&bot_clone, chat_id_clone, msg_id, &final_text).await;
+        }
+        final_text
+    });
+
+    // Execute the task
+    let result = execute_agent_task(user_id, &task_text, Some(tx)).await;
+    let progress_text = progress_handle.await.unwrap_or_default();
+
+    // Save agent memory after task execution
+    save_memory_after_task(user_id, &ctx.storage).await;
+
+    // Update the message with the result
+    match result {
+        Ok(response) => {
+            edit_message_safe(&ctx.bot, chat_id, progress_msg.id, &progress_text).await;
+            let formatted_response = crate::utils::format_text(&response);
+            ctx.bot
+                .send_message(chat_id, formatted_response)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+        Err(e) => {
+            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{e}");
+            edit_message_safe(&ctx.bot, chat_id, progress_msg.id, &error_text).await;
+        }
+    }
+
+    Ok(())
+}
+
 /// Execute an agent task and return the result
 async fn execute_agent_task(
     user_id: i64,
     task: &str,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<String> {
-    // Renew cancellation token for this task (atomic, lock-free)
-    {
-        let mut tokens = CANCELLATION_TOKENS.write().await;
-        // Replace with fresh token for new task
-        tokens.insert(
-            user_id,
-            Arc::new(tokio_util::sync::CancellationToken::new()),
-        );
-    }
-
     // Get Arc<RwLock<AgentExecutor>> from the map
     let executor_arc = {
         let sessions = AGENT_SESSIONS.read().await;
