@@ -15,6 +15,7 @@ use crate::llm::LlmClient;
 use crate::storage::R2Storage;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
@@ -30,6 +31,12 @@ pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
 /// Global agent sessions storage (`user_id` -> Arc<RwLock<AgentExecutor>>)
 /// Using Arc<RwLock> to allow concurrent access without removing executors during execution
 static AGENT_SESSIONS: LazyLock<RwLock<HashMap<i64, Arc<RwLock<AgentExecutor>>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Global cancellation tokens storage (`user_id` -> Arc<AtomicBool>)
+/// Separate from AGENT_SESSIONS to allow lock-free cancellation during task execution
+/// Critical for preventing race conditions when cancel button is pressed
+static CANCELLATION_TOKENS: LazyLock<RwLock<HashMap<i64, Arc<AtomicBool>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Get the agent mode keyboard
@@ -289,7 +296,7 @@ async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
 }
 
 /// Execute an agent task and return the result
-/// NOTE: Uses Arc<RwLock> to access executor without removing it from the map
+/// NOTE: Registers a cancellation token in CANCELLATION_TOKENS for lock-free cancellation
 async fn execute_agent_task(
     user_id: i64,
     task: &str,
@@ -304,6 +311,16 @@ async fn execute_agent_task(
             .ok_or_else(|| anyhow::anyhow!("No agent session found"))?
     };
 
+    // Create a fresh cancellation token for this task execution
+    // This allows cancel_agent_task to set it without waiting for write lock on executor
+    let cancel_token = Arc::new(AtomicBool::new(false));
+
+    // Register the cancellation token (lock-free access for cancel button)
+    {
+        let mut tokens = CANCELLATION_TOKENS.write().await;
+        tokens.insert(user_id, Arc::clone(&cancel_token));
+    }
+
     // Acquire write lock on the executor
     let mut executor = executor_arc.write().await;
 
@@ -316,14 +333,27 @@ async fn execute_agent_task(
     // Check timeout
     if executor.is_timed_out() {
         executor.reset();
+        // Clean up token
+        CANCELLATION_TOKENS.write().await.remove(&user_id);
         return Err(anyhow::anyhow!(
             "Предыдущая сессия истекла по таймауту. Начинаю новую сессию."
         ));
     }
 
+    // CRITICAL: Inject the cancellation token into the executor
+    // This replaces the executor's internal flag with our shared token
+    executor.set_cancellation_flag(Arc::clone(&cancel_token));
+
     // Execute the task while holding the lock
-    // The executor remains in the HashMap, allowing cancel() to work
-    executor.execute(task, progress_tx).await
+    let result = executor.execute(task, progress_tx).await;
+
+    // Clean up the cancellation token after task completion
+    {
+        let mut tokens = CANCELLATION_TOKENS.write().await;
+        tokens.remove(&user_id);
+    }
+
+    result
 }
 
 /// Extract input from a message
@@ -444,15 +474,23 @@ async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: 
 pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
+    // CRITICAL FIX: Access the cancellation token directly from CANCELLATION_TOKENS
+    // This bypasses the write lock on executor, allowing instant cancellation
     let cancelled = {
-        let sessions = AGENT_SESSIONS.read().await;
-        if let Some(executor_arc) = sessions.get(&user_id) {
-            let mut executor = executor_arc.write().await;
-            executor.cancel();
-            info!(user_id = user_id, "Task cancellation requested by user");
+        let tokens = CANCELLATION_TOKENS.read().await;
+        if let Some(cancel_token) = tokens.get(&user_id) {
+            // Set the cancellation flag (lock-free atomic operation)
+            cancel_token.store(true, Ordering::SeqCst);
+            info!(
+                user_id = user_id,
+                "Cancellation token set (lock-free), task will abort at next check point"
+            );
             true
         } else {
-            warn!(user_id = user_id, "No active session to cancel");
+            warn!(
+                user_id = user_id,
+                "No active cancellation token found (task may have already completed)"
+            );
             false
         }
     };

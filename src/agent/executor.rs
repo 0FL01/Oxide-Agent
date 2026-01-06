@@ -741,6 +741,12 @@ impl AgentExecutor {
         self.cancellation_flag.load(Ordering::SeqCst)
     }
 
+    /// Set a custom cancellation flag (used for lock-free cancellation)
+    /// This allows external code to inject a shared AtomicBool for concurrent access
+    pub fn set_cancellation_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.cancellation_flag = flag;
+    }
+
     /// Reset the executor and session
     pub fn reset(&mut self) {
         self.cancellation_flag.store(false, Ordering::SeqCst);
