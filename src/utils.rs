@@ -415,4 +415,31 @@ mod tests {
         let name = extract_tag_name(&input);
         assert_eq!(name, "a");
     }
+
+    #[test]
+    fn test_clean_html_double_escaping_prevention() {
+        // Simulate what would happen if tool_call XML leaked into content
+        let input = "Result: <arg_key>some value</arg_key> in text";
+        let cleaned = clean_html(input);
+        // Should escape unsupported tags once
+        assert_eq!(
+            cleaned,
+            "Result: &lt;arg_key&gt;some value&lt;/arg_key&gt; in text"
+        );
+
+        // Should NOT double-escape if run again
+        let double_cleaned = clean_html(&cleaned);
+        assert_eq!(cleaned, double_cleaned);
+    }
+
+    #[test]
+    fn test_clean_html_xml_like_tags() {
+        // Test various XML-like tags that could leak from LLM tool calls
+        let input = "Text with <arg_value>data</arg_value> and <tool_name>search</tool_name>";
+        let cleaned = clean_html(input);
+        assert!(!cleaned.contains("<arg_value>"));
+        assert!(!cleaned.contains("<tool_name>"));
+        assert!(cleaned.contains("&lt;arg_value&gt;"));
+        assert!(cleaned.contains("&lt;tool_name&gt;"));
+    }
 }

@@ -310,8 +310,43 @@ impl AgentExecutor {
         ctx: &mut AgentLoopContext<'_>,
     ) -> Result<Option<String>> {
         use super::progress::AgentEvent;
-        let final_response =
+        let mut final_response =
             content.unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
+
+        // ANTI-LEAK PROTECTION: Detect tool_call syntax leaking into final response
+        if final_response.contains("<arg_key>")
+            || final_response.contains("<arg_value>")
+            || final_response.contains("</arg_key>")
+            || final_response.contains("</arg_value>")
+        {
+            warn!("Detected leaked tool_call XML syntax in final response, sanitizing output");
+            // Remove tool_call artifacts from response
+            final_response = final_response
+                .replace("<arg_key>", "")
+                .replace("</arg_key>", "")
+                .replace("<arg_value>", "")
+                .replace("</arg_value>", "");
+
+            // If response is now empty or too short, force continuation
+            if final_response.trim().len() < 10 {
+                warn!(
+                    "Response became empty after sanitization, forcing iteration to get real answer"
+                );
+                *continuation_count += 1;
+                if let Some(tx) = ctx.progress_tx {
+                    let _ = tx
+                        .send(AgentEvent::Continuation {
+                            reason: "Обнаружена ошибка генерации, повторяю попытку...".to_string(),
+                            count: *continuation_count,
+                        })
+                        .await;
+                }
+                ctx.messages.push(Message::system(
+                    "[СИСТЕМА: Ваш предыдущий ответ содержал служебный синтаксис вместо нормального текста. Пожалуйста, предоставьте полноценный текстовый ответ на запрос пользователя, используя результаты уже выполненных инструментов.]"
+                ));
+                return Ok(None);
+            }
+        }
 
         {
             let current_todos = ctx.todos_arc.lock().await;
