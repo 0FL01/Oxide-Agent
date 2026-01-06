@@ -220,7 +220,12 @@ impl ToolProvider for TodosProvider {
         tool_name == "write_todos"
     }
 
-    async fn execute(&self, tool_name: &str, arguments: &str) -> Result<String> {
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
         debug!(tool = tool_name, "Executing todos tool");
 
         if tool_name != "write_todos" {
@@ -378,7 +383,7 @@ mod tests {
             ]
         }"#;
 
-        let result = provider.execute("write_todos", args).await?;
+        let result = provider.execute("write_todos", args, None).await?;
         assert!(result.contains("Список задач обновлён"));
         assert!(result.contains("1/3 выполнено"));
         assert!(result.contains("Task 2"));

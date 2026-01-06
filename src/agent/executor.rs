@@ -627,21 +627,38 @@ impl AgentExecutor {
                     .await;
             }
 
-            // Execute tool with timeout to prevent indefinite blocking
+            // Execute tool with timeout and cancellation support
             let tool_timeout = Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS);
-            let result = match timeout(tool_timeout, ctx.registry.execute(&name, &args)).await {
-                Ok(Ok(r)) => r,
-                Ok(Err(e)) => format!("Ошибка выполнения инструмента: {e}"),
-                Err(_) => {
-                    warn!(
-                        tool_name = %name,
-                        timeout_secs = AGENT_TOOL_TIMEOUT_SECS,
-                        "Tool execution timed out"
-                    );
-                    format!(
-                        "Инструмент '{name}' превысил лимит времени ({} секунд)",
-                        AGENT_TOOL_TIMEOUT_SECS
-                    )
+            let result = {
+                use tokio::select;
+                select! {
+                    res = timeout(tool_timeout, ctx.registry.execute(&name, &args, Some(&self.session.cancellation_token))) => {
+                        match res {
+                            Ok(Ok(r)) => r,
+                            Ok(Err(e)) => format!("Ошибка выполнения инструмента: {e}"),
+                            Err(_) => {
+                                warn!(
+                                    tool_name = %name,
+                                    timeout_secs = AGENT_TOOL_TIMEOUT_SECS,
+                                    "Tool execution timed out"
+                                );
+                                format!(
+                                    "Инструмент '{name}' превысил лимит времени ({} секунд)",
+                                    AGENT_TOOL_TIMEOUT_SECS
+                                )
+                            }
+                        }
+                    },
+                    _ = self.session.cancellation_token.cancelled() => {
+                        warn!(tool_name = %name, "Tool execution cancelled by user");
+                        if let Some(tx) = ctx.progress_tx {
+                            let _ = tx.send(AgentEvent::Cancelling { tool_name: name.clone() }).await;
+                            // Give UI time to show cancelling status (2 sec cleanup timeout)
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            let _ = tx.send(AgentEvent::Cancelled).await;
+                        }
+                        return Err(anyhow!("Задача отменена пользователем во время выполнения инструмента"));
+                    }
                 }
             };
 

@@ -38,7 +38,12 @@ impl ToolRegistry {
     /// # Errors
     ///
     /// Returns an error if no provider can handle the tool or if execution fails.
-    pub async fn execute(&self, tool_name: &str, arguments: &str) -> Result<String> {
+    pub async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
         debug!(tool = tool_name, "Looking for provider to handle tool");
 
         for provider in &self.providers {
@@ -48,7 +53,9 @@ impl ToolRegistry {
                     provider = provider.name(),
                     "Found provider for tool"
                 );
-                return provider.execute(tool_name, arguments).await;
+                return provider
+                    .execute(tool_name, arguments, cancellation_token)
+                    .await;
             }
         }
 

@@ -104,7 +104,12 @@ impl ToolProvider for TavilyProvider {
         matches!(tool_name, "web_search" | "web_extract")
     }
 
-    async fn execute(&self, tool_name: &str, arguments: &str) -> Result<String> {
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
         use std::fmt::Write;
         debug!(tool = tool_name, "Executing Tavily tool");
 

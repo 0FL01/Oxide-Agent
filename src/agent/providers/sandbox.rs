@@ -76,10 +76,13 @@ impl SandboxProvider {
 
         let workspace_path = format!("/workspace/{path}");
         let check = sandbox
-            .exec_command(&format!(
-                "test -f '{}' && echo 'exists'",
-                escape(workspace_path.as_str().into())
-            ))
+            .exec_command(
+                &format!(
+                    "test -f '{}' && echo 'exists'",
+                    escape(workspace_path.as_str().into())
+                ),
+                None,
+            )
             .await?;
 
         if check.stdout.contains("exists") {
@@ -89,7 +92,7 @@ impl SandboxProvider {
 
         info!(path = %path, "File not found at /workspace/{path}, searching...");
         let find_cmd = format!("find /workspace -name '{}' -type f", escape(path.into()));
-        let result = sandbox.exec_command(&find_cmd).await?;
+        let result = sandbox.exec_command(&find_cmd, None).await?;
 
         let found_paths: Vec<&str> = result.stdout.lines().filter(|l| !l.is_empty()).collect();
 
@@ -113,9 +116,18 @@ impl SandboxProvider {
         }
     }
 
-    async fn handle_execute_command(sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+    async fn handle_execute_command(
+        sandbox: &SandboxManager,
+        arguments: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
-        match sandbox.exec_command(&args.command).await {
+
+        // Pass cancellation_token to exec_command
+        match sandbox
+            .exec_command(&args.command, cancellation_token)
+            .await
+        {
             Ok(result) => {
                 if result.success() {
                     if result.stdout.is_empty() {
@@ -223,7 +235,7 @@ impl SandboxProvider {
             escape(args.path.as_str().into())
         );
 
-        match sandbox.exec_command(&cmd).await {
+        match sandbox.exec_command(&cmd, None).await {
             Ok(result) => {
                 if result.success() {
                     if result.stdout.is_empty() {
@@ -365,7 +377,12 @@ impl ToolProvider for SandboxProvider {
         )
     }
 
-    async fn execute(&self, tool_name: &str, arguments: &str) -> Result<String> {
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
         debug!(tool = tool_name, "Executing sandbox tool");
 
         // Ensure sandbox is running
@@ -380,7 +397,9 @@ impl ToolProvider for SandboxProvider {
         };
 
         match tool_name {
-            "execute_command" => Self::handle_execute_command(&sandbox, arguments).await,
+            "execute_command" => {
+                Self::handle_execute_command(&sandbox, arguments, cancellation_token).await
+            }
             "write_file" => Self::handle_write_file(&sandbox, arguments).await,
             "read_file" => Self::handle_read_file(&sandbox, arguments).await,
             "send_file_to_user" => self.handle_send_file(&sandbox, arguments).await,

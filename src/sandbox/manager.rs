@@ -201,13 +201,60 @@ impl SandboxManager {
         Ok(())
     }
 
+    /// Kill all processes in the container (SIGKILL)
+    ///
+    /// Used when cancelling an ongoing command execution.
+    /// Returns Ok even if kill fails (best effort cleanup).
+    async fn kill_processes(&self) {
+        if let Some(container_id) = &self.container_id {
+            // Best effort kill: send SIGKILL to all processes
+            // We use killall5 which sends signal to all processes except kernel threads
+            let kill_cmd = "killall5 -9 2>/dev/null || true";
+
+            debug!(
+                container_id = %container_id,
+                "Attempting to kill all processes in container"
+            );
+
+            // Execute without recursion (use internal Docker API directly to avoid deadlock)
+            let exec_options = CreateExecOptions {
+                attach_stdout: Some(false),
+                attach_stderr: Some(false),
+                cmd: Some(vec!["sh", "-c", kill_cmd]),
+                ..Default::default()
+            };
+
+            if let Ok(exec) = self.docker.create_exec(container_id, exec_options).await {
+                // Fire and forget - don't wait for completion
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    self.docker.start_exec(&exec.id, None),
+                )
+                .await;
+
+                info!(container_id = %container_id, "Process kill signal sent");
+            } else {
+                warn!(container_id = %container_id, "Failed to create kill exec");
+            }
+        }
+    }
+
     /// Execute a command in the sandbox
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - The command to execute
+    /// * `cancellation_token` - Optional token to allow cancellation of long-running commands
     ///
     /// # Errors
     ///
-    /// Returns an error if sandbox is not running, exec creation fails, or execution times out.
-    #[instrument(skip(self), fields(container_id = ?self.container_id))]
-    pub async fn exec_command(&self, cmd: &str) -> Result<ExecResult> {
+    /// Returns an error if sandbox is not running, exec creation fails, execution times out, or is cancelled.
+    #[instrument(skip(self, cancellation_token), fields(container_id = ?self.container_id))]
+    pub async fn exec_command(
+        &self,
+        cmd: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<ExecResult> {
         let container_id = self
             .container_id
             .as_ref()
@@ -229,14 +276,36 @@ impl SandboxManager {
             .await
             .context("Failed to create exec")?;
 
-        // Start exec with timeout
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(SANDBOX_EXEC_TIMEOUT_SECS),
-            self.run_exec(&exec.id),
-        )
-        .await
-        .map_err(|_| anyhow!("Command execution timed out after {SANDBOX_EXEC_TIMEOUT_SECS}s"))?
-        .context("Command execution failed")?;
+        // If cancellation_token is provided, use select! to handle cancellation
+        let result = if let Some(token) = cancellation_token {
+            use tokio::select;
+            select! {
+                res = tokio::time::timeout(
+                    std::time::Duration::from_secs(SANDBOX_EXEC_TIMEOUT_SECS),
+                    self.run_exec(&exec.id),
+                ) => {
+                    res.map_err(|_| anyhow!("Command execution timed out after {SANDBOX_EXEC_TIMEOUT_SECS}s"))?
+                        .context("Command execution failed")?
+                },
+                _ = token.cancelled() => {
+                    warn!(exec_id = %exec.id, cmd = %cmd, "Command cancelled by user, killing processes");
+
+                    // Kill all processes in the container
+                    self.kill_processes().await;
+
+                    return Err(anyhow!("Выполнение команды прервано пользователем"));
+                }
+            }
+        } else {
+            // No cancellation token: use original timeout logic
+            tokio::time::timeout(
+                std::time::Duration::from_secs(SANDBOX_EXEC_TIMEOUT_SECS),
+                self.run_exec(&exec.id),
+            )
+            .await
+            .map_err(|_| anyhow!("Command execution timed out after {SANDBOX_EXEC_TIMEOUT_SECS}s"))?
+            .context("Command execution failed")?
+        };
 
         debug!(
             exit_code = result.exit_code,
@@ -300,7 +369,7 @@ impl SandboxManager {
             shell_escape::escape(path.into())
         );
 
-        let result = self.exec_command(&cmd).await?;
+        let result = self.exec_command(&cmd, None).await?;
 
         if !result.success() {
             return Err(anyhow!("Failed to write file: {}", result.stderr));
@@ -319,7 +388,7 @@ impl SandboxManager {
     pub async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
         let cmd = format!("base64 {}", shell_escape::escape(path.into()));
 
-        let result = self.exec_command(&cmd).await?;
+        let result = self.exec_command(&cmd, None).await?;
 
         if !result.success() {
             return Err(anyhow!("Failed to read file: {}", result.stderr));
@@ -358,7 +427,8 @@ impl SandboxManager {
             .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
 
         // Ensure parent directory exists
-        self.exec_command(&format!("mkdir -p '{parent}'")).await?;
+        self.exec_command(&format!("mkdir -p '{parent}'"), None)
+            .await?;
 
         // Create tar archive in memory
         let mut tar_buffer = Vec::new();
@@ -418,7 +488,10 @@ impl SandboxManager {
 
         // Check if file exists first
         let check = self
-            .exec_command(&format!("test -f '{container_path}' && echo 'exists'"))
+            .exec_command(
+                &format!("test -f '{container_path}' && echo 'exists'"),
+                None,
+            )
             .await?;
         if !check.stdout.contains("exists") {
             anyhow::bail!("File not found: {container_path}");
@@ -426,7 +499,7 @@ impl SandboxManager {
 
         // Get file size to check limits (50MB max for Telegram)
         let size_check = self
-            .exec_command(&format!("stat -c %s '{container_path}'"))
+            .exec_command(&format!("stat -c %s '{container_path}'"), None)
             .await?;
         let file_size: u64 = size_check.stdout.trim().parse().unwrap_or(0);
 
@@ -485,7 +558,7 @@ impl SandboxManager {
     #[instrument(skip(self))]
     pub async fn get_uploads_size(&self) -> Result<u64> {
         let result = self
-            .exec_command("du -sb /workspace/uploads 2>/dev/null || echo '0'")
+            .exec_command("du -sb /workspace/uploads 2>/dev/null || echo '0'", None)
             .await?;
 
         let size_str = result.stdout.split_whitespace().next().unwrap_or("0");
@@ -583,12 +656,14 @@ mod tests {
         assert!(sandbox.is_running());
 
         // Execute command
-        let result = sandbox.exec_command("echo 'Hello, World!'").await?;
+        let result = sandbox.exec_command("echo 'Hello, World!'", None).await?;
         assert!(result.success());
         assert!(result.stdout.contains("Hello, World!"));
 
         // Python test
-        let result = sandbox.exec_command("python3 -c \"print(2 + 2)\"").await?;
+        let result = sandbox
+            .exec_command("python3 -c \"print(2 + 2)\"", None)
+            .await?;
         assert!(result.success());
         assert!(result.stdout.contains('4'));
 

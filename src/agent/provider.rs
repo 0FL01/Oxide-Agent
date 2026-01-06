@@ -6,6 +6,7 @@
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 /// Unified interface for tool providers
 #[async_trait]
@@ -20,5 +21,16 @@ pub trait ToolProvider: Send + Sync {
     fn can_handle(&self, tool_name: &str) -> bool;
 
     /// Execute a tool and return the result
-    async fn execute(&self, tool_name: &str, arguments: &str) -> Result<String>;
+    ///
+    /// # Arguments
+    ///
+    /// * `tool_name` - Name of the tool to execute
+    /// * `arguments` - JSON-encoded arguments for the tool
+    /// * `cancellation_token` - Optional token to allow cancellation of long-running operations
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String>;
 }
