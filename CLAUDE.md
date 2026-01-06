@@ -24,7 +24,8 @@ src/
 │       ├── mod.rs
 │       ├── sandbox.rs
 │       ├── tavily.rs
-│       └── todos.rs
+│       ├── todos.rs
+│       └── ytdlp.rs           # YT-DLP провайдер (YouTube, видео-платформы)
 ├── bot/                       # Telegram-бот
 │   ├── mod.rs
 │   ├── handlers.rs            # Обработчики команд и сообщений
@@ -45,6 +46,7 @@ src/
 └── utils.rs                   # Утилиты
 
 tests/
+├── cancellation_respected.rs   # Тесты корректной работы отмены
 ├── agent_xml_leak_prevention.rs # Тесты защиты от утечек XML
 └── integration_validation.rs    # Интеграционные тесты
 
