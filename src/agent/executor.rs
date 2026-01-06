@@ -357,16 +357,21 @@ impl AgentExecutor {
             messages: &mut messages,
         };
 
-        let result = timeout(timeout_duration, self.run_loop(&mut ctx)).await;
-
-        if let Ok(inner) = result {
-            inner
-        } else {
-            self.session.timeout();
-            Err(anyhow!(
-                "Задача превысила лимит времени ({} минут)",
-                AGENT_TIMEOUT_SECS / 60
-            ))
+        match timeout(timeout_duration, self.run_loop(&mut ctx)).await {
+            Ok(inner) => match inner {
+                Ok(res) => Ok(res),
+                Err(e) => {
+                    self.session.fail(e.to_string());
+                    Err(e)
+                }
+            },
+            Err(_) => {
+                self.session.timeout();
+                Err(anyhow!(
+                    "Задача превысила лимит времени ({} минут)",
+                    AGENT_TIMEOUT_SECS / 60
+                ))
+            }
         }
     }
 
@@ -461,6 +466,22 @@ impl AgentExecutor {
         ))
     }
 
+    async fn bail_if_cancelled(
+        &self,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<super::progress::AgentEvent>>,
+    ) -> Result<()> {
+        use super::progress::AgentEvent;
+
+        if !self.session.cancellation_token.is_cancelled() {
+            return Ok(());
+        }
+
+        if let Some(tx) = progress_tx {
+            let _ = tx.send(AgentEvent::Cancelled).await;
+        }
+        Err(anyhow!("Задача отменена пользователем"))
+    }
+
     async fn handle_final_response(
         &mut self,
         content: Option<String>,
@@ -470,6 +491,8 @@ impl AgentExecutor {
         ctx: &mut AgentLoopContext<'_>,
     ) -> Result<Option<String>> {
         use super::progress::AgentEvent;
+        self.bail_if_cancelled(ctx.progress_tx).await?;
+
         let mut final_response =
             content.unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
 
@@ -632,6 +655,17 @@ impl AgentExecutor {
             let result = {
                 use tokio::select;
                 select! {
+                    biased;
+                    _ = self.session.cancellation_token.cancelled() => {
+                        warn!(tool_name = %name, "Tool execution cancelled by user");
+                        if let Some(tx) = ctx.progress_tx {
+                            let _ = tx.send(AgentEvent::Cancelling { tool_name: name.clone() }).await;
+                            // Give UI time to show cancelling status (2 sec cleanup timeout)
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            let _ = tx.send(AgentEvent::Cancelled).await;
+                        }
+                        return Err(anyhow!("Задача отменена пользователем во время выполнения инструмента"));
+                    },
                     res = timeout(tool_timeout, ctx.registry.execute(&name, &args, Some(&self.session.cancellation_token))) => {
                         match res {
                             Ok(Ok(r)) => r,
@@ -649,16 +683,6 @@ impl AgentExecutor {
                             }
                         }
                     },
-                    _ = self.session.cancellation_token.cancelled() => {
-                        warn!(tool_name = %name, "Tool execution cancelled by user");
-                        if let Some(tx) = ctx.progress_tx {
-                            let _ = tx.send(AgentEvent::Cancelling { tool_name: name.clone() }).await;
-                            // Give UI time to show cancelling status (2 sec cleanup timeout)
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            let _ = tx.send(AgentEvent::Cancelled).await;
-                        }
-                        return Err(anyhow!("Задача отменена пользователем во время выполнения инструмента"));
-                    }
                 }
             };
 

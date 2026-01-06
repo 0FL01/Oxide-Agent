@@ -53,7 +53,8 @@ pub struct AgentSession {
     /// Current status
     pub status: AgentStatus,
     /// Cancellation token for the current active task
-    /// Updated on each new task via start_task()
+    /// Set by the caller before starting a task (e.g. bot handler) so that external
+    /// cancellation requests are observed by the executor.
     pub cancellation_token: CancellationToken,
 }
 
@@ -82,7 +83,6 @@ impl AgentSession {
 
     /// Start a new task, resetting the timer and generating a task ID
     pub fn start_task(&mut self) {
-        self.renew_cancellation_token();
         self.started_at = Some(Instant::now());
         self.current_task_id = Some(uuid::Uuid::new_v4().to_string());
         self.status = AgentStatus::Processing {
