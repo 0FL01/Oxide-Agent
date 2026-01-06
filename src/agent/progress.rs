@@ -2,7 +2,8 @@ use super::providers::TodoList;
 use serde::{Deserialize, Serialize};
 
 /// Events that can occur during agent execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentEvent {
     /// Agent is thinking about the next step
     Thinking {
@@ -42,6 +43,19 @@ pub enum AgentEvent {
         /// Raw file content
         #[serde(with = "serde_bytes")]
         content: Vec<u8>,
+    },
+    /// File to send to user with delivery confirmation
+    /// Used by ytdlp provider for automatic cleanup after successful delivery
+    #[serde(skip)]
+    FileToSendWithConfirmation {
+        /// Original file name
+        file_name: String,
+        /// Raw file content
+        content: Vec<u8>,
+        /// Path in sandbox for cleanup after success
+        sandbox_path: String,
+        /// Channel to receive delivery confirmation
+        confirmation_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     /// Agent has finished the task
     Finished,
@@ -119,6 +133,9 @@ impl ProgressState {
             AgentEvent::Continuation { reason, count } => self.handle_continuation(reason, count),
             AgentEvent::TodosUpdated { todos } => self.handle_todos_update(todos),
             AgentEvent::FileToSend { file_name, .. } => self.handle_file_send(file_name),
+            AgentEvent::FileToSendWithConfirmation { file_name, .. } => {
+                self.handle_file_send(file_name)
+            }
             AgentEvent::Finished => self.handle_finish(),
             AgentEvent::Cancelling { tool_name } => self.handle_cancelling(tool_name),
             AgentEvent::Cancelled => self.handle_cancelled(),

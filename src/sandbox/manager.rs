@@ -567,6 +567,31 @@ impl SandboxManager {
             .map_err(|e| anyhow!("Failed to parse uploads size: {e}"))
     }
 
+    /// Clean up old media files in /workspace/downloads/ (older than 7 days)
+    ///
+    /// This helps prevent accumulation of orphaned media files from ytdlp downloads.
+    /// Files are considered orphaned if delivery to Telegram failed or was interrupted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cleanup command fails.
+    #[instrument(skip(self))]
+    pub async fn cleanup_old_downloads(&self) -> Result<u64> {
+        // Find and count files older than 7 days
+        let count_cmd = "find /workspace/downloads -type f -mtime +7 2>/dev/null | wc -l";
+        let count_result = self.exec_command(count_cmd, None).await?;
+        let count: u64 = count_result.stdout.trim().parse().unwrap_or(0);
+
+        if count > 0 {
+            // Delete files older than 7 days
+            let cleanup_cmd = "find /workspace/downloads -type f -mtime +7 -delete 2>/dev/null";
+            self.exec_command(cleanup_cmd, None).await?;
+            info!(files_deleted = count, "Cleaned up old download files");
+        }
+
+        Ok(count)
+    }
+
     /// Destroy the sandbox container
     ///
     /// # Errors

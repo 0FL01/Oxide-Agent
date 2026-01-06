@@ -22,7 +22,7 @@ use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{InputFile, KeyboardButton, KeyboardMarkup, MessageId, ParseMode};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Type alias for dialogue
 pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
@@ -286,6 +286,94 @@ async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
     }
 }
 
+/// Spawn task to handle progress updates and file delivery
+fn spawn_progress_updater(
+    bot: Bot,
+    chat_id: ChatId,
+    msg_id: MessageId,
+    mut rx: tokio::sync::mpsc::Receiver<AgentEvent>,
+) -> tokio::task::JoinHandle<String> {
+    tokio::spawn(async move {
+        let mut state = ProgressState::new(AGENT_MAX_ITERATIONS);
+        let mut last_update = std::time::Instant::now();
+        let mut needs_update = false;
+        let throttle_duration = std::time::Duration::from_millis(1500);
+
+        while let Some(event) = rx.recv().await {
+            // Handle file sending separately (side effect)
+            match &event {
+                AgentEvent::FileToSend {
+                    ref file_name,
+                    ref content,
+                } => {
+                    let input_file =
+                        InputFile::memory(content.clone()).file_name(file_name.clone());
+                    if let Err(e) = bot.send_document(chat_id, input_file).await {
+                        tracing::error!("Failed to send file {}: {}", file_name, e);
+                    }
+                }
+                AgentEvent::FileToSendWithConfirmation {
+                    file_name: _,
+                    content: _,
+                    sandbox_path: _,
+                    ..
+                } => {
+                    // Extract the confirmation channel
+                    // We need to destructure the event to move confirmation_tx out
+                    if let AgentEvent::FileToSendWithConfirmation {
+                        file_name: fname,
+                        content: fcontent,
+                        sandbox_path: spath,
+                        confirmation_tx,
+                    } = event
+                    {
+                        // Retry logic with exponential backoff
+                        let result = crate::utils::retry_telegram_operation(|| async {
+                            let input_file =
+                                InputFile::memory(fcontent.clone()).file_name(fname.clone());
+                            bot.send_document(chat_id, input_file)
+                                .await
+                                .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
+                        })
+                        .await;
+
+                        match result {
+                            Ok(_) => {
+                                info!(file_name = %fname, sandbox_path = %spath, "File delivered successfully");
+                                let _ = confirmation_tx.send(Ok(()));
+                            }
+                            Err(e) => {
+                                error!(file_name = %fname, error = %e, "Failed to deliver file after retries");
+                                let _ = confirmation_tx.send(Err(e.to_string()));
+                            }
+                        }
+                        // Don't update state for this variant, we already handled it
+                        needs_update = true;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+
+            state.update(event);
+            needs_update = true;
+
+            if last_update.elapsed() >= throttle_duration {
+                let text = state.format_telegram();
+                edit_message_safe(&bot, chat_id, msg_id, &text).await;
+                last_update = std::time::Instant::now();
+                needs_update = false;
+            }
+        }
+
+        let final_text = state.format_telegram();
+        if needs_update {
+            edit_message_safe(&bot, chat_id, msg_id, &final_text).await;
+        }
+        final_text
+    })
+}
+
 async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let user_id = ctx.msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = ctx.msg.chat.id;
@@ -308,49 +396,10 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         .await?;
 
     // Create progress tracking channel
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
+    let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
 
     // Spawn progress updater task
-    let bot_clone = ctx.bot.clone();
-    let chat_id_clone = chat_id;
-    let msg_id = progress_msg.id;
-
-    let progress_handle = tokio::spawn(async move {
-        let mut state = ProgressState::new(AGENT_MAX_ITERATIONS);
-        let mut last_update = std::time::Instant::now();
-        let mut needs_update = false;
-        let throttle_duration = std::time::Duration::from_millis(1500);
-
-        while let Some(event) = rx.recv().await {
-            // Handle file sending separately (side effect)
-            if let AgentEvent::FileToSend {
-                ref file_name,
-                ref content,
-            } = event
-            {
-                let input_file = InputFile::memory(content.clone()).file_name(file_name.clone());
-                if let Err(e) = bot_clone.send_document(chat_id_clone, input_file).await {
-                    tracing::error!("Failed to send file {}: {}", file_name, e);
-                }
-            }
-
-            state.update(event);
-            needs_update = true;
-
-            if last_update.elapsed() >= throttle_duration {
-                let text = state.format_telegram();
-                edit_message_safe(&bot_clone, chat_id_clone, msg_id, &text).await;
-                last_update = std::time::Instant::now();
-                needs_update = false;
-            }
-        }
-
-        let final_text = state.format_telegram();
-        if needs_update {
-            edit_message_safe(&bot_clone, chat_id_clone, msg_id, &final_text).await;
-        }
-        final_text
-    });
+    let progress_handle = spawn_progress_updater(ctx.bot.clone(), chat_id, progress_msg.id, rx);
 
     // Execute the task
     let result = execute_agent_task(user_id, &task_text, Some(tx)).await;

@@ -17,7 +17,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Patterns indicating fatal, unrecoverable yt-dlp errors
 /// that should stop execution immediately
@@ -129,6 +129,22 @@ impl YtdlpProvider {
             .exec_command(&format!("mkdir -p {DOWNLOADS_DIR}"), None)
             .await?;
 
+        // Cleanup old downloads (files older than 7 days) on sandbox init
+        // This runs at most once per sandbox lifecycle
+        tokio::spawn({
+            let sb = sandbox.clone();
+            async move {
+                if let Ok(count) = sb.cleanup_old_downloads().await {
+                    if count > 0 {
+                        debug!(
+                            files_deleted = count,
+                            "Cleaned up old download files on init"
+                        );
+                    }
+                }
+            }
+        });
+
         *self.sandbox.lock().await = Some(sandbox);
         Ok(())
     }
@@ -140,6 +156,98 @@ impl YtdlpProvider {
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
+    }
+
+    /// Send file to user with automatic cleanup after successful delivery
+    async fn send_file_with_cleanup(
+        &self,
+        sandbox: &SandboxManager,
+        file_path: &str,
+        file_name: &str,
+    ) -> Result<String> {
+        // Download file from sandbox
+        let content = match sandbox.download_file(file_path).await {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(format!(
+                    "❌ Failed to read file from sandbox: {e}\n\n\
+                     File path: {file_path}"
+                ));
+            }
+        };
+
+        let size_mb = content.len() as f64 / 1024.0 / 1024.0;
+
+        if let Some(ref tx) = self.progress_tx {
+            // Create oneshot channel for delivery confirmation
+            let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+
+            // Send file with confirmation request
+            if let Err(e) = tx
+                .send(AgentEvent::FileToSendWithConfirmation {
+                    file_name: file_name.to_string(),
+                    content,
+                    sandbox_path: file_path.to_string(),
+                    confirmation_tx: confirm_tx,
+                })
+                .await
+            {
+                warn!(error = %e, "Failed to send FileToSendWithConfirmation event");
+                return Ok(format!(
+                    "⚠️ File downloaded ({size_mb:.2} MB) but failed to queue for sending: {e}\n\
+                     Path: {file_path}"
+                ));
+            }
+
+            // Wait for confirmation with timeout (2 minutes)
+            match tokio::time::timeout(std::time::Duration::from_secs(120), confirm_rx).await {
+                Ok(Ok(Ok(()))) => {
+                    // Success! Delete file from sandbox
+                    info!(file_path = %file_path, "File delivered successfully, cleaning up");
+                    if let Err(e) = sandbox
+                        .exec_command(&format!("rm -f '{file_path}'"), None)
+                        .await
+                    {
+                        warn!(error = %e, file_path = %file_path, "Failed to cleanup file after delivery");
+                    }
+                    Ok(format!(
+                        "✅ File '{file_name}' ({size_mb:.2} MB) sent to user successfully"
+                    ))
+                }
+                Ok(Ok(Err(e))) => {
+                    // Delivery failed after retries
+                    warn!(error = %e, file_path = %file_path, "File delivery failed after retries");
+                    Ok(format!(
+                        "⚠️ Failed to send file to user: {e}\n\
+                         File remains in sandbox at: {file_path}\n\
+                         You can retry using `send_file_to_user` tool."
+                    ))
+                }
+                Ok(Err(_)) => {
+                    // Channel closed unexpectedly
+                    warn!(file_path = %file_path, "Confirmation channel closed unexpectedly");
+                    Ok(format!(
+                        "⚠️ File delivery status unknown (channel closed)\n\
+                         File remains in sandbox at: {file_path}"
+                    ))
+                }
+                Err(_) => {
+                    // Timeout
+                    warn!(file_path = %file_path, "File delivery confirmation timeout");
+                    Ok(format!(
+                        "⚠️ File delivery timed out (2 minutes)\n\
+                         File remains in sandbox at: {file_path}"
+                    ))
+                }
+            }
+        } else {
+            warn!("Progress channel not available for file delivery");
+            Ok(format!(
+                "⚠️ File downloaded ({size_mb:.2} MB) but progress channel not available\n\
+                 Path: {file_path}\n\
+                 Use `send_file_to_user` tool to send it manually."
+            ))
+        }
     }
 
     /// Execute yt-dlp command and return output
@@ -453,6 +561,13 @@ impl YtdlpProvider {
             .file_name()
             .map_or("video.mp4".to_string(), |n| n.to_string_lossy().to_string());
 
+        if args.send_to_user {
+            // Auto-send to user with confirmation for cleanup
+            return self
+                .send_file_with_cleanup(&sandbox, video_path, &filename)
+                .await;
+        }
+
         Ok(format!(
             "Video downloaded successfully!\n\n\
              - **File**: {filename}\n\
@@ -522,6 +637,13 @@ impl YtdlpProvider {
             .file_name()
             .map_or("audio.mp3".to_string(), |n| n.to_string_lossy().to_string());
 
+        if args.send_to_user {
+            // Auto-send to user with confirmation for cleanup
+            return self
+                .send_file_with_cleanup(&sandbox, audio_path, &filename)
+                .await;
+        }
+
         Ok(format!(
             "Audio extracted successfully!\n\n\
              - **File**: {filename}\n\
@@ -566,11 +688,147 @@ struct DownloadVideoArgs {
     start_time: Option<String>,
     #[serde(default)]
     end_time: Option<String>,
+    /// Automatically send to user after download (default: true)
+    #[serde(default = "default_true")]
+    send_to_user: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct DownloadAudioArgs {
     url: String,
+    /// Automatically send to user after download (default: true)
+    #[serde(default = "default_true")]
+    send_to_user: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// ============================================================================
+// Tool Definitions - Split into multiple functions to satisfy clippy
+// ============================================================================
+
+impl YtdlpProvider {
+    fn get_metadata_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "ytdlp_get_video_metadata".to_string(),
+            description: "Get comprehensive metadata for a video from YouTube or other supported platforms. Returns JSON with title, channel, duration, views, upload date, description, tags, and more. No video download required.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Video URL (YouTube, Vimeo, Facebook, etc.)"
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: specific fields to extract (e.g., ['title', 'channel', 'duration', 'view_count'])"
+                    }
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
+    fn get_transcript_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "ytdlp_download_transcript".to_string(),
+            description: "Download and extract clean text transcript from a video. Supports auto-generated and manual subtitles. Returns plain text without timestamps.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Video URL"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Subtitle language code (default: 'en'). Examples: 'en', 'ru', 'es', 'zh-Hans'"
+                    }
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
+    fn get_search_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "ytdlp_search_videos".to_string(),
+            description: "Search for videos on YouTube. Returns list of videos with titles, channels, durations, and URLs.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results (1-20, default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        }
+    }
+
+    fn get_download_video_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "ytdlp_download_video".to_string(),
+            description: "Download a video from YouTube or other platforms. By default, automatically sends the file to the user and cleans up after successful delivery. Set send_to_user=false to keep the file in sandbox for further processing.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Video URL"
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "description": "Video resolution: '480', '720', '1080', or 'best' (default: '720')"
+                    },
+                    "start_time": {
+                        "type": "string",
+                        "description": "Optional start time for trimming (format: 'MM:SS' or 'HH:MM:SS')"
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "description": "Optional end time for trimming (format: 'MM:SS' or 'HH:MM:SS')"
+                    },
+                    "send_to_user": {
+                        "type": "boolean",
+                        "description": "Automatically send file to user after download (default: true). Set to false if you need to process the file first.",
+                        "default": true
+                    }
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
+    fn get_download_audio_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "ytdlp_download_audio".to_string(),
+            description: "Extract and download audio from a video as MP3. By default, automatically sends the file to the user and cleans up after successful delivery. Set send_to_user=false to keep the file in sandbox for further processing.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Video URL"
+                    },
+                    "send_to_user": {
+                        "type": "boolean",
+                        "description": "Automatically send file to user after download (default: true). Set to false if you need to process the file first.",
+                        "default": true
+                    }
+                },
+                "required": ["url"]
+            }),
+        }
+    }
 }
 
 // ============================================================================
@@ -585,101 +843,11 @@ impl ToolProvider for YtdlpProvider {
 
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
-            ToolDefinition {
-                name: "ytdlp_get_video_metadata".to_string(),
-                description: "Get comprehensive metadata for a video from YouTube or other supported platforms. Returns JSON with title, channel, duration, views, upload date, description, tags, and more. No video download required.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "Video URL (YouTube, Vimeo, Facebook, etc.)"
-                        },
-                        "fields": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Optional: specific fields to extract (e.g., ['title', 'channel', 'duration', 'view_count'])"
-                        }
-                    },
-                    "required": ["url"]
-                }),
-            },
-            ToolDefinition {
-                name: "ytdlp_download_transcript".to_string(),
-                description: "Download and extract clean text transcript from a video. Supports auto-generated and manual subtitles. Returns plain text without timestamps.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "Video URL"
-                        },
-                        "language": {
-                            "type": "string",
-                            "description": "Subtitle language code (default: 'en'). Examples: 'en', 'ru', 'es', 'zh-Hans'"
-                        }
-                    },
-                    "required": ["url"]
-                }),
-            },
-            ToolDefinition {
-                name: "ytdlp_search_videos".to_string(),
-                description: "Search for videos on YouTube. Returns list of videos with titles, channels, durations, and URLs.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query"
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "Maximum number of results (1-20, default: 5)"
-                        }
-                    },
-                    "required": ["query"]
-                }),
-            },
-            ToolDefinition {
-                name: "ytdlp_download_video".to_string(),
-                description: "Download a video to the sandbox. Supports resolution selection and time trimming. After download, use 'send_file_to_user' to send to user.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "Video URL"
-                        },
-                        "resolution": {
-                            "type": "string",
-                            "description": "Video resolution: '480', '720', '1080', or 'best' (default: '720')"
-                        },
-                        "start_time": {
-                            "type": "string",
-                            "description": "Optional start time for trimming (format: 'MM:SS' or 'HH:MM:SS')"
-                        },
-                        "end_time": {
-                            "type": "string",
-                            "description": "Optional end time for trimming (format: 'MM:SS' or 'HH:MM:SS')"
-                        }
-                    },
-                    "required": ["url"]
-                }),
-            },
-            ToolDefinition {
-                name: "ytdlp_download_audio".to_string(),
-                description: "Extract and download audio from a video as MP3. After download, use 'send_file_to_user' to send to user.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "Video URL"
-                        }
-                    },
-                    "required": ["url"]
-                }),
-            },
+            Self::get_metadata_tool(),
+            Self::get_transcript_tool(),
+            Self::get_search_tool(),
+            Self::get_download_video_tool(),
+            Self::get_download_audio_tool(),
         ]
     }
 
