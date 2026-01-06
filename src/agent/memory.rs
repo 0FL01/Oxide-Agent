@@ -5,6 +5,7 @@
 
 use crate::agent::providers::TodoList;
 use crate::config::AGENT_COMPACT_THRESHOLD;
+use crate::llm::ToolCall;
 use serde::{Deserialize, Serialize};
 use tiktoken_rs::cl100k_base;
 use tracing::info;
@@ -19,6 +20,12 @@ pub struct AgentMessage {
     /// Optional reasoning/thinking content (for models that support it, e.g., GLM-4.7)
     /// This is counted towards token limits but not shown to user
     pub reasoning: Option<String>,
+    /// Tool call ID (for tool responses)
+    pub tool_call_id: Option<String>,
+    /// Tool name (for tool responses)
+    pub tool_name: Option<String>,
+    /// Tool calls made by assistant
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 /// Role of a message sender in agent memory
@@ -30,6 +37,8 @@ pub enum MessageRole {
     User,
     /// Response from the assistant/agent
     Assistant,
+    /// Tool response message
+    Tool,
 }
 
 impl AgentMessage {
@@ -39,6 +48,9 @@ impl AgentMessage {
             role: MessageRole::System,
             content: content.into(),
             reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
         }
     }
 
@@ -48,6 +60,9 @@ impl AgentMessage {
             role: MessageRole::User,
             content: content.into(),
             reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
         }
     }
 
@@ -57,6 +72,9 @@ impl AgentMessage {
             role: MessageRole::Assistant,
             content: content.into(),
             reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
         }
     }
 
@@ -69,6 +87,33 @@ impl AgentMessage {
             role: MessageRole::Assistant,
             content: content.into(),
             reasoning: Some(reasoning.into()),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Create a new tool response message
+    pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
+        Self {
+            role: MessageRole::Tool,
+            content: content.into(),
+            reasoning: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(name.to_string()),
+            tool_calls: None,
+        }
+    }
+
+    /// Create a new assistant message with tool calls
+    pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+            reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: Some(tool_calls),
         }
     }
 }
@@ -230,6 +275,17 @@ impl AgentMemory {
                 }
                 MessageRole::System => {
                     // Skip system messages in summary
+                }
+                MessageRole::Tool => {
+                    // Include tool results in summary
+                    if let Some(ref name) = msg.tool_name {
+                        let truncated = if msg.content.len() > 150 {
+                            format!("{}...", &msg.content.chars().take(150).collect::<String>())
+                        } else {
+                            msg.content.clone()
+                        };
+                        summary_parts.push(format!("• Инструмент {name}: {truncated}"));
+                    }
                 }
             }
         }

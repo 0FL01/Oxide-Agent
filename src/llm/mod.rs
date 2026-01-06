@@ -89,12 +89,12 @@ impl Message {
 
     /// Create a new tool response message
     #[must_use]
-    pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
+    pub fn tool(tool_call_id: &str, _name: &str, content: &str) -> Self {
         Self {
             role: "tool".to_string(),
             content: content.to_string(),
             tool_call_id: Some(tool_call_id.to_string()),
-            name: Some(name.to_string()),
+            name: None,
             tool_calls: None,
         }
     }

@@ -70,13 +70,14 @@ impl AgentExecutor {
                     super::memory::MessageRole::User => "user",
                     super::memory::MessageRole::Assistant => "assistant",
                     super::memory::MessageRole::System => "system",
+                    super::memory::MessageRole::Tool => "tool",
                 };
                 Message {
                     role: role.to_string(),
                     content: msg.content.clone(),
-                    tool_call_id: None,
-                    name: None,
-                    tool_calls: None,
+                    tool_call_id: msg.tool_call_id.clone(),
+                    name: msg.tool_name.clone(),
+                    tool_calls: msg.tool_calls.clone(),
                 }
             })
             .collect()
@@ -384,6 +385,12 @@ impl AgentExecutor {
             tool_calls.clone(),
         ));
 
+        let assistant_msg = AgentMessage::assistant_with_tools(
+            format!("[Вызов инструментов: {}]", tool_names.join(", ")),
+            tool_calls.clone(),
+        );
+        self.session.memory.add_message(assistant_msg);
+
         for tool_call in tool_calls {
             let (name, args) =
                 Self::sanitize_tool_call(&tool_call.function.name, &tool_call.function.arguments);
@@ -432,6 +439,8 @@ impl AgentExecutor {
             }
             ctx.messages
                 .push(Message::tool(&tool_call.id, &name, &result));
+            let tool_msg = AgentMessage::tool(&tool_call.id, &name, &result);
+            self.session.memory.add_message(tool_msg);
         }
         Ok(())
     }
