@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
     /// Agent is thinking about the next step
-    Thinking,
+    Thinking {
+        /// Current token count in memory
+        tokens: usize,
+    },
     /// Agent is calling a tool
     ToolCall {
         /// Tool name
@@ -70,6 +73,8 @@ pub struct Step {
     pub description: String,
     /// Current status of the step
     pub status: StepStatus,
+    /// Optional token count at this step
+    pub tokens: Option<usize>,
 }
 
 /// Possible statuses for an execution step
@@ -98,7 +103,7 @@ impl ProgressState {
     /// Updates the progress state based on an agent event
     pub fn update(&mut self, event: AgentEvent) {
         match event {
-            AgentEvent::Thinking => {
+            AgentEvent::Thinking { tokens } => {
                 self.current_iteration += 1;
                 if let Some(last) = self.steps.last_mut() {
                     if last.status == StepStatus::InProgress {
@@ -111,6 +116,7 @@ impl ProgressState {
                         self.current_iteration, self.max_iterations
                     ),
                     status: StepStatus::InProgress,
+                    tokens: Some(tokens),
                 });
             }
             AgentEvent::ToolCall { name, .. } => {
@@ -122,6 +128,7 @@ impl ProgressState {
                 self.steps.push(Step {
                     description: format!("Выполнение: {name}"),
                     status: StepStatus::InProgress,
+                    tokens: None,
                 });
             }
             AgentEvent::ToolResult { .. } => {
@@ -145,6 +152,7 @@ impl ProgressState {
                         crate::utils::truncate_str(reason, 50)
                     ),
                     status: StepStatus::InProgress,
+                    tokens: None,
                 });
             }
             AgentEvent::TodosUpdated { todos } => {
@@ -167,6 +175,7 @@ impl ProgressState {
                 self.steps.push(Step {
                     description: format!("📤 Отправка файла: {file_name}"),
                     status: StepStatus::Completed,
+                    tokens: None,
                 });
             }
             AgentEvent::Finished => {
@@ -221,9 +230,15 @@ impl ProgressState {
                 StepStatus::Completed => "✅",
                 StepStatus::Failed => "❌",
             };
+
+            let tokens_str = step.tokens.map_or_else(String::new, |t| {
+                format!(" [<b>{}</b>]", crate::utils::format_tokens(t))
+            });
+
             lines.push(format!(
-                "{icon} {}",
-                html_escape::encode_text(&step.description)
+                "{icon} {}{}",
+                html_escape::encode_text(&step.description),
+                tokens_str
             ));
         }
 

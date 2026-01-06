@@ -351,6 +351,21 @@ pub fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
         .map_or_else(|| s.to_string(), |(pos, _)| s[..pos].to_string())
 }
 
+/// Formats a token count into a human-readable string (e.g., 1100 -> 1.1k).
+#[must_use]
+pub fn format_tokens(n: usize) -> String {
+    if n >= 1000 {
+        let k = n as f64 / 1000.0;
+        if k >= 10.0 {
+            format!("{:.0}k", k) // 10k, 11k
+        } else {
+            format!("{:.1}k", k).replace(".0k", "k") // 1.1k, 1k
+        }
+    } else {
+        n.to_string()
+    }
+}
+
 /// Retry a Telegram API operation with exponential backoff.
 ///
 /// This function is specifically designed for Telegram API file operations

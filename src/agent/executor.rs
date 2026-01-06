@@ -377,7 +377,12 @@ impl AgentExecutor {
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
             if let Some(tx) = ctx.progress_tx {
-                let _ = tx.send(AgentEvent::Thinking).await;
+                let current_tokens = self.session.memory.token_count();
+                let _ = tx
+                    .send(AgentEvent::Thinking {
+                        tokens: current_tokens,
+                    })
+                    .await;
             }
 
             let response = self
