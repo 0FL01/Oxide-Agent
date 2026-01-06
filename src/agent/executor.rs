@@ -360,7 +360,7 @@ impl AgentExecutor {
     ) -> Result<String> {
         #[cfg(feature = "tavily")]
         use super::providers::TavilyProvider;
-        use super::providers::{SandboxProvider, TodosProvider};
+        use super::providers::{SandboxProvider, TodosProvider, YtdlpProvider};
         use super::registry::ToolRegistry;
 
         self.session.start_task();
@@ -385,6 +385,14 @@ impl AgentExecutor {
             SandboxProvider::new(self.session.user_id)
         };
         registry.register(Box::new(sandbox_provider));
+
+        // Register YtdlpProvider for video platform tools
+        let ytdlp_provider = if let Some(ref tx) = progress_tx {
+            YtdlpProvider::new(self.session.user_id).with_progress_tx(tx.clone())
+        } else {
+            YtdlpProvider::new(self.session.user_id)
+        };
+        registry.register(Box::new(ytdlp_provider));
 
         #[cfg(feature = "tavily")]
         if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
