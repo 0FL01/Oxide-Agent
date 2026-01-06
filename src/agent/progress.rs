@@ -56,6 +56,9 @@ pub enum AgentEvent {
     Error(String),
 }
 
+/// Maximum number of visible steps in Telegram progress report
+const MAX_VISIBLE_STEPS: usize = 30;
+
 /// Current state of the agent's progress
 #[derive(Debug, Clone, Default)]
 pub struct ProgressState {
@@ -262,7 +265,15 @@ impl ProgressState {
             }
         }
 
-        for step in &self.steps {
+        // Tail-truncation: show only the last MAX_VISIBLE_STEPS steps
+        let total_steps = self.steps.len();
+        let skip_count = total_steps.saturating_sub(MAX_VISIBLE_STEPS);
+
+        if skip_count > 0 {
+            lines.push(format!("... <i>(скрыто {skip_count} шагов)</i> ..."));
+        }
+
+        for step in self.steps.iter().skip(skip_count) {
             let icon = match step.status {
                 StepStatus::Pending => "⬜",
                 StepStatus::InProgress => "⏳",
