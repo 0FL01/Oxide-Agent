@@ -331,9 +331,15 @@ async fn execute_agent_task(
 /// Extract input from a message
 async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
     if let Some(voice) = msg.voice() {
-        let file = bot.get_file(voice.file.id.clone()).await?;
-        let mut buffer = Vec::new();
-        bot.download_file(&file.path, &mut buffer).await?;
+        // Download voice file with retry logic
+        let buffer = crate::utils::retry_telegram_operation(|| async {
+            let file = bot.get_file(voice.file.id.clone()).await?;
+            let mut buf = Vec::new();
+            bot.download_file(&file.path, &mut buf).await?;
+            Ok(buf)
+        })
+        .await?;
+
         let mime_type = voice
             .mime_type
             .as_ref()
@@ -346,9 +352,15 @@ async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
 
     if let Some(photos) = msg.photo() {
         if let Some(photo) = photos.last() {
-            let file = bot.get_file(photo.file.id.clone()).await?;
-            let mut buffer = Vec::new();
-            bot.download_file(&file.path, &mut buffer).await?;
+            // Download photo file with retry logic
+            let buffer = crate::utils::retry_telegram_operation(|| async {
+                let file = bot.get_file(photo.file.id.clone()).await?;
+                let mut buf = Vec::new();
+                bot.download_file(&file.path, &mut buf).await?;
+                Ok(buf)
+            })
+            .await?;
+
             let caption = msg.caption().map(ToString::to_string);
             return Ok(AgentInput::Image {
                 bytes: buffer,
@@ -368,9 +380,14 @@ async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
             );
         }
 
-        let file = bot.get_file(doc.file.id.clone()).await?;
-        let mut buffer = Vec::new();
-        bot.download_file(&file.path, &mut buffer).await?;
+        // Download document file with retry logic
+        let buffer = crate::utils::retry_telegram_operation(|| async {
+            let file = bot.get_file(doc.file.id.clone()).await?;
+            let mut buf = Vec::new();
+            bot.download_file(&file.path, &mut buf).await?;
+            Ok(buf)
+        })
+        .await?;
 
         info!(
             file_name = ?doc.file_name,

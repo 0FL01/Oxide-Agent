@@ -404,3 +404,11 @@ pub fn get_unauthorized_cache_max_size() -> u64 {
         .and_then(|s| s.parse().ok())
         .unwrap_or(UNAUTHORIZED_CACHE_MAX_SIZE)
 }
+
+// Telegram API retry configuration
+/// Maximum number of retry attempts for Telegram API file operations
+pub const TELEGRAM_API_MAX_RETRIES: usize = 3;
+/// Initial backoff delay in milliseconds for Telegram API retries
+pub const TELEGRAM_API_INITIAL_BACKOFF_MS: u64 = 500;
+/// Maximum backoff delay in milliseconds for Telegram API retries
+pub const TELEGRAM_API_MAX_BACKOFF_MS: u64 = 4000;

@@ -10,7 +10,12 @@
 // This is intentional and safe - lazy_regex! validates regex at compile time
 #![allow(clippy::non_std_lazy_statics)]
 
+use anyhow::Result;
 use lazy_regex::lazy_regex;
+use std::time::Duration;
+use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use tokio_retry::Retry;
+use tracing::warn;
 
 /// Match code blocks: ```...```
 static RE_CODE_BLOCK: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"```[\s\S]*?```");
@@ -442,4 +447,64 @@ mod tests {
         assert!(cleaned.contains("&lt;arg_value&gt;"));
         assert!(cleaned.contains("&lt;tool_name&gt;"));
     }
+}
+
+/// Retry a Telegram API operation with exponential backoff.
+///
+/// This function is specifically designed for Telegram API file operations
+/// (e.g., `get_file` + `download_file`) that may fail due to transient network errors.
+///
+/// The retry strategy uses exponential backoff with jitter to avoid thundering herd:
+/// - Initial delay: 500ms
+/// - Max delay: 4s
+/// - Max attempts: 3 (configurable via constants in `config.rs`)
+///
+/// # Arguments
+///
+/// * `operation` - An async closure that performs the operation and returns `Result<T>`
+///
+/// # Returns
+///
+/// Returns the result of the operation if successful within max attempts,
+/// or the last error if all attempts fail.
+///
+/// # Examples
+///
+/// ```no_run
+/// use another_chat_rs::utils::retry_telegram_operation;
+/// use anyhow::Result;
+///
+/// async fn download_file() -> Result<Vec<u8>> {
+///     // ... your download logic
+///     Ok(vec![])
+/// }
+///
+/// # async fn example() -> Result<()> {
+/// let buffer = retry_telegram_operation(|| async {
+///     download_file().await
+/// }).await?;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn retry_telegram_operation<F, Fut, T>(operation: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    use crate::config::{
+        TELEGRAM_API_INITIAL_BACKOFF_MS, TELEGRAM_API_MAX_BACKOFF_MS, TELEGRAM_API_MAX_RETRIES,
+    };
+
+    let retry_strategy = ExponentialBackoff::from_millis(TELEGRAM_API_INITIAL_BACKOFF_MS)
+        .max_delay(Duration::from_millis(TELEGRAM_API_MAX_BACKOFF_MS))
+        .map(jitter) // Add jitter to prevent thundering herd
+        .take(TELEGRAM_API_MAX_RETRIES);
+
+    Retry::spawn(retry_strategy, operation).await.map_err(|e| {
+        warn!(
+            "Telegram API operation failed after {} attempts: {}",
+            TELEGRAM_API_MAX_RETRIES, e
+        );
+        e
+    })
 }

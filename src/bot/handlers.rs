@@ -557,9 +557,15 @@ pub async fn handle_voice(
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
-    let file = bot.get_file(voice.file.id.clone()).await?;
-    let mut buffer = Vec::new();
-    bot.download_file(&file.path, &mut buffer).await?;
+
+    // Download voice file with retry logic
+    let buffer = crate::utils::retry_telegram_operation(|| async {
+        let file = bot.get_file(voice.file.id.clone()).await?;
+        let mut buf = Vec::new();
+        bot.download_file(&file.path, &mut buf).await?;
+        Ok(buf)
+    })
+    .await?;
 
     let model_id = provider_info.map_or("unknown", |p| p.id);
     match llm
@@ -625,9 +631,15 @@ pub async fn handle_photo(
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadPhoto)
         .await?;
-    let file = bot.get_file(photo.file.id.clone()).await?;
-    let mut buffer = Vec::new();
-    bot.download_file(&file.path, &mut buffer).await?;
+
+    // Download photo file with retry logic
+    let buffer = crate::utils::retry_telegram_operation(|| async {
+        let file = bot.get_file(photo.file.id.clone()).await?;
+        let mut buf = Vec::new();
+        bot.download_file(&file.path, &mut buf).await?;
+        Ok(buf)
+    })
+    .await?;
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
