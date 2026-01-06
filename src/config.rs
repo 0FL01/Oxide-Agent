@@ -361,3 +361,46 @@ pub const SANDBOX_CPU_PERIOD: i64 = 100_000;
 pub const SANDBOX_CPU_QUOTA: i64 = 200_000; // 2 CPUs (200% of period)
 /// Timeout for individual command execution in sandbox
 pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 60; // 1 minute per command
+
+// Unauthorized access flood protection
+/// Cooldown period (seconds) between "Access Denied" messages for same user
+/// Default: 20 minutes
+pub const UNAUTHORIZED_COOLDOWN_SECS: u64 = 1200; // 20 minutes
+/// Time-to-live (seconds) for cache entries
+/// Default: 2 hours
+pub const UNAUTHORIZED_CACHE_TTL_SECS: u64 = 7200; // 2 hours
+/// Maximum cache capacity (number of entries)
+pub const UNAUTHORIZED_CACHE_MAX_SIZE: u64 = 10_000;
+
+/// Get unauthorized cooldown from env or default
+///
+/// Environment variable: `UNAUTHORIZED_COOLDOWN_SECS`
+#[must_use]
+pub fn get_unauthorized_cooldown() -> u64 {
+    std::env::var("UNAUTHORIZED_COOLDOWN_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(UNAUTHORIZED_COOLDOWN_SECS)
+}
+
+/// Get unauthorized cache TTL from env or default
+///
+/// Environment variable: `UNAUTHORIZED_CACHE_TTL_SECS`
+#[must_use]
+pub fn get_unauthorized_cache_ttl() -> u64 {
+    std::env::var("UNAUTHORIZED_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(UNAUTHORIZED_CACHE_TTL_SECS)
+}
+
+/// Get unauthorized cache max size from env or default
+///
+/// Environment variable: `UNAUTHORIZED_CACHE_MAX_SIZE`
+#[must_use]
+pub fn get_unauthorized_cache_max_size() -> u64 {
+    std::env::var("UNAUTHORIZED_CACHE_MAX_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(UNAUTHORIZED_CACHE_MAX_SIZE)
+}

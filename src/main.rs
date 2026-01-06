@@ -1,4 +1,8 @@
-use another_chat_rs::config::Settings;
+use another_chat_rs::bot::UnauthorizedCache;
+use another_chat_rs::config::{
+    get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
+    Settings,
+};
 use another_chat_rs::{bot, llm, storage};
 use bot::handlers::{get_user_id_safe, Command};
 use bot::state::State;
@@ -159,13 +163,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize bot state
     let bot_state = init_bot_state();
 
+    // Initialize unauthorized cache
+    let unauthorized_cache = init_unauthorized_cache();
+
     // Setup handlers
     let handler = setup_handler();
 
     info!("Bot is running...");
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![storage, llm_client, settings, bot_state])
+        .dependencies(dptree::deps![
+            storage,
+            llm_client,
+            settings,
+            bot_state,
+            unauthorized_cache
+        ])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
@@ -219,6 +232,19 @@ fn init_bot_state() -> Arc<InMemStorage<State>> {
     InMemStorage::<State>::new()
 }
 
+fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
+    let cooldown = get_unauthorized_cooldown();
+    let ttl = get_unauthorized_cache_ttl();
+    let max_size = get_unauthorized_cache_max_size();
+
+    info!(
+        "Initializing UnauthorizedCache (cooldown: {}s, ttl: {}s, max_size: {})",
+        cooldown, ttl, max_size
+    );
+
+    Arc::new(UnauthorizedCache::new(cooldown, ttl, max_size))
+}
+
 fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
     Update::filter_message()
         .branch(
@@ -267,7 +293,11 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
         )
 }
 
-async fn handle_unauthorized(bot: Bot, msg: Message) -> Result<(), teloxide::RequestError> {
+async fn handle_unauthorized(
+    bot: Bot,
+    msg: Message,
+    cache: Arc<UnauthorizedCache>,
+) -> Result<(), teloxide::RequestError> {
     let user_id = get_user_id_safe(&msg);
     let user_name = msg
         .from
@@ -275,14 +305,21 @@ async fn handle_unauthorized(bot: Bot, msg: Message) -> Result<(), teloxide::Req
         .map(|u| u.first_name.clone())
         .unwrap_or_else(|| "Unknown".to_string());
 
-    info!(
-        "⛔️ Unauthorized access attempt from user {} ({}).",
-        user_id, user_name
-    );
+    // Check if we should send a message (cooldown period passed or first attempt)
+    if cache.should_send(user_id, &user_name).await {
+        info!(
+            "⛔️ Unauthorized access from user {} ({}). Sending denial message.",
+            user_id, user_name
+        );
 
-    if let Err(e) = bot.send_message(msg.chat.id, "⛔️ Access denied").await {
-        error!("Failed to send access denied message to {}: {}", user_id, e);
+        if let Err(e) = bot.send_message(msg.chat.id, "⛔️ Access denied").await {
+            error!("Failed to send access denied message to {}: {}", user_id, e);
+        } else {
+            // Mark that message was sent successfully
+            cache.mark_sent(user_id).await;
+        }
     }
+    // Note: Silenced attempts are logged inside cache.should_send() with throttling
 
     respond(())
 }
@@ -293,11 +330,13 @@ async fn handle_command(
     cmd: Command,
     storage: Arc<storage::R2Storage>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    cache: Arc<UnauthorizedCache>,
 ) -> Result<(), teloxide::RequestError> {
     let res = match cmd {
         Command::Start => bot::handlers::start(bot, msg, storage, dialogue).await,
         Command::Clear => bot::handlers::clear(bot, msg, storage).await,
         Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
+        Command::Stats => bot::handlers::stats(bot, msg, cache).await,
     };
     if let Err(e) = res {
         error!("Command error: {}", e);

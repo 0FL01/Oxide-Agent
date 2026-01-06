@@ -1,4 +1,5 @@
 use crate::bot::state::State;
+use crate::bot::UnauthorizedCache;
 use crate::config::{Settings, DEFAULT_MODEL, MODELS};
 use crate::llm::{LlmClient, Message as LlmMessage};
 use crate::storage::R2Storage;
@@ -85,6 +86,9 @@ pub enum Command {
     /// Check bot health
     #[command(description = "Проверка работоспособности.")]
     Healthcheck,
+    /// Show bot statistics
+    #[command(description = "Показать статистику бота.")]
+    Stats,
 }
 
 /// Create the main menu keyboard
@@ -232,6 +236,39 @@ pub async fn healthcheck(bot: Bot, msg: Message) -> Result<()> {
     info!("Healthcheck command received from user {user_id}.");
     bot.send_message(msg.chat.id, "OK").await?;
     info!("Responded 'OK' to healthcheck from user {user_id}.");
+    Ok(())
+}
+
+/// Stats handler - shows bot statistics including unauthorized cache metrics
+///
+/// # Errors
+///
+/// Returns an error if the stats response cannot be sent.
+pub async fn stats(bot: Bot, msg: Message, cache: Arc<UnauthorizedCache>) -> Result<()> {
+    let user_id = get_user_id_safe(&msg);
+    info!("Stats command received from user {user_id}.");
+
+    let cooldown_secs = cache.cooldown().as_secs();
+    let cooldown_mins = cooldown_secs / 60;
+
+    let stats_text = format!(
+        "<b>📊 Статистика бота</b>\n\n\
+        <b>Защита от спама (Access Denied):</b>\n\
+        • Период затишья: {} мин.\n\
+        • Записей в кэше: {}\n\
+        • Заблокировано уведомлений: {}\n\n\
+        <i>Бот отвечает «Access Denied» не чаще чем раз в {} минут для одного пользователя, чтобы избежать бана от Telegram.</i>",
+        cooldown_mins,
+        cache.entry_count(),
+        cache.silenced_count(),
+        cooldown_mins
+    );
+
+    bot.send_message(msg.chat.id, stats_text)
+        .parse_mode(ParseMode::Html)
+        .await?;
+
+    info!("Responded to stats from user {user_id}.");
     Ok(())
 }
 
