@@ -1,6 +1,6 @@
 use another_chat_rs::config::Settings;
 use another_chat_rs::{bot, llm, storage};
-use bot::handlers::Command;
+use bot::handlers::{get_user_id_safe, Command};
 use bot::state::State;
 use dotenvy::dotenv;
 use regex::Regex;
@@ -160,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bot_state = init_bot_state();
 
     // Setup handlers
-    let handler = setup_handler(&settings);
+    let handler = setup_handler();
 
     info!("Bot is running...");
 
@@ -219,48 +219,72 @@ fn init_bot_state() -> Arc<InMemStorage<State>> {
     InMemStorage::<State>::new()
 }
 
-fn setup_handler(settings: &Arc<Settings>) -> UpdateHandler<teloxide::RequestError> {
-    let allowed_users = settings.allowed_users();
-    let auth_filter = move |msg: teloxide::types::Message| {
-        let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-        allowed_users.contains(&user_id)
-    };
-
+fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
     Update::filter_message()
-        .filter(auth_filter)
-        .enter_dialogue::<Message, InMemStorage<State>, State>()
         .branch(
-            dptree::entry()
-                .filter_command::<Command>()
-                .endpoint(handle_command),
+            // Основная ветка для авторизованных пользователей
+            dptree::filter(|msg: Message, settings: Arc<Settings>| {
+                settings.allowed_users().contains(&get_user_id_safe(&msg))
+            })
+            .enter_dialogue::<Message, InMemStorage<State>, State>()
+            .branch(
+                dptree::entry()
+                    .filter_command::<Command>()
+                    .endpoint(handle_command),
+            )
+            .branch(
+                dptree::case![State::Start]
+                    .branch(
+                        Update::filter_message()
+                            .filter(|msg: Message| msg.text().is_some())
+                            .endpoint(handle_start_text),
+                    )
+                    .branch(
+                        Update::filter_message()
+                            .filter(|msg: Message| msg.voice().is_some())
+                            .endpoint(handle_start_voice),
+                    )
+                    .branch(
+                        Update::filter_message()
+                            .filter(|msg: Message| msg.photo().is_some())
+                            .endpoint(handle_start_photo),
+                    )
+                    .branch(
+                        dptree::filter(|msg: Message| msg.document().is_some())
+                            .endpoint(handle_start_document),
+                    ),
+            )
+            .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
+            .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
+            .branch(
+                dptree::case![State::AgentWipeConfirmation]
+                    .endpoint(handle_agent_wipe_confirmation),
+            ),
         )
         .branch(
-            dptree::case![State::Start]
-                .branch(
-                    Update::filter_message()
-                        .filter(|msg: Message| msg.text().is_some())
-                        .endpoint(handle_start_text),
-                )
-                .branch(
-                    Update::filter_message()
-                        .filter(|msg: Message| msg.voice().is_some())
-                        .endpoint(handle_start_voice),
-                )
-                .branch(
-                    Update::filter_message()
-                        .filter(|msg: Message| msg.photo().is_some())
-                        .endpoint(handle_start_photo),
-                )
-                .branch(
-                    dptree::filter(|msg: Message| msg.document().is_some())
-                        .endpoint(handle_start_document),
-                ),
+            // Все, кто не попал в фильтр выше — неавторизованы
+            dptree::endpoint(handle_unauthorized),
         )
-        .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
-        .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
-        .branch(
-            dptree::case![State::AgentWipeConfirmation].endpoint(handle_agent_wipe_confirmation),
-        )
+}
+
+async fn handle_unauthorized(bot: Bot, msg: Message) -> Result<(), teloxide::RequestError> {
+    let user_id = get_user_id_safe(&msg);
+    let user_name = msg
+        .from
+        .as_ref()
+        .map(|u| u.first_name.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    info!(
+        "⛔️ Unauthorized access attempt from user {} ({}).",
+        user_id, user_name
+    );
+
+    if let Err(e) = bot.send_message(msg.chat.id, "⛔️ Access denied").await {
+        error!("Failed to send access denied message to {}: {}", user_id, e);
+    }
+
+    respond(())
 }
 
 async fn handle_command(

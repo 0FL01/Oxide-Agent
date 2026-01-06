@@ -28,7 +28,9 @@ fn get_user_name(msg: &Message) -> String {
     "Unknown".to_string()
 }
 
-fn get_user_id_safe(msg: &Message) -> i64 {
+/// Safe extraction of user ID from a message.
+/// Returns 0 if the user information is missing.
+pub fn get_user_id_safe(msg: &Message) -> i64 {
     msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed())
 }
 
