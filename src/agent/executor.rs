@@ -13,7 +13,6 @@ use crate::config::{
 use crate::llm::{LlmClient, Message, ToolCall, ToolCallFunction, ToolDefinition};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
@@ -24,8 +23,6 @@ pub struct AgentExecutor {
     llm_client: Arc<LlmClient>,
     session: AgentSession,
     hook_registry: HookRegistry,
-    /// Atomic flag for task cancellation (lock-free, thread-safe)
-    cancellation_flag: Arc<AtomicBool>,
 }
 
 /// Context for the agent execution loop to reduce argument count
@@ -51,7 +48,6 @@ impl AgentExecutor {
             llm_client,
             session,
             hook_registry,
-            cancellation_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -380,7 +376,7 @@ impl AgentExecutor {
 
         for iteration in 0..AGENT_MAX_ITERATIONS {
             // Check for cancellation at the start of each iteration
-            if self.is_cancelled() {
+            if self.session.cancellation_token.is_cancelled() {
                 if let Some(tx) = ctx.progress_tx {
                     let _ = tx.send(AgentEvent::Cancelled).await;
                 }
@@ -606,7 +602,7 @@ impl AgentExecutor {
 
         for tool_call in tool_calls {
             // Check for cancellation before each tool call
-            if self.is_cancelled() {
+            if self.session.cancellation_token.is_cancelled() {
                 if let Some(tx) = ctx.progress_tx {
                     let _ = tx.send(AgentEvent::Cancelled).await;
                 }
@@ -728,28 +724,14 @@ impl AgentExecutor {
         format!("{date_context}{base_prompt}")
     }
 
-    /// Cancel the current task
-    pub fn cancel(&mut self) {
-        self.cancellation_flag.store(true, Ordering::SeqCst);
-        self.session
-            .fail("Задача отменена пользователем".to_string());
-    }
-
     /// Check if the task has been cancelled
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancellation_flag.load(Ordering::SeqCst)
-    }
-
-    /// Set a custom cancellation flag (used for lock-free cancellation)
-    /// This allows external code to inject a shared AtomicBool for concurrent access
-    pub fn set_cancellation_flag(&mut self, flag: Arc<AtomicBool>) {
-        self.cancellation_flag = flag;
+        self.session.cancellation_token.is_cancelled()
     }
 
     /// Reset the executor and session
     pub fn reset(&mut self) {
-        self.cancellation_flag.store(false, Ordering::SeqCst);
         self.session.reset();
     }
 

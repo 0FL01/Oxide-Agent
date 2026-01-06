@@ -10,6 +10,7 @@ use crate::sandbox::SandboxManager;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 /// Status of an agent session
@@ -51,6 +52,9 @@ pub struct AgentSession {
     pub current_task_id: Option<String>,
     /// Current status
     pub status: AgentStatus,
+    /// Cancellation token for the current active task
+    /// Updated on each new task via start_task()
+    pub cancellation_token: CancellationToken,
 }
 
 impl AgentSession {
@@ -66,11 +70,19 @@ impl AgentSession {
             started_at: None,
             current_task_id: None,
             status: AgentStatus::Idle,
+            cancellation_token: CancellationToken::new(),
         }
+    }
+
+    /// Renew the cancellation token before a new task
+    /// CRITICAL: Prevents old cancellation signals from affecting new tasks
+    pub fn renew_cancellation_token(&mut self) {
+        self.cancellation_token = CancellationToken::new();
     }
 
     /// Start a new task, resetting the timer and generating a task ID
     pub fn start_task(&mut self) {
+        self.renew_cancellation_token();
         self.started_at = Some(Instant::now());
         self.current_task_id = Some(uuid::Uuid::new_v4().to_string());
         self.status = AgentStatus::Processing {
