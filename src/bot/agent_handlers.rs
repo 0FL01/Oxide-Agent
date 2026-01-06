@@ -32,6 +32,12 @@ pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
 static AGENT_SESSIONS: LazyLock<RwLock<HashMap<i64, Arc<RwLock<AgentExecutor>>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// Global cancellation tokens storage (`user_id` -> Arc<CancellationToken>)
+/// Separate from executor to allow lock-free cancellation during task execution
+static CANCELLATION_TOKENS: LazyLock<
+    RwLock<HashMap<i64, Arc<tokio_util::sync::CancellationToken>>>,
+> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
 /// Get the agent mode keyboard
 ///
 /// # Examples
@@ -81,10 +87,16 @@ pub async fn activate_agent_mode(
 
     let executor = AgentExecutor::new(llm.clone(), session);
 
-    // Store session wrapped in Arc<RwLock>
+    // Store session wrapped in Arc<RwLock> and create cancellation token
     {
         let mut sessions = AGENT_SESSIONS.write().await;
         sessions.insert(user_id, Arc::new(RwLock::new(executor)));
+
+        let mut tokens = CANCELLATION_TOKENS.write().await;
+        tokens.insert(
+            user_id,
+            Arc::new(tokio_util::sync::CancellationToken::new()),
+        );
     }
 
     // Save state to DB
@@ -273,6 +285,13 @@ async fn ensure_session_exists(
         let executor = AgentExecutor::new(llm.clone(), session);
         let mut sessions = AGENT_SESSIONS.write().await;
         sessions.insert(user_id, Arc::new(RwLock::new(executor)));
+
+        // Create cancellation token for this user
+        let mut tokens = CANCELLATION_TOKENS.write().await;
+        tokens.insert(
+            user_id,
+            Arc::new(tokio_util::sync::CancellationToken::new()),
+        );
     } else {
         debug!(user_id = user_id, "Session already exists in cache");
     }
@@ -294,6 +313,16 @@ async fn execute_agent_task(
     task: &str,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<String> {
+    // Renew cancellation token for this task (atomic, lock-free)
+    {
+        let mut tokens = CANCELLATION_TOKENS.write().await;
+        // Replace with fresh token for new task
+        tokens.insert(
+            user_id,
+            Arc::new(tokio_util::sync::CancellationToken::new()),
+        );
+    }
+
     // Get Arc<RwLock<AgentExecutor>> from the map
     let executor_arc = {
         let sessions = AGENT_SESSIONS.read().await;
@@ -301,6 +330,15 @@ async fn execute_agent_task(
             .get(&user_id)
             .cloned() // Clone the Arc (cheap operation)
             .ok_or_else(|| anyhow::anyhow!("No agent session found"))?
+    };
+
+    // Get the cancellation token for this task
+    let cancellation_token = {
+        let tokens = CANCELLATION_TOKENS.read().await;
+        tokens
+            .get(&user_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("No cancellation token found"))?
     };
 
     // Acquire write lock on the executor
@@ -320,7 +358,10 @@ async fn execute_agent_task(
         ));
     }
 
-    // Execute the task (cancellation token will be renewed in executor.execute -> session.start_task)
+    // IMPORTANT: Set the external cancellation token into session
+    executor.session_mut().cancellation_token = (*cancellation_token).clone();
+
+    // Execute the task (now uses external token that can be cancelled lock-free)
     executor.execute(task, progress_tx).await
 }
 
@@ -442,23 +483,22 @@ async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: 
 pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
-    // Access the cancellation token directly from the session
-    // This uses read locks only, allowing instant cancellation without blocking execution
+    // Access the cancellation token from LOCK-FREE storage
+    // This allows instant cancellation without waiting for executor locks
     let cancelled = {
-        let sessions = AGENT_SESSIONS.read().await;
-        if let Some(executor_arc) = sessions.get(&user_id) {
-            let executor = executor_arc.read().await;
+        let tokens = CANCELLATION_TOKENS.read().await;
+        if let Some(token_arc) = tokens.get(&user_id) {
             // CancellationToken::cancel() is a lock-free atomic operation
-            executor.session().cancellation_token.cancel();
+            token_arc.cancel();
             info!(
                 user_id = user_id,
-                "Cancellation requested (lock-free), task will abort at next checkpoint"
+                "Cancellation requested (lock-free), task will abort immediately"
             );
             true
         } else {
             warn!(
                 user_id = user_id,
-                "No active session found (task may have already completed)"
+                "No active cancellation token found (task may have already completed)"
             );
             false
         }
@@ -538,6 +578,10 @@ pub async fn exit_agent_mode(
     {
         let mut sessions = AGENT_SESSIONS.write().await;
         sessions.remove(&user_id);
+
+        // Also remove cancellation token
+        let mut tokens = CANCELLATION_TOKENS.write().await;
+        tokens.remove(&user_id);
     }
 
     let _ = storage

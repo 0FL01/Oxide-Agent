@@ -29,7 +29,8 @@ src/
 │   ├── mod.rs
 │   ├── handlers.rs            # Обработчики команд и сообщений
 │   ├── agent_handlers.rs      # Обработчики режима Агента
-│   └── state.rs               # Состояние пользователя
+│   ├── state.rs               # Состояние пользователя
+│   └── unauthorized_cache.rs  # Защита от флуда неавторизованных
 ├── llm/                       # Провайдеры LLM
 │   ├── mod.rs
 │   ├── common.rs
@@ -44,7 +45,8 @@ src/
 └── utils.rs                   # Утилиты
 
 tests/
-└── integration_validation.rs   # Интеграционные тесты
+├── agent_xml_leak_prevention.rs # Тесты защиты от утечек XML
+└── integration_validation.rs    # Интеграционные тесты
 
 sandbox/
 └── Dockerfile.sandbox         # Docker-образ песочницы
