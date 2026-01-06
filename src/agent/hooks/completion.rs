@@ -93,9 +93,10 @@ impl Hook for CompletionCheckHook {
 mod tests {
     use super::*;
     use crate::agent::providers::{TodoItem, TodoList, TodoStatus};
+    use crate::config::AGENT_CONTINUATION_LIMIT;
 
     fn create_context(todos: &TodoList, continuation_count: usize) -> HookContext<'_> {
-        HookContext::new(todos, 0, continuation_count, 5)
+        HookContext::new(todos, 0, continuation_count, AGENT_CONTINUATION_LIMIT)
     }
 
     #[test]
@@ -170,7 +171,7 @@ mod tests {
         });
 
         // At continuation limit
-        let context = create_context(&todos, 5);
+        let context = create_context(&todos, AGENT_CONTINUATION_LIMIT);
         let event = HookEvent::AfterAgent {
             response: "Done!".to_string(),
         };

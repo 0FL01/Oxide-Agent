@@ -139,8 +139,9 @@ impl ProgressState {
                 }
                 self.steps.push(Step {
                     description: format!(
-                        "🔄 Продолжение ({}/5): {}",
+                        "🔄 Продолжение ({}/{}): {}",
                         count,
+                        crate::config::AGENT_CONTINUATION_LIMIT,
                         crate::utils::truncate_str(reason, 50)
                     ),
                     status: StepStatus::InProgress,

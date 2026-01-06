@@ -1,7 +1,7 @@
 //! Configuration and settings management
 //!
 //! Loads settings from environment variables and defines model constants.
-
+//!
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -340,7 +340,7 @@ pub fn get_agent_model() -> &'static str {
 pub const AGENT_MODEL: &str = "ZAI GLM-4.7";
 
 /// Maximum iterations for agent loop
-pub const AGENT_MAX_ITERATIONS: usize = 100;
+pub const AGENT_MAX_ITERATIONS: usize = 200;
 /// Agent task timeout in seconds
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
 /// Agent memory token limit (increased to 200k for GLM-4.7)
@@ -348,7 +348,7 @@ pub const AGENT_MAX_TOKENS: usize = 200_000;
 /// Threshold to trigger memory compaction
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
 /// Max forced continuations when todos incomplete
-pub const AGENT_CONTINUATION_LIMIT: usize = 5; // Max forced continuations when todos incomplete
+pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when todos incomplete
 
 // Sandbox configuration
 /// Docker image for the sandbox

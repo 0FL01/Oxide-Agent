@@ -101,6 +101,7 @@ impl Default for HookRegistry {
 mod tests {
     use super::*;
     use crate::agent::providers::TodoList;
+    use crate::config::AGENT_CONTINUATION_LIMIT;
 
     struct TestHook {
         name: &'static str,
@@ -121,7 +122,7 @@ mod tests {
     fn test_empty_registry() {
         let registry = HookRegistry::new();
         let todos = TodoList::new();
-        let context = HookContext::new(&todos, 0, 0, 5);
+        let context = HookContext::new(&todos, 0, 0, AGENT_CONTINUATION_LIMIT);
         let event = HookEvent::AfterAgent {
             response: "test".to_string(),
         };
@@ -153,7 +154,7 @@ mod tests {
         }));
 
         let todos = TodoList::new();
-        let context = HookContext::new(&todos, 0, 0, 5);
+        let context = HookContext::new(&todos, 0, 0, AGENT_CONTINUATION_LIMIT);
         let event = HookEvent::AfterAgent {
             response: "test".to_string(),
         };
