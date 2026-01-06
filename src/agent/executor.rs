@@ -8,10 +8,12 @@ use super::session::AgentSession;
 use crate::agent::providers::TodoList;
 use crate::config::{
     get_agent_model, AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_TIMEOUT_SECS,
+    AGENT_TOOL_TIMEOUT_SECS,
 };
 use crate::llm::{LlmClient, Message, ToolCall, ToolCallFunction, ToolDefinition};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
@@ -22,6 +24,8 @@ pub struct AgentExecutor {
     llm_client: Arc<LlmClient>,
     session: AgentSession,
     hook_registry: HookRegistry,
+    /// Atomic flag for task cancellation (lock-free, thread-safe)
+    cancellation_flag: Arc<AtomicBool>,
 }
 
 /// Context for the agent execution loop to reduce argument count
@@ -47,6 +51,7 @@ impl AgentExecutor {
             llm_client,
             session,
             hook_registry,
+            cancellation_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -374,6 +379,14 @@ impl AgentExecutor {
         let mut continuation_count: usize = 0;
 
         for iteration in 0..AGENT_MAX_ITERATIONS {
+            // Check for cancellation at the start of each iteration
+            if self.is_cancelled() {
+                if let Some(tx) = ctx.progress_tx {
+                    let _ = tx.send(AgentEvent::Cancelled).await;
+                }
+                return Err(anyhow!("Задача отменена пользователем"));
+            }
+
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
             if let Some(tx) = ctx.progress_tx {
@@ -592,6 +605,14 @@ impl AgentExecutor {
         self.session.memory.add_message(assistant_msg);
 
         for tool_call in tool_calls {
+            // Check for cancellation before each tool call
+            if self.is_cancelled() {
+                if let Some(tx) = ctx.progress_tx {
+                    let _ = tx.send(AgentEvent::Cancelled).await;
+                }
+                return Err(anyhow!("Задача отменена пользователем"));
+            }
+
             let (name, args) =
                 Self::sanitize_tool_call(&tool_call.function.name, &tool_call.function.arguments);
 
@@ -610,9 +631,22 @@ impl AgentExecutor {
                     .await;
             }
 
-            let result = match ctx.registry.execute(&name, &args).await {
-                Ok(r) => r,
-                Err(e) => format!("Ошибка выполнения инструмента: {e}"),
+            // Execute tool with timeout to prevent indefinite blocking
+            let tool_timeout = Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS);
+            let result = match timeout(tool_timeout, ctx.registry.execute(&name, &args)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => format!("Ошибка выполнения инструмента: {e}"),
+                Err(_) => {
+                    warn!(
+                        tool_name = %name,
+                        timeout_secs = AGENT_TOOL_TIMEOUT_SECS,
+                        "Tool execution timed out"
+                    );
+                    format!(
+                        "Инструмент '{name}' превысил лимит времени ({} секунд)",
+                        AGENT_TOOL_TIMEOUT_SECS
+                    )
+                }
             };
 
             if name == "write_todos" {
@@ -696,12 +730,20 @@ impl AgentExecutor {
 
     /// Cancel the current task
     pub fn cancel(&mut self) {
+        self.cancellation_flag.store(true, Ordering::SeqCst);
         self.session
             .fail("Задача отменена пользователем".to_string());
     }
 
+    /// Check if the task has been cancelled
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_flag.load(Ordering::SeqCst)
+    }
+
     /// Reset the executor and session
     pub fn reset(&mut self) {
+        self.cancellation_flag.store(false, Ordering::SeqCst);
         self.session.reset();
     }
 

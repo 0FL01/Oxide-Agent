@@ -45,6 +45,8 @@ pub enum AgentEvent {
     },
     /// Agent has finished the task
     Finished,
+    /// Agent was cancelled by user
+    Cancelled,
     /// Agent encountered an error
     Error(String),
 }
@@ -183,6 +185,14 @@ impl ProgressState {
                 for step in &mut self.steps {
                     if step.status == StepStatus::InProgress {
                         step.status = StepStatus::Completed;
+                    }
+                }
+            }
+            AgentEvent::Cancelled => {
+                self.error = Some("Задача отменена пользователем".to_string());
+                if let Some(last) = self.steps.last_mut() {
+                    if last.status == StepStatus::InProgress {
+                        last.status = StepStatus::Failed;
                     }
                 }
             }

@@ -27,8 +27,9 @@ use tracing::{debug, info, warn};
 /// Type alias for dialogue
 pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
 
-/// Global agent sessions storage (`user_id` -> session)
-static AGENT_SESSIONS: LazyLock<RwLock<HashMap<i64, AgentExecutor>>> =
+/// Global agent sessions storage (`user_id` -> Arc<RwLock<AgentExecutor>>)
+/// Using Arc<RwLock> to allow concurrent access without removing executors during execution
+static AGENT_SESSIONS: LazyLock<RwLock<HashMap<i64, Arc<RwLock<AgentExecutor>>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Get the agent mode keyboard
@@ -80,10 +81,10 @@ pub async fn activate_agent_mode(
 
     let executor = AgentExecutor::new(llm.clone(), session);
 
-    // Store session
+    // Store session wrapped in Arc<RwLock>
     {
         let mut sessions = AGENT_SESSIONS.write().await;
-        sessions.insert(user_id, executor);
+        sessions.insert(user_id, Arc::new(RwLock::new(executor)));
     }
 
     // Save state to DB
@@ -271,7 +272,7 @@ async fn ensure_session_exists(
 
         let executor = AgentExecutor::new(llm.clone(), session);
         let mut sessions = AGENT_SESSIONS.write().await;
-        sessions.insert(user_id, executor);
+        sessions.insert(user_id, Arc::new(RwLock::new(executor)));
     } else {
         debug!(user_id = user_id, "Session already exists in cache");
     }
@@ -279,7 +280,8 @@ async fn ensure_session_exists(
 
 async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
     let sessions = AGENT_SESSIONS.read().await;
-    if let Some(executor) = sessions.get(&user_id) {
+    if let Some(executor_arc) = sessions.get(&user_id) {
+        let executor = executor_arc.read().await;
         let _ = storage
             .save_agent_memory(user_id, &executor.session().memory)
             .await;
@@ -287,45 +289,41 @@ async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
 }
 
 /// Execute an agent task and return the result
-/// NOTE: Takes the executor out of the map during execution to avoid holding lock
+/// NOTE: Uses Arc<RwLock> to access executor without removing it from the map
 async fn execute_agent_task(
     user_id: i64,
     task: &str,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<String> {
-    // Take the executor out of the map to avoid holding lock during execution
-    let mut executor = {
-        let mut sessions = AGENT_SESSIONS.write().await;
+    // Get Arc<RwLock<AgentExecutor>> from the map
+    let executor_arc = {
+        let sessions = AGENT_SESSIONS.read().await;
         sessions
-            .remove(&user_id)
+            .get(&user_id)
+            .cloned() // Clone the Arc (cheap operation)
             .ok_or_else(|| anyhow::anyhow!("No agent session found"))?
     };
+
+    // Acquire write lock on the executor
+    let mut executor = executor_arc.write().await;
 
     debug!(
         user_id = user_id,
         memory_messages = executor.session().memory.get_messages().len(),
-        "Executor taken from cache for task execution"
+        "Executor accessed for task execution"
     );
 
     // Check timeout
     if executor.is_timed_out() {
         executor.reset();
-        AGENT_SESSIONS.write().await.insert(user_id, executor);
         return Err(anyhow::anyhow!(
             "Предыдущая сессия истекла по таймауту. Начинаю новую сессию."
         ));
     }
 
-    // Execute the task without holding the lock
-    let result = executor.execute(task, progress_tx).await;
-
-    // Put the executor back
-    {
-        let mut sessions = AGENT_SESSIONS.write().await;
-        sessions.insert(user_id, executor);
-    }
-
-    result
+    // Execute the task while holding the lock
+    // The executor remains in the HashMap, allowing cancel() to work
+    executor.execute(task, progress_tx).await
 }
 
 /// Extract input from a message
@@ -446,16 +444,28 @@ async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: 
 pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
-    {
-        let mut sessions = AGENT_SESSIONS.write().await;
-        if let Some(executor) = sessions.get_mut(&user_id) {
+    let cancelled = {
+        let sessions = AGENT_SESSIONS.read().await;
+        if let Some(executor_arc) = sessions.get(&user_id) {
+            let mut executor = executor_arc.write().await;
             executor.cancel();
+            info!(user_id = user_id, "Task cancellation requested by user");
+            true
+        } else {
+            warn!(user_id = user_id, "No active session to cancel");
+            false
         }
-    }
+    };
 
-    bot.send_message(msg.chat.id, "❌ Задача отменена")
-        .reply_markup(get_agent_keyboard())
-        .await?;
+    if cancelled {
+        bot.send_message(msg.chat.id, "❌ Задача отменяется...")
+            .reply_markup(get_agent_keyboard())
+            .await?;
+    } else {
+        bot.send_message(msg.chat.id, "⚠️ Нет активной задачи для отмены")
+            .reply_markup(get_agent_keyboard())
+            .await?;
+    }
     Ok(())
 }
 
@@ -468,8 +478,9 @@ pub async fn clear_agent_todos(bot: Bot, msg: Message) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
     {
-        let mut sessions = AGENT_SESSIONS.write().await;
-        if let Some(executor) = sessions.get_mut(&user_id) {
+        let sessions = AGENT_SESSIONS.read().await;
+        if let Some(executor_arc) = sessions.get(&user_id) {
+            let mut executor = executor_arc.write().await;
             executor.session_mut().clear_todos();
         }
     }
@@ -488,8 +499,9 @@ pub async fn clear_agent_memory(bot: Bot, msg: Message, storage: Arc<R2Storage>)
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
     {
-        let mut sessions = AGENT_SESSIONS.write().await;
-        if let Some(executor) = sessions.get_mut(&user_id) {
+        let sessions = AGENT_SESSIONS.read().await;
+        if let Some(executor_arc) = sessions.get(&user_id) {
+            let mut executor = executor_arc.write().await;
             executor.reset();
         }
     }
@@ -565,8 +577,9 @@ pub async fn handle_agent_wipe_confirmation(
 
     match text {
         "✅ Да" => {
-            let mut sessions = AGENT_SESSIONS.write().await;
-            if let Some(executor) = sessions.get_mut(&user_id) {
+            let sessions = AGENT_SESSIONS.read().await;
+            if let Some(executor_arc) = sessions.get(&user_id) {
+                let mut executor = executor_arc.write().await;
                 match executor.session_mut().ensure_sandbox().await {
                     Ok(sandbox) => {
                         if let Err(e) = sandbox.recreate().await {
