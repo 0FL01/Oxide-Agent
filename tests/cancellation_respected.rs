@@ -1,4 +1,4 @@
-use another_chat_rs::agent::{AgentExecutor, AgentSession, AgentStatus};
+use another_chat_rs::agent::{AgentExecutor, AgentSession, AgentStatus, TodoItem, TodoStatus};
 use another_chat_rs::config::Settings;
 use another_chat_rs::llm::LlmClient;
 use std::sync::Arc;
@@ -30,6 +30,17 @@ async fn cancellation_token_is_not_overwritten_by_task_start() {
     let llm = Arc::new(LlmClient::new(&settings_without_llm_providers()));
     let mut session = AgentSession::new(1, 1);
 
+    session.memory.todos.items = vec![
+        TodoItem {
+            description: "Task 1".to_string(),
+            status: TodoStatus::Pending,
+        },
+        TodoItem {
+            description: "Task 2".to_string(),
+            status: TodoStatus::InProgress,
+        },
+    ];
+
     let token = CancellationToken::new();
     token.cancel();
     session.cancellation_token = token;
@@ -52,5 +63,9 @@ async fn cancellation_token_is_not_overwritten_by_task_start() {
         matches!(executor.session().status, AgentStatus::Error(_)),
         "unexpected status: {:?}",
         executor.session().status
+    );
+    assert!(
+        executor.session().memory.todos.items.is_empty(),
+        "todos were not cleared on cancellation"
     );
 }

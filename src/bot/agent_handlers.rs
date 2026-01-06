@@ -59,7 +59,6 @@ static CANCELLATION_TOKENS: LazyLock<
 pub fn get_agent_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![
         vec![KeyboardButton::new("❌ Отменить задачу")],
-        vec![KeyboardButton::new("🗑 Очистить задачи")],
         vec![KeyboardButton::new("🗑 Очистить память")],
         vec![KeyboardButton::new("🔄 Пересоздать контейнер")],
         vec![KeyboardButton::new("⬅️ Выйти из режима агента")],
@@ -155,9 +154,6 @@ pub async fn handle_agent_message(
         match text {
             "❌ Отменить задачу" => {
                 return cancel_agent_task(bot, msg, dialogue).await;
-            }
-            "/cleartodos" | "🗑 Очистить задачи" => {
-                return clear_agent_todos(bot, msg).await;
             }
             "🗑 Очистить память" => {
                 return clear_agent_memory(bot, msg, storage).await;
@@ -569,36 +565,45 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
         }
     };
 
+    // Best-effort: clear todos without waiting for executor locks.
+    // If the executor is currently busy, it will clear todos on its cancellation path.
+    let cleared_todos = {
+        let executor_arc = {
+            let sessions = AGENT_SESSIONS.read().await;
+            sessions.get(&user_id).cloned()
+        };
+
+        if let Some(executor_arc) = executor_arc {
+            if let Ok(mut executor) = executor_arc.try_write() {
+                executor.session_mut().clear_todos();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
     if cancelled {
-        bot.send_message(msg.chat.id, "❌ Задача отменяется...")
+        let text = if cleared_todos {
+            "❌ Задача отменяется...\n📋 Список задач очищен."
+        } else {
+            "❌ Задача отменяется..."
+        };
+        bot.send_message(msg.chat.id, text)
             .reply_markup(get_agent_keyboard())
             .await?;
     } else {
-        bot.send_message(msg.chat.id, "⚠️ Нет активной задачи для отмены")
+        let text = if cleared_todos {
+            "📋 Список задач очищен."
+        } else {
+            "⚠️ Нет активной задачи для отмены"
+        };
+        bot.send_message(msg.chat.id, text)
             .reply_markup(get_agent_keyboard())
             .await?;
     }
-    Ok(())
-}
-
-/// Clear agent todos
-///
-/// # Errors
-///
-/// Returns an error if the confirmation message cannot be sent.
-pub async fn clear_agent_todos(bot: Bot, msg: Message) -> Result<()> {
-    let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-
-    {
-        let sessions = AGENT_SESSIONS.read().await;
-        if let Some(executor_arc) = sessions.get(&user_id) {
-            let mut executor = executor_arc.write().await;
-            executor.session_mut().clear_todos();
-        }
-    }
-
-    bot.send_message(msg.chat.id, "📋 Список задач очищен")
-        .await?;
     Ok(())
 }
 

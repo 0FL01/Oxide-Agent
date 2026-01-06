@@ -36,6 +36,11 @@ struct AgentLoopContext<'a> {
     messages: &'a mut Vec<Message>,
 }
 
+struct CancelCleanupContext<'a> {
+    progress_tx: Option<&'a tokio::sync::mpsc::Sender<super::progress::AgentEvent>>,
+    todos_arc: Option<&'a Arc<Mutex<TodoList>>>,
+}
+
 impl AgentExecutor {
     /// Create a new agent executor
     #[must_use]
@@ -382,10 +387,12 @@ impl AgentExecutor {
         for iteration in 0..AGENT_MAX_ITERATIONS {
             // Check for cancellation at the start of each iteration
             if self.session.cancellation_token.is_cancelled() {
-                if let Some(tx) = ctx.progress_tx {
-                    let _ = tx.send(AgentEvent::Cancelled).await;
-                }
-                return Err(anyhow!("Задача отменена пользователем"));
+                return Err(self
+                    .cancelled_error(CancelCleanupContext {
+                        progress_tx: ctx.progress_tx,
+                        todos_arc: Some(ctx.todos_arc),
+                    })
+                    .await);
             }
 
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
@@ -466,20 +473,134 @@ impl AgentExecutor {
         ))
     }
 
-    async fn bail_if_cancelled(
-        &self,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<super::progress::AgentEvent>>,
-    ) -> Result<()> {
+    async fn cancelled_error(&mut self, ctx: CancelCleanupContext<'_>) -> anyhow::Error {
         use super::progress::AgentEvent;
 
+        self.session.memory.todos.clear();
+        if let Some(todos_arc) = ctx.todos_arc {
+            let mut todos = todos_arc.lock().await;
+            todos.clear();
+        }
+
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::TodosUpdated {
+                    todos: TodoList::new(),
+                })
+                .await;
+            let _ = tx.send(AgentEvent::Cancelled).await;
+        }
+
+        anyhow!("Задача отменена пользователем")
+    }
+
+    async fn bail_if_cancelled(&mut self, ctx: &mut AgentLoopContext<'_>) -> Result<()> {
         if !self.session.cancellation_token.is_cancelled() {
             return Ok(());
         }
 
-        if let Some(tx) = progress_tx {
-            let _ = tx.send(AgentEvent::Cancelled).await;
+        Err(self
+            .cancelled_error(CancelCleanupContext {
+                progress_tx: ctx.progress_tx,
+                todos_arc: Some(ctx.todos_arc),
+            })
+            .await)
+    }
+
+    fn sanitize_leaked_xml(iteration: usize, final_response: &mut String) -> bool {
+        use lazy_regex::regex;
+
+        // ANTI-LEAK PROTECTION: Detect and sanitize XML-like syntax leaking into final response
+        // This handles malformed LLM responses where XML tags appear instead of proper tool calls
+        let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
+        if !xml_tag_pattern.is_match(final_response) {
+            return false;
         }
-        Err(anyhow!("Задача отменена пользователем"))
+
+        let original_len = final_response.len();
+        warn!(
+            model = %crate::config::get_agent_model(),
+            iteration = iteration,
+            "Detected leaked XML syntax in final response, sanitizing output"
+        );
+
+        // Remove all XML-like tags
+        *final_response = Self::sanitize_xml_tags(final_response);
+
+        debug!(
+            original_len = original_len,
+            sanitized_len = final_response.len(),
+            "XML tags removed from response"
+        );
+        true
+    }
+
+    async fn force_continuation_due_to_bad_response(
+        &self,
+        continuation_count: &mut usize,
+        ctx: &mut AgentLoopContext<'_>,
+    ) {
+        use super::progress::AgentEvent;
+
+        warn!("Response became empty after sanitization, forcing iteration to get real answer");
+        *continuation_count += 1;
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::Continuation {
+                    reason: "Обнаружена ошибка генерации, повторяю попытку...".to_string(),
+                    count: *continuation_count,
+                })
+                .await;
+        }
+        ctx.messages.push(Message::system(
+            "[СИСТЕМА: Ваш предыдущий ответ содержал служебный XML-синтаксис вместо нормального текста. \
+            ВАЖНО: \
+            1. НЕ используйте XML-теги (<tool_call>, <filepath>, <arg_key> и т.д.) \
+            2. НЕ повторяйте вызовы инструментов - они уже выполнены \
+            3. Используйте ТОЛЬКО результаты уже выполненных инструментов \
+            4. Отформатируйте ответ в виде обычного текста или markdown \
+            Пожалуйста, предоставьте полноценный текстовый ответ на запрос пользователя.]",
+        ));
+    }
+
+    async fn sync_todos_from_arc(&mut self, todos_arc: &Arc<Mutex<TodoList>>) {
+        let current_todos = todos_arc.lock().await;
+        self.session.memory.todos = (*current_todos).clone();
+    }
+
+    fn after_agent_hook_result(
+        &self,
+        iteration: usize,
+        continuation_count: usize,
+        final_response: &str,
+    ) -> HookResult {
+        let hook_context = HookContext::new(
+            &self.session.memory.todos,
+            iteration,
+            continuation_count,
+            AGENT_CONTINUATION_LIMIT,
+        );
+        self.hook_registry.execute(
+            &HookEvent::AfterAgent {
+                response: final_response.to_string(),
+            },
+            &hook_context,
+        )
+    }
+
+    fn save_final_response(&mut self, final_response: &str, reasoning: Option<String>) {
+        if let Some(reasoning_content) = reasoning {
+            self.session
+                .memory
+                .add_message(AgentMessage::assistant_with_reasoning(
+                    final_response,
+                    reasoning_content,
+                ));
+        } else {
+            self.session
+                .memory
+                .add_message(AgentMessage::assistant(final_response));
+        }
     }
 
     async fn handle_final_response(
@@ -491,77 +612,21 @@ impl AgentExecutor {
         ctx: &mut AgentLoopContext<'_>,
     ) -> Result<Option<String>> {
         use super::progress::AgentEvent;
-        self.bail_if_cancelled(ctx.progress_tx).await?;
+        self.bail_if_cancelled(ctx).await?;
 
         let mut final_response =
             content.unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
 
-        // ANTI-LEAK PROTECTION: Detect and sanitize XML-like syntax leaking into final response
-        // This handles malformed LLM responses where XML tags appear instead of proper tool calls
-        use lazy_regex::regex;
-        let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
-
-        if xml_tag_pattern.is_match(&final_response) {
-            let original_len = final_response.len();
-            warn!(
-                model = %crate::config::get_agent_model(),
-                iteration = iteration,
-                "Detected leaked XML syntax in final response, sanitizing output"
-            );
-
-            // Remove all XML-like tags
-            final_response = Self::sanitize_xml_tags(&final_response);
-
-            debug!(
-                original_len = original_len,
-                sanitized_len = final_response.len(),
-                "XML tags removed from response"
-            );
-
-            // If response is now empty or too short, force continuation
-            if final_response.trim().len() < 10 {
-                warn!(
-                    "Response became empty after sanitization, forcing iteration to get real answer"
-                );
-                *continuation_count += 1;
-                if let Some(tx) = ctx.progress_tx {
-                    let _ = tx
-                        .send(AgentEvent::Continuation {
-                            reason: "Обнаружена ошибка генерации, повторяю попытку...".to_string(),
-                            count: *continuation_count,
-                        })
-                        .await;
-                }
-                ctx.messages.push(Message::system(
-                    "[СИСТЕМА: Ваш предыдущий ответ содержал служебный XML-синтаксис вместо нормального текста. \
-                    ВАЖНО: \
-                    1. НЕ используйте XML-теги (<tool_call>, <filepath>, <arg_key> и т.д.) \
-                    2. НЕ повторяйте вызовы инструментов - они уже выполнены \
-                    3. Используйте ТОЛЬКО результаты уже выполненных инструментов \
-                    4. Отформатируйте ответ в виде обычного текста или markdown \
-                    Пожалуйста, предоставьте полноценный текстовый ответ на запрос пользователя.]"
-                ));
-                return Ok(None);
-            }
+        let xml_sanitized = Self::sanitize_leaked_xml(iteration, &mut final_response);
+        if xml_sanitized && final_response.trim().len() < 10 {
+            self.force_continuation_due_to_bad_response(continuation_count, ctx)
+                .await;
+            return Ok(None);
         }
 
-        {
-            let current_todos = ctx.todos_arc.lock().await;
-            self.session.memory.todos = (*current_todos).clone();
-        }
-
-        let hook_context = HookContext::new(
-            &self.session.memory.todos,
-            iteration,
-            *continuation_count,
-            AGENT_CONTINUATION_LIMIT,
-        );
-        let hook_result = self.hook_registry.execute(
-            &HookEvent::AfterAgent {
-                response: final_response.clone(),
-            },
-            &hook_context,
-        );
+        self.sync_todos_from_arc(ctx.todos_arc).await;
+        let hook_result =
+            self.after_agent_hook_result(iteration, *continuation_count, &final_response);
 
         if let HookResult::ForceIteration { reason, context } = hook_result {
             *continuation_count += 1;
@@ -581,19 +646,7 @@ impl AgentExecutor {
             return Ok(None);
         }
 
-        // Save to memory with reasoning (if present)
-        if let Some(reasoning_content) = reasoning {
-            self.session
-                .memory
-                .add_message(AgentMessage::assistant_with_reasoning(
-                    &final_response,
-                    reasoning_content,
-                ));
-        } else {
-            self.session
-                .memory
-                .add_message(AgentMessage::assistant(&final_response));
-        }
+        self.save_final_response(&final_response, reasoning);
 
         self.session.complete();
         if let Some(tx) = ctx.progress_tx {
@@ -607,7 +660,6 @@ impl AgentExecutor {
         tool_calls: Vec<ToolCall>,
         ctx: &mut AgentLoopContext<'_>,
     ) -> Result<()> {
-        use super::progress::AgentEvent;
         let tool_names: Vec<String> = tool_calls
             .iter()
             .map(|tc| tc.function.name.clone())
@@ -624,95 +676,102 @@ impl AgentExecutor {
         self.session.memory.add_message(assistant_msg);
 
         for tool_call in tool_calls {
-            // Check for cancellation before each tool call
-            if self.session.cancellation_token.is_cancelled() {
-                if let Some(tx) = ctx.progress_tx {
-                    let _ = tx.send(AgentEvent::Cancelled).await;
-                }
-                return Err(anyhow!("Задача отменена пользователем"));
-            }
-
-            let (name, args) =
-                Self::sanitize_tool_call(&tool_call.function.name, &tool_call.function.arguments);
-
-            info!(
-                tool_name = %name,
-                tool_args = %crate::utils::truncate_str(&args, 200),
-                "Executing tool call"
-            );
-
-            if let Some(tx) = ctx.progress_tx {
-                let _ = tx
-                    .send(AgentEvent::ToolCall {
-                        name: name.clone(),
-                        input: args.clone(),
-                    })
-                    .await;
-            }
-
-            // Execute tool with timeout and cancellation support
-            let tool_timeout = Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS);
-            let result = {
-                use tokio::select;
-                select! {
-                    biased;
-                    _ = self.session.cancellation_token.cancelled() => {
-                        warn!(tool_name = %name, "Tool execution cancelled by user");
-                        if let Some(tx) = ctx.progress_tx {
-                            let _ = tx.send(AgentEvent::Cancelling { tool_name: name.clone() }).await;
-                            // Give UI time to show cancelling status (2 sec cleanup timeout)
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            let _ = tx.send(AgentEvent::Cancelled).await;
-                        }
-                        return Err(anyhow!("Задача отменена пользователем во время выполнения инструмента"));
-                    },
-                    res = timeout(tool_timeout, ctx.registry.execute(&name, &args, Some(&self.session.cancellation_token))) => {
-                        match res {
-                            Ok(Ok(r)) => r,
-                            Ok(Err(e)) => format!("Ошибка выполнения инструмента: {e}"),
-                            Err(_) => {
-                                warn!(
-                                    tool_name = %name,
-                                    timeout_secs = AGENT_TOOL_TIMEOUT_SECS,
-                                    "Tool execution timed out"
-                                );
-                                format!(
-                                    "Инструмент '{name}' превысил лимит времени ({} секунд)",
-                                    AGENT_TOOL_TIMEOUT_SECS
-                                )
-                            }
-                        }
-                    },
-                }
-            };
-
-            if name == "write_todos" {
-                {
-                    let current_todos = ctx.todos_arc.lock().await;
-                    self.session.memory.todos = current_todos.clone();
-                }
-                if let Some(tx) = ctx.progress_tx {
-                    let _ = tx
-                        .send(AgentEvent::TodosUpdated {
-                            todos: self.session.memory.todos.clone(),
-                        })
-                        .await;
-                }
-            }
-
-            if let Some(tx) = ctx.progress_tx {
-                let _ = tx
-                    .send(AgentEvent::ToolResult {
-                        name: name.clone(),
-                        output: result.clone(),
-                    })
-                    .await;
-            }
-            ctx.messages
-                .push(Message::tool(&tool_call.id, &name, &result));
-            let tool_msg = AgentMessage::tool(&tool_call.id, &name, &result);
-            self.session.memory.add_message(tool_msg);
+            self.execute_single_tool_call(tool_call, ctx).await?;
         }
+        Ok(())
+    }
+
+    async fn execute_single_tool_call(
+        &mut self,
+        tool_call: ToolCall,
+        ctx: &mut AgentLoopContext<'_>,
+    ) -> Result<()> {
+        use super::progress::AgentEvent;
+
+        self.bail_if_cancelled(ctx).await?;
+
+        let (name, args) =
+            Self::sanitize_tool_call(&tool_call.function.name, &tool_call.function.arguments);
+
+        info!(
+            tool_name = %name,
+            tool_args = %crate::utils::truncate_str(&args, 200),
+            "Executing tool call"
+        );
+
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::ToolCall {
+                    name: name.clone(),
+                    input: args.clone(),
+                })
+                .await;
+        }
+
+        // Execute tool with timeout and cancellation support
+        let tool_timeout = Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS);
+        let result = {
+            use tokio::select;
+            select! {
+                biased;
+                _ = self.session.cancellation_token.cancelled() => {
+                    warn!(tool_name = %name, "Tool execution cancelled by user");
+                    if let Some(tx) = ctx.progress_tx {
+                        let _ = tx.send(AgentEvent::Cancelling { tool_name: name.clone() }).await;
+                        // Give UI time to show cancelling status (2 sec cleanup timeout)
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    return Err(self
+                        .cancelled_error(CancelCleanupContext {
+                            progress_tx: ctx.progress_tx,
+                            todos_arc: Some(ctx.todos_arc),
+                        })
+                        .await);
+                },
+                res = timeout(tool_timeout, ctx.registry.execute(&name, &args, Some(&self.session.cancellation_token))) => {
+                    match res {
+                        Ok(Ok(r)) => r,
+                        Ok(Err(e)) => format!("Ошибка выполнения инструмента: {e}"),
+                        Err(_) => {
+                            warn!(
+                                tool_name = %name,
+                                timeout_secs = AGENT_TOOL_TIMEOUT_SECS,
+                                "Tool execution timed out"
+                            );
+                            format!(
+                                "Инструмент '{name}' превысил лимит времени ({} секунд)",
+                                AGENT_TOOL_TIMEOUT_SECS
+                            )
+                        }
+                    }
+                },
+            }
+        };
+
+        if name == "write_todos" {
+            self.sync_todos_from_arc(ctx.todos_arc).await;
+            if let Some(tx) = ctx.progress_tx {
+                let _ = tx
+                    .send(AgentEvent::TodosUpdated {
+                        todos: self.session.memory.todos.clone(),
+                    })
+                    .await;
+            }
+        }
+
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::ToolResult {
+                    name: name.clone(),
+                    output: result.clone(),
+                })
+                .await;
+        }
+        ctx.messages
+            .push(Message::tool(&tool_call.id, &name, &result));
+        let tool_msg = AgentMessage::tool(&tool_call.id, &name, &result);
+        self.session.memory.add_message(tool_msg);
+
         Ok(())
     }
 
