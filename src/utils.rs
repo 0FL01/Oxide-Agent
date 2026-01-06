@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
 use tracing::warn;
+use unicode_segmentation::UnicodeSegmentation;
+use uuid::Uuid;
 
 /// Match code blocks: ```...```
 static RE_CODE_BLOCK: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"```[\s\S]*?```");
@@ -40,51 +42,54 @@ static RE_INLINE_CODE: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"`(.*?)`");
 static RE_MULTI_NEWLINE: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"\n{3,}");
 
 /// Replace naked angle brackets with HTML entities, preserving Telegram-allowed HTML tags.
-/// Rust's regex doesn't support lookbehind/lookahead, so we iterate manually.
+///
+/// This function uses an iterator-based approach (instead of allocating Vec<char>)
+/// for better performance on long texts.
 fn escape_angle_brackets(text: &str) -> String {
     // Whitelist of HTML tags supported by Telegram
     const TELEGRAM_ALLOWED_TAGS: &[&str] = &[
         "b", "i", "u", "s", "code", "pre", "a", "/b", "/i", "/u", "/s", "/code", "/pre", "/a",
     ];
 
-    let chars: Vec<char> = text.chars().collect();
     let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
     let mut in_tag = false;
 
-    for (i, &c) in chars.iter().enumerate() {
+    while let Some(c) = chars.next() {
         match c {
             '<' => {
                 // Look ahead to see if this starts an HTML tag like </a or <b
-                let (starts_tag, tag_name) = if i + 1 < chars.len() {
-                    let next1 = chars[i + 1];
-                    let next2 = if i + 2 < chars.len() {
-                        Some(chars[i + 2])
-                    } else {
-                        None
-                    };
-                    match (next1, next2) {
-                        ('/', Some(ch)) if ch.is_ascii_alphabetic() => {
-                            // Extract closing tag name: </tag>
-                            let name = extract_tag_name(&chars[i + 2..]);
-                            (true, format!("/{}", name))
-                        }
-                        (ch, _) if ch.is_ascii_alphabetic() => {
-                            // Extract opening tag name: <tag>
-                            let name = extract_tag_name(&chars[i + 1..]);
-                            (true, name)
-                        }
-                        _ => (false, String::new()),
-                    }
-                } else {
-                    (false, String::new())
-                };
+                let mut lookahead = String::new();
+                let mut peeked_chars = Vec::new();
 
-                // Only allow if tag name is in whitelist
-                if starts_tag && TELEGRAM_ALLOWED_TAGS.contains(&tag_name.as_str()) {
-                    result.push(c);
+                // Check for closing tag: </
+                if chars.peek() == Some(&'/') {
+                    peeked_chars.push(chars.next().unwrap());
+                    lookahead.push('/');
+                }
+
+                // Extract tag name (alphanumeric only, stops at space or >)
+                while let Some(&next_char) = chars.peek() {
+                    if next_char.is_ascii_alphanumeric() {
+                        peeked_chars.push(chars.next().unwrap());
+                        lookahead.push(next_char);
+                    } else {
+                        break;
+                    }
+                }
+
+                // Check if it's a whitelisted tag
+                if !lookahead.is_empty() && TELEGRAM_ALLOWED_TAGS.contains(&lookahead.as_str()) {
+                    result.push('<');
+                    result.push_str(&lookahead);
                     in_tag = true;
                 } else {
+                    // Not a whitelisted tag, escape the <
                     result.push_str("&lt;");
+                    // Put back the peeked characters
+                    for peeked in peeked_chars {
+                        result.push(peeked);
+                    }
                 }
             }
             '>' => {
@@ -103,14 +108,6 @@ fn escape_angle_brackets(text: &str) -> String {
     result
 }
 
-/// Extract tag name from character slice until non-alphanumeric character or end
-fn extract_tag_name(chars: &[char]) -> String {
-    chars
-        .iter()
-        .take_while(|c| c.is_ascii_alphanumeric())
-        .collect()
-}
-
 /// Cleans HTML content by escaping naked angle brackets while preserving code blocks and valid HTML tags.
 ///
 /// This function uses `RE_CODE_BLOCK` (a compile-time validated regex via `lazy_regex!`)
@@ -125,16 +122,19 @@ fn extract_tag_name(chars: &[char]) -> String {
 /// assert_eq!(cleaned, "Check this: 1 &lt; 2 but <b>bold</b> works");
 /// ```
 pub fn clean_html(text: &str) -> String {
-    let mut code_blocks = Vec::new();
+    // Use UUID-based placeholders to prevent collision attacks
+    // (user text containing "__CODE_BLOCK_0__" won't be replaced)
+    let mut code_blocks: Vec<(String, String)> = Vec::new();
     let mut text_owned = text.to_string();
 
-    // Replace code blocks with placeholders
+    // Replace code blocks with UUID-based placeholders
     let mut result = String::new();
     let mut last_end = 0;
     for mat in RE_CODE_BLOCK.find_iter(&text_owned) {
         result.push_str(&text_owned[last_end..mat.start()]);
-        let placeholder = format!("__CODE_BLOCK_{}__", code_blocks.len());
-        code_blocks.push(mat.as_str().to_string());
+        let uuid = Uuid::new_v4().as_simple().to_string();
+        let placeholder = format!("__CODE_BLOCK_{uuid}__");
+        code_blocks.push((placeholder.clone(), mat.as_str().to_string()));
         result.push_str(&placeholder);
         last_end = mat.end();
     }
@@ -145,9 +145,8 @@ pub fn clean_html(text: &str) -> String {
     text_owned = escape_angle_brackets(&text_owned);
 
     // Restore code blocks
-    for (i, block) in code_blocks.iter().enumerate() {
-        let placeholder = format!("__CODE_BLOCK_{i}__");
-        text_owned = text_owned.replace(&placeholder, block);
+    for (placeholder, block) in code_blocks {
+        text_owned = text_owned.replace(&placeholder, &block);
     }
 
     text_owned
@@ -218,6 +217,10 @@ pub fn format_text(text: &str) -> String {
 /// This function respects code blocks (triple backticks) and tries to close/reopen them
 /// across message boundaries to maintain proper formatting in Telegram.
 ///
+/// **Edge case handling:**
+/// - If a single line exceeds `max_length`, it will be split by grapheme clusters (Unicode-safe).
+/// - This prevents failures on very long lines without newlines.
+///
 /// # Arguments
 ///
 /// * `message` - The string to split.
@@ -251,6 +254,39 @@ pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
     let code_fence = "```";
 
     for line in message.lines() {
+        // Handle very long lines without newlines (edge case)
+        if line.len() > max_length {
+            // If we have content in current_message, flush it first
+            if !current_message.is_empty() {
+                if code_block {
+                    current_message.push_str(code_fence);
+                    current_message.push('\n');
+                }
+                parts.push(current_message.trim_end().to_string());
+                current_message.clear();
+                if code_block {
+                    current_message.push_str(code_fence);
+                    current_message.push('\n');
+                }
+            }
+
+            // Split the long line by grapheme clusters (Unicode-safe)
+            let graphemes: Vec<&str> = line.graphemes(true).collect();
+            let mut chunk = String::new();
+            for grapheme in graphemes {
+                if chunk.len() + grapheme.len() > max_length {
+                    parts.push(chunk.trim_end().to_string());
+                    chunk.clear();
+                }
+                chunk.push_str(grapheme);
+            }
+            if !chunk.is_empty() {
+                current_message.push_str(&chunk);
+                current_message.push('\n');
+            }
+            continue;
+        }
+
         if line.starts_with(code_fence) {
             code_block = !code_block;
         }
@@ -261,19 +297,14 @@ pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
             if code_block {
                 current_message.push_str(code_fence);
                 current_message.push('\n');
-                // We don't flip code_block state here because we want the NEXT part to start with code_fence too
             }
 
-            parts.append(&mut vec![current_message.trim_end().to_string()]);
+            parts.push(current_message.trim_end().to_string());
             current_message.clear();
 
             if code_block {
-                // If we WERE in a code block, the new part should start with one
-                // Wait, if it *starts* with code_fence, we just toggled it.
-                // Let's re-evaluate.
                 current_message.push_str(code_fence);
                 current_message.push('\n');
-                // If the line ITSELF was the fence, we don't want to double it.
                 if !line.starts_with(code_fence) {
                     current_message.push_str(line);
                     current_message.push('\n');
@@ -466,22 +497,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_tag_name_valid() {
-        use super::extract_tag_name;
-        let input: Vec<char> = "b>".chars().collect();
-        let name = extract_tag_name(&input);
-        assert_eq!(name, "b");
-    }
-
-    #[test]
-    fn extract_tag_name_with_attrs() {
-        use super::extract_tag_name;
-        let input: Vec<char> = "a href='url'>".chars().collect();
-        let name = extract_tag_name(&input);
-        assert_eq!(name, "a");
-    }
-
-    #[test]
     fn test_clean_html_double_escaping_prevention() {
         // Simulate what would happen if tool_call XML leaked into content
         let input = "Result: <arg_key>some value</arg_key> in text";
@@ -506,5 +521,66 @@ mod tests {
         assert!(!cleaned.contains("<tool_name>"));
         assert!(cleaned.contains("&lt;arg_value&gt;"));
         assert!(cleaned.contains("&lt;tool_name&gt;"));
+    }
+
+    #[test]
+    fn test_clean_html_placeholder_injection_attack() {
+        // CRITICAL: Test that user text containing placeholder-like strings
+        // doesn't get replaced with actual code blocks
+        let input = "User says: __CODE_BLOCK_0__\n```rust\nfn evil() {}\n```";
+        let cleaned = clean_html(input);
+
+        // The placeholder should NOT be replaced (UUID makes it unique)
+        assert!(cleaned.contains("__CODE_BLOCK_"));
+        assert!(cleaned.contains("fn evil()"));
+
+        // Original placeholder from user should still be there
+        // (it won't match the UUID-based placeholder)
+        assert!(cleaned.contains("User says: __CODE_BLOCK_0__"));
+    }
+
+    #[test]
+    fn test_tag_with_attributes() {
+        // Test that tags with attributes are properly handled
+        let input = r#"<a href="http://example.com?a=1&b=2">link</a>"#;
+        let cleaned = clean_html(input);
+        // The tag should be preserved (it's whitelisted)
+        assert!(cleaned.contains("<a"));
+        assert!(cleaned.contains("</a>"));
+    }
+
+    #[test]
+    fn test_split_very_long_line() {
+        // Test edge case: single line exceeding max_length without newlines
+        let input = "a".repeat(10000);
+        let parts = split_long_message(&input, 4096);
+
+        // Should split into multiple parts
+        assert!(parts.len() >= 3);
+
+        // Each part should be within max_length
+        for part in &parts {
+            assert!(part.len() <= 4096);
+        }
+
+        // All parts concatenated should equal original (minus newlines)
+        let concatenated: String = parts.join("");
+        assert_eq!(concatenated.len(), input.len());
+    }
+
+    #[test]
+    fn test_split_unicode_graphemes() {
+        // Test that splitting by graphemes works correctly with Unicode
+        let input = "🔥".repeat(5000); // Each emoji is ~4 bytes
+        let parts = split_long_message(&input, 4096);
+
+        // Should split without breaking emoji clusters
+        assert!(parts.len() >= 3);
+
+        for part in &parts {
+            assert!(part.len() <= 4096);
+            // Each part should still contain valid emojis (not broken)
+            assert!(part.chars().all(|c| c != '\u{FFFD}')); // No replacement chars
+        }
     }
 }

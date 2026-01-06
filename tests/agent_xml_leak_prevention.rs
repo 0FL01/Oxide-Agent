@@ -4,112 +4,46 @@
 
 #[cfg(test)]
 mod xml_sanitization_tests {
+    use another_chat_rs::utils::clean_html;
 
     #[test]
     fn test_sanitize_xml_tags_basic() {
-        // Test basic XML tag removal
+        // Test basic XML tag removal (HTML entity escaped tags)
         let input = "Some text &lt;tool_call&gt;content&lt;/tool_call&gt; more text";
-        let _expected = "Some text content more text";
+        let result = clean_html(input);
 
-        // Access via reflection or make function pub(crate)
-        // For now, we'll test the integration through handle_final_response
-        assert!(input.contains("&lt;tool_call&gt;"));
-        // The sanitized version should not contain XML tags
+        // These are already escaped by the time they reach clean_html
+        // clean_html should preserve them as-is (they're not real tags)
+        assert_eq!(result, input);
     }
 
     #[test]
     fn test_sanitize_xml_tags_filepath() {
         let input = "read_file&lt;filepath&gt;/workspace/docker-compose.yml&lt;/filepath&gt;&lt;/tool_call&gt;";
-        assert!(input.contains("&lt;filepath&gt;"));
-        assert!(input.contains("&lt;/tool_call&gt;"));
-        // After sanitization, these should be removed
+        let result = clean_html(input);
+
+        // Already escaped entities should remain unchanged
+        assert_eq!(result, input);
     }
 
     #[test]
     fn test_sanitize_xml_tags_multiple() {
         let input = "&lt;arg_key&gt;test&lt;/arg_key&gt;&lt;arg_value&gt;value&lt;/arg_value&gt;&lt;command&gt;ls&lt;/command&gt;";
-        assert!(input.contains("&lt;arg_key&gt;"));
-        assert!(input.contains("&lt;command&gt;"));
-        // All tags should be removed
+        let result = clean_html(input);
+
+        // Already escaped entities should remain unchanged
+        assert_eq!(result, input);
     }
 
     #[test]
-    fn test_malformed_tool_call_read_file() {
-        // Test that we can parse malformed read_file calls
-        let content = "read_file&lt;filepath&gt;/workspace/test.txt&lt;/filepath&gt;";
+    fn test_raw_xml_tags_should_be_escaped() {
+        // Test that raw (unescaped) XML-like tags get escaped
+        let input = "Some text <tool_call>content</tool_call> more text";
+        let result = clean_html(input);
 
-        // Should extract: tool_name = "read_file", filepath = "/workspace/test.txt"
-        assert!(content.contains("read_file"));
-        assert!(content.contains("/workspace/test.txt"));
-    }
-
-    #[test]
-    fn test_malformed_tool_call_execute_command() {
-        let content = "execute_command&lt;command&gt;ls -la&lt;/command&gt;";
-
-        // Should extract: tool_name = "execute_command", command = "ls -la"
-        assert!(content.contains("execute_command"));
-        assert!(content.contains("ls -la"));
-    }
-
-    #[test]
-    fn test_malformed_tool_call_bug_reproduction() {
-        // Reproduce the exact bug from AGENT-2026-001
-        let content = "[Вызов инструментов: read_file]read_filepath/workspace/docker-compose.yml&lt;/tool_call&gt;";
-
-        // This should be recognized and parsed into a proper tool call
-        assert!(content.contains("read_file"));
-        assert!(content.contains("/workspace/docker-compose.yml"));
-        assert!(content.contains("&lt;/tool_call&gt;"));
-    }
-}
-
-#[cfg(test)]
-mod malformed_tool_call_recovery_tests {
-    #[test]
-    fn test_recovery_read_file_with_filepath_tag() {
-        let malformed = "read_file&lt;filepath&gt;/workspace/config.yaml&lt;/filepath&gt;";
-        // Should recover to: {"filepath": "/workspace/config.yaml"}
-        assert!(malformed.contains("/workspace/config.yaml"));
-    }
-
-    #[test]
-    fn test_recovery_read_file_without_tags() {
-        let malformed = "read_filepath/workspace/test.txt&lt;/tool_call&gt;";
-        // Should recover to: {"filepath": "/workspace/test.txt"}
-        assert!(malformed.contains("/workspace/test.txt"));
-    }
-
-    #[test]
-    fn test_recovery_write_file() {
-        let malformed = "write_file&lt;filepath&gt;/test.txt&lt;/filepath&gt;&lt;content&gt;Hello World&lt;/content&gt;";
-        // Should recover to: {"filepath": "/test.txt", "content": "Hello World"}
-        assert!(malformed.contains("/test.txt"));
-        assert!(malformed.contains("Hello World"));
-    }
-
-    #[test]
-    fn test_recovery_execute_command() {
-        let malformed = "execute_command&lt;command&gt;python3 --version&lt;/command&gt;";
-        // Should recover to: {"command": "python3 --version"}
-        assert!(malformed.contains("python3 --version"));
-    }
-
-    #[test]
-    fn test_no_recovery_for_valid_text() {
-        // Should NOT trigger recovery for normal text
-        let normal_text =
-            "Here is the file content:\n\nversion: '3.8'\nservices:\n  app:\n    image: nginx";
-        assert!(!normal_text.contains("&lt;tool_call&gt;"));
-        assert!(!normal_text.contains("&lt;filepath&gt;"));
-    }
-
-    #[test]
-    fn test_no_recovery_for_unknown_tools() {
-        let unknown = "unknown_tool&lt;param&gt;value&lt;/param&gt;";
-        // Should NOT recover unknown tools
-        assert!(!unknown.contains("read_file"));
-        assert!(!unknown.contains("execute_command"));
+        // Raw tags should be escaped
+        assert!(result.contains("&lt;tool_call&gt;"));
+        assert!(result.contains("&lt;/tool_call&gt;"));
     }
 }
 

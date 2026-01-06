@@ -67,6 +67,7 @@ dependencies = [
  "tokio-retry",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
  "uuid",
 ]
 

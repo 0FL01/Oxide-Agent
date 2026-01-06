@@ -50,6 +50,7 @@ lazy-regex = "3.5.1"
 eventsource-stream = "0.2.3"
 moka = { version = "0.12", features = ["future"] }
 tokio-retry = "0.3"
+unicode-segmentation = "1.12.0"
 
 [features]
 default = []
