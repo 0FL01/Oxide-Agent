@@ -255,15 +255,21 @@ async fn ensure_session_exists(
 }
 
 async fn is_agent_task_running(user_id: i64) -> bool {
-    let sessions = AGENT_SESSIONS.read().await;
-    let Some(executor_arc) = sessions.get(&user_id) else {
+    let executor_arc = {
+        let sessions = AGENT_SESSIONS.read().await;
+        sessions.get(&user_id).cloned()
+    };
+
+    let Some(executor_arc) = executor_arc else {
         return false;
     };
 
-    match executor_arc.try_read() {
+    let running = match executor_arc.try_read() {
         Ok(executor) => executor.session().is_processing(),
         Err(_) => true,
-    }
+    };
+
+    running
 }
 
 async fn renew_cancellation_token(user_id: i64) {
