@@ -34,9 +34,14 @@ static RE_INLINE_CODE: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"`(.*?)`");
 /// Match 3+ consecutive newlines
 static RE_MULTI_NEWLINE: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"\n{3,}");
 
-/// Replace naked angle brackets with HTML entities, preserving HTML tags.
+/// Replace naked angle brackets with HTML entities, preserving Telegram-allowed HTML tags.
 /// Rust's regex doesn't support lookbehind/lookahead, so we iterate manually.
 fn escape_angle_brackets(text: &str) -> String {
+    // Whitelist of HTML tags supported by Telegram
+    const TELEGRAM_ALLOWED_TAGS: &[&str] = &[
+        "b", "i", "u", "s", "code", "pre", "a", "/b", "/i", "/u", "/s", "/code", "/pre", "/a",
+    ];
+
     let chars: Vec<char> = text.chars().collect();
     let mut result = String::with_capacity(text.len());
     let mut in_tag = false;
@@ -45,7 +50,7 @@ fn escape_angle_brackets(text: &str) -> String {
         match c {
             '<' => {
                 // Look ahead to see if this starts an HTML tag like </a or <b
-                let starts_tag = if i + 1 < chars.len() {
+                let (starts_tag, tag_name) = if i + 1 < chars.len() {
                     let next1 = chars[i + 1];
                     let next2 = if i + 2 < chars.len() {
                         Some(chars[i + 2])
@@ -53,15 +58,24 @@ fn escape_angle_brackets(text: &str) -> String {
                         None
                     };
                     match (next1, next2) {
-                        ('/', Some(ch)) if ch.is_ascii_alphabetic() => true,
-                        (ch, _) if ch.is_ascii_alphabetic() => true,
-                        _ => false,
+                        ('/', Some(ch)) if ch.is_ascii_alphabetic() => {
+                            // Extract closing tag name: </tag>
+                            let name = extract_tag_name(&chars[i + 2..]);
+                            (true, format!("/{}", name))
+                        }
+                        (ch, _) if ch.is_ascii_alphabetic() => {
+                            // Extract opening tag name: <tag>
+                            let name = extract_tag_name(&chars[i + 1..]);
+                            (true, name)
+                        }
+                        _ => (false, String::new()),
                     }
                 } else {
-                    false
+                    (false, String::new())
                 };
 
-                if starts_tag {
+                // Only allow if tag name is in whitelist
+                if starts_tag && TELEGRAM_ALLOWED_TAGS.contains(&tag_name.as_str()) {
                     result.push(c);
                     in_tag = true;
                 } else {
@@ -82,6 +96,14 @@ fn escape_angle_brackets(text: &str) -> String {
         }
     }
     result
+}
+
+/// Extract tag name from character slice until non-alphanumeric character or end
+fn extract_tag_name(chars: &[char]) -> String {
+    chars
+        .iter()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect()
 }
 
 /// Cleans HTML content by escaping naked angle brackets while preserving code blocks and valid HTML tags.
@@ -360,5 +382,37 @@ mod tests {
         assert!(parts.len() > 1);
         assert!(parts[0].ends_with("```"));
         assert!(parts[1].starts_with("```"));
+    }
+
+    #[test]
+    fn test_clean_html_unsupported_tags() {
+        let input = "Text with <arg_key>value</arg_key> and <custom>tag</custom>";
+        let expected =
+            "Text with &lt;arg_key&gt;value&lt;/arg_key&gt; and &lt;custom&gt;tag&lt;/custom&gt;";
+        assert_eq!(clean_html(input), expected);
+    }
+
+    #[test]
+    fn test_tavily_result_escaping() {
+        let input = "Result: <arg_key>some value</arg_key> in text";
+        let cleaned = clean_html(input);
+        assert!(!cleaned.contains("<arg_key>"));
+        assert!(cleaned.contains("&lt;arg_key&gt;"));
+    }
+
+    #[test]
+    fn extract_tag_name_valid() {
+        use super::extract_tag_name;
+        let input: Vec<char> = "b>".chars().collect();
+        let name = extract_tag_name(&input);
+        assert_eq!(name, "b");
+    }
+
+    #[test]
+    fn extract_tag_name_with_attrs() {
+        use super::extract_tag_name;
+        let input: Vec<char> = "a href='url'>".chars().collect();
+        let name = extract_tag_name(&input);
+        assert_eq!(name, "a");
     }
 }

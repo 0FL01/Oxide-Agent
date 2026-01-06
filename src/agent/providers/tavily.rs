@@ -6,6 +6,7 @@ use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
+use html_escape;
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
@@ -131,9 +132,9 @@ impl ToolProvider for TavilyProvider {
                                     output,
                                     "### {}. {}\n**URL**: {}\n\n{}\n\n---\n\n",
                                     i + 1,
-                                    result.title,
+                                    html_escape::encode_text(&result.title),
                                     result.url,
-                                    result.content
+                                    html_escape::encode_text(&result.content)
                                 );
                             }
                         }
@@ -162,7 +163,8 @@ impl ToolProvider for TavilyProvider {
                                 let _ = write!(
                                     output,
                                     "## {}\n\n{}\n\n---\n\n",
-                                    result.url, result.raw_content
+                                    result.url,
+                                    html_escape::encode_text(&result.raw_content)
                                 );
                             }
                         }
