@@ -33,7 +33,7 @@ pub fn sanitize_xml_tags(text: &str) -> String {
     // Matches lowercase letters, digits, underscores in tag names
     let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
 
-    xml_tag_pattern.replace_all(text, "").to_string()
+    xml_tag_pattern.replace_all(text, " ").trim().to_string()
 }
 
 /// Agent executor that runs tasks iteratively
@@ -131,13 +131,15 @@ impl AgentExecutor {
     /// Sanitize tool call by detecting malformed LLM responses where JSON arguments are placed in tool name
     /// Returns (`corrected_name`, `corrected_arguments`)
     fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
-        let trimmed_name = name.trim();
+        let xml_sanitized_name = sanitize_xml_tags(name);
+        let trimmed_name = xml_sanitized_name.trim();
 
         // PATTERN 1: Check if name looks like it contains JSON object (starts with { and has "todos" key)
         // Example: `{"todos": [{"description": "...", "status": "..."}]}`
         if trimmed_name.starts_with('{') && trimmed_name.contains("\"todos\"") {
             warn!(
                 tool_name = %name,
+                sanitized_name = %xml_sanitized_name,
                 "Detected malformed tool call: JSON object in tool name field"
             );
 
@@ -174,6 +176,7 @@ impl AgentExecutor {
                 if base_name == "todos" || base_name == "write_todos" {
                     warn!(
                         tool_name = %name,
+                        sanitized_name = %xml_sanitized_name,
                         base_name = %base_name,
                         "Detected malformed tool call: JSON array appended to tool name"
                     );
@@ -206,7 +209,35 @@ impl AgentExecutor {
         }
 
         // Return unchanged if no issues detected
+        if xml_sanitized_name != name {
+            let normalized_name = Self::normalize_tool_name(trimmed_name, name);
+            return (normalized_name, arguments.to_string());
+        }
+
         (name.to_string(), arguments.to_string())
+    }
+
+    fn normalize_tool_name(sanitized_name: &str, original_name: &str) -> String {
+        let mut tokens = sanitized_name.split_whitespace();
+        let Some(first) = tokens.next() else {
+            warn!(
+                tool_name = %original_name,
+                sanitized_name = %sanitized_name,
+                "Sanitized tool name is empty"
+            );
+            return String::new();
+        };
+
+        if tokens.next().is_some() {
+            warn!(
+                tool_name = %original_name,
+                sanitized_name = %sanitized_name,
+                normalized_name = %first,
+                "Sanitized tool name contained extra tokens; using first token"
+            );
+        }
+
+        first.to_string()
     }
 
     /// Extract first valid JSON object from a string
@@ -1266,6 +1297,14 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_tool_call_strips_xml_from_name() {
+        let (name, args) =
+            AgentExecutor::sanitize_tool_call("command</arg_key><arg_value>cd", "{}");
+        assert_eq!(name, "command");
+        assert_eq!(args, "{}");
+    }
+
+    #[test]
     fn test_extract_first_json_simple() {
         let input = r#"{"key": "value"}"#;
         let result = AgentExecutor::extract_first_json(input);
@@ -1309,21 +1348,21 @@ mod tests {
     fn test_sanitize_xml_tags_basic() {
         let input = "Some text <tool_call>content</tool_call> more text";
         let result = sanitize_xml_tags(input);
-        assert_eq!(result, "Some text content more text");
+        assert_eq!(result, "Some text  content  more text");
     }
 
     #[test]
     fn test_sanitize_xml_tags_filepath() {
         let input = "read_file<filepath>/workspace/docker-compose.yml</filepath></tool_call>";
         let result = sanitize_xml_tags(input);
-        assert_eq!(result, "read_file/workspace/docker-compose.yml");
+        assert_eq!(result, "read_file /workspace/docker-compose.yml");
     }
 
     #[test]
     fn test_sanitize_xml_tags_multiple() {
         let input = "<arg_key>test</arg_key><arg_value>value</arg_value><command>ls</command>";
         let result = sanitize_xml_tags(input);
-        assert_eq!(result, "testvaluels");
+        assert_eq!(result, "test  value  ls");
     }
 
     #[test]
@@ -1331,7 +1370,7 @@ mod tests {
         // Real-world example from bug report
         let input = "todos</arg_key><arg_value>[{\"description\": \"test\"}]";
         let result = sanitize_xml_tags(input);
-        assert_eq!(result, "todos[{\"description\": \"test\"}]");
+        assert_eq!(result, "todos  [{\"description\": \"test\"}]");
         assert!(!result.contains("</arg_key>"));
         assert!(!result.contains("<arg_value>"));
     }
@@ -1363,14 +1402,14 @@ mod tests {
     fn test_sanitize_xml_tags_with_underscores() {
         let input = "<tool_name>search</tool_name><arg_key_1>value</arg_key_1>";
         let result = sanitize_xml_tags(input);
-        assert_eq!(result, "searchvalue");
+        assert_eq!(result, "search  value");
     }
 
     #[test]
     fn test_sanitize_xml_tags_with_numbers() {
         let input = "<arg1>first</arg1><arg2>second</arg2>";
         let result = sanitize_xml_tags(input);
-        assert_eq!(result, "firstsecond");
+        assert_eq!(result, "first  second");
     }
 
     // Tests for BUGFIX AGENT-2026-001: looks_like_tool_call_text
