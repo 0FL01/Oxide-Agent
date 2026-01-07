@@ -8,7 +8,7 @@ allowed_tools:
   - ytdlp_search_videos
   - ytdlp_download_video
   - ytdlp_download_audio
-weight: high
+weight: on_demand
 ---
 ## Видео-платформы (YouTube и др.):
 - **ytdlp_get_video_metadata**: получить метаданные видео (название, канал, длительность, просмотры, дата загрузки, описание, теги и др.). Не требует скачивания видео. Параметры: url (обязательно), fields (опционально - массив полей)

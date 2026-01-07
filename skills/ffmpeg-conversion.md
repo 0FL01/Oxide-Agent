@@ -3,7 +3,7 @@ name: ffmpeg-conversion
 description: Конвертация видео и аудио с использованием ffmpeg (только софтверное ускорение).
 triggers: [ffmpeg, конверт, кодирова, транскод, видео, аудио, mp4, mkv, avi, webm, mp3, aac, flac, wav, кодек, битрейт]
 allowed_tools: [execute_command, read_file, write_file, send_file_to_user, list_files]
-weight: medium
+weight: on_demand
 ---
 ## FFmpeg - конвертация видео и аудио
 

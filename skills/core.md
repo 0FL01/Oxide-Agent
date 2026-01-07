@@ -31,7 +31,7 @@ Assistant: [вызывает read_file через JSON API - невидимо д
 Tool: [возвращает содержимое файла]
 Assistant: "Вот содержимое docker-compose.yml:
 ```yaml
-version: '3.8'
+services:
 ...
 ```"
 ````
