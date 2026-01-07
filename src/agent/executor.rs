@@ -252,6 +252,7 @@ impl AgentExecutor {
             "web_extract",
             "list_files",
             "send_file_to_user",
+            "upload_file",
             "write_todos",
         ];
 
@@ -266,11 +267,11 @@ impl AgentExecutor {
                 "read_file" => {
                     // Pattern: read_file<filepath>PATH</filepath> or read_filePATH</tool_call>
                     if let Some(caps) = regex!(r"read_file.*?<filepath>(.*?)</").captures(content) {
-                        serde_json::json!({"filepath": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
                     } else if let Some(caps) =
                         regex!(r"read_file(?:path)?([^\s<]+)").captures(content)
                     {
-                        serde_json::json!({"filepath": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
                     } else {
                         continue;
                     }
@@ -289,7 +290,7 @@ impl AgentExecutor {
                         .unwrap_or("");
 
                     if !filepath.is_empty() {
-                        serde_json::json!({"filepath": filepath, "content": file_content})
+                        serde_json::json!({"path": filepath, "content": file_content})
                     } else {
                         continue;
                     }
@@ -309,16 +310,28 @@ impl AgentExecutor {
                 "list_files" => {
                     // Pattern: list_files<directory>PATH</directory>
                     if let Some(caps) = regex!(r"<directory>(.*?)</").captures(content) {
-                        serde_json::json!({"directory": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
                     } else {
                         // Default to current directory
-                        serde_json::json!({"directory": ""})
+                        serde_json::json!({"path": ""})
                     }
                 }
                 "send_file_to_user" => {
-                    // Pattern: send_file_to_user<filepath>PATH</filepath>
+                    // Pattern: send_file_to_user<filepath>PATH</filepath> or send_file_to_user<path>PATH</path>
                     if let Some(caps) = regex!(r"<filepath>(.*?)</").captures(content) {
-                        serde_json::json!({"filepath": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) = regex!(r"<path>(.*?)</").captures(content) {
+                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                "upload_file" => {
+                    // Pattern: upload_file<filepath>PATH</filepath> or upload_file<path>PATH</path>
+                    if let Some(caps) = regex!(r"<filepath>(.*?)</").captures(content) {
+                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) = regex!(r"<path>(.*?)</").captures(content) {
+                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
                     } else {
                         continue;
                     }
@@ -360,7 +373,7 @@ impl AgentExecutor {
     ) -> Result<String> {
         #[cfg(feature = "tavily")]
         use super::providers::TavilyProvider;
-        use super::providers::{SandboxProvider, TodosProvider, YtdlpProvider};
+        use super::providers::{FileHosterProvider, SandboxProvider, TodosProvider, YtdlpProvider};
         use super::registry::ToolRegistry;
 
         self.session.start_task();
@@ -385,6 +398,9 @@ impl AgentExecutor {
             SandboxProvider::new(self.session.user_id)
         };
         registry.register(Box::new(sandbox_provider));
+
+        // Register FileHosterProvider for uploading large files (Litterbox)
+        registry.register(Box::new(FileHosterProvider::new(self.session.user_id)));
 
         // Register YtdlpProvider for video platform tools
         let ytdlp_provider = if let Some(ref tx) = progress_tx {

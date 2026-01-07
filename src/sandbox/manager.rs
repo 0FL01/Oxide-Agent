@@ -14,6 +14,7 @@ use bollard::Docker;
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{Either, Full};
+use shell_escape::escape;
 use std::collections::HashMap;
 use std::io::Read;
 use tracing::{debug, info, instrument, warn};
@@ -486,22 +487,8 @@ impl SandboxManager {
             .as_ref()
             .ok_or_else(|| anyhow!("Sandbox not running"))?;
 
-        // Check if file exists first
-        let check = self
-            .exec_command(
-                &format!("test -f '{container_path}' && echo 'exists'"),
-                None,
-            )
-            .await?;
-        if !check.stdout.contains("exists") {
-            anyhow::bail!("File not found: {container_path}");
-        }
-
         // Get file size to check limits (50MB max for Telegram)
-        let size_check = self
-            .exec_command(&format!("stat -c %s '{container_path}'"), None)
-            .await?;
-        let file_size: u64 = size_check.stdout.trim().parse().unwrap_or(0);
+        let file_size = self.file_size_bytes(container_path, None).await?;
 
         const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
         if file_size > MAX_FILE_SIZE {
@@ -652,6 +639,36 @@ impl SandboxManager {
 
         // Create new one
         self.create_sandbox().await
+    }
+
+    /// Get a file size from inside the sandbox in bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox is not running, file doesn't exist, or output can't be parsed.
+    #[instrument(skip(self, cancellation_token), fields(path = %container_path))]
+    pub async fn file_size_bytes(
+        &self,
+        container_path: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<u64> {
+        let escaped_path = escape(container_path.into());
+
+        let check_cmd = format!("test -f {escaped_path} && echo 'exists'");
+        let check = self.exec_command(&check_cmd, cancellation_token).await?;
+        if !check.stdout.contains("exists") {
+            anyhow::bail!("File not found: {container_path}");
+        }
+
+        let size_cmd = format!("stat -c %s {escaped_path}");
+        let size_check = self.exec_command(&size_cmd, cancellation_token).await?;
+        let file_size: u64 = size_check
+            .stdout
+            .trim()
+            .parse()
+            .context("Failed to parse file size")?;
+
+        Ok(file_size)
     }
 }
 

@@ -16,6 +16,8 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
+use super::path::resolve_file_path;
+
 /// Provider for Docker sandbox tools
 pub struct SandboxProvider {
     sandbox: Arc<Mutex<Option<SandboxManager>>>,
@@ -65,55 +67,6 @@ impl SandboxProvider {
 
         *self.sandbox.lock().await = Some(sandbox);
         Ok(())
-    }
-
-    /// Resolve relative path to absolute path in sandbox
-    /// Searches for file if not found at expected location
-    async fn resolve_file_path(sandbox: &SandboxManager, path: &str) -> Result<String> {
-        if path.starts_with('/') {
-            return Ok(path.to_string());
-        }
-
-        let workspace_path = format!("/workspace/{path}");
-        let check = sandbox
-            .exec_command(
-                &format!(
-                    "test -f '{}' && echo 'exists'",
-                    escape(workspace_path.as_str().into())
-                ),
-                None,
-            )
-            .await?;
-
-        if check.stdout.contains("exists") {
-            info!(original_path = %path, resolved_path = %workspace_path, "Resolved file path");
-            return Ok(workspace_path);
-        }
-
-        info!(path = %path, "File not found at /workspace/{path}, searching...");
-        let find_cmd = format!("find /workspace -name '{}' -type f", escape(path.into()));
-        let result = sandbox.exec_command(&find_cmd, None).await?;
-
-        let found_paths: Vec<&str> = result.stdout.lines().filter(|l| !l.is_empty()).collect();
-
-        match found_paths.len() {
-            0 => anyhow::bail!(
-                "Файл '{}' не найден в песочнице. Используйте инструмент 'list_files' для просмотра доступных файлов.",
-                path
-            ),
-            1 => {
-                let resolved = found_paths[0].to_string();
-                info!(original_path = %path, resolved_path = %resolved, "Found file");
-                Ok(resolved)
-            }
-            _ => {
-                let paths_list = found_paths.join("\n  - ");
-                anyhow::bail!(
-                    "Найдено несколько файлов с именем '{}':\n  - {}\n\nПожалуйста, укажите полный путь к нужному файлу.",
-                    path, paths_list
-                )
-            }
-        }
     }
 
     async fn handle_execute_command(
@@ -170,7 +123,7 @@ impl SandboxProvider {
         let args: SendFileArgs = serde_json::from_str(arguments)?;
         info!(path = %args.path, "send_file_to_user called");
 
-        let resolved_path = match Self::resolve_file_path(sandbox, &args.path).await {
+        let resolved_path = match resolve_file_path(sandbox, &args.path).await {
             Ok(p) => p,
             Err(e) => {
                 warn!(path = %args.path, error = %e, "Failed to resolve file path");
@@ -181,6 +134,22 @@ impl SandboxProvider {
         let file_name = std::path::Path::new(&resolved_path)
             .file_name()
             .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
+
+        let file_size = match sandbox.file_size_bytes(&resolved_path, None).await {
+            Ok(size) => size,
+            Err(e) => {
+                error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
+                return Ok(format!("❌ Ошибка проверки размера файла: {e}"));
+            }
+        };
+
+        const TELEGRAM_MAX_FILE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
+        if file_size > TELEGRAM_MAX_FILE_SIZE_BYTES {
+            return Ok(
+                "⚠️ ОШИБКА: Файл слишком велик для Telegram (>50 МБ). Пожалуйста, используйте инструмент upload_file, чтобы загрузить его в облако."
+                    .to_string(),
+            );
+        }
 
         match sandbox.download_file(&resolved_path).await {
             Ok(content) => {
