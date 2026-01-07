@@ -400,6 +400,20 @@ impl LlmClient {
         result
     }
 
+    /// Generate an embedding vector using the Mistral embeddings endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` if Mistral is not configured, or any provider error.
+    pub async fn generate_embedding(&self, text: &str, model: &str) -> Result<Vec<f32>, LlmError> {
+        let provider = self
+            .mistral
+            .as_ref()
+            .ok_or_else(|| LlmError::MissingConfig("mistral".to_string()))?;
+
+        provider.generate_embedding(text, model).await
+    }
+
     /// # Errors
     ///
     /// Returns `LlmError::MissingConfig` if `OpenRouter` is not configured, or any error from the provider.

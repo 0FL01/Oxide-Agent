@@ -99,6 +99,16 @@ struct LenientResponse {
     choices: Vec<LenientChoice>,
 }
 
+#[derive(serde::Deserialize, Debug)]
+struct MistralEmbeddingData {
+    embedding: Vec<f32>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct MistralEmbeddingResponse {
+    data: Vec<MistralEmbeddingData>,
+}
+
 /// LLM provider implementation for Mistral AI
 pub struct MistralProvider {
     client: Client<OpenAIConfig>,
@@ -212,6 +222,33 @@ impl MistralProvider {
             finish_reason,
             reasoning_content: None, // Mistral doesn't support reasoning
         })
+    }
+
+    /// Generate an embedding vector using the Mistral embeddings endpoint.
+    pub async fn generate_embedding(&self, text: &str, model: &str) -> Result<Vec<f32>, LlmError> {
+        let body = json!({
+            "model": model,
+            "input": [text],
+            "encoding_format": "float"
+        });
+        let auth_header = format!("Bearer {}", self.api_key);
+        let response = send_json_request(
+            &self.http_client,
+            "https://api.mistral.ai/v1/embeddings",
+            &body,
+            Some(auth_header.as_str()),
+            &[],
+        )
+        .await?;
+
+        let parsed: MistralEmbeddingResponse =
+            serde_json::from_value(response).map_err(|e| LlmError::JsonError(e.to_string()))?;
+        let embedding = parsed
+            .data
+            .first()
+            .ok_or_else(|| LlmError::ApiError("Empty embedding response".to_string()))?;
+
+        Ok(embedding.embedding.clone())
     }
 }
 

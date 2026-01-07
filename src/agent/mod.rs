@@ -22,6 +22,8 @@ pub mod providers;
 pub mod registry;
 /// Agent session management
 pub mod session;
+/// Skill system for modular prompts
+pub mod skills;
 
 /// Loop detection subsystem
 pub mod loop_detection;
@@ -38,3 +40,4 @@ pub use provider::ToolProvider;
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use registry::ToolRegistry;
 pub use session::{AgentSession, AgentStatus};
+pub use skills::SkillRegistry;

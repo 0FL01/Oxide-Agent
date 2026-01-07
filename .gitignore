@@ -7,4 +7,4 @@ func_for_ad.md
 test/__pycache__
 __pycache__
 **/target
-
+.embeddings_cache/

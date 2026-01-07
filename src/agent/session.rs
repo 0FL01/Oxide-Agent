@@ -9,6 +9,7 @@ use crate::config::{AGENT_MAX_TOKENS, AGENT_TIMEOUT_SECS};
 use crate::sandbox::SandboxManager;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -58,6 +59,10 @@ pub struct AgentSession {
     pub cancellation_token: CancellationToken,
     /// Last task text for retry actions.
     pub last_task: Option<String>,
+    /// Loaded skills for the current system prompt or dynamic context.
+    loaded_skills: HashSet<String>,
+    /// Token count for loaded skills.
+    skill_token_count: usize,
 }
 
 impl AgentSession {
@@ -75,6 +80,8 @@ impl AgentSession {
             status: AgentStatus::Idle,
             cancellation_token: CancellationToken::new(),
             last_task: None,
+            loaded_skills: HashSet::new(),
+            skill_token_count: 0,
         }
     }
 
@@ -142,6 +149,8 @@ impl AgentSession {
         self.current_task_id = None;
         self.progress_message_id = None;
         self.last_task = None;
+        self.loaded_skills.clear();
+        self.skill_token_count = 0;
 
         // Sandbox is persistent, do NOT destroy it here
         // if let Some(mut sandbox) = self.sandbox.take() { ... }
@@ -150,6 +159,34 @@ impl AgentSession {
     /// Store the last task text for retries.
     pub fn remember_task(&mut self, task: &str) {
         self.last_task = Some(task.to_string());
+    }
+
+    /// Reset loaded skills based on the active system prompt.
+    pub fn set_loaded_skills(&mut self, skills: &[crate::agent::skills::SkillContext]) {
+        self.loaded_skills = skills.iter().map(|skill| skill.name.clone()).collect();
+        self.skill_token_count = skills.iter().map(|skill| skill.token_count).sum();
+    }
+
+    /// Register a dynamically loaded skill, returns true if it was new.
+    pub fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool {
+        if self.loaded_skills.insert(name.to_string()) {
+            self.skill_token_count = self.skill_token_count.saturating_add(token_count);
+            return true;
+        }
+
+        false
+    }
+
+    /// Check if a skill is already loaded.
+    #[must_use]
+    pub fn is_skill_loaded(&self, name: &str) -> bool {
+        self.loaded_skills.contains(name)
+    }
+
+    /// Get total tokens used by loaded skills.
+    #[must_use]
+    pub const fn skill_token_count(&self) -> usize {
+        self.skill_token_count
     }
 
     /// Clear only the todos list (keeps memory intact)

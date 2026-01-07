@@ -361,6 +361,78 @@ pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto
 /// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when todos incomplete
 
+// Skill system configuration
+/// Skills directory (contains modular prompt files)
+pub const SKILLS_DIR: &str = "skills";
+/// Maximum tokens allocated to selected skills
+pub const SKILL_TOKEN_BUDGET: usize = 1500;
+/// Minimum semantic similarity score to consider a skill relevant
+pub const SKILL_EMBEDDING_THRESHOLD: f32 = 0.6;
+/// Maximum number of non-core skills to select
+pub const SKILL_MAX_SELECTED: usize = 3;
+/// TTL for skill metadata cache (seconds)
+pub const SKILL_CACHE_TTL_SECS: u64 = 3600;
+/// Default embedding model for skills
+pub const MISTRAL_EMBED_MODEL: &str = "mistral-embed";
+/// Expected embedding vector dimension
+pub const EMBEDDING_DIMENSION: usize = 256;
+/// Embedding cache directory
+pub const EMBEDDING_CACHE_DIR: &str = ".embeddings_cache/skills";
+
+/// Get skills directory path from env or default.
+#[must_use]
+pub fn get_skills_dir() -> String {
+    std::env::var("SKILLS_DIR").unwrap_or_else(|_| SKILLS_DIR.to_string())
+}
+
+/// Get skill token budget from env or default.
+#[must_use]
+pub fn get_skill_token_budget() -> usize {
+    std::env::var("SKILL_TOKEN_BUDGET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SKILL_TOKEN_BUDGET)
+}
+
+/// Get semantic threshold from env or default.
+#[must_use]
+pub fn get_skill_semantic_threshold() -> f32 {
+    std::env::var("SKILL_SEMANTIC_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SKILL_EMBEDDING_THRESHOLD)
+}
+
+/// Get max selected skills from env or default.
+#[must_use]
+pub fn get_skill_max_selected() -> usize {
+    std::env::var("SKILL_MAX_SELECTED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SKILL_MAX_SELECTED)
+}
+
+/// Get skill cache TTL (seconds) from env or default.
+#[must_use]
+pub fn get_skill_cache_ttl_secs() -> u64 {
+    std::env::var("SKILL_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SKILL_CACHE_TTL_SECS)
+}
+
+/// Get embedding model name from env or default.
+#[must_use]
+pub fn get_mistral_embed_model() -> String {
+    std::env::var("MISTRAL_EMBED_MODEL").unwrap_or_else(|_| MISTRAL_EMBED_MODEL.to_string())
+}
+
+/// Get embedding cache directory from env or default.
+#[must_use]
+pub fn get_embedding_cache_dir() -> String {
+    std::env::var("EMBEDDING_CACHE_DIR").unwrap_or_else(|_| EMBEDDING_CACHE_DIR.to_string())
+}
+
 // Sandbox configuration
 /// Docker image for the sandbox
 pub const SANDBOX_IMAGE: &str = "agent-sandbox:latest";

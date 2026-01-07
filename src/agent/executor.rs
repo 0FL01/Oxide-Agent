@@ -6,6 +6,7 @@ use super::hooks::{CompletionCheckHook, HookContext, HookEvent, HookRegistry, Ho
 use super::loop_detection::{LoopDetectionConfig, LoopDetectionService, LoopType};
 use super::memory::AgentMessage;
 use super::session::AgentSession;
+use super::skills::SkillRegistry;
 use crate::agent::providers::TodoList;
 use crate::config::{
     get_agent_model, AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_TIMEOUT_SECS,
@@ -43,6 +44,7 @@ pub struct AgentExecutor {
     hook_registry: HookRegistry,
     loop_detector: Arc<Mutex<LoopDetectionService>>,
     loop_detection_disabled_next_run: bool,
+    skill_registry: Option<SkillRegistry>,
 }
 
 /// Context for the agent execution loop to reduce argument count
@@ -75,12 +77,21 @@ impl AgentExecutor {
             loop_config,
         )));
 
+        let skill_registry = match SkillRegistry::from_env(llm_client.clone()) {
+            Ok(registry) => registry,
+            Err(err) => {
+                warn!(error = %err, "Failed to initialize skills registry, falling back to AGENT.md");
+                None
+            }
+        };
+
         Self {
             llm_client,
             session,
             hook_registry,
             loop_detector,
             loop_detection_disabled_next_run: false,
+            skill_registry,
         }
     }
 
@@ -506,7 +517,7 @@ impl AgentExecutor {
                 self.loop_detection_disabled_next_run = false;
             }
         }
-        let system_prompt = Self::create_agent_system_prompt();
+        let system_prompt = self.create_agent_system_prompt(task).await;
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
 
         let mut registry = ToolRegistry::new();
@@ -1055,6 +1066,8 @@ impl AgentExecutor {
         let (name, args) =
             Self::sanitize_tool_call(&tool_call.function.name, &tool_call.function.arguments);
 
+        self.load_skill_context_for_tool(&name, ctx).await?;
+
         info!(
             tool_name = %name,
             tool_args = %crate::utils::truncate_str(&args, 200),
@@ -1139,8 +1152,57 @@ impl AgentExecutor {
         Ok(())
     }
 
+    async fn load_skill_context_for_tool(
+        &mut self,
+        tool_name: &str,
+        ctx: &mut AgentLoopContext<'_>,
+    ) -> Result<()> {
+        let Some(registry) = self.skill_registry.as_mut() else {
+            return Ok(());
+        };
+
+        let skill = match registry.load_skill_for_tool(tool_name).await {
+            Ok(skill) => skill,
+            Err(err) => {
+                warn!(tool_name = %tool_name, error = %err, "Failed to load skill for tool");
+                return Ok(());
+            }
+        };
+
+        let Some(skill) = skill else {
+            return Ok(());
+        };
+
+        if self.session.is_skill_loaded(&skill.metadata.name) {
+            return Ok(());
+        }
+
+        let context_message = format!(
+            "[Загружен модуль: {}]\n{}",
+            skill.metadata.name, skill.content
+        );
+
+        self.session
+            .memory
+            .add_message(AgentMessage::system(context_message.clone()));
+        ctx.messages.push(Message::system(&context_message));
+
+        if self
+            .session
+            .register_loaded_skill(&skill.metadata.name, skill.token_count)
+        {
+            info!(
+                skill = %skill.metadata.name,
+                total_tokens = self.session.skill_token_count(),
+                "Dynamic skill loaded"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Create the system prompt for the agent
-    fn create_agent_system_prompt() -> String {
+    async fn create_agent_system_prompt(&mut self, task: &str) -> String {
         let now = chrono::Local::now();
         let current_date = now.format("%Y-%m-%d %H:%M:%S").to_string();
         let current_day = now.format("%A").to_string();
@@ -1159,6 +1221,30 @@ impl AgentExecutor {
         let date_context = format!(
             "### ТЕКУЩАЯ ДАТА И ВРЕМЯ\nСегодня: {current_date}, {current_day_ru}\nВАЖНО: Всегда используй эту дату как текущую. Если результаты поиска (web_search) содержат фразы 'сегодня', 'завтра' или даты, которые противоречат этой, считай результаты поиска устаревшими и интерпретируй их относительно указанной выше даты.\n\n"
         );
+
+        if let Some(registry) = self.skill_registry.as_mut() {
+            match registry.build_prompt(task).await {
+                Ok(skill_prompt) if !skill_prompt.content.is_empty() => {
+                    self.session.set_loaded_skills(&skill_prompt.skills);
+                    info!(
+                        skills = ?skill_prompt.skills,
+                        total_tokens = skill_prompt.token_count,
+                        skipped = ?skill_prompt.skipped,
+                        "Skills loaded for request"
+                    );
+                    return format!("{date_context}{}", skill_prompt.content);
+                }
+                Ok(_) => {
+                    warn!("Skills prompt empty, falling back to AGENT.md");
+                }
+                Err(err) => {
+                    warn!(error = %err, "Failed to build skills prompt, falling back to AGENT.md");
+                }
+            }
+        }
+
+        let empty_skills: [crate::agent::skills::SkillContext; 0] = [];
+        self.session.set_loaded_skills(&empty_skills);
 
         let base_prompt = match std::fs::read_to_string("AGENT.md") {
             Ok(prompt) => prompt,
