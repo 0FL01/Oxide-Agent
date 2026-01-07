@@ -18,6 +18,23 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, instrument, warn};
 
+/// Sanitize XML-like tags from text
+///
+/// This removes any XML-like tags that may have leaked from malformed LLM responses.
+/// Examples: `<tool_call>`, `</tool_call>`, `<filepath>`, `<arg_key>`, etc.
+///
+/// This function is public within the crate to allow reuse in progress tracking,
+/// todo descriptions, and other agent components that need protection from XML leaks.
+pub(crate) fn sanitize_xml_tags(text: &str) -> String {
+    use lazy_regex::regex;
+
+    // Pattern to match opening and closing XML tags: <tag_name> or </tag_name>
+    // Matches lowercase letters, digits, underscores in tag names
+    let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
+
+    xml_tag_pattern.replace_all(text, "").to_string()
+}
+
 /// Agent executor that runs tasks iteratively
 pub struct AgentExecutor {
     llm_client: Arc<LlmClient>,
@@ -216,20 +233,6 @@ impl AgentExecutor {
         }
 
         None
-    }
-
-    /// Sanitize XML-like tags from response text
-    ///
-    /// This removes any XML-like tags that may have leaked from malformed LLM responses.
-    /// Examples: `<tool_call>`, `</tool_call>`, `<filepath>`, `<arg_key>`, etc.
-    fn sanitize_xml_tags(text: &str) -> String {
-        use lazy_regex::regex;
-
-        // Pattern to match opening and closing XML tags: <tag_name> or </tag_name>
-        // Matches lowercase letters, digits, underscores in tag names
-        let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
-
-        xml_tag_pattern.replace_all(text, "").to_string()
     }
 
     /// Try to parse a malformed tool call from content text
@@ -596,7 +599,7 @@ impl AgentExecutor {
         );
 
         // Remove all XML-like tags
-        *final_response = Self::sanitize_xml_tags(final_response);
+        *final_response = sanitize_xml_tags(final_response);
 
         debug!(
             original_len = original_len,
@@ -771,10 +774,12 @@ impl AgentExecutor {
         );
 
         if let Some(tx) = ctx.progress_tx {
+            // Sanitize XML tags from tool name and input to prevent UI corruption
+            // This protects against malformed LLM responses that leak XML syntax
             let _ = tx
                 .send(AgentEvent::ToolCall {
-                    name: name.clone(),
-                    input: args.clone(),
+                    name: sanitize_xml_tags(&name),
+                    input: sanitize_xml_tags(&args),
                 })
                 .await;
         }
@@ -1036,5 +1041,74 @@ mod tests {
         let input = "not json at all";
         let result = AgentExecutor::extract_first_json(input);
         assert!(result.is_none());
+    }
+
+    // Tests for sanitize_xml_tags function
+    #[test]
+    fn test_sanitize_xml_tags_basic() {
+        let input = "Some text <tool_call>content</tool_call> more text";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, "Some text content more text");
+    }
+
+    #[test]
+    fn test_sanitize_xml_tags_filepath() {
+        let input = "read_file<filepath>/workspace/docker-compose.yml</filepath></tool_call>";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, "read_file/workspace/docker-compose.yml");
+    }
+
+    #[test]
+    fn test_sanitize_xml_tags_multiple() {
+        let input = "<arg_key>test</arg_key><arg_value>value</arg_value><command>ls</command>";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, "testvaluels");
+    }
+
+    #[test]
+    fn test_sanitize_xml_tags_malformed_tool_call() {
+        // Real-world example from bug report
+        let input = "todos</arg_key><arg_value>[{\"description\": \"test\"}]";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, "todos[{\"description\": \"test\"}]");
+        assert!(!result.contains("</arg_key>"));
+        assert!(!result.contains("<arg_value>"));
+    }
+
+    #[test]
+    fn test_sanitize_xml_tags_preserves_content() {
+        let input = "Normal text without tags";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_sanitize_xml_tags_preserves_valid_comparison() {
+        // Should preserve mathematical comparisons
+        let input = "Check if x < 5 and y > 3";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_sanitize_xml_tags_only_lowercase() {
+        // Should only match lowercase XML tags
+        let input = "Text <ToolCall>content</ToolCall> <COMMAND>ls</COMMAND>";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, input); // Uppercase tags are preserved
+    }
+
+    #[test]
+    fn test_sanitize_xml_tags_with_underscores() {
+        let input = "<tool_name>search</tool_name><arg_key_1>value</arg_key_1>";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, "searchvalue");
+    }
+
+    #[test]
+    fn test_sanitize_xml_tags_with_numbers() {
+        let input = "<arg1>first</arg1><arg2>second</arg2>";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, "firstsecond");
     }
 }

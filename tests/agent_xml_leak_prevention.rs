@@ -102,3 +102,40 @@ mod integration_tests {
         assert!(!cleaned.contains("&lt;/tool_call&gt;"));
     }
 }
+
+#[cfg(test)]
+mod progress_integration_tests {
+    use another_chat_rs::agent::progress::{AgentEvent, ProgressState};
+
+    #[test]
+    fn test_progress_state_with_sanitized_tool_name() {
+        let mut state = ProgressState::new(100);
+
+        // Simulate sanitized tool call event (XML tags already removed in executor)
+        state.update(AgentEvent::ToolCall {
+            name: "todos".to_string(), // Already sanitized!
+            input: "[{\"description\": \"test\"}]".to_string(),
+        });
+
+        let output = state.format_telegram();
+
+        // Should NOT contain XML tags in the formatted output
+        assert!(!output.contains("<arg_key>"));
+        assert!(!output.contains("</arg_key>"));
+        assert!(output.contains("Выполнение: todos"));
+    }
+
+    #[test]
+    fn test_progress_state_with_complex_input() {
+        let mut state = ProgressState::new(100);
+
+        // Test with complex but sanitized input
+        state.update(AgentEvent::ToolCall {
+            name: "web_search".to_string(),
+            input: "query: \"test query\"".to_string(),
+        });
+
+        let output = state.format_telegram();
+        assert!(output.contains("Выполнение: web_search"));
+    }
+}
