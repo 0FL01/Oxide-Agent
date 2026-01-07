@@ -26,7 +26,7 @@ src/
 │   │   └── types.rs
 │   └── providers/             # Реализации инструментов
 │       ├── mod.rs
-│       ├── filehoster.rs      # Litterbox-интеграция (upload_file)
+│       ├── filehoster.rs      # GoFile-интеграция (upload_file)
 │       ├── path.rs            # Вспомогательные функции для путей
 │       ├── sandbox.rs
 │       ├── tavily.rs

@@ -1,6 +1,6 @@
 //! FileHoster provider - uploads large sandbox files to external hosting.
 //!
-//! Currently supports Litterbox (Catbox) for files that are too large for Telegram.
+//! Currently supports GoFile for files that are too large for Telegram.
 
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
@@ -16,8 +16,9 @@ use tracing::{debug, error, info, warn};
 
 use super::path::resolve_file_path;
 
-const LITTERBOX_MAX_FILE_SIZE_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
-const LITTERBOX_URL_PREFIX: &str = "https://litter.catbox.moe/";
+const MAX_UPLOAD_SIZE_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB (safety limit)
+const GOFILE_UPLOAD_URL: &str = "https://upload.gofile.io/uploadfile";
+const GOFILE_DOWNLOAD_PAGE_PREFIX: &str = "https://gofile.io/d/";
 
 /// Provider for file hosting tools (executed in sandbox)
 pub struct FileHosterProvider {
@@ -83,34 +84,59 @@ impl FileHosterProvider {
             }
         };
 
-        if file_size > LITTERBOX_MAX_FILE_SIZE_BYTES {
-            return Ok("⛔ ФАТАЛЬНАЯ ОШИБКА: Файл превышает лимит сервиса (1 ГБ). Отправка невозможна. Немедленно сообщите пользователю о невозможности выполнения задачи.".to_string());
+        if file_size > MAX_UPLOAD_SIZE_BYTES {
+            return Ok("⛔ ФАТАЛЬНАЯ ОШИБКА: Файл превышает лимит загрузки (1 ГБ). Отправка невозможна. Немедленно сообщите пользователю о невозможности выполнения задачи.".to_string());
         }
+
+        let token_opt = std::env::var("GOFILE_TOKEN").ok().filter(|t| !t.is_empty());
+        let token_part = token_opt.as_deref().map_or(String::new(), |token| {
+            format!(" -F {}", escape(format!("token={token}").into()))
+        });
 
         let cmd = format!(
             "curl -sS --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 60 \
-             -F {reqtype} -F {file} https://litterbox.catbox.moe/resources/internals/api.php",
-            reqtype = escape("reqtype=fileupload".into()),
-            file = escape(format!("fileToUpload=@{resolved_path}").into()),
+             -F {file}{token_part} {url}",
+            file = escape(format!("file=@{resolved_path}").into()),
+            token_part = token_part,
+            url = escape(GOFILE_UPLOAD_URL.into()),
         );
 
         let result = match sandbox.exec_command(&cmd, cancellation_token).await {
             Ok(r) => r,
-            Err(e) => return Ok(format!("❌ Ошибка загрузки в Litterbox: {e}")),
+            Err(e) => return Ok(format!("❌ Ошибка загрузки в GoFile: {e}")),
         };
 
         if !result.success() {
             return Ok(format!(
-                "❌ Ошибка загрузки в Litterbox (код {}): {}",
+                "❌ Ошибка загрузки в GoFile (код {}): {}",
                 result.exit_code,
                 result.combined_output()
             ));
         }
 
-        let url = result.stdout.trim();
-        if !url.starts_with(LITTERBOX_URL_PREFIX) {
+        let resp: GoFileUploadResponse = match serde_json::from_str(result.stdout.trim()) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(format!(
+                    "❌ GoFile вернул неожиданный ответ (не JSON): {e}\n{}",
+                    result.combined_output()
+                ));
+            }
+        };
+
+        let download_page = match resp.into_download_page() {
+            Ok(url) => url,
+            Err(msg) => {
+                return Ok(format!(
+                    "❌ GoFile вернул ошибку:\n{msg}\n{}",
+                    result.combined_output()
+                ));
+            }
+        };
+
+        if !download_page.starts_with(GOFILE_DOWNLOAD_PAGE_PREFIX) {
             return Ok(format!(
-                "❌ Litterbox вернул неожиданный ответ вместо ссылки:\n{}",
+                "❌ GoFile вернул неожиданный ответ вместо ссылки:\n{}",
                 result.combined_output()
             ));
         }
@@ -128,7 +154,7 @@ impl FileHosterProvider {
             }
         }
 
-        Ok(url.to_string())
+        Ok(download_page)
     }
 }
 
@@ -136,6 +162,41 @@ impl FileHosterProvider {
 #[derive(Debug, Deserialize)]
 struct UploadFileArgs {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoFileUploadResponse {
+    status: String,
+    #[serde(default)]
+    data: Option<GoFileUploadData>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoFileUploadData {
+    #[serde(rename = "downloadPage")]
+    download_page: Option<String>,
+}
+
+impl GoFileUploadResponse {
+    fn into_download_page(self) -> std::result::Result<String, String> {
+        if self.status == "ok" {
+            let url = self
+                .data
+                .and_then(|d| d.download_page)
+                .filter(|u| !u.trim().is_empty());
+            return url.ok_or_else(|| "GoFile: missing downloadPage in response".to_string());
+        }
+
+        let msg = self
+            .error
+            .or(self.message)
+            .unwrap_or_else(|| "GoFile: unknown error".to_string());
+        Err(msg)
+    }
 }
 
 #[async_trait]
@@ -147,7 +208,7 @@ impl ToolProvider for FileHosterProvider {
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             name: "upload_file".to_string(),
-            description: "Upload a file from the sandbox to external hosting (Litterbox). Use this for files too large for Telegram (>50 MB). Returns a public link on success.".to_string(),
+            description: "Upload a file from the sandbox to external hosting (GoFile). Use this for files too large for Telegram (>50 MB). Returns a public link on success.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

@@ -402,7 +402,7 @@ impl AgentExecutor {
         };
         registry.register(Box::new(sandbox_provider));
 
-        // Register FileHosterProvider for uploading large files (Litterbox)
+        // Register FileHosterProvider for uploading large files (GoFile)
         registry.register(Box::new(FileHosterProvider::new(self.session.user_id)));
 
         // Register YtdlpProvider for video platform tools
