@@ -13,6 +13,11 @@ src/
 ├── agent/                     # ядро агента и логика выполнения
 │   ├── mod.rs
 │   ├── executor.rs
+│   ├── recovery.rs            # восстановление malformed ответов
+│   ├── tool_bridge.rs         # мост исполнения инструментов
+│   ├── prompt/                # сборка системных промптов
+│   │   ├── mod.rs
+│   │   └── composer.rs
 │   ├── loop_detection/        # детектирование зацикливаний
 │   │   ├── ...
 │   ├── skills/                # подсистема навыков (RAG/embeddings)

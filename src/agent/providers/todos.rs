@@ -240,7 +240,7 @@ impl ToolProvider for TodosProvider {
             .todos
             .into_iter()
             .map(|arg| TodoItem {
-                description: crate::agent::executor::sanitize_xml_tags(&arg.description),
+                description: crate::agent::sanitize_xml_tags(&arg.description),
                 status: arg.status,
             })
             .collect();

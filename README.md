@@ -238,10 +238,10 @@ docker-compose.yml
 | Название | Провайдер | Особенности |
 | :--- | :--- | :--- |
 | **OR Gemini 3 Flash** | OpenRouter | Мультимодальность, модель по умолчанию |
-| **ZAI GLM-4.6-Flash** | Zai | Высокая скорость, free |
-| **Mistral Large** | Mistral | Нативный вызов инструментов |
-| **Gemini 2.5 Flash Lite** | Google | Быстрая и эффективная |
-| **Devstral 2512** | Mistral | Оптимизирована для кодинга и работы Агента |
+| **ZAI GLM-4.7** | Zai | GLM Coding Plan |
+| **Mistral Large** | Mistral | Бесплатно и щедро |
+| **Gemini 2.5 Flash Lite** | Google | Дешево и эффективная |
+| **Devstral 2512** | Mistral | Топ за бесплатно для кодинга и работы Агента |
 
 ## Ключевые зависимости
 

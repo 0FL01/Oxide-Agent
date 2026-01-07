@@ -14,16 +14,22 @@ pub mod hooks;
 pub mod memory;
 /// Preprocessor for different input types (voice, photo, etc)
 pub mod preprocessor;
+/// Prompt composition for system prompts
+pub mod prompt;
 /// Tool provider trait
 pub mod provider;
 /// Built-in tool providers (Sandbox, Tavily, Todos)
 pub mod providers;
+/// Recovery module for malformed LLM responses
+pub mod recovery;
 /// Registry for managing available tools
 pub mod registry;
 /// Agent session management
 pub mod session;
 /// Skill system for modular prompts
 pub mod skills;
+/// Tool execution bridge with timeout and cancellation
+pub mod tool_bridge;
 
 /// Loop detection subsystem
 pub mod loop_detection;
@@ -38,6 +44,7 @@ pub use memory::AgentMemory;
 pub use progress::{AgentEvent, ProgressState};
 pub use provider::ToolProvider;
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
+pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;
 pub use session::{AgentSession, AgentStatus};
 pub use skills::SkillRegistry;

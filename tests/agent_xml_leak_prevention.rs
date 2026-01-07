@@ -142,7 +142,7 @@ mod progress_integration_tests {
 // BUGFIX AGENT-2026-001: Integration tests for malformed tool call bug fix
 #[cfg(test)]
 mod bugfix_agent_2026_001_tests {
-    use another_chat_rs::agent::executor::sanitize_xml_tags;
+    use another_chat_rs::agent::sanitize_xml_tags;
 
     #[test]
     fn test_ytdlp_malformed_tool_call_detection() {
