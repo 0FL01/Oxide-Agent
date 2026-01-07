@@ -7,9 +7,9 @@ edition = "2021"
 unsafe_code = "forbid"
 
 [lints.clippy]
-unwrap_used = "deny"
-too_many_lines = "deny" 
-too_many_arguments = "deny"
+unwrap_used = "forbid"
+too_many_lines = "forbid" 
+too_many_arguments = "forbid"
 
 [dependencies]
 tokio = { version = "1.48", features = ["full"] }
@@ -49,6 +49,7 @@ eventsource-stream = "0.2.3"
 moka = { version = "0.12", features = ["future"] }
 tokio-retry = "0.3"
 unicode-segmentation = "1.12.0"
+sha2 = "0.10.9"
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]

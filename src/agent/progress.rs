@@ -1,3 +1,4 @@
+use super::loop_detection::LoopType;
 use super::providers::TodoList;
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,13 @@ pub enum AgentEvent {
     Cancelled,
     /// Agent encountered an error
     Error(String),
+    /// Loop detected during execution
+    LoopDetected {
+        /// Type of loop detected
+        loop_type: LoopType,
+        /// Iteration when detected
+        iteration: usize,
+    },
 }
 
 /// Maximum number of visible steps in Telegram progress report
@@ -140,6 +148,10 @@ impl ProgressState {
             AgentEvent::Cancelling { tool_name } => self.handle_cancelling(tool_name),
             AgentEvent::Cancelled => self.handle_cancelled(),
             AgentEvent::Error(e) => self.handle_error(e),
+            AgentEvent::LoopDetected {
+                loop_type,
+                iteration,
+            } => self.handle_loop_detected(loop_type, iteration),
         }
     }
 
@@ -253,6 +265,16 @@ impl ProgressState {
 
     fn handle_error(&mut self, e: String) {
         self.error = Some(e);
+        self.fail_last_step();
+    }
+
+    fn handle_loop_detected(&mut self, loop_type: LoopType, iteration: usize) {
+        let label = match loop_type {
+            LoopType::ToolCallLoop => "Повторяющиеся вызовы",
+            LoopType::ContentLoop => "Повторяющийся текст",
+            LoopType::CognitiveLoop => "Застревание",
+        };
+        self.error = Some(format!("Обнаружена петля: {label} (итерация {iteration})"));
         self.fail_last_step();
     }
 

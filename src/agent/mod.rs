@@ -23,11 +23,15 @@ pub mod registry;
 /// Agent session management
 pub mod session;
 
+/// Loop detection subsystem
+pub mod loop_detection;
+
 /// Progress tracking and Telegram status updates
 pub mod progress;
 
 pub use executor::AgentExecutor;
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
+pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::AgentMemory;
 pub use progress::{AgentEvent, ProgressState};
 pub use provider::ToolProvider;

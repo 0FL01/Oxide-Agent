@@ -5,6 +5,7 @@
 
 use crate::agent::{
     executor::AgentExecutor,
+    loop_detection::LoopType,
     preprocessor::{AgentInput, Preprocessor},
     progress::{AgentEvent, ProgressState},
     AgentSession,
@@ -20,7 +21,10 @@ use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::net::Download;
 use teloxide::prelude::*;
-use teloxide::types::{InputFile, KeyboardButton, KeyboardMarkup, MessageId, ParseMode};
+use teloxide::types::{
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, KeyboardButton,
+    KeyboardMarkup, MessageId, ParseMode,
+};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -45,6 +49,31 @@ static AGENT_SESSIONS: LazyLock<RwLock<HashMap<i64, Arc<RwLock<AgentExecutor>>>>
 static CANCELLATION_TOKENS: LazyLock<
     RwLock<HashMap<i64, Arc<tokio_util::sync::CancellationToken>>>,
 > = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+const LOOP_CALLBACK_RETRY: &str = "retry_no_loop";
+const LOOP_CALLBACK_RESET: &str = "reset_task";
+const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
+
+fn loop_action_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback("Повторить без детекции", LOOP_CALLBACK_RETRY),
+            InlineKeyboardButton::callback("Сбросить задачу", LOOP_CALLBACK_RESET),
+        ],
+        vec![InlineKeyboardButton::callback(
+            "Отменить",
+            LOOP_CALLBACK_CANCEL,
+        )],
+    ])
+}
+
+fn loop_type_label(loop_type: LoopType) -> &'static str {
+    match loop_type {
+        LoopType::ToolCallLoop => "Повторяющиеся вызовы",
+        LoopType::ContentLoop => "Повторяющийся текст",
+        LoopType::CognitiveLoop => "Застревание",
+    }
+}
 
 /// Get the agent mode keyboard
 ///
@@ -352,6 +381,16 @@ fn spawn_progress_updater(
                         continue;
                     }
                 }
+                AgentEvent::LoopDetected {
+                    loop_type,
+                    iteration,
+                } => {
+                    if let Err(e) =
+                        send_loop_detected_message(&bot, chat_id, *loop_type, *iteration).await
+                    {
+                        warn!("Failed to send loop notification: {e}");
+                    }
+                }
                 _ => {}
             }
 
@@ -372,6 +411,26 @@ fn spawn_progress_updater(
         }
         final_text
     })
+}
+
+async fn send_loop_detected_message(
+    bot: &Bot,
+    chat_id: ChatId,
+    loop_type: LoopType,
+    iteration: usize,
+) -> Result<()> {
+    let text = format!(
+        "🔁 <b>Обнаружена петля в выполнении задачи</b>\nТип: {}\nИтерация: {}\n\nВыберите действие:",
+        loop_type_label(loop_type),
+        iteration
+    );
+
+    bot.send_message(chat_id, text)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(loop_action_keyboard())
+        .await?;
+
+    Ok(())
 }
 
 async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
@@ -427,6 +486,43 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     Ok(())
 }
 
+async fn run_agent_task_with_text(
+    bot: Bot,
+    chat_id: ChatId,
+    user_id: i64,
+    task_text: String,
+    storage: Arc<R2Storage>,
+) -> Result<()> {
+    let progress_msg = bot
+        .send_message(chat_id, "⏳ Обработка задачи...")
+        .parse_mode(ParseMode::Html)
+        .await?;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
+    let progress_handle = spawn_progress_updater(bot.clone(), chat_id, progress_msg.id, rx);
+
+    let result = execute_agent_task(user_id, &task_text, Some(tx)).await;
+    let progress_text = progress_handle.await.unwrap_or_default();
+
+    save_memory_after_task(user_id, &storage).await;
+
+    match result {
+        Ok(response) => {
+            edit_message_safe(&bot, chat_id, progress_msg.id, &progress_text).await;
+            let formatted_response = crate::utils::format_text(&response);
+            bot.send_message(chat_id, formatted_response)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+        Err(e) => {
+            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{e}");
+            edit_message_safe(&bot, chat_id, progress_msg.id, &error_text).await;
+        }
+    }
+
+    Ok(())
+}
+
 /// Execute an agent task and return the result
 async fn execute_agent_task(
     user_id: i64,
@@ -473,6 +569,115 @@ async fn execute_agent_task(
 
     // Execute the task (now uses external token that can be cancelled lock-free)
     executor.execute(task, progress_tx).await
+}
+
+/// Handle loop-detection inline keyboard callbacks.
+///
+/// # Errors
+///
+/// Returns an error if Telegram API calls fail.
+pub async fn handle_loop_callback(
+    bot: Bot,
+    q: CallbackQuery,
+    storage: Arc<R2Storage>,
+    llm: Arc<LlmClient>,
+) -> Result<()> {
+    let Some(data) = q.data.as_deref() else {
+        return Ok(());
+    };
+
+    let _ = bot.answer_callback_query(q.id.clone()).await;
+
+    let user_id = q.from.id.0.cast_signed();
+    let chat_id = q
+        .message
+        .as_ref()
+        .map(|msg| msg.chat().id)
+        .ok_or_else(|| anyhow::anyhow!("Callback message missing chat id"))?;
+
+    match data {
+        LOOP_CALLBACK_RETRY => {
+            if is_agent_task_running(user_id).await {
+                bot.send_message(
+                    chat_id,
+                    "⏳ Задача уже выполняется. Дождитесь завершения или отмените её.",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
+            renew_cancellation_token(user_id).await;
+
+            let executor_arc = {
+                let sessions = AGENT_SESSIONS.read().await;
+                sessions.get(&user_id).cloned()
+            };
+
+            let Some(executor_arc) = executor_arc else {
+                bot.send_message(chat_id, "⚠️ Сессия агента не найдена.")
+                    .await?;
+                return Ok(());
+            };
+
+            let task_text = {
+                let executor = executor_arc.read().await;
+                executor.last_task().map(str::to_string)
+            };
+
+            let Some(task_text) = task_text else {
+                bot.send_message(chat_id, "⚠️ Нет сохранённой задачи для повтора.")
+                    .await?;
+                return Ok(());
+            };
+
+            {
+                let mut executor = executor_arc.write().await;
+                executor.disable_loop_detection_next_run();
+            }
+
+            let task_bot = bot.clone();
+            let task_storage = storage.clone();
+            tokio::spawn(async move {
+                let error_bot = task_bot.clone();
+                if let Err(e) =
+                    run_agent_task_with_text(task_bot, chat_id, user_id, task_text, task_storage)
+                        .await
+                {
+                    let _ = error_bot
+                        .send_message(chat_id, format!("❌ Ошибка: {e}"))
+                        .await;
+                }
+            });
+        }
+        LOOP_CALLBACK_RESET => {
+            let executor_arc = {
+                let sessions = AGENT_SESSIONS.read().await;
+                sessions.get(&user_id).cloned()
+            };
+
+            if let Some(executor_arc) = executor_arc {
+                if let Ok(mut executor) = executor_arc.try_write() {
+                    executor.reset();
+                    bot.send_message(chat_id, "🔄 Задача сброшена.")
+                        .reply_markup(get_agent_keyboard())
+                        .await?;
+                } else {
+                    bot.send_message(chat_id, "⚠️ Нельзя сбросить задачу, пока она выполняется.")
+                        .await?;
+                }
+            } else {
+                bot.send_message(chat_id, "⚠️ Сессия агента не найдена.")
+                    .await?;
+            }
+        }
+        LOOP_CALLBACK_CANCEL => {
+            cancel_agent_task_by_id(bot.clone(), user_id, chat_id).await?;
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 /// Extract input from a message
@@ -653,6 +858,66 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
             .reply_markup(get_agent_keyboard())
             .await?;
     }
+    Ok(())
+}
+
+async fn cancel_agent_task_by_id(bot: Bot, user_id: i64, chat_id: ChatId) -> Result<()> {
+    let cancelled = {
+        let tokens = CANCELLATION_TOKENS.read().await;
+        if let Some(token_arc) = tokens.get(&user_id) {
+            token_arc.cancel();
+            info!(
+                user_id = user_id,
+                "Cancellation requested (lock-free), task will abort immediately"
+            );
+            true
+        } else {
+            warn!(
+                user_id = user_id,
+                "No active cancellation token found (task may have already completed)"
+            );
+            false
+        }
+    };
+
+    let cleared_todos = {
+        let executor_arc = {
+            let sessions = AGENT_SESSIONS.read().await;
+            sessions.get(&user_id).cloned()
+        };
+
+        if let Some(executor_arc) = executor_arc {
+            if let Ok(mut executor) = executor_arc.try_write() {
+                executor.session_mut().clear_todos();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    if cancelled {
+        let text = if cleared_todos {
+            "❌ Задача отменяется...\n📋 Список задач очищен."
+        } else {
+            "❌ Задача отменяется..."
+        };
+        bot.send_message(chat_id, text)
+            .reply_markup(get_agent_keyboard())
+            .await?;
+    } else {
+        let text = if cleared_todos {
+            "📋 Список задач очищен."
+        } else {
+            "⚠️ Нет активной задачи для отмены"
+        };
+        bot.send_message(chat_id, text)
+            .reply_markup(get_agent_keyboard())
+            .await?;
+    }
+
     Ok(())
 }
 

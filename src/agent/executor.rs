@@ -3,6 +3,7 @@
 //! Handles the iterative execution of tasks using LLM with tool calling.
 
 use super::hooks::{CompletionCheckHook, HookContext, HookEvent, HookRegistry, HookResult};
+use super::loop_detection::{LoopDetectionConfig, LoopDetectionService, LoopType};
 use super::memory::AgentMessage;
 use super::session::AgentSession;
 use crate::agent::providers::TodoList;
@@ -40,6 +41,8 @@ pub struct AgentExecutor {
     llm_client: Arc<LlmClient>,
     session: AgentSession,
     hook_registry: HookRegistry,
+    loop_detector: Arc<Mutex<LoopDetectionService>>,
+    loop_detection_disabled_next_run: bool,
 }
 
 /// Context for the agent execution loop to reduce argument count
@@ -66,10 +69,18 @@ impl AgentExecutor {
         let mut hook_registry = HookRegistry::new();
         hook_registry.register(Box::new(CompletionCheckHook::new()));
 
+        let loop_config = Arc::new(LoopDetectionConfig::from_env());
+        let loop_detector = Arc::new(Mutex::new(LoopDetectionService::new(
+            llm_client.clone(),
+            loop_config,
+        )));
+
         Self {
             llm_client,
             session,
             hook_registry,
+            loop_detector,
+            loop_detection_disabled_next_run: false,
         }
     }
 
@@ -82,6 +93,17 @@ impl AgentExecutor {
     /// Get a mutable reference to the session
     pub const fn session_mut(&mut self) -> &mut AgentSession {
         &mut self.session
+    }
+
+    /// Disable loop detection for the next execution attempt.
+    pub fn disable_loop_detection_next_run(&mut self) {
+        self.loop_detection_disabled_next_run = true;
+    }
+
+    /// Get the last task text, if available.
+    #[must_use]
+    pub fn last_task(&self) -> Option<&str> {
+        self.session.last_task.as_deref()
     }
 
     /// Convert `AgentMessage` history to LLM Message format
@@ -434,6 +456,7 @@ impl AgentExecutor {
 
         self.session.start_task();
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
+        self.session.remember_task(task);
         info!(
             task = %task,
             task_id = %task_id,
@@ -443,6 +466,15 @@ impl AgentExecutor {
         );
 
         self.session.memory.add_message(AgentMessage::user(task));
+
+        {
+            let mut detector = self.loop_detector.lock().await;
+            detector.reset(task_id.clone());
+            if self.loop_detection_disabled_next_run {
+                detector.disable_for_session();
+                self.loop_detection_disabled_next_run = false;
+            }
+        }
         let system_prompt = Self::create_agent_system_prompt();
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
 
@@ -533,6 +565,12 @@ impl AgentExecutor {
                     .await;
             }
 
+            if self.llm_loop_detected(iteration).await {
+                return Err(self
+                    .loop_detected_error(LoopType::CognitiveLoop, iteration, ctx)
+                    .await);
+            }
+
             let response = self
                 .llm_client
                 .chat_with_tools(
@@ -575,7 +613,17 @@ impl AgentExecutor {
                 }
             }
 
-            if response.tool_calls.is_empty() {
+            let tool_calls = Self::sanitize_tool_calls(response.tool_calls);
+
+            if tool_calls.is_empty() {
+                if let Some(content) = response.content.as_ref() {
+                    if self.content_loop_detected(content).await {
+                        return Err(self
+                            .loop_detected_error(LoopType::ContentLoop, iteration, ctx)
+                            .await);
+                    }
+                }
+
                 match self
                     .handle_final_response(
                         response.content,
@@ -591,7 +639,13 @@ impl AgentExecutor {
                 }
             }
 
-            self.execute_tool_calls(response.tool_calls, ctx).await?;
+            if self.tool_loop_detected(&tool_calls).await {
+                return Err(self
+                    .loop_detected_error(LoopType::ToolCallLoop, iteration, ctx)
+                    .await);
+            }
+
+            self.execute_tool_calls(tool_calls, ctx).await?;
         }
 
         self.session.fail("Превышен лимит итераций".to_string());
@@ -619,6 +673,78 @@ impl AgentExecutor {
         }
 
         anyhow!("Задача отменена пользователем")
+    }
+
+    async fn loop_detected_error(
+        &self,
+        loop_type: LoopType,
+        iteration: usize,
+        ctx: &AgentLoopContext<'_>,
+    ) -> anyhow::Error {
+        use super::progress::AgentEvent;
+
+        let event = {
+            let detector = self.loop_detector.lock().await;
+            detector.create_event(loop_type, iteration)
+        };
+
+        warn!(
+            session_id = %event.session_id,
+            loop_type = ?event.loop_type,
+            iteration = event.iteration,
+            "Loop detected in agent execution"
+        );
+
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::LoopDetected {
+                    loop_type,
+                    iteration,
+                })
+                .await;
+        }
+
+        anyhow!("Loop detected: {:?}", loop_type)
+    }
+
+    async fn llm_loop_detected(&self, iteration: usize) -> bool {
+        let mut detector = self.loop_detector.lock().await;
+        match detector
+            .check_llm_periodic(&self.session.memory, iteration)
+            .await
+        {
+            Ok(detected) => detected,
+            Err(err) => {
+                warn!(error = %err, "LLM loop check failed, continuing without LLM signal");
+                false
+            }
+        }
+    }
+
+    async fn content_loop_detected(&self, content: &str) -> bool {
+        let mut detector = self.loop_detector.lock().await;
+        match detector.check_content(content) {
+            Ok(detected) => detected,
+            Err(err) => {
+                warn!(error = %err, "Content loop check failed, continuing");
+                false
+            }
+        }
+    }
+
+    async fn tool_loop_detected(&self, tool_calls: &[ToolCall]) -> bool {
+        let mut detector = self.loop_detector.lock().await;
+        for tool_call in tool_calls {
+            match detector.check_tool_call(&tool_call.function.name, &tool_call.function.arguments)
+            {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(err) => {
+                    warn!(error = %err, "Tool loop check failed, continuing");
+                }
+            }
+        }
+        false
     }
 
     async fn bail_if_cancelled(&mut self, ctx: &mut AgentLoopContext<'_>) -> Result<()> {
@@ -846,6 +972,20 @@ impl AgentExecutor {
         Ok(Some(final_response))
     }
 
+    fn sanitize_tool_calls(tool_calls: Vec<ToolCall>) -> Vec<ToolCall> {
+        tool_calls
+            .into_iter()
+            .map(|call| {
+                let (name, arguments) =
+                    Self::sanitize_tool_call(&call.function.name, &call.function.arguments);
+                ToolCall {
+                    id: call.id,
+                    function: ToolCallFunction { name, arguments },
+                }
+            })
+            .collect()
+    }
+
     async fn execute_tool_calls(
         &mut self,
         tool_calls: Vec<ToolCall>,
@@ -1026,6 +1166,10 @@ impl AgentExecutor {
     /// Reset the executor and session
     pub fn reset(&mut self) {
         self.session.reset();
+        self.loop_detection_disabled_next_run = false;
+        if let Ok(mut detector) = self.loop_detector.try_lock() {
+            detector.reset(String::new());
+        }
     }
 
     /// Check if the session is timed out

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::UpdateHandler;
 use teloxide::prelude::*;
+use teloxide::types::CallbackQuery;
 use tracing::{error, info};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
@@ -246,45 +247,56 @@ fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
 }
 
 fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
-    Update::filter_message()
+    dptree::entry()
         .branch(
-            // Основная ветка для авторизованных пользователей
-            dptree::filter(|msg: Message, settings: Arc<Settings>| {
-                settings.allowed_users().contains(&get_user_id_safe(&msg))
-            })
-            .enter_dialogue::<Message, InMemStorage<State>, State>()
-            .branch(
-                dptree::entry()
-                    .filter_command::<Command>()
-                    .endpoint(handle_command),
-            )
-            .branch(
-                dptree::case![State::Start]
-                    .branch(
-                        Update::filter_message()
-                            .filter(|msg: Message| msg.text().is_some())
-                            .endpoint(handle_start_text),
-                    )
-                    .branch(
-                        Update::filter_message()
-                            .filter(|msg: Message| msg.voice().is_some())
-                            .endpoint(handle_start_voice),
-                    )
-                    .branch(
-                        Update::filter_message()
-                            .filter(|msg: Message| msg.photo().is_some())
-                            .endpoint(handle_start_photo),
-                    )
-                    .branch(
-                        dptree::filter(|msg: Message| msg.document().is_some())
-                            .endpoint(handle_start_document),
-                    ),
-            )
-            .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
-            .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
-            .branch(
-                dptree::case![State::AgentWipeConfirmation]
-                    .endpoint(handle_agent_wipe_confirmation),
+            Update::filter_callback_query()
+                .filter(|q: CallbackQuery, settings: Arc<Settings>| {
+                    settings
+                        .allowed_users()
+                        .contains(&q.from.id.0.cast_signed())
+                })
+                .endpoint(handle_loop_callback),
+        )
+        .branch(
+            Update::filter_message().branch(
+                // Основная ветка для авторизованных пользователей
+                dptree::filter(|msg: Message, settings: Arc<Settings>| {
+                    settings.allowed_users().contains(&get_user_id_safe(&msg))
+                })
+                .enter_dialogue::<Message, InMemStorage<State>, State>()
+                .branch(
+                    dptree::entry()
+                        .filter_command::<Command>()
+                        .endpoint(handle_command),
+                )
+                .branch(
+                    dptree::case![State::Start]
+                        .branch(
+                            Update::filter_message()
+                                .filter(|msg: Message| msg.text().is_some())
+                                .endpoint(handle_start_text),
+                        )
+                        .branch(
+                            Update::filter_message()
+                                .filter(|msg: Message| msg.voice().is_some())
+                                .endpoint(handle_start_voice),
+                        )
+                        .branch(
+                            Update::filter_message()
+                                .filter(|msg: Message| msg.photo().is_some())
+                                .endpoint(handle_start_photo),
+                        )
+                        .branch(
+                            dptree::filter(|msg: Message| msg.document().is_some())
+                                .endpoint(handle_start_document),
+                        ),
+                )
+                .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
+                .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
+                .branch(
+                    dptree::case![State::AgentWipeConfirmation]
+                        .endpoint(handle_agent_wipe_confirmation),
+                ),
             ),
         )
         .branch(
@@ -430,6 +442,18 @@ async fn handle_agent_message(
     .await
     {
         error!("Agent mode handler error: {}", e);
+    }
+    respond(())
+}
+
+async fn handle_loop_callback(
+    bot: Bot,
+    q: CallbackQuery,
+    storage: Arc<storage::R2Storage>,
+    llm: Arc<llm::LlmClient>,
+) -> Result<(), teloxide::RequestError> {
+    if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, storage, llm).await {
+        error!("Loop callback handler error: {}", e);
     }
     respond(())
 }

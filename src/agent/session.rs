@@ -56,6 +56,8 @@ pub struct AgentSession {
     /// Set by the caller before starting a task (e.g. bot handler) so that external
     /// cancellation requests are observed by the executor.
     pub cancellation_token: CancellationToken,
+    /// Last task text for retry actions.
+    pub last_task: Option<String>,
 }
 
 impl AgentSession {
@@ -72,6 +74,7 @@ impl AgentSession {
             current_task_id: None,
             status: AgentStatus::Idle,
             cancellation_token: CancellationToken::new(),
+            last_task: None,
         }
     }
 
@@ -138,9 +141,15 @@ impl AgentSession {
         self.started_at = None;
         self.current_task_id = None;
         self.progress_message_id = None;
+        self.last_task = None;
 
         // Sandbox is persistent, do NOT destroy it here
         // if let Some(mut sandbox) = self.sandbox.take() { ... }
+    }
+
+    /// Store the last task text for retries.
+    pub fn remember_task(&mut self, task: &str) {
+        self.last_task = Some(task.to_string());
     }
 
     /// Clear only the todos list (keeps memory intact)
