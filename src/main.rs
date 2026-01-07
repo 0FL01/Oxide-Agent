@@ -301,7 +301,7 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
         )
         .branch(
             // Все, кто не попал в фильтр выше — неавторизованы
-            dptree::endpoint(handle_unauthorized),
+            Update::filter_message().endpoint(handle_unauthorized),
         )
 }
 
