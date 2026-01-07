@@ -69,6 +69,7 @@ pub struct LlmLoopDetector {
     confidence_threshold: f64,
     history_count: usize,
     scout_model: String,
+    enabled: bool,
 }
 
 impl LlmLoopDetector {
@@ -83,6 +84,7 @@ impl LlmLoopDetector {
             confidence_threshold: config.llm_confidence_threshold,
             history_count: config.llm_history_count,
             scout_model: config.scout_model.clone(),
+            enabled: true,
         }
     }
 
@@ -94,11 +96,15 @@ impl LlmLoopDetector {
         self.confidence_threshold = config.llm_confidence_threshold;
         self.history_count = config.llm_history_count;
         self.scout_model = config.scout_model.clone();
+        self.enabled = true;
     }
 
     /// Whether a check is due for this iteration.
     #[must_use]
     pub fn should_check(&self, iteration: usize) -> bool {
+        if !self.enabled {
+            return false;
+        }
         let turn = iteration.saturating_add(1);
         if turn < self.check_after_turns {
             return false;
@@ -115,6 +121,9 @@ impl LlmLoopDetector {
         memory: &AgentMemory,
         iteration: usize,
     ) -> Result<bool, LoopDetectionError> {
+        if !self.enabled {
+            return Ok(false);
+        }
         if !self.should_check(iteration) {
             return Ok(false);
         }
@@ -142,8 +151,20 @@ impl LlmLoopDetector {
         .await
         .map_err(|e| LoopDetectionError::LlmFailure(format!("LLM timeout: {e}")))?;
 
-        let llm_response =
-            llm_response.map_err(|e| LoopDetectionError::LlmFailure(e.to_string()))?;
+        let llm_response = match llm_response {
+            Ok(response) => response,
+            Err(err) => {
+                if Self::should_disable_on_error(&err) {
+                    self.enabled = false;
+                    warn!(
+                        error = %err,
+                        "Disabling LLM loop checks (scout model unavailable)"
+                    );
+                    return Ok(false);
+                }
+                return Err(LoopDetectionError::LlmFailure(err.to_string()));
+            }
+        };
 
         let parsed = Self::parse_response(&llm_response)?;
         debug!(
@@ -229,6 +250,14 @@ impl LlmLoopDetector {
         Err(LoopDetectionError::LlmFailure(
             "LLM response missing JSON object".to_string(),
         ))
+    }
+
+    fn should_disable_on_error(err: &LlmError) -> bool {
+        match err {
+            LlmError::MissingConfig(_) => true,
+            LlmError::Unknown(msg) => msg.contains("Model") && msg.contains("not found"),
+            _ => false,
+        }
     }
 
     fn extract_first_json_object(input: &str) -> Option<String> {
