@@ -8,6 +8,7 @@ use super::types::{LoopDetectedEvent, LoopDetectionError, LoopType};
 use crate::agent::memory::AgentMemory;
 use chrono::Utc;
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 /// Central coordinator for loop detection.
 pub struct LoopDetectionService {
@@ -61,14 +62,26 @@ impl LoopDetectionService {
         args: &str,
     ) -> Result<bool, LoopDetectionError> {
         if !self.is_enabled() {
+            debug!(session_id = %self.session_id, "loop_service: detection disabled");
             return Ok(false);
         }
         if self.loop_detected {
+            debug!(session_id = %self.session_id, "loop_service: already detected loop");
             return Ok(true);
         }
 
         self.content_detector.reset_tracking();
         let detected = self.tool_detector.check(tool_name, args);
+
+        if detected {
+            warn!(
+                session_id = %self.session_id,
+                tool_name,
+                loop_type = "ToolCallLoop",
+                "loop_service: LOOP DETECTED via tool_detector"
+            );
+        }
+
         self.loop_detected = detected;
         Ok(detected)
     }
@@ -82,7 +95,24 @@ impl LoopDetectionService {
             return Ok(true);
         }
 
+        let content_preview: String = content.chars().take(80).collect();
+        debug!(
+            session_id = %self.session_id,
+            content_preview,
+            content_len = content.len(),
+            "loop_service: checking content"
+        );
+
         let detected = self.content_detector.check(content);
+
+        if detected {
+            warn!(
+                session_id = %self.session_id,
+                loop_type = "ContentLoop",
+                "loop_service: LOOP DETECTED via content_detector"
+            );
+        }
+
         self.loop_detected = detected;
         Ok(detected)
     }
@@ -101,10 +131,31 @@ impl LoopDetectionService {
         }
 
         if !self.llm_detector.should_check(iteration) {
+            debug!(
+                session_id = %self.session_id,
+                iteration,
+                "loop_service: skipping LLM check (not due yet)"
+            );
             return Ok(false);
         }
 
+        debug!(
+            session_id = %self.session_id,
+            iteration,
+            "loop_service: running LLM periodic check"
+        );
+
         let detected = self.llm_detector.check(memory, iteration).await?;
+
+        if detected {
+            warn!(
+                session_id = %self.session_id,
+                iteration,
+                loop_type = "LlmLoop",
+                "loop_service: LOOP DETECTED via llm_detector"
+            );
+        }
+
         self.loop_detected = detected;
         Ok(detected)
     }

@@ -1,6 +1,7 @@
 //! Tool call loop detector.
 
 use sha2::{Digest, Sha256};
+use tracing::debug;
 
 /// Detects consecutive identical tool calls using hashing.
 pub struct ToolCallDetector {
@@ -23,14 +24,42 @@ impl ToolCallDetector {
     /// Check if the given tool call forms a loop.
     pub fn check(&mut self, tool_name: &str, args: &str) -> bool {
         let key = Self::hash_tool_call(tool_name, args);
-        if self.last_key.as_deref() == Some(&key) {
+        let prev_key = self
+            .last_key
+            .as_ref()
+            .map(|k| k[..8.min(k.len())].to_string());
+        let args_preview: String = args.chars().take(100).collect();
+
+        let is_repeat = self.last_key.as_deref() == Some(&key);
+        if is_repeat {
             self.repetition_count = self.repetition_count.saturating_add(1);
         } else {
-            self.last_key = Some(key);
+            self.last_key = Some(key.clone());
             self.repetition_count = 1;
         }
 
-        self.repetition_count >= self.threshold
+        debug!(
+            tool_name,
+            args_preview,
+            current_hash = &key[..8.min(key.len())],
+            prev_hash = ?prev_key,
+            repetition_count = self.repetition_count,
+            threshold = self.threshold,
+            is_repeat,
+            "tool_detector: checking tool call"
+        );
+
+        let detected = self.repetition_count >= self.threshold;
+        if detected {
+            debug!(
+                tool_name,
+                repetition_count = self.repetition_count,
+                threshold = self.threshold,
+                "tool_detector: THRESHOLD REACHED - loop detected!"
+            );
+        }
+
+        detected
     }
 
     /// Reset the detector state.

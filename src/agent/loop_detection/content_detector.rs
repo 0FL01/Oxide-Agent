@@ -3,6 +3,7 @@
 use lazy_regex::lazy_regex;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use tracing::debug;
 
 const DEFAULT_MAX_DISTANCE_MULTIPLIER: usize = 5;
 
@@ -44,11 +45,16 @@ impl ContentLoopDetector {
         self.update_code_block_state(content);
 
         if has_code_fence || self.in_code_block {
+            debug!(
+                in_code_block = self.in_code_block,
+                has_code_fence, "content_detector: skipping (code block)"
+            );
             self.reset_tracking();
             return false;
         }
 
         if self.should_skip_tracking(content) {
+            debug!("content_detector: skipping (table/list/header)");
             self.reset_tracking();
             return false;
         }
@@ -56,10 +62,21 @@ impl ContentLoopDetector {
         self.history.extend(content.chars());
         self.truncate_if_needed();
 
+        debug!(
+            history_len = self.history.len(),
+            chunk_size = self.chunk_size,
+            last_index = self.last_index,
+            "content_detector: processing content"
+        );
+
         while self.last_index + self.chunk_size <= self.history.len() {
             let chunk = self.chunk_at(self.last_index);
             let hash = Self::hash_chunk(&chunk);
             if self.check_chunk_loop(self.last_index, &chunk, &hash) {
+                debug!(
+                    chunk_preview = %chunk.chars().take(30).collect::<String>(),
+                    "content_detector: LOOP DETECTED!"
+                );
                 return true;
             }
             self.last_index = self.last_index.saturating_add(1);
@@ -151,7 +168,9 @@ impl ContentLoopDetector {
 
         let positions = self.chunk_stats.entry(hash.to_string()).or_default();
         positions.push(position);
-        if positions.len() < self.loop_threshold {
+
+        let occurrences = positions.len();
+        if occurrences < self.loop_threshold {
             return false;
         }
 
@@ -162,7 +181,21 @@ impl ContentLoopDetector {
         let avg_distance = total_distance / (self.loop_threshold - 1);
         let max_distance = self.chunk_size * self.max_distance_multiplier;
 
-        avg_distance <= max_distance
+        let is_loop = avg_distance <= max_distance;
+
+        if occurrences >= self.loop_threshold {
+            debug!(
+                hash_prefix = &hash[..8.min(hash.len())],
+                occurrences,
+                threshold = self.loop_threshold,
+                avg_distance,
+                max_distance,
+                is_loop,
+                "content_detector: chunk threshold check"
+            );
+        }
+
+        is_loop
     }
 }
 
