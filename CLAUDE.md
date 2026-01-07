@@ -10,16 +10,18 @@
 src/
 ├── main.rs                    # точка входа
 ├── lib.rs                     # библиотечный корень
-├── agent/
+├── agent/                     # ядро агента и логика выполнения
 │   ├── mod.rs
 │   ├── executor.rs
-│   ├── loop_detection/
+│   ├── loop_detection/        # детектирование зацикливаний
+│   │   ├── ...
+│   ├── skills/                # подсистема навыков (RAG/embeddings)
 │   │   ├── mod.rs
-│   │   ├── config.rs
-│   │   ├── content_detector.rs
-│   │   ├── llm_detector.rs
-│   │   ├── service.rs
-│   │   ├── tool_detector.rs
+│   │   ├── cache.rs
+│   │   ├── embeddings.rs
+│   │   ├── loader.rs
+│   │   ├── matcher.rs
+│   │   ├── registry.rs
 │   │   └── types.rs
 │   ├── session.rs
 │   ├── memory.rs
@@ -27,12 +29,9 @@ src/
 │   ├── progress.rs
 │   ├── provider.rs
 │   ├── registry.rs
-│   ├── hooks/
-│   │   ├── mod.rs
-│   │   ├── completion.rs
-│   │   ├── registry.rs
-│   │   └── types.rs
-│   └── providers/
+│   ├── hooks/                 # хуки выполнения (completion и др.)
+│   │   ├── ...
+│   └── providers/             # провайдеры инструментов (Sandbox, Tavily, и т.д.)
 │       ├── mod.rs
 │       ├── filehoster.rs
 │       ├── path.rs
@@ -40,39 +39,42 @@ src/
 │       ├── tavily.rs
 │       ├── todos.rs
 │       └── ytdlp.rs
-├── bot/
+├── bot/                       # логика Telegram-бота и хендлеры
 │   ├── mod.rs
 │   ├── handlers.rs
 │   ├── agent_handlers.rs
 │   ├── state.rs
 │   └── unauthorized_cache.rs
-├── llm/
+├── llm/                       # интеграции с провайдерами LLM
 │   ├── mod.rs
 │   ├── common.rs
 │   ├── providers.rs
 │   ├── openai_compat.rs
 │   └── http_utils.rs
-├── sandbox/
+├── sandbox/                   # управление изолированной средой
 │   ├── mod.rs
 │   └── manager.rs
 ├── storage.rs
 ├── config.rs
 └── utils.rs
 
-tests/
-├── cancellation_respected.rs
-├── agent_xml_leak_prevention.rs
-└── integration_validation.rs
+backlog/                      # документация, планы и чертежи
+├── BLUEPRINT.md               # основной план развития проекта
+└── docs/                      # подробные спецификации компонентов
 
-sandbox/
+skills/                       # определения навыков в формате markdown
+
+tests/                        # интеграционные и функциональные тесты
+
+sandbox/                      # конфигурация Docker для песочницы
 └── Dockerfile.sandbox
 
-.github/
+.github/                      # CI/CD конфигурация
 └── workflows/
     └── ci-cd.yml
 
-AGENT.md
-Dockerfile
+AGENTS.md                     # описание ролей и возможностей агентов
+Dockerfile                     # Dockerfile основного приложения
 docker-compose.yml
 ```
 

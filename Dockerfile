@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/another-chat-rs /app/another-chat-rs
-COPY AGENT.md /app/AGENT.md
+#COPY AGENT.md /app/AGENT.md
 
 
 # Set environment variables
