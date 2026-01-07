@@ -160,11 +160,3 @@ pub async fn sync_todos_from_arc(session: &mut AgentSession, todos_arc: &Arc<Mut
     session.memory.todos = (*current_todos).clone();
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_tool_bridge_module_exists() {
-        // Basic test to ensure module compiles
-        assert!(true);
-    }
-}

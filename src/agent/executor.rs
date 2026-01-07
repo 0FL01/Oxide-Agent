@@ -691,14 +691,4 @@ impl AgentExecutor {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    // All recovery-related tests have been moved to recovery.rs
-    // Only executor-specific tests remain here
-
-    #[test]
-    fn test_executor_module_exists() {
-        // Basic test to ensure module compiles
-        assert!(true);
-    }
-}
+// All tests have been moved to recovery.rs and other specific modules
