@@ -50,6 +50,10 @@ impl SkillRegistry {
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                warn!(
+                    skills_dir = %skills_dir.display(),
+                    "Skills directory not found, skill system will be inactive"
+                );
                 return Ok(None);
             }
             Err(err) => {
@@ -60,11 +64,22 @@ impl SkillRegistry {
             }
         }
 
-        let loader = SkillLoader::new(skills_dir);
+        let loader = SkillLoader::new(skills_dir.clone());
         let metadata = loader.load_all_metadata()?;
         if metadata.is_empty() {
+            warn!(
+                skills_dir = %skills_dir.display(),
+                "Skills directory exists but contains no valid skill definitions"
+            );
             return Ok(None);
         }
+
+        info!(
+            skills_count = metadata.len(),
+            skills_dir = %skills_dir.display(),
+            skills = ?metadata.iter().map(|m| &m.name).collect::<Vec<_>>(),
+            "Skill registry initialized"
+        );
 
         let matcher = SkillMatcher::new(config.semantic_threshold, config.max_selected);
         let embeddings = EmbeddingService::new(llm_client, &config);
