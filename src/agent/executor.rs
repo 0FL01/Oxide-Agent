@@ -244,22 +244,14 @@ impl AgentExecutor {
     /// - "execute_command<command>ls -la</command>"
     ///
     /// BUGFIX AGENT-2026-001: Extended to support ytdlp tools
-    #[allow(clippy::too_many_lines)]
     fn try_parse_malformed_tool_call(content: &str) -> Option<ToolCall> {
-        use lazy_regex::regex;
-        use uuid::Uuid;
-
-        // List of known tool names to look for
-        let tool_names = [
+        const TOOL_NAMES: [&str; 11] = [
             "read_file",
             "write_file",
             "execute_command",
-            "web_search",
-            "web_extract",
             "list_files",
             "send_file_to_user",
             "upload_file",
-            "write_todos",
             // BUGFIX AGENT-2026-001: Add ytdlp tools to malformed call recovery
             "ytdlp_get_video_metadata",
             "ytdlp_download_transcript",
@@ -268,169 +260,160 @@ impl AgentExecutor {
             "ytdlp_download_audio",
         ];
 
-        // Try to find a tool name in the content
-        for tool_name in &tool_names {
+        for tool_name in TOOL_NAMES {
             if !content.contains(tool_name) {
                 continue;
             }
 
-            // Try different patterns to extract arguments
-            let arguments = match *tool_name {
-                "read_file" => {
-                    // Pattern: read_file<filepath>PATH</filepath> or read_filePATH</tool_call>
-                    if let Some(caps) = regex!(r"read_file.*?<filepath>(.*?)</").captures(content) {
-                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) =
-                        regex!(r"read_file(?:path)?([^\s<]+)").captures(content)
-                    {
-                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                "write_file" => {
-                    // Pattern: write_file<filepath>PATH</filepath><content>CONTENT</content>
-                    let filepath = regex!(r"<filepath>(.*?)</")
-                        .captures(content)
-                        .and_then(|c| c.get(1))
-                        .map(|m| m.as_str())
-                        .unwrap_or("");
-                    let file_content = regex!(r"<content>(.*?)</")
-                        .captures(content)
-                        .and_then(|c| c.get(1))
-                        .map(|m| m.as_str())
-                        .unwrap_or("");
-
-                    if !filepath.is_empty() {
-                        serde_json::json!({"path": filepath, "content": file_content})
-                    } else {
-                        continue;
-                    }
-                }
-                "execute_command" => {
-                    // Pattern: execute_command<command>CMD</command>
-                    if let Some(caps) = regex!(r"<command>(.*?)</").captures(content) {
-                        serde_json::json!({"command": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) =
-                        regex!(r"execute_command(?:command)?([^\s<]+)").captures(content)
-                    {
-                        serde_json::json!({"command": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                "list_files" => {
-                    // Pattern: list_files<directory>PATH</directory>
-                    if let Some(caps) = regex!(r"<directory>(.*?)</").captures(content) {
-                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        // Default to current directory
-                        serde_json::json!({"path": ""})
-                    }
-                }
-                "send_file_to_user" => {
-                    // Pattern: send_file_to_user<filepath>PATH</filepath> or send_file_to_user<path>PATH</path>
-                    if let Some(caps) = regex!(r"<filepath>(.*?)</").captures(content) {
-                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) = regex!(r"<path>(.*?)</").captures(content) {
-                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                "upload_file" => {
-                    // Pattern: upload_file<filepath>PATH</filepath> or upload_file<path>PATH</path>
-                    if let Some(caps) = regex!(r"<filepath>(.*?)</").captures(content) {
-                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) = regex!(r"<path>(.*?)</").captures(content) {
-                        serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                // BUGFIX AGENT-2026-001: Add ytdlp tool recovery patterns
-                "ytdlp_get_video_metadata" => {
-                    // Pattern: ytdlp_get_video_metadata<url>URL</url> or ytdlp_get_video_metadataurl...
-                    if let Some(caps) = regex!(r"<url>(.*?)</").captures(content) {
-                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) =
-                        regex!(r"ytdlp_get_video_metadata(?:url)?([^\s<]+)").captures(content)
-                    {
-                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                "ytdlp_download_transcript" => {
-                    // Pattern: ytdlp_download_transcript<url>URL</url> or ytdlp_download_transcripturl...
-                    if let Some(caps) = regex!(r"<url>(.*?)</").captures(content) {
-                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) =
-                        regex!(r"ytdlp_download_transcript(?:url)?([^\s<]+)").captures(content)
-                    {
-                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                "ytdlp_search_videos" => {
-                    // Pattern: ytdlp_search_videos<query>QUERY</query> or ytdlp_search_videosquery...
-                    if let Some(caps) = regex!(r"<query>(.*?)</").captures(content) {
-                        serde_json::json!({"query": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) =
-                        regex!(r"ytdlp_search_videos(?:query)?([^\s<]+)").captures(content)
-                    {
-                        serde_json::json!({"query": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                "ytdlp_download_video" => {
-                    // Pattern: ytdlp_download_video<url>URL</url> or ytdlp_download_videourl...
-                    if let Some(caps) = regex!(r"<url>(.*?)</").captures(content) {
-                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) =
-                        regex!(r"ytdlp_download_video(?:url)?([^\s<]+)").captures(content)
-                    {
-                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                "ytdlp_download_audio" => {
-                    // Pattern: ytdlp_download_audio<url>URL</url> or ytdlp_download_audiourl...
-                    if let Some(caps) = regex!(r"<url>(.*?)</").captures(content) {
-                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else if let Some(caps) =
-                        regex!(r"ytdlp_download_audio(?:url)?([^\s<]+)").captures(content)
-                    {
-                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
-                    } else {
-                        continue;
-                    }
-                }
-                _ => continue,
+            let Some(arguments) = Self::extract_malformed_tool_arguments(tool_name, content) else {
+                continue;
             };
 
-            // Construct a valid ToolCall
-            let arguments_str = serde_json::to_string(&arguments).ok()?;
-
-            warn!(
-                tool_name = tool_name,
-                arguments = %arguments_str,
-                "Recovered malformed tool call from content"
-            );
-
-            return Some(ToolCall {
-                id: format!("recovered_{}", Uuid::new_v4()),
-                function: ToolCallFunction {
-                    name: tool_name.to_string(),
-                    arguments: arguments_str,
-                },
-            });
+            return Self::build_recovered_tool_call(tool_name, arguments);
         }
 
         None
+    }
+
+    fn extract_malformed_tool_arguments(tool_name: &str, content: &str) -> Option<Value> {
+        match tool_name {
+            "read_file" => Self::extract_read_file_arguments(content),
+            "write_file" => Self::extract_write_file_arguments(content),
+            "execute_command" => Self::extract_execute_command_arguments(content),
+            "list_files" => Self::extract_list_files_arguments(content),
+            "send_file_to_user" => Self::extract_send_file_to_user_arguments(content),
+            "upload_file" => Self::extract_upload_file_arguments(content),
+            "ytdlp_get_video_metadata" => Self::extract_ytdlp_url_arguments(content, tool_name),
+            "ytdlp_download_transcript" => Self::extract_ytdlp_url_arguments(content, tool_name),
+            "ytdlp_search_videos" => Self::extract_ytdlp_search_arguments(content),
+            "ytdlp_download_video" => Self::extract_ytdlp_url_arguments(content, tool_name),
+            "ytdlp_download_audio" => Self::extract_ytdlp_url_arguments(content, tool_name),
+            _ => None,
+        }
+    }
+
+    fn build_recovered_tool_call(tool_name: &str, arguments: Value) -> Option<ToolCall> {
+        use uuid::Uuid;
+
+        let arguments_str = serde_json::to_string(&arguments).ok()?;
+
+        warn!(
+            tool_name = tool_name,
+            arguments = %arguments_str,
+            "Recovered malformed tool call from content"
+        );
+
+        Some(ToolCall {
+            id: format!("recovered_{}", Uuid::new_v4()),
+            function: ToolCallFunction {
+                name: tool_name.to_string(),
+                arguments: arguments_str,
+            },
+        })
+    }
+
+    fn extract_tag_value<'a>(content: &'a str, tag: &str) -> Option<&'a str> {
+        let open = format!("<{tag}>");
+        let start = content.find(&open)? + open.len();
+        let after_open = &content[start..];
+        let end = after_open.find("</").unwrap_or(after_open.len());
+        let value = after_open[..end].trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    }
+
+    fn extract_token_after_tool_name<'a>(
+        content: &'a str,
+        tool_name: &str,
+        optional_prefix: Option<&str>,
+    ) -> Option<&'a str> {
+        let idx = content.find(tool_name)?;
+        let mut after = &content[idx + tool_name.len()..];
+        after = after.trim_start();
+        if let Some(prefix) = optional_prefix {
+            after = after.strip_prefix(prefix).unwrap_or(after).trim_start();
+        }
+
+        let end = after
+            .char_indices()
+            .find(|(_, ch)| ch.is_whitespace() || *ch == '<')
+            .map_or(after.len(), |(i, _)| i);
+        let token = after[..end].trim();
+        if token.is_empty() {
+            None
+        } else {
+            Some(token)
+        }
+    }
+
+    fn extract_read_file_arguments(content: &str) -> Option<Value> {
+        if let Some(path) = Self::extract_tag_value(content, "filepath") {
+            return Some(serde_json::json!({ "path": path }));
+        }
+
+        Self::extract_token_after_tool_name(content, "read_file", Some("path"))
+            .map(|path| serde_json::json!({ "path": path }))
+    }
+
+    fn extract_write_file_arguments(content: &str) -> Option<Value> {
+        let path = Self::extract_tag_value(content, "filepath")?;
+        let file_content = Self::extract_tag_value(content, "content").unwrap_or("");
+        Some(serde_json::json!({ "path": path, "content": file_content }))
+    }
+
+    fn extract_execute_command_arguments(content: &str) -> Option<Value> {
+        if let Some(command) = Self::extract_tag_value(content, "command") {
+            return Some(serde_json::json!({ "command": command }));
+        }
+
+        Self::extract_token_after_tool_name(content, "execute_command", Some("command"))
+            .map(|command| serde_json::json!({ "command": command }))
+    }
+
+    fn extract_list_files_arguments(content: &str) -> Option<Value> {
+        let path = Self::extract_tag_value(content, "directory").unwrap_or("");
+        Some(serde_json::json!({ "path": path }))
+    }
+
+    fn extract_send_file_to_user_arguments(content: &str) -> Option<Value> {
+        if let Some(path) = Self::extract_tag_value(content, "filepath")
+            .or_else(|| Self::extract_tag_value(content, "path"))
+        {
+            return Some(serde_json::json!({ "path": path }));
+        }
+
+        None
+    }
+
+    fn extract_upload_file_arguments(content: &str) -> Option<Value> {
+        if let Some(path) = Self::extract_tag_value(content, "filepath")
+            .or_else(|| Self::extract_tag_value(content, "path"))
+        {
+            return Some(serde_json::json!({ "path": path }));
+        }
+
+        None
+    }
+
+    fn extract_ytdlp_url_arguments(content: &str, tool_name: &str) -> Option<Value> {
+        if let Some(url) = Self::extract_tag_value(content, "url") {
+            return Some(serde_json::json!({ "url": url }));
+        }
+
+        Self::extract_token_after_tool_name(content, tool_name, Some("url"))
+            .map(|url| serde_json::json!({ "url": url }))
+    }
+
+    fn extract_ytdlp_search_arguments(content: &str) -> Option<Value> {
+        if let Some(query) = Self::extract_tag_value(content, "query") {
+            return Some(serde_json::json!({ "query": query }));
+        }
+
+        Self::extract_token_after_tool_name(content, "ytdlp_search_videos", Some("query"))
+            .map(|query| serde_json::json!({ "query": query }))
     }
 
     /// Execute a task with iterative tool calling (agentic loop)
