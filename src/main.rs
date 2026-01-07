@@ -252,7 +252,7 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
             Update::filter_callback_query()
                 .filter(|q: CallbackQuery, settings: Arc<Settings>| {
                     settings
-                        .allowed_users()
+                        .agent_allowed_users()
                         .contains(&q.from.id.0.cast_signed())
                 })
                 .endpoint(handle_loop_callback),
