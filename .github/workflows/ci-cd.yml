@@ -26,6 +26,16 @@ jobs:
       R2_SECRET_ACCESS_KEY: dummy
       R2_BUCKET_NAME: dummy
       ZAI_API_KEY: dummy
+      LOOP_DETECTION_ENABLED: "true"
+      LOOP_TOOL_CALL_THRESHOLD: "5"
+      LOOP_CONTENT_CHUNK_SIZE: "50"
+      LOOP_CONTENT_THRESHOLD: "10"
+      LOOP_MAX_HISTORY_LENGTH: "5000"
+      LOOP_LLM_CHECK_AFTER_TURNS: "30"
+      LOOP_LLM_CHECK_INTERVAL: "3"
+      LOOP_LLM_CONFIDENCE_THRESHOLD: "0.9"
+      LOOP_LLM_HISTORY_COUNT: "20"
+      LOOP_SCOUT_MODEL: labs-devstral-small-2512
 
     steps:
       - name: Checkout code
@@ -95,6 +105,16 @@ jobs:
           OPENROUTER_SITE_URL: ${{ secrets.OPENROUTER_SITE_URL }}
           OPENROUTER_SITE_NAME: ${{ secrets.OPENROUTER_SITE_NAME }}
           SYSTEM_MESSAGE: ${{ secrets.SYSTEM_MESSAGE }}
+          LOOP_DETECTION_ENABLED: ${{ secrets.LOOP_DETECTION_ENABLED || 'true' }}
+          LOOP_TOOL_CALL_THRESHOLD: ${{ secrets.LOOP_TOOL_CALL_THRESHOLD || '5' }}
+          LOOP_CONTENT_CHUNK_SIZE: ${{ secrets.LOOP_CONTENT_CHUNK_SIZE || '50' }}
+          LOOP_CONTENT_THRESHOLD: ${{ secrets.LOOP_CONTENT_THRESHOLD || '10' }}
+          LOOP_MAX_HISTORY_LENGTH: ${{ secrets.LOOP_MAX_HISTORY_LENGTH || '5000' }}
+          LOOP_LLM_CHECK_AFTER_TURNS: ${{ secrets.LOOP_LLM_CHECK_AFTER_TURNS || '30' }}
+          LOOP_LLM_CHECK_INTERVAL: ${{ secrets.LOOP_LLM_CHECK_INTERVAL || '3' }}
+          LOOP_LLM_CONFIDENCE_THRESHOLD: ${{ secrets.LOOP_LLM_CONFIDENCE_THRESHOLD || '0.9' }}
+          LOOP_LLM_HISTORY_COUNT: ${{ secrets.LOOP_LLM_HISTORY_COUNT || '20' }}
+          LOOP_SCOUT_MODEL: ${{ secrets.LOOP_SCOUT_MODEL || 'labs-devstral-small-2512' }}
         run: cargo test --test integration_validation -- --ignored --nocapture
 
   deploy:
@@ -145,12 +165,22 @@ jobs:
           OPENROUTER_SITE_URL: ${{ secrets.OPENROUTER_SITE_URL }}
           OPENROUTER_SITE_NAME: ${{ secrets.OPENROUTER_SITE_NAME }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          LOOP_DETECTION_ENABLED: ${{ secrets.LOOP_DETECTION_ENABLED }}
+          LOOP_TOOL_CALL_THRESHOLD: ${{ secrets.LOOP_TOOL_CALL_THRESHOLD }}
+          LOOP_CONTENT_CHUNK_SIZE: ${{ secrets.LOOP_CONTENT_CHUNK_SIZE }}
+          LOOP_CONTENT_THRESHOLD: ${{ secrets.LOOP_CONTENT_THRESHOLD }}
+          LOOP_MAX_HISTORY_LENGTH: ${{ secrets.LOOP_MAX_HISTORY_LENGTH }}
+          LOOP_LLM_CHECK_AFTER_TURNS: ${{ secrets.LOOP_LLM_CHECK_AFTER_TURNS }}
+          LOOP_LLM_CHECK_INTERVAL: ${{ secrets.LOOP_LLM_CHECK_INTERVAL }}
+          LOOP_LLM_CONFIDENCE_THRESHOLD: ${{ secrets.LOOP_LLM_CONFIDENCE_THRESHOLD }}
+          LOOP_LLM_HISTORY_COUNT: ${{ secrets.LOOP_LLM_HISTORY_COUNT }}
+          LOOP_SCOUT_MODEL: ${{ secrets.LOOP_SCOUT_MODEL }}
         with:
           host: ${{ secrets.SSH_HOST }}
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: GROQ_API_KEY,TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,GEMINI_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,SYSTEM_MESSAGE,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_ENDPOINT_URL,R2_BUCKET_NAME,OPENROUTER_SITE_URL,OPENROUTER_SITE_NAME,TAVILY_API_KEY
+          envs: GROQ_API_KEY,TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,GEMINI_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,SYSTEM_MESSAGE,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_ENDPOINT_URL,R2_BUCKET_NAME,OPENROUTER_SITE_URL,OPENROUTER_SITE_NAME,TAVILY_API_KEY,LOOP_DETECTION_ENABLED,LOOP_TOOL_CALL_THRESHOLD,LOOP_CONTENT_CHUNK_SIZE,LOOP_CONTENT_THRESHOLD,LOOP_MAX_HISTORY_LENGTH,LOOP_LLM_CHECK_AFTER_TURNS,LOOP_LLM_CHECK_INTERVAL,LOOP_LLM_CONFIDENCE_THRESHOLD,LOOP_LLM_HISTORY_COUNT,LOOP_SCOUT_MODEL
           timeout: 60s
           command_timeout: 30m
           script: |
@@ -180,6 +210,16 @@ jobs:
             printf "OPENROUTER_SITE_URL=%s\n" "$OPENROUTER_SITE_URL" >> .env
             printf "OPENROUTER_SITE_NAME=%s\n" "$OPENROUTER_SITE_NAME" >> .env
             printf "TAVILY_API_KEY=%s\n" "$TAVILY_API_KEY" >> .env
+            printf "LOOP_DETECTION_ENABLED=%s\n" "${LOOP_DETECTION_ENABLED:-true}" >> .env
+            printf "LOOP_TOOL_CALL_THRESHOLD=%s\n" "${LOOP_TOOL_CALL_THRESHOLD:-5}" >> .env
+            printf "LOOP_CONTENT_CHUNK_SIZE=%s\n" "${LOOP_CONTENT_CHUNK_SIZE:-50}" >> .env
+            printf "LOOP_CONTENT_THRESHOLD=%s\n" "${LOOP_CONTENT_THRESHOLD:-10}" >> .env
+            printf "LOOP_MAX_HISTORY_LENGTH=%s\n" "${LOOP_MAX_HISTORY_LENGTH:-5000}" >> .env
+            printf "LOOP_LLM_CHECK_AFTER_TURNS=%s\n" "${LOOP_LLM_CHECK_AFTER_TURNS:-30}" >> .env
+            printf "LOOP_LLM_CHECK_INTERVAL=%s\n" "${LOOP_LLM_CHECK_INTERVAL:-3}" >> .env
+            printf "LOOP_LLM_CONFIDENCE_THRESHOLD=%s\n" "${LOOP_LLM_CONFIDENCE_THRESHOLD:-0.9}" >> .env
+            printf "LOOP_LLM_HISTORY_COUNT=%s\n" "${LOOP_LLM_HISTORY_COUNT:-20}" >> .env
+            printf "LOOP_SCOUT_MODEL=%s\n" "${LOOP_SCOUT_MODEL:-labs-devstral-small-2512}" >> .env
             echo ".env file created."
 
             # Create docker-compose.yml
@@ -220,5 +260,3 @@ jobs:
             else
               echo "Warning: sandbox directory not found, skipping sandbox image build."
             end
-
-
