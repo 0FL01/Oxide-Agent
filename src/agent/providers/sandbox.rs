@@ -12,17 +12,27 @@ use serde::Deserialize;
 use serde_json::json;
 use shell_escape::escape;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use super::path::resolve_file_path;
 
+const TELEGRAM_MAX_FILE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
+const TELEGRAM_DELIVERY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Provider for Docker sandbox tools
 pub struct SandboxProvider {
     sandbox: Arc<Mutex<Option<SandboxManager>>>,
     user_id: i64,
     progress_tx: Option<Sender<AgentEvent>>,
+}
+
+struct FileDeliveryRequest {
+    file_name: String,
+    content: Vec<u8>,
+    sandbox_path: String,
 }
 
 impl SandboxProvider {
@@ -67,6 +77,76 @@ impl SandboxProvider {
 
         *self.sandbox.lock().await = Some(sandbox);
         Ok(())
+    }
+
+    async fn deliver_file_via_telegram(&self, request: FileDeliveryRequest) -> String {
+        let FileDeliveryRequest {
+            file_name,
+            content,
+            sandbox_path,
+        } = request;
+
+        if content.is_empty() {
+            return format!(
+                "❌ ОШИБКА: Файл '{file_name}' пуст (0 байт) и не может быть отправлен в Telegram.\n\
+                 Путь в песочнице: {sandbox_path}"
+            );
+        }
+
+        let size_mb = content.len() as f64 / 1024.0 / 1024.0;
+
+        let Some(ref tx) = self.progress_tx else {
+            warn!(file_name = %file_name, "Progress channel not available");
+            return format!(
+                "⚠️ Файл '{file_name}' прочитан ({size_mb:.2} MB), но канал отправки недоступен.\n\
+                 Путь в песочнице: {sandbox_path}"
+            );
+        };
+
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+        if let Err(e) = tx
+            .send(AgentEvent::FileToSendWithConfirmation {
+                file_name: file_name.clone(),
+                content,
+                sandbox_path: sandbox_path.clone(),
+                confirmation_tx: confirm_tx,
+            })
+            .await
+        {
+            warn!(file_name = %file_name, error = %e, "Failed to send FileToSendWithConfirmation event");
+            return format!(
+                "⚠️ Файл '{file_name}' прочитан ({size_mb:.2} MB), но не удалось поставить в очередь на отправку: {e}\n\
+                 Путь в песочнице: {sandbox_path}"
+            );
+        }
+
+        match tokio::time::timeout(TELEGRAM_DELIVERY_CONFIRMATION_TIMEOUT, confirm_rx).await {
+            Ok(Ok(Ok(()))) => {
+                info!(file_name = %file_name, sandbox_path = %sandbox_path, "File delivered successfully");
+                format!("✅ Файл '{file_name}' доставлен пользователю")
+            }
+            Ok(Ok(Err(e))) => {
+                warn!(file_name = %file_name, error = %e, "File delivery failed");
+                format!(
+                    "❌ Не удалось отправить файл '{file_name}' пользователю через Telegram: {e}\n\
+                     Путь в песочнице: {sandbox_path}"
+                )
+            }
+            Ok(Err(_)) => {
+                warn!(file_name = %file_name, "Confirmation channel closed unexpectedly");
+                format!(
+                    "⚠️ Статус доставки файла '{file_name}' неизвестен (канал подтверждения закрыт).\n\
+                     Путь в песочнице: {sandbox_path}"
+                )
+            }
+            Err(_) => {
+                warn!(file_name = %file_name, "File delivery confirmation timeout");
+                format!(
+                    "⚠️ Таймаут ожидания доставки файла '{file_name}' (2 минуты).\n\
+                     Путь в песочнице: {sandbox_path}"
+                )
+            }
+        }
     }
 
     async fn handle_execute_command(
@@ -143,7 +223,13 @@ impl SandboxProvider {
             }
         };
 
-        const TELEGRAM_MAX_FILE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
+        if file_size == 0 {
+            return Ok(format!(
+                "❌ ОШИБКА: Файл '{file_name}' пуст (0 байт) и не может быть отправлен в Telegram.\n\
+                 Путь в песочнице: {resolved_path}"
+            ));
+        }
+
         if file_size > TELEGRAM_MAX_FILE_SIZE_BYTES {
             return Ok(
                 "⚠️ ОШИБКА: Файл слишком велик для Telegram (>50 МБ). Пожалуйста, используйте инструмент upload_file, чтобы загрузить его в облако."
@@ -153,31 +239,14 @@ impl SandboxProvider {
 
         match sandbox.download_file(&resolved_path).await {
             Ok(content) => {
-                if let Some(ref tx) = self.progress_tx {
-                    match tx
-                        .send(AgentEvent::FileToSend {
-                            file_name: file_name.clone(),
-                            content,
-                        })
-                        .await
-                    {
-                        Ok(()) => {
-                            info!(file_name = %file_name, resolved_path = %resolved_path, "File sent successfully");
-                            Ok(format!("✅ Файл '{file_name}' отправлен пользователю"))
-                        }
-                        Err(e) => {
-                            warn!(file_name = %file_name, error = %e, "Failed to send FileToSend event");
-                            Ok(format!(
-                                "⚠️ Файл '{file_name}' прочитан из песочницы, но не удалось отправить: {e}"
-                            ))
-                        }
-                    }
-                } else {
-                    warn!(file_name = %file_name, "Progress channel not available");
-                    Ok(format!(
-                        "⚠️ Файл '{file_name}' прочитан, но канал отправки недоступен"
-                    ))
-                }
+                let message = self
+                    .deliver_file_via_telegram(FileDeliveryRequest {
+                        file_name: file_name.clone(),
+                        content,
+                        sandbox_path: resolved_path.clone(),
+                    })
+                    .await;
+                Ok(message)
             }
             Err(e) => {
                 error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
@@ -227,6 +296,99 @@ impl SandboxProvider {
             }
             Err(e) => Ok(format!("❌ Ошибка выполнения команды: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deliver_file_returns_success_only_after_confirmation() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(1);
+        let provider = SandboxProvider::new(1).with_progress_tx(tx);
+
+        tokio::spawn(async move {
+            if let Some(AgentEvent::FileToSendWithConfirmation {
+                confirmation_tx, ..
+            }) = rx.recv().await
+            {
+                let _ = confirmation_tx.send(Ok(()));
+            }
+        });
+
+        let result = provider
+            .deliver_file_via_telegram(FileDeliveryRequest {
+                file_name: "ok.txt".to_string(),
+                content: b"hello".to_vec(),
+                sandbox_path: "/workspace/ok.txt".to_string(),
+            })
+            .await;
+
+        assert!(result.starts_with("✅"), "unexpected result: {result}");
+    }
+
+    #[tokio::test]
+    async fn deliver_file_propagates_telegram_error_to_agent() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(1);
+        let provider = SandboxProvider::new(1).with_progress_tx(tx);
+
+        tokio::spawn(async move {
+            if let Some(AgentEvent::FileToSendWithConfirmation {
+                confirmation_tx, ..
+            }) = rx.recv().await
+            {
+                let _ =
+                    confirmation_tx.send(Err("Bad Request: file must be non-empty".to_string()));
+            }
+        });
+
+        let result = provider
+            .deliver_file_via_telegram(FileDeliveryRequest {
+                file_name: "empty.txt".to_string(),
+                content: b"x".to_vec(),
+                sandbox_path: "/workspace/empty.txt".to_string(),
+            })
+            .await;
+
+        assert!(result.starts_with("❌"), "unexpected result: {result}");
+        assert!(
+            result.contains("Bad Request: file must be non-empty"),
+            "missing telegram error in: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_file_fails_when_queue_is_unavailable() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(1);
+        drop(rx);
+
+        let provider = SandboxProvider::new(1).with_progress_tx(tx);
+        let result = provider
+            .deliver_file_via_telegram(FileDeliveryRequest {
+                file_name: "file.txt".to_string(),
+                content: b"hello".to_vec(),
+                sandbox_path: "/workspace/file.txt".to_string(),
+            })
+            .await;
+
+        assert!(!result.starts_with("✅"), "unexpected result: {result}");
+        assert!(result.starts_with("⚠️"), "unexpected result: {result}");
+    }
+
+    #[tokio::test]
+    async fn deliver_file_rejects_empty_content() {
+        let provider = SandboxProvider::new(1);
+        let result = provider
+            .deliver_file_via_telegram(FileDeliveryRequest {
+                file_name: "empty.bin".to_string(),
+                content: Vec::new(),
+                sandbox_path: "/workspace/empty.bin".to_string(),
+            })
+            .await;
+
+        assert!(result.starts_with("❌"), "unexpected result: {result}");
+        assert!(result.contains("0 байт"), "unexpected result: {result}");
     }
 }
 
