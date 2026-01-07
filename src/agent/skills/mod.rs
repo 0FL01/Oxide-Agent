@@ -124,7 +124,7 @@ impl SkillConfig {
             max_selected,
             cache_ttl,
             embedding_model: crate::config::get_mistral_embed_model(),
-            embedding_dimension: crate::config::EMBEDDING_DIMENSION,
+            embedding_dimension: crate::config::get_embedding_dimension(),
             max_loaded_skills,
         }
     }

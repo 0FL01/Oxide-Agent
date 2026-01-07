@@ -144,7 +144,11 @@ impl EmbeddingService {
             SkillError::EmbeddingCache(format!("failed to parse {}: {err}", path.display()))
         })?;
 
-        self.ensure_dimension(&entry.embedding)?;
+        if let Err(err) = self.ensure_dimension(&entry.embedding) {
+            warn!(skill = %skill_name, ?err, "Cached embedding dimension mismatch, ignoring cache");
+            return Ok(None);
+        }
+
         self.in_memory
             .insert(skill_name.to_string(), entry.embedding.clone());
 
