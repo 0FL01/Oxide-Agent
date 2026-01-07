@@ -8,63 +8,72 @@
 
 ```
 src/
-├── main.rs                    # Точка входа, инициализация и запуск бота
-├── lib.rs                     # Корень библиотеки, экспорт модулей
-├── agent/                     # Логика режима Агента
+├── main.rs
+├── lib.rs
+├── agent/
 │   ├── mod.rs
-│   ├── session.rs             # Сессия агента
-│   ├── executor.rs            # Исполнитель команд
-│   ├── memory.rs              # Память агента (персистенция в R2)
-│   ├── preprocessor.rs        # Препроцессинг сообщений
-│   ├── progress.rs            # Отслеживание прогресса задач
-│   ├── provider.rs            # Трейт ToolProvider
-│   ├── registry.rs            # Реестр ToolRegistry
-│   ├── hooks/                 # Хуки выполнения
+│   ├── executor.rs
+│   ├── loop_detection/
+│   │   ├── mod.rs
+│   │   ├── config.rs
+│   │   ├── content_detector.rs
+│   │   ├── llm_detector.rs
+│   │   ├── service.rs
+│   │   ├── tool_detector.rs
+│   │   └── types.rs
+│   ├── session.rs
+│   ├── memory.rs
+│   ├── preprocessor.rs
+│   ├── progress.rs
+│   ├── provider.rs
+│   ├── registry.rs
+│   ├── hooks/
 │   │   ├── mod.rs
 │   │   ├── completion.rs
 │   │   ├── registry.rs
 │   │   └── types.rs
-│   └── providers/             # Реализации инструментов
+│   └── providers/
 │       ├── mod.rs
-│       ├── filehoster.rs      # GoFile-интеграция (upload_file)
-│       ├── path.rs            # Вспомогательные функции для путей
+│       ├── filehoster.rs
+│       ├── path.rs
 │       ├── sandbox.rs
 │       ├── tavily.rs
 │       ├── todos.rs
-│       └── ytdlp.rs           # YT-DLP провайдер (YouTube, видео-платформы)
-├── bot/                       # Telegram-бот
+│       └── ytdlp.rs
+├── bot/
 │   ├── mod.rs
-│   ├── handlers.rs            # Обработчики команд и сообщений
-│   ├── agent_handlers.rs      # Обработчики режима Агента
-│   ├── state.rs               # Состояние пользователя
-│   └── unauthorized_cache.rs  # Защита от флуда неавторизованных
-├── llm/                       # Провайдеры LLM
+│   ├── handlers.rs
+│   ├── agent_handlers.rs
+│   ├── state.rs
+│   └── unauthorized_cache.rs
+├── llm/
 │   ├── mod.rs
 │   ├── common.rs
-│   ├── providers.rs           # Традиционные провайдеры (Groq, Gemini, etc)
-│   ├── openai_compat.rs       # OpenAI-совместимый интерфейс
-│   └── http_utils.rs          # HTTP-утилиты
-├── sandbox/                   # Менеджер песочницы (Docker)
+│   ├── providers.rs
+│   ├── openai_compat.rs
+│   └── http_utils.rs
+├── sandbox/
 │   ├── mod.rs
 │   └── manager.rs
-├── storage.rs                 # Слой хранения (S3/R2)
-├── config.rs                  # Конфигурация
-└── utils.rs                   # Утилиты
+├── storage.rs
+├── config.rs
+└── utils.rs
 
 tests/
-├── cancellation_respected.rs   # Тесты корректной работы отмены
-├── agent_xml_leak_prevention.rs # Тесты защиты от утечек XML
-└── integration_validation.rs    # Интеграционные тесты
+├── cancellation_respected.rs
+├── agent_xml_leak_prevention.rs
+└── integration_validation.rs
 
 sandbox/
-└── Dockerfile.sandbox         # Docker-образ песочницы
+└── Dockerfile.sandbox
 
 .github/
 └── workflows/
-    └── ci-cd.yml              # CI/CD пайплайн
+    └── ci-cd.yml
 
-Dockerfile                     # Docker-образ приложения
-docker-compose.yml             # Docker Compose конфигурация
+AGENT.md
+Dockerfile
+docker-compose.yml
 ```
 
 ## 🦀 Rust Coding Guidelines
