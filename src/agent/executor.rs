@@ -23,9 +23,9 @@ use tracing::{debug, error, info, instrument, warn};
 /// This removes any XML-like tags that may have leaked from malformed LLM responses.
 /// Examples: `<tool_call>`, `</tool_call>`, `<filepath>`, `<arg_key>`, etc.
 ///
-/// This function is public within the crate to allow reuse in progress tracking,
+/// This function is public to allow reuse in integration tests, progress tracking,
 /// todo descriptions, and other agent components that need protection from XML leaks.
-pub(crate) fn sanitize_xml_tags(text: &str) -> String {
+pub fn sanitize_xml_tags(text: &str) -> String {
     use lazy_regex::regex;
 
     // Pattern to match opening and closing XML tags: <tag_name> or </tag_name>
@@ -242,6 +242,9 @@ impl AgentExecutor {
     /// - "read_file<filepath>/workspace/docker-compose.yml</tool_call>"
     /// - "[Вызов инструментов: read_file]read_filepath..."
     /// - "execute_command<command>ls -la</command>"
+    ///
+    /// BUGFIX AGENT-2026-001: Extended to support ytdlp tools
+    #[allow(clippy::too_many_lines)]
     fn try_parse_malformed_tool_call(content: &str) -> Option<ToolCall> {
         use lazy_regex::regex;
         use uuid::Uuid;
@@ -257,6 +260,12 @@ impl AgentExecutor {
             "send_file_to_user",
             "upload_file",
             "write_todos",
+            // BUGFIX AGENT-2026-001: Add ytdlp tools to malformed call recovery
+            "ytdlp_get_video_metadata",
+            "ytdlp_download_transcript",
+            "ytdlp_search_videos",
+            "ytdlp_download_video",
+            "ytdlp_download_audio",
         ];
 
         // Try to find a tool name in the content
@@ -335,6 +344,67 @@ impl AgentExecutor {
                         serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
                     } else if let Some(caps) = regex!(r"<path>(.*?)</").captures(content) {
                         serde_json::json!({"path": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                // BUGFIX AGENT-2026-001: Add ytdlp tool recovery patterns
+                "ytdlp_get_video_metadata" => {
+                    // Pattern: ytdlp_get_video_metadata<url>URL</url> or ytdlp_get_video_metadataurl...
+                    if let Some(caps) = regex!(r"<url>(.*?)</").captures(content) {
+                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) =
+                        regex!(r"ytdlp_get_video_metadata(?:url)?([^\s<]+)").captures(content)
+                    {
+                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                "ytdlp_download_transcript" => {
+                    // Pattern: ytdlp_download_transcript<url>URL</url> or ytdlp_download_transcripturl...
+                    if let Some(caps) = regex!(r"<url>(.*?)</").captures(content) {
+                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) =
+                        regex!(r"ytdlp_download_transcript(?:url)?([^\s<]+)").captures(content)
+                    {
+                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                "ytdlp_search_videos" => {
+                    // Pattern: ytdlp_search_videos<query>QUERY</query> or ytdlp_search_videosquery...
+                    if let Some(caps) = regex!(r"<query>(.*?)</").captures(content) {
+                        serde_json::json!({"query": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) =
+                        regex!(r"ytdlp_search_videos(?:query)?([^\s<]+)").captures(content)
+                    {
+                        serde_json::json!({"query": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                "ytdlp_download_video" => {
+                    // Pattern: ytdlp_download_video<url>URL</url> or ytdlp_download_videourl...
+                    if let Some(caps) = regex!(r"<url>(.*?)</").captures(content) {
+                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) =
+                        regex!(r"ytdlp_download_video(?:url)?([^\s<]+)").captures(content)
+                    {
+                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else {
+                        continue;
+                    }
+                }
+                "ytdlp_download_audio" => {
+                    // Pattern: ytdlp_download_audio<url>URL</url> or ytdlp_download_audiourl...
+                    if let Some(caps) = regex!(r"<url>(.*?)</").captures(content) {
+                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
+                    } else if let Some(caps) =
+                        regex!(r"ytdlp_download_audio(?:url)?([^\s<]+)").captures(content)
+                    {
+                        serde_json::json!({"url": caps.get(1).map(|m| m.as_str()).unwrap_or("")})
                     } else {
                         continue;
                     }
@@ -609,6 +679,51 @@ impl AgentExecutor {
         true
     }
 
+    /// Check if text looks like a malformed tool call attempt
+    ///
+    /// This detects patterns that indicate the LLM tried to call a tool but failed to use
+    /// proper JSON format. Examples:
+    /// - "[Вызов инструментов: ytdlp_get_video_metadataurl...]"
+    /// - "[Tool calls: read_file]read_filepath..."
+    /// - "ytdlp_download_videourl..."
+    fn looks_like_tool_call_text(text: &str) -> bool {
+        // Pattern 1: Explicit tool call markers in Russian or English
+        if text.contains("[Tool call") || text.contains("Tool calls:") {
+            return true;
+        }
+
+        // Check for Russian markers
+        if text.contains("Вызов инструмент") {
+            return true;
+        }
+
+        // Pattern 2: Known tool names (simple contains check for malformed cases)
+        let tool_names = [
+            "ytdlp_get_video_metadata",
+            "ytdlp_download_transcript",
+            "ytdlp_search_videos",
+            "ytdlp_download_video",
+            "ytdlp_download_audio",
+            "write_file",
+            "read_file",
+            "execute_command",
+            "web_search",
+            "web_extract",
+            "list_files",
+            "send_file_to_user",
+            "upload_file",
+            "write_todos",
+        ];
+
+        for tool_name in &tool_names {
+            if text.contains(tool_name) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     async fn force_continuation_due_to_bad_response(
         &self,
         continuation_count: &mut usize,
@@ -692,10 +807,29 @@ impl AgentExecutor {
             content.unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
 
         let xml_sanitized = Self::sanitize_leaked_xml(iteration, &mut final_response);
-        if xml_sanitized && final_response.trim().len() < 10 {
-            self.force_continuation_due_to_bad_response(continuation_count, ctx)
-                .await;
-            return Ok(None);
+
+        // BUGFIX AGENT-2026-001: Improved detection of malformed tool calls after XML sanitization
+        // If XML was sanitized, check both for empty responses AND tool-like text patterns
+        if xml_sanitized {
+            // Check 1: Response became too short after sanitization
+            if final_response.trim().len() < 10 {
+                self.force_continuation_due_to_bad_response(continuation_count, ctx)
+                    .await;
+                return Ok(None);
+            }
+
+            // Check 2: Response contains tool call patterns (e.g., "[Вызов инструментов: ytdlp_...]")
+            if Self::looks_like_tool_call_text(&final_response) {
+                warn!(
+                    model = %crate::config::get_agent_model(),
+                    iteration = iteration,
+                    response_preview = %crate::utils::truncate_str(&final_response, 100),
+                    "Detected tool call pattern in sanitized response, forcing continuation"
+                );
+                self.force_continuation_due_to_bad_response(continuation_count, ctx)
+                    .await;
+                return Ok(None);
+            }
         }
 
         self.sync_todos_from_arc(ctx.todos_arc).await;
@@ -1110,5 +1244,84 @@ mod tests {
         let input = "<arg1>first</arg1><arg2>second</arg2>";
         let result = sanitize_xml_tags(input);
         assert_eq!(result, "firstsecond");
+    }
+
+    // Tests for BUGFIX AGENT-2026-001: looks_like_tool_call_text
+    #[test]
+    fn test_looks_like_tool_call_text_with_russian_marker() {
+        let input = "[Вызов инструментов: ytdlp_get_video_metadataurl...]";
+        assert!(AgentExecutor::looks_like_tool_call_text(input));
+    }
+
+    #[test]
+    fn test_looks_like_tool_call_text_with_english_marker() {
+        let input = "[Tool calls: read_file]read_filepath...";
+        assert!(AgentExecutor::looks_like_tool_call_text(input));
+    }
+
+    #[test]
+    fn test_looks_like_tool_call_text_with_ytdlp_tool_name() {
+        let input = "ytdlp_get_video_metadataurl...";
+        assert!(AgentExecutor::looks_like_tool_call_text(input));
+    }
+
+    #[test]
+    fn test_looks_like_tool_call_text_with_other_tool_names() {
+        assert!(AgentExecutor::looks_like_tool_call_text(
+            "execute_command ls"
+        ));
+        assert!(AgentExecutor::looks_like_tool_call_text(
+            "read_file /path/to/file"
+        ));
+        assert!(AgentExecutor::looks_like_tool_call_text(
+            "write_todos [...]"
+        ));
+    }
+
+    #[test]
+    fn test_looks_like_tool_call_text_normal_text() {
+        let input = "This is a normal response with some information about the task.";
+        assert!(!AgentExecutor::looks_like_tool_call_text(input));
+    }
+
+    #[test]
+    fn test_looks_like_tool_call_text_normal_russian_text() {
+        let input = "Вот результат выполнения задачи без вызова инструментов.";
+        assert!(!AgentExecutor::looks_like_tool_call_text(input));
+    }
+
+    // Tests for BUGFIX AGENT-2026-001: try_parse_malformed_tool_call with ytdlp
+    #[test]
+    fn test_try_parse_malformed_ytdlp_get_video_metadata() {
+        let input = "ytdlp_get_video_metadata<url>https://youtube.com/watch?v=xxx</url>";
+        let result = AgentExecutor::try_parse_malformed_tool_call(input);
+
+        assert!(result.is_some());
+        let tool_call = result.expect("tool_call should be Some");
+        assert_eq!(tool_call.function.name, "ytdlp_get_video_metadata");
+
+        let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+            .expect("arguments should be valid JSON");
+        assert_eq!(args["url"], "https://youtube.com/watch?v=xxx");
+    }
+
+    #[test]
+    fn test_try_parse_malformed_ytdlp_without_tags() {
+        let input = "ytdlp_get_video_metadataurl https://youtube.com/watch?v=xxx";
+        let result = AgentExecutor::try_parse_malformed_tool_call(input);
+
+        assert!(result.is_some());
+        let tool_call = result.expect("tool_call should be Some");
+        assert_eq!(tool_call.function.name, "ytdlp_get_video_metadata");
+    }
+
+    #[test]
+    fn test_try_parse_malformed_ytdlp_download_transcript() {
+        let input = "ytdlp_download_transcripturlhttps://youtube.com/watch?v=yyy";
+        let result = AgentExecutor::try_parse_malformed_tool_call(input);
+
+        assert!(result.is_some());
+        let tool_call = result.expect("tool_call should be Some");
+        assert_eq!(tool_call.function.name, "ytdlp_download_transcript");
     }
 }

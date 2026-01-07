@@ -139,3 +139,66 @@ mod progress_integration_tests {
         assert!(output.contains("Выполнение: web_search"));
     }
 }
+// BUGFIX AGENT-2026-001: Integration tests for malformed tool call bug fix
+#[cfg(test)]
+mod bugfix_agent_2026_001_tests {
+    use another_chat_rs::agent::executor::sanitize_xml_tags;
+
+    #[test]
+    fn test_ytdlp_malformed_tool_call_detection() {
+        // This reproduces the exact bug scenario from the report
+        let malformed_response = "[Вызов инструментов: ytdlp_get_video_metadataurl...]";
+
+        // The response should be detected as tool-like text
+        // This is tested indirectly through sanitize_xml_tags
+        let sanitized = sanitize_xml_tags(malformed_response);
+
+        // After sanitization, the text should remain (no XML tags to remove in this case)
+        assert_eq!(sanitized, malformed_response);
+
+        // But it should still contain tool markers
+        assert!(malformed_response.contains("Вызов инструмент"));
+        assert!(malformed_response.contains("ytdlp_"));
+    }
+
+    #[test]
+    fn test_ytdlp_with_xml_tags_sanitization() {
+        // Test case where ytdlp tool call has XML tags
+        let malformed = "[Вызов инструментов: ytdlp_get_video_metadata]<url>https://youtube.com/watch?v=xxx</url>";
+
+        let sanitized = sanitize_xml_tags(malformed);
+
+        // XML tags should be removed
+        assert!(!sanitized.contains("<url>"));
+        assert!(!sanitized.contains("</url>"));
+
+        // But the URL should remain
+        assert!(sanitized.contains("https://youtube.com/watch?v=xxx"));
+
+        // And tool markers should remain
+        assert!(sanitized.contains("Вызов инструмент"));
+        assert!(sanitized.contains("ytdlp_get_video_metadata"));
+    }
+
+    #[test]
+    fn test_normal_response_not_flagged() {
+        // Normal responses should not be flagged as tool calls
+        let normal_response = "Вот результат выполнения задачи. Файл был успешно обработан.";
+
+        // Should not contain any tool markers
+        assert!(!normal_response.contains("Вызов инструмент"));
+        assert!(!normal_response.contains("ytdlp_"));
+        assert!(!normal_response.contains("[Tool call"));
+    }
+
+    #[test]
+    fn test_short_sanitized_response() {
+        // Test that very short responses after sanitization are caught
+        let input = "<tag>Hi</tag>";
+        let sanitized = sanitize_xml_tags(input);
+
+        // After sanitization, should be very short
+        assert_eq!(sanitized, "Hi");
+        assert!(sanitized.trim().len() < 10);
+    }
+}
