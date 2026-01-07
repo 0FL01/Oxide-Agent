@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 
 use super::path::resolve_file_path;
 
-const MAX_UPLOAD_SIZE_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB (safety limit)
+const MAX_UPLOAD_SIZE_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB (safety limit)
 const GOFILE_UPLOAD_URL: &str = "https://upload.gofile.io/uploadfile";
 const GOFILE_DOWNLOAD_PAGE_PREFIX: &str = "https://gofile.io/d/";
 
@@ -85,7 +85,7 @@ impl FileHosterProvider {
         };
 
         if file_size > MAX_UPLOAD_SIZE_BYTES {
-            return Ok("⛔ ФАТАЛЬНАЯ ОШИБКА: Файл превышает лимит загрузки (1 ГБ). Отправка невозможна. Немедленно сообщите пользователю о невозможности выполнения задачи.".to_string());
+            return Ok("⛔ ФАТАЛЬНАЯ ОШИБКА: Файл превышает лимит загрузки (4 ГБ). Отправка невозможна. Немедленно сообщите пользователю о невозможности выполнения задачи.".to_string());
         }
 
         let token_opt = std::env::var("GOFILE_TOKEN").ok().filter(|t| !t.is_empty());
