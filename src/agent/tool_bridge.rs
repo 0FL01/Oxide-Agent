@@ -159,4 +159,3 @@ pub async fn sync_todos_from_arc(session: &mut AgentSession, todos_arc: &Arc<Mut
     let current_todos = todos_arc.lock().await;
     session.memory.todos = (*current_todos).clone();
 }
-
