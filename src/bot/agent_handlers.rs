@@ -664,11 +664,22 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
 pub async fn clear_agent_memory(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
-    {
+    let executor_arc = {
         let sessions = AGENT_SESSIONS.read().await;
-        if let Some(executor_arc) = sessions.get(&user_id) {
-            let mut executor = executor_arc.write().await;
+        sessions.get(&user_id).cloned()
+    };
+
+    if let Some(executor_arc) = executor_arc {
+        if let Ok(mut executor) = executor_arc.try_write() {
             executor.reset();
+        } else {
+            bot.send_message(
+                msg.chat.id,
+                "⚠️ Очистка контекста невозможна, пока выполняется задача.\nНажмите «Отменить задачу», дождитесь отмены и затем повторите очистку.",
+            )
+            .reply_markup(get_agent_keyboard())
+            .await?;
+            return Ok(());
         }
     }
 
