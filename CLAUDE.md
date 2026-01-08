@@ -15,6 +15,7 @@ src/
 │   ├── executor.rs
 │   ├── recovery.rs            # восстановление malformed ответов
 │   ├── tool_bridge.rs         # мост исполнения инструментов
+│   ├── session_registry.rs    # реестр сессий агентов
 │   ├── prompt/                # сборка системных промптов
 │   │   ├── mod.rs
 │   │   └── composer.rs
@@ -49,7 +50,13 @@ src/
 │   ├── handlers.rs
 │   ├── agent_handlers.rs
 │   ├── state.rs
-│   └── unauthorized_cache.rs
+│   ├── unauthorized_cache.rs
+│   ├── views/                 # шаблоны сообщений и UI
+│   │   ├── mod.rs
+│   │   └── agent.rs
+│   └── agent/                 # бот-специфичная логика агента
+│       ├── mod.rs
+│       └── media.rs
 ├── llm/                       # интеграции с провайдерами LLM
 │   ├── mod.rs
 │   ├── common.rs
