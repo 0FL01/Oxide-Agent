@@ -300,9 +300,15 @@ impl AgentExecutor {
 
             let mut response = response.map_err(|e| anyhow!("LLM call failed: {e}"))?;
 
-            // Log reasoning/thinking if present
+            // Log reasoning/thinking if present and send to progress
             if let Some(ref reasoning) = response.reasoning_content {
                 debug!(reasoning_len = reasoning.len(), "Model reasoning received");
+
+                // Send reasoning summary to progress display
+                if let Some(tx) = ctx.progress_tx {
+                    let summary = super::thoughts::extract_reasoning_summary(reasoning, 100);
+                    let _ = tx.send(AgentEvent::Reasoning { summary }).await;
+                }
             }
 
             // RECOVERY: Try to parse malformed tool calls from content

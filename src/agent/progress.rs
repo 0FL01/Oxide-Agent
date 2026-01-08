@@ -1,5 +1,6 @@
 use super::loop_detection::LoopType;
 use super::providers::TodoList;
+use super::thoughts;
 use serde::{Deserialize, Serialize};
 
 /// Events that can occur during agent execution
@@ -71,6 +72,11 @@ pub enum AgentEvent {
     Cancelled,
     /// Agent encountered an error
     Error(String),
+    /// Agent's reasoning/thinking process (for models that support it)
+    Reasoning {
+        /// Short summary of reasoning
+        summary: String,
+    },
     /// Loop detected during execution
     LoopDetected {
         /// Type of loop detected
@@ -95,6 +101,8 @@ pub struct ProgressState {
     pub is_finished: bool,
     /// Optional error message
     pub error: Option<String>,
+    /// Current agent thought/reasoning
+    pub current_thought: Option<String>,
 }
 
 /// A single step in the agent's execution process
@@ -139,9 +147,9 @@ impl ProgressState {
             AgentEvent::Thinking { tokens } => self.handle_thinking(tokens),
             AgentEvent::ToolCall {
                 name,
+                input,
                 command_preview,
-                ..
-            } => self.handle_tool_call(name, command_preview),
+            } => self.handle_tool_call(name, input, command_preview),
             AgentEvent::ToolResult { .. } => self.complete_last_step(),
             AgentEvent::Continuation { reason, count } => self.handle_continuation(reason, count),
             AgentEvent::TodosUpdated { todos } => self.handle_todos_update(todos),
@@ -153,6 +161,7 @@ impl ProgressState {
             AgentEvent::Cancelling { tool_name } => self.handle_cancelling(tool_name),
             AgentEvent::Cancelled => self.handle_cancelled(),
             AgentEvent::Error(e) => self.handle_error(e),
+            AgentEvent::Reasoning { summary } => self.handle_reasoning(summary),
             AgentEvent::LoopDetected {
                 loop_type,
                 iteration,
@@ -192,8 +201,18 @@ impl ProgressState {
         });
     }
 
-    fn handle_tool_call(&mut self, name: String, command_preview: Option<String>) {
+    fn handle_tool_call(&mut self, name: String, input: String, command_preview: Option<String>) {
         self.complete_last_step();
+
+        // Try to infer a human-readable thought from tool call
+        let inferred_thought = thoughts::infer_thought(&name, &input);
+
+        // Update current thought with inferred thought or command preview
+        if let Some(ref thought) = inferred_thought {
+            self.current_thought = Some(thought.clone());
+        } else if let Some(ref preview) = command_preview {
+            self.current_thought = Some(thoughts::infer_thought_from_command(preview));
+        }
 
         // Use command preview if available, otherwise show tool name
         let description = command_preview
@@ -251,11 +270,17 @@ impl ProgressState {
 
     fn handle_finish(&mut self) {
         self.is_finished = true;
+        self.current_thought = None; // Clear thought on finish
         for step in &mut self.steps {
             if step.status == StepStatus::InProgress {
                 step.status = StepStatus::Completed;
             }
         }
+    }
+
+    fn handle_reasoning(&mut self, summary: String) {
+        // Store the reasoning summary as current thought
+        self.current_thought = Some(summary);
     }
 
     fn handle_cancelling(&mut self, tool_name: String) {
@@ -310,6 +335,16 @@ impl ProgressState {
             self.current_iteration, self.max_iterations, tokens_str
         ));
         lines.push(String::new());
+
+        // === Agent Thought (if available) ===
+        if let Some(ref thought) = self.current_thought {
+            lines.push("💭 <i>Размышления агента:</i>".to_string());
+            lines.push(format!(
+                "   {}",
+                html_escape::encode_text(&crate::utils::truncate_str(thought, 80))
+            ));
+            lines.push(String::new());
+        }
 
         // === Todo Progress (if available) ===
         if let Some(ref todos) = self.current_todos {

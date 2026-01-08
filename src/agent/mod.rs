@@ -33,6 +33,9 @@ pub mod skills;
 /// Tool execution bridge with timeout and cancellation
 pub mod tool_bridge;
 
+/// Agent thought inference from tool calls
+pub mod thoughts;
+
 /// Loop detection subsystem
 pub mod loop_detection;
 
