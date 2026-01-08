@@ -279,8 +279,11 @@ impl ProgressState {
     }
 
     fn handle_reasoning(&mut self, summary: String) {
-        // Store the reasoning summary as current thought
-        self.current_thought = Some(summary);
+        // Only update if reasoning is meaningful (>20 chars)
+        // Otherwise keep the previous inferred thought from tool call
+        if summary.len() >= 20 {
+            self.current_thought = Some(summary);
+        }
     }
 
     fn handle_cancelling(&mut self, tool_name: String) {
@@ -341,20 +344,30 @@ impl ProgressState {
             lines.push("💭 <i>Размышления агента:</i>".to_string());
             lines.push(format!(
                 "   {}",
-                html_escape::encode_text(&crate::utils::truncate_str(thought, 80))
+                html_escape::encode_text(&crate::utils::truncate_str(thought, 120))
             ));
             lines.push(String::new());
         }
 
-        // === Todo Progress (if available) ===
+        // === Todo Progress (full list with status icons) ===
         if let Some(ref todos) = self.current_todos {
-            if let Some(current) = todos.current_task() {
+            if !todos.items.is_empty() {
                 lines.push(format!(
-                    "📋 <b>Задача [{}/{}]:</b> {}",
-                    todos.completed_count() + 1,
-                    todos.items.len(),
-                    html_escape::encode_text(&current.description)
+                    "📋 <b>Задачи [{}/{}]:</b>",
+                    todos.completed_count(),
+                    todos.items.len()
                 ));
+                for (i, item) in todos.items.iter().enumerate() {
+                    let status_icon = match item.status {
+                        super::providers::TodoStatus::Completed => "✅",
+                        super::providers::TodoStatus::InProgress => "🔄",
+                        super::providers::TodoStatus::Pending => "⏳",
+                        super::providers::TodoStatus::Cancelled => "❌",
+                    };
+                    let truncated = crate::utils::truncate_str(&item.description, 45);
+                    let desc = html_escape::encode_text(&truncated);
+                    lines.push(format!("  {} {}. {}", status_icon, i + 1, desc));
+                }
             }
         }
 
