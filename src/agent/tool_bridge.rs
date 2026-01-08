@@ -78,12 +78,20 @@ pub async fn execute_single_tool_call(
     );
 
     if let Some(tx) = ctx.progress_tx {
+        // Extract command preview for execute_command tool
+        let command_preview = if name == "execute_command" {
+            extract_command_preview(&args)
+        } else {
+            None
+        };
+
         // Sanitize XML tags from tool name and input to prevent UI corruption
         // This protects against malformed LLM responses that leak XML syntax
         let _ = tx
             .send(AgentEvent::ToolCall {
                 name: sanitize_xml_tags(&name),
                 input: sanitize_xml_tags(&args),
+                command_preview,
             })
             .await;
     }
@@ -158,4 +166,11 @@ pub async fn execute_single_tool_call(
 pub async fn sync_todos_from_arc(session: &mut AgentSession, todos_arc: &Arc<Mutex<TodoList>>) {
     let current_todos = todos_arc.lock().await;
     session.memory.todos = (*current_todos).clone();
+}
+
+/// Extracts a human-readable command preview from execute_command arguments
+fn extract_command_preview(args: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(args)
+        .ok()
+        .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
 }

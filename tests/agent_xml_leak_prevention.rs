@@ -115,6 +115,7 @@ mod progress_integration_tests {
         state.update(AgentEvent::ToolCall {
             name: "todos".to_string(), // Already sanitized!
             input: "[{\"description\": \"test\"}]".to_string(),
+            command_preview: None,
         });
 
         let output = state.format_telegram();
@@ -122,7 +123,8 @@ mod progress_integration_tests {
         // Should NOT contain XML tags in the formatted output
         assert!(!output.contains("<arg_key>"));
         assert!(!output.contains("</arg_key>"));
-        assert!(output.contains("Выполнение: todos"));
+        // Current step should show with ⏳ prefix
+        assert!(output.contains("⏳ Выполнение: todos"));
     }
 
     #[test]
@@ -133,10 +135,84 @@ mod progress_integration_tests {
         state.update(AgentEvent::ToolCall {
             name: "web_search".to_string(),
             input: "query: \"test query\"".to_string(),
+            command_preview: None,
         });
 
         let output = state.format_telegram();
-        assert!(output.contains("Выполнение: web_search"));
+        // Current step should show with ⏳ prefix
+        assert!(output.contains("⏳ Выполнение: web_search"));
+    }
+
+    #[test]
+    fn test_progress_state_with_command_preview() {
+        let mut state = ProgressState::new(100);
+
+        // Test execute_command with command preview
+        state.update(AgentEvent::ToolCall {
+            name: "execute_command".to_string(),
+            input: r#"{"command": "pip install pandas"}"#.to_string(),
+            command_preview: Some("pip install pandas".to_string()),
+        });
+
+        let output = state.format_telegram();
+
+        // Should show the command preview with ⏳ prefix, not "Выполнение: execute_command"
+        assert!(output.contains("⏳ 🔧 pip install pandas"));
+        assert!(!output.contains("Выполнение: execute_command"));
+    }
+
+    #[test]
+    fn test_progress_grouped_steps() {
+        let mut state = ProgressState::new(100);
+
+        // Add multiple completed steps
+        state.update(AgentEvent::ToolCall {
+            name: "web_search".to_string(),
+            input: "q1".to_string(),
+            command_preview: None,
+        });
+        state.update(AgentEvent::ToolResult {
+            name: "web_search".to_string(),
+            output: "result1".to_string(),
+        });
+
+        state.update(AgentEvent::ToolCall {
+            name: "web_search".to_string(),
+            input: "q2".to_string(),
+            command_preview: None,
+        });
+        state.update(AgentEvent::ToolResult {
+            name: "web_search".to_string(),
+            output: "result2".to_string(),
+        });
+
+        state.update(AgentEvent::ToolCall {
+            name: "execute_command".to_string(),
+            input: "{}".to_string(),
+            command_preview: Some("ls -la".to_string()),
+        });
+
+        let output = state.format_telegram();
+
+        // Should show grouped completed steps
+        assert!(output.contains("✅ web_search ×2"));
+        // Current step should be shown
+        assert!(output.contains("⏳ 🔧 ls -la"));
+    }
+
+    #[test]
+    fn test_progress_header_format() {
+        let mut state = ProgressState::new(200);
+
+        // Simulate thinking event
+        state.update(AgentEvent::Thinking { tokens: 5700 });
+
+        let output = state.format_telegram();
+
+        // Check header format
+        assert!(output.contains("🤖 <b>Oxide Agent</b>"));
+        assert!(output.contains("Итерация 1/200"));
+        assert!(output.contains("5.7k")); // Token format
     }
 }
 // BUGFIX AGENT-2026-001: Integration tests for malformed tool call bug fix

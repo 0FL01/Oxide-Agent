@@ -17,6 +17,8 @@ pub enum AgentEvent {
         name: String,
         /// Tool input arguments
         input: String,
+        /// Human-readable preview (e.g., command for execute_command)
+        command_preview: Option<String>,
     },
     /// Agent received a tool result
     ToolResult {
@@ -78,9 +80,6 @@ pub enum AgentEvent {
     },
 }
 
-/// Maximum number of visible steps in Telegram progress report
-const MAX_VISIBLE_STEPS: usize = 30;
-
 /// Current state of the agent's progress
 #[derive(Debug, Clone, Default)]
 pub struct ProgressState {
@@ -107,6 +106,8 @@ pub struct Step {
     pub status: StepStatus,
     /// Optional token count at this step
     pub tokens: Option<usize>,
+    /// Tool name for grouping (None for non-tool steps like Thinking)
+    pub tool_name: Option<String>,
 }
 
 /// Possible statuses for an execution step
@@ -136,7 +137,11 @@ impl ProgressState {
     pub fn update(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Thinking { tokens } => self.handle_thinking(tokens),
-            AgentEvent::ToolCall { name, .. } => self.handle_tool_call(name),
+            AgentEvent::ToolCall {
+                name,
+                command_preview,
+                ..
+            } => self.handle_tool_call(name, command_preview),
             AgentEvent::ToolResult { .. } => self.complete_last_step(),
             AgentEvent::Continuation { reason, count } => self.handle_continuation(reason, count),
             AgentEvent::TodosUpdated { todos } => self.handle_todos_update(todos),
@@ -183,15 +188,23 @@ impl ProgressState {
             ),
             status: StepStatus::InProgress,
             tokens: Some(tokens),
+            tool_name: None,
         });
     }
 
-    fn handle_tool_call(&mut self, name: String) {
+    fn handle_tool_call(&mut self, name: String, command_preview: Option<String>) {
         self.complete_last_step();
+
+        // Use command preview if available, otherwise show tool name
+        let description = command_preview
+            .map(|preview| format!("🔧 {}", crate::utils::truncate_str(preview, 60)))
+            .unwrap_or_else(|| format!("Выполнение: {}", &name));
+
         self.steps.push(Step {
-            description: format!("Выполнение: {name}"),
+            description,
             status: StepStatus::InProgress,
             tokens: None,
+            tool_name: Some(name),
         });
     }
 
@@ -206,6 +219,7 @@ impl ProgressState {
             ),
             status: StepStatus::InProgress,
             tokens: None,
+            tool_name: None,
         });
     }
 
@@ -231,6 +245,7 @@ impl ProgressState {
             description: format!("📤 Отправка файла: {file_name}"),
             status: StepStatus::Completed,
             tokens: None,
+            tool_name: Some("file_send".to_string()),
         });
     }
 
@@ -254,6 +269,7 @@ impl ProgressState {
                 description: format!("⏹ Прерывание: {tool_name}..."),
                 status: StepStatus::InProgress,
                 tokens: None,
+                tool_name: None,
             });
         }
     }
@@ -282,55 +298,49 @@ impl ProgressState {
     #[must_use]
     pub fn format_telegram(&self) -> String {
         let mut lines = Vec::new();
-        lines.push("🤖 <b>Работа агента</b>\n".to_string());
 
-        // Todos status if available
+        // === Header: Oxide Agent │ Итерация X/Y │ Токены ===
+        let tokens_str = self
+            .last_token_count()
+            .map(crate::utils::format_tokens)
+            .unwrap_or_else(|| "...".to_string());
+
+        lines.push(format!(
+            "🤖 <b>Oxide Agent</b> │ Итерация {}/{} │ {}",
+            self.current_iteration, self.max_iterations, tokens_str
+        ));
+        lines.push(String::new());
+
+        // === Todo Progress (if available) ===
         if let Some(ref todos) = self.current_todos {
-            if !todos.items.is_empty() {
+            if let Some(current) = todos.current_task() {
                 lines.push(format!(
-                    "<b>План задач ({}/{}):</b>",
-                    todos.completed_count(),
-                    todos.items.len()
+                    "📋 <b>Задача [{}/{}]:</b> {}",
+                    todos.completed_count() + 1,
+                    todos.items.len(),
+                    html_escape::encode_text(&current.description)
                 ));
-                for (i, item) in todos.items.iter().enumerate() {
-                    lines.push(format!(
-                        "{}. {} {}",
-                        i + 1,
-                        item.status,
-                        html_escape::encode_text(&item.description)
-                    ));
-                }
-                lines.push(String::new()); // Empty line separator
             }
         }
 
-        // Tail-truncation: show only the last MAX_VISIBLE_STEPS steps
-        let total_steps = self.steps.len();
-        let skip_count = total_steps.saturating_sub(MAX_VISIBLE_STEPS);
-
-        if skip_count > 0 {
-            lines.push(format!("... <i>(скрыто {skip_count} шагов)</i> ..."));
+        // === Grouped Completed Steps ===
+        let grouped = self.format_grouped_steps();
+        if !grouped.is_empty() {
+            lines.extend(grouped);
         }
 
-        for step in self.steps.iter().skip(skip_count) {
-            let icon = match step.status {
-                StepStatus::Pending => "⬜",
-                StepStatus::InProgress => "⏳",
-                StepStatus::Completed => "✅",
-                StepStatus::Failed => "❌",
-            };
-
-            let tokens_str = step.tokens.map_or_else(String::new, |t| {
-                format!(" [<b>{}</b>]", crate::utils::format_tokens(t))
-            });
-
+        // === Current Step ===
+        if let Some(step) = self.current_step() {
+            if !lines.last().is_some_and(String::is_empty) {
+                lines.push(String::new());
+            }
             lines.push(format!(
-                "{icon} {}{}",
-                html_escape::encode_text(&step.description),
-                tokens_str
+                "⏳ {}",
+                html_escape::encode_text(&step.description)
             ));
         }
 
+        // === Footer (status) ===
         if self.is_finished {
             lines.push("\n✅ <b>Задача завершена</b>".to_string());
         } else if let Some(ref e) = self.error {
@@ -338,10 +348,50 @@ impl ProgressState {
                 "\n❌ <b>Ошибка:</b> {}",
                 html_escape::encode_text(e)
             ));
-        } else {
-            lines.push("\n<i>Агент подбирает инструменты...</i>".to_string());
         }
 
         lines.join("\n")
+    }
+
+    /// Groups completed tool steps by tool name
+    fn format_grouped_steps(&self) -> Vec<String> {
+        use std::collections::HashMap;
+
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+
+        for step in &self.steps {
+            if step.status == StepStatus::Completed {
+                if let Some(ref tool_name) = step.tool_name {
+                    *counts.entry(tool_name.as_str()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Sort by count descending for better readability
+        let mut sorted: Vec<_> = counts.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+        sorted
+            .into_iter()
+            .map(|(name, count)| {
+                if count > 1 {
+                    format!("  ✅ {} ×{}", name, count)
+                } else {
+                    format!("  ✅ {}", name)
+                }
+            })
+            .collect()
+    }
+
+    /// Returns the current in-progress step
+    fn current_step(&self) -> Option<&Step> {
+        self.steps
+            .iter()
+            .rfind(|s| s.status == StepStatus::InProgress)
+    }
+
+    /// Returns the last token count from any thinking step
+    fn last_token_count(&self) -> Option<usize> {
+        self.steps.iter().rev().find_map(|s| s.tokens)
     }
 }
