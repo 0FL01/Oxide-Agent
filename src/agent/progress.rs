@@ -374,6 +374,8 @@ impl ProgressState {
         // === Grouped Completed Steps ===
         let grouped = self.format_grouped_steps();
         if !grouped.is_empty() {
+            lines.push(String::new());
+            lines.push("🔧 <b>Инструменты:</b>".to_string());
             lines.extend(grouped);
         }
 
