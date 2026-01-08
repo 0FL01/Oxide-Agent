@@ -6,26 +6,25 @@
 use crate::agent::{
     executor::AgentExecutor,
     loop_detection::LoopType,
-    preprocessor::{AgentInput, Preprocessor},
+    preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
-    AgentSession,
+    AgentSession, TelegramSessionRegistry,
 };
+use crate::bot::agent::extract_agent_input;
 use crate::bot::state::State;
+use crate::bot::views::{
+    get_agent_keyboard, loop_action_keyboard, loop_type_label, wipe_confirmation_keyboard,
+    AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
+};
 use crate::config::AGENT_MAX_ITERATIONS;
 use crate::llm::LlmClient;
 use crate::storage::R2Storage;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
-use teloxide::net::Download;
 use teloxide::prelude::*;
-use teloxide::types::{
-    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, KeyboardButton,
-    KeyboardMarkup, MessageId, ParseMode,
-};
-use tokio::sync::RwLock;
+use teloxide::types::{CallbackQuery, InputFile, MessageId, ParseMode};
 use tracing::{debug, error, info, warn};
 
 /// Type alias for dialogue
@@ -39,61 +38,9 @@ struct AgentTaskContext {
     llm: Arc<LlmClient>,
 }
 
-/// Global agent sessions storage (`user_id` -> Arc<RwLock<AgentExecutor>>)
-/// Using Arc<RwLock> to allow concurrent access without removing executors during execution
-static AGENT_SESSIONS: LazyLock<RwLock<HashMap<i64, Arc<RwLock<AgentExecutor>>>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
-
-/// Global cancellation tokens storage (`user_id` -> Arc<CancellationToken>)
-/// Separate from executor to allow lock-free cancellation during task execution
-static CANCELLATION_TOKENS: LazyLock<
-    RwLock<HashMap<i64, Arc<tokio_util::sync::CancellationToken>>>,
-> = LazyLock::new(|| RwLock::new(HashMap::new()));
-
-const LOOP_CALLBACK_RETRY: &str = "retry_no_loop";
-const LOOP_CALLBACK_RESET: &str = "reset_task";
-const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
-
-fn loop_action_keyboard() -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![
-        vec![
-            InlineKeyboardButton::callback("Повторить без детекции", LOOP_CALLBACK_RETRY),
-            InlineKeyboardButton::callback("Сбросить задачу", LOOP_CALLBACK_RESET),
-        ],
-        vec![InlineKeyboardButton::callback(
-            "Отменить",
-            LOOP_CALLBACK_CANCEL,
-        )],
-    ])
-}
-
-fn loop_type_label(loop_type: LoopType) -> &'static str {
-    match loop_type {
-        LoopType::ToolCallLoop => "Повторяющиеся вызовы",
-        LoopType::ContentLoop => "Повторяющийся текст",
-        LoopType::CognitiveLoop => "Застревание",
-    }
-}
-
-/// Get the agent mode keyboard
-///
-/// # Examples
-///
-/// ```
-/// use another_chat_rs::bot::agent_handlers::get_agent_keyboard;
-/// let keyboard = get_agent_keyboard();
-/// assert!(!keyboard.keyboard.is_empty());
-/// ```
-#[must_use]
-pub fn get_agent_keyboard() -> KeyboardMarkup {
-    KeyboardMarkup::new(vec![
-        vec![KeyboardButton::new("❌ Отменить задачу")],
-        vec![KeyboardButton::new("🗑 Очистить память")],
-        vec![KeyboardButton::new("🔄 Пересоздать контейнер")],
-        vec![KeyboardButton::new("⬅️ Выйти из режима агента")],
-    ])
-    .resize_keyboard()
-}
+/// Global session registry for agent executors
+static SESSION_REGISTRY: LazyLock<TelegramSessionRegistry> =
+    LazyLock::new(TelegramSessionRegistry::new);
 
 /// Activate agent mode for a user
 ///
@@ -123,17 +70,8 @@ pub async fn activate_agent_mode(
 
     let executor = AgentExecutor::new(llm.clone(), session);
 
-    // Store session wrapped in Arc<RwLock> and create cancellation token
-    {
-        let mut sessions = AGENT_SESSIONS.write().await;
-        sessions.insert(user_id, Arc::new(RwLock::new(executor)));
-
-        let mut tokens = CANCELLATION_TOKENS.write().await;
-        tokens.insert(
-            user_id,
-            Arc::new(tokio_util::sync::CancellationToken::new()),
-        );
-    }
+    // Store session in registry
+    SESSION_REGISTRY.insert(user_id, executor).await;
 
     // Save state to DB
     storage
@@ -144,18 +82,7 @@ pub async fn activate_agent_mode(
     dialogue.update(State::AgentMode).await?;
 
     // Send welcome message
-    let welcome = r"🤖 <b>Режим Агента активирован</b>
-
-Я готов помочь с решением сложных задач. Отправьте мне:
-• 📝 Текстовое описание задачи
-• 🎤 Голосовое сообщение
-• 🖼 Изображение с описанием
-
-Я буду анализировать задачу, декомпозировать её и выполнять пошагово, показывая прогресс.
-
-<i>Лимит времени: 30 минут на задачу</i>";
-
-    bot.send_message(msg.chat.id, welcome)
+    bot.send_message(msg.chat.id, DefaultAgentView::welcome_message())
         .parse_mode(ParseMode::Html)
         .reply_markup(get_agent_keyboard())
         .await?;
@@ -241,73 +168,42 @@ async fn ensure_session_exists(
     llm: &Arc<LlmClient>,
     storage: &Arc<R2Storage>,
 ) {
-    let has_session = {
-        let sessions = AGENT_SESSIONS.read().await;
-        sessions.contains_key(&user_id)
-    };
+    if SESSION_REGISTRY.contains(&user_id).await {
+        debug!(user_id = user_id, "Session already exists in cache");
+        return;
+    }
 
-    if !has_session {
-        let mut session = AgentSession::new(user_id, chat_id);
+    let mut session = AgentSession::new(user_id, chat_id);
 
-        // Load saved agent memory if exists
-        if let Ok(Some(saved_memory)) = storage.load_agent_memory(user_id).await {
-            session.memory = saved_memory;
-            info!(
-                user_id = user_id,
-                messages_count = session.memory.get_messages().len(),
-                "Loaded agent memory for user in ensure_session_exists"
-            );
-        } else {
-            info!(
-                user_id = user_id,
-                "No saved agent memory found, starting fresh"
-            );
-        }
-
-        let executor = AgentExecutor::new(llm.clone(), session);
-        let mut sessions = AGENT_SESSIONS.write().await;
-        sessions.insert(user_id, Arc::new(RwLock::new(executor)));
-
-        // Create cancellation token for this user
-        let mut tokens = CANCELLATION_TOKENS.write().await;
-        tokens.insert(
-            user_id,
-            Arc::new(tokio_util::sync::CancellationToken::new()),
+    // Load saved agent memory if exists
+    if let Ok(Some(saved_memory)) = storage.load_agent_memory(user_id).await {
+        session.memory = saved_memory;
+        info!(
+            user_id = user_id,
+            messages_count = session.memory.get_messages().len(),
+            "Loaded agent memory for user in ensure_session_exists"
         );
     } else {
-        debug!(user_id = user_id, "Session already exists in cache");
+        info!(
+            user_id = user_id,
+            "No saved agent memory found, starting fresh"
+        );
     }
+
+    let executor = AgentExecutor::new(llm.clone(), session);
+    SESSION_REGISTRY.insert(user_id, executor).await;
 }
 
 async fn is_agent_task_running(user_id: i64) -> bool {
-    let executor_arc = {
-        let sessions = AGENT_SESSIONS.read().await;
-        sessions.get(&user_id).cloned()
-    };
-
-    let Some(executor_arc) = executor_arc else {
-        return false;
-    };
-
-    let running = match executor_arc.try_read() {
-        Ok(executor) => executor.session().is_processing(),
-        Err(_) => true,
-    };
-
-    running
+    SESSION_REGISTRY.is_running(&user_id).await
 }
 
 async fn renew_cancellation_token(user_id: i64) {
-    let mut tokens = CANCELLATION_TOKENS.write().await;
-    tokens.insert(
-        user_id,
-        Arc::new(tokio_util::sync::CancellationToken::new()),
-    );
+    SESSION_REGISTRY.renew_cancellation_token(&user_id).await;
 }
 
 async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
-    let sessions = AGENT_SESSIONS.read().await;
-    if let Some(executor_arc) = sessions.get(&user_id) {
+    if let Some(executor_arc) = SESSION_REGISTRY.get(&user_id).await {
         let executor = executor_arc.read().await;
         let _ = storage
             .save_agent_memory(user_id, &executor.session().memory)
@@ -529,23 +425,17 @@ async fn execute_agent_task(
     task: &str,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<String> {
-    // Get Arc<RwLock<AgentExecutor>> from the map
-    let executor_arc = {
-        let sessions = AGENT_SESSIONS.read().await;
-        sessions
-            .get(&user_id)
-            .cloned() // Clone the Arc (cheap operation)
-            .ok_or_else(|| anyhow::anyhow!("No agent session found"))?
-    };
+    // Get executor from registry
+    let executor_arc = SESSION_REGISTRY
+        .get(&user_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No agent session found"))?;
 
     // Get the cancellation token for this task
-    let cancellation_token = {
-        let tokens = CANCELLATION_TOKENS.read().await;
-        tokens
-            .get(&user_id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("No cancellation token found"))?
-    };
+    let cancellation_token = SESSION_REGISTRY
+        .get_cancellation_token(&user_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No cancellation token found"))?;
 
     // Acquire write lock on the executor
     let mut executor = executor_arc.write().await;
@@ -598,24 +488,18 @@ pub async fn handle_loop_callback(
     match data {
         LOOP_CALLBACK_RETRY => {
             if is_agent_task_running(user_id).await {
-                bot.send_message(
-                    chat_id,
-                    "⏳ Задача уже выполняется. Дождитесь завершения или отмените её.",
-                )
-                .await?;
+                bot.send_message(chat_id, DefaultAgentView::task_already_running())
+                    .await?;
                 return Ok(());
             }
 
             ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
             renew_cancellation_token(user_id).await;
 
-            let executor_arc = {
-                let sessions = AGENT_SESSIONS.read().await;
-                sessions.get(&user_id).cloned()
-            };
+            let executor_arc = SESSION_REGISTRY.get(&user_id).await;
 
             let Some(executor_arc) = executor_arc else {
-                bot.send_message(chat_id, "⚠️ Сессия агента не найдена.")
+                bot.send_message(chat_id, DefaultAgentView::session_not_found())
                     .await?;
                 return Ok(());
             };
@@ -626,7 +510,7 @@ pub async fn handle_loop_callback(
             };
 
             let Some(task_text) = task_text else {
-                bot.send_message(chat_id, "⚠️ Нет сохранённой задачи для повтора.")
+                bot.send_message(chat_id, DefaultAgentView::no_saved_task())
                     .await?;
                 return Ok(());
             };
@@ -645,32 +529,26 @@ pub async fn handle_loop_callback(
                         .await
                 {
                     let _ = error_bot
-                        .send_message(chat_id, format!("❌ Ошибка: {e}"))
+                        .send_message(chat_id, DefaultAgentView::error_message(&e.to_string()))
                         .await;
                 }
             });
         }
-        LOOP_CALLBACK_RESET => {
-            let executor_arc = {
-                let sessions = AGENT_SESSIONS.read().await;
-                sessions.get(&user_id).cloned()
-            };
-
-            if let Some(executor_arc) = executor_arc {
-                if let Ok(mut executor) = executor_arc.try_write() {
-                    executor.reset();
-                    bot.send_message(chat_id, "🔄 Задача сброшена.")
-                        .reply_markup(get_agent_keyboard())
-                        .await?;
-                } else {
-                    bot.send_message(chat_id, "⚠️ Нельзя сбросить задачу, пока она выполняется.")
-                        .await?;
-                }
-            } else {
-                bot.send_message(chat_id, "⚠️ Сессия агента не найдена.")
+        LOOP_CALLBACK_RESET => match SESSION_REGISTRY.reset(&user_id).await {
+            Ok(()) => {
+                bot.send_message(chat_id, DefaultAgentView::task_reset())
+                    .reply_markup(get_agent_keyboard())
                     .await?;
             }
-        }
+            Err("Session not found") => {
+                bot.send_message(chat_id, DefaultAgentView::session_not_found())
+                    .await?;
+            }
+            Err(_) => {
+                bot.send_message(chat_id, DefaultAgentView::reset_blocked_by_task())
+                    .await?;
+            }
+        },
         LOOP_CALLBACK_CANCEL => {
             cancel_agent_task_by_id(bot.clone(), user_id, chat_id).await?;
         }
@@ -678,90 +556,6 @@ pub async fn handle_loop_callback(
     }
 
     Ok(())
-}
-
-/// Extract input from a message
-async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput> {
-    if let Some(voice) = msg.voice() {
-        // Download voice file with retry logic
-        let buffer = crate::utils::retry_telegram_operation(|| async {
-            let file = bot.get_file(voice.file.id.clone()).await?;
-            let mut buf = Vec::new();
-            bot.download_file(&file.path, &mut buf).await?;
-            Ok(buf)
-        })
-        .await?;
-
-        let mime_type = voice
-            .mime_type
-            .as_ref()
-            .map_or_else(|| "audio/ogg".to_string(), ToString::to_string);
-        return Ok(AgentInput::Voice {
-            bytes: buffer,
-            mime_type,
-        });
-    }
-
-    if let Some(photos) = msg.photo() {
-        if let Some(photo) = photos.last() {
-            // Download photo file with retry logic
-            let buffer = crate::utils::retry_telegram_operation(|| async {
-                let file = bot.get_file(photo.file.id.clone()).await?;
-                let mut buf = Vec::new();
-                bot.download_file(&file.path, &mut buf).await?;
-                Ok(buf)
-            })
-            .await?;
-
-            let caption = msg.caption().map(ToString::to_string);
-            return Ok(AgentInput::Image {
-                bytes: buffer,
-                context: caption,
-            });
-        }
-    }
-
-    // Document
-    if let Some(doc) = msg.document() {
-        const MAX_FILE_SIZE: u32 = 20 * 1024 * 1024; // 20 MB
-
-        if doc.file.size > MAX_FILE_SIZE {
-            anyhow::bail!(
-                "Файл слишком большой: {:.1} MB (максимум 20 MB)",
-                f64::from(doc.file.size) / 1024.0 / 1024.0
-            );
-        }
-
-        // Download document file with retry logic
-        let buffer = crate::utils::retry_telegram_operation(|| async {
-            let file = bot.get_file(doc.file.id.clone()).await?;
-            let mut buf = Vec::new();
-            bot.download_file(&file.path, &mut buf).await?;
-            Ok(buf)
-        })
-        .await?;
-
-        info!(
-            file_name = ?doc.file_name,
-            mime_type = ?doc.mime_type,
-            size = buffer.len(),
-            "Downloaded document from Telegram"
-        );
-
-        return Ok(AgentInput::Document {
-            bytes: buffer,
-            file_name: doc.file_name.clone().unwrap_or_else(|| "file".to_string()),
-            mime_type: doc.mime_type.as_ref().map(ToString::to_string),
-            caption: msg.caption().map(String::from),
-        });
-    }
-
-    let text = msg
-        .text()
-        .or_else(|| msg.caption())
-        .unwrap_or("")
-        .to_string();
-    Ok(AgentInput::Text(text))
 }
 
 /// Edit a message safely (ignore errors)
@@ -798,62 +592,18 @@ async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: 
 pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
-    // Access the cancellation token from LOCK-FREE storage
-    // This allows instant cancellation without waiting for executor locks
-    let cancelled = {
-        let tokens = CANCELLATION_TOKENS.read().await;
-        if let Some(token_arc) = tokens.get(&user_id) {
-            // CancellationToken::cancel() is a lock-free atomic operation
-            token_arc.cancel();
-            info!(
-                user_id = user_id,
-                "Cancellation requested (lock-free), task will abort immediately"
-            );
-            true
-        } else {
-            warn!(
-                user_id = user_id,
-                "No active cancellation token found (task may have already completed)"
-            );
-            false
-        }
-    };
+    // Access the cancellation token from registry (lock-free)
+    let cancelled = SESSION_REGISTRY.cancel(&user_id).await;
 
     // Best-effort: clear todos without waiting for executor locks.
-    // If the executor is currently busy, it will clear todos on its cancellation path.
-    let cleared_todos = {
-        let executor_arc = {
-            let sessions = AGENT_SESSIONS.read().await;
-            sessions.get(&user_id).cloned()
-        };
+    let cleared_todos = SESSION_REGISTRY.clear_todos(&user_id).await;
 
-        if let Some(executor_arc) = executor_arc {
-            if let Ok(mut executor) = executor_arc.try_write() {
-                executor.session_mut().clear_todos();
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
-
-    if cancelled {
-        let text = if cleared_todos {
-            "❌ Задача отменяется...\n📋 Список задач очищен."
-        } else {
-            "❌ Задача отменяется..."
-        };
-        bot.send_message(msg.chat.id, text)
+    let text = DefaultAgentView::task_cancelled(cleared_todos);
+    if !cancelled && !cleared_todos {
+        bot.send_message(msg.chat.id, DefaultAgentView::no_active_task())
             .reply_markup(get_agent_keyboard())
             .await?;
     } else {
-        let text = if cleared_todos {
-            "📋 Список задач очищен."
-        } else {
-            "⚠️ Нет активной задачи для отмены"
-        };
         bot.send_message(msg.chat.id, text)
             .reply_markup(get_agent_keyboard())
             .await?;
@@ -862,57 +612,15 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
 }
 
 async fn cancel_agent_task_by_id(bot: Bot, user_id: i64, chat_id: ChatId) -> Result<()> {
-    let cancelled = {
-        let tokens = CANCELLATION_TOKENS.read().await;
-        if let Some(token_arc) = tokens.get(&user_id) {
-            token_arc.cancel();
-            info!(
-                user_id = user_id,
-                "Cancellation requested (lock-free), task will abort immediately"
-            );
-            true
-        } else {
-            warn!(
-                user_id = user_id,
-                "No active cancellation token found (task may have already completed)"
-            );
-            false
-        }
-    };
+    let cancelled = SESSION_REGISTRY.cancel(&user_id).await;
+    let cleared_todos = SESSION_REGISTRY.clear_todos(&user_id).await;
 
-    let cleared_todos = {
-        let executor_arc = {
-            let sessions = AGENT_SESSIONS.read().await;
-            sessions.get(&user_id).cloned()
-        };
-
-        if let Some(executor_arc) = executor_arc {
-            if let Ok(mut executor) = executor_arc.try_write() {
-                executor.session_mut().clear_todos();
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
-
-    if cancelled {
-        let text = if cleared_todos {
-            "❌ Задача отменяется...\n📋 Список задач очищен."
-        } else {
-            "❌ Задача отменяется..."
-        };
-        bot.send_message(chat_id, text)
+    let text = DefaultAgentView::task_cancelled(cleared_todos);
+    if !cancelled && !cleared_todos {
+        bot.send_message(chat_id, DefaultAgentView::no_active_task())
             .reply_markup(get_agent_keyboard())
             .await?;
     } else {
-        let text = if cleared_todos {
-            "📋 Список задач очищен."
-        } else {
-            "⚠️ Нет активной задачи для отмены"
-        };
         bot.send_message(chat_id, text)
             .reply_markup(get_agent_keyboard())
             .await?;
@@ -929,29 +637,26 @@ async fn cancel_agent_task_by_id(bot: Bot, user_id: i64, chat_id: ChatId) -> Res
 pub async fn clear_agent_memory(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
-    let executor_arc = {
-        let sessions = AGENT_SESSIONS.read().await;
-        sessions.get(&user_id).cloned()
-    };
-
-    if let Some(executor_arc) = executor_arc {
-        if let Ok(mut executor) = executor_arc.try_write() {
-            executor.reset();
-        } else {
-            bot.send_message(
-                msg.chat.id,
-                "⚠️ Очистка контекста невозможна, пока выполняется задача.\nНажмите «Отменить задачу», дождитесь отмены и затем повторите очистку.",
-            )
-            .reply_markup(get_agent_keyboard())
-            .await?;
-            return Ok(());
+    match SESSION_REGISTRY.reset(&user_id).await {
+        Ok(()) => {
+            let _ = storage.clear_agent_memory(user_id).await;
+            bot.send_message(msg.chat.id, DefaultAgentView::memory_cleared())
+                .reply_markup(get_agent_keyboard())
+                .await?;
+        }
+        Err("Cannot reset while task is running") => {
+            bot.send_message(msg.chat.id, DefaultAgentView::clear_blocked_by_task())
+                .reply_markup(get_agent_keyboard())
+                .await?;
+        }
+        Err(_) => {
+            // No session — just clear storage
+            let _ = storage.clear_agent_memory(user_id).await;
+            bot.send_message(msg.chat.id, DefaultAgentView::memory_cleared())
+                .reply_markup(get_agent_keyboard())
+                .await?;
         }
     }
-
-    let _ = storage.clear_agent_memory(user_id).await;
-    bot.send_message(msg.chat.id, "🗑 Память агента очищена")
-        .reply_markup(get_agent_keyboard())
-        .await?;
     Ok(())
 }
 
@@ -969,15 +674,7 @@ pub async fn exit_agent_mode(
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
     save_memory_after_task(user_id, &storage).await;
-
-    {
-        let mut sessions = AGENT_SESSIONS.write().await;
-        sessions.remove(&user_id);
-
-        // Also remove cancellation token
-        let mut tokens = CANCELLATION_TOKENS.write().await;
-        tokens.remove(&user_id);
-    }
+    SESSION_REGISTRY.remove(&user_id).await;
 
     let _ = storage
         .update_user_state(user_id, "chat_mode".to_string())
@@ -985,7 +682,7 @@ pub async fn exit_agent_mode(
     dialogue.update(State::Start).await?;
 
     let keyboard = crate::bot::handlers::get_main_keyboard();
-    bot.send_message(msg.chat.id, "👋 Вышли из режима агента")
+    bot.send_message(msg.chat.id, DefaultAgentView::exiting_agent())
         .reply_markup(keyboard)
         .await?;
     Ok(())
@@ -998,13 +695,10 @@ pub async fn exit_agent_mode(
 /// Returns an error if the confirmation message cannot be sent.
 pub async fn confirm_agent_wipe(bot: Bot, msg: Message, dialogue: AgentDialogue) -> Result<()> {
     dialogue.update(State::AgentWipeConfirmation).await?;
-    let keyboard = KeyboardMarkup::new(vec![vec![
-        KeyboardButton::new("✅ Да"),
-        KeyboardButton::new("❌ Отмена"),
-    ]])
-    .resize_keyboard();
-    bot.send_message(msg.chat.id, "⚠️ <b>Внимание!</b>\n\nЭто действие удалит текущий контейнер агента и все файлы внутри него. История переписки сохранится.\n\nВы уверены?")
-        .parse_mode(ParseMode::Html).reply_markup(keyboard).await?;
+    bot.send_message(msg.chat.id, DefaultAgentView::wipe_confirmation())
+        .parse_mode(ParseMode::Html)
+        .reply_markup(wipe_confirmation_keyboard())
+        .await?;
     Ok(())
 }
 
@@ -1023,8 +717,7 @@ pub async fn handle_agent_wipe_confirmation(
 
     match text {
         "✅ Да" => {
-            let sessions = AGENT_SESSIONS.read().await;
-            if let Some(executor_arc) = sessions.get(&user_id) {
+            if let Some(executor_arc) = SESSION_REGISTRY.get(&user_id).await {
                 let mut executor = executor_arc.write().await;
                 match executor.session_mut().ensure_sandbox().await {
                     Ok(sandbox) => {
@@ -1032,29 +725,30 @@ pub async fn handle_agent_wipe_confirmation(
                             bot.send_message(msg.chat.id, format!("Ошибка при пересоздании: {e}"))
                                 .await?;
                         } else {
-                            bot.send_message(msg.chat.id, "✅ Контейнер успешно пересоздан.")
+                            bot.send_message(msg.chat.id, DefaultAgentView::container_recreated())
                                 .await?;
                         }
                     }
                     Err(_) => {
-                        bot.send_message(msg.chat.id, "Ошибка доступа к менеджеру песочницы.")
+                        bot.send_message(msg.chat.id, DefaultAgentView::sandbox_access_error())
                             .await?;
                     }
                 }
             }
         }
         "❌ Отмена" => {
-            bot.send_message(msg.chat.id, "Отменено.").await?;
+            bot.send_message(msg.chat.id, DefaultAgentView::operation_cancelled())
+                .await?;
         }
         _ => {
-            bot.send_message(msg.chat.id, "Пожалуйста, выберите вариант на клавиатуре.")
+            bot.send_message(msg.chat.id, DefaultAgentView::select_keyboard_option())
                 .await?;
             return Ok(());
         }
     }
 
     dialogue.update(State::AgentMode).await?;
-    bot.send_message(msg.chat.id, "Готов к работе.")
+    bot.send_message(msg.chat.id, DefaultAgentView::ready_to_work())
         .reply_markup(get_agent_keyboard())
         .await?;
     Ok(())

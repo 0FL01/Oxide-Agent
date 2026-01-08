@@ -26,6 +26,8 @@ pub mod recovery;
 pub mod registry;
 /// Agent session management
 pub mod session;
+/// Session registry for managing multiple concurrent sessions
+pub mod session_registry;
 /// Skill system for modular prompts
 pub mod skills;
 /// Tool execution bridge with timeout and cancellation
@@ -47,4 +49,5 @@ pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;
 pub use session::{AgentSession, AgentStatus};
+pub use session_registry::{SessionRegistry, TelegramSessionRegistry};
 pub use skills::SkillRegistry;

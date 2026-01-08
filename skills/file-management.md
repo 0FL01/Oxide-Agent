@@ -1,7 +1,7 @@
 ---
 name: file-management
 description: Работа с песочницей, файлами и выполнением команд.
-triggers: [файл, папк, директори, команда, скрипт, выполнить, python, bash, sandbox]
+triggers: [файл, папк, директори, команда, скрипт, выполнить, python, bash, sandbox, ls, cat, grep, rm, cp, mv]
 allowed_tools: [execute_command, write_file, read_file, send_file_to_user, list_files]
 weight: medium
 ---
