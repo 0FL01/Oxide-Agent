@@ -270,7 +270,7 @@ cargo build --release --features tavily
 
 ## Лицензия
 
-Проект распространяется под лицензией **GNU Affero General Public License v3 (AGPL-3.0)**. Подробности в файле [LICENSE].
+Проект распространяется под лицензией **GNU Affero General Public License v3 (AGPL-3.0)**. Подробности в файле [LICENSE](https://github.com/0FL01/Another-Chat-with-LLM/blob/main/LICENSE).
 
 Copyright (C) 2026 @0FL01
 
