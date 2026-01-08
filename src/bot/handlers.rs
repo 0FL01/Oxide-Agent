@@ -103,8 +103,8 @@ pub enum Command {
 #[must_use]
 pub fn get_main_keyboard() -> KeyboardMarkup {
     let keyboard = vec![vec![
-        KeyboardButton::new("💬 Режим чата"),
         KeyboardButton::new("🤖 Режим Агента"),
+        KeyboardButton::new("💬 Режим чата"),
     ]];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }

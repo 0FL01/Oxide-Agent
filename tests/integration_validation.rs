@@ -1,9 +1,9 @@
-use oxide_agent::config::Settings;
 use anyhow::{anyhow, Result};
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use aws_types::region::Region;
 use dotenvy::dotenv;
+use oxide_agent::config::Settings;
 use std::path::Path;
 use tracing::info;
 use tracing_subscriber::{prelude::*, EnvFilter};
