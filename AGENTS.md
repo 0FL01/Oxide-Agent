@@ -16,11 +16,18 @@ src/
 │   ├── recovery.rs            # восстановление malformed ответов
 │   ├── tool_bridge.rs         # мост исполнения инструментов
 │   ├── session_registry.rs    # реестр сессий агентов
+│   ├── thoughts.rs            # генерация мыслей агента
 │   ├── prompt/                # сборка системных промптов
 │   │   ├── mod.rs
 │   │   └── composer.rs
 │   ├── loop_detection/        # детектирование зацикливаний
-│   │   ├── ...
+│   │   ├── mod.rs
+│   │   ├── config.rs
+│   │   ├── content_detector.rs
+│   │   ├── llm_detector.rs
+│   │   ├── service.rs
+│   │   ├── tool_detector.rs
+│   │   └── types.rs
 │   ├── skills/                # подсистема навыков (RAG/embeddings)
 │   │   ├── mod.rs
 │   │   ├── cache.rs
@@ -36,7 +43,10 @@ src/
 │   ├── provider.rs
 │   ├── registry.rs
 │   ├── hooks/                 # хуки выполнения (completion и др.)
-│   │   ├── ...
+│   │   ├── mod.rs
+│   │   ├── completion.rs
+│   │   ├── registry.rs
+│   │   └── types.rs
 │   └── providers/             # провайдеры инструментов (Sandbox, Tavily, и т.д.)
 │       ├── mod.rs
 │       ├── filehoster.rs
@@ -49,6 +59,7 @@ src/
 │   ├── mod.rs
 │   ├── handlers.rs
 │   ├── agent_handlers.rs
+│   ├── messaging.rs           # отправка и разбиение сообщений
 │   ├── state.rs
 │   ├── unauthorized_cache.rs
 │   ├── views/                 # шаблоны сообщений и UI
