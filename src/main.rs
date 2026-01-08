@@ -291,6 +291,28 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                                 .endpoint(handle_start_document),
                         ),
                 )
+                .branch(
+                    dptree::case![State::ChatMode]
+                        .branch(
+                            Update::filter_message()
+                                .filter(|msg: Message| msg.text().is_some())
+                                .endpoint(handle_start_text),
+                        )
+                        .branch(
+                            Update::filter_message()
+                                .filter(|msg: Message| msg.voice().is_some())
+                                .endpoint(handle_start_voice),
+                        )
+                        .branch(
+                            Update::filter_message()
+                                .filter(|msg: Message| msg.photo().is_some())
+                                .endpoint(handle_start_photo),
+                        )
+                        .branch(
+                            dptree::filter(|msg: Message| msg.document().is_some())
+                                .endpoint(handle_start_document),
+                        ),
+                )
                 .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
                 .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
                 .branch(

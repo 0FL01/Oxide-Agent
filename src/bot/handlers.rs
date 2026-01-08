@@ -102,16 +102,25 @@ pub enum Command {
 /// ```
 #[must_use]
 pub fn get_main_keyboard() -> KeyboardMarkup {
+    let keyboard = vec![vec![
+        KeyboardButton::new("💬 Режим чата"),
+        KeyboardButton::new("🤖 Режим Агента"),
+    ]];
+    KeyboardMarkup::new(keyboard).resize_keyboard()
+}
+
+/// Create the chat menu keyboard
+#[must_use]
+pub fn get_chat_keyboard() -> KeyboardMarkup {
     let keyboard = vec![
         vec![
             KeyboardButton::new("Очистить контекст"),
             KeyboardButton::new("Сменить модель"),
         ],
         vec![
-            KeyboardButton::new("🤖 Режим Агента"),
             KeyboardButton::new("Доп функции"),
+            KeyboardButton::new("Назад"),
         ],
-        vec![KeyboardButton::new("🗑 Очистить всё")],
     ];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
@@ -185,7 +194,10 @@ pub async fn start(
     info!("User {user_id} ({user_name}) is allowed. Set model to {model}");
 
     let text = format!(
-        "<b>Привет!</b> Я бот, который может отвечать на вопросы и распознавать речь.\nТекущая модель: <b>{model}</b>"
+        "<b>Привет! {user_name}!</b> Я бот, который поможет тебе работать с LLM.\n\n\
+         Выберите режим работы:\n\
+         • <b>Режим чата</b> — обычное общение с AI\n\
+         • <b>Режим Агента</b> — выполнение сложных задач с доступом к инструментам"
     );
 
     info!("Sending welcome message to user {user_id}.");
@@ -213,7 +225,7 @@ pub async fn clear(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()
             info!("Chat history successfully cleared for user {user_id}.");
             bot.send_message(msg.chat.id, "<b>История чата очищена.</b>")
                 .parse_mode(ParseMode::Html)
-                .reply_markup(get_main_keyboard())
+                .reply_markup(get_chat_keyboard())
                 .await?;
         }
         Err(e) => {
@@ -306,12 +318,20 @@ pub async fn handle_text(
         return Ok(());
     }
 
+    let state = dialogue.get().await?.unwrap_or(State::Start);
+    if matches!(state, State::Start) {
+        bot.send_message(msg.chat.id, "Пожалуйста, выберите режим работы:")
+            .reply_markup(get_main_keyboard())
+            .await?;
+        return Ok(());
+    }
+
     if MODELS.iter().any(|(name, _)| *name == text) {
         info!("User {user_id} selected model '{text}' via text input.");
         storage.update_user_model(user_id, text.clone()).await?;
         bot.send_message(msg.chat.id, format!("Модель изменена на <b>{text}</b>"))
             .parse_mode(ParseMode::Html)
-            .reply_markup(get_main_keyboard())
+                .reply_markup(get_chat_keyboard())
             .await?;
         return Ok(());
     }
@@ -330,6 +350,15 @@ async fn handle_menu_commands(
 ) -> Result<bool> {
     let user_id = get_user_id_safe(msg);
     match text {
+        "💬 Режим чата" => {
+            dialogue.update(State::ChatMode).await.map_err(|e| anyhow!(e.to_string()))?;
+            let model = storage.get_user_model(user_id).await?.unwrap_or_else(|| DEFAULT_MODEL.to_string());
+            bot.send_message(msg.chat.id, format!("<b>Активирован режим чата.</b>\nТекущая модель: <b>{model}</b>"))
+                .parse_mode(ParseMode::Html)
+                .reply_markup(get_chat_keyboard())
+                .await?;
+            Ok(true)
+        }
         "Очистить контекст" => {
             clear(bot.clone(), msg.clone(), storage.clone()).await?;
             Ok(true)
@@ -373,9 +402,17 @@ async fn handle_menu_commands(
             Ok(true)
         }
         "Назад" => {
-            bot.send_message(msg.chat.id, "Выберите действие: (Или начните диалог)")
-                .reply_markup(get_main_keyboard())
-                .await?;
+            let state = dialogue.get().await?.unwrap_or(State::Start);
+            if matches!(state, State::ChatMode) || matches!(state, State::EditingPrompt) {
+                dialogue.update(State::Start).await.map_err(|e| anyhow!(e.to_string()))?;
+                bot.send_message(msg.chat.id, "Выберите режим работы:")
+                    .reply_markup(get_main_keyboard())
+                    .await?;
+            } else {
+                bot.send_message(msg.chat.id, "Выберите режим работы:")
+                    .reply_markup(get_main_keyboard())
+                    .await?;
+            }
             Ok(true)
         }
         "⬅️ Выйти из режима агента" | "❌ Отменить задачу" | "🗑 Очистить память" =>
@@ -386,14 +423,6 @@ async fn handle_menu_commands(
                 _ => "Память агента не активна.",
             };
             bot.send_message(msg.chat.id, response)
-                .reply_markup(get_main_keyboard())
-                .await?;
-            Ok(true)
-        }
-        "🗑 Очистить всё" => {
-            storage.clear_all_context(user_id).await?;
-            bot.send_message(msg.chat.id, "<b>🗑 Весь контекст очищен</b>")
-                .parse_mode(ParseMode::Html)
                 .reply_markup(get_main_keyboard())
                 .await?;
             Ok(true)
@@ -442,17 +471,17 @@ pub async fn handle_editing_prompt(
     let user_id = get_user_id_safe(&msg);
 
     if text == "Назад" {
-        dialogue.exit().await.map_err(|e| anyhow!(e.to_string()))?;
+        dialogue.update(State::ChatMode).await.map_err(|e| anyhow!(e.to_string()))?;
         bot.send_message(msg.chat.id, "Отмена обновления системного промпта.")
-            .reply_markup(get_main_keyboard())
+            .reply_markup(get_chat_keyboard())
             .await?;
     } else {
         storage
             .update_user_prompt(user_id, text.to_string())
             .await?;
-        dialogue.exit().await.map_err(|e| anyhow!(e.to_string()))?;
+        dialogue.update(State::ChatMode).await.map_err(|e| anyhow!(e.to_string()))?;
         bot.send_message(msg.chat.id, "Системный промпт обновлен.")
-            .reply_markup(get_main_keyboard())
+            .reply_markup(get_chat_keyboard())
             .await?;
     }
     Ok(())
@@ -537,6 +566,14 @@ pub async fn handle_voice(
         return Ok(());
     }
 
+    let state = dialogue.get().await?.unwrap_or(State::Start);
+    if matches!(state, State::Start) {
+        bot.send_message(msg.chat.id, "Пожалуйста, выберите режим работы:")
+            .reply_markup(get_main_keyboard())
+            .await?;
+        return Ok(());
+    }
+
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
     let model = storage
         .get_user_model(user_id)
@@ -605,6 +642,14 @@ pub async fn handle_photo(
     ))
     .await?
     {
+        return Ok(());
+    }
+
+    let state = dialogue.get().await?.unwrap_or(State::Start);
+    if matches!(state, State::Start) {
+        bot.send_message(msg.chat.id, "Пожалуйста, выберите режим работы:")
+            .reply_markup(get_main_keyboard())
+            .await?;
         return Ok(());
     }
 
