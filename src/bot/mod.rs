@@ -4,6 +4,8 @@ pub mod agent;
 pub mod agent_handlers;
 /// General command and message handlers
 pub mod handlers;
+/// Common messaging utilities (split long messages, formatting)
+pub mod messaging;
 /// User state and dialogue management
 pub mod state;
 /// Unauthorized access flood protection

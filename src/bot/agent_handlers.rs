@@ -11,6 +11,7 @@ use crate::agent::{
     AgentSession, TelegramSessionRegistry,
 };
 use crate::bot::agent::extract_agent_input;
+use crate::bot::messaging::send_long_message;
 use crate::bot::state::State;
 use crate::bot::views::{
     get_agent_keyboard, loop_action_keyboard, loop_type_label, wipe_confirmation_keyboard,
@@ -367,11 +368,8 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     match result {
         Ok(response) => {
             edit_message_safe(&ctx.bot, chat_id, progress_msg.id, &progress_text).await;
-            let formatted_response = crate::utils::format_text(&response);
-            ctx.bot
-                .send_message(chat_id, formatted_response)
-                .parse_mode(ParseMode::Html)
-                .await?;
+            // Use send_long_message to properly split response if it exceeds Telegram limit
+            send_long_message(&ctx.bot, chat_id, &response).await?;
         }
         Err(e) => {
             let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{e}");
@@ -405,10 +403,8 @@ async fn run_agent_task_with_text(
     match result {
         Ok(response) => {
             edit_message_safe(&bot, chat_id, progress_msg.id, &progress_text).await;
-            let formatted_response = crate::utils::format_text(&response);
-            bot.send_message(chat_id, formatted_response)
-                .parse_mode(ParseMode::Html)
-                .await?;
+            // Use send_long_message to properly split response if it exceeds Telegram limit
+            send_long_message(&bot, chat_id, &response).await?;
         }
         Err(e) => {
             let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{e}");

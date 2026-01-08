@@ -3,7 +3,7 @@ use crate::bot::UnauthorizedCache;
 use crate::config::{Settings, DEFAULT_MODEL, MODELS};
 use crate::llm::{LlmClient, Message as LlmMessage};
 use crate::storage::R2Storage;
-use crate::utils::{self, truncate_str};
+use crate::utils::truncate_str;
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use teloxide::{
@@ -512,16 +512,9 @@ async fn process_llm_request(
     Ok(())
 }
 
-async fn send_long_message(bot: &Bot, chat_id: ChatId, text: &str) -> Result<()> {
-    let formatted = utils::format_text(text);
-    let parts = utils::split_long_message(&formatted, 4000);
-    for part in parts {
-        bot.send_message(chat_id, part)
-            .parse_mode(ParseMode::Html)
-            .await?;
-    }
-    Ok(())
-}
+/// Re-export the shared send_long_message function for convenience.
+/// This function formats text and splits it into multiple messages if needed.
+use super::messaging::send_long_message;
 
 /// Voice message handler
 ///
