@@ -190,6 +190,7 @@ pub fn sanitize_tool_calls(tool_calls: Vec<ToolCall>) -> Vec<ToolCall> {
             ToolCall {
                 id: call.id,
                 function: ToolCallFunction { name, arguments },
+                is_recovered: call.is_recovered,
             }
         })
         .collect()
@@ -252,6 +253,12 @@ fn extract_malformed_tool_arguments(tool_name: &str, content: &str) -> Option<Va
     }
 }
 
+/// Check if an extracted argument is valid (not garbage like `]`).
+/// Returns true if the argument is at least 2 characters and contains alphanumeric.
+fn is_valid_argument(arg: &str) -> bool {
+    arg.len() >= 2 && arg.chars().any(|c| c.is_alphanumeric())
+}
+
 fn build_recovered_tool_call(tool_name: &str, arguments: Value) -> Option<ToolCall> {
     use uuid::Uuid;
 
@@ -269,6 +276,7 @@ fn build_recovered_tool_call(tool_name: &str, arguments: Value) -> Option<ToolCa
             name: tool_name.to_string(),
             arguments: arguments_str,
         },
+        is_recovered: true,
     })
 }
 
@@ -302,7 +310,7 @@ fn extract_token_after_tool_name<'a>(
         .find(|(_, ch)| ch.is_whitespace() || *ch == '<')
         .map_or(after.len(), |(i, _)| i);
     let token = after[..end].trim();
-    if token.is_empty() {
+    if token.is_empty() || !is_valid_argument(token) {
         None
     } else {
         Some(token)
@@ -717,5 +725,60 @@ mod tests {
         assert!(result.is_some());
         let tool_call = result.expect("tool_call should be Some");
         assert_eq!(tool_call.function.name, "ytdlp_download_transcript");
+    }
+
+    // Tests for is_valid_argument function (BUG-2026-0108-001 fix)
+    #[test]
+    fn test_is_valid_argument_rejects_single_bracket() {
+        assert!(!is_valid_argument("]"));
+        assert!(!is_valid_argument("["));
+        assert!(!is_valid_argument("}"));
+        assert!(!is_valid_argument("{"));
+    }
+
+    #[test]
+    fn test_is_valid_argument_rejects_short() {
+        assert!(!is_valid_argument(""));
+        assert!(!is_valid_argument("a"));
+        assert!(!is_valid_argument("1"));
+    }
+
+    #[test]
+    fn test_is_valid_argument_rejects_special_only() {
+        assert!(!is_valid_argument("][]"));
+        assert!(!is_valid_argument("]]]"));
+        assert!(!is_valid_argument("..."));
+    }
+
+    #[test]
+    fn test_is_valid_argument_accepts_valid() {
+        assert!(is_valid_argument("ls"));
+        assert!(is_valid_argument("/path/to/file"));
+        assert!(is_valid_argument("https://example.com"));
+        assert!(is_valid_argument("git status"));
+    }
+
+    #[test]
+    fn test_malformed_tool_call_rejects_bracket_argument() {
+        // This should NOT create a recovered tool call because `]` is invalid
+        let input = "execute_command]";
+        let result = try_parse_malformed_tool_call(input);
+        assert!(
+            result.is_none(),
+            "Should reject malformed call with `]` argument"
+        );
+    }
+
+    #[test]
+    fn test_recovered_tool_call_has_is_recovered_flag() {
+        let input = "read_file<filepath>/workspace/test.rs</filepath>";
+        let result = try_parse_malformed_tool_call(input);
+
+        assert!(result.is_some());
+        let tool_call = result.expect("tool_call should be Some");
+        assert!(
+            tool_call.is_recovered,
+            "Recovered tool call should have is_recovered=true"
+        );
     }
 }

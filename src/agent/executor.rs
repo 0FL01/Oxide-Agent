@@ -446,6 +446,14 @@ impl AgentExecutor {
     async fn tool_loop_detected(&self, tool_calls: &[ToolCall]) -> bool {
         let mut detector = self.loop_detector.lock().await;
         for tool_call in tool_calls {
+            // Skip recovered tool calls to prevent false positive loop detection
+            if tool_call.is_recovered {
+                debug!(
+                    tool_name = %tool_call.function.name,
+                    "Skipping recovered tool call in loop detection"
+                );
+                continue;
+            }
             match detector.check_tool_call(&tool_call.function.name, &tool_call.function.arguments)
             {
                 Ok(true) => return true,

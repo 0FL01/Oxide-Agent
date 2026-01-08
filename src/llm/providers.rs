@@ -211,6 +211,7 @@ impl MistralProvider {
                             name: tc.function.name.clone(),
                             arguments: tc.function.arguments.clone(),
                         },
+                        is_recovered: false,
                     })
                     .collect()
             })
@@ -630,6 +631,7 @@ impl ZaiProvider {
                                     name: name.clone(),
                                     arguments: func.arguments.clone().unwrap_or_default(),
                                 },
+                                is_recovered: false,
                             },
                         );
                     }

@@ -131,6 +131,9 @@ pub struct ToolCall {
     /// Function to be called
     #[serde(rename = "function")]
     pub function: ToolCallFunction,
+    /// Whether this tool call was recovered from a malformed LLM response
+    #[serde(default)]
+    pub is_recovered: bool,
 }
 
 /// Function details within a tool call

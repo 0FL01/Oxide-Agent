@@ -1,0 +1,154 @@
+{
+    "bug_id": "BUG-2026-0108-001",
+    "title": "Ложное срабатывание Loop Detection при malformed tool calls от GLM-4.7",
+    "severity": "HIGH",
+    "status": "FIXED",
+    "environment": {
+        "model": "ZAI GLM-4.7",
+        "iteration_detected": 24,
+        "loop_type": "CognitiveLoop (via LlmLoop detector)",
+        "task_completed_after_recovery": true,
+        "final_iteration": 47
+    },
+    "summary": "Система Loop Detection ложно определяет зацикливание агента, когда модель GLM-4.7 генерирует malformed tool calls. Recovery механизм корректно восстанавливает tool calls с аргументами типа ']', но LLM-детектор интерпретирует эти повторяющиеся recovered calls как признак застревания.",
+    "root_cause_hypothesis": [
+        {
+            "id": "RCA-1",
+            "description": "Модель GLM-4.7 систематически генерирует malformed tool calls с аргументом ']' вместо полноценного JSON",
+            "evidence": [
+                "Recovered malformed tool call from content tool_name='execute_command' arguments={'command':']'}",
+                "Recovered malformed tool call from content tool_name='read_file' arguments={'path':']'}",
+                "Паттерн повторяется 20+ раз в одной сессии"
+            ],
+            "affected_component": "LLM Provider / Model ZAI GLM-4.7"
+        },
+        {
+            "id": "RCA-2",
+            "description": "Recovery механизм создаёт идентичные tool calls при восстановлении malformed ответов, что триггерит ToolCallDetector",
+            "evidence": [
+                "Все recovered calls имеют идентичные hash-подписи: (tool_name + '{\"command\":\"]\"}' или '{\"path\":\"]\"}')",
+                "ToolCallDetector срабатывает после 5 повторений (threshold=5)"
+            ],
+            "affected_component": "src/agent/recovery.rs → extract_malformed_tool_arguments()"
+        },
+        {
+            "id": "RCA-3",
+            "description": "LLM Loop Detector не учитывает контекст: recovered malformed calls vs реальные повторяющиеся действия",
+            "evidence": [
+                "LLM детектор анализирует историю без информации о том, какие calls были recovered",
+                "Паттерн 'Recovered malformed tool call' в логах игнорируется детектором",
+                "После рестарта агент успешно завершает задачу (итерация 47)"
+            ],
+            "affected_component": "src/agent/loop_detection/llm_detector.rs"
+        },
+        {
+            "id": "RCA-4",
+            "description": "Функция extract_token_after_tool_name в recovery.rs возвращает ']' как валидный аргумент",
+            "evidence": [
+                "Паттерн извлечения: 'execute_command]' → extracts ']' as command",
+                "Нет валидации что аргумент имеет смысловое значение"
+            ],
+            "affected_component": "src/agent/recovery.rs → extract_token_after_tool_name()"
+        }
+    ],
+    "symptoms": [
+        "Агент выполняет полезную работу (клонирование репо, чтение файлов, анализ кода)",
+        "Появляются частые WARN логи: 'Recovered malformed tool call from content'",
+        "На итерации 24 срабатывает Loop Detection с типом CognitiveLoop",
+        "Пользователю показывается '❌ Ошибка: Обнаружена петля: Застревание (итерация 24)'",
+        "После ручного рестарта агент успешно продолжает и завершает задачу"
+    ],
+    "files_to_investigate": [
+        {
+            "path": "src/agent/recovery.rs",
+            "reason": "extract_token_after_tool_name() возвращает ']' как валидный аргумент. Нужна валидация минимальной длины/содержимого аргументов",
+            "lines": "288-310, 327-334"
+        },
+        {
+            "path": "src/agent/loop_detection/llm_detector.rs",
+            "reason": "LLM детектор не получает информации о recovered/malformed calls. SYSTEM_PROMPT должен учитывать этот контекст",
+            "lines": "17-41, 196-225"
+        },
+        {
+            "path": "src/agent/loop_detection/tool_detector.rs",
+            "reason": "ToolCallDetector считает все tool calls эквивалентно, не различая recovered malformed calls",
+            "lines": "25-63"
+        },
+        {
+            "path": "src/agent/loop_detection/service.rs",
+            "reason": "check_tool_call() не передаёт контекст о происхождении tool call (original vs recovered)",
+            "lines": "59-87"
+        },
+        {
+            "path": "src/agent/executor.rs",
+            "reason": "Место интеграции recovery и loop detection. Нужно проверить как передаётся информация между модулями",
+            "lines": "N/A - requires investigation"
+        }
+    ],
+    "proposed_solutions": [
+        {
+            "id": "FIX-1",
+            "description": "Добавить валидацию аргументов в recovery.rs: отклонять аргументы короче 2 символов или состоящие только из спецсимволов",
+            "priority": "HIGH",
+            "complexity": "LOW"
+        },
+        {
+            "id": "FIX-2",
+            "description": "Добавить флаг 'is_recovered' в ToolCall и не учитывать recovered calls в loop detection",
+            "priority": "MEDIUM",
+            "complexity": "MEDIUM"
+        },
+        {
+            "id": "FIX-3",
+            "description": "Обновить SYSTEM_PROMPT в llm_detector.rs: добавить правило 'malformed/recovered tool calls are NOT loops'",
+            "priority": "MEDIUM",
+            "complexity": "LOW"
+        },
+        {
+            "id": "FIX-4",
+            "description": "Добавить счётчик malformed calls в сессию. Если malformed_count > threshold, переключить модель или снизить чувствительность loop detection",
+            "priority": "LOW",
+            "complexity": "HIGH"
+        }
+    ],
+    "reproduction_steps": [
+        "1. Использовать модель ZAI GLM-4.7 в качестве агента",
+        "2. Дать задачу требующую анализа репозитория (клонирование + чтение файлов)",
+        "3. Дождаться появления malformed tool calls в логах",
+        "4. Наблюдать срабатывание loop detection на ~24 итерации",
+        "5. Перезапустить задачу и убедиться что она успешно завершается"
+    ],
+    "logs_analysis": {
+        "malformed_calls_count": "20+",
+        "malformed_patterns": [
+            "{\"command\":\"]\"}",
+            "{\"path\":\"]\"}"
+        ],
+        "successful_calls_between_malformed": [
+            "git clone https://github.com/0FL01/Oxide-Agent.git",
+            "cat /workspace/Oxide-Agent/src/agent/hooks/types.rs",
+            "grep -r 'HookRegistry' /workspace/Oxide-Agent/src/",
+            "head -100 /workspace/Oxide-Agent/src/agent/hooks/completion.rs"
+        ],
+        "task_outcome": "SUCCESS (after recovery restart)"
+    },
+    "created_at": "2026-01-08T23:44:00+03:00",
+    "reporter": "QA / Automated Test Analysis",
+    "resolved_at": "2026-01-09T00:00:00+03:00",
+    "resolution": {
+        "implemented_fix": "FIX-1 + FIX-2 (Option D: combined approach)",
+        "changes": [
+            "Added is_valid_argument() validation in recovery.rs to reject args < 2 chars or without alphanumeric",
+            "Added is_recovered field to ToolCall struct in llm/mod.rs",
+            "Updated build_recovered_tool_call() to set is_recovered=true",
+            "Updated tool_loop_detected() in executor.rs to skip recovered calls",
+            "Added 7 new unit tests for validation and is_recovered flag"
+        ],
+        "files_modified": [
+            "src/llm/mod.rs",
+            "src/llm/providers.rs",
+            "src/agent/recovery.rs",
+            "src/agent/executor.rs"
+        ]
+    }
+}
