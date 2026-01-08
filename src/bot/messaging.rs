@@ -39,11 +39,13 @@ pub const TELEGRAM_MESSAGE_LIMIT: usize = 4000;
 /// send_long_message(&bot, chat_id, &very_long_response).await?;
 /// ```
 pub async fn send_long_message(bot: &Bot, chat_id: ChatId, text: &str) -> Result<()> {
-    let formatted = utils::format_text(text);
-    let parts = utils::split_long_message(&formatted, TELEGRAM_MESSAGE_LIMIT);
+    // Split raw Markdown first - split_long_message correctly handles ``` fences
+    let parts = utils::split_long_message(text, TELEGRAM_MESSAGE_LIMIT);
 
     for part in parts {
-        bot.send_message(chat_id, part)
+        // Format each part to HTML after splitting to ensure proper tag closure
+        let formatted = utils::format_text(&part);
+        bot.send_message(chat_id, formatted)
             .parse_mode(ParseMode::Html)
             .await?;
     }
