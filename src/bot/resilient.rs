@@ -143,16 +143,3 @@ pub async fn edit_message_safe_resilient(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // Note: Integration tests for Telegram API operations require a live bot token
-    // and are not suitable for unit tests. These would be tested manually or
-    // via integration test suite with mocked responses.
-
-    #[test]
-    fn test_module_compiles() {
-        // Placeholder to ensure module compiles correctly
-        assert!(true);
-    }
-}
