@@ -22,7 +22,9 @@ pub struct SessionRegistry<Id: Hash + Eq + Clone + Send + Sync + std::fmt::Debug
     cancellation_tokens: RwLock<HashMap<Id, Arc<CancellationToken>>>,
 }
 
-impl<Id: Hash + Eq + Clone + Send + Sync + std::fmt::Debug + 'static> Default for SessionRegistry<Id> {
+impl<Id: Hash + Eq + Clone + Send + Sync + std::fmt::Debug + 'static> Default
+    for SessionRegistry<Id>
+{
     fn default() -> Self {
         Self::new()
     }
