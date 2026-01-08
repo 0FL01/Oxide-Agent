@@ -14,16 +14,31 @@ const MIN_INTERVAL: usize = 3;
 const MAX_INTERVAL: usize = 15;
 const LLM_TIMEOUT_SECS: u64 = 30;
 
-const SYSTEM_PROMPT: &str = "You are an AI diagnostic agent. Analyze the conversation for \
-unproductive loops (repetitive actions, cognitive loops, or alternating patterns). \
-Differentiate legitimate incremental progress from looping. Respond ONLY with JSON.";
+const SYSTEM_PROMPT: &str = r#"You are an AI loop detection specialist. CRITICAL RULES:
 
-const USER_PROMPT: &str = r#"Return JSON:
+## What is NOT a loop (do NOT flag):
+- Reading different files sequentially to understand codebase → NORMAL exploration
+- Executing commands with different arguments → NORMAL work
+- Analyzing multiple related modules/files → NORMAL software development
+- Making progress even if slow → NORMAL iteration
+
+## What IS a loop (flag with high confidence):
+- SAME file read 3+ times without new information extracted
+- SAME command with IDENTICAL arguments repeated 3+ times
+- Agent explicitly repeating previous failed approach verbatim
+- Alternating between 2-3 actions without any progress
+
+Respond ONLY with valid JSON."#;
+
+const USER_PROMPT: &str = r#"Analyze ONLY the last 5-10 messages for loops. Return JSON:
 {
   "is_stuck": bool,
   "confidence": 0.0-1.0,
-  "reasoning": "short explanation"
-}"#;
+  "reasoning": "specific evidence: which exact action repeated and how many times",
+  "repeated_action": "name of specific tool/file if detected, null otherwise"
+}
+
+IMPORTANT: If different files are being read or commands have different arguments, is_stuck MUST be false."#;
 
 #[derive(Debug, Deserialize)]
 struct LlmLoopResponse {
@@ -175,7 +190,38 @@ impl LlmLoopDetector {
         );
         self.update_interval(parsed.confidence);
 
-        Ok(parsed.is_stuck && parsed.confidence >= self.confidence_threshold)
+        Ok(self.validate_detection(&parsed))
+    }
+
+    /// Validate detection requires both high confidence AND specific evidence.
+    fn validate_detection(&self, parsed: &LlmLoopResponse) -> bool {
+        if !parsed.is_stuck {
+            return false;
+        }
+
+        if parsed.confidence < self.confidence_threshold {
+            return false;
+        }
+
+        // Require specific evidence in reasoning
+        let reasoning_lower = parsed.reasoning.to_lowercase();
+        let has_evidence = parsed.reasoning.len() > 20
+            && (reasoning_lower.contains("times")
+                || reasoning_lower.contains("repeated")
+                || reasoning_lower.contains("same file")
+                || reasoning_lower.contains("identical")
+                || reasoning_lower.contains("loop"));
+
+        if !has_evidence {
+            warn!(
+                confidence = parsed.confidence,
+                reasoning = %parsed.reasoning,
+                "LLM detected loop but reasoning lacks specific evidence, ignoring"
+            );
+            return false;
+        }
+
+        true
     }
 
     fn update_interval(&mut self, confidence: f64) {
@@ -339,7 +385,7 @@ mod tests {
     async fn detects_loop_when_confident() {
         let config = LoopDetectionConfig::default();
         let client = Arc::new(MockLoopScout {
-            responses: vec![r#"{"is_stuck":true,"confidence":0.95,"reasoning":"loop"}"#.to_string()],
+            responses: vec![r#"{"is_stuck":true,"confidence":0.98,"reasoning":"execute_command repeated 5 times with identical arguments reading same file"}"#.to_string()],
             index: std::sync::Mutex::new(0),
         });
         let mut detector = LlmLoopDetector::new(client, &config);

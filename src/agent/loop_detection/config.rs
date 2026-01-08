@@ -52,9 +52,9 @@ impl Default for LoopDetectionConfig {
             max_history_length: 5000,
             llm_check_after_turns: 30,
             llm_check_interval: 3,
-            llm_confidence_threshold: 0.9,
+            llm_confidence_threshold: 0.95,
             llm_history_count: 20,
-            scout_model: "labs-devstral-small-2512".to_string(),
+            scout_model: "magistral-medium-2509".to_string(),
         }
     }
 }
