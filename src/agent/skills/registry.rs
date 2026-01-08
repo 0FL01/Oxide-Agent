@@ -9,7 +9,18 @@ use crate::llm::LlmClient;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+/// Generic tools that are used by multiple skills and should not trigger
+/// dynamic skill loading by themselves. These tools are too common to be
+/// meaningful triggers for specific skills.
+const GENERIC_TOOLS: &[&str] = &[
+    "execute_command",
+    "read_file",
+    "write_file",
+    "send_file_to_user",
+    "list_files",
+];
 
 /// Resulting prompt composed from selected skills.
 #[derive(Debug, Clone)]
@@ -154,10 +165,22 @@ impl SkillRegistry {
     }
 
     /// Load a skill by tool name for dynamic injection.
+    ///
+    /// Generic tools (execute_command, read_file, etc.) are ignored because
+    /// they are used by multiple skills and would cause false positives.
     pub async fn load_skill_for_tool(
         &mut self,
         tool_name: &str,
     ) -> SkillResult<Option<Arc<Skill>>> {
+        // Skip generic tools that are used by multiple skills
+        if GENERIC_TOOLS.contains(&tool_name) {
+            debug!(
+                tool_name = %tool_name,
+                "Skipping dynamic skill loading for generic tool"
+            );
+            return Ok(None);
+        }
+
         self.refresh_if_stale()?;
 
         let skill_name = self
