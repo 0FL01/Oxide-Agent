@@ -331,7 +331,7 @@ pub async fn handle_text(
         storage.update_user_model(user_id, text.clone()).await?;
         bot.send_message(msg.chat.id, format!("Модель изменена на <b>{text}</b>"))
             .parse_mode(ParseMode::Html)
-                .reply_markup(get_chat_keyboard())
+            .reply_markup(get_chat_keyboard())
             .await?;
         return Ok(());
     }
@@ -351,12 +351,21 @@ async fn handle_menu_commands(
     let user_id = get_user_id_safe(msg);
     match text {
         "💬 Режим чата" => {
-            dialogue.update(State::ChatMode).await.map_err(|e| anyhow!(e.to_string()))?;
-            let model = storage.get_user_model(user_id).await?.unwrap_or_else(|| DEFAULT_MODEL.to_string());
-            bot.send_message(msg.chat.id, format!("<b>Активирован режим чата.</b>\nТекущая модель: <b>{model}</b>"))
-                .parse_mode(ParseMode::Html)
-                .reply_markup(get_chat_keyboard())
-                .await?;
+            dialogue
+                .update(State::ChatMode)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+            let model = storage
+                .get_user_model(user_id)
+                .await?
+                .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+            bot.send_message(
+                msg.chat.id,
+                format!("<b>Активирован режим чата.</b>\nТекущая модель: <b>{model}</b>"),
+            )
+            .parse_mode(ParseMode::Html)
+            .reply_markup(get_chat_keyboard())
+            .await?;
             Ok(true)
         }
         "Очистить контекст" => {
@@ -404,7 +413,10 @@ async fn handle_menu_commands(
         "Назад" => {
             let state = dialogue.get().await?.unwrap_or(State::Start);
             if matches!(state, State::ChatMode) || matches!(state, State::EditingPrompt) {
-                dialogue.update(State::Start).await.map_err(|e| anyhow!(e.to_string()))?;
+                dialogue
+                    .update(State::Start)
+                    .await
+                    .map_err(|e| anyhow!(e.to_string()))?;
                 bot.send_message(msg.chat.id, "Выберите режим работы:")
                     .reply_markup(get_main_keyboard())
                     .await?;
@@ -471,7 +483,10 @@ pub async fn handle_editing_prompt(
     let user_id = get_user_id_safe(&msg);
 
     if text == "Назад" {
-        dialogue.update(State::ChatMode).await.map_err(|e| anyhow!(e.to_string()))?;
+        dialogue
+            .update(State::ChatMode)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
         bot.send_message(msg.chat.id, "Отмена обновления системного промпта.")
             .reply_markup(get_chat_keyboard())
             .await?;
@@ -479,7 +494,10 @@ pub async fn handle_editing_prompt(
         storage
             .update_user_prompt(user_id, text.to_string())
             .await?;
-        dialogue.update(State::ChatMode).await.map_err(|e| anyhow!(e.to_string()))?;
+        dialogue
+            .update(State::ChatMode)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
         bot.send_message(msg.chat.id, "Системный промпт обновлен.")
             .reply_markup(get_chat_keyboard())
             .await?;

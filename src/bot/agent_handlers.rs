@@ -679,9 +679,12 @@ pub async fn exit_agent_mode(
     dialogue.update(State::Start).await?;
 
     let keyboard = crate::bot::handlers::get_main_keyboard();
-    bot.send_message(msg.chat.id, "👋 Вышли из режима агента. Выберите режим работы:")
-        .reply_markup(keyboard)
-        .await?;
+    bot.send_message(
+        msg.chat.id,
+        "👋 Вышли из режима агента. Выберите режим работы:",
+    )
+    .reply_markup(keyboard)
+    .await?;
     Ok(())
 }
 
