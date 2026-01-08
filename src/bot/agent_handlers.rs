@@ -636,6 +636,7 @@ async fn cancel_agent_task_by_id(bot: Bot, user_id: i64, chat_id: ChatId) -> Res
 /// Returns an error if the confirmation message cannot be sent.
 pub async fn clear_agent_memory(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    info!(user_id = user_id, "User requested memory clear via button");
 
     match SESSION_REGISTRY.reset(&user_id).await {
         Ok(()) => {

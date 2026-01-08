@@ -9,7 +9,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Global session registry for agent executors
 ///
@@ -17,18 +17,18 @@ use tracing::{debug, info, warn};
 /// - Telegram: `i64` (user_id)
 /// - Web: `String` (session token)
 /// - Discord: `u64` (user snowflake)
-pub struct SessionRegistry<Id: Hash + Eq + Clone + Send + Sync + 'static> {
+pub struct SessionRegistry<Id: Hash + Eq + Clone + Send + Sync + std::fmt::Debug + 'static> {
     sessions: RwLock<HashMap<Id, Arc<RwLock<AgentExecutor>>>>,
     cancellation_tokens: RwLock<HashMap<Id, Arc<CancellationToken>>>,
 }
 
-impl<Id: Hash + Eq + Clone + Send + Sync + 'static> Default for SessionRegistry<Id> {
+impl<Id: Hash + Eq + Clone + Send + Sync + std::fmt::Debug + 'static> Default for SessionRegistry<Id> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Id: Hash + Eq + Clone + Send + Sync + 'static> SessionRegistry<Id> {
+impl<Id: Hash + Eq + Clone + Send + Sync + std::fmt::Debug + 'static> SessionRegistry<Id> {
     /// Create a new empty registry
     #[must_use]
     pub fn new() -> Self {
@@ -159,7 +159,7 @@ impl<Id: Hash + Eq + Clone + Send + Sync + 'static> SessionRegistry<Id> {
         let result = match executor_arc.try_write() {
             Ok(mut executor) => {
                 executor.reset();
-                debug!("Session reset");
+                info!(user_id = ?id, "Session reset");
                 Ok(())
             }
             Err(_) => Err("Cannot reset while task is running"),
