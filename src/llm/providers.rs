@@ -506,9 +506,26 @@ impl ZaiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!(
-                "ZAI API error: {status} - {error_text}"
-            )));
+
+            // Detect HTML error pages from Nginx/proxies
+            let is_html = error_text.trim_start().starts_with("<!DOCTYPE")
+                || error_text.trim_start().starts_with("<html")
+                || error_text.trim_start().starts_with("<HTML");
+
+            let clean_message = if is_html {
+                // Don't include raw HTML in error message
+                format!("ZAI API error: {status} (Server returned HTML error page)")
+            } else {
+                // Truncate very long error messages to avoid token bloat
+                let truncated = if error_text.len() > 500 {
+                    format!("{}... (truncated)", &error_text[..500])
+                } else {
+                    error_text
+                };
+                format!("ZAI API error: {status} - {truncated}")
+            };
+
+            return Err(LlmError::ApiError(clean_message));
         }
 
         Ok(response)

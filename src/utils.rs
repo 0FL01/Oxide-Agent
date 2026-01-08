@@ -19,6 +19,31 @@ use tracing::warn;
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
+/// Sanitizes all HTML special characters from error text for safe Telegram rendering.
+///
+/// Unlike `clean_html`, this function escapes *all* angle brackets and special HTML
+/// characters, not just unsupported tags. Use this for error messages that may contain
+/// raw HTML from upstream sources (e.g., Nginx error pages, API responses).
+///
+/// This prevents Telegram "Bad Request: can't parse entities" errors when error text
+/// accidentally contains HTML tags like `<html>`, `<!DOCTYPE>`, etc.
+///
+/// # Examples
+///
+/// ```
+/// use oxide_agent::utils::sanitize_html_error;
+/// let error = "<html>500 Internal Server Error</html>";
+/// let safe = sanitize_html_error(error);
+/// assert_eq!(safe, "&lt;html&gt;500 Internal Server Error&lt;/html&gt;");
+/// ```
+#[must_use]
+pub fn sanitize_html_error(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// Match code blocks: ```...```
 static RE_CODE_BLOCK: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"```[\s\S]*?```");
 

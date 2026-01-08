@@ -339,10 +339,14 @@ impl LlmClient {
 
     /// Chat completion with tool calling support (for agent mode)
     ///
+    /// This method includes retry logic with exponential backoff for transient errors
+    /// (5xx status codes and network errors). Up to 5 attempts will be made with
+    /// increasing delays: 1s, 2s, 4s, 8s, 16s.
+    ///
     /// # Errors
     ///
     /// Returns `LlmError::Unknown` if the model is not found, if tool calling is not supported for the provider,
-    /// or any error from the provider.
+    /// or any error from the provider after all retry attempts are exhausted.
     #[instrument(skip(self, system_prompt, messages, tools))]
     pub async fn chat_with_tools(
         &self,
@@ -352,6 +356,10 @@ impl LlmClient {
         model_name: &str,
     ) -> Result<ChatResponse, LlmError> {
         use crate::config::MODELS;
+
+        // Retry configuration (hardcoded with reasonable defaults)
+        const MAX_RETRIES: usize = 5;
+        const INITIAL_BACKOFF_MS: u64 = 1000; // 1 second
 
         let model_info = MODELS
             .iter()
@@ -370,37 +378,93 @@ impl LlmClient {
             "Sending tool-enabled request to LLM"
         );
 
-        let start = std::time::Instant::now();
-        let result = provider
-            .chat_with_tools(
-                system_prompt,
-                messages,
-                tools,
-                model_info.id,
-                model_info.max_tokens,
-            )
-            .await;
-        let duration = start.elapsed();
+        for attempt in 1..=MAX_RETRIES {
+            let start = std::time::Instant::now();
+            let result = provider
+                .chat_with_tools(
+                    system_prompt,
+                    messages,
+                    tools,
+                    model_info.id,
+                    model_info.max_tokens,
+                )
+                .await;
+            let duration = start.elapsed();
 
-        if let Ok(resp) = &result {
-            debug!(
-                model = model_name,
-                duration_ms = duration.as_millis(),
-                tool_calls_count = resp.tool_calls.len(),
-                finish_reason = %resp.finish_reason,
-                has_reasoning = resp.reasoning_content.is_some(),
-                "Received tool response from LLM"
-            );
-        } else if let Err(e) = &result {
-            warn!(
-                model = model_name,
-                duration_ms = duration.as_millis(),
-                error = %e,
-                "Tool-enabled LLM request failed"
-            );
+            match result {
+                Ok(resp) => {
+                    if attempt > 1 {
+                        info!(
+                            model = model_name,
+                            attempt = attempt,
+                            duration_ms = duration.as_millis(),
+                            "LLM retry succeeded"
+                        );
+                    }
+                    debug!(
+                        model = model_name,
+                        duration_ms = duration.as_millis(),
+                        tool_calls_count = resp.tool_calls.len(),
+                        finish_reason = %resp.finish_reason,
+                        has_reasoning = resp.reasoning_content.is_some(),
+                        "Received tool response from LLM"
+                    );
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    warn!(
+                        model = model_name,
+                        attempt = attempt,
+                        max_attempts = MAX_RETRIES,
+                        duration_ms = duration.as_millis(),
+                        error = %e,
+                        "Tool-enabled LLM request failed"
+                    );
+
+                    // Check if error is retryable and we have attempts left
+                    if Self::is_retryable_error(&e) && attempt < MAX_RETRIES {
+                        let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
+                        info!(
+                            model = model_name,
+                            backoff_ms = backoff_ms,
+                            attempt = attempt,
+                            max_attempts = MAX_RETRIES,
+                            "Retrying LLM request after transient error"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        continue;
+                    }
+
+                    return Err(e);
+                }
+            }
         }
 
-        result
+        // This should be unreachable, but just in case
+        Err(LlmError::ApiError(
+            "All retry attempts exhausted".to_string(),
+        ))
+    }
+
+    /// Checks if an LLM error is transient and should be retried.
+    ///
+    /// Retryable errors include:
+    /// - 5xx server errors (500, 502, 503, 504)
+    /// - Network errors (timeouts, connection issues)
+    fn is_retryable_error(error: &LlmError) -> bool {
+        match error {
+            LlmError::ApiError(msg) => {
+                let msg_lower = msg.to_lowercase();
+                msg_lower.contains("500")
+                    || msg_lower.contains("502")
+                    || msg_lower.contains("503")
+                    || msg_lower.contains("504")
+                    || msg_lower.contains("timeout")
+                    || msg_lower.contains("overloaded")
+            }
+            LlmError::NetworkError(_) => true,
+            _ => false,
+        }
     }
 
     /// Generate an embedding vector using the Mistral embeddings endpoint.

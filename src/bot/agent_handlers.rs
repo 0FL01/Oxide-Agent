@@ -372,7 +372,10 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
             send_long_message(&ctx.bot, chat_id, &response).await?;
         }
         Err(e) => {
-            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{e}");
+            // Sanitize error text to prevent Telegram HTML parse errors
+            // (errors from API may contain raw HTML like Nginx error pages)
+            let sanitized_error = crate::utils::sanitize_html_error(&e.to_string());
+            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{sanitized_error}");
             edit_message_safe(&ctx.bot, chat_id, progress_msg.id, &error_text).await;
         }
     }
@@ -407,7 +410,9 @@ async fn run_agent_task_with_text(
             send_long_message(&bot, chat_id, &response).await?;
         }
         Err(e) => {
-            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{e}");
+            // Sanitize error text to prevent Telegram HTML parse errors
+            let sanitized_error = crate::utils::sanitize_html_error(&e.to_string());
+            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{sanitized_error}");
             edit_message_safe(&bot, chat_id, progress_msg.id, &error_text).await;
         }
     }
