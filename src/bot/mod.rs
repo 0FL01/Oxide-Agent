@@ -6,6 +6,8 @@ pub mod agent_handlers;
 pub mod handlers;
 /// Common messaging utilities (split long messages, formatting)
 pub mod messaging;
+/// Resilient messaging with automatic retry for Telegram API operations
+pub mod resilient;
 /// User state and dialogue management
 pub mod state;
 /// Unauthorized access flood protection

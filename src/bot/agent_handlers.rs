@@ -296,7 +296,7 @@ fn spawn_progress_updater(
 
             if last_update.elapsed() >= throttle_duration {
                 let text = state.format_telegram();
-                edit_message_safe(&bot, chat_id, msg_id, &text).await;
+                super::resilient::edit_message_safe_resilient(&bot, chat_id, msg_id, &text).await;
                 last_update = std::time::Instant::now();
                 needs_update = false;
             }
@@ -304,7 +304,7 @@ fn spawn_progress_updater(
 
         let final_text = state.format_telegram();
         if needs_update {
-            edit_message_safe(&bot, chat_id, msg_id, &final_text).await;
+            super::resilient::edit_message_safe_resilient(&bot, chat_id, msg_id, &final_text).await;
         }
         final_text
     })
@@ -344,12 +344,14 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         "Input preprocessed, task text extracted"
     );
 
-    // Send initial progress message
-    let progress_msg = ctx
-        .bot
-        .send_message(chat_id, "⏳ Обработка задачи...")
-        .parse_mode(ParseMode::Html)
-        .await?;
+    // Send initial progress message with retry on network failures
+    let progress_msg = super::resilient::send_message_resilient(
+        &ctx.bot,
+        chat_id,
+        "⏳ Обработка задачи...",
+        Some(ParseMode::Html),
+    )
+    .await?;
 
     // Create progress tracking channel
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
@@ -367,7 +369,13 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     // Update the message with the result
     match result {
         Ok(response) => {
-            edit_message_safe(&ctx.bot, chat_id, progress_msg.id, &progress_text).await;
+            super::resilient::edit_message_safe_resilient(
+                &ctx.bot,
+                chat_id,
+                progress_msg.id,
+                &progress_text,
+            )
+            .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
             send_long_message(&ctx.bot, chat_id, &response).await?;
         }
@@ -376,7 +384,13 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
             // (errors from API may contain raw HTML like Nginx error pages)
             let sanitized_error = crate::utils::sanitize_html_error(&e.to_string());
             let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{sanitized_error}");
-            edit_message_safe(&ctx.bot, chat_id, progress_msg.id, &error_text).await;
+            super::resilient::edit_message_safe_resilient(
+                &ctx.bot,
+                chat_id,
+                progress_msg.id,
+                &error_text,
+            )
+            .await;
         }
     }
 
@@ -390,10 +404,13 @@ async fn run_agent_task_with_text(
     task_text: String,
     storage: Arc<R2Storage>,
 ) -> Result<()> {
-    let progress_msg = bot
-        .send_message(chat_id, "⏳ Обработка задачи...")
-        .parse_mode(ParseMode::Html)
-        .await?;
+    let progress_msg = super::resilient::send_message_resilient(
+        &bot,
+        chat_id,
+        "⏳ Обработка задачи...",
+        Some(ParseMode::Html),
+    )
+    .await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
     let progress_handle = spawn_progress_updater(bot.clone(), chat_id, progress_msg.id, rx);
@@ -405,7 +422,13 @@ async fn run_agent_task_with_text(
 
     match result {
         Ok(response) => {
-            edit_message_safe(&bot, chat_id, progress_msg.id, &progress_text).await;
+            super::resilient::edit_message_safe_resilient(
+                &bot,
+                chat_id,
+                progress_msg.id,
+                &progress_text,
+            )
+            .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
             send_long_message(&bot, chat_id, &response).await?;
         }
@@ -413,7 +436,13 @@ async fn run_agent_task_with_text(
             // Sanitize error text to prevent Telegram HTML parse errors
             let sanitized_error = crate::utils::sanitize_html_error(&e.to_string());
             let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{sanitized_error}");
-            edit_message_safe(&bot, chat_id, progress_msg.id, &error_text).await;
+            super::resilient::edit_message_safe_resilient(
+                &bot,
+                chat_id,
+                progress_msg.id,
+                &error_text,
+            )
+            .await;
         }
     }
 
@@ -557,32 +586,6 @@ pub async fn handle_loop_callback(
     }
 
     Ok(())
-}
-
-/// Edit a message safely (ignore errors)
-async fn edit_message_safe(bot: &Bot, chat_id: ChatId, msg_id: MessageId, text: &str) {
-    const ERROR_NOT_MODIFIED: &str = "message is not modified";
-    const ERROR_NOT_FOUND: &str = "message to edit not found";
-
-    let truncated = if text.chars().count() > 4000 {
-        let truncated_text = crate::utils::truncate_str(text, 4000);
-        format!("{truncated_text}...\n\n<i>(сообщение обрезано)</i>")
-    } else {
-        text.to_string()
-    };
-
-    if let Err(e) = bot
-        .edit_message_text(chat_id, msg_id, truncated)
-        .parse_mode(ParseMode::Html)
-        .await
-    {
-        let err_msg = e.to_string();
-        if !err_msg.contains(ERROR_NOT_MODIFIED) && !err_msg.contains(ERROR_NOT_FOUND) {
-            warn!("Failed to edit message: {e}");
-        } else {
-            debug!("Message update skipped or not found: {err_msg}");
-        }
-    }
 }
 
 /// Cancel the current agent task

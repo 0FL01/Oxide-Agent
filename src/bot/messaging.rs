@@ -45,8 +45,8 @@ pub async fn send_long_message(bot: &Bot, chat_id: ChatId, text: &str) -> Result
     for part in parts {
         // Format each part to HTML after splitting to ensure proper tag closure
         let formatted = utils::format_text(&part);
-        bot.send_message(chat_id, formatted)
-            .parse_mode(ParseMode::Html)
+        // Use resilient send with automatic retry on network failures
+        super::resilient::send_message_resilient(bot, chat_id, formatted, Some(ParseMode::Html))
             .await?;
     }
 

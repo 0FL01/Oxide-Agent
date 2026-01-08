@@ -60,6 +60,7 @@ src/
 │   ├── handlers.rs
 │   ├── agent_handlers.rs
 │   ├── messaging.rs           # отправка и разбиение сообщений
+│   ├── resilient.rs           # устойчивая отправка с ретраями
 │   ├── state.rs
 │   ├── unauthorized_cache.rs
 │   ├── views/                 # шаблоны сообщений и UI
