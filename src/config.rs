@@ -24,7 +24,7 @@ pub struct Settings {
     pub groq_api_key: Option<String>,
     /// Mistral API key
     pub mistral_api_key: Option<String>,
-    /// `ZeroAI` API key
+    /// `ZAI` (Zhipu AI) API key
     pub zai_api_key: Option<String>,
     /// Gemini API key
     pub gemini_api_key: Option<String>,
