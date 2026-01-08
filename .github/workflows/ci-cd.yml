@@ -10,7 +10,7 @@ on:
 
 env:
   DOCKER_IMAGE: another-chat-tg # Local usage only/naming convention
-  RUST_LOG: info,another_chat_rs::agent::loop_detection=debug
+  RUST_LOG: info
 
 jobs:
   test:
@@ -32,7 +32,7 @@ jobs:
       LOOP_CONTENT_CHUNK_SIZE: "50"
       LOOP_CONTENT_THRESHOLD: "10"
       LOOP_MAX_HISTORY_LENGTH: "5000"
-      LOOP_LLM_CHECK_AFTER_TURNS: "30"
+      LOOP_LLM_CHECK_AFTER_TURNS: "25"
       LOOP_LLM_CHECK_INTERVAL: "3"
       LOOP_LLM_CONFIDENCE_THRESHOLD: "0.9"
       LOOP_LLM_HISTORY_COUNT: "20"
@@ -111,7 +111,7 @@ jobs:
           LOOP_CONTENT_CHUNK_SIZE: ${{ secrets.LOOP_CONTENT_CHUNK_SIZE || '50' }}
           LOOP_CONTENT_THRESHOLD: ${{ secrets.LOOP_CONTENT_THRESHOLD || '10' }}
           LOOP_MAX_HISTORY_LENGTH: ${{ secrets.LOOP_MAX_HISTORY_LENGTH || '5000' }}
-          LOOP_LLM_CHECK_AFTER_TURNS: ${{ secrets.LOOP_LLM_CHECK_AFTER_TURNS || '30' }}
+          LOOP_LLM_CHECK_AFTER_TURNS: ${{ secrets.LOOP_LLM_CHECK_AFTER_TURNS || '25' }}
           LOOP_LLM_CHECK_INTERVAL: ${{ secrets.LOOP_LLM_CHECK_INTERVAL || '3' }}
           LOOP_LLM_CONFIDENCE_THRESHOLD: ${{ secrets.LOOP_LLM_CONFIDENCE_THRESHOLD || '0.9' }}
           LOOP_LLM_HISTORY_COUNT: ${{ secrets.LOOP_LLM_HISTORY_COUNT || '20' }}
@@ -195,7 +195,7 @@ jobs:
 
             # Create .env file using environment variables
             echo "Creating .env file..."
-            printf "RUST_LOG=info,another_chat_rs::agent::loop_detection=debug\n" > .env
+            printf "RUST_LOG=info\n" > .env
             printf "GROQ_API_KEY=%s\n" "$GROQ_API_KEY" >> .env
             printf "TELEGRAM_TOKEN=%s\n" "$TELEGRAM_TOKEN" >> .env
             printf "OPENROUTER_API_KEY=%s\n" "$OPENROUTER_API_KEY" >> .env
@@ -218,7 +218,7 @@ jobs:
             test -n "$LOOP_CONTENT_CHUNK_SIZE"; or set LOOP_CONTENT_CHUNK_SIZE 50
             test -n "$LOOP_CONTENT_THRESHOLD"; or set LOOP_CONTENT_THRESHOLD 10
             test -n "$LOOP_MAX_HISTORY_LENGTH"; or set LOOP_MAX_HISTORY_LENGTH 5000
-            test -n "$LOOP_LLM_CHECK_AFTER_TURNS"; or set LOOP_LLM_CHECK_AFTER_TURNS 30
+            test -n "$LOOP_LLM_CHECK_AFTER_TURNS"; or set LOOP_LLM_CHECK_AFTER_TURNS 25
             test -n "$LOOP_LLM_CHECK_INTERVAL"; or set LOOP_LLM_CHECK_INTERVAL 3
             test -n "$LOOP_LLM_CONFIDENCE_THRESHOLD"; or set LOOP_LLM_CONFIDENCE_THRESHOLD 0.9
             test -n "$LOOP_LLM_HISTORY_COUNT"; or set LOOP_LLM_HISTORY_COUNT 20
