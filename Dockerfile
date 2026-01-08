@@ -32,11 +32,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/another-chat-rs /app/another-chat-rs
+COPY --from=builder /app/target/release/oxide-agent /app/oxide-agent
 COPY skills/ /app/skills/
 
 
 # Set environment variables
 ENV RUST_LOG=info
 
-CMD ["./another-chat-rs"]
+CMD ["./oxide-agent"]

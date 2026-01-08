@@ -25,9 +25,9 @@ impl Preprocessor {
     ///
     /// ```no_run
     /// use std::sync::Arc;
-    /// use another_chat_rs::llm::LlmClient;
-    /// use another_chat_rs::agent::preprocessor::Preprocessor;
-    /// use another_chat_rs::config::Settings;
+    /// use oxide_agent::llm::LlmClient;
+    /// use oxide_agent::agent::preprocessor::Preprocessor;
+    /// use oxide_agent::config::Settings;
     ///
     /// let settings = Settings::new().unwrap();
     /// let llm_client = Arc::new(LlmClient::new(&settings));
@@ -49,9 +49,9 @@ impl Preprocessor {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use another_chat_rs::llm::LlmClient;
-    /// # use another_chat_rs::agent::preprocessor::Preprocessor;
-    /// # use another_chat_rs::config::Settings;
+    /// # use oxide_agent::llm::LlmClient;
+    /// # use oxide_agent::agent::preprocessor::Preprocessor;
+    /// # use oxide_agent::config::Settings;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
     /// # let settings = Settings::new().unwrap();
@@ -91,9 +91,9 @@ impl Preprocessor {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use another_chat_rs::llm::LlmClient;
-    /// # use another_chat_rs::agent::preprocessor::Preprocessor;
-    /// # use another_chat_rs::config::Settings;
+    /// # use oxide_agent::llm::LlmClient;
+    /// # use oxide_agent::agent::preprocessor::Preprocessor;
+    /// # use oxide_agent::config::Settings;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
     /// # let settings = Settings::new().unwrap();
@@ -281,9 +281,9 @@ impl Preprocessor {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use another_chat_rs::llm::LlmClient;
-    /// # use another_chat_rs::agent::preprocessor::{Preprocessor, AgentInput};
-    /// # use another_chat_rs::config::Settings;
+    /// # use oxide_agent::llm::LlmClient;
+    /// # use oxide_agent::agent::preprocessor::{Preprocessor, AgentInput};
+    /// # use oxide_agent::config::Settings;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
     /// # let settings = Settings::new().unwrap();

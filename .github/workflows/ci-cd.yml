@@ -1,4 +1,4 @@
-name: CI/CD Pipeline (Rust)
+name: Oxide Agent CI/CD Pipeline
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
     branches: [ "main", "testing" ]
 
 env:
-  DOCKER_IMAGE: another-chat-tg # Local usage only/naming convention
+  DOCKER_IMAGE: oxide-agent # Local usage only/naming convention
   RUST_LOG: info
 
 jobs:
@@ -239,10 +239,10 @@ jobs:
             # Create docker-compose.yml
             echo "Creating docker-compose.yml..."
             echo "services:
-              another_chat_tg:
+              oxide_agent:
                 build:
                   context: ./build_context
-                container_name: another_chat_tg
+                container_name: oxide_agent
                 network_mode: \"host\"
                 restart: unless-stopped
                 env_file:

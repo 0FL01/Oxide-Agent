@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 mod xml_sanitization_tests {
-    use another_chat_rs::utils::clean_html;
+    use oxide_agent::utils::clean_html;
 
     #[test]
     fn test_sanitize_xml_tags_basic() {
@@ -105,7 +105,7 @@ mod integration_tests {
 
 #[cfg(test)]
 mod progress_integration_tests {
-    use another_chat_rs::agent::progress::{AgentEvent, ProgressState};
+    use oxide_agent::agent::progress::{AgentEvent, ProgressState};
 
     #[test]
     fn test_progress_state_with_sanitized_tool_name() {
@@ -142,7 +142,7 @@ mod progress_integration_tests {
 // BUGFIX AGENT-2026-001: Integration tests for malformed tool call bug fix
 #[cfg(test)]
 mod bugfix_agent_2026_001_tests {
-    use another_chat_rs::agent::sanitize_xml_tags;
+    use oxide_agent::agent::sanitize_xml_tags;
 
     #[test]
     fn test_ytdlp_malformed_tool_call_detection() {

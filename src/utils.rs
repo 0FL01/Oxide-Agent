@@ -120,7 +120,7 @@ fn escape_angle_brackets(text: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use another_chat_rs::utils::clean_html;
+/// use oxide_agent::utils::clean_html;
 /// let input = "Check this: 1 < 2 but <b>bold</b> works";
 /// let cleaned = clean_html(input);
 /// assert_eq!(cleaned, "Check this: 1 &lt; 2 but <b>bold</b> works");
@@ -172,7 +172,7 @@ pub fn clean_html(text: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use another_chat_rs::utils::format_text;
+/// use oxide_agent::utils::format_text;
 /// let input = "**Bold** and *italic* with `code`";
 /// let formatted = format_text(input);
 /// assert_eq!(formatted, "<b>Bold</b> and <i>italic</i> with <code>code</code>");
@@ -237,7 +237,7 @@ pub fn format_text(text: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use another_chat_rs::utils::split_long_message;
+/// use oxide_agent::utils::split_long_message;
 /// let long_msg = "A very long message...\n".repeat(300);
 /// let parts = split_long_message(&long_msg, 4096);
 /// assert!(parts.len() > 1);
@@ -341,7 +341,7 @@ pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// use another_chat_rs::utils::truncate_str;
+/// use oxide_agent::utils::truncate_str;
 /// let s = "Привет, мир!";
 /// assert_eq!(truncate_str(s, 6), "Привет");
 /// ```
@@ -392,7 +392,7 @@ pub fn format_tokens(n: usize) -> String {
 /// # Examples
 ///
 /// ```no_run
-/// use another_chat_rs::utils::retry_telegram_operation;
+/// use oxide_agent::utils::retry_telegram_operation;
 /// use anyhow::Result;
 ///
 /// async fn download_file() -> Result<Vec<u8>> {

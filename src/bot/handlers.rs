@@ -96,7 +96,7 @@ pub enum Command {
 /// # Examples
 ///
 /// ```
-/// use another_chat_rs::bot::handlers::get_main_keyboard;
+/// use oxide_agent::bot::handlers::get_main_keyboard;
 /// let keyboard = get_main_keyboard();
 /// assert!(!keyboard.keyboard.is_empty());
 /// ```
@@ -130,7 +130,7 @@ pub fn get_chat_keyboard() -> KeyboardMarkup {
 /// # Examples
 ///
 /// ```
-/// use another_chat_rs::bot::handlers::get_extra_functions_keyboard;
+/// use oxide_agent::bot::handlers::get_extra_functions_keyboard;
 /// let keyboard = get_extra_functions_keyboard();
 /// assert!(!keyboard.keyboard.is_empty());
 /// ```
@@ -148,7 +148,7 @@ pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
 /// # Examples
 ///
 /// ```
-/// use another_chat_rs::bot::handlers::get_model_keyboard;
+/// use oxide_agent::bot::handlers::get_model_keyboard;
 /// let keyboard = get_model_keyboard();
 /// assert!(!keyboard.keyboard.is_empty());
 /// ```

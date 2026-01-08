@@ -37,7 +37,7 @@ impl UnauthorizedCache {
     /// # Examples
     ///
     /// ```
-    /// use another_chat_rs::bot::UnauthorizedCache;
+    /// use oxide_agent::bot::UnauthorizedCache;
     ///
     /// let cache = UnauthorizedCache::new(
     ///     1200,   // 20 minutes cooldown
@@ -75,7 +75,7 @@ impl UnauthorizedCache {
     /// # Examples
     ///
     /// ```no_run
-    /// # use another_chat_rs::bot::UnauthorizedCache;
+    /// # use oxide_agent::bot::UnauthorizedCache;
     /// # async fn example() {
     /// let cache = UnauthorizedCache::new(1200, 7200, 10_000);
     ///

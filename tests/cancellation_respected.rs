@@ -1,6 +1,6 @@
-use another_chat_rs::agent::{AgentExecutor, AgentSession, AgentStatus, TodoItem, TodoStatus};
-use another_chat_rs::config::Settings;
-use another_chat_rs::llm::LlmClient;
+use oxide_agent::agent::{AgentExecutor, AgentSession, AgentStatus, TodoItem, TodoStatus};
+use oxide_agent::config::Settings;
+use oxide_agent::llm::LlmClient;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -20,7 +20,7 @@ fn settings_without_llm_providers() -> Settings {
         r2_endpoint_url: None,
         r2_bucket_name: None,
         openrouter_site_url: String::new(),
-        openrouter_site_name: "Another Chat TG Bot".to_string(),
+        openrouter_site_name: "Oxide Agent TG Bot".to_string(),
         system_message: None,
     }
 }

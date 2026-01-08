@@ -33,7 +33,7 @@ pub const TELEGRAM_MESSAGE_LIMIT: usize = 4000;
 /// # Examples
 ///
 /// ```ignore
-/// use another_chat_rs::bot::messaging::send_long_message;
+/// use oxide_agent::bot::messaging::send_long_message;
 ///
 /// // Will automatically split if text exceeds 4000 characters
 /// send_long_message(&bot, chat_id, &very_long_response).await?;

@@ -221,7 +221,7 @@ pub fn loop_type_label(loop_type: LoopType) -> &'static str {
 /// # Examples
 ///
 /// ```
-/// use another_chat_rs::bot::views::get_agent_keyboard;
+/// use oxide_agent::bot::views::get_agent_keyboard;
 /// let keyboard = get_agent_keyboard();
 /// assert!(!keyboard.keyboard.is_empty());
 /// ```

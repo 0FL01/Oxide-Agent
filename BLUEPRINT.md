@@ -15,7 +15,7 @@
 
 **Цель:** Определить, какой именно детектор вызывает ложные срабатывания.
 
-### [MODIFY] [tool_detector.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/tool_detector.rs)
+### [MODIFY] [tool_detector.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/tool_detector.rs)
 
 - Добавить `tracing::debug!` в метод `check()` с выводом:
   - `tool_name`
@@ -24,13 +24,13 @@
   - Счётчик повторений `repetition_count`
 - Логировать момент срабатывания threshold
 
-### [MODIFY] [service.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/service.rs)
+### [MODIFY] [service.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/service.rs)
 
 - В `check_tool_call()` добавить лог какой тип петли сработал
 - Логировать состояние всех детекторов перед возвратом `true`
 - Добавить трейс в `check_content()` и `check_llm_periodic()`
 
-### [MODIFY] [content_detector.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/content_detector.rs)
+### [MODIFY] [content_detector.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/content_detector.rs)
 
 - Добавить аналогичное debug-логирование
 - Логировать размер chunk'ов и совпадения
@@ -41,7 +41,7 @@
 
 **Цель:** Заменить простой последовательный счётчик на window-based анализ паттернов.
 
-### [MODIFY] [tool_detector.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/tool_detector.rs)
+### [MODIFY] [tool_detector.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/tool_detector.rs)
 
 Полная переработка структуры `ToolCallDetector`:
 
@@ -59,20 +59,20 @@
    - **Циклы:** `A → B → C → A → B → C`
 3. Не считать петлёй: `A → B → C → D → E` (разные вызовы)
 
-### [MODIFY] [config.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/config.rs)
+### [MODIFY] [config.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/config.rs)
 
 Добавить новые параметры:
 - `tool_window_size` (default: 10)
 - `tool_pattern_min_repeats` (default: 3)
 - `tool_max_pattern_length` (default: 4)
 
-### [NEW] [pattern_matcher.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/pattern_matcher.rs)
+### [NEW] [pattern_matcher.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/pattern_matcher.rs)
 
 Новый модуль для алгоритмов поиска паттернов:
 - Функция поиска повторяющихся подпоследовательностей
 - Эффективный алгоритм (rolling hash или suffix matching)
 
-### [MODIFY] [mod.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/mod.rs)
+### [MODIFY] [mod.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/mod.rs)
 
 - Добавить экспорт `pattern_matcher`
 
@@ -82,7 +82,7 @@
 
 **Цель:** Сделать LLM-детектор основным арбитром с лучшим контекстом.
 
-### [MODIFY] [llm_detector.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/llm_detector.rs)
+### [MODIFY] [llm_detector.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/llm_detector.rs)
 
 **Изменения в промпте:**
 - Переписать `SYSTEM_PROMPT` с явным указанием:
@@ -98,7 +98,7 @@
 **Изменения в интервалах:**
 - Вместо фиксированного интервала — адаптивная логика
 
-### [MODIFY] [config.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/config.rs)
+### [MODIFY] [config.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/config.rs)
 
 Обновить defaults для LLM детектора:
 - `llm_check_after_turns`: 15 (было 30)
@@ -106,7 +106,7 @@
 - `llm_confidence_threshold`: 0.85 (было 0.9)
 - `llm_history_count`: 30 (было 20)
 
-### [MODIFY] [types.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/loop_detection/types.rs)
+### [MODIFY] [types.rs](file:///home/stfu/ai/oxide-agent/src/agent/loop_detection/types.rs)
 
 - Добавить новый `LoopType::PatternLoop` для sliding window детекции
 - Расширить `LoopDetectedEvent` полем `pattern_description: Option<String>`
@@ -123,7 +123,7 @@
    - Тест на `A → A → A → A → A` (должен детектироваться)
 
 2. Интеграционные тесты:
-   - `cargo test --package another_chat_rs --lib loop_detection`
+   - `cargo test --package oxide_agent --lib loop_detection`
 
 ### Manual Verification
 

@@ -58,7 +58,7 @@ const fn default_openrouter_site_url() -> String {
 }
 
 fn default_openrouter_site_name() -> String {
-    "Another Chat TG Bot".to_string()
+    "Oxide Agent TG Bot".to_string()
 }
 
 impl Settings {
@@ -67,7 +67,7 @@ impl Settings {
     /// # Examples
     ///
     /// ```no_run
-    /// use another_chat_rs::config::Settings;
+    /// use oxide_agent::config::Settings;
     ///
     /// let settings = Settings::new().expect("Failed to load configuration");
     /// ```

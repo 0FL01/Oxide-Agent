@@ -40,7 +40,7 @@ sequenceDiagram
 
 ### Agent Providers
 
-#### [NEW] [delegation.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/providers/delegation.rs)
+#### [NEW] [delegation.rs](file:///home/stfu/ai/oxide-agent/src/agent/providers/delegation.rs)
 Провайдер инструмента `delegate_to_sub_agent`:
 - **Параметры инструмента**:
   - `task`: строка — описание задачи для саб-агента
@@ -52,7 +52,7 @@ sequenceDiagram
 
 ### Configuration
 
-#### [MODIFY] [config.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/config.rs)
+#### [MODIFY] [config.rs](file:///home/stfu/ai/oxide-agent/src/config.rs)
 Добавить:
 ```diff
 +/// Model for sub-agent delegation (lightweight CoT)
@@ -82,20 +82,20 @@ sequenceDiagram
 
 ### Agent Module
 
-#### [MODIFY] [mod.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/providers/mod.rs)
+#### [MODIFY] [mod.rs](file:///home/stfu/ai/oxide-agent/src/agent/providers/mod.rs)
 Добавить экспорт нового провайдера:
 ```diff
 +pub mod delegation;
 ```
 
-#### [MODIFY] [registry.rs](file:///home/stfu/ai/Another-Chat-with-LLM/src/agent/registry.rs)
+#### [MODIFY] [registry.rs](file:///home/stfu/ai/oxide-agent/src/agent/registry.rs)
 Зарегистрировать инструмент `delegate_to_sub_agent` с низким приоритетом.
 
 ---
 
 ### Skills
 
-#### [NEW] [delegation.md](file:///home/stfu/ai/Another-Chat-with-LLM/skills/delegation.md)
+#### [NEW] [delegation.md](file:///home/stfu/ai/oxide-agent/skills/delegation.md)
 Skill-файл для объяснения агенту когда и как использовать делегирование:
 
 ```markdown

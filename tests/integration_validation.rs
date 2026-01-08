@@ -1,4 +1,4 @@
-use another_chat_rs::config::Settings;
+use oxide_agent::config::Settings;
 use anyhow::{anyhow, Result};
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;

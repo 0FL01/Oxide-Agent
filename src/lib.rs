@@ -1,5 +1,5 @@
 #![deny(missing_docs)]
-//! Another Chat with LLM - Rust implementation
+//! Oxide Agent
 //!
 //! A Telegram bot that supports multiple LLM providers, multimodal input,
 //! and an advanced agent mode with tool execution and sandboxing.

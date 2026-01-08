@@ -1,9 +1,9 @@
-use another_chat_rs::bot::UnauthorizedCache;
-use another_chat_rs::config::{
+use oxide_agent::bot::UnauthorizedCache;
+use oxide_agent::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
     Settings,
 };
-use another_chat_rs::{bot, llm, storage};
+use oxide_agent::{bot, llm, storage};
 use bot::handlers::{get_user_id_safe, Command};
 use bot::state::State;
 use dotenvy::dotenv;
@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup logging with redaction
     init_logging(patterns);
 
-    info!("Starting Another Chat TG Bot (Rust port)...");
+    info!("Starting Oxide Agent TG Bot...");
 
     // Load settings
     let settings = init_settings();

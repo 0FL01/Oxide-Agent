@@ -1,6 +1,6 @@
-# Another Chat TG Bot
+# Oxide Agent TG Bot
 
-Универсальный Telegram-бот с ИИ-ассистентом, поддерживающий множество моделей, мультимодальность и расширенный **Режим Агента** с выполнением кода. **Написан на Rust.**
+Универсальный Telegram-бот с ИИ-ассистентом, поддерживающий множество моделей, мультимодальность и расширенный **Режим Агента** с выполнением кода.
 
 ## Описание
 
@@ -57,8 +57,8 @@
 
 1.  **Клонируйте репозиторий:**
     ```bash
-    git clone https://github.com/0FL01/Another-Chat-with-LLM.git
-    cd Another-Chat-with-LLM
+    git clone https://github.com/0FL01/oxide-agent.git
+    cd oxide-agent
     ```
 
 2.  **Настройте переменные окружения:**
@@ -282,7 +282,7 @@ cargo build --release --features tavily
 
 ## Лицензия
 
-Проект распространяется под лицензией **GNU Affero General Public License v3 (AGPL-3.0)**. Подробности в файле [LICENSE](https://github.com/0FL01/Another-Chat-with-LLM/blob/main/LICENSE).
+Проект распространяется под лицензией **GNU Affero General Public License v3 (AGPL-3.0)**. Подробности в файле [LICENSE](https://github.com/0FL01/oxide-agent/blob/main/LICENSE).
 
 Copyright (C) 2026 @0FL01
 

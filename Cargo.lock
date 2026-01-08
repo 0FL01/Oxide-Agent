@@ -27,51 +27,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "another-chat-rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-openai",
- "async-trait",
- "aws-config",
- "aws-credential-types",
- "aws-sdk-s3",
- "aws-types",
- "base64",
- "bollard",
- "bytes",
- "chrono",
- "config",
- "dotenvy",
- "eventsource-stream",
- "futures-util",
- "html-escape",
- "http-body-util",
- "lazy-regex",
- "moka",
- "regex",
- "reqwest",
- "serde",
- "serde_bytes",
- "serde_json",
- "serde_yaml",
- "sha2",
- "shell-escape",
- "tar",
- "tavily",
- "teloxide",
- "thiserror 2.0.17",
- "tiktoken-rs",
- "tokio",
- "tokio-retry",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "unicode-segmentation",
- "uuid",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2490,6 +2445,51 @@ name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
+
+[[package]]
+name = "oxide-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-openai",
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "aws-types",
+ "base64",
+ "bollard",
+ "bytes",
+ "chrono",
+ "config",
+ "dotenvy",
+ "eventsource-stream",
+ "futures-util",
+ "html-escape",
+ "http-body-util",
+ "lazy-regex",
+ "moka",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "shell-escape",
+ "tar",
+ "tavily",
+ "teloxide",
+ "thiserror 2.0.17",
+ "tiktoken-rs",
+ "tokio",
+ "tokio-retry",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-segmentation",
+ "uuid",
+]
 
 [[package]]
 name = "p256"
