@@ -301,4 +301,7 @@ cargo build --release --features tavily
 
 ## Лицензия
 
-MIT License
+Проект распространяется под лицензией **GNU Affero General Public License v3 (AGPL-3.0)**. Подробности в файле [LICENSE].
+
+Copyright (C) 2026 @0FL01
+
