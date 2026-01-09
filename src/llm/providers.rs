@@ -506,6 +506,17 @@ impl ZaiProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+
+            // Handle 429 Too Many Requests specifically
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let wait_secs = crate::llm::http_utils::parse_retry_after(response.headers());
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(LlmError::RateLimit {
+                    wait_secs,
+                    message: error_text,
+                });
+            }
+
             let error_text = response.text().await.unwrap_or_default();
 
             // Detect HTML error pages from Nginx/proxies

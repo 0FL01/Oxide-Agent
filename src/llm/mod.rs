@@ -27,6 +27,14 @@ pub enum LlmError {
     /// Missing provider configuration or API key
     #[error("Missing client/API key: {0}")]
     MissingConfig(String),
+    /// Rate limit exceeded (429), optionally with a wait time
+    #[error("Rate limit exceeded: {message} (wait: {wait_secs:?}s)")]
+    RateLimit {
+        /// Retry-After duration in seconds, if provided by the server
+        wait_secs: Option<u64>,
+        /// Error message from the server
+        message: String,
+    },
     /// Any other unexpected error
     #[error("Unknown error: {0}")]
     Unknown(String),
@@ -359,7 +367,6 @@ impl LlmClient {
 
         // Retry configuration (hardcoded with reasonable defaults)
         const MAX_RETRIES: usize = 5;
-        const INITIAL_BACKOFF_MS: u64 = 1000; // 1 second
 
         let model_info = MODELS
             .iter()
@@ -422,17 +429,19 @@ impl LlmClient {
                     );
 
                     // Check if error is retryable and we have attempts left
-                    if Self::is_retryable_error(&e) && attempt < MAX_RETRIES {
-                        let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
-                        info!(
-                            model = model_name,
-                            backoff_ms = backoff_ms,
-                            attempt = attempt,
-                            max_attempts = MAX_RETRIES,
-                            "Retrying LLM request after transient error"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                        continue;
+                    if attempt < MAX_RETRIES {
+                        if let Some(backoff) = Self::get_retry_delay(&e, attempt) {
+                            info!(
+                                model = model_name,
+                                backoff_ms = backoff.as_millis(),
+                                attempt = attempt,
+                                max_attempts = MAX_RETRIES,
+                                error_type = ?e,
+                                "Retrying LLM request"
+                            );
+                            tokio::time::sleep(backoff).await;
+                            continue;
+                        }
                     }
 
                     return Err(e);
@@ -446,24 +455,47 @@ impl LlmClient {
         ))
     }
 
-    /// Checks if an LLM error is transient and should be retried.
-    ///
-    /// Retryable errors include:
-    /// - 5xx server errors (500, 502, 503, 504)
-    /// - Network errors (timeouts, connection issues)
-    fn is_retryable_error(error: &LlmError) -> bool {
+    /// Calculates the delay before the next retry attempt based on the error type.
+    /// Returns `None` if the error is not retryable.
+    fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<std::time::Duration> {
+        const INITIAL_BACKOFF_MS: u64 = 1000;
+
         match error {
+            LlmError::RateLimit { wait_secs, .. } => {
+                // If the server provided a wait time, use it (plus a small buffer)
+                if let Some(secs) = wait_secs {
+                    return Some(std::time::Duration::from_secs(*secs + 1));
+                }
+                // Otherwise use a more aggressive backoff for rate limits: 10s, 20s, 40s...
+                // attempt starts at 1
+                let backoff_secs = 10u64 * 2u64.pow((attempt - 1) as u32);
+                Some(std::time::Duration::from_secs(backoff_secs))
+            }
             LlmError::ApiError(msg) => {
                 let msg_lower = msg.to_lowercase();
-                msg_lower.contains("500")
+                if msg_lower.contains("429") {
+                    // Treat as rate limit without explicit wait time
+                    let backoff_secs = 10u64 * 2u64.pow((attempt - 1) as u32);
+                    return Some(std::time::Duration::from_secs(backoff_secs));
+                }
+
+                if msg_lower.contains("500")
                     || msg_lower.contains("502")
                     || msg_lower.contains("503")
                     || msg_lower.contains("504")
                     || msg_lower.contains("timeout")
                     || msg_lower.contains("overloaded")
+                {
+                    let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
+                    return Some(std::time::Duration::from_millis(backoff_ms));
+                }
+                None
             }
-            LlmError::NetworkError(_) => true,
-            _ => false,
+            LlmError::NetworkError(_) => {
+                let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
+                Some(std::time::Duration::from_millis(backoff_ms))
+            }
+            _ => None,
         }
     }
 
@@ -541,20 +573,13 @@ impl LlmClient {
                 Ok(res) => return Ok(res),
                 Err(e) => {
                     warn!("OpenRouter: Error with {fallback_model} on attempt {attempt}: {e}");
-                    // Check if it's a retryable error
-                    let err_str = e.to_string().to_lowercase();
-                    if (err_str.contains("503")
-                        || err_str.contains("429")
-                        || err_str.contains("500")
-                        || err_str.contains("overloaded")
-                        || err_str.contains("unavailable")
-                        || err_str.contains("timeout"))
-                        && attempt < 5
-                    {
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                        continue;
+                    match Self::get_retry_delay(&e, attempt) {
+                        Some(delay) => {
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        None => return Err(e),
                     }
-                    return Err(e);
                 }
             }
         }

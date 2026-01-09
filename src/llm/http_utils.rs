@@ -67,6 +67,17 @@ pub async fn send_json_request(
 
     if !response.status().is_success() {
         let status = response.status();
+
+        // Handle 429 Too Many Requests specifically
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let wait_secs = parse_retry_after(response.headers());
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::RateLimit {
+                wait_secs,
+                message: error_text,
+            });
+        }
+
         let error_text = response.text().await.unwrap_or_default();
 
         // Detect HTML error pages from Nginx/proxies
@@ -132,4 +143,19 @@ pub fn extract_text_content(response: &Value, path: &[&str]) -> Result<String, L
         .as_str()
         .map(ToString::to_string)
         .ok_or_else(|| LlmError::ApiError(format!("Expected string at path, got: {current:?}")))
+}
+
+/// Helper to parse Retry-After header
+/// Returns number of seconds to wait if present and valid
+pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    if let Some(header_val) = headers.get(reqwest::header::RETRY_AFTER) {
+        if let Ok(val_str) = header_val.to_str() {
+            // Try parsing as seconds
+            if let Ok(secs) = val_str.parse::<u64>() {
+                return Some(secs);
+            }
+            // Could implement HTTP Date parsing here if needed, but seconds is most common for APIs
+        }
+    }
+    None
 }
