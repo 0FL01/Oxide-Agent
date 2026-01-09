@@ -7,7 +7,7 @@
 ## 1. Core Concept
 Use a secondary, lightweight LLM (Sidecar) to interpret the primary agent's raw reasoning and tool calls into a concise, human-readable narrative.
 
-**Target Model:** `mistral-small-latest` (Provider: Mistral AI)  
+**Target Model:** `labs-mistral-small-creative` (Provider: Mistral AI)  
 **Constraints:** 
 - Strict 1 RPS limit handling.
 - Fallback to static templates if the narrator fails.

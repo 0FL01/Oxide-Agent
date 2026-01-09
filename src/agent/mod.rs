@@ -36,6 +36,9 @@ pub mod tool_bridge;
 /// Agent thought inference from tool calls
 pub mod thoughts;
 
+/// Narrator for human-readable status updates
+pub mod narrator;
+
 /// Loop detection subsystem
 pub mod loop_detection;
 

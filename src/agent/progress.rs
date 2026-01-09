@@ -84,6 +84,13 @@ pub enum AgentEvent {
         /// Iteration when detected
         iteration: usize,
     },
+    /// Narrative update from sidecar LLM
+    Narrative {
+        /// Short action-oriented headline
+        headline: String,
+        /// Detailed context explanation
+        content: String,
+    },
 }
 
 /// Current state of the agent's progress
@@ -103,6 +110,10 @@ pub struct ProgressState {
     pub error: Option<String>,
     /// Current agent thought/reasoning
     pub current_thought: Option<String>,
+    /// Narrative headline from sidecar LLM
+    pub narrative_headline: Option<String>,
+    /// Narrative content from sidecar LLM
+    pub narrative_content: Option<String>,
 }
 
 /// A single step in the agent's execution process
@@ -166,6 +177,7 @@ impl ProgressState {
                 loop_type,
                 iteration,
             } => self.handle_loop_detected(loop_type, iteration),
+            AgentEvent::Narrative { headline, content } => self.handle_narrative(headline, content),
         }
     }
 
@@ -322,6 +334,11 @@ impl ProgressState {
         self.fail_last_step();
     }
 
+    fn handle_narrative(&mut self, headline: String, content: String) {
+        self.narrative_headline = Some(headline);
+        self.narrative_content = Some(content);
+    }
+
     /// Formats the progress state into a HTML message for Telegram
     #[must_use]
     pub fn format_telegram(&self) -> String {
@@ -339,8 +356,21 @@ impl ProgressState {
         ));
         lines.push(String::new());
 
-        // === Agent Thought (if available) ===
-        if let Some(ref thought) = self.current_thought {
+        // === Narrative or Agent Thought ===
+        // Prefer narrative from sidecar LLM, fallback to inferred thought
+        if let (Some(ref headline), Some(ref content)) =
+            (&self.narrative_headline, &self.narrative_content)
+        {
+            lines.push(format!(
+                "🧠 <b>{}</b>",
+                html_escape::encode_text(&crate::utils::truncate_str(headline, 50))
+            ));
+            lines.push(format!(
+                "   {}",
+                html_escape::encode_text(&crate::utils::truncate_str(content, 150))
+            ));
+            lines.push(String::new());
+        } else if let Some(ref thought) = self.current_thought {
             lines.push("💭 <i>Размышления агента:</i>".to_string());
             lines.push(format!(
                 "   {}",

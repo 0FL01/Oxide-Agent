@@ -40,6 +40,7 @@ src/
 │   ├── memory.rs
 │   ├── preprocessor.rs
 │   ├── progress.rs
+│   ├── narrator.rs            # генерация нарратива статусов
 │   ├── provider.rs
 │   ├── registry.rs
 │   ├── hooks/                 # хуки выполнения (completion и др.)

@@ -361,6 +361,27 @@ pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto
 /// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when todos incomplete
 
+// Narrator system configuration
+/// Model used for narrative generation (sidecar LLM)
+pub const NARRATOR_MODEL: &str = "labs-mistral-small-creative";
+/// Provider for narrator model
+pub const NARRATOR_PROVIDER: &str = "mistral";
+/// Maximum tokens for narrator response (concise output)
+pub const NARRATOR_MAX_TOKENS: u32 = 256;
+
+/// Get narrator model from env or default
+#[must_use]
+pub fn get_narrator_model() -> &'static str {
+    // Static string required, so we don't support env override for now
+    NARRATOR_MODEL
+}
+
+/// Get narrator provider from env or default
+#[must_use]
+pub fn get_narrator_provider() -> &'static str {
+    NARRATOR_PROVIDER
+}
+
 // Skill system configuration
 /// Skills directory (contains modular prompt files)
 pub const SKILLS_DIR: &str = "skills";

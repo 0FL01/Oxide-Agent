@@ -9,6 +9,7 @@
 use super::hooks::{CompletionCheckHook, HookContext, HookEvent, HookRegistry, HookResult};
 use super::loop_detection::{LoopDetectionConfig, LoopDetectionService, LoopType};
 use super::memory::AgentMessage;
+use super::narrator::Narrator;
 use super::prompt::create_agent_system_prompt;
 use super::providers::TodoList;
 use super::recovery::{
@@ -40,6 +41,7 @@ pub struct AgentExecutor {
     loop_detector: Arc<Mutex<LoopDetectionService>>,
     loop_detection_disabled_next_run: bool,
     skill_registry: Option<SkillRegistry>,
+    narrator: Arc<Narrator>,
 }
 
 /// Context for the agent execution loop to reduce argument count
@@ -90,6 +92,8 @@ impl AgentExecutor {
             }
         };
 
+        let narrator = Arc::new(Narrator::new(llm_client.clone()));
+
         Self {
             llm_client,
             session,
@@ -97,6 +101,7 @@ impl AgentExecutor {
             loop_detector,
             loop_detection_disabled_next_run: false,
             skill_registry,
+            narrator,
         }
     }
 
@@ -309,6 +314,9 @@ impl AgentExecutor {
 
             self.preprocess_llm_response(&mut response, ctx).await;
 
+            // Async narrative generation (non-blocking sidecar LLM)
+            self.spawn_narrative_task(&response, ctx.progress_tx);
+
             let tool_calls = sanitize_tool_calls(response.tool_calls);
 
             if tool_calls.is_empty() {
@@ -390,6 +398,31 @@ impl AgentExecutor {
                 }
             }
         }
+    }
+
+    /// Spawns async narrative generation task (non-blocking sidecar LLM)
+    fn spawn_narrative_task(
+        &self,
+        response: &ChatResponse,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
+        let Some(tx) = progress_tx else { return };
+
+        let narrator = Arc::clone(&self.narrator);
+        let reasoning = response.reasoning_content.clone();
+        let tool_calls = response.tool_calls.clone();
+        let tx = tx.clone();
+
+        tokio::spawn(async move {
+            if let Some(narrative) = narrator.generate(reasoning.as_deref(), &tool_calls).await {
+                let _ = tx
+                    .send(AgentEvent::Narrative {
+                        headline: narrative.headline,
+                        content: narrative.content,
+                    })
+                    .await;
+            }
+        });
     }
 
     async fn cancelled_error(&mut self, ctx: CancelCleanupContext<'_>) -> anyhow::Error {
