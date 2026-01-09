@@ -55,6 +55,11 @@ impl LoopDetectionService {
         self.disabled_for_session = true;
     }
 
+    /// Reset content tracking state without affecting tool/LLM detectors.
+    pub fn reset_content_tracking(&mut self) {
+        self.content_detector.reset_tracking();
+    }
+
     /// Check a tool call for repetition.
     pub fn check_tool_call(
         &mut self,

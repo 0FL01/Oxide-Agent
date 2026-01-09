@@ -12,7 +12,7 @@ use super::memory::AgentMessage;
 use super::prompt::create_agent_system_prompt;
 use super::providers::TodoList;
 use super::recovery::{
-    looks_like_tool_call_text, sanitize_leaked_xml, sanitize_tool_calls,
+    contains_xml_tags, looks_like_tool_call_text, sanitize_leaked_xml, sanitize_tool_calls,
     try_parse_malformed_tool_call,
 };
 use super::session::AgentSession;
@@ -433,6 +433,16 @@ impl AgentExecutor {
     }
 
     async fn content_loop_detected(&self, content: &str) -> bool {
+        if looks_like_tool_call_text(content) || contains_xml_tags(content) {
+            let mut detector = self.loop_detector.lock().await;
+            detector.reset_content_tracking();
+            debug!(
+                content_preview = %crate::utils::truncate_str(content, 80),
+                "Skipping content loop detection for recovery-like content"
+            );
+            return false;
+        }
+
         let mut detector = self.loop_detector.lock().await;
         match detector.check_content(content) {
             Ok(detected) => detected,
@@ -452,6 +462,7 @@ impl AgentExecutor {
                     tool_name = %tool_call.function.name,
                     "Skipping recovered tool call in loop detection"
                 );
+                detector.reset_content_tracking();
                 continue;
             }
             match detector.check_tool_call(&tool_call.function.name, &tool_call.function.arguments)

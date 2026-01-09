@@ -242,4 +242,13 @@ mod tests {
         assert!(!detector.check("- item"));
         assert_eq!(detector.history_len(), 0);
     }
+
+    #[test]
+    fn reset_tracking_clears_history() {
+        let mut detector = ContentLoopDetector::new(10, 4, 200);
+        detector.check("some repeated text");
+        assert!(detector.history_len() > 0);
+        detector.reset_tracking();
+        assert_eq!(detector.history_len(), 0);
+    }
 }

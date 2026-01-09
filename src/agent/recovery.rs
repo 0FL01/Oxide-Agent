@@ -22,6 +22,12 @@ pub fn sanitize_xml_tags(text: &str) -> String {
     xml_tag_pattern.replace_all(text, " ").trim().to_string()
 }
 
+/// Check if text contains XML-like tags.
+pub fn contains_xml_tags(text: &str) -> bool {
+    let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
+    xml_tag_pattern.is_match(text)
+}
+
 /// Sanitize tool call by detecting malformed LLM responses where JSON arguments are placed in tool name
 /// Returns (`corrected_name`, `corrected_arguments`)
 pub fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
@@ -630,6 +636,18 @@ mod tests {
         let input = "Check if x < 5 and y > 3";
         let result = sanitize_xml_tags(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_contains_xml_tags_detects_tags() {
+        let input = "read_file<filepath>/workspace/file.txt</filepath>";
+        assert!(contains_xml_tags(input));
+    }
+
+    #[test]
+    fn test_contains_xml_tags_ignores_plain_text() {
+        let input = "Plain response without tags.";
+        assert!(!contains_xml_tags(input));
     }
 
     #[test]
