@@ -365,7 +365,7 @@ pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when
 /// Skills directory (contains modular prompt files)
 pub const SKILLS_DIR: &str = "skills";
 /// Maximum tokens allocated to selected skills
-pub const SKILL_TOKEN_BUDGET: usize = 1500;
+pub const SKILL_TOKEN_BUDGET: usize = 4096;
 /// Minimum semantic similarity score to consider a skill relevant
 pub const SKILL_EMBEDDING_THRESHOLD: f32 = 0.6;
 /// Maximum number of non-core skills to select
