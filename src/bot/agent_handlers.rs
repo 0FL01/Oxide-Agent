@@ -719,6 +719,8 @@ pub async fn handle_agent_wipe_confirmation(
     bot: Bot,
     msg: Message,
     dialogue: AgentDialogue,
+    storage: Arc<R2Storage>,
+    llm: Arc<LlmClient>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let text = msg.text().unwrap_or("");
@@ -735,6 +737,9 @@ pub async fn handle_agent_wipe_confirmation(
 
     match text {
         "✅ Да" => {
+            // Ensure session exists (restores from DB if needs be, or creates new)
+            ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
+
             if let Some(executor_arc) = SESSION_REGISTRY.get(&user_id).await {
                 let mut executor = executor_arc.write().await;
                 match executor.session_mut().ensure_sandbox().await {
@@ -756,11 +761,7 @@ pub async fn handle_agent_wipe_confirmation(
                     }
                 }
             } else {
-                // If for some reason session is gone, we just show ready to work
-                // or session not found. Behaving safely by just showing the keyboard with a generic message
-                // or just the ready message if we really want to recover.
-                // But the user specifically wanted to remove "Ready to work" AFTER success.
-                // Here we are in a weird state. Let's just say session not found to be safe/correct.
+                // Should be unreachable due to ensure_session_exists, but just in case
                 bot.send_message(chat_id, DefaultAgentView::session_not_found())
                     .reply_markup(keyboard)
                     .await?;

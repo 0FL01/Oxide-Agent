@@ -484,8 +484,12 @@ async fn handle_agent_wipe_confirmation(
     bot: Bot,
     msg: Message,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    storage: Arc<storage::R2Storage>,
+    llm: Arc<llm::LlmClient>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::agent_handlers::handle_agent_wipe_confirmation(bot, msg, dialogue).await {
+    if let Err(e) =
+        bot::agent_handlers::handle_agent_wipe_confirmation(bot, msg, dialogue, storage, llm).await
+    {
         error!("Agent wipe confirmation handler error: {}", e);
     }
     respond(())
