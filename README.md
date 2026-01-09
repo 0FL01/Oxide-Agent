@@ -56,7 +56,7 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
 *   **OpenRouter** (`OPENROUTER_API_KEY`) — used for chat (`gemini-3-flash`).
     > [!IMPORTANT]
     > **Gemini 3 Flash** model (via OpenRouter) is **required** for voice message recognition and image analysis. Without it, these functions will not work.
-*   **ZAI** (`ZAI_API_KEY`) — used for agent (`glm-4.7`). **ZAI** is [Zhipu AI](https://z.ai/).
+*   **ZAI** (`ZAI_API_KEY`) — used for agent (`glm-4.7`, **Default Agent Model**). **ZAI** is [Zhipu AI](https://z.ai/).
 
 ### 🛠 Infrastructure
 *   **Docker** — run code sandbox (`agent-sandbox:latest`)
@@ -239,8 +239,8 @@ docker-compose.yml
 
 | Name | Provider | Features |
 | :--- | :--- | :--- |
-| **OR Gemini 3 Flash** | OpenRouter | Multimodal, default model |
-| **ZAI GLM-4.7** | ZAI (Zhipu AI) | GLM Coding Plan |
+| **OR Gemini 3 Flash** | OpenRouter | Multimodal, default chat model |
+| **ZAI GLM-4.7** | ZAI (Zhipu AI) | Default Agent Model, GLM Coding Plan |
 | **Mistral Large** | Mistral | Free and generous |
 | **Gemini 2.5 Flash Lite** | Google | Cheap and efficient |
 | **Devstral 2512** | Mistral | Top free choice for coding and Agent work |
