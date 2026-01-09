@@ -223,6 +223,7 @@ impl MistralProvider {
             tool_calls,
             finish_reason,
             reasoning_content: None, // Mistral doesn't support reasoning
+            usage: None,             // Mistral doesn't provide usage in this response format
         })
     }
 
@@ -375,6 +376,14 @@ pub struct ZaiProvider {
 #[derive(serde::Deserialize, Debug)]
 struct ZaiStreamChunk {
     choices: Vec<ZaiStreamChoice>,
+    usage: Option<ZaiStreamUsage>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ZaiStreamUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -558,6 +567,7 @@ impl ZaiProvider {
         let mut content = String::new();
         let mut final_tool_calls: HashMap<usize, super::ToolCall> = HashMap::new();
         let mut finish_reason = String::from("unknown");
+        let mut usage: Option<super::TokenUsage> = None;
 
         while let Some(event_result) = stream.next().await {
             match event_result {
@@ -586,6 +596,15 @@ impl ZaiProvider {
                         if let Some(ref reason) = choice.finish_reason {
                             finish_reason = reason.clone();
                         }
+                    }
+
+                    // Capture usage statistics (usually in last chunk)
+                    if let Some(ref u) = parsed.usage {
+                        usage = Some(super::TokenUsage {
+                            prompt_tokens: u.prompt_tokens,
+                            completion_tokens: u.completion_tokens,
+                            total_tokens: u.total_tokens,
+                        });
                     }
                 }
                 Err(e) => {
@@ -619,6 +638,7 @@ impl ZaiProvider {
             } else {
                 Some(reasoning_content)
             },
+            usage,
         })
     }
 
@@ -793,6 +813,7 @@ impl LlmProvider for ZaiProvider {
             "temperature": 0.95,
             "stream": true,
             "tool_stream": true,
+            "stream_options": { "include_usage": true },
             "thinking": {
                 "type": "enabled",
                 "clear_thinking": true

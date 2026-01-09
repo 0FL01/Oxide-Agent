@@ -300,6 +300,13 @@ impl AgentExecutor {
 
             let mut response = response.map_err(|e| anyhow!("LLM call failed: {e}"))?;
 
+            // Synchronize token count with API billing data
+            if let Some(u) = &response.usage {
+                self.session
+                    .memory
+                    .sync_token_count(u.total_tokens as usize);
+            }
+
             // Log reasoning/thinking if present and send to progress
             if let Some(ref reasoning) = response.reasoning_content {
                 debug!(reasoning_len = reasoning.len(), "Model reasoning received");

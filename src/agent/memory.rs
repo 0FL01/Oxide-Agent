@@ -172,6 +172,23 @@ impl AgentMemory {
         self.token_count
     }
 
+    /// Synchronize token count with actual API usage data
+    ///
+    /// This replaces the local heuristic estimate with the authoritative
+    /// count from the API response.
+    pub fn sync_token_count(&mut self, real_total_tokens: usize) {
+        let diff = real_total_tokens as i64 - self.token_count as i64;
+        if diff.abs() > 100 {
+            tracing::debug!(
+                local = self.token_count,
+                real = real_total_tokens,
+                diff = diff,
+                "Token sync: significant drift detected"
+            );
+        }
+        self.token_count = real_total_tokens;
+    }
+
     /// Clear all messages from memory
     pub fn clear(&mut self) {
         self.messages.clear();

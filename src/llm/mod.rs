@@ -153,6 +153,17 @@ pub struct ToolCallFunction {
     pub arguments: String,
 }
 
+/// Token usage statistics from API response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenUsage {
+    /// Input tokens (system prompt + history + files)
+    pub prompt_tokens: u32,
+    /// Output tokens (model response + reasoning)
+    pub completion_tokens: u32,
+    /// Total tokens used
+    pub total_tokens: u32,
+}
+
 /// Chat response that may include tool calls
 #[derive(Debug, Clone)]
 pub struct ChatResponse {
@@ -164,6 +175,8 @@ pub struct ChatResponse {
     pub finish_reason: String,
     /// Optional reasoning/thinking process (for models that support it, e.g., GLM-4.7)
     pub reasoning_content: Option<String>,
+    /// Token usage statistics (if provided by the API)
+    pub usage: Option<TokenUsage>,
 }
 
 /// Interface for all LLM providers
