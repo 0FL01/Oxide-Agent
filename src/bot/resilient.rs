@@ -80,15 +80,23 @@ pub async fn edit_message_resilient(
     msg_id: MessageId,
     text: impl Into<String>,
     parse_mode: Option<ParseMode>,
-) -> Result<Message> {
+) -> Result<Option<Message>> {
     let text = text.into();
     crate::utils::retry_telegram_operation(|| async {
         let mut req = bot.edit_message_text(chat_id, msg_id, text.clone());
         if let Some(pm) = parse_mode {
             req = req.parse_mode(pm);
         }
-        req.await
-            .map_err(|e| anyhow::anyhow!("Telegram edit error: {e}"))
+        match req.await {
+            Ok(msg) => Ok(Some(msg)),
+            Err(e) => {
+                let err_msg = e.to_string();
+                if err_msg.contains("message is not modified") {
+                    return Ok(None);
+                }
+                Err(anyhow::anyhow!("Telegram edit error: {e}"))
+            }
+        }
     })
     .await
 }
@@ -119,7 +127,6 @@ pub async fn edit_message_safe_resilient(
     msg_id: MessageId,
     text: &str,
 ) -> bool {
-    const ERROR_NOT_MODIFIED: &str = "message is not modified";
     const ERROR_NOT_FOUND: &str = "message to edit not found";
 
     // Truncate if too long (Telegram limit is 4096, we use 4000 for safety)
@@ -131,10 +138,14 @@ pub async fn edit_message_safe_resilient(
     };
 
     match edit_message_resilient(bot, chat_id, msg_id, truncated, Some(ParseMode::Html)).await {
-        Ok(_) => true,
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            debug!("Message update skipped: message is not modified");
+            true
+        }
         Err(e) => {
             let err_msg = e.to_string();
-            if err_msg.contains(ERROR_NOT_MODIFIED) || err_msg.contains(ERROR_NOT_FOUND) {
+            if err_msg.contains(ERROR_NOT_FOUND) {
                 debug!("Message update skipped: {err_msg}");
             } else {
                 warn!("Failed to edit message after retries: {e}");
