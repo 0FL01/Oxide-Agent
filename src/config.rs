@@ -363,7 +363,7 @@ pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when
 
 // Narrator system configuration
 /// Model used for narrative generation (sidecar LLM)
-pub const NARRATOR_MODEL: &str = "labs-mistral-small-creative";
+pub const NARRATOR_MODEL: &str = "mistral-small-2506";
 /// Provider for narrator model
 pub const NARRATOR_PROVIDER: &str = "mistral";
 /// Maximum tokens for narrator response (concise output)
