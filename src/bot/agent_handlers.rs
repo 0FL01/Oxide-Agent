@@ -722,6 +722,16 @@ pub async fn handle_agent_wipe_confirmation(
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let text = msg.text().unwrap_or("");
+    let chat_id = msg.chat.id;
+
+    if text != "✅ Да" && text != "❌ Отмена" {
+        bot.send_message(chat_id, DefaultAgentView::select_keyboard_option())
+            .await?;
+        return Ok(());
+    }
+
+    dialogue.update(State::AgentMode).await?;
+    let keyboard = get_agent_keyboard();
 
     match text {
         "✅ Да" => {
@@ -730,34 +740,39 @@ pub async fn handle_agent_wipe_confirmation(
                 match executor.session_mut().ensure_sandbox().await {
                     Ok(sandbox) => {
                         if let Err(e) = sandbox.recreate().await {
-                            bot.send_message(msg.chat.id, format!("Ошибка при пересоздании: {e}"))
+                            bot.send_message(chat_id, format!("Ошибка при пересоздании: {e}"))
+                                .reply_markup(keyboard)
                                 .await?;
                         } else {
-                            bot.send_message(msg.chat.id, DefaultAgentView::container_recreated())
+                            bot.send_message(chat_id, DefaultAgentView::container_recreated())
+                                .reply_markup(keyboard)
                                 .await?;
                         }
                     }
                     Err(_) => {
-                        bot.send_message(msg.chat.id, DefaultAgentView::sandbox_access_error())
+                        bot.send_message(chat_id, DefaultAgentView::sandbox_access_error())
+                            .reply_markup(keyboard)
                             .await?;
                     }
                 }
+            } else {
+                // If for some reason session is gone, we just show ready to work
+                // or session not found. Behaving safely by just showing the keyboard with a generic message
+                // or just the ready message if we really want to recover.
+                // But the user specifically wanted to remove "Ready to work" AFTER success.
+                // Here we are in a weird state. Let's just say session not found to be safe/correct.
+                bot.send_message(chat_id, DefaultAgentView::session_not_found())
+                    .reply_markup(keyboard)
+                    .await?;
             }
         }
         "❌ Отмена" => {
-            bot.send_message(msg.chat.id, DefaultAgentView::operation_cancelled())
+            bot.send_message(chat_id, DefaultAgentView::operation_cancelled())
+                .reply_markup(keyboard)
                 .await?;
         }
-        _ => {
-            bot.send_message(msg.chat.id, DefaultAgentView::select_keyboard_option())
-                .await?;
-            return Ok(());
-        }
+        _ => unreachable!(),
     }
 
-    dialogue.update(State::AgentMode).await?;
-    bot.send_message(msg.chat.id, DefaultAgentView::ready_to_work())
-        .reply_markup(get_agent_keyboard())
-        .await?;
     Ok(())
 }
