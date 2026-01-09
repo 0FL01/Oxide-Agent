@@ -180,7 +180,7 @@ mod tests {
         let input = r#"{"headline": "Тест", "content": "Содержимое теста"}"#;
         let parsed: Result<Narrative, _> = serde_json::from_str(input);
         assert!(parsed.is_ok());
-        let narrative = parsed.unwrap();
+        let narrative = parsed.expect("Failed to parse valid JSON in test");
         assert_eq!(narrative.headline, "Тест");
         assert_eq!(narrative.content, "Содержимое теста");
     }
