@@ -30,6 +30,7 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
     *   **Autonomy:** Agent plans steps and selects tools itself.
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit is reached.
+    *   **🗣️ Narrator:** Separate model for summarizing agent thoughts and actions in chat.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
 *   **Multi-LLM Support:** Groq, Mistral AI, Google Gemini, OpenRouter, and Zai.
 *   **Native Tool Calling:** Efficient use of tools in modern models.
