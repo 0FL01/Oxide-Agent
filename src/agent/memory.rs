@@ -178,8 +178,15 @@ impl AgentMemory {
     /// count from the API response.
     pub fn sync_token_count(&mut self, real_total_tokens: usize) {
         let diff = real_total_tokens as i64 - self.token_count as i64;
+
+        tracing::info!(
+            total = real_total_tokens,
+            diff = diff,
+            "METRIC: Token usage synchronized from API"
+        );
+
         if diff.abs() > 100 {
-            tracing::debug!(
+            tracing::warn!(
                 local = self.token_count,
                 real = real_total_tokens,
                 diff = diff,
