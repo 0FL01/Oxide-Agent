@@ -507,8 +507,8 @@ pub const TELEGRAM_API_MAX_BACKOFF_MS: u64 = 4000;
 
 // LLM HTTP client configuration
 /// Default timeout for LLM API HTTP requests (seconds)
-/// Prevents infinite hangs when API is slow or unresponsive
-pub const LLM_HTTP_TIMEOUT_SECS: u64 = 30;
+/// Keeps long-running model responses alive while preventing infinite hangs
+pub const LLM_HTTP_TIMEOUT_SECS: u64 = 300;
 
 /// Get LLM HTTP timeout from env or default
 ///

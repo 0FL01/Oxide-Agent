@@ -11,8 +11,8 @@ use std::time::Duration;
 
 /// Creates an HTTP client configured with the standard LLM timeout.
 ///
-/// Uses `LLM_HTTP_TIMEOUT_SECS` environment variable or 30s default.
-/// This prevents infinite hangs when API is slow or unresponsive.
+/// Uses `LLM_HTTP_TIMEOUT_SECS` environment variable or default configuration.
+/// This keeps long-running responses alive while preventing infinite hangs.
 #[must_use]
 pub fn create_http_client() -> HttpClient {
     let timeout = Duration::from_secs(get_llm_http_timeout_secs());
