@@ -322,9 +322,9 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         },
     ),
     (
-        "mistral-small-2506",
+        "labs-mistral-small-creative",
         ModelInfo {
-            id: "mistral-small-2506",
+            id: "labs-mistral-small-creative",
             max_tokens: 32000,
             provider: "mistral",
         },
@@ -371,7 +371,7 @@ pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when
 
 // Narrator system configuration
 /// Model used for narrative generation (sidecar LLM)
-pub const NARRATOR_MODEL: &str = "mistral-small-2506";
+pub const NARRATOR_MODEL: &str = "labs-mistral-small-creative";
 /// Provider for narrator model
 pub const NARRATOR_PROVIDER: &str = "mistral";
 /// Maximum tokens for narrator response (concise output)
