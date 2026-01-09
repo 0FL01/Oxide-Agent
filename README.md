@@ -1,103 +1,103 @@
 # Oxide Agent TG Bot
 
-Универсальный Telegram-бот с ИИ-ассистентом, поддерживающий множество моделей, мультимодальность и расширенный **Режим Агента** с выполнением кода.
+[(Russian README)](README-ru.md)
 
-## Описание
+Universal Telegram bot with AI assistant, supporting multiple models, multimodality, and advanced **Agent Mode** with code execution.
+
+## Description
 
 <details>
-<summary>ℹ️ О проекте: Стек технологий (Rust, Teloxide), интеграции и архитектура</summary>
+<summary>ℹ️ About: Tech Stack (Rust, Teloxide), Integrations, and Architecture</summary>
 
-Этот проект представляет собой Telegram-бота, который интегрируется с различными API больших языковых моделей (LLM) для предоставления пользователям многофункционального ИИ-ассистента. Бот может обрабатывать текстовые, голосовые, видео сообщения и изображения, работать с документами, управлять историей диалога и выполнять сложные задачи в изолированной песочнице.
+This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-Бот разработан с использованием **Rust 1.92**, библиотеки `teloxide`, AWS SDK для взаимодействия с Cloudflare R2, и нативной интеграции с провайдерами ИИ (Groq, Mistral AI, Google Gemini, OpenRouter, Zai).
+The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cloudflare R2 interaction, and native integration with AI providers (Groq, Mistral AI, Google Gemini, OpenRouter, Zai).
 </details>
 
-## Возможности
+## Features
 
+*   **🤖 Agent Mode:**
+    *   **Integrated Sandbox:** Safe execution of Python code and Bash commands in isolated Docker containers (`debian:trixie-slim`).
+    *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
+    *   **📋 Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
+    *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (7 skills: core, ffmpeg-conversion, file-hosting, file-management, task-planning, video-processing, web-search).
+    *   **📁 File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
+    *   **🎬 Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
+    *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
+    *   **Web Search and Data Extraction:** Tavily API integration for retrieving up-to-date information from the web.
+    *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior (Completion Hook, Registry).
+    *   **🔄 Loop Detection:** Three levels of protection (Content Detector, Tool Detector, LLM Detector) to prevent infinite loops.
+    *   **Autonomy:** Agent plans steps and selects tools itself.
+    *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
+    *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit is reached.
+    *   **Execution Progress:** Interactive display of current working step in Telegram.
+*   **Multi-LLM Support:** Groq, Mistral AI, Google Gemini, OpenRouter, and Zai.
+*   **Native Tool Calling:** Efficient use of tools in modern models.
+*   **Multimedia Processing:**
+    *   Voice and video messages (speech recognition via Gemini).
+    *   Images (analysis and description via multimodal models).
+    *   Work with documents of various formats.
+*   **Context Management:** Dialogue history saved in Cloudflare R2 (S3).
+*   **🔒 Security and Quality:** `unsafe_code = "forbid"`, strict Clippy lints, no panics (`zero-panic profile`).
 
-
-*   **🤖 Режим Агента (Agent Mode):**
-    *   **Интегрированная песочница:** Безопасное выполнение Python-кода и Bash-команд в изолированных Docker-контейнерах (`debian:trixie-slim`).
-    *   **Инструменты (Tools):** Чтение/запись файлов, выполнение команд, поиск в интернете, работа с видео и файловым хостингом.
-    *   **📋 Управление задачами (Todos):** Система `write_todos` для планирования и отслеживания прогресса выполнения сложных запросов.
-    *   **🎯 Система навыков (Skills):** RAG-система с embeddings для автоматического предоставления релевантного контекста из markdown-документов (7 навыков: core, ffmpeg-conversion, file-hosting, file-management, task-planning, video-processing, web-search).
-    *   **📁 Работа с файлами:** Прием файлов от пользователя (до 20MB), отправка в Telegram (до 50MB) или загрузка на облако (до 4GB) с генерацией ссылки.
-    *   **🎬 Обработка видео:** Интеграция yt-dlp для скачивания видео и медиафайлов из интернета.
-    *   **☁️ Файловый хостинг:** Загрузка файлов из песочницы на публичный хостинг с коротким временем жизни.
-    *   **Веб-поиск и извлечение данных:** Интеграция с Tavily API для получения актуальной информации из сети.
-    *   **🔗 Система хуков (Hooks):** Расширяемая архитектура для перехвата и кастомизации поведения агента (Completion Hook, Registry).
-    *   **🔄 Детектирование зацикливания:** Три уровня защиты (Content Detector, Tool Detector, LLM Detector) для предотвращения бесконечных циклов.
-    *   **Автономность:** Агент сам планирует шаги и выбирает инструменты.
-    *   **Отдельная авторизация:** Управление доступом к агенту через `AGENT_ACCESS_IDS`.
-    *   **Долгая память и контекст:** До 200K токенов с автоматическим сжатием при достижении лимита.
-    *   **Прогресс выполнения:** Интерактивное отображение текущего шага работы в Telegram.
-*   **Поддержка множества LLM:** Groq, Mistral AI, Google Gemini, OpenRouter и Zai.
-*   **Нативный Tool Calling:** Эффективное использование инструментов в современных моделях.
-*   **Обработка мультимедиа:**
-    *   Голосовые и видео сообщения (распознавание речи через Gemini).
-    *   Изображения (анализ и описание через мультимодальные модели).
-    *   Работа с документами различных форматов.
-*   **Управление контекстом:** История диалога сохраняется в Cloudflare R2 (S3).
-*   **🔒 Безопасность и качество:** `unsafe_code = "forbid"`, строгие линты Clippy, отсутствие паник (`zero-panic profile`).
-
-## Системные требования
+## System Requirements
 
 <details>
-<summary>🔑 API Ключи и Инфраструктура</summary>
+<summary>🔑 API Keys and Infrastructure</summary>
 
-### 🔑 API Ключи (Mandatory)
-| Провайдер | Переменная | Описание |
+### 🔑 API Keys (Mandatory)
+| Provider | Variable | Description |
 | :--- | :--- | :--- |
-| **Telegram** | `TELEGRAM_TOKEN` | Токен бота от [@BotFather](https://t.me/BotFather) |
-| **Cloudflare R2** | `R2_*` | S3-хранилище (Access Key, Secret, Endpoint, Bucket) |
-| **Mistral AI** | `MISTRAL_API_KEY` | **Критично для Агента** (модель `mistral-embed` для выбора навыков) |
+| **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
+| **Cloudflare R2** | `R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
+| **Mistral AI** | `MISTRAL_API_KEY` | **Critical for Agent** (`mistral-embed` model for skill selection) |
 
-### 🤖 LLM Провайдеры (Default)
-*   **OpenRouter** (`OPENROUTER_API_KEY`) — используется для чата (`gemini-3-flash`).
+### 🤖 LLM Providers (Default)
+*   **OpenRouter** (`OPENROUTER_API_KEY`) — used for chat (`gemini-3-flash`).
     > [!IMPORTANT]
-    > Модель **Gemini 3 Flash** (через OpenRouter) **необходима** для распознавания голосовых сообщений и анализа изображений. Без неё эти функции работать не будут.
-*   **ZAI** (`ZAI_API_KEY`) — используется для агента (`glm-4.7`). **ZAI** — это [Zhipu AI](https://z.ai/).
+    > **Gemini 3 Flash** model (via OpenRouter) is **required** for voice message recognition and image analysis. Without it, these functions will not work.
+*   **ZAI** (`ZAI_API_KEY`) — used for agent (`glm-4.7`). **ZAI** is [Zhipu AI](https://z.ai/).
 
-### 🛠 Инфраструктура
-*   **Docker** — запуск песочницы кода (`agent-sandbox:latest`)
-*   **Tavily API** — опционально для веб-поиска (`TAVILY_API_KEY`)
+### 🛠 Infrastructure
+*   **Docker** — run code sandbox (`agent-sandbox:latest`)
+*   **Tavily API** — optional for web search (`TAVILY_API_KEY`)
 </details>
 
-## Установка и запуск
+## Installation and Launch
 
 <details>
-<summary>🚀 Инструкция по установке (Docker & Source)</summary>
+<summary>🚀 Installation Instructions (Docker & Source)</summary>
 
-1.  **Клонируйте репозиторий:**
+1.  **Clone the repository:**
     ```bash
     git clone https://github.com/0FL01/oxide-agent.git
     cd oxide-agent
     ```
 
-2.  **Настройте переменные окружения:**
-    Создайте `.env` на основе `.env.example`.
+2.  **Configure environment variables:**
+    Create `.env` based on `.env.example`.
 
-3.  **Соберите образ песочницы:**
+3.  **Build sandbox image:**
     ```bash
     docker build -t agent-sandbox:latest -f sandbox/Dockerfile.sandbox ..
     ```
 
-4.  **Соберите и запустите бота:**
+4.  **Build and run the bot:**
     ```bash
     docker-compose up --build -d
     ```
 </details>
 
-## Конфигурация (.env)
+## Configuration (.env)
 
 <details>
-<summary>⚙️ Пример файла конфигурации</summary>
+<summary>⚙️ Example Configuration File</summary>
 
 ```dotenv
 # Telegram
-TELEGRAM_TOKEN=ВАШ_ТОКЕН
-ALLOWED_USERS=ID1,ID2 # Список разрешенных Telegram ID (базовый доступ)
-AGENT_ACCESS_IDS=ID1 # Доступ к Режиму Агента (тратит много токенов)
+TELEGRAM_TOKEN=YOUR_TOKEN
+ALLOWED_USERS=ID1,ID2 # List of allowed Telegram IDs (basic access)
+AGENT_ACCESS_IDS=ID1 # Access to Agent Mode (consumes many tokens)
 
 # Cloudflare R2 (S3)
 R2_ACCESS_KEY_ID=...
@@ -110,216 +110,205 @@ GROQ_API_KEY=...
 MISTRAL_API_KEY=...
 GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
-ZAI_API_KEY=... # Провайдер ZAI (Zhipu AI)
-TAVILY_API_KEY=... # Ключ Tavily для веб-поиска в режиме Агента (опционально)
+ZAI_API_KEY=... # ZAI Provider (Zhipu AI)
+TAVILY_API_KEY=... # Tavily key for web search in Agent mode (optional)
 ```
 </details>
 
-## Архитектура агента
+## Agent Architecture
 
 <details>
-<summary>🏗 Внутренняя структура, Навыки, Хуки</summary>
+<summary>🏗 Internal Structure, Skills, Hooks</summary>
 
-### 🎯 Система навыков (Skills)
+### 🎯 Skills System
+The agent uses a RAG approach with embeddings to automatically provide relevant context:
+- **7 skills** as markdown documents (`skills/`)
+- **Semantic matching** of user requests with skills via cosine similarity
+- **Embeddings caching** for fast access (Moka cache)
+- **Automatic injection** of relevant instructions into the system prompt
 
-Агент использует RAG-подход с embeddings для автоматического предоставления релевантного контекста:
+### 🔄 Loop Protection
+Three-level loop detection system (`agent/loop_detection/`):
+1. **Content Detector** — analyzes repeating agent messages
+2. **Tool Detector** — tracks identical tool calls
+3. **LLM Detector** — uses LLM to analyze loop patterns
 
-- **7 навыков** в виде markdown-документов (`skills/`)
-- **Семантическое сопоставление** запросов пользователя с навыками через косинусное подобие
-- **Кэширование embeddings** для быстрого доступа (Moka cache)
-- **Автоматическая инъекция** релевантных инструкций в системный промпт
+### 🔗 Hooks System
+Extensible architecture for personalizing agent behavior:
+- **Completion Hook** — task completion handling
+- **Registry** — centralized hook management
+- Ability to add custom hooks
 
-### 🔄 Защита от зацикливания
-
-Трёхуровневая система детектирования зацикливания (`agent/loop_detection/`):
-
-1. **Content Detector** — анализирует повторяющиеся сообщения агента
-2. **Tool Detector** — отслеживает одинаковые вызовы инструментов
-3. **LLM Detector** — использует LLM для анализа паттернов зацикливания
-
-### 🔗 Система хуков (Hooks)
-
-Расширяемая архитектура для кастомизации поведения агента:
-
-- **Completion Hook** — обработка завершения задач
-- **Registry** — централизованное управление хуками
-- Возможность добавления пользовательских хуков
-
-### 🛠️ Провайдеры инструментов
-
-Агент использует модульную систему провайдеров, каждый из которых предоставляет специализированный набор инструментов:
-
-- **Sandbox Provider** (`sandbox.rs`, ~20KB) — выполнение кода, чтение/запись файлов, команды оболочки
-- **Tavily Provider** (`tavily.rs`) — веб-поиск и извлечение данных из интернета
-- **Todos Provider** (`todos.rs`) — управление списком задач для долгосрочного планирования
-- **YT-DLP Provider** (`ytdlp.rs`, ~33KB) — скачивание видео и аудио с различных платформ
-- **File Hoster Provider** (`filehoster.rs`) — публичная загрузка файлов на временный хостинг (до 4GB)
-- **Path Provider** (`path.rs`) — работа с путями и файловой структурой
+### 🛠️ Tool Providers
+The agent uses a modular provider system, each offering a specialized set of tools:
+- **Sandbox Provider** (`sandbox.rs`, ~20KB) — code execution, file read/write, shell commands
+- **Tavily Provider** (`tavily.rs`) — web search and data extraction
+- **Todos Provider** (`todos.rs`) — task list management for long-term planning
+- **YT-DLP Provider** (`ytdlp.rs`, ~33KB) — video and audio download from various platforms
+- **File Hoster Provider** (`filehoster.rs`) — public file upload to temporary hosting (up to 4GB)
+- **Path Provider** (`path.rs`) — path and file structure operations
 </details>
 
-## Использование
+## Usage
 
-1.  Отправьте `/start` боту.
-2.  **Обычный режим:** Просто пишите сообщения или отправляйте файлы/голосовые.
-3.  **🤖 Режим Агента:** Нажмите кнопку "🤖 Режим Агента". Теперь бот сможет выполнять код и использовать расширенные инструменты.
+1.  Send `/start` to the bot.
+2.  **Regular Mode:** Just write messages or send files/voice notes.
+3.  **🤖 Agent Mode:** Click the "🤖 Agent Mode" button. Now the bot can execute code and use advanced tools.
 
 <details>
-<summary>💡 Примеры команд агента и управление</summary>
+<summary>💡 Agent Command Examples and Control</summary>
 
-**Примеры команд для агента:**
-- *"Напиши скрипт на python, который скачивает главную страницу google и найди там слово 'Search'"*
-- *"Скачай видео с YouTube по ссылке [URL] и конвертируй его в MP4 через FFmpeg"*
-- *"Создай CSV файл с данными о погоде и загрузи его на file.io"*
-- *"Найди информацию о последних новостях по ИИ через веб-поиск"*
+**Agent Command Examples:**
+- *"Write a python script that downloads the google homepage and finds the word 'Search' there"*
+- *"Download video from YouTube via link [URL] and convert it to MP4 via FFmpeg"*
+- *"Create a CSV file with weather data and upload it to file.io"*
+- *"Find information about latest AI news via web search"*
 
-**Управление:** Используйте кнопки "Очистить контекст", "Сменить модель" или "Доп функции".
+**Control:** Use "Clear Context", "Change Model" or "Extra Functions" buttons.
 </details>
 
-## Структура проекта
+## Project Structure
 
 <details>
-<summary>📂 Дерево файлов (развернуть)</summary>
+<summary>📂 File Tree (expand)</summary>
 
 ```text
 src/
-├── main.rs                    # точка входа
-├── lib.rs                     # библиотечный корень
-├── agent/                     # ядро агента и логика выполнения
+├── main.rs                    # entry point
+├── lib.rs                     # library root
+├── agent/                     # agent core and execution logic
 │   ├── mod.rs
-│   ├── executor.rs            # главный исполнитель агента
-│   ├── recovery.rs            # восстановление malformed ответов
-│   ├── tool_bridge.rs         # мост исполнения инструментов
-│   ├── session_registry.rs    # реестр сессий агентов
-│   ├── loop_detection/        # детектирование зацикливания
+│   ├── executor.rs            # main agent executor
+│   ├── recovery.rs            # malformed response recovery
+│   ├── tool_bridge.rs         # tool execution bridge
+│   ├── session_registry.rs    # agent session registry
+│   ├── loop_detection/        # loop detection
 │   │   ├── content_detector.rs
 │   │   ├── tool_detector.rs
 │   │   ├── llm_detector.rs
 │   │   └── service.rs
-│   ├── skills/                # подсистема навыков (RAG/embeddings)
-│   ├── hooks/                 # хуки выполнения (Completion и др.)
-│   ├── prompt/                # сборка системных промптов
-│   ├── providers/             # провайдеры инструментов (Sandbox, Tavily, и т.д.)
-│   ├── session.rs             # состояние сессии
-│   ├── memory.rs              # работа с памятью и контекстом
-│   ├── preprocessor.rs        # предобработка входных медиа
-│   ├── progress.rs            # управление отображением прогресса
-│   └── registry.rs            # глобальный реестр инструментов
-├── bot/                       # логика Telegram-бота
-│   ├── handlers.rs            # основные хендлеры
-│   ├── agent_handlers.rs      # хендлеры агентского режима
-│   ├── views/                 # шаблоны сообщений и UI (agent.rs)
-│   └── agent/                 # бот-специфичная логика (media.rs)
-├── llm/                       # интеграции с провайдерами LLM
-├── sandbox/                   # управление Docker-песочницей
-├── storage.rs                 # работа с Cloudflare R2/S3
-├── config.rs                  # конфигурация и константы
-└── utils.rs                   # вспомогательные утилиты
+│   ├── skills/                # skills subsystem (RAG/embeddings)
+│   ├── hooks/                 # execution hooks (Completion etc.)
+│   ├── prompt/                # system prompt assembly
+│   ├── providers/             # tool providers (Sandbox, Tavily, etc.)
+│   ├── session.rs             # session state
+│   ├── memory.rs              # memory and context handling
+│   ├── preprocessor.rs        # input media preprocessing
+│   ├── progress.rs            # progress display management
+│   └── registry.rs            # global tool registry
+├── bot/                       # Telegram bot logic
+│   ├── handlers.rs            # main handlers
+│   ├── agent_handlers.rs      # agent mode handlers
+│   ├── views/                 # message templates and UI (agent.rs)
+│   └── agent/                 # bot-specific logic (media.rs)
+├── llm/                       # LLM provider integrations
+├── sandbox/                   # Docker sandbox management
+├── storage.rs                 # Cloudflare R2/S3 operations
+├── config.rs                  # configuration and constants
+└── utils.rs                   # helper utilities
 
-skills/                        # определения навыков (markdown)
-├── core.md                    # базовые концепции
-├── ffmpeg-conversion.md       # конвертация через FFmpeg
-├── file-hosting.md            # работа с файловым хостингом
-├── file-management.md         # управление файлами
-├── task-planning.md           # планирование задач
-├── video-processing.md        # обработка видео
-└── web-search.md              # веб-поиск
+skills/                        # skill definitions (markdown)
+├── core.md                    # base concepts
+├── ffmpeg-conversion.md       # FFmpeg conversion
+├── file-hosting.md            # file hosting operations
+├── file-management.md         # file management
+├── task-planning.md           # task planning
+├── video-processing.md        # video processing
+└── web-search.md              # web search
 
-backlog/                       # документация, планы и чертежи
-├── BLUEPRINT.md               # основной план развития проекта
-└── docs/                      # подробные спецификации компонентов
+backlog/                       # documentation, plans and blueprints
+├── BLUEPRINT.md               # main project development plan
+└── docs/                      # detailed component specifications
 
-tests/                         # интеграционные и функциональные тесты
+tests/                         # integration and functional tests
 
-sandbox/                       # конфигурация Docker для песочницы
+sandbox/                       # Docker configuration for sandbox
 └── Dockerfile.sandbox
 
-.github/                       # CI/CD конфигурация
+.github/                       # CI/CD configuration
 └── workflows/
     └── ci-cd.yml
 
-Dockerfile                     # Dockerfile основного приложения
+Dockerfile                     # Main application Dockerfile
 docker-compose.yml
 ```
 </details>
 
-## Доступные модели
+## Available Models
 
-
-
-| Название | Провайдер | Особенности |
+| Name | Provider | Features |
 | :--- | :--- | :--- |
-| **OR Gemini 3 Flash** | OpenRouter | Мультимодальность, модель по умолчанию |
+| **OR Gemini 3 Flash** | OpenRouter | Multimodal, default model |
 | **ZAI GLM-4.7** | ZAI (Zhipu AI) | GLM Coding Plan |
-| **Mistral Large** | Mistral | Бесплатно и щедро |
-| **Gemini 2.5 Flash Lite** | Google | Дешево и эффективно |
-| **Devstral 2512** | Mistral | Топ за бесплатно для кодинга и работы Агента |
+| **Mistral Large** | Mistral | Free and generous |
+| **Gemini 2.5 Flash Lite** | Google | Cheap and efficient |
+| **Devstral 2512** | Mistral | Top free choice for coding and Agent work |
 
-## Ключевые зависимости
+## Key Dependencies
 
 <details>
-<summary>📦 Основные библиотеки Rust</summary>
+<summary>📦 Main Rust Libraries</summary>
 
-**Основные библиотеки:**
+**Main libraries:**
 
-- **teloxide** (0.17.0) — Telegram Bot API с макросами и обработчиками
-- **tokio** (1.48) — асинхронная runtime среда
-- **async-openai** (0.32.2) — работа с OpenAI-совместимыми API
-- **aws-sdk-s3** (1.119.0) — интеграция с Cloudflare R2
-- **bollard** (0.19.4) — Docker API для управления песочницей
-- **reqwest** (0.12) — HTTP-клиент с поддержкой multipart и streaming
-- **serde_json** (1.0) — JSON сериализация/десериализация
-- **tiktoken-rs** (0.9.1) — подсчет токенов для различных моделей
-- **lazy-regex** (3.5.1) — оптимизированные регулярные выражения
-- **moka** (0.12) — высокопроизводительный кэш с TTL
-- **tavily** (2.0) — опциональный feature для веб-поиска
-- **chrono** (0.4.42) — работа с датами и временем
-- **thiserror** (2.0.17) — создание кастомных ошибок
-- **anyhow** (1.0.100) — упрощенная обработка ошибок в приложении
+- **teloxide** (0.17.0) — Telegram Bot API with macros and handlers
+- **tokio** (1.48) — asynchronous runtime
+- **async-openai** (0.32.2) — work with OpenAI-compatible APIs
+- **aws-sdk-s3** (1.119.0) — Cloudflare R2 integration
+- **bollard** (0.19.4) — Docker API for sandbox management
+- **reqwest** (0.12) — HTTP client with multipart and streaming support
+- **serde_json** (1.0) — JSON serialization/deserialization
+- **tiktoken-rs** (0.9.1) — token counting for various models
+- **lazy-regex** (3.5.1) — optimized regular expressions
+- **moka** (0.12) — high-performance cache with TTL
+- **tavily** (2.0) — optional feature for web search
+- **chrono** (0.4.42) — date and time handling
+- **thiserror** (2.0.17) — custom error creation
+- **anyhow** (1.0.100) — simplified error handling in application
 </details>
 
-## Разработка
+## Development
 
 <details>
-<summary>💻 Команды для разработчика и CI/CD</summary>
+<summary>💻 Developer Commands and CI/CD</summary>
 
-Для локальной разработки (требуется установленный Rust):
+For local development (requires Rust installed):
 ```bash
-# Проверка
+# Check
 cargo check
 
-# Тестирование (132 теста)
+# Testing (132 tests)
 cargo test --release
 
-# Линтинг (Clippy с warn/deny)
+# Linting (Clippy with warn/deny)
 cargo clippy --tests -- -D warnings
 
-# Форматирование
+# Formatting
 cargo fmt
 
-# Сборка с feature flags
+# Build with feature flags
 cargo build --release --features tavily
 ```
 
 ### CI/CD
 
-Проект использует GitHub Actions для автоматического тестирования и развертывания:
-- **Testing:** Запуск `cargo check`, `cargo clippy`, `cargo test`, `cargo fmt`
-- **Deployment:** Автоматический деплой на сервер через SSH при пуше в `main`
+The project uses GitHub Actions for automatic testing and deployment:
+- **Testing:** Runs `cargo check`, `cargo clippy`, `cargo test`, `cargo fmt`
+- **Deployment:** Automatic deploy to server via SSH on push to `main`
 
-### Безопасность и Lints
+### Security and Lints
 
-- **`unsafe_code = "forbid"`** в workspace lints — запрещён небезопасный код
+- **`unsafe_code = "forbid"`** in workspace lints — unsafe code is forbidden
 - **Clippy lints (forbid level):**
-  - `unwrap_used = "forbid"` — все Result/Option должны обрабатываться через `?` или `match`
-  - `too_many_lines = "forbid"` — файлы >300 строк должны быть разбиты
-  - `too_many_arguments = "forbid"` — функции >3 аргументов требуют структуру Context/Config
-- **Feature flags:** Tavily доступен через `--features tavily`
-- **Error Handling:** Использование `thiserror` для библиотечных ошибок, `anyhow` для приложения
+  - `unwrap_used = "forbid"` — all Result/Option must be handled via `?` or `match`
+  - `too_many_lines = "forbid"` — files >300 lines must be split
+  - `too_many_arguments = "forbid"` — functions >3 arguments require Context/Config struct
+- **Feature flags:** Tavily available via `--features tavily`
+- **Error Handling:** Using `thiserror` for library errors, `anyhow` for application
 </details>
 
-## Лицензия
+## License
 
-Проект распространяется под лицензией **GNU Affero General Public License v3 (AGPL-3.0)**. Подробности в файле [LICENSE](https://github.com/0FL01/oxide-agent/blob/main/LICENSE).
+The project is distributed under the **GNU Affero General Public License v3 (AGPL-3.0)**. Details in the [LICENSE](https://github.com/0FL01/oxide-agent/blob/main/LICENSE) file.
 
 Copyright (C) 2026 @0FL01
-
