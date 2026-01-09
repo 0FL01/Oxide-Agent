@@ -139,17 +139,17 @@ impl Narrator {
 Your task: Convert raw agent reasoning and tool calls into a concise, user-friendly status update.
 
 Output ONLY valid JSON in this exact format:
-{"headline": "Short Action Title", "content": "2-3 sentences explaining what the agent is doing and why."}
+{"headline": "Short Action Title", "content": "1-2 sentences describing WHAT the agent is doing right now."}
 
 Rules:
 - headline: 3-5 words, action-oriented (e.g., "Searching for Dependencies", "Writing Python Script")
-- content: Explain the context and intent in plain language
+- content: Describe ONLY the action. Do not explain why it is useful. Never use phrases like "This will help", "To achieve this", "In order to".
 - Use Russian language for output
 - Be concise and professional
 - Do NOT include raw technical details or code
 
 Example:
-{"headline": "Анализ структуры проекта", "content": "Агент изучает файловую структуру для понимания архитектуры. Это поможет определить правильное место для новых компонентов."}"#
+{"headline": "Анализ структуры проекта", "content": "Агент изучает файловую структуру и конфигурационные файлы проекта."}"#
             .to_string()
     }
 }
