@@ -75,4 +75,3 @@ Inject the narrator call into the main execution loop (`run_loop`).
 3.  **Update Events:** Modify `AgentEvent` and `ProgressState` in `src/agent/progress.rs`.
 4.  **Update UI:** Rewrite `ProgressState::format_telegram` to use the new fields.
 5.  **Wire it up:** Call the narrator in `AgentExecutor::run_loop` and send the event.
-6.  **Test:** Verify with Mistral API (mock or real) and check 1 RPS compliance.

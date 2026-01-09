@@ -127,6 +127,9 @@ pub struct AgentMemory {
     token_count: usize,
     max_tokens: usize,
     compact_threshold: usize,
+    /// Last synchronized token count from API
+    #[serde(default)]
+    last_api_token_count: Option<usize>,
 }
 
 impl AgentMemory {
@@ -139,6 +142,7 @@ impl AgentMemory {
             token_count: 0,
             max_tokens,
             compact_threshold: AGENT_COMPACT_THRESHOLD,
+            last_api_token_count: None,
         }
     }
 
@@ -172,6 +176,12 @@ impl AgentMemory {
         self.token_count
     }
 
+    /// Get the last synchronized API token count
+    #[must_use]
+    pub const fn api_token_count(&self) -> Option<usize> {
+        self.last_api_token_count
+    }
+
     /// Synchronize token count with actual API usage data
     ///
     /// This replaces the local heuristic estimate with the authoritative
@@ -194,6 +204,7 @@ impl AgentMemory {
             );
         }
         self.token_count = real_total_tokens;
+        self.last_api_token_count = Some(real_total_tokens);
     }
 
     /// Clear all messages from memory
@@ -201,6 +212,7 @@ impl AgentMemory {
         self.messages.clear();
         self.todos.clear();
         self.token_count = 0;
+        self.last_api_token_count = None;
     }
 
     /// Count tokens in a string using cl100k tokenizer (GPT-4/Claude compatible)
@@ -266,6 +278,9 @@ impl AgentMemory {
             self.token_count,
             self.messages.len()
         );
+
+        // Reset API token count since we compacted and lost the 1:1 mapping
+        self.last_api_token_count = None;
     }
 
     /// Create a simple summary of messages (no LLM, just extraction of key points)
@@ -360,5 +375,28 @@ mod tests {
         memory.clear();
         assert_eq!(memory.get_messages().len(), 0);
         assert_eq!(memory.token_count(), 0);
+    }
+
+    #[test]
+    fn test_sync_token_count() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user("Hello"));
+
+        // Initial state
+        assert_eq!(memory.api_token_count(), None);
+
+        // Sync
+        memory.sync_token_count(1234);
+        assert_eq!(memory.api_token_count(), Some(1234));
+        assert_eq!(memory.token_count(), 1234);
+
+        // Add more messages (local count increases, api count stays same)
+        memory.add_message(AgentMessage::user("More text"));
+        assert!(memory.token_count() > 1234);
+        assert_eq!(memory.api_token_count(), Some(1234));
+
+        // Clear
+        memory.clear();
+        assert_eq!(memory.api_token_count(), None);
     }
 }

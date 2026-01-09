@@ -267,9 +267,16 @@ impl AgentExecutor {
 
             if let Some(tx) = ctx.progress_tx {
                 let current_tokens = self.session.memory.token_count();
+                // Prefer API value if available for display
+                let display_tokens = self
+                    .session
+                    .memory
+                    .api_token_count()
+                    .unwrap_or(current_tokens);
+
                 let _ = tx
                     .send(AgentEvent::Thinking {
-                        tokens: current_tokens,
+                        tokens: display_tokens,
                     })
                     .await;
             }
