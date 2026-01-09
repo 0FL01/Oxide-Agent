@@ -22,7 +22,7 @@ use crate::agent::progress::AgentEvent;
 use crate::config::{
     get_agent_model, AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_TIMEOUT_SECS,
 };
-use crate::llm::{LlmClient, Message, ToolCall, ToolDefinition};
+use crate::llm::{ChatResponse, LlmClient, Message, ToolCall, ToolDefinition};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -300,40 +300,7 @@ impl AgentExecutor {
 
             let mut response = response.map_err(|e| anyhow!("LLM call failed: {e}"))?;
 
-            // Synchronize token count with API billing data
-            if let Some(u) = &response.usage {
-                self.session
-                    .memory
-                    .sync_token_count(u.total_tokens as usize);
-            }
-
-            // Log reasoning/thinking if present and send to progress
-            if let Some(ref reasoning) = response.reasoning_content {
-                debug!(reasoning_len = reasoning.len(), "Model reasoning received");
-
-                // Send reasoning summary to progress display
-                if let Some(tx) = ctx.progress_tx {
-                    let summary = super::thoughts::extract_reasoning_summary(reasoning, 100);
-                    let _ = tx.send(AgentEvent::Reasoning { summary }).await;
-                }
-            }
-
-            // RECOVERY: Try to parse malformed tool calls from content
-            // This handles cases where LLM generates XML-like syntax instead of proper JSON tool calls
-            if response.tool_calls.is_empty() && response.content.is_some() {
-                if let Some(content_str) = response.content.as_ref() {
-                    if let Some(recovered_call) = try_parse_malformed_tool_call(content_str) {
-                        warn!(
-                            model = %get_agent_model(),
-                            tool_name = %recovered_call.function.name,
-                            "METRIC: Recovered malformed tool call from content"
-                        );
-                        response.tool_calls.push(recovered_call);
-                        response.content =
-                            Some("[Tool call recovered from malformed response]".to_string());
-                    }
-                }
-            }
+            self.preprocess_llm_response(&mut response, ctx).await;
 
             let tool_calls = sanitize_tool_calls(response.tool_calls);
 
@@ -374,6 +341,48 @@ impl AgentExecutor {
         Err(anyhow!(
             "Агент превысил лимит итераций ({AGENT_MAX_ITERATIONS})."
         ))
+    }
+
+    /// Preprocesses the LLM response: token sync, reasoning logging, and malformed call recovery
+    async fn preprocess_llm_response(
+        &mut self,
+        response: &mut ChatResponse,
+        ctx: &AgentLoopContext<'_>,
+    ) {
+        // Synchronize token count with API billing data
+        if let Some(u) = &response.usage {
+            self.session
+                .memory
+                .sync_token_count(u.total_tokens as usize);
+        }
+
+        // Log reasoning/thinking if present and send to progress
+        if let Some(ref reasoning) = response.reasoning_content {
+            debug!(reasoning_len = reasoning.len(), "Model reasoning received");
+
+            // Send reasoning summary to progress display
+            if let Some(tx) = ctx.progress_tx {
+                let summary = super::thoughts::extract_reasoning_summary(reasoning, 100);
+                let _ = tx.send(AgentEvent::Reasoning { summary }).await;
+            }
+        }
+
+        // RECOVERY: Try to parse malformed tool calls from content
+        // This handles cases where LLM generates XML-like syntax instead of proper JSON tool calls
+        if response.tool_calls.is_empty() && response.content.is_some() {
+            if let Some(content_str) = response.content.as_ref() {
+                if let Some(recovered_call) = try_parse_malformed_tool_call(content_str) {
+                    warn!(
+                        model = %get_agent_model(),
+                        tool_name = %recovered_call.function.name,
+                        "METRIC: Recovered malformed tool call from content"
+                    );
+                    response.tool_calls.push(recovered_call);
+                    response.content =
+                        Some("[Tool call recovered from malformed response]".to_string());
+                }
+            }
+        }
     }
 
     async fn cancelled_error(&mut self, ctx: CancelCleanupContext<'_>) -> anyhow::Error {
