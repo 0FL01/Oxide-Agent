@@ -321,6 +321,14 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
             provider: "mistral",
         },
     ),
+    (
+        "mistral-small-2506",
+        ModelInfo {
+            id: "mistral-small-2506",
+            max_tokens: 32000,
+            provider: "mistral",
+        },
+    ),
 ];
 
 /// Default model for chat
