@@ -1,3 +1,4 @@
+use super::http_utils;
 use super::http_utils::{extract_text_content, send_json_request};
 use super::openai_compat;
 use super::{LlmError, LlmProvider, Message};
@@ -125,7 +126,7 @@ impl MistralProvider {
             .with_api_base("https://api.mistral.ai/v1");
         Self {
             client: Client::with_config(config),
-            http_client: HttpClient::new(),
+            http_client: http_utils::create_http_client(),
             api_key,
         }
     }
@@ -409,7 +410,7 @@ impl ZaiProvider {
     #[must_use]
     pub fn new(api_key: String) -> Self {
         Self {
-            http_client: HttpClient::new(),
+            http_client: http_utils::create_http_client(),
             api_key,
         }
     }
@@ -806,7 +807,7 @@ impl GeminiProvider {
     #[must_use]
     pub fn new(api_key: String) -> Self {
         Self {
-            http_client: HttpClient::new(),
+            http_client: http_utils::create_http_client(),
             api_key,
         }
     }
@@ -959,7 +960,7 @@ impl OpenRouterProvider {
     #[must_use]
     pub fn new(api_key: String, site_url: String, site_name: String) -> Self {
         Self {
-            http_client: HttpClient::new(),
+            http_client: http_utils::create_http_client(),
             api_key,
             site_url,
             site_name,

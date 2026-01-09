@@ -3,9 +3,24 @@
 //! Provides common HTTP request/response handling to eliminate
 //! code duplication across provider implementations.
 
+use crate::config::get_llm_http_timeout_secs;
 use crate::llm::LlmError;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
+use std::time::Duration;
+
+/// Creates an HTTP client configured with the standard LLM timeout.
+///
+/// Uses `LLM_HTTP_TIMEOUT_SECS` environment variable or 30s default.
+/// This prevents infinite hangs when API is slow or unresponsive.
+#[must_use]
+pub fn create_http_client() -> HttpClient {
+    let timeout = Duration::from_secs(get_llm_http_timeout_secs());
+    HttpClient::builder()
+        .timeout(timeout)
+        .build()
+        .unwrap_or_else(|_| HttpClient::new())
+}
 
 /// Sends an HTTP POST request with JSON body and returns parsed JSON response.
 ///

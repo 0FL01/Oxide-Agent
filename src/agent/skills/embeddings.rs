@@ -98,14 +98,27 @@ impl EmbeddingService {
     }
 
     async fn generate_embedding(&self, text: &str) -> SkillResult<Vec<f32>> {
-        let result = self
-            .llm_client
-            .generate_embedding(text, &self.model)
-            .await
-            .map_err(|err| match err {
-                LlmError::MissingConfig(msg) => SkillError::EmbeddingUnavailable(msg),
-                _ => SkillError::EmbeddingRequest(err.to_string()),
-            })?;
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        const EMBEDDING_TIMEOUT_SECS: u64 = 30;
+
+        let embedding_future = self.llm_client.generate_embedding(text, &self.model);
+
+        let result = timeout(
+            Duration::from_secs(EMBEDDING_TIMEOUT_SECS),
+            embedding_future,
+        )
+        .await
+        .map_err(|_| {
+            SkillError::EmbeddingRequest(format!(
+                "Embedding generation timeout after {EMBEDDING_TIMEOUT_SECS}s"
+            ))
+        })?
+        .map_err(|err| match err {
+            LlmError::MissingConfig(msg) => SkillError::EmbeddingUnavailable(msg),
+            _ => SkillError::EmbeddingRequest(err.to_string()),
+        })?;
 
         self.ensure_dimension(&result)?;
         Ok(result)

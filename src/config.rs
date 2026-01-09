@@ -504,3 +504,19 @@ pub const TELEGRAM_API_MAX_RETRIES: usize = 3;
 pub const TELEGRAM_API_INITIAL_BACKOFF_MS: u64 = 500;
 /// Maximum backoff delay in milliseconds for Telegram API retries
 pub const TELEGRAM_API_MAX_BACKOFF_MS: u64 = 4000;
+
+// LLM HTTP client configuration
+/// Default timeout for LLM API HTTP requests (seconds)
+/// Prevents infinite hangs when API is slow or unresponsive
+pub const LLM_HTTP_TIMEOUT_SECS: u64 = 30;
+
+/// Get LLM HTTP timeout from env or default
+///
+/// Environment variable: `LLM_HTTP_TIMEOUT_SECS`
+#[must_use]
+pub fn get_llm_http_timeout_secs() -> u64 {
+    std::env::var("LLM_HTTP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(LLM_HTTP_TIMEOUT_SECS)
+}
