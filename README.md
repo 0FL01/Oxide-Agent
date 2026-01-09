@@ -20,7 +20,7 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
     *   **Integrated Sandbox:** Safe execution of Python code and Bash commands in isolated Docker containers (`debian:trixie-slim`).
     *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
     *   **📋 Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
-    *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (7 skills: core, ffmpeg-conversion, file-hosting, file-management, task-planning, video-processing, web-search).
+    *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (8 skills: core, ffmpeg-conversion, file-hosting, file-management, html-report, task-planning, video-processing, web-search).
     *   **📁 File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
     *   **🎬 Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
@@ -212,6 +212,7 @@ skills/                        # skill definitions (markdown)
 ├── ffmpeg-conversion.md       # FFmpeg conversion
 ├── file-hosting.md            # file hosting operations
 ├── file-management.md         # file management
+├── html-report.md             # HTML report generation
 ├── task-planning.md           # task planning
 ├── video-processing.md        # video processing
 └── web-search.md              # web search
