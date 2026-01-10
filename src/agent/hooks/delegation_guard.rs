@@ -5,52 +5,27 @@
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
+use lazy_regex::lazy_regex;
 use serde_json::Value;
 
 /// Hook that blocks delegation of analytical tasks.
-pub struct DelegationGuardHook {
-    forbidden_keywords: Vec<&'static str>,
-}
+pub struct DelegationGuardHook {}
 
 impl DelegationGuardHook {
     /// Create a new delegation guard hook.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            forbidden_keywords: vec![
-                // English
-                "why",
-                "analyze",
-                "explain",
-                "review",
-                "opinion",
-                "reasoning",
-                "architect",
-                "evaluate",
-                "compare",
-                // Russian
-                "почему",
-                "анализ",
-                "объясни",
-                "обзор",
-                "мнение",
-                "архитект",
-                "оцени",
-                "сравни",
-                "выясни",    // "find out" - often implies investigation + reasoning
-                "эффективн", // "effective" - implies quality judgment
-            ],
-        }
+        Self {}
     }
 
     fn check_task(&self, task: &str) -> Option<String> {
-        let normalized = task.to_lowercase();
-        for keyword in &self.forbidden_keywords {
-            if normalized.contains(keyword) {
-                return Some(keyword.to_string());
-            }
-        }
-        None
+        static RE_ANALYTICAL_INTENT: lazy_regex::Lazy<regex::Regex> = lazy_regex!(
+            r"(?iu)\b(why|analyz\w*|explain\w*|review\w*|opinion\w*|reason\w*|evaluate\w*|compare\w*|почему|анализ\w*|объясн\w*|обзор\w*|мнени\w*|оцени\w*|сравни\w*|выясни\w*|эффективн\w*)\b"
+        );
+
+        RE_ANALYTICAL_INTENT
+            .captures(task)
+            .and_then(|captures| captures.get(1).map(|m| m.as_str().to_string()))
     }
 }
 
