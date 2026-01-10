@@ -53,7 +53,9 @@ mod integration_tests {
 
     #[test]
     fn test_xml_tag_regex_pattern() {
-        let pattern = regex!(r"&lt;/?[a-z_][a-z0-9_]*&gt;");
+        let pattern = regex!(
+            r"&lt;/?(?:tool_call|tool_name|filepath|arg_key|arg_value|command|query|url|content|directory|path|arg_key_[0-9]+|arg_value_[0-9]+|arg[0-9]+)&gt;"
+        );
 
         // Should match these
         assert!(pattern.is_match("&lt;tool_call&gt;"));
@@ -66,6 +68,10 @@ mod integration_tests {
         assert!(!pattern.is_match("&lt;ToolCall&gt;"));
         assert!(!pattern.is_match("&lt;COMMAND&gt;"));
 
+        // Should NOT match HTML tags
+        assert!(!pattern.is_match("&lt;html&gt;"));
+        assert!(!pattern.is_match("&lt;div&gt;"));
+
         // Should NOT match regular text
         assert!(!pattern.is_match("normal text"));
         assert!(!pattern.is_match("&lt; not a tag"));
@@ -73,7 +79,9 @@ mod integration_tests {
 
     #[test]
     fn test_xml_tag_replacement() {
-        let pattern = regex!(r"&lt;/?[a-z_][a-z0-9_]*&gt;");
+        let pattern = regex!(
+            r"&lt;/?(?:tool_call|tool_name|filepath|arg_key|arg_value|command|query|url|content|directory|path|arg_key_[0-9]+|arg_value_[0-9]+|arg[0-9]+)&gt;"
+        );
 
         let input = "text &lt;tool_call&gt;content&lt;/tool_call&gt; more";
         let result = pattern.replace_all(input, "");
@@ -270,7 +278,7 @@ mod bugfix_agent_2026_001_tests {
     #[test]
     fn test_short_sanitized_response() {
         // Test that very short responses after sanitization are caught
-        let input = "<tag>Hi</tag>";
+        let input = "<tool_call>Hi</tool_call>";
         let sanitized = sanitize_xml_tags(input);
 
         // After sanitization, should be very short

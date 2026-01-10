@@ -7,25 +7,29 @@ use lazy_regex::regex;
 use serde_json::Value;
 use tracing::warn;
 
-/// Sanitize XML-like tags from text
+/// Sanitize leaked control XML tags from text.
 ///
-/// This removes any XML-like tags that may have leaked from malformed LLM responses.
+/// This removes known control tags that may have leaked from malformed LLM responses.
 /// Examples: `<tool_call>`, `</tool_call>`, `<filepath>`, `<arg_key>`, etc.
 ///
 /// This function is public to allow reuse in integration tests, progress tracking,
 /// todo descriptions, and other agent components that need protection from XML leaks.
 pub fn sanitize_xml_tags(text: &str) -> String {
-    // Pattern to match opening and closing XML tags: <tag_name> or </tag_name>
-    // Matches lowercase letters, digits, underscores in tag names
-    let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
-
-    xml_tag_pattern.replace_all(text, " ").trim().to_string()
+    control_xml_tag_pattern()
+        .replace_all(text, " ")
+        .trim()
+        .to_string()
 }
 
 /// Check if text contains XML-like tags.
 pub fn contains_xml_tags(text: &str) -> bool {
-    let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
-    xml_tag_pattern.is_match(text)
+    control_xml_tag_pattern().is_match(text)
+}
+
+fn control_xml_tag_pattern() -> &'static regex::Regex {
+    regex!(
+        r"</?(?:tool_call|tool_name|filepath|arg_key|arg_value|command|query|url|content|directory|path|arg_key_[0-9]+|arg_value_[0-9]+|arg[0-9]+)>"
+    )
 }
 
 /// Sanitize tool call by detecting malformed LLM responses where JSON arguments are placed in tool name
@@ -437,8 +441,7 @@ pub fn looks_like_tool_call_text(text: &str) -> bool {
 
 /// Sanitize leaked XML from final response and return whether sanitization occurred
 pub fn sanitize_leaked_xml(iteration: usize, final_response: &mut String) -> bool {
-    let xml_tag_pattern = regex!(r"</?[a-z_][a-z0-9_]*>");
-    if !xml_tag_pattern.is_match(final_response) {
+    if !control_xml_tag_pattern().is_match(final_response) {
         return false;
     }
 
@@ -639,6 +642,13 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_xml_tags_preserves_html_tags() {
+        let input = "<html><head><meta charset=\"utf-8\"></head><body><div>ok</div></body></html>";
+        let result = sanitize_xml_tags(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
     fn test_contains_xml_tags_detects_tags() {
         let input = "read_file<filepath>/workspace/file.txt</filepath>";
         assert!(contains_xml_tags(input));
@@ -647,6 +657,12 @@ mod tests {
     #[test]
     fn test_contains_xml_tags_ignores_plain_text() {
         let input = "Plain response without tags.";
+        assert!(!contains_xml_tags(input));
+    }
+
+    #[test]
+    fn test_contains_xml_tags_ignores_html() {
+        let input = "<div><span>ok</span></div>";
         assert!(!contains_xml_tags(input));
     }
 
