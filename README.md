@@ -181,6 +181,7 @@ src/
 │   ├── mod.rs
 │   ├── executor.rs            # main agent executor
 │   ├── recovery.rs            # malformed response recovery
+│   ├── structured_output.rs    # parsed and validated structured response
 │   ├── tool_bridge.rs         # tool execution bridge
 │   ├── session_registry.rs    # agent session registry
 │   ├── loop_detection/        # loop detection

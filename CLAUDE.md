@@ -14,6 +14,7 @@ src/
 │   ├── mod.rs
 │   ├── executor.rs
 │   ├── recovery.rs            # восстановление malformed ответов
+│   ├── structured_output.rs    # парсинг и валидация структурированных ответов
 │   ├── tool_bridge.rs         # мост исполнения инструментов
 │   ├── session_registry.rs    # реестр сессий агентов
 │   ├── thoughts.rs            # генерация мыслей агента
