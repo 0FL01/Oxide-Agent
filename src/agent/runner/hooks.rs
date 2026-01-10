@@ -7,6 +7,11 @@ use crate::llm::Message;
 
 use super::AgentRunner;
 
+pub(super) enum ToolHookDecision {
+    Continue,
+    Blocked { reason: String },
+}
+
 impl AgentRunner {
     /// Apply hooks that run before the agent starts.
     pub(super) fn apply_before_agent_hooks(
@@ -67,7 +72,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &RunState,
         tool_call: &crate::llm::ToolCall,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<ToolHookDecision> {
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
             state.iteration,
@@ -87,7 +92,20 @@ impl AgentRunner {
             &hook_context,
         );
 
-        self.apply_hook_result(result, ctx)
+        match result {
+            HookResult::Continue => Ok(ToolHookDecision::Continue),
+            HookResult::InjectContext(context) => {
+                self.inject_system_context(ctx, context);
+                Ok(ToolHookDecision::Continue)
+            }
+            HookResult::ForceIteration { reason, context } => {
+                if let Some(context) = context {
+                    self.inject_system_context(ctx, context);
+                }
+                Ok(ToolHookDecision::Blocked { reason })
+            }
+            HookResult::Block { reason } => Ok(ToolHookDecision::Blocked { reason }),
+        }
     }
 
     /// Apply hooks after a tool call completes.

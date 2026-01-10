@@ -1,8 +1,11 @@
 //! Tool execution helpers for the agent runner.
 
+use super::hooks::ToolHookDecision;
 use super::types::{AgentRunnerContext, RunState};
 use super::AgentRunner;
 use crate::agent::memory::AgentMessage;
+use crate::agent::progress::AgentEvent;
+use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_bridge::{execute_single_tool_call, ToolExecutionContext};
 use crate::llm::{Message, ToolCall, ToolCallFunction};
 use tracing::{info, warn};
@@ -54,7 +57,14 @@ impl AgentRunner {
         for tool_call in &tool_calls {
             self.load_skill_context_for_tool(ctx, &tool_call.function.name)
                 .await?;
-            self.apply_before_tool_hooks(ctx, state, tool_call)?;
+            match self.apply_before_tool_hooks(ctx, state, tool_call)? {
+                ToolHookDecision::Continue => {}
+                ToolHookDecision::Blocked { reason } => {
+                    self.record_blocked_tool_result(ctx, tool_call, &reason)
+                        .await;
+                    continue;
+                }
+            }
             let cancellation_token = ctx.agent.cancellation_token().clone();
             let memory = ctx.agent.memory_mut();
             let mut tool_ctx = ToolExecutionContext {
@@ -69,6 +79,58 @@ impl AgentRunner {
             self.apply_after_tool_hooks(ctx, state, &tool_result);
         }
         Ok(())
+    }
+
+    async fn record_blocked_tool_result(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        tool_call: &ToolCall,
+        reason: &str,
+    ) {
+        let tool_name = &tool_call.function.name;
+        let tool_args = &tool_call.function.arguments;
+        let output = format!("⛔ Tool call blocked by policy.\n{reason}");
+
+        if let Some(tx) = ctx.progress_tx {
+            let sanitized_name = sanitize_xml_tags(tool_name);
+            let sanitized_args = sanitize_xml_tags(tool_args);
+            let command_preview = if tool_name == "execute_command" {
+                Self::extract_command_preview(tool_args)
+            } else {
+                None
+            };
+
+            let _ = tx
+                .send(AgentEvent::ToolCall {
+                    name: sanitized_name.clone(),
+                    input: sanitized_args,
+                    command_preview,
+                })
+                .await;
+            let _ = tx
+                .send(AgentEvent::ToolResult {
+                    name: sanitized_name,
+                    output: output.clone(),
+                })
+                .await;
+        }
+
+        ctx.messages
+            .push(Message::tool(&tool_call.id, tool_name, &output));
+        ctx.agent
+            .memory_mut()
+            .add_message(AgentMessage::tool(&tool_call.id, tool_name, &output));
+    }
+
+    fn extract_command_preview(arguments: &str) -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(arguments)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("command")
+                    .and_then(|command| command.as_str())
+                    .map(str::to_string)
+            })
     }
 
     async fn load_skill_context_for_tool(
