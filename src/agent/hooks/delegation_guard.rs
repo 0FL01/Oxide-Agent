@@ -19,6 +19,19 @@ impl DelegationGuardHook {
     }
 
     fn check_task(&self, task: &str) -> Option<String> {
+        // 1. Whitelist: Explicit retrieval verbs (The "Safe" Path)
+        // If the task starts with a mechanical verb, we assume it's a retrieval task
+        // and bypass the blocklist. This prevents blocking queries like "Find files about architecture".
+        static RE_RETRIEVAL_INTENT: lazy_regex::Lazy<regex::Regex> = lazy_regex!(
+            r"(?iu)^\s*(?:please\s+|kindly\s+)?(?:find|search|grep|locate|list|ls|cat|read|get|fetch|download|clone|найти|найди|поиск|искать|перечисли|список|покажи|скачай|загрузи|прочитай|выведи)\b"
+        );
+
+        if RE_RETRIEVAL_INTENT.is_match(task) {
+            return None;
+        }
+
+        // 2. Blocklist: Analytical keywords (The "Guard" Path)
+        // Only checked if the task didn't pass the whitelist.
         static RE_ANALYTICAL_INTENT: lazy_regex::Lazy<regex::Regex> = lazy_regex!(
             r"(?iu)\b(why|analyz\w*|explain\w*|review\w*|opinion\w*|reason\w*|evaluate\w*|compare\w*|почему|анализ\w*|объясн\w*|обзор\w*|мнени\w*|оцени\w*|сравни\w*|выясни\w*|эффективн\w*)\b"
         );
