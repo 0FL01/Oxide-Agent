@@ -226,6 +226,7 @@ fn spawn_progress_updater(
         let throttle_duration = std::time::Duration::from_millis(1500);
 
         while let Some(event) = rx.recv().await {
+            log_agent_event_info(&event);
             // Handle file sending separately (side effect)
             match &event {
                 AgentEvent::FileToSend {
@@ -308,6 +309,158 @@ fn spawn_progress_updater(
         }
         final_text
     })
+}
+
+fn log_agent_event_info(event: &AgentEvent) {
+    let _handled = log_agent_file_event(event)
+        || log_agent_tool_event(event)
+        || log_agent_progress_event(event)
+        || log_agent_misc_event(event);
+}
+
+fn log_agent_file_event(event: &AgentEvent) -> bool {
+    match event {
+        AgentEvent::FileToSend { file_name, content } => {
+            info!(
+                event = "file_to_send",
+                file_name = %file_name,
+                size_bytes = content.len(),
+                "Agent event"
+            );
+            true
+        }
+        AgentEvent::FileToSendWithConfirmation {
+            file_name,
+            content,
+            sandbox_path,
+            ..
+        } => {
+            info!(
+                event = "file_to_send_confirm",
+                file_name = %file_name,
+                size_bytes = content.len(),
+                sandbox_path = %sandbox_path,
+                "Agent event"
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+fn log_agent_tool_event(event: &AgentEvent) -> bool {
+    match event {
+        AgentEvent::ToolCall {
+            name,
+            input,
+            command_preview,
+        } => {
+            let input_preview = crate::utils::truncate_str(input, 200);
+            let command_preview = command_preview
+                .as_deref()
+                .map(|preview| crate::utils::truncate_str(preview, 120));
+            info!(
+                event = "tool_call",
+                tool_name = %name,
+                command_preview = ?command_preview,
+                input_preview = %input_preview,
+                "Agent event"
+            );
+            true
+        }
+        AgentEvent::ToolResult { name, output } => {
+            let output_preview = crate::utils::truncate_str(output, 200);
+            info!(
+                event = "tool_result",
+                tool_name = %name,
+                output_preview = %output_preview,
+                "Agent event"
+            );
+            true
+        }
+        AgentEvent::Cancelling { tool_name } => {
+            info!(event = "cancelling", tool_name = %tool_name, "Agent event");
+            true
+        }
+        _ => false,
+    }
+}
+
+fn log_agent_progress_event(event: &AgentEvent) -> bool {
+    match event {
+        AgentEvent::Thinking { tokens } => {
+            info!(event = "thinking", tokens = *tokens, "Agent event");
+            true
+        }
+        AgentEvent::Continuation { reason, count } => {
+            let reason_preview = crate::utils::truncate_str(reason, 200);
+            info!(
+                event = "continuation",
+                count = *count,
+                reason_preview = %reason_preview,
+                "Agent event"
+            );
+            true
+        }
+        AgentEvent::TodosUpdated { todos } => {
+            info!(
+                event = "todos_updated",
+                total = todos.items.len(),
+                completed = todos.completed_count(),
+                pending = todos.pending_count(),
+                "Agent event"
+            );
+            true
+        }
+        AgentEvent::Finished => {
+            info!(event = "finished", "Agent event");
+            true
+        }
+        AgentEvent::Cancelled => {
+            info!(event = "cancelled", "Agent event");
+            true
+        }
+        _ => false,
+    }
+}
+
+fn log_agent_misc_event(event: &AgentEvent) -> bool {
+    match event {
+        AgentEvent::Error(message) => {
+            let preview = crate::utils::truncate_str(message, 200);
+            info!(event = "error", message = %preview, "Agent event");
+            true
+        }
+        AgentEvent::Reasoning { summary } => {
+            let preview = crate::utils::truncate_str(summary, 200);
+            info!(event = "reasoning", summary_preview = %preview, "Agent event");
+            true
+        }
+        AgentEvent::LoopDetected {
+            loop_type,
+            iteration,
+        } => {
+            info!(
+                event = "loop_detected",
+                loop_type = ?loop_type,
+                iteration = *iteration,
+                "Agent event"
+            );
+            true
+        }
+        AgentEvent::Narrative { headline, content } => {
+            let headline_preview = crate::utils::truncate_str(headline, 120);
+            let content_preview = crate::utils::truncate_str(content, 200);
+            info!(
+                event = "narrative",
+                headline = %headline_preview,
+                content_preview = %content_preview,
+                "Agent event"
+            );
+            true
+        }
+        _ => false,
+    }
 }
 
 async fn send_loop_detected_message(
