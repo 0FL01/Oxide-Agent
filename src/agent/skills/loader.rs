@@ -6,7 +6,7 @@ use crate::agent::skills::types::{
 use crate::agent::skills::{SkillError, SkillResult};
 use chrono::Utc;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
@@ -31,7 +31,7 @@ impl SkillLoader {
                 source,
             })?;
 
-        let mut metadata = Vec::new();
+        let mut paths = Vec::new();
 
         for entry in entries {
             let entry = match entry {
@@ -43,17 +43,77 @@ impl SkillLoader {
             };
 
             let path = entry.path();
+            let file_name = path.file_name().and_then(|name| name.to_str());
+            if file_name.map(|name| name.starts_with('.')).unwrap_or(false) {
+                continue;
+            }
+
             if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
                 continue;
             }
 
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(err) => {
+                    warn!(path = ?path, error = %err, "Failed to read skill file type");
+                    continue;
+                }
+            };
+
+            if !(file_type.is_file() || file_type.is_symlink()) {
+                continue;
+            }
+
+            paths.push(path);
+        }
+
+        paths.sort();
+        let mut metadata = HashMap::new();
+
+        for path in paths {
             match self.parse_file(&path) {
-                Ok((meta, _)) => metadata.push(meta),
+                Ok((meta, _)) => {
+                    let preferred = path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(|stem| stem == meta.name)
+                        .unwrap_or(false);
+
+                    match metadata.entry(meta.name.clone()) {
+                        Entry::Vacant(entry) => {
+                            entry.insert((meta, path, preferred));
+                        }
+                        Entry::Occupied(mut entry) => {
+                            let existing = entry.get();
+                            let existing_preferred = existing.2;
+                            let existing_path = existing.1.clone();
+                            let replace = preferred && !existing_preferred;
+                            let log_path = path.clone();
+
+                            if replace {
+                                entry.insert((meta, path, preferred));
+                            }
+
+                            warn!(
+                                skill = %entry.key(),
+                                path = ?log_path,
+                                existing_path = ?existing_path,
+                                replaced = replace,
+                                "Duplicate skill name detected"
+                            );
+                        }
+                    }
+                }
                 Err(err) => {
                     warn!(path = ?path, error = %err, "Skipping invalid skill definition");
                 }
             }
         }
+
+        let mut metadata = metadata
+            .into_values()
+            .map(|(meta, _, _)| meta)
+            .collect::<Vec<_>>();
 
         metadata.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(metadata)

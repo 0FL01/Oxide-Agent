@@ -89,10 +89,24 @@ impl SkillMatcher {
             });
         }
 
+        let mut deduped = Vec::new();
+        let mut seen = HashMap::<String, usize>::new();
+
+        for skill in matches {
+            if let Some(index) = seen.get(skill.name.as_str()).copied() {
+                if is_better_match(&skill, &deduped[index]) {
+                    deduped[index] = skill;
+                }
+            } else {
+                seen.insert(skill.name.clone(), deduped.len());
+                deduped.push(skill);
+            }
+        }
+
         let mut always = Vec::new();
         let mut candidates = Vec::new();
 
-        for skill in matches {
+        for skill in deduped {
             if skill.weight == SkillWeight::Always {
                 always.push(skill);
             } else {
@@ -116,4 +130,27 @@ impl SkillMatcher {
         selected.extend(candidates.into_iter().take(self.max_selected));
         selected
     }
+}
+
+fn is_better_match(candidate: &SkillMatch, current: &SkillMatch) -> bool {
+    let weight_cmp = candidate.weight.priority().cmp(&current.weight.priority());
+    if weight_cmp != Ordering::Equal {
+        return weight_cmp == Ordering::Greater;
+    }
+
+    let score_cmp = candidate.combined_score.total_cmp(&current.combined_score);
+    if score_cmp != Ordering::Equal {
+        return score_cmp == Ordering::Greater;
+    }
+
+    let trigger_cmp = candidate.trigger_match.cmp(&current.trigger_match);
+    if trigger_cmp != Ordering::Equal {
+        return trigger_cmp == Ordering::Greater;
+    }
+
+    candidate
+        .semantic_score
+        .unwrap_or(0.0)
+        .total_cmp(&current.semantic_score.unwrap_or(0.0))
+        == Ordering::Greater
 }
