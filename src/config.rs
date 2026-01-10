@@ -337,14 +337,6 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
             provider: "mistral",
         },
     ),
-    (
-        "glm-4-32b-0414-128k",
-        ModelInfo {
-            id: "glm-4-32b-0414-128k",
-            max_tokens: 32000,
-            provider: "zai",
-        },
-    ),
 ];
 
 /// Default model for chat
@@ -384,7 +376,7 @@ pub const SUB_AGENT_TIMEOUT_SECS: u64 = 600;
 /// Maximum timeout for individual tool call (in seconds)
 /// This prevents a single tool from blocking the agent indefinitely
 pub const AGENT_TOOL_TIMEOUT_SECS: u64 = 300; // 5 minutes
-/// Agent memory token limit (increased to 200k for GLM-4.7)
+/// Agent memory token limit
 pub const AGENT_MAX_TOKENS: usize = 200_000;
 /// Sub-agent memory token limit (lighter context)
 pub const SUB_AGENT_MAX_TOKENS: usize = 64_000;
@@ -395,7 +387,7 @@ pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when
 
 // Narrator system configuration
 /// Model used for narrative generation (sidecar LLM)
-pub const NARRATOR_MODEL: &str = "glm-4-32b-0414-128k";
+pub const NARRATOR_MODEL: &str = "glm-4.5-air";
 /// Provider for narrator model
 pub const NARRATOR_PROVIDER: &str = "zai";
 /// Maximum tokens for narrator response (concise output)
