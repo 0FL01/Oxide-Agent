@@ -133,6 +133,33 @@ pub async fn create_agent_system_prompt(
     format!("{date_context}{base_prompt}\n\n{structured_output}")
 }
 
+/// Create a minimal system prompt for sub-agent execution.
+#[must_use]
+pub fn create_sub_agent_system_prompt(
+    task: &str,
+    tools: &[ToolDefinition],
+    extra_context: Option<&str>,
+) -> String {
+    let date_context = build_date_context();
+    let mut base_prompt = format!(
+        "Ты - легковесный суб-агент для черновой работы.\n\
+Ты НЕ общаешься с пользователем напрямую и возвращаешь результат только оркестратору.\n\
+Твоя задача: {task}.\n\
+Используй только доступные инструменты, если это необходимо.\n\
+Не вызывай delegate_to_sub_agent и не отправляй файлы пользователю."
+    );
+
+    if let Some(extra) = extra_context {
+        if !extra.trim().is_empty() {
+            base_prompt.push_str("\n\nДополнительный контекст:\n");
+            base_prompt.push_str(extra.trim());
+        }
+    }
+
+    let structured_output = build_structured_output_instructions(tools);
+    format!("{date_context}{base_prompt}\n\n{structured_output}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

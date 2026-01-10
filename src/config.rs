@@ -290,6 +290,14 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
         },
     ),
     (
+        "ZAI GLM-4.5-Air",
+        ModelInfo {
+            id: "glm-4.5-air",
+            max_tokens: 64000,
+            provider: "zai",
+        },
+    ),
+    (
         "Mistral Large",
         ModelInfo {
             id: "mistral-large-latest",
@@ -337,6 +345,8 @@ pub const DEFAULT_MODEL: &str = "OR Gemini 3 Flash";
 // Agent Mode configuration
 /// Model used for agent tasks (ZAI GLM-4.7)
 pub const AGENT_MODEL_ZAI: &str = "ZAI GLM-4.7";
+/// Model used for sub-agent tasks (ZAI GLM-4.5-Air)
+pub const SUB_AGENT_MODEL_ZAI: &str = "ZAI GLM-4.5-Air";
 /// Model used for agent tasks (Mistral Devstral 2512)
 pub const AGENT_MODEL_MISTRAL: &str = "Devstral 2512";
 
@@ -357,13 +367,19 @@ pub const AGENT_MODEL: &str = "ZAI GLM-4.7";
 
 /// Maximum iterations for agent loop
 pub const AGENT_MAX_ITERATIONS: usize = 200;
+/// Maximum iterations for sub-agent loop
+pub const SUB_AGENT_MAX_ITERATIONS: usize = 60;
 /// Agent task timeout in seconds
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
+/// Sub-agent task timeout in seconds
+pub const SUB_AGENT_TIMEOUT_SECS: u64 = 600;
 /// Maximum timeout for individual tool call (in seconds)
 /// This prevents a single tool from blocking the agent indefinitely
 pub const AGENT_TOOL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 /// Agent memory token limit (increased to 200k for GLM-4.7)
 pub const AGENT_MAX_TOKENS: usize = 200_000;
+/// Sub-agent memory token limit (lighter context)
+pub const SUB_AGENT_MAX_TOKENS: usize = 64_000;
 /// Threshold to trigger memory compaction
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
 /// Max forced continuations when todos incomplete

@@ -13,6 +13,12 @@ pub enum HookEvent {
         prompt: String,
     },
 
+    /// Before the agent begins a new iteration
+    BeforeIteration {
+        /// Iteration index
+        iteration: usize,
+    },
+
     /// After the agent produces a response (when no more tool calls)
     AfterAgent {
         /// The agent's response text
@@ -71,6 +77,10 @@ pub struct HookContext<'a> {
     pub continuation_count: usize,
     /// Maximum allowed continuations before stopping
     pub max_continuations: usize,
+    /// Current token count in memory
+    pub token_count: usize,
+    /// Maximum allowed tokens for memory
+    pub max_tokens: usize,
 }
 
 impl<'a> HookContext<'a> {
@@ -87,7 +97,17 @@ impl<'a> HookContext<'a> {
             iteration,
             continuation_count,
             max_continuations,
+            token_count: 0,
+            max_tokens: usize::MAX,
         }
+    }
+
+    /// Add token usage metadata to the hook context.
+    #[must_use]
+    pub const fn with_tokens(mut self, token_count: usize, max_tokens: usize) -> Self {
+        self.token_count = token_count;
+        self.max_tokens = max_tokens;
+        self
     }
 
     /// Check if we've reached the continuation limit

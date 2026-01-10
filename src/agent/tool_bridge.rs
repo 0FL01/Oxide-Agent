@@ -2,12 +2,12 @@
 //!
 //! Handles tool execution with timeout, cancellation support, and progress events.
 
+use super::memory::AgentMemory;
 use super::memory::AgentMessage;
 use super::progress::AgentEvent;
 use super::providers::TodoList;
 use super::recovery::sanitize_xml_tags;
 use super::registry::ToolRegistry;
-use super::session::AgentSession;
 use crate::config::AGENT_TOOL_TIMEOUT_SECS;
 use crate::llm::{Message, ToolCall};
 use anyhow::Result;
@@ -26,28 +26,39 @@ pub struct ToolExecutionContext<'a> {
     pub todos_arc: &'a Arc<Mutex<TodoList>>,
     /// Messages for the LLM conversation
     pub messages: &'a mut Vec<Message>,
+    /// Mutable access to agent memory
+    pub memory: &'a mut AgentMemory,
+    /// Cancellation token for the current task
+    pub cancellation_token: tokio_util::sync::CancellationToken,
+}
+
+/// Result of executing a tool call.
+pub struct ToolExecutionResult {
+    /// Name of the tool that was executed.
+    pub tool_name: String,
+    /// Output produced by the tool.
+    pub output: String,
 }
 
 /// Execute a list of tool calls
 pub async fn execute_tool_calls(
     tool_calls: Vec<ToolCall>,
-    session: &mut AgentSession,
     ctx: &mut ToolExecutionContext<'_>,
-) -> Result<()> {
+) -> Result<Vec<ToolExecutionResult>> {
+    let mut results = Vec::with_capacity(tool_calls.len());
     for tool_call in tool_calls {
-        execute_single_tool_call(tool_call, session, ctx).await?;
+        results.push(execute_single_tool_call(tool_call, ctx).await?);
     }
-    Ok(())
+    Ok(results)
 }
 
 /// Execute a single tool call with timeout and cancellation support
 pub async fn execute_single_tool_call(
     tool_call: ToolCall,
-    session: &mut AgentSession,
     ctx: &mut ToolExecutionContext<'_>,
-) -> Result<()> {
+) -> Result<ToolExecutionResult> {
     // Check for cancellation before execution
-    if session.cancellation_token.is_cancelled() {
+    if ctx.cancellation_token.is_cancelled() {
         return Err(anyhow::anyhow!("Задача отменена пользователем"));
     }
 
@@ -86,7 +97,7 @@ pub async fn execute_single_tool_call(
         use tokio::select;
         select! {
             biased;
-            _ = session.cancellation_token.cancelled() => {
+            _ = ctx.cancellation_token.cancelled() => {
                 warn!(tool_name = %name, "Tool execution cancelled by user");
                 if let Some(tx) = ctx.progress_tx {
                     let _ = tx.send(AgentEvent::Cancelling { tool_name: name.clone() }).await;
@@ -95,7 +106,7 @@ pub async fn execute_single_tool_call(
                 }
                 return Err(anyhow::anyhow!("Задача отменена пользователем"));
             },
-            res = timeout(tool_timeout, ctx.registry.execute(&name, &args, Some(&session.cancellation_token))) => {
+            res = timeout(tool_timeout, ctx.registry.execute(&name, &args, Some(&ctx.cancellation_token))) => {
                 match res {
                     Ok(Ok(r)) => r,
                     Ok(Err(e)) => format!("Ошибка выполнения инструмента: {e}"),
@@ -117,11 +128,11 @@ pub async fn execute_single_tool_call(
 
     // Sync todos if write_todos was called
     if name == "write_todos" {
-        sync_todos_from_arc(session, ctx.todos_arc).await;
+        sync_todos_from_arc(ctx.memory, ctx.todos_arc).await;
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::TodosUpdated {
-                    todos: session.memory.todos.clone(),
+                    todos: ctx.memory.todos.clone(),
                 })
                 .await;
         }
@@ -140,15 +151,18 @@ pub async fn execute_single_tool_call(
     // Add result to messages
     ctx.messages.push(Message::tool(&id, &name, &result));
     let tool_msg = AgentMessage::tool(&id, &name, &result);
-    session.memory.add_message(tool_msg);
+    ctx.memory.add_message(tool_msg);
 
-    Ok(())
+    Ok(ToolExecutionResult {
+        tool_name: name,
+        output: result,
+    })
 }
 
 /// Synchronize todos from the shared Arc to the session memory
-pub async fn sync_todos_from_arc(session: &mut AgentSession, todos_arc: &Arc<Mutex<TodoList>>) {
+pub async fn sync_todos_from_arc(memory: &mut AgentMemory, todos_arc: &Arc<Mutex<TodoList>>) {
     let current_todos = todos_arc.lock().await;
-    session.memory.todos = (*current_todos).clone();
+    memory.todos = (*current_todos).clone();
 }
 
 /// Extracts a human-readable command preview from execute_command arguments

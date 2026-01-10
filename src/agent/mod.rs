@@ -6,6 +6,8 @@
 //! - Report progress via Telegram message updates
 //! - Manage conversation memory with auto-compaction
 
+/// Context abstractions for runner execution
+pub mod context;
 /// Executor for iterative task processing
 pub mod executor;
 /// Hook system for intercepting agent events
@@ -24,6 +26,8 @@ pub mod providers;
 pub mod recovery;
 /// Registry for managing available tools
 pub mod registry;
+/// Core agent runner (execution loop)
+pub mod runner;
 /// Agent session management
 pub mod session;
 /// Session registry for managing multiple concurrent sessions
@@ -47,6 +51,7 @@ pub mod loop_detection;
 /// Progress tracking and Telegram status updates
 pub mod progress;
 
+pub use context::{AgentContext, EphemeralSession};
 pub use executor::AgentExecutor;
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
@@ -56,6 +61,7 @@ pub use provider::ToolProvider;
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;
+pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{AgentSession, AgentStatus};
 pub use session_registry::{SessionRegistry, TelegramSessionRegistry};
 pub use skills::SkillRegistry;

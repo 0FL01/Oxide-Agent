@@ -176,6 +176,12 @@ impl AgentMemory {
         self.token_count
     }
 
+    /// Get the configured maximum token count.
+    #[must_use]
+    pub const fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
     /// Get the last synchronized API token count
     #[must_use]
     pub const fn api_token_count(&self) -> Option<usize> {

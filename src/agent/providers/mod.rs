@@ -2,6 +2,7 @@
 //!
 //! Contains implementations of `ToolProvider` for different tool sources.
 
+pub mod delegation;
 pub mod filehoster;
 pub mod sandbox;
 pub mod todos;
@@ -12,6 +13,7 @@ mod path;
 #[cfg(feature = "tavily")]
 pub mod tavily;
 
+pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
 pub use sandbox::SandboxProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
