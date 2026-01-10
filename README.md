@@ -20,7 +20,7 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
     *   **Integrated Sandbox:** Safe execution of Python code and Bash commands in isolated Docker containers (`debian:trixie-slim`).
     *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
     *   **📋 Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
-    *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (8 skills: core, ffmpeg-conversion, file-hosting, file-management, html-report, task-planning, video-processing, web-search).
+    *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (9 skills: core, delegation_manager, ffmpeg-conversion, file-hosting, file-management, html-report, task-planning, video-processing, web-search).
     *   **📁 File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
     *   **🎬 Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
@@ -123,7 +123,7 @@ TAVILY_API_KEY=... # Tavily key for web search in Agent mode (optional)
 
 ### 🎯 Skills System
 The agent uses a RAG approach with embeddings to automatically provide relevant context:
-- **7 skills** as markdown documents (`skills/`)
+- **9 skills** as markdown documents (`skills/`)
 - **Semantic matching** of user requests with skills via cosine similarity
 - **Embeddings caching** for fast access (Moka cache)
 - **Automatic injection** of relevant instructions into the system prompt
@@ -148,6 +148,7 @@ The agent uses a modular provider system, each offering a specialized set of too
 - **YT-DLP Provider** (`ytdlp.rs`, ~33KB) — video and audio download from various platforms
 - **File Hoster Provider** (`filehoster.rs`) — public file upload to temporary hosting (up to 4GB)
 - **Path Provider** (`path.rs`) — path and file structure operations
+- **Delegation Provider** (`delegation.rs`) — sub-agent delegation for complex task decomposition
 </details>
 
 ## Usage
@@ -180,30 +181,30 @@ src/
 ├── agent/                     # agent core and execution logic
 │   ├── mod.rs
 │   ├── executor.rs            # main agent executor
+│   ├── context.rs             # agent execution context
 │   ├── recovery.rs            # malformed response recovery
 │   ├── structured_output.rs    # parsed and validated structured response
 │   ├── tool_bridge.rs         # tool execution bridge
 │   ├── session_registry.rs    # agent session registry
-│   ├── loop_detection/        # loop detection
-│   │   ├── content_detector.rs
-│   │   ├── tool_detector.rs
-│   │   ├── llm_detector.rs
-│   │   └── service.rs
+│   ├── runner/                # execution runner modules
+│   ├── loop_detection/        # loop detection (content, tool, llm)
 │   ├── skills/                # skills subsystem (RAG/embeddings)
-│   ├── hooks/                 # execution hooks (Completion etc.)
-│   ├── prompt/                # system prompt assembly
-│   ├── providers/             # tool providers (Sandbox, Tavily, etc.)
+│   ├── hooks/                 # execution hooks (Completion, Complexity, Safety)
+│   ├── prompt/                # system prompt assembly (Composer)
+│   ├── providers/             # tool providers (Sandbox, Tavily, Delegation, etc.)
 │   ├── session.rs             # session state
 │   ├── memory.rs              # memory and context handling
 │   ├── preprocessor.rs        # input media preprocessing
 │   ├── progress.rs            # progress display management
+│   ├── thoughts.rs            # analytical thoughts generation
 │   └── registry.rs            # global tool registry
 ├── bot/                       # Telegram bot logic
 │   ├── handlers.rs            # main handlers
 │   ├── agent_handlers.rs      # agent mode handlers
 │   ├── views/                 # message templates and UI (agent.rs)
-│   └── agent/                 # bot-specific logic (media.rs)
-├── llm/                       # LLM provider integrations
+│   ├── agent/                 # bot-specific logic (media.rs)
+│   └── mod.rs
+├── llm/                       # LLM provider integrations (OpenAI, Zai, etc.)
 ├── sandbox/                   # Docker sandbox management
 ├── storage.rs                 # Cloudflare R2/S3 operations
 ├── config.rs                  # configuration and constants
@@ -211,6 +212,7 @@ src/
 
 skills/                        # skill definitions (markdown)
 ├── core.md                    # base concepts
+├── delegation_manager.md      # delegation and sub-agents
 ├── ffmpeg-conversion.md       # FFmpeg conversion
 ├── file-hosting.md            # file hosting operations
 ├── file-management.md         # file management
@@ -220,17 +222,15 @@ skills/                        # skill definitions (markdown)
 └── web-search.md              # web search
 
 backlog/                       # documentation, plans and blueprints
-├── BLUEPRINT.md               # main project development plan
-└── docs/                      # detailed component specifications
+├── blueprints/                # implementation plans
+├── docs/                      # detailed component specifications
+├── bugs/                      # tracked issues
+└── done/                      # completed architectural changes
 
 tests/                         # integration and functional tests
 
 sandbox/                       # Docker configuration for sandbox
 └── Dockerfile.sandbox
-
-.github/                       # CI/CD configuration
-└── workflows/
-    └── ci-cd.yml
 
 Dockerfile                     # Main application Dockerfile
 docker-compose.yml

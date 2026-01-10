@@ -43,6 +43,16 @@ impl ComplexityAnalyzerHook {
             "report",
             "benchmark",
             "market",
+            "git",
+            "clone",
+            "repo",
+            "репозитор",
+            "код",
+            "файлы",
+            "сканир",
+            "codebase",
+            "files",
+            "изучи",
         ];
 
         if keywords.iter().any(|keyword| normalized.contains(keyword)) {

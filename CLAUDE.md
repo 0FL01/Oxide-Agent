@@ -13,6 +13,7 @@ src/
 ├── agent/                     # ядро агента и логика выполнения
 │   ├── mod.rs
 │   ├── executor.rs
+│   ├── context.rs             # контекст выполнения агента
 │   ├── recovery.rs            # восстановление malformed ответов
 │   ├── structured_output.rs    # парсинг и валидация структурированных ответов
 │   ├── tool_bridge.rs         # мост исполнения инструментов
@@ -28,6 +29,14 @@ src/
 │   │   ├── llm_detector.rs
 │   │   ├── service.rs
 │   │   ├── tool_detector.rs
+│   │   └── types.rs
+│   ├── runner/                # вспомогательные модули исполнения
+│   │   ├── mod.rs
+│   │   ├── execution.rs
+│   │   ├── hooks.rs
+│   │   ├── loop_detection.rs
+│   │   ├── responses.rs
+│   │   ├── tools.rs
 │   │   └── types.rs
 │   ├── skills/                # подсистема навыков (RAG/embeddings)
 │   │   ├── mod.rs
@@ -47,10 +56,13 @@ src/
 │   ├── hooks/                 # хуки выполнения (completion и др.)
 │   │   ├── mod.rs
 │   │   ├── completion.rs
+│   │   ├── complexity.rs      # оценка сложности задачи
+│   │   ├── sub_agent_safety.rs # проверка безопасности делегирования
 │   │   ├── registry.rs
 │   │   └── types.rs
 │   └── providers/             # провайдеры инструментов (Sandbox, Tavily, и т.д.)
 │       ├── mod.rs
+│       ├── delegation.rs      # делегирование под-агентам
 │       ├── filehoster.rs
 │       ├── path.rs
 │       ├── sandbox.rs
@@ -85,15 +97,30 @@ src/
 └── utils.rs
 
 skills/                       # определения навыков в формате markdown
+├── core.md
+├── delegation_manager.md      # управление делегированием
+├── ffmpeg-conversion.md
+├── file-hosting.md
+├── file-management.md
+├── html-report.md
+├── task-planning.md
+├── video-processing.md
+└── web-search.md
 
 tests/                        # интеграционные и функциональные тесты
+├── agent_xml_leak_prevention.rs
+├── cancellation_respected.rs
+├── integration_validation.rs
+└── sub_agent_delegation.rs
+
+backlog/                      # документация и планы
+├── blueprints/
+├── bugs/
+├── docs/                     # спецификации компонентов
+└── done/                     # завершенные задачи
 
 sandbox/                      # конфигурация Docker для песочницы
 └── Dockerfile.sandbox
-
-.github/                      # CI/CD конфигурация
-└── workflows/
-    └── ci-cd.yml
 
 Dockerfile                     # Dockerfile основного приложения
 docker-compose.yml
