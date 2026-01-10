@@ -11,9 +11,12 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use aws_types::region::Region;
 use thiserror::Error;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
+use moka::future::Cache;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Errors that can occur during storage operations
 #[derive(Error, Debug)]
@@ -59,6 +62,7 @@ pub struct Message {
 pub struct R2Storage {
     client: Client,
     bucket: String,
+    cache: Cache<String, Arc<Vec<u8>>>,
 }
 
 impl R2Storage {
@@ -100,9 +104,16 @@ impl R2Storage {
 
         let client = Client::from_conf(s3_config);
 
+        let cache = Cache::builder()
+            .max_capacity(10_000)
+            .time_to_live(Duration::from_secs(60 * 60)) // 1 hour
+            .time_to_idle(Duration::from_secs(30 * 60)) // 30 minutes
+            .build();
+
         Ok(Self {
             client,
             bucket: bucket.clone(),
+            cache,
         })
     }
 
@@ -116,13 +127,19 @@ impl R2Storage {
         key: &str,
         data: &T,
     ) -> Result<(), StorageError> {
-        let body = serde_json::to_string_pretty(data)?;
+        let body_str = serde_json::to_string_pretty(data)?;
+        let body_bytes = body_str.into_bytes();
+
+        // Write-Through: Update cache immediately
+        self.cache
+            .insert(key.to_string(), Arc::new(body_bytes.clone()))
+            .await;
 
         self.client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
-            .body(ByteStream::from(body.into_bytes()))
+            .body(ByteStream::from(body_bytes))
             .content_type("application/json")
             .send()
             .await
@@ -140,6 +157,18 @@ impl R2Storage {
         &self,
         key: &str,
     ) -> Result<Option<T>, StorageError> {
+        // Read-Through: Check cache first
+        if let Some(cached_data) = self.cache.get(key).await {
+            match serde_json::from_slice(&cached_data) {
+                Ok(data) => return Ok(Some(data)),
+                Err(e) => {
+                    warn!("Cache deserialization failed for {}: {}", key, e);
+                    // Fallback to S3 if cache is corrupted, but also remove from cache
+                    self.cache.invalidate(key).await;
+                }
+            }
+        }
+
         let result = self
             .client
             .get_object()
@@ -154,8 +183,15 @@ impl R2Storage {
                     .body
                     .collect()
                     .await
-                    .map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
-                let json_data = serde_json::from_slice(&data.into_bytes())?;
+                    .map_err(|e| StorageError::Io(std::io::Error::other(e)))?
+                    .into_bytes();
+
+                // Read-Through: Populate cache on miss
+                self.cache
+                    .insert(key.to_string(), Arc::new(data.to_vec()))
+                    .await;
+
+                let json_data = serde_json::from_slice(&data)?;
                 Ok(Some(json_data))
             }
             Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
@@ -169,6 +205,9 @@ impl R2Storage {
     ///
     /// Returns an error if S3 deletion fails.
     pub async fn delete_object(&self, key: &str) -> Result<(), StorageError> {
+        // Invalidate cache
+        self.cache.invalidate(key).await;
+
         self.client
             .delete_object()
             .bucket(&self.bucket)
