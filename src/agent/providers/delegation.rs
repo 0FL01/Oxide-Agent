@@ -5,7 +5,7 @@
 
 use crate::agent::context::{AgentContext, EphemeralSession};
 use crate::agent::hooks::{CompletionCheckHook, SubAgentSafetyConfig, SubAgentSafetyHook};
-use crate::agent::memory::AgentMessage;
+use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::prompt::create_sub_agent_system_prompt;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{FileHosterProvider, SandboxProvider, TodosProvider, YtdlpProvider};
@@ -31,6 +31,8 @@ use uuid::Uuid;
 use crate::agent::providers::TavilyProvider;
 
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &["delegate_to_sub_agent", "send_file_to_user"];
+const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
+const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
 
 /// Provider for sub-agent delegation tool.
 pub struct DelegationProvider {
@@ -115,7 +117,8 @@ impl ToolProvider for DelegationProvider {
             name: "delegate_to_sub_agent".to_string(),
             description: "Делегировать черновую работу легковесному саб-агенту. \
 Передавай краткую, четкую задачу и список разрешенных инструментов. \
-Можно добавить дополнительный контекст (например, выдержку из навыка)."
+Можно добавить дополнительный контекст (например, выдержку из навыка). \
+Если саб-агент не успевает, вернется отчет с частичными результатами."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -236,11 +239,27 @@ impl ToolProvider for DelegationProvider {
         let timeout_duration = Duration::from_secs(SUB_AGENT_TIMEOUT_SECS);
         match timeout(timeout_duration, runner.run(&mut ctx)).await {
             Ok(Ok(result)) => Ok(result),
-            Ok(Err(err)) => Err(anyhow!("Sub-agent failed: {err}")),
-            Err(_) => Err(anyhow!(
-                "Sub-agent timed out after {} seconds",
-                SUB_AGENT_TIMEOUT_SECS
-            )),
+            Ok(Err(err)) => {
+                warn!(task_id = %task_id, error = %err, "Sub-agent failed");
+                Ok(build_sub_agent_report(SubAgentReportContext {
+                    task_id: &task_id,
+                    status: SubAgentReportStatus::Error,
+                    error: Some(err.to_string()),
+                    memory: sub_session.memory(),
+                }))
+            }
+            Err(_) => {
+                warn!(task_id = %task_id, "Sub-agent timed out");
+                Ok(build_sub_agent_report(SubAgentReportContext {
+                    task_id: &task_id,
+                    status: SubAgentReportStatus::Timeout,
+                    error: Some(format!(
+                        "Sub-agent timed out after {} seconds",
+                        SUB_AGENT_TIMEOUT_SECS
+                    )),
+                    memory: sub_session.memory(),
+                }))
+            }
         }
     }
 }
@@ -299,5 +318,81 @@ impl ToolProvider for RestrictedToolProvider {
         self.inner
             .execute(tool_name, arguments, cancellation_token)
             .await
+    }
+}
+
+enum SubAgentReportStatus {
+    Timeout,
+    Error,
+}
+
+impl SubAgentReportStatus {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Error => "error",
+        }
+    }
+}
+
+struct SubAgentReportContext<'a> {
+    task_id: &'a str,
+    status: SubAgentReportStatus,
+    error: Option<String>,
+    memory: &'a AgentMemory,
+}
+
+fn build_sub_agent_report(ctx: SubAgentReportContext<'_>) -> String {
+    let report = json!({
+        "status": ctx.status.as_str(),
+        "task_id": ctx.task_id,
+        "error": ctx.error,
+        "note": "Саб-агент не завершил задачу. Используй частичные результаты ниже.",
+        "timeout_secs": SUB_AGENT_TIMEOUT_SECS,
+        "tokens": ctx.memory.token_count(),
+        "todos": &ctx.memory.todos,
+        "recent_messages": summarize_recent_messages(ctx.memory),
+    });
+
+    match serde_json::to_string_pretty(&report) {
+        Ok(payload) => payload,
+        Err(err) => format!(
+            "Sub-agent {}. Failed to serialize report: {err}",
+            ctx.status.as_str()
+        ),
+    }
+}
+
+fn summarize_recent_messages(memory: &AgentMemory) -> Vec<serde_json::Value> {
+    let mut items = Vec::new();
+    for message in memory
+        .get_messages()
+        .iter()
+        .rev()
+        .take(SUB_AGENT_REPORT_MAX_MESSAGES)
+    {
+        let content = crate::utils::truncate_str(&message.content, SUB_AGENT_REPORT_MAX_CHARS);
+        let reasoning = message
+            .reasoning
+            .as_ref()
+            .map(|text| crate::utils::truncate_str(text, SUB_AGENT_REPORT_MAX_CHARS));
+        items.push(json!({
+            "role": role_label(&message.role),
+            "content": content,
+            "reasoning": reasoning,
+            "tool_name": message.tool_name.as_deref(),
+            "tool_call_id": message.tool_call_id.as_deref(),
+        }));
+    }
+    items.reverse();
+    items
+}
+
+fn role_label(role: &MessageRole) -> &'static str {
+    match role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
     }
 }

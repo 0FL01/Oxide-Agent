@@ -3,6 +3,7 @@
 //! Parses the strict JSON response format used by the agent loop and validates
 //! that it conforms to the expected schema.
 
+use crate::agent::recovery::extract_first_json;
 use crate::llm::ToolDefinition;
 use serde::Deserialize;
 use std::fmt;
@@ -78,10 +79,105 @@ pub fn parse_structured_output(
         return Err(StructuredOutputError::new("Empty response content"));
     }
 
-    let parsed: StructuredOutput = serde_json::from_str(trimmed)
+    let mut last_error = match try_parse_structured_output(trimmed, tools) {
+        Ok(parsed) => return Ok(parsed),
+        Err(err) => err.message().to_string(),
+    };
+
+    let sanitized = strip_control_chars(trimmed);
+    if sanitized != trimmed {
+        match try_parse_structured_output(&sanitized, tools) {
+            Ok(parsed) => return Ok(parsed),
+            Err(err) => last_error = err.message().to_string(),
+        }
+    }
+
+    for recovered in recovery_candidates(&sanitized) {
+        match try_parse_structured_output(&recovered, tools) {
+            Ok(parsed) => return Ok(parsed),
+            Err(err) => last_error = err.message().to_string(),
+        }
+    }
+
+    Err(StructuredOutputError::new(format!(
+        "Structured output parse failed after recovery attempts: {last_error}"
+    )))
+}
+
+fn try_parse_structured_output(
+    raw: &str,
+    tools: &[ToolDefinition],
+) -> Result<ValidatedStructuredOutput, StructuredOutputError> {
+    let parsed: StructuredOutput = serde_json::from_str(raw)
         .map_err(|e| StructuredOutputError::new(format!("JSON parse error: {e}")))?;
 
     validate_structured_output(parsed, tools)
+}
+
+fn strip_control_chars(input: &str) -> String {
+    let mut changed = false;
+    let mut output = String::with_capacity(input.len());
+
+    for ch in input.chars() {
+        let keep = matches!(ch, '\n' | '\r' | '\t') || !ch.is_control();
+        if keep {
+            output.push(ch);
+        } else {
+            changed = true;
+        }
+    }
+
+    if changed {
+        output
+    } else {
+        input.to_string()
+    }
+}
+
+fn recovery_candidates(input: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Some(fenced) = extract_fenced_json(input) {
+        candidates.push(fenced);
+    }
+
+    if let Some(extracted) = extract_first_json(input) {
+        if !candidates.contains(&extracted) {
+            candidates.push(extracted);
+        }
+    }
+
+    candidates
+}
+
+fn extract_fenced_json(input: &str) -> Option<String> {
+    let fence = "```";
+    let start = input.find(fence)?;
+    let after_start = &input[start + fence.len()..];
+    let end = after_start.find(fence)?;
+    let mut block = after_start[..end].trim().to_string();
+
+    block = strip_fence_language(&block);
+    if block.is_empty() {
+        None
+    } else {
+        Some(block)
+    }
+}
+
+fn strip_fence_language(block: &str) -> String {
+    let mut lines = block.lines();
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+
+    let first_trim = first.trim();
+    if first_trim.eq_ignore_ascii_case("json") || first_trim.eq_ignore_ascii_case("jsonc") {
+        let rest = lines.collect::<Vec<_>>().join("\n");
+        return rest.trim().to_string();
+    }
+
+    block.trim().to_string()
 }
 
 fn validate_structured_output(
@@ -234,5 +330,39 @@ mod tests {
         let raw = r#"{"thought":" ","tool_call":null,"final_answer":"ok"}"#;
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_json_inside_code_fence() {
+        let raw = "```json\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\"}\n```";
+        let result = parse_structured_output(raw, &tools_fixture());
+        assert!(matches!(
+            result,
+            Ok(parsed) if parsed.final_answer.as_deref() == Some("ok")
+        ));
+    }
+
+    #[test]
+    fn parses_json_with_leading_text() {
+        let raw =
+            "Ответ:\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\"}\nСпасибо";
+        let result = parse_structured_output(raw, &tools_fixture());
+        assert!(matches!(
+            result,
+            Ok(parsed) if parsed.final_answer.as_deref() == Some("ok")
+        ));
+    }
+
+    #[test]
+    fn parses_json_with_control_chars() {
+        let raw = format!(
+            "{{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok{}\"}}",
+            '\u{0001}'
+        );
+        let result = parse_structured_output(&raw, &tools_fixture());
+        assert!(matches!(
+            result,
+            Ok(parsed) if parsed.final_answer.as_deref() == Some("ok")
+        ));
     }
 }
