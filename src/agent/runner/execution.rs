@@ -3,6 +3,7 @@
 use super::types::{AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure};
 use super::AgentRunner;
 use crate::agent::progress::AgentEvent;
+use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::ChatResponse;
 use anyhow::{anyhow, Result};
@@ -104,6 +105,30 @@ impl AgentRunner {
             .trim()
             .to_string();
 
+        if !response.tool_calls.is_empty() {
+            let tool_calls = sanitize_tool_calls(std::mem::take(&mut response.tool_calls));
+
+            self.spawn_narrative_task(
+                response.reasoning_content.as_deref(),
+                &tool_calls,
+                ctx.progress_tx,
+            );
+
+            if self.tool_loop_detected(&tool_calls).await {
+                return Err(self
+                    .loop_detected_error(
+                        ctx,
+                        state,
+                        crate::agent::loop_detection::LoopType::ToolCallLoop,
+                    )
+                    .await);
+            }
+
+            self.record_assistant_tool_call(ctx, &raw_json, &tool_calls);
+            self.execute_tools(ctx, state, tool_calls).await?;
+            return Ok(None);
+        }
+
         let parsed = match parse_structured_output(&raw_json, ctx.tools) {
             Ok(parsed) => parsed,
             Err(error) => {
@@ -184,7 +209,13 @@ impl AgentRunner {
             }
         }
 
-        if response.content.is_none() {
+        let content_empty = response
+            .content
+            .as_deref()
+            .map(|content| content.trim().is_empty())
+            .unwrap_or(true);
+
+        if content_empty && response.tool_calls.is_empty() {
             warn!(model = %ctx.config.model_name, "Model returned empty content");
         }
     }
