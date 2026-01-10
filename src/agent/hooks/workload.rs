@@ -114,9 +114,15 @@ impl Hook for WorkloadDistributorHook {
                 if self.is_complex_prompt(prompt) {
                     return HookResult::InjectContext(
                         "[SYSTEM NOTICE: High Complexity Detected]\n\
-                        DO NOT perform heavy lifting (git clone, mass file reading, searching) yourself.\n\
-                        Use `delegate_to_sub_agent` for ALL data gathering and exploration.\n\
-                        Your role is ORCHESTRATOR & ANALYST. Delegate the manual labor."
+                        You must SPLIT your workflow to handle this request efficiently:\n\
+                        1. 🟢 DELEGATE retrieval tasks (git clone, grep, find, cat) to `delegate_to_sub_agent`.\n\
+                           - Goal: Get raw data/files.\n\
+                           - Forbidden for sub-agent: analysis, reasoning, explaining \"why\".\n\
+                        2. 🧠 RETAIN analysis tasks for yourself.\n\
+                           - Goal: Read the files returned by the sub-agent and perform the high-level reasoning.\n\
+                           - Do NOT try to clone repos or scan thousands of files yourself.\n\
+                        Example of GOOD delegation: \"Clone repo X and list files containing 'hook'\".\n\
+                        Example of BAD delegation: \"Analyze how the hook system works\"."
                             .to_string(),
                     );
                 }
