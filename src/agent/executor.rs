@@ -2,7 +2,7 @@
 //!
 //! Handles the iterative execution of tasks using LLM with tool calling.
 //! This module is the main coordinator - delegates to submodules for:
-//! - recovery: XML/JSON sanitization and malformed response recovery
+//! - structured_output: strict JSON schema parsing and validation
 //! - prompt: System prompt composition
 //! - tool_bridge: Tool execution with timeout and progress events
 
@@ -12,23 +12,21 @@ use super::memory::AgentMessage;
 use super::narrator::Narrator;
 use super::prompt::create_agent_system_prompt;
 use super::providers::TodoList;
-use super::recovery::{
-    contains_xml_tags, looks_like_tool_call_text, sanitize_leaked_xml, sanitize_tool_calls,
-    try_parse_malformed_tool_call,
-};
 use super::session::AgentSession;
 use super::skills::SkillRegistry;
+use super::structured_output::{parse_structured_output, StructuredOutputError, ValidatedToolCall};
 use super::tool_bridge::{execute_tool_calls, sync_todos_from_arc, ToolExecutionContext};
 use crate::agent::progress::AgentEvent;
 use crate::config::{
     get_agent_model, AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS, AGENT_TIMEOUT_SECS,
 };
-use crate::llm::{ChatResponse, LlmClient, Message, ToolCall, ToolDefinition};
+use crate::llm::{ChatResponse, LlmClient, Message, ToolCall, ToolCallFunction, ToolDefinition};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 // Re-export sanitize_xml_tags for backward compatibility
 pub use super::recovery::sanitize_xml_tags as public_sanitize_xml_tags;
@@ -187,10 +185,6 @@ impl AgentExecutor {
             }
         }
 
-        // Build system prompt using the prompt module
-        let system_prompt =
-            create_agent_system_prompt(task, self.skill_registry.as_mut(), &mut self.session).await;
-
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
 
         let mut registry = ToolRegistry::new();
@@ -223,6 +217,14 @@ impl AgentExecutor {
         }
 
         let tools = registry.all_tools();
+        // Build system prompt using the prompt module (includes tool schema)
+        let system_prompt = create_agent_system_prompt(
+            task,
+            &tools,
+            self.skill_registry.as_mut(),
+            &mut self.session,
+        )
+        .await;
         let mut messages = Self::convert_memory_to_messages(self.session.memory.get_messages());
         let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);
 
@@ -292,64 +294,13 @@ impl AgentExecutor {
                     .await);
             }
 
-            let response = self
-                .llm_client
-                .chat_with_tools(
-                    ctx.system_prompt,
-                    ctx.messages,
-                    ctx.tools,
-                    get_agent_model(),
-                )
-                .await;
-
-            if let Err(ref e) = response {
-                if let Some(tx) = ctx.progress_tx {
-                    let _ = tx
-                        .send(AgentEvent::Error(format!("LLM call failed: {e}")))
-                        .await;
-                }
+            let response = self.call_llm_with_tools(ctx).await?;
+            if let Some(result) = self
+                .handle_llm_response(response, iteration, &mut continuation_count, ctx)
+                .await?
+            {
+                return Ok(result);
             }
-
-            let mut response = response.map_err(|e| anyhow!("LLM call failed: {e}"))?;
-
-            self.preprocess_llm_response(&mut response, ctx).await;
-
-            // Async narrative generation (non-blocking sidecar LLM)
-            self.spawn_narrative_task(&response, ctx.progress_tx);
-
-            let tool_calls = sanitize_tool_calls(response.tool_calls);
-
-            if tool_calls.is_empty() {
-                if let Some(content) = response.content.as_ref() {
-                    if self.content_loop_detected(content).await {
-                        return Err(self
-                            .loop_detected_error(LoopType::ContentLoop, iteration, ctx)
-                            .await);
-                    }
-                }
-
-                match self
-                    .handle_final_response(
-                        response.content,
-                        response.reasoning_content,
-                        iteration,
-                        &mut continuation_count,
-                        ctx,
-                    )
-                    .await?
-                {
-                    Some(res) => return Ok(res),
-                    None => continue,
-                }
-            }
-
-            if self.tool_loop_detected(&tool_calls).await {
-                return Err(self
-                    .loop_detected_error(LoopType::ToolCallLoop, iteration, ctx)
-                    .await);
-            }
-
-            self.execute_tools(tool_calls, ctx).await?;
         }
 
         self.session.fail("Превышен лимит итераций".to_string());
@@ -358,7 +309,100 @@ impl AgentExecutor {
         ))
     }
 
-    /// Preprocesses the LLM response: token sync, reasoning logging, and malformed call recovery
+    async fn call_llm_with_tools(&self, ctx: &AgentLoopContext<'_>) -> Result<ChatResponse> {
+        let response = self
+            .llm_client
+            .chat_with_tools(
+                ctx.system_prompt,
+                ctx.messages,
+                ctx.tools,
+                get_agent_model(),
+            )
+            .await;
+
+        if let Err(ref e) = response {
+            if let Some(tx) = ctx.progress_tx {
+                let _ = tx
+                    .send(AgentEvent::Error(format!("LLM call failed: {e}")))
+                    .await;
+            }
+        }
+
+        response.map_err(|e| anyhow!("LLM call failed: {e}"))
+    }
+
+    async fn handle_llm_response(
+        &mut self,
+        mut response: ChatResponse,
+        iteration: usize,
+        continuation_count: &mut usize,
+        ctx: &mut AgentLoopContext<'_>,
+    ) -> Result<Option<String>> {
+        self.preprocess_llm_response(&mut response, ctx).await;
+
+        let raw_json = response
+            .content
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        let parsed = match parse_structured_output(&raw_json, ctx.tools) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                self.handle_structured_output_error(err, &raw_json, continuation_count, ctx)
+                    .await;
+                return Ok(None);
+            }
+        };
+
+        let tool_calls = parsed
+            .tool_call
+            .map(|tool_call| vec![self.build_tool_call(tool_call)])
+            .unwrap_or_default();
+
+        // Async narrative generation (non-blocking sidecar LLM)
+        self.spawn_narrative_task(
+            response.reasoning_content.as_deref(),
+            &tool_calls,
+            ctx.progress_tx,
+        );
+
+        if tool_calls.is_empty() {
+            let final_answer = parsed
+                .final_answer
+                .unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
+
+            if self.content_loop_detected(&final_answer).await {
+                return Err(self
+                    .loop_detected_error(LoopType::ContentLoop, iteration, ctx)
+                    .await);
+            }
+
+            return self
+                .handle_final_response(
+                    final_answer,
+                    &raw_json,
+                    response.reasoning_content,
+                    iteration,
+                    continuation_count,
+                    ctx,
+                )
+                .await;
+        }
+
+        if self.tool_loop_detected(&tool_calls).await {
+            return Err(self
+                .loop_detected_error(LoopType::ToolCallLoop, iteration, ctx)
+                .await);
+        }
+
+        self.record_assistant_tool_call(&raw_json, &tool_calls, ctx);
+        self.execute_tools(tool_calls, ctx).await?;
+        Ok(None)
+    }
+
+    /// Preprocesses the LLM response: token sync and reasoning logging
     async fn preprocess_llm_response(
         &mut self,
         response: &mut ChatResponse,
@@ -382,35 +426,23 @@ impl AgentExecutor {
             }
         }
 
-        // RECOVERY: Try to parse malformed tool calls from content
-        // This handles cases where LLM generates XML-like syntax instead of proper JSON tool calls
-        if response.tool_calls.is_empty() && response.content.is_some() {
-            if let Some(content_str) = response.content.as_ref() {
-                if let Some(recovered_call) = try_parse_malformed_tool_call(content_str) {
-                    warn!(
-                        model = %get_agent_model(),
-                        tool_name = %recovered_call.function.name,
-                        "METRIC: Recovered malformed tool call from content"
-                    );
-                    response.tool_calls.push(recovered_call);
-                    response.content =
-                        Some("[Tool call recovered from malformed response]".to_string());
-                }
-            }
+        if response.content.is_none() {
+            warn!(model = %get_agent_model(), "Model returned empty content");
         }
     }
 
     /// Spawns async narrative generation task (non-blocking sidecar LLM)
     fn spawn_narrative_task(
         &self,
-        response: &ChatResponse,
+        reasoning: Option<&str>,
+        tool_calls: &[ToolCall],
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) {
         let Some(tx) = progress_tx else { return };
 
         let narrator = Arc::clone(&self.narrator);
-        let reasoning = response.reasoning_content.clone();
-        let tool_calls = response.tool_calls.clone();
+        let reasoning = reasoning.map(str::to_string);
+        let tool_calls = tool_calls.to_vec();
         let tx = tx.clone();
 
         tokio::spawn(async move {
@@ -489,16 +521,6 @@ impl AgentExecutor {
     }
 
     async fn content_loop_detected(&self, content: &str) -> bool {
-        if looks_like_tool_call_text(content) || contains_xml_tags(content) {
-            let mut detector = self.loop_detector.lock().await;
-            detector.reset_content_tracking();
-            debug!(
-                content_preview = %crate::utils::truncate_str(content, 80),
-                "Skipping content loop detection for recovery-like content"
-            );
-            return false;
-        }
-
         let mut detector = self.loop_detector.lock().await;
         match detector.check_content(content) {
             Ok(detected) => detected,
@@ -546,30 +568,66 @@ impl AgentExecutor {
             .await)
     }
 
-    async fn force_continuation_due_to_bad_response(
+    fn build_tool_call(&self, tool_call: ValidatedToolCall) -> ToolCall {
+        ToolCall {
+            id: format!("call_{}", Uuid::new_v4()),
+            function: ToolCallFunction {
+                name: tool_call.name,
+                arguments: tool_call.arguments_json,
+            },
+            is_recovered: false,
+        }
+    }
+
+    fn record_assistant_tool_call(
+        &mut self,
+        raw_json: &str,
+        tool_calls: &[ToolCall],
+        ctx: &mut AgentLoopContext<'_>,
+    ) {
+        let tool_calls_vec = tool_calls.to_vec();
+        ctx.messages.push(Message::assistant_with_tools(
+            raw_json,
+            tool_calls_vec.clone(),
+        ));
+        self.session
+            .memory
+            .add_message(AgentMessage::assistant_with_tools(
+                raw_json.to_string(),
+                tool_calls_vec,
+            ));
+    }
+
+    async fn handle_structured_output_error(
         &self,
+        error: StructuredOutputError,
+        raw_json: &str,
         continuation_count: &mut usize,
         ctx: &mut AgentLoopContext<'_>,
     ) {
-        warn!("Response became empty after sanitization, forcing iteration to get real answer");
+        warn!(
+            error = %error,
+            raw_preview = %crate::utils::truncate_str(raw_json, 200),
+            "Structured output validation failed"
+        );
+
         *continuation_count += 1;
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::Continuation {
-                    reason: "Обнаружена ошибка генерации, повторяю попытку...".to_string(),
+                    reason: "Некорректный JSON-ответ, повторяю попытку...".to_string(),
                     count: *continuation_count,
                 })
                 .await;
         }
-        ctx.messages.push(Message::system(
-            "[СИСТЕМА: Ваш предыдущий ответ содержал служебный XML-синтаксис вместо нормального текста. \
-            ВАЖНО: \
-            1. НЕ используйте XML-теги (<tool_call>, <filepath>, <arg_key> и т.д.) \
-            2. НЕ повторяйте вызовы инструментов - они уже выполнены \
-            3. Используйте ТОЛЬКО результаты уже выполненных инструментов \
-            4. Отформатируйте ответ в виде обычного текста или markdown \
-            Пожалуйста, предоставьте полноценный текстовый ответ на запрос пользователя.]",
-        ));
+
+        let response_preview = crate::utils::truncate_str(raw_json, 400);
+        let system_message = format!(
+            "[СИСТЕМА: Ваш предыдущий ответ не соответствует строгой JSON-схеме.\nОшибка: {}\nОтвет: {}\nВерните ТОЛЬКО валидный JSON по указанной схеме без markdown, XML или текста вне JSON.]",
+            error.message(),
+            response_preview
+        );
+        ctx.messages.push(Message::system(&system_message));
     }
 
     fn after_agent_hook_result(
@@ -592,24 +650,25 @@ impl AgentExecutor {
         )
     }
 
-    fn save_final_response(&mut self, final_response: &str, reasoning: Option<String>) {
+    fn save_final_response(&mut self, raw_json: &str, reasoning: Option<String>) {
         if let Some(reasoning_content) = reasoning {
             self.session
                 .memory
                 .add_message(AgentMessage::assistant_with_reasoning(
-                    final_response,
+                    raw_json,
                     reasoning_content,
                 ));
         } else {
             self.session
                 .memory
-                .add_message(AgentMessage::assistant(final_response));
+                .add_message(AgentMessage::assistant(raw_json));
         }
     }
 
     async fn handle_final_response(
         &mut self,
-        content: Option<String>,
+        final_answer: String,
+        raw_json: &str,
         reasoning: Option<String>,
         iteration: usize,
         continuation_count: &mut usize,
@@ -617,34 +676,7 @@ impl AgentExecutor {
     ) -> Result<Option<String>> {
         self.bail_if_cancelled(ctx).await?;
 
-        let mut final_response =
-            content.unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
-
-        let xml_sanitized = sanitize_leaked_xml(iteration, &mut final_response);
-
-        // BUGFIX AGENT-2026-001: Improved detection of malformed tool calls after XML sanitization
-        // If XML was sanitized, check both for empty responses AND tool-like text patterns
-        if xml_sanitized {
-            // Check 1: Response became too short after sanitization
-            if final_response.trim().len() < 10 {
-                self.force_continuation_due_to_bad_response(continuation_count, ctx)
-                    .await;
-                return Ok(None);
-            }
-
-            // Check 2: Response contains tool call patterns (e.g., "[Вызов инструментов: ytdlp_...]")
-            if looks_like_tool_call_text(&final_response) {
-                warn!(
-                    model = %crate::config::get_agent_model(),
-                    iteration = iteration,
-                    response_preview = %crate::utils::truncate_str(&final_response, 100),
-                    "Detected tool call pattern in sanitized response, forcing continuation"
-                );
-                self.force_continuation_due_to_bad_response(continuation_count, ctx)
-                    .await;
-                return Ok(None);
-            }
-        }
+        let final_response = final_answer;
 
         sync_todos_from_arc(&mut self.session, ctx.todos_arc).await;
         let hook_result =
@@ -660,7 +692,7 @@ impl AgentExecutor {
                     })
                     .await;
             }
-            ctx.messages.push(Message::assistant(&final_response));
+            ctx.messages.push(Message::assistant(raw_json));
             ctx.messages.push(Message::system(&format!(
                 "[СИСТЕМА: {reason}]\n\n{}",
                 context.unwrap_or_default()
@@ -668,7 +700,7 @@ impl AgentExecutor {
             return Ok(None);
         }
 
-        self.save_final_response(&final_response, reasoning);
+        self.save_final_response(raw_json, reasoning);
 
         self.session.complete();
         if let Some(tx) = ctx.progress_tx {
@@ -684,11 +716,8 @@ impl AgentExecutor {
     ) -> Result<()> {
         // Load skill context for each tool before execution
         for tool_call in &tool_calls {
-            let (name, _) = super::recovery::sanitize_tool_call(
-                &tool_call.function.name,
-                &tool_call.function.arguments,
-            );
-            self.load_skill_context_for_tool(&name, ctx).await?;
+            self.load_skill_context_for_tool(&tool_call.function.name, ctx)
+                .await?;
         }
 
         let mut tool_ctx = ToolExecutionContext {

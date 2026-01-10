@@ -34,21 +34,6 @@ pub async fn execute_tool_calls(
     session: &mut AgentSession,
     ctx: &mut ToolExecutionContext<'_>,
 ) -> Result<()> {
-    let tool_names: Vec<String> = tool_calls
-        .iter()
-        .map(|tc| tc.function.name.clone())
-        .collect();
-    ctx.messages.push(Message::assistant_with_tools(
-        &format!("[Вызов инструментов: {}]", tool_names.join(", ")),
-        tool_calls.clone(),
-    ));
-
-    let assistant_msg = AgentMessage::assistant_with_tools(
-        format!("[Вызов инструментов: {}]", tool_names.join(", ")),
-        tool_calls.clone(),
-    );
-    session.memory.add_message(assistant_msg);
-
     for tool_call in tool_calls {
         execute_single_tool_call(tool_call, session, ctx).await?;
     }
@@ -66,10 +51,9 @@ pub async fn execute_single_tool_call(
         return Err(anyhow::anyhow!("Задача отменена пользователем"));
     }
 
-    let (name, args) = super::recovery::sanitize_tool_call(
-        &tool_call.function.name,
-        &tool_call.function.arguments,
-    );
+    let ToolCall { id, function, .. } = tool_call;
+    let name = function.name;
+    let args = function.arguments;
 
     info!(
         tool_name = %name,
@@ -154,9 +138,8 @@ pub async fn execute_single_tool_call(
     }
 
     // Add result to messages
-    ctx.messages
-        .push(Message::tool(&tool_call.id, &name, &result));
-    let tool_msg = AgentMessage::tool(&tool_call.id, &name, &result);
+    ctx.messages.push(Message::tool(&id, &name, &result));
+    let tool_msg = AgentMessage::tool(&id, &name, &result);
     session.memory.add_message(tool_msg);
 
     Ok(())

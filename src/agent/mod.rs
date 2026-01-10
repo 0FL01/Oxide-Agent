@@ -30,6 +30,8 @@ pub mod session;
 pub mod session_registry;
 /// Skill system for modular prompts
 pub mod skills;
+/// Structured output parsing and validation
+pub mod structured_output;
 /// Tool execution bridge with timeout and cancellation
 pub mod tool_bridge;
 

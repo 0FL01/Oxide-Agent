@@ -812,8 +812,8 @@ impl LlmProvider for ZaiProvider {
             "max_tokens": max_tokens,
             "temperature": 0.95,
             "stream": true,
-            "tool_stream": true,
             "stream_options": { "include_usage": true },
+            "response_format": { "type": "json_object" },
             "thinking": {
                 "type": "enabled",
                 "clear_thinking": true
