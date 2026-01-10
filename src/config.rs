@@ -337,6 +337,14 @@ pub const MODELS: &[(&str, ModelInfo)] = &[
             provider: "mistral",
         },
     ),
+    (
+        "glm-4-32b-0414-128k",
+        ModelInfo {
+            id: "glm-4-32b-0414-128k",
+            max_tokens: 32000,
+            provider: "zai",
+        },
+    ),
 ];
 
 /// Default model for chat
@@ -387,9 +395,9 @@ pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when
 
 // Narrator system configuration
 /// Model used for narrative generation (sidecar LLM)
-pub const NARRATOR_MODEL: &str = "labs-mistral-small-creative";
+pub const NARRATOR_MODEL: &str = "glm-4-32b-0414-128k";
 /// Provider for narrator model
-pub const NARRATOR_PROVIDER: &str = "mistral";
+pub const NARRATOR_PROVIDER: &str = "zai";
 /// Maximum tokens for narrator response (concise output)
 pub const NARRATOR_MAX_TOKENS: u32 = 256;
 
