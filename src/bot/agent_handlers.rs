@@ -20,7 +20,7 @@ use crate::bot::views::{
 use crate::config::AGENT_MAX_ITERATIONS;
 use crate::llm::LlmClient;
 use crate::storage::R2Storage;
-use anyhow::Result;
+use anyhow::{Error, Result};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
@@ -37,6 +37,11 @@ struct AgentTaskContext {
     msg: Message,
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
+}
+
+enum AgentWipeError {
+    SandboxAccess(Error),
+    Recreate(Error),
 }
 
 /// Global session registry for agent executors
@@ -892,32 +897,50 @@ pub async fn handle_agent_wipe_confirmation(
         "✅ Да" => {
             // Ensure session exists (restores from DB if needs be, or creates new)
             ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
-
-            if let Some(executor_arc) = SESSION_REGISTRY.get(&user_id).await {
-                let mut executor = executor_arc.write().await;
-                match executor.session_mut().ensure_sandbox().await {
-                    Ok(sandbox) => {
-                        if let Err(e) = sandbox.recreate().await {
-                            bot.send_message(chat_id, format!("Ошибка при пересоздании: {e}"))
-                                .reply_markup(keyboard)
-                                .await?;
-                        } else {
-                            bot.send_message(chat_id, DefaultAgentView::container_recreated())
-                                .reply_markup(keyboard)
-                                .await?;
-                        }
-                    }
-                    Err(_) => {
-                        bot.send_message(chat_id, DefaultAgentView::sandbox_access_error())
-                            .reply_markup(keyboard)
-                            .await?;
-                    }
+            match SESSION_REGISTRY
+                .with_executor_mut(&user_id, |executor| {
+                    Box::pin(async move {
+                        let sandbox = executor
+                            .session_mut()
+                            .ensure_sandbox()
+                            .await
+                            .map_err(AgentWipeError::SandboxAccess)?;
+                        sandbox.recreate().await.map_err(AgentWipeError::Recreate)?;
+                        Ok(())
+                    })
+                })
+                .await
+            {
+                Ok(Ok(())) => {
+                    bot.send_message(chat_id, DefaultAgentView::container_recreated())
+                        .reply_markup(keyboard)
+                        .await?;
                 }
-            } else {
-                // Should be unreachable due to ensure_session_exists, but just in case
-                bot.send_message(chat_id, DefaultAgentView::session_not_found())
+                Ok(Err(AgentWipeError::SandboxAccess(e))) => {
+                    warn!(error = %e, "Sandbox access failed during container recreate");
+                    bot.send_message(chat_id, DefaultAgentView::sandbox_access_error())
+                        .reply_markup(keyboard)
+                        .await?;
+                }
+                Ok(Err(AgentWipeError::Recreate(e))) => {
+                    bot.send_message(chat_id, format!("Ошибка при пересоздании: {e}"))
+                        .reply_markup(keyboard)
+                        .await?;
+                }
+                Err("Cannot reset while task is running") => {
+                    bot.send_message(
+                        chat_id,
+                        DefaultAgentView::container_recreate_blocked_by_task(),
+                    )
                     .reply_markup(keyboard)
                     .await?;
+                }
+                Err(_) => {
+                    // Should be unreachable due to ensure_session_exists, but just in case
+                    bot.send_message(chat_id, DefaultAgentView::session_not_found())
+                        .reply_markup(keyboard)
+                        .await?;
+                }
             }
         }
         "❌ Отмена" => {

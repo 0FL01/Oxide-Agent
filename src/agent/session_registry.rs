@@ -5,7 +5,9 @@
 
 use super::executor::AgentExecutor;
 use std::collections::HashMap;
+use std::future::Future;
 use std::hash::Hash;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -149,6 +151,23 @@ impl<Id: Hash + Eq + Clone + Send + Sync + std::fmt::Debug + 'static> SessionReg
     ///
     /// Returns `Ok(())` if reset succeeded, `Err` if session is busy
     pub async fn reset(&self, id: &Id) -> Result<(), &'static str> {
+        self.with_executor_mut(id, |executor| {
+            Box::pin(async move {
+                executor.reset();
+            })
+        })
+        .await?;
+        info!(user_id = ?id, "Session reset");
+        Ok(())
+    }
+
+    /// Execute a mutable action on the session executor without waiting for a running task.
+    ///
+    /// Returns `Err` if the session is missing or busy.
+    pub async fn with_executor_mut<F, T>(&self, id: &Id, action: F) -> Result<T, &'static str>
+    where
+        F: for<'a> FnOnce(&'a mut AgentExecutor) -> Pin<Box<dyn Future<Output = T> + Send + 'a>>,
+    {
         let executor_arc = {
             let sessions = self.sessions.read().await;
             sessions.get(id).cloned()
@@ -158,15 +177,10 @@ impl<Id: Hash + Eq + Clone + Send + Sync + std::fmt::Debug + 'static> SessionReg
             return Err("Session not found");
         };
 
-        let result = match executor_arc.try_write() {
-            Ok(mut executor) => {
-                executor.reset();
-                info!(user_id = ?id, "Session reset");
-                Ok(())
-            }
-            Err(_) => Err("Cannot reset while task is running"),
-        };
-        result
+        let mut executor = executor_arc
+            .try_write()
+            .map_err(|_| "Cannot reset while task is running")?;
+        Ok(action(&mut executor).await)
     }
 
     /// Remove a session from the registry

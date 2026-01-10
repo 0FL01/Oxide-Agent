@@ -50,6 +50,8 @@ pub trait AgentView {
 
     /// Message when clearing memory while task is running
     fn clear_blocked_by_task() -> &'static str;
+    /// Cannot recreate container while a task is running
+    fn container_recreate_blocked_by_task() -> &'static str;
 
     /// Message for container recreated successfully
     fn container_recreated() -> &'static str;
@@ -141,6 +143,10 @@ impl AgentView for DefaultAgentView {
 
     fn clear_blocked_by_task() -> &'static str {
         "⚠️ Очистка контекста невозможна, пока выполняется задача.\nНажмите «Отменить задачу», дождитесь отмены и затем повторите очистку."
+    }
+
+    fn container_recreate_blocked_by_task() -> &'static str {
+        "⚠️ Пересоздание контейнера невозможно, пока выполняется задача.\nНажмите «Отменить задачу», дождитесь отмены и затем повторите действие."
     }
 
     fn container_recreated() -> &'static str {
