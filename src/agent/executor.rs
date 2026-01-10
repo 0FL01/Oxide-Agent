@@ -3,7 +3,7 @@
 //! Handles orchestration around the core agent runner, including
 //! session lifecycle, skill prompts, and tool registry setup.
 
-use super::hooks::{CompletionCheckHook, ComplexityAnalyzerHook};
+use super::hooks::{CompletionCheckHook, DelegationGuardHook, WorkloadDistributorHook};
 use super::memory::AgentMessage;
 use super::prompt::create_agent_system_prompt;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -34,7 +34,8 @@ impl AgentExecutor {
     pub fn new(llm_client: Arc<LlmClient>, session: AgentSession) -> Self {
         let mut runner = AgentRunner::new(llm_client.clone());
         runner.register_hook(Box::new(CompletionCheckHook::new()));
-        runner.register_hook(Box::new(ComplexityAnalyzerHook::new()));
+        runner.register_hook(Box::new(WorkloadDistributorHook::new()));
+        runner.register_hook(Box::new(DelegationGuardHook::new()));
 
         let skill_registry = match SkillRegistry::from_env(llm_client.clone()) {
             Ok(Some(registry)) => {
