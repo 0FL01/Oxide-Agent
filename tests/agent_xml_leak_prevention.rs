@@ -95,7 +95,7 @@ mod integration_tests {
     #[test]
     fn test_complex_malformed_response() {
         // Real-world example from bug report
-        let malformed = "[Вызов инструментов: read_file]read_filepath/workspace/docker-compose.yml&lt;/tool_call&gt;";
+        let malformed = "[Call tools: read_file]read_filepath/workspace/docker-compose.yml&lt;/tool_call&gt;";
 
         // After processing should:
         // 1. Detect "read_file" in content
@@ -132,7 +132,7 @@ mod progress_integration_tests {
         assert!(!output.contains("<arg_key>"));
         assert!(!output.contains("</arg_key>"));
         // Current step should show with ⏳ prefix
-        assert!(output.contains("⏳ Выполнение: todos"));
+        assert!(output.contains("⏳ Execution: todos"));
     }
 
     #[test]
@@ -148,7 +148,7 @@ mod progress_integration_tests {
 
         let output = state.format_telegram();
         // Current step should show with ⏳ prefix
-        assert!(output.contains("⏳ Выполнение: web_search"));
+        assert!(output.contains("⏳ Execution: web_search"));
     }
 
     #[test]
@@ -164,9 +164,9 @@ mod progress_integration_tests {
 
         let output = state.format_telegram();
 
-        // Should show the command preview with ⏳ prefix, not "Выполнение: execute_command"
+        // Should show the command preview with ⏳ prefix, not "Execution: execute_command"
         assert!(output.contains("⏳ 🔧 pip install pandas"));
-        assert!(!output.contains("Выполнение: execute_command"));
+        assert!(!output.contains("Execution: execute_command"));
     }
 
     #[test]
@@ -219,7 +219,7 @@ mod progress_integration_tests {
 
         // Check header format
         assert!(output.contains("🤖 <b>Oxide Agent</b>"));
-        assert!(output.contains("Итерация 1/200"));
+        assert!(output.contains("Iteration 1/200"));
         assert!(output.contains("5.7k")); // Token format
     }
 }
@@ -231,7 +231,7 @@ mod bugfix_agent_2026_001_tests {
     #[test]
     fn test_ytdlp_malformed_tool_call_detection() {
         // This reproduces the exact bug scenario from the report
-        let malformed_response = "[Вызов инструментов: ytdlp_get_video_metadataurl...]";
+        let malformed_response = "[Tool call: ytdlp_get_video_metadataurl...]";
 
         // The response should be detected as tool-like text
         // This is tested indirectly through sanitize_xml_tags
@@ -241,14 +241,14 @@ mod bugfix_agent_2026_001_tests {
         assert_eq!(sanitized, malformed_response);
 
         // But it should still contain tool markers
-        assert!(malformed_response.contains("Вызов инструмент"));
+        assert!(malformed_response.contains("Tool call"));
         assert!(malformed_response.contains("ytdlp_"));
     }
 
     #[test]
     fn test_ytdlp_with_xml_tags_sanitization() {
         // Test case where ytdlp tool call has XML tags
-        let malformed = "[Вызов инструментов: ytdlp_get_video_metadata]<url>https://youtube.com/watch?v=xxx</url>";
+        let malformed = "[Tool call: ytdlp_get_video_metadata]<url>https://youtube.com/watch?v=xxx</url>";
 
         let sanitized = sanitize_xml_tags(malformed);
 
@@ -260,17 +260,17 @@ mod bugfix_agent_2026_001_tests {
         assert!(sanitized.contains("https://youtube.com/watch?v=xxx"));
 
         // And tool markers should remain
-        assert!(sanitized.contains("Вызов инструмент"));
+        assert!(sanitized.contains("Tool call"));
         assert!(sanitized.contains("ytdlp_get_video_metadata"));
     }
 
     #[test]
     fn test_normal_response_not_flagged() {
         // Normal responses should not be flagged as tool calls
-        let normal_response = "Вот результат выполнения задачи. Файл был успешно обработан.";
+        let normal_response = "Here is the result of task execution. The file was successfully processed.";
 
         // Should not contain any tool markers
-        assert!(!normal_response.contains("Вызов инструмент"));
+        assert!(!normal_response.contains("Tool call"));
         assert!(!normal_response.contains("ytdlp_"));
         assert!(!normal_response.contains("[Tool call"));
     }

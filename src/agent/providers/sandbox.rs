@@ -88,8 +88,8 @@ impl SandboxProvider {
 
         if content.is_empty() {
             return format!(
-                "❌ ОШИБКА: Файл '{file_name}' пуст (0 байт) и не может быть отправлен в Telegram.\n\
-                 Путь в песочнице: {sandbox_path}"
+                "❌ ERROR: File '{file_name}' is empty (0 bytes) and cannot be sent to Telegram.\n\
+                 Path in sandbox: {sandbox_path}"
             );
         }
 
@@ -98,8 +98,8 @@ impl SandboxProvider {
         let Some(ref tx) = self.progress_tx else {
             warn!(file_name = %file_name, "Progress channel not available");
             return format!(
-                "⚠️ Файл '{file_name}' прочитан ({size_mb:.2} MB), но канал отправки недоступен.\n\
-                 Путь в песочнице: {sandbox_path}"
+                "⚠️ File '{file_name}' read ({size_mb:.2} MB), but send channel is not available.\n\
+                 Path in sandbox: {sandbox_path}"
             );
         };
 
@@ -115,35 +115,35 @@ impl SandboxProvider {
         {
             warn!(file_name = %file_name, error = %e, "Failed to send FileToSendWithConfirmation event");
             return format!(
-                "⚠️ Файл '{file_name}' прочитан ({size_mb:.2} MB), но не удалось поставить в очередь на отправку: {e}\n\
-                 Путь в песочнице: {sandbox_path}"
+                "⚠️ File '{file_name}' read ({size_mb:.2} MB), but failed to send to Telegram: {e}\n\
+                 Path in sandbox: {sandbox_path}"
             );
         }
 
         match tokio::time::timeout(TELEGRAM_DELIVERY_CONFIRMATION_TIMEOUT, confirm_rx).await {
             Ok(Ok(Ok(()))) => {
                 info!(file_name = %file_name, sandbox_path = %sandbox_path, "File delivered successfully");
-                format!("✅ Файл '{file_name}' доставлен пользователю")
+                format!("✅ File '{file_name}' delivered to user")
             }
             Ok(Ok(Err(e))) => {
                 warn!(file_name = %file_name, error = %e, "File delivery failed");
                 format!(
-                    "❌ Не удалось отправить файл '{file_name}' пользователю через Telegram: {e}\n\
-                     Путь в песочнице: {sandbox_path}"
+                    "❌ Failed to send file '{file_name}' to user through Telegram: {e}\n\
+                     Path in sandbox: {sandbox_path}"
                 )
             }
             Ok(Err(_)) => {
                 warn!(file_name = %file_name, "Confirmation channel closed unexpectedly");
                 format!(
-                    "⚠️ Статус доставки файла '{file_name}' неизвестен (канал подтверждения закрыт).\n\
-                     Путь в песочнице: {sandbox_path}"
+                    "⚠️ Status of file '{file_name}' delivery unknown (confirmation channel closed).\n\
+                     Path in sandbox: {sandbox_path}"
                 )
             }
             Err(_) => {
                 warn!(file_name = %file_name, "File delivery confirmation timeout");
                 format!(
-                    "⚠️ Таймаут ожидания доставки файла '{file_name}' (2 минуты).\n\
-                     Путь в песочнице: {sandbox_path}"
+                    "⚠️ File '{file_name}' delivery confirmation timeout (2 minutes).\n\
+                     Path in sandbox: {sandbox_path}"
                 )
             }
         }
@@ -164,19 +164,19 @@ impl SandboxProvider {
             Ok(result) => {
                 if result.success() {
                     if result.stdout.is_empty() {
-                        Ok("(команда выполнена успешно, вывод пуст)".to_string())
+                        Ok("(command executed successfully, output is empty)".to_string())
                     } else {
                         Ok(result.stdout)
                     }
                 } else {
                     Ok(format!(
-                        "Ошибка (код {}): {}",
+                        "Command failed (exit code {}): {}",
                         result.exit_code,
                         result.combined_output()
                     ))
                 }
             }
-            Err(e) => Ok(format!("Ошибка выполнения команды: {e}")),
+            Err(e) => Ok(format!("Command execution failed: {e}")),
         }
     }
 
@@ -186,8 +186,8 @@ impl SandboxProvider {
             .write_file(&args.path, args.content.as_bytes())
             .await
         {
-            Ok(()) => Ok(format!("Файл {} успешно записан", args.path)),
-            Err(e) => Ok(format!("Ошибка записи файла: {e}")),
+            Ok(()) => Ok(format!("File {} successfully written", args.path)),
+            Err(e) => Ok(format!("Error writing file: {e}")),
         }
     }
 
@@ -195,7 +195,7 @@ impl SandboxProvider {
         let args: ReadFileArgs = serde_json::from_str(arguments)?;
         match sandbox.read_file(&args.path).await {
             Ok(content) => Ok(String::from_utf8_lossy(&content).to_string()),
-            Err(e) => Ok(format!("Ошибка чтения файла: {e}")),
+            Err(e) => Ok(format!("Error reading file: {e}")),
         }
     }
 
@@ -219,20 +219,20 @@ impl SandboxProvider {
             Ok(size) => size,
             Err(e) => {
                 error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
-                return Ok(format!("❌ Ошибка проверки размера файла: {e}"));
+                return Ok(format!("❌ Error checking file size: {e}"));
             }
         };
 
         if file_size == 0 {
             return Ok(format!(
-                "❌ ОШИБКА: Файл '{file_name}' пуст (0 байт) и не может быть отправлен в Telegram.\n\
-                 Путь в песочнице: {resolved_path}"
+                "❌ ERROR: File '{file_name}' is empty (0 bytes) and cannot be sent to Telegram.\n\
+                 Path in sandbox: {resolved_path}"
             ));
         }
 
         if file_size > TELEGRAM_MAX_FILE_SIZE_BYTES {
             return Ok(
-                "⚠️ ОШИБКА: Файл слишком велик для Telegram (>50 МБ). Пожалуйста, используйте инструмент upload_file, чтобы загрузить его в облако."
+                "⚠️ ERROR: File too large for Telegram (>50 MB). Please use the upload_file tool to upload it to the cloud."
                     .to_string(),
             );
         }
@@ -250,7 +250,7 @@ impl SandboxProvider {
             }
             Err(e) => {
                 error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
-                Ok(format!("❌ Ошибка загрузки файла: {e}"))
+                Ok(format!("❌ Error downloading file: {e}"))
             }
         }
     }
@@ -278,23 +278,23 @@ impl SandboxProvider {
                 if result.success() {
                     if result.stdout.is_empty() {
                         Ok(format!(
-                            "Директория '{}' пуста или не существует",
+                            "Directory '{}' is empty or does not exist",
                             args.path
                         ))
                     } else {
                         Ok(format!(
-                            "📁 Содержимое '{}':\n\n```\n{}\n```",
+                            "📁 Directory '{}':\n\n```\n{}\n```",
                             args.path, result.stdout
                         ))
                     }
                 } else {
                     Ok(format!(
-                        "❌ Ошибка при чтении директории: {}",
+                        "❌ Error reading directory: {}",
                         result.stderr
                     ))
                 }
             }
-            Err(e) => Ok(format!("❌ Ошибка выполнения команды: {e}")),
+            Err(e) => Ok(format!("❌ Error executing command: {e}")),
         }
     }
 }
@@ -388,7 +388,7 @@ mod tests {
             .await;
 
         assert!(result.starts_with("❌"), "unexpected result: {result}");
-        assert!(result.contains("0 байт"), "unexpected result: {result}");
+        assert!(result.contains("0 bytes"), "unexpected result: {result}");
     }
 }
 

@@ -210,8 +210,8 @@ pub fn sanitize_tool_calls(tool_calls: Vec<ToolCall>) -> Vec<ToolCall> {
 ///
 /// This handles cases where the LLM generates XML-like syntax instead of proper JSON tool calls.
 /// Example inputs:
-/// - "read_file<filepath>/workspace/docker-compose.yml</tool_call>"
-/// - "[Вызов инструментов: read_file]read_filepath..."
+/// - "read_file<filepath>/workspace/docker-compose.yml"
+/// - "[Call tools: read_file]read_filepath..."
 /// - "execute_command<command>ls -la</command>"
 ///
 /// BUGFIX AGENT-2026-001: Extended to support ytdlp tools
@@ -398,7 +398,7 @@ fn extract_ytdlp_search_arguments(content: &str) -> Option<Value> {
 ///
 /// This detects patterns that indicate the LLM tried to call a tool but failed to use
 /// proper JSON format. Examples:
-/// - "[Вызов инструментов: ytdlp_get_video_metadataurl...]"
+/// - "[Call tools: ytdlp_get_video_metadataurl...]"
 /// - "[Tool calls: read_file]read_filepath..."
 /// - "ytdlp_download_videourl..."
 pub fn looks_like_tool_call_text(text: &str) -> bool {
@@ -408,7 +408,7 @@ pub fn looks_like_tool_call_text(text: &str) -> bool {
     }
 
     // Check for Russian markers
-    if text.contains("Вызов инструмент") {
+    if text.contains("Call tools") {
         return true;
     }
 
@@ -515,9 +515,9 @@ mod tests {
     #[test]
     fn test_sanitize_tool_call_complex_array() {
         let malformed_name = r#"todos [
-            {"description": "Обновление yt-dlp до последней версии", "status": "in_progress"},
-            {"description": "Тестирование новой версии", "status": "pending"},
-            {"description": "Документирование изменений", "status": "pending"}
+            {"description": "Update yt-dlp to latest version", "status": "in_progress"},
+            {"description": "Test new version", "status": "pending"},
+            {"description": "Document changes", "status": "pending"}
         ]"#;
         let (name, args) = sanitize_tool_call(malformed_name, "{}");
 
@@ -688,10 +688,9 @@ mod tests {
         assert_eq!(result, "first  second");
     }
 
-    // Tests for BUGFIX AGENT-2026-001: looks_like_tool_call_text
     #[test]
     fn test_looks_like_tool_call_text_with_russian_marker() {
-        let input = "[Вызов инструментов: ytdlp_get_video_metadataurl...]";
+        let input = "[Tool calls: ytdlp_get_video_metadataurl...]";
         assert!(looks_like_tool_call_text(input));
     }
 
@@ -722,7 +721,7 @@ mod tests {
 
     #[test]
     fn test_looks_like_tool_call_text_normal_russian_text() {
-        let input = "Вот результат выполнения задачи без вызова инструментов.";
+        let input = "Here is the result of task execution without tool calls.";
         assert!(!looks_like_tool_call_text(input));
     }
 

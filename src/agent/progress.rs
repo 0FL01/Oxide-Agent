@@ -204,7 +204,7 @@ impl ProgressState {
         self.complete_last_step();
         self.steps.push(Step {
             description: format!(
-                "Анализ задачи (итерация {}/{})",
+                "Task analysis (iteration {}/{})",
                 self.current_iteration, self.max_iterations
             ),
             status: StepStatus::InProgress,
@@ -229,7 +229,7 @@ impl ProgressState {
         // Use command preview if available, otherwise show tool name
         let description = command_preview
             .map(|preview| format!("🔧 {}", crate::utils::truncate_str(preview, 60)))
-            .unwrap_or_else(|| format!("Выполнение: {}", &name));
+            .unwrap_or_else(|| format!("Execution: {}", &name));
 
         self.steps.push(Step {
             description,
@@ -243,7 +243,7 @@ impl ProgressState {
         self.complete_last_step();
         self.steps.push(Step {
             description: format!(
-                "🔄 Продолжение ({}/{}): {}",
+                "🔄 Continuation ({}/{}): {}",
                 count,
                 crate::config::AGENT_CONTINUATION_LIMIT,
                 crate::utils::truncate_str(reason, 50)
@@ -273,7 +273,7 @@ impl ProgressState {
 
     fn handle_file_send(&mut self, file_name: String) {
         self.steps.push(Step {
-            description: format!("📤 Отправка файла: {file_name}"),
+            description: format!("📤 File send: {file_name}"),
             status: StepStatus::Completed,
             tokens: None,
             tool_name: Some("file_send".to_string()),
@@ -302,11 +302,11 @@ impl ProgressState {
         // Add a step showing cancellation is in progress
         if let Some(last) = self.steps.last_mut() {
             if last.status == StepStatus::InProgress {
-                last.description = format!("⏹ Прерывание: {tool_name}...");
+                last.description = format!("⏹ Cancellation: {tool_name}...");
             }
         } else {
             self.steps.push(Step {
-                description: format!("⏹ Прерывание: {tool_name}..."),
+                description: format!("⏹ Cancellation: {tool_name}..."),
                 status: StepStatus::InProgress,
                 tokens: None,
                 tool_name: None,
@@ -315,7 +315,7 @@ impl ProgressState {
     }
 
     fn handle_cancelled(&mut self) {
-        self.error = Some("Задача отменена пользователем".to_string());
+        self.error = Some("Task cancelled by user".to_string());
         self.fail_last_step();
     }
 
@@ -326,11 +326,11 @@ impl ProgressState {
 
     fn handle_loop_detected(&mut self, loop_type: LoopType, iteration: usize) {
         let label = match loop_type {
-            LoopType::ToolCallLoop => "Повторяющиеся вызовы",
-            LoopType::ContentLoop => "Повторяющийся текст",
-            LoopType::CognitiveLoop => "Застревание",
+            LoopType::ToolCallLoop => "Recurring calls",
+            LoopType::ContentLoop => "Recurring text",
+            LoopType::CognitiveLoop => "Stuck",
         };
-        self.error = Some(format!("Обнаружена петля: {label} (итерация {iteration})"));
+        self.error = Some(format!("Loop detected: {label} (iteration {iteration})"));
         self.fail_last_step();
     }
 
@@ -344,14 +344,14 @@ impl ProgressState {
     pub fn format_telegram(&self) -> String {
         let mut lines = Vec::new();
 
-        // === Header: Oxide Agent │ Итерация X/Y │ Токены ===
+        // === Header: Oxide Agent │ Iteration X/Y │ Tokens ===
         let tokens_str = self
             .last_token_count()
             .map(crate::utils::format_tokens)
             .unwrap_or_else(|| "...".to_string());
 
         lines.push(format!(
-            "🤖 <b>Oxide Agent</b> │ Итерация {}/{} │ {}",
+            "🤖 <b>Oxide Agent</b> │ Iteration {}/{} │ {}",
             self.current_iteration, self.max_iterations, tokens_str
         ));
         lines.push(String::new());
@@ -371,7 +371,7 @@ impl ProgressState {
             ));
             lines.push(String::new());
         } else if let Some(ref thought) = self.current_thought {
-            lines.push("💭 <i>Размышления агента:</i>".to_string());
+            lines.push("💭 <i>Agent thoughts:</i>".to_string());
             lines.push(format!(
                 "   {}",
                 html_escape::encode_text(&crate::utils::truncate_str(thought, 120))
@@ -383,7 +383,7 @@ impl ProgressState {
         if let Some(ref todos) = self.current_todos {
             if !todos.items.is_empty() {
                 lines.push(format!(
-                    "📋 <b>Задачи [{}/{}]:</b>",
+                    "📋 <b>Tasks [{}/{}]:</b>",
                     todos.completed_count(),
                     todos.items.len()
                 ));
@@ -405,7 +405,7 @@ impl ProgressState {
         let grouped = self.format_grouped_steps();
         if !grouped.is_empty() {
             lines.push(String::new());
-            lines.push("🔧 <b>Инструменты:</b>".to_string());
+            lines.push("🔧 <b>Tools:</b>".to_string());
             lines.extend(grouped);
         }
 
@@ -422,10 +422,10 @@ impl ProgressState {
 
         // === Footer (status) ===
         if self.is_finished {
-            lines.push("\n✅ <b>Задача завершена</b>".to_string());
+            lines.push("\n✅ <b>Task completed</b>".to_string());
         } else if let Some(ref e) = self.error {
             lines.push(format!(
-                "\n❌ <b>Ошибка:</b> {}",
+                "\n❌ <b>Error:</b> {}",
                 html_escape::encode_text(e)
             ));
         }

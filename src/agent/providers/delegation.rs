@@ -115,26 +115,26 @@ impl ToolProvider for DelegationProvider {
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             name: "delegate_to_sub_agent".to_string(),
-            description: "Делегировать черновую работу легковесному саб-агенту. \
-Передавай краткую, четкую задачу и список разрешенных инструментов. \
-Можно добавить дополнительный контекст (например, выдержку из навыка). \
-Если саб-агент не успевает, вернется отчет с частичными результатами."
+            description: "Delegate rough work to lightweight sub-agent. \
+Pass a short, clear task and a list of allowed tools. \
+You can add additional context (e.g., a quote from a skill). \
+If the sub-agent doesn't finish, a partial report will be returned."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "Задача для саб-агента"
+                        "description": "Task for sub-agent"
                     },
                     "tools": {
                         "type": "array",
-                        "description": "Белый список разрешенных инструментов",
+                        "description": "Whitelist of allowed tools",
                         "items": {"type": "string"}
                     },
                     "context": {
                         "type": "string",
-                        "description": "Дополнительный контекст (опционально)"
+                        "description": "Additional context (optional)"
                     }
                 },
                 "required": ["task", "tools"]
@@ -347,7 +347,7 @@ fn build_sub_agent_report(ctx: SubAgentReportContext<'_>) -> String {
         "status": ctx.status.as_str(),
         "task_id": ctx.task_id,
         "error": ctx.error,
-        "note": "Саб-агент не завершил задачу. Используй частичные результаты ниже.",
+        "note": "Sub-agent did not finish the task. Use partial results below.",
         "timeout_secs": SUB_AGENT_TIMEOUT_SECS,
         "tokens": ctx.memory.token_count(),
         "todos": &ctx.memory.todos,

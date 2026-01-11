@@ -260,7 +260,7 @@ impl AgentMemory {
 
         // Create a summary of the old messages (simple version)
         let summary = Self::create_simple_summary(&to_summarize);
-        let summary_msg = AgentMessage::system(format!("[Предыдущий контекст сжат]\n{summary}"));
+        let summary_msg = AgentMessage::system(format!("[Previous context compressed]\n{summary}"));
 
         // Insert summary at the beginning
         self.messages.insert(0, summary_msg);
@@ -302,7 +302,7 @@ impl AgentMemory {
                     } else {
                         msg.content.clone()
                     };
-                    summary_parts.push(format!("• Запрос: {truncated}"));
+                    summary_parts.push(format!("• Request: {truncated}"));
                 }
                 MessageRole::Assistant => {
                     // Extract first sentence or first 150 chars
@@ -315,7 +315,7 @@ impl AgentMemory {
                         .take(150)
                         .collect::<String>();
                     if !first_part.is_empty() {
-                        summary_parts.push(format!("• Ответ: {first_part}..."));
+                        summary_parts.push(format!("• Answer: {first_part}..."));
                     }
                 }
                 MessageRole::System => {
@@ -329,7 +329,7 @@ impl AgentMemory {
                         } else {
                             msg.content.clone()
                         };
-                        summary_parts.push(format!("• Инструмент {name}: {truncated}"));
+                        summary_parts.push(format!("• Tool {name}: {truncated}"));
                     }
                 }
             }
