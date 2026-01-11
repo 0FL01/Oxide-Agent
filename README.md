@@ -27,6 +27,7 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
     *   **Web Search and Data Extraction:** Tavily API integration for retrieving up-to-date information from the web.
     *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior (Completion Hook, Registry).
     *   **🔄 Loop Detection:** Three levels of protection (Content Detector, Tool Detector, LLM Detector) to prevent infinite loops.
+    *   **👥 Hierarchical Delegation:** The Main Agent acts as an orchestrator, delegating heavy retrieval and mechanical tasks (git clone, searching) to Sub-Agents to maximize efficiency and context preservation.
     *   **Autonomy:** Agent plans steps and selects tools itself.
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit is reached.
@@ -137,8 +138,10 @@ Three-level loop detection system (`agent/loop_detection/`):
 ### 🔗 Hooks System
 Extensible architecture for personalizing agent behavior:
 - **Completion Hook** — task completion handling
+- **Workload Distributor** — enforces separation of duties by blocking heavy manual operations in the Main Agent and encouraging delegation
+- **Delegation Guard** — prevents delegation of high-level analytical tasks ("think", "analyze"), restricting sub-agents to mechanical retrieval
+- **Sub-Agent Safety** — ensures safe execution environments for delegated tasks
 - **Registry** — centralized hook management
-- Ability to add custom hooks
 
 ### 🛠️ Tool Providers
 The agent uses a modular provider system, each offering a specialized set of tools:
@@ -189,7 +192,7 @@ src/
 │   ├── runner/                # execution runner modules
 │   ├── loop_detection/        # loop detection (content, tool, llm)
 │   ├── skills/                # skills subsystem (RAG/embeddings)
-│   ├── hooks/                 # execution hooks (Completion, Complexity, Safety)
+│   ├── hooks/                 # execution hooks (Completion, Workload, Delegation, Safety)
 │   ├── prompt/                # system prompt assembly (Composer)
 │   ├── providers/             # tool providers (Sandbox, Tavily, Delegation, etc.)
 │   ├── session.rs             # session state
