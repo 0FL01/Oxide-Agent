@@ -132,7 +132,7 @@ pub async fn edit_message_safe_resilient(
     // Truncate if too long (Telegram limit is 4096, we use 4000 for safety)
     let truncated = if text.chars().count() > 4000 {
         let truncated_text = crate::utils::truncate_str(text, 4000);
-        format!("{truncated_text}...\n\n<i>(сообщение обрезано)</i>")
+        format!("{truncated_text}...\n\n<i>(message truncated)</i>")
     } else {
         text.to_string()
     };

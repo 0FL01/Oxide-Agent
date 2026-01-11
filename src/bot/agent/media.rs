@@ -67,7 +67,7 @@ pub async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput>
     if let Some(doc) = msg.document() {
         if doc.file.size > MAX_FILE_SIZE {
             anyhow::bail!(
-                "Файл слишком большой: {:.1} MB (максимум 20 MB)",
+                "File too large: {:.1} MB (max 20 MB)",
                 f64::from(doc.file.size) / 1024.0 / 1024.0
             );
         }
