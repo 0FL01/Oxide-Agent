@@ -288,10 +288,7 @@ impl SandboxProvider {
                         ))
                     }
                 } else {
-                    Ok(format!(
-                        "❌ Error reading directory: {}",
-                        result.stderr
-                    ))
+                    Ok(format!("❌ Error reading directory: {}", result.stderr))
                 }
             }
             Err(e) => Ok(format!("❌ Error executing command: {e}")),

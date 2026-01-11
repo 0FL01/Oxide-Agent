@@ -95,7 +95,8 @@ mod integration_tests {
     #[test]
     fn test_complex_malformed_response() {
         // Real-world example from bug report
-        let malformed = "[Call tools: read_file]read_filepath/workspace/docker-compose.yml&lt;/tool_call&gt;";
+        let malformed =
+            "[Call tools: read_file]read_filepath/workspace/docker-compose.yml&lt;/tool_call&gt;";
 
         // After processing should:
         // 1. Detect "read_file" in content
@@ -248,7 +249,8 @@ mod bugfix_agent_2026_001_tests {
     #[test]
     fn test_ytdlp_with_xml_tags_sanitization() {
         // Test case where ytdlp tool call has XML tags
-        let malformed = "[Tool call: ytdlp_get_video_metadata]<url>https://youtube.com/watch?v=xxx</url>";
+        let malformed =
+            "[Tool call: ytdlp_get_video_metadata]<url>https://youtube.com/watch?v=xxx</url>";
 
         let sanitized = sanitize_xml_tags(malformed);
 
@@ -267,7 +269,8 @@ mod bugfix_agent_2026_001_tests {
     #[test]
     fn test_normal_response_not_flagged() {
         // Normal responses should not be flagged as tool calls
-        let normal_response = "Here is the result of task execution. The file was successfully processed.";
+        let normal_response =
+            "Here is the result of task execution. The file was successfully processed.";
 
         // Should not contain any tool markers
         assert!(!normal_response.contains("Tool call"));
