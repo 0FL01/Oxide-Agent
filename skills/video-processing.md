@@ -17,6 +17,12 @@ weight: on_demand
 - **ytdlp_download_video**: download video to sandbox. Supports resolution selection and time trimming. After downloading, use `send_file_to_user` to send to the user. Parameters: url (required), resolution (optional: '480', '720', '1080', 'best' — default '720'), start_time (optional), end_time (optional)
 - **ytdlp_download_audio**: extract and download audio from video in MP3 format. After downloading, use `send_file_to_user` to send to the user. Parameters: url (required)
 
+### 🎥 Format Preferences
+**When downloading content, prioritize maximum compatibility (especially for Telegram):**
+- **Video**: Prefer **H.264 (AVC)** video codec inside **MP4** container.
+- **Audio**: Prefer **AAC** or **MP3** audio codecs.
+- Avoid formats like VP9/WebM unless specifically requested, as they may not play natively on all devices.
+
 ### ⚠️ CRITICAL: Handling yt-dlp Errors
 
 **If a ytdlp_* tool returns a message with ❌ — STOP IMMEDIATELY!**
