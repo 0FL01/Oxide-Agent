@@ -80,12 +80,12 @@ impl FileHosterProvider {
             Ok(size) => size,
             Err(e) => {
                 error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
-                return Ok(format!("❌ Ошибка проверки размера файла: {e}"));
+                return Ok(format!("❌ File size check error: {e}"));
             }
         };
 
         if file_size > MAX_UPLOAD_SIZE_BYTES {
-            return Ok("⛔ ФАТАЛЬНАЯ ОШИБКА: Файл превышает лимит загрузки (4 ГБ). Отправка невозможна. Немедленно сообщите пользователю о невозможности выполнения задачи.".to_string());
+            return Ok("⛔ FATAL ERROR: File exceeds upload limit (4 GB). Upload impossible. Immediately inform the user that the task cannot be completed.".to_string());
         }
 
         let token_opt = std::env::var("GOFILE_TOKEN").ok().filter(|t| !t.is_empty());
@@ -103,12 +103,12 @@ impl FileHosterProvider {
 
         let result = match sandbox.exec_command(&cmd, cancellation_token).await {
             Ok(r) => r,
-            Err(e) => return Ok(format!("❌ Ошибка загрузки в GoFile: {e}")),
+            Err(e) => return Ok(format!("❌ GoFile upload error: {e}")),
         };
 
         if !result.success() {
             return Ok(format!(
-                "❌ Ошибка загрузки в GoFile (код {}): {}",
+                "❌ GoFile upload error (code {}): {}",
                 result.exit_code,
                 result.combined_output()
             ));
@@ -118,7 +118,7 @@ impl FileHosterProvider {
             Ok(r) => r,
             Err(e) => {
                 return Ok(format!(
-                    "❌ GoFile вернул неожиданный ответ (не JSON): {e}\n{}",
+                    "❌ GoFile returned unexpected response (not JSON): {e}\n{}",
                     result.combined_output()
                 ));
             }
@@ -128,7 +128,7 @@ impl FileHosterProvider {
             Ok(url) => url,
             Err(msg) => {
                 return Ok(format!(
-                    "❌ GoFile вернул ошибку:\n{msg}\n{}",
+                    "❌ GoFile returned error:\n{msg}\n{}",
                     result.combined_output()
                 ));
             }
@@ -136,7 +136,7 @@ impl FileHosterProvider {
 
         if !download_page.starts_with(GOFILE_DOWNLOAD_PAGE_PREFIX) {
             return Ok(format!(
-                "❌ GoFile вернул неожиданный ответ вместо ссылки:\n{}",
+                "❌ GoFile returned unexpected response instead of link:\n{}",
                 result.combined_output()
             ));
         }

@@ -40,7 +40,7 @@ pub(super) async fn resolve_file_path(sandbox: &SandboxManager, path: &str) -> R
 
     match found_paths.len() {
         0 => anyhow::bail!(
-            "Файл '{}' не найден в песочнице. Используйте инструмент 'list_files' для просмотра доступных файлов.",
+            "File '{}' not found in sandbox. Use 'list_files' tool to see available files.",
             path
         ),
         1 => {
@@ -52,7 +52,7 @@ pub(super) async fn resolve_file_path(sandbox: &SandboxManager, path: &str) -> R
             warn!(path = %path, matches = found_paths.len(), "Multiple files found");
             let paths_list = found_paths.join("\n  - ");
             anyhow::bail!(
-                "Найдено несколько файлов с именем '{}':\n  - {}\n\nПожалуйста, укажите полный путь к нужному файлу.",
+                "Multiple files found with name '{}':\n  - {}\n\nPlease specify the full path to the desired file.",
                 path, paths_list
             )
         }

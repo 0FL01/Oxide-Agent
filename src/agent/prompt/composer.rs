@@ -14,37 +14,26 @@ fn build_date_context() -> String {
     let current_date = now.format("%Y-%m-%d %H:%M:%S").to_string();
     let current_day = now.format("%A").to_string();
 
-    let current_day_ru = match current_day.as_str() {
-        "Monday" => "понедельник",
-        "Tuesday" => "вторник",
-        "Wednesday" => "среда",
-        "Thursday" => "четверг",
-        "Friday" => "пятница",
-        "Saturday" => "суббота",
-        "Sunday" => "воскресенье",
-        _ => &current_day,
-    };
-
     format!(
-        "### ТЕКУЩАЯ ДАТА И ВРЕМЯ\nСегодня: {current_date}, {current_day_ru}\nВАЖНО: Всегда используй эту дату как текущую. Если результаты поиска (web_search) содержат фразы 'сегодня', 'завтра' или даты, которые противоречат этой, считай результаты поиска устаревшими и интерпретируй их относительно указанной выше даты.\n\n"
+        "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nIMPORTANT: Always use this date as the current date. If search results (web_search) contain phrases like 'today', 'tomorrow', or dates contradicting this, consider the search results outdated and interpret them relative to the date above.\n\n"
     )
 }
 
 /// Get the fallback prompt when AGENT.md is missing
 fn get_fallback_prompt() -> String {
-    r"Ты - AI-агент с доступом к изолированной среде выполнения (sandbox) и веб-поиску.
-## Доступные инструменты (основные примеры):
-- **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep и другие стандартные утилиты)
-- **write_file**: записать содержимое в файл
-- **read_file**: прочитать содержимое файла
-- **web_search**: поиск информации в интернете
-- **web_extract**: извлечение текста из веб-страниц
-- **write_todos**: создать или обновить список задач
-## Важные правила:
-- Если нужны реальные данные - ИСПОЛЬЗУЙ ИНСТРУМЕНТЫ
-- Для вычислений используй Python
-- После получения результата инструмента - проанализируй его и продолжай работу
-- Для СЛОЖНЫХ запросов ОБЯЗАТЕЛЬНО используй write_todos для создания плана"
+    r"You are an AI agent with access to a sandbox environment and web search.
+## Available Tools (Basic Examples):
+- **execute_command**: execute bash command in sandbox (available: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep and other standard utilities)
+- **write_file**: write content to file
+- **read_file**: read file content
+- **web_search**: search information on the web
+- **web_extract**: extract text from web pages
+- **write_todos**: create or update todo list
+## Important Rules:
+- If real data is needed - USE TOOLS
+- Use Python for calculations
+- After receiving tool result - analyze it and continue working
+- For COMPLEX requests, YOU MUST use write_todos to create a plan"
         .to_string()
 }
 
@@ -52,26 +41,26 @@ fn build_structured_output_instructions(tools: &[ToolDefinition]) -> String {
     let tools_json = serde_json::to_string_pretty(&tools).unwrap_or_else(|_| "[]".to_string());
 
     format!(
-        r#"## СТРУКТУРИРОВАННЫЙ ВЫВОД (ОБЯЗАТЕЛЬНО)
-Ты ДОЛЖЕН отвечать ТОЛЬКО валидным JSON-объектом строго по схеме:
+        r#"## STRUCTURED OUTPUT (MANDATORY)
+You MUST respond ONLY with a valid JSON object strictly following the schema:
 {{
-  "thought": "Краткое описание решения и шага",
+  "thought": "Brief description of the solution and step",
   "tool_call": {{
     "name": "tool_name",
     "arguments": {{}}
   }},
-  "final_answer": "Финальный ответ пользователю"
+  "final_answer": "Final answer to the user"
 }}
 
-Правила:
-- РОВНО одно из полей `tool_call` или `final_answer` должно быть заполнено (второе = null)
-- Если нужен инструмент: `tool_call` = объект, `final_answer` = null
-- Если ответ готов: `tool_call` = null, `final_answer` = строка
-- `tool_call.arguments` всегда JSON-объект
-- Никаких дополнительных ключей, markdown, XML, пояснений или текста вне JSON
-- Результаты инструментов приходят в сообщениях с ролью `tool`
+Rules:
+- EXACTLY one of `tool_call` or `final_answer` must be filled (the other = null)
+- If a tool is needed: `tool_call` = object, `final_answer` = null
+- If answer is ready: `tool_call` = null, `final_answer` = string
+- `tool_call.arguments` is always a JSON object
+- No extra keys, markdown, XML, explanations, or text outside JSON
+- Tool results arrive in messages with role `tool`
 
-## Доступные инструменты (JSON schema)
+## Available Tools (JSON schema)
 {tools_json}"#
     )
 }
@@ -142,16 +131,16 @@ pub fn create_sub_agent_system_prompt(
 ) -> String {
     let date_context = build_date_context();
     let mut base_prompt = format!(
-        "Ты - легковесный суб-агент для черновой работы.\n\
-Ты НЕ общаешься с пользователем напрямую и возвращаешь результат только оркестратору.\n\
-Твоя задача: {task}.\n\
-Используй только доступные инструменты, если это необходимо.\n\
-Не вызывай delegate_to_sub_agent и не отправляй файлы пользователю."
+        "You are a lightweight sub-agent for draft work.\n\
+You do NOT communicate with the user directly and return the result only to the orchestrator.\n\
+Your task: {task}.\n\
+Use only available tools if necessary.\n\
+Do not call delegate_to_sub_agent and do not send files to the user."
     );
 
     if let Some(extra) = extra_context {
         if !extra.trim().is_empty() {
-            base_prompt.push_str("\n\nДополнительный контекст:\n");
+            base_prompt.push_str("\n\nAdditional context:\n");
             base_prompt.push_str(extra.trim());
         }
     }
@@ -167,8 +156,8 @@ mod tests {
     #[test]
     fn test_build_date_context_contains_date() {
         let context = build_date_context();
-        assert!(context.contains("ТЕКУЩАЯ ДАТА И ВРЕМЯ"));
-        assert!(context.contains("Сегодня:"));
+        assert!(context.contains("CURRENT DATE AND TIME"));
+        assert!(context.contains("Today:"));
     }
 
     #[test]

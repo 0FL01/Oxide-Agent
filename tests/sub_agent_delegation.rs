@@ -13,9 +13,9 @@ async fn sub_agent_delegation_smoke_test() -> anyhow::Result<()> {
     let provider = DelegationProvider::new(llm, 1);
 
     let args = json!({
-        "task": "Сделай короткое резюме о том, что такое Rust и где его применяют.",
+        "task": "Make a short summary of what Rust is and where it is used.",
         "tools": ["write_todos"],
-        "context": "Ответ должен быть кратким, 3-5 предложений."
+        "context": "The answer should be brief, 3-5 sentences."
     });
 
     let result = provider

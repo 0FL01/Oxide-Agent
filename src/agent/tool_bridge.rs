@@ -59,7 +59,7 @@ pub async fn execute_single_tool_call(
 ) -> Result<ToolExecutionResult> {
     // Check for cancellation before execution
     if ctx.cancellation_token.is_cancelled() {
-        return Err(anyhow::anyhow!("Задача отменена пользователем"));
+        return Err(anyhow::anyhow!("Task cancelled by user"));
     }
 
     let ToolCall { id, function, .. } = tool_call;
@@ -104,12 +104,12 @@ pub async fn execute_single_tool_call(
                     // Give UI time to show cancelling status (2 sec cleanup timeout)
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
-                return Err(anyhow::anyhow!("Задача отменена пользователем"));
+                return Err(anyhow::anyhow!("Task cancelled by user"));
             },
             res = timeout(tool_timeout, ctx.registry.execute(&name, &args, Some(&ctx.cancellation_token))) => {
                 match res {
                     Ok(Ok(r)) => r,
-                    Ok(Err(e)) => format!("Ошибка выполнения инструмента: {e}"),
+                    Ok(Err(e)) => format!("Tool execution error: {e}"),
                     Err(_) => {
                         warn!(
                             tool_name = %name,
@@ -117,7 +117,7 @@ pub async fn execute_single_tool_call(
                             "Tool execution timed out"
                         );
                         format!(
-                            "Инструмент '{name}' превысил лимит времени ({} секунд)",
+                            "Tool '{name}' timed out ({} seconds)",
                             AGENT_TOOL_TIMEOUT_SECS
                         )
                     }

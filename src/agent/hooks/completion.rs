@@ -70,7 +70,7 @@ impl Hook for CompletionCheckHook {
         let completed = context.todos.completed_count();
 
         let reason = format!(
-            "Не все задачи выполнены ({completed}/{total} завершено, {pending} осталось). Продолжи работу над оставшимися задачами."
+            "Not all tasks are completed ({completed}/{total} done, {pending} remaining). Continue working on remaining tasks."
         );
 
         let todo_context = context.todos.to_context_string();

@@ -24,7 +24,7 @@ impl AgentRunner {
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::Continuation {
-                    reason: "Некорректный JSON-ответ, повторяю попытку...".to_string(),
+                    reason: "Invalid JSON response, retrying...".to_string(),
                     count: state.continuation_count,
                 })
                 .await;
@@ -32,7 +32,7 @@ impl AgentRunner {
 
         let response_preview = crate::utils::truncate_str(&failure.raw_json, 400);
         let system_message = format!(
-            "[СИСТЕМА: Ваш предыдущий ответ не соответствует строгой JSON-схеме.\nОшибка: {}\nОтвет: {}\nВерните ТОЛЬКО валидный JSON по указанной схеме без markdown, XML или текста вне JSON.]",
+            "[SYSTEM: Your previous response does not follow the strict JSON schema.\nError: {}\nResponse: {}\nReturn ONLY valid JSON according to the schema without markdown, XML, or text outside JSON.]",
             failure.error.message(),
             response_preview
         );
@@ -89,7 +89,7 @@ impl AgentRunner {
             ctx.messages
                 .push(crate::llm::Message::assistant(&input.raw_json));
             ctx.messages.push(crate::llm::Message::system(&format!(
-                "[СИСТЕМА: {reason}]\n\n{}",
+                "[SYSTEM: {reason}]\n\n{}",
                 context.unwrap_or_default()
             )));
             return Ok(None);

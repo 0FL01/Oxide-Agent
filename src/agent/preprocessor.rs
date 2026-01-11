@@ -125,21 +125,20 @@ impl Preprocessor {
 
         let prompt = user_context.map_or_else(
             || {
-                "Опиши это изображение детально для AI-агента. \
-                     Укажи все важные детали, текст, объекты и их расположение."
+                "Describe this image in detail for an AI agent. \
+                     Include all important details, text, objects and their locations."
                     .to_string()
             },
             |ctx| {
                 format!(
-                    "Опиши это изображение детально для AI-агента, который будет выполнять задачу. \
-                 Контекст пользователя: {ctx}"
+                    "Describe this image in detail for an AI agent that will perform a task. \
+                 User context: {ctx}"
                 )
             },
         );
 
-        let system_prompt = "Ты - визуальный анализатор для AI-агента. \
-                            Твоя задача - создать подробное текстовое описание изображения, \
-                            которое позволит агенту понять его содержание без доступа к самому изображению.";
+        let system_prompt = "You are a visual analyzer for an AI agent. \
+                            Your task is to create a detailed text description of the image that allows the agent to understand its content without accessing the image itself.";
 
         let description = self
             .llm_client
@@ -185,7 +184,7 @@ impl Preprocessor {
 
         if new_size > UPLOAD_LIMIT_BYTES {
             anyhow::bail!(
-                "Превышен лимит загрузки: {:.1} GB / 1 GB. Пересоздайте контейнер.",
+                "Upload limit exceeded: {:.1} GB / 1 GB. Recreate the container.",
                 new_size as f64 / 1024.0 / 1024.0 / 1024.0
             );
         }
@@ -196,13 +195,13 @@ impl Preprocessor {
         let hint = Self::get_file_type_hint(&file_name);
 
         let mut parts = vec![
-            "📎 **Пользователь загрузил файл:**".to_string(),
-            format!("   Путь: `{}`", upload_path),
-            format!("   Размер: {}", size_str),
+            "📎 **User uploaded a file:**".to_string(),
+            format!("   Path: `{}`", upload_path),
+            format!("   Size: {}", size_str),
         ];
 
         if let Some(mime_type) = &mime_type {
-            parts.push(format!("   Тип: {mime_type}"));
+            parts.push(format!("   Type: {mime_type}"));
         }
 
         parts.push(String::new());
@@ -210,9 +209,9 @@ impl Preprocessor {
 
         parts.push(String::new());
         if let Some(caption) = caption {
-            parts.push(format!("**Сообщение:** {caption}"));
+            parts.push(format!("**Message:** {caption}"));
         } else {
-            parts.push("_Пользователь не оставил комментарий._".to_string());
+            parts.push("_User did not leave a comment._".to_string());
         }
 
         Ok(parts.join("\n"))
@@ -261,25 +260,23 @@ impl Preprocessor {
 
         match ext.as_deref() {
             Some("py" | "rs" | "js" | "ts" | "go" | "java" | "cpp" | "c" | "h") => {
-                "💡 Исходный код. Используй `read_file` или выполни.".into()
+                "💡 Source code. Use `read_file` or execute.".into()
             }
             Some("json" | "yaml" | "yml" | "toml" | "xml") => {
-                "💡 Структурированные данные. Читай через `read_file`.".into()
+                "💡 Structured data. Read via `read_file`.".into()
             }
-            Some("csv") => "💡 CSV. Обработай через Python pandas.".into(),
-            Some("xlsx" | "xls") => "💡 Excel. Используй Python openpyxl/pandas.".into(),
+            Some("csv") => "💡 CSV. Process via Python pandas.".into(),
+            Some("xlsx" | "xls") => "💡 Excel. Use Python openpyxl/pandas.".into(),
             Some("zip" | "tar" | "gz" | "7z" | "rar") => {
-                "💡 Архив. Распакуй: `unzip`, `tar -xf`, etc.".into()
+                "💡 Archive. Unpack: `unzip`, `tar -xf`, etc.".into()
             }
             Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg") => {
-                "💡 Изображение. Обработай через Python PIL.".into()
+                "💡 Image. Process via Python PIL.".into()
             }
-            Some("txt" | "md" | "log" | "ini" | "cfg") => {
-                "💡 Текст. Читай через `read_file`.".into()
-            }
-            Some("pdf") => "💡 PDF. Используй Python PyPDF2/pdfplumber.".into(),
-            Some("sql" | "db" | "sqlite") => "💡 База данных. Используй Python sqlite3.".into(),
-            _ => "💡 Используй подходящие инструменты.".into(),
+            Some("txt" | "md" | "log" | "ini" | "cfg") => "💡 Text. Read via `read_file`.".into(),
+            Some("pdf") => "💡 PDF. Use Python PyPDF2/pdfplumber.".into(),
+            Some("sql" | "db" | "sqlite") => "💡 Database. Use Python sqlite3.".into(),
+            _ => "💡 Use appropriate tools.".into(),
         }
     }
 
@@ -319,7 +316,7 @@ impl Preprocessor {
             AgentInput::ImageWithText { image_bytes, text } => {
                 let description = self.describe_image(image_bytes, Some(&text)).await?;
                 Ok(format!(
-                    "Пользователь отправил изображение с текстом: \"{text}\"\n\nОписание изображения:\n{description}"
+                    "User sent an image with text: \"{text}\"\n\nImage description:\n{description}"
                 ))
             }
             AgentInput::Document {
@@ -444,10 +441,10 @@ mod tests {
 
     #[test]
     fn test_get_file_type_hint() {
-        assert!(Preprocessor::get_file_type_hint("script.py").contains("код"));
+        assert!(Preprocessor::get_file_type_hint("script.py").contains("Source code"));
         assert!(Preprocessor::get_file_type_hint("data.csv").contains("pandas"));
-        assert!(Preprocessor::get_file_type_hint("archive.zip").contains("Архив"));
+        assert!(Preprocessor::get_file_type_hint("archive.zip").contains("Archive"));
         assert!(Preprocessor::get_file_type_hint("image.png").contains("PIL"));
-        assert!(Preprocessor::get_file_type_hint("unknown.xyz").contains("инструменты"));
+        assert!(Preprocessor::get_file_type_hint("unknown.xyz").contains("tools"));
     }
 }
