@@ -17,12 +17,16 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
 ## Features
 
 *   **🤖 Agent Mode:**
+        <img width="974" height="747" alt="image_2026-01-11_20-58-21" src="https://github.com/user-attachments/assets/c99e55e4-8933-4ec8-9f50-22f7cbca4c77" />
+    
     *   **Integrated Sandbox:** Safe execution of Python code and Bash commands in isolated Docker containers (`debian:trixie-slim`).
     *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
     *   **📋 Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
     *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (9 skills: core, delegation_manager, ffmpeg-conversion, file-hosting, file-management, html-report, task-planning, video-processing, web-search).
     *   **📁 File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
     *   **🎬 Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
+        <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
+
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
     *   **Web Search and Data Extraction:** Tavily API integration for retrieving up-to-date information from the web.
     *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior (Completion Hook, Registry).
