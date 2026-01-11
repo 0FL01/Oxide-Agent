@@ -491,7 +491,22 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     // Preprocess input
     let preprocessor = Preprocessor::new(ctx.llm.clone(), user_id);
     let input = extract_agent_input(&ctx.bot, &ctx.msg).await?;
-    let task_text = preprocessor.preprocess_input(input).await?;
+    let task_text = match preprocessor.preprocess_input(input).await {
+        Ok(text) => text,
+        Err(err) => {
+            if err.to_string() == "MULTIMODAL_DISABLED" {
+                super::resilient::send_message_resilient(
+                    &ctx.bot,
+                    chat_id,
+                    "🚫 Агент не может обработать этот файл.\nТребуется подключение Gemini/OpenRouter для работы со зрением и слухом.",
+                    None,
+                )
+                .await?;
+                return Ok(());
+            }
+            return Err(err);
+        }
+    };
     info!(
         user_id = user_id,
         chat_id = chat_id.0,

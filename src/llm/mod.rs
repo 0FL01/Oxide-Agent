@@ -267,6 +267,33 @@ impl LlmClient {
         }
     }
 
+    /// Returns true if at least one multimodal provider is configured.
+    #[must_use]
+    pub fn is_multimodal_available(&self) -> bool {
+        self.gemini.is_some() || self.openrouter.is_some()
+    }
+
+    /// Returns true if the requested provider is configured.
+    #[must_use]
+    pub fn is_provider_available(&self, name: &str) -> bool {
+        if name.eq_ignore_ascii_case("groq") {
+            return self.groq.is_some();
+        }
+        if name.eq_ignore_ascii_case("mistral") {
+            return self.mistral.is_some();
+        }
+        if name.eq_ignore_ascii_case("zai") {
+            return self.zai.is_some();
+        }
+        if name.eq_ignore_ascii_case("gemini") {
+            return self.gemini.is_some();
+        }
+        if name.eq_ignore_ascii_case("openrouter") {
+            return self.openrouter.is_some();
+        }
+        false
+    }
+
     /// Returns the provider for the given name
     ///
     /// # Errors

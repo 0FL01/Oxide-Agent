@@ -128,6 +128,16 @@ impl Settings {
             }
         }
 
+        if settings
+            .zai_api_key
+            .as_ref()
+            .is_none_or(|key| key.trim().is_empty())
+        {
+            return Err(ConfigError::Message(
+                "Critical: ZAI_API_KEY is required for operation".to_string(),
+            ));
+        }
+
         Ok(settings)
     }
 
@@ -168,6 +178,8 @@ mod tests {
     // Tests run sequentially to avoid environment variable race conditions
     #[test]
     fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
+        env::set_var("ZAI_API_KEY", "dummy_zai_key");
+
         // 1. Test standard loading
         env::set_var("R2_ENDPOINT_URL", "https://example.com");
         env::set_var("TELEGRAM_TOKEN", "dummy_token");
@@ -206,6 +218,8 @@ mod tests {
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("TELEGRAM_TOKEN");
+
+        env::remove_var("ZAI_API_KEY");
         Ok(())
     }
 

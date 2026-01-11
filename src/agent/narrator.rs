@@ -43,6 +43,11 @@ impl Narrator {
             return None;
         }
 
+        if !self.llm_client.is_provider_available("mistral") {
+            warn!("Narrator disabled: Mistral provider not configured");
+            return None;
+        }
+
         let user_message = self.build_user_message(reasoning_content, tool_calls);
         let model = get_narrator_model();
         let provider = get_narrator_provider();

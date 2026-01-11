@@ -67,6 +67,10 @@ impl Preprocessor {
     ///
     /// Returns an error if the transcription fails.
     pub async fn transcribe_voice(&self, audio_bytes: Vec<u8>, mime_type: &str) -> Result<String> {
+        if !self.llm_client.is_multimodal_available() {
+            return Err(anyhow::anyhow!("MULTIMODAL_DISABLED"));
+        }
+
         info!(
             "Transcribing voice message: {} bytes, mime: {mime_type}",
             audio_bytes.len()
@@ -113,6 +117,10 @@ impl Preprocessor {
         image_bytes: Vec<u8>,
         user_context: Option<&str>,
     ) -> Result<String> {
+        if !self.llm_client.is_multimodal_available() {
+            return Err(anyhow::anyhow!("MULTIMODAL_DISABLED"));
+        }
+
         info!("Describing image: {} bytes", image_bytes.len());
 
         let prompt = user_context.map_or_else(

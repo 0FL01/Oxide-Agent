@@ -27,6 +27,10 @@ impl EmbeddingService {
     /// Create a new embedding service from config.
     #[must_use]
     pub fn new(llm_client: Arc<LlmClient>, config: &SkillConfig) -> Self {
+        if !llm_client.is_provider_available("mistral") {
+            warn!("Embeddings disabled, using keyword matching only");
+        }
+
         Self {
             llm_client,
             model: config.embedding_model.clone(),

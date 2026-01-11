@@ -594,6 +594,15 @@ pub async fn handle_voice(
         return Ok(());
     }
 
+    if !llm.is_multimodal_available() {
+        bot.send_message(
+            msg.chat.id,
+            "🚫 Функция недоступна.\nОбработка медиа отключена, так как не настроен провайдер Gemini или OpenRouter.",
+        )
+        .await?;
+        return Ok(());
+    }
+
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
     let model = storage
         .get_user_model(user_id)
@@ -670,6 +679,15 @@ pub async fn handle_photo(
         bot.send_message(msg.chat.id, "Пожалуйста, выберите режим работы:")
             .reply_markup(get_main_keyboard())
             .await?;
+        return Ok(());
+    }
+
+    if !llm.is_multimodal_available() {
+        bot.send_message(
+            msg.chat.id,
+            "🚫 Функция недоступна.\nОбработка медиа отключена, так как не настроен провайдер Gemini или OpenRouter.",
+        )
+        .await?;
         return Ok(());
     }
 
