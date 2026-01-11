@@ -126,58 +126,35 @@ Dockerfile                     # Dockerfile основного приложен�
 docker-compose.yml
 ```
 
-## 🦀 Rust Coding Guidelines
+## 🦀 Rust Architecture & Workflow
 
-### 1. Style & Idiomatic Rust
-- **Compliance**: Follow the official [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
-- **Formatting**: ALWAYS run `cargo fmt` before final delivery.
-- **Idioms**: Prefer functional combinators (`.map()`, `.and_then()`, `.collect()`) over imperative loops where it enhances readability.
-- **Naming**: Strict `snake_case` for functions/variables, `PascalCase` for types/traits.
+### 1. Architecture & Structure
+- **Feature Isolation**: Maintain feature-based directory structure. `agent/` modules must not depend on `bot/`.
+- **Module Hierarchy**: Every directory must have a `mod.rs` defining clear public exports.
+- **Error Handling**: Use `thiserror` for libraries and `anyhow` for apps.
+  > *Note: `unwrap()`, `expect()`, and files >300 lines are strictly blocked by system hooks.*
 
-### 2. Architecture & Structure
-- **Feature Isolation**: Maintain the feature-based directory structure. Modules in `agent/` must not directly depend on `bot/` logic.
-- **File Management**: If a file exceeds **300 lines**, split it into a sub-module or extract logic into a separate file within the same directory.
-- **Module Hierarchy**: Every directory must have a `mod.rs` (or `name.rs` + `name/` folder) clearly defining public vs private exports.
+### 2. Operational Workflow
+**Tools are enforced by the environment.**
+- **Compilation**: Use `cargo-check` for quick validation. Only use `cargo-build` for final binaries.
+- **Dependencies**: Use `cargo-add`, `cargo-remove`, `cargo-update`.
+- **Metadata**: Use `workspace-info` for project topology and `cargo-info` for crate details.
+- **Cleanup**: Periodically run `cargo-machete`.
 
-### 3. Safety & Error Handling (CRITICAL)
-- **Zero Panic Policy**: ⛔ **NO `unwrap()`, `expect()`, or `panic!()`**. Use `Result<T, E>` and the `?` operator.
-- **Lints**: No `#[allow(...)]` for Clippy. If Clippy fails, you MUST refactor.
-- **Unsafe**: `unsafe_code = "forbid"` is enforced. Any bypass is a protocol violation.
-- **Errors**: Use `thiserror` for library-level errors and `anyhow` for high-level application flow.
+### 3. Debugging Strategy
+1. **Analyze**: If compiler throws an error code (e.g., E0308), run `rustc-explain E0308` FIRST.
+2. **Search**: Use `tavily-search` -> `tavily-extract` for external docs/errors.
+3. **Test**: Use `cargo-test` for logic and `cargo-hack` for feature flag combinations.
 
-### 4. Complexity Control
-- **Argument Limit**: If a function requires > 3 arguments, encapsulate them into a `struct Context` or `struct Config`.
-- **Statics**: Use `lazy_regex` for Regex. Global state is permitted only via `Arc<T>` or `OnceLock`.
+### 4. Code Quality
+- **Linting**: Run `cargo-clippy` before finishing a task.
+- **Formatting**: **Automatic.** The system auto-formats on save. Do not run `cargo fmt` manually.
+- **Security**: Run `cargo-deny-check` for audits.
 
-## 🛠️ Операционные рекомендации
-
-### 1. Структура проекта и метаданные
-- **Начальный контекст**: Немедленно используйте `workspace-info`, чтобы понять топологию проекта (члены, пакеты) без тяжелой нагрузки `cargo metadata`.
-- **Информация о зависимостях**: Используйте `cargo-info [crate]` для получения подробностей. Избегайте ручного чтения `Cargo.toml`.
-- **Объяснение ошибок**: Если компилятор выдает код ошибки (например, E0308), **всегда** запускайте `rustc-explain [code]`, прежде чем пытаться исправить её.
-
-### 2. Сборка и проверка кода
-- **Быстрая проверка**: Используйте `cargo-check`. Это быстрее и дешевле, чем сборка.
-- **Полная сборка**: Используйте `cargo-build` только тогда, когда требуются исполняемые файлы.
-- **Тестирование**:
-    - Используйте `cargo-test` для стандартных запусков.
-    - Используйте `cargo-hack` для проверки комбинаций флагов функций (feature flags), если проблема может быть связана с ними.
-
-### 3. Управление зависимостями
-- **Добавление/удаление**: Используйте `cargo-add` и `cargo-remove`.
-- **Обновления**: Используйте `cargo-update` для поднятия версий в lock-файле.
-- **Очистка**: Периодически используйте `cargo-machete` для выявления неиспользуемых зависимостей.
-
-### 4. Качество кода и безопасность
-- **Линтинг**: Запустите `cargo-clippy` перед предложением окончательных изменений кода.
-- **Форматирование**: ОБЯЗАТЕЛЬНО. Запустите `cargo-fmt` (через `mcp:rust-mcp-server`) перед ЛЮБОЙ отправкой кода для прохождения CI.
-- **Безопасность**: Используйте `cargo-deny-check` для аудита лицензий и уязвимостей.
-
-## ⚡ Карта инструментов (Намерение -> Команда)
-| Намерение | Предпочтительный инструмент |
+## ⚡ Tool Intent Map
+| Intent | Tool |
 | :--- | :--- |
-| "Компилируется ли этот код?" | `cargo-check` |
-| "Какие функции (features) есть у X?" | `cargo-info X` |
-| "Что за ошибка E0xxx?" | `rustc-explain E0xxx` |
-| "Очистить неиспользуемые зависимости" | `cargo-machete` |
-| "Проверить детальную совместимость" | `cargo-hack` |
+| "Check syntax/types" | `cargo-check` |
+| "Check crate features" | `cargo-info [crate]` |
+| "Understand error" | `rustc-explain [code]` |
+| "Find docs/solutions" | `tavily-search` |
