@@ -238,9 +238,7 @@ fn spawn_progress_updater(
                     ref file_name,
                     ref content,
                 } => {
-                    let input_file =
-                        InputFile::memory(content.clone()).file_name(file_name.clone());
-                    if let Err(e) = bot.send_document(chat_id, input_file).await {
+                    if let Err(e) = send_file_smart(&bot, chat_id, file_name, content).await {
                         tracing::error!("Failed to send file {}: {}", file_name, e);
                     }
                 }
@@ -261,9 +259,7 @@ fn spawn_progress_updater(
                     {
                         // Retry logic with exponential backoff
                         let result = crate::utils::retry_telegram_operation(|| async {
-                            let input_file =
-                                InputFile::memory(fcontent.clone()).file_name(fname.clone());
-                            bot.send_document(chat_id, input_file)
+                            send_file_smart(&bot, chat_id, &fname, &fcontent)
                                 .await
                                 .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
                         })
@@ -952,4 +948,63 @@ pub async fn handle_agent_wipe_confirmation(
     }
 
     Ok(())
+}
+
+static VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm"];
+static AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "m4a", "flac"];
+
+/// Smart file sending that chooses send_video/send_audio/send_document based on extension
+///
+/// Implements fallback logic: if native media sending fails, retries as a document.
+/// Accepts &[u8] to avoid unnecessary cloning.
+async fn send_file_smart(
+    bot: &Bot,
+    chat_id: ChatId,
+    file_name: &str,
+    content: &[u8],
+) -> Result<teloxide::types::Message> {
+    let extension = std::path::Path::new(file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|s| s.to_lowercase());
+
+    let file_name_owned = file_name.to_string();
+    let make_file = || InputFile::memory(content.to_vec()).file_name(file_name_owned.clone());
+
+    if let Some(ext) = extension.as_deref() {
+        if VIDEO_EXTENSIONS.contains(&ext) {
+            return match bot.send_video(chat_id, make_file()).await {
+                Ok(msg) => Ok(msg),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to send video '{}' as native media: {}. Fallback to document.",
+                        file_name,
+                        e
+                    );
+                    bot.send_document(chat_id, make_file())
+                        .await
+                        .map_err(Into::into)
+                }
+            };
+        }
+        if AUDIO_EXTENSIONS.contains(&ext) {
+            return match bot.send_audio(chat_id, make_file()).await {
+                Ok(msg) => Ok(msg),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to send audio '{}' as native media: {}. Fallback to document.",
+                        file_name,
+                        e
+                    );
+                    bot.send_document(chat_id, make_file())
+                        .await
+                        .map_err(Into::into)
+                }
+            };
+        }
+    }
+
+    bot.send_document(chat_id, make_file())
+        .await
+        .map_err(Into::into)
 }
