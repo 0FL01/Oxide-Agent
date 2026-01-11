@@ -149,7 +149,7 @@ Output ONLY valid JSON in this exact format:
 Rules:
 - headline: 3-5 words, action-oriented (e.g., "Searching for Dependencies", "Writing Python Script")
 - content: Describe ONLY the action. Do not explain why it is useful. Never use phrases like "This will help", "To achieve this", "In order to".
-- Use English language for output
+- Use User's language for output
 - Be concise and professional
 - Do NOT include raw technical details or code
 
@@ -182,11 +182,11 @@ mod tests {
 
     #[test]
     fn test_parse_narrative_valid_json() {
-        let input = r#"{"headline": "Тест", "content": "Содержимое теста"}"#;
+        let input = r#"{"headline": "Test", "content": "Content"}"#;
         let parsed: Result<Narrative, _> = serde_json::from_str(input);
         assert!(parsed.is_ok());
         let narrative = parsed.expect("Failed to parse valid JSON in test");
-        assert_eq!(narrative.headline, "Тест");
-        assert_eq!(narrative.content, "Содержимое теста");
+        assert_eq!(narrative.headline, "Test");
+        assert_eq!(narrative.content, "Content");
     }
 }

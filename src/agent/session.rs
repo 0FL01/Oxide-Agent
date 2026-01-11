@@ -96,7 +96,7 @@ impl AgentSession {
         self.started_at = Some(Instant::now());
         self.current_task_id = Some(uuid::Uuid::new_v4().to_string());
         self.status = AgentStatus::Processing {
-            step: "Инициализация...".to_string(),
+            step: "Initializing...".to_string(),
             progress_percent: 0,
         };
     }

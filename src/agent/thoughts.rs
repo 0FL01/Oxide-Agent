@@ -7,19 +7,19 @@ use lazy_regex::regex_replace_all;
 
 /// Templates for generating thoughts from tool calls
 const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
-    ("read_file", "Читаю файл {path}"),
-    ("write_file", "Записываю изменения в {path}"),
-    ("execute_command", "Выполняю команду"),
-    ("list_files", "Изучаю содержимое {directory}"),
-    ("tavily_search", "Ищу информацию: {query}"),
-    ("tavily_extract", "Извлекаю контент с {url}"),
-    ("tavily_crawl", "Анализирую структуру сайта {url}"),
-    ("download_file", "Скачиваю файл с {url}"),
-    ("ytdlp_download", "Загружаю видео с {url}"),
-    ("ytdlp_info", "Получаю информацию о видео {url}"),
-    ("upload_to_gofile", "Загружаю файл на файлохостинг"),
-    ("write_todos", "Обновляю список задач"),
-    ("complete_todo", "Отмечаю задачу выполненной"),
+    ("read_file", "Reading file {path}"),
+    ("write_file", "Writing changes to {path}"),
+    ("execute_command", "Executing command"),
+    ("list_files", "Viewing directory contents {directory}"),
+    ("tavily_search", "Searching for information: {query}"),
+    ("tavily_extract", "Extracting content from {url}"),
+    ("tavily_crawl", "Analyzing website structure {url}"),
+    ("download_file", "Downloading file from {url}"),
+    ("ytdlp_download", "Downloading video from {url}"),
+    ("ytdlp_info", "Getting video information {url}"),
+    ("upload_to_gofile", "Uploading file to filehosting"),
+    ("write_todos", "Updating todo list"),
+    ("complete_todo", "Marking todo as completed"),
 ];
 
 /// Generate a human-readable thought from a tool call
@@ -98,25 +98,25 @@ pub fn infer_thought(tool_name: &str, arguments: &str) -> Option<String> {
 pub fn infer_thought_from_command(command: &str) -> String {
     // Common command patterns and their descriptions
     let patterns: &[(&str, &str)] = &[
-        ("cat ", "Просматриваю содержимое файла"),
-        ("grep ", "Ищу в файлах"),
-        ("find ", "Ищу файлы"),
-        ("ls ", "Изучаю содержимое каталога"),
-        ("cd ", "Перехожу в каталог"),
-        ("mkdir ", "Создаю каталог"),
-        ("rm ", "Удаляю файлы"),
-        ("cp ", "Копирую файлы"),
-        ("mv ", "Перемещаю файлы"),
-        ("curl ", "Загружаю данные из сети"),
-        ("wget ", "Скачиваю файл"),
-        ("pip ", "Управляю Python-пакетами"),
-        ("npm ", "Управляю Node.js-пакетами"),
-        ("cargo ", "Работаю с Rust-проектом"),
-        ("git ", "Работаю с Git"),
-        ("python ", "Запускаю Python-скрипт"),
-        ("node ", "Запускаю Node.js-скрипт"),
-        ("docker ", "Работаю с Docker"),
-        ("ffmpeg ", "Обрабатываю медиафайл"),
+        ("cat ", "Viewing file content"),
+        ("grep ", "Searching in files"),
+        ("find ", "Searching for files"),
+        ("ls ", "Viewing directory contents"),
+        ("cd ", "Navigating to directory"),
+        ("mkdir ", "Creating directory"),
+        ("rm ", "Removing files"),
+        ("cp ", "Copying files"),
+        ("mv ", "Moving files"),
+        ("curl ", "Downloading data from the network"),
+        ("wget ", "Downloading file"),
+        ("pip ", "Managing Python packages"),
+        ("npm ", "Managing Node.js packages"),
+        ("cargo ", "Working with Rust project"),
+        ("git ", "Working with Git"),
+        ("python ", "Running Python script"),
+        ("node ", "Running Node.js script"),
+        ("docker ", "Working with Docker"),
+        ("ffmpeg ", "Processing media file"),
     ];
 
     let cmd_lower = command.to_lowercase();
@@ -128,7 +128,7 @@ pub fn infer_thought_from_command(command: &str) -> String {
     }
 
     // Default: just say "executing command"
-    "Выполняю команду".to_string()
+    "Executing command".to_string()
 }
 
 /// Extract reasoning summary from full reasoning content
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn test_infer_thought_read_file() {
         let thought = infer_thought("read_file", r#"{"path": "/workspace/src/main.rs"}"#);
-        assert_eq!(thought, Some("Читаю файл main.rs".to_string()));
+        assert_eq!(thought, Some("Reading file main.rs".to_string()));
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
         let thought = infer_thought("tavily_search", r#"{"query": "rust async programming"}"#);
         assert_eq!(
             thought,
-            Some("Ищу информацию: rust async programming".to_string())
+            Some("Searching for information: rust async programming".to_string())
         );
     }
 
@@ -230,11 +230,11 @@ mod tests {
     fn test_infer_thought_from_command() {
         assert_eq!(
             infer_thought_from_command("cat /etc/hosts"),
-            "Просматриваю содержимое файла"
+            "Viewing file content"
         );
         assert_eq!(
             infer_thought_from_command("cargo build --release"),
-            "Работаю с Rust-проектом"
+            "Working with Rust project"
         );
     }
 

@@ -294,7 +294,7 @@ impl SandboxManager {
                     // Kill all processes in the container
                     self.kill_processes().await;
 
-                    return Err(anyhow!("Выполнение команды прервано пользователем"));
+                    return Err(anyhow!("Command execution cancelled by user"));
                 }
             }
         } else {

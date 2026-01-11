@@ -118,7 +118,7 @@ impl TodoList {
             return String::new();
         }
 
-        let mut lines = vec!["## Текущий список задач:".to_string()];
+        let mut lines = vec!["## Current task list:".to_string()];
 
         for (i, item) in self.items.iter().enumerate() {
             lines.push(format!("{}. {} {}", i + 1, item.status, item.description));
@@ -126,7 +126,7 @@ impl TodoList {
 
         let completed = self.completed_count();
         let total = self.items.len();
-        lines.push(format!("\nПрогресс: {completed}/{total} выполнено"));
+        lines.push(format!("\nProgress: {completed}/{total} completed"));
 
         lines.join("\n")
     }
@@ -183,28 +183,28 @@ impl ToolProvider for TodosProvider {
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             name: "write_todos".to_string(),
-            description: "Создать или обновить список задач для текущего запроса. \
-                ОБЯЗАТЕЛЬНО используй для сложных запросов, требующих нескольких шагов \
-                (исследование, сравнение, анализ). Создай план ПЕРЕД началом работы. \
-                НЕ ДАВАЙ финальный ответ, пока все задачи не выполнены."
+            description: "Create or update a list of tasks for the current request. \
+                ABSOLUTELY use it for complex requests that require multiple steps \
+                (research, comparison, analysis). Create a plan BEFORE starting work. \
+                DO NOT GIVE a final answer until all tasks are completed."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "todos": {
                         "type": "array",
-                        "description": "Полный список задач (заменяет предыдущий список)",
+                        "description": "Full list of tasks (replaces previous list)",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "description": {
                                     "type": "string",
-                                    "description": "Описание задачи"
+                                    "description": "Task description"
                                 },
                                 "status": {
                                     "type": "string",
                                     "enum": ["pending", "in_progress", "completed", "cancelled"],
-                                    "description": "Статус задачи. Только ОДНА задача может быть in_progress."
+                                    "description": "Task status. Only ONE task can be in_progress."
                                 }
                             },
                             "required": ["description", "status"]
@@ -267,14 +267,14 @@ impl ToolProvider for TodosProvider {
         let response = current.map_or_else(
             || {
                 if is_all_complete {
-                    format!("✅ Все задачи выполнены! ({completed}/{total})")
+                    format!("✅ All tasks completed! ({completed}/{total})")
                 } else {
-                    format!("✅ Список задач обновлён ({completed}/{total} выполнено)")
+                    format!("✅ Task list updated ({completed}/{total} completed)")
                 }
             },
             |current_task| {
                 format!(
-                    "✅ Список задач обновлён ({completed}/{total} выполнено)\n🔄 Текущая задача: {current_task}"
+                    "✅ Task list updated ({completed}/{total} completed)\n🔄 Current task: {current_task}"
                 )
             },
         );
@@ -356,19 +356,19 @@ mod tests {
     fn test_todo_list_to_context_string() {
         let mut list = TodoList::new();
         list.items.push(TodoItem {
-            description: "Поиск информации".to_string(),
+            description: "Search for information".to_string(),
             status: TodoStatus::Completed,
         });
         list.items.push(TodoItem {
-            description: "Анализ данных".to_string(),
+            description: "Analyze data".to_string(),
             status: TodoStatus::InProgress,
         });
 
         let context = list.to_context_string();
-        assert!(context.contains("Текущий список задач"));
-        assert!(context.contains("✅ Поиск информации"));
-        assert!(context.contains("🔄 Анализ данных"));
-        assert!(context.contains("1/2 выполнено"));
+        assert!(context.contains("Current task list"));
+        assert!(context.contains("✅ Search for information"));
+        assert!(context.contains("🔄 Analyze data"));
+        assert!(context.contains("1/2 completed"));
     }
 
     #[tokio::test]
@@ -385,8 +385,8 @@ mod tests {
         }"#;
 
         let result = provider.execute("write_todos", args, None).await?;
-        assert!(result.contains("Список задач обновлён"));
-        assert!(result.contains("1/3 выполнено"));
+        assert!(result.contains("Task list updated"));
+        assert!(result.contains("1/3 completed"));
         assert!(result.contains("Task 2"));
 
         let list = todos.lock().await;

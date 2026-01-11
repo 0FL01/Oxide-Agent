@@ -63,7 +63,7 @@ impl AgentRunner {
         }
 
         Err(anyhow!(
-            "Агент превысил лимит итераций ({}).",
+            "Agent exceeded iteration limit ({}).",
             ctx.config.max_iterations
         ))
     }
@@ -153,7 +153,7 @@ impl AgentRunner {
         if tool_calls.is_empty() {
             let final_answer = parsed
                 .final_answer
-                .unwrap_or_else(|| "Задача выполнена, но ответ пуст.".to_string());
+                .unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
 
             if self.content_loop_detected(final_answer.as_str()).await {
                 return Err(self
@@ -263,7 +263,7 @@ impl AgentRunner {
             let _ = tx.send(AgentEvent::Cancelled).await;
         }
 
-        anyhow!("Задача отменена пользователем")
+        anyhow!("Task cancelled by user")
     }
 
     // Response helpers live in responses.rs

@@ -126,10 +126,10 @@ impl ToolProvider for TavilyProvider {
 
                 match self.client.call(&request).await {
                     Ok(response) => {
-                        let mut output = format!("## Результаты поиска: {}\n\n", args.query);
+                        let mut output = format!("## Search results for: {}\n\n", args.query);
 
                         if response.results.is_empty() {
-                            output.push_str("Ничего не найдено по данному запросу.\n");
+                            output.push_str("No results found for this query.\n");
                         } else {
                             for (i, result) in response.results.iter().enumerate() {
                                 let _ = write!(
@@ -145,7 +145,7 @@ impl ToolProvider for TavilyProvider {
 
                         Ok(output)
                     }
-                    Err(e) => Ok(format!("Ошибка поиска: {e}")),
+                    Err(e) => Ok(format!("Search error: {e}")),
                 }
             }
             "web_extract" => {
@@ -161,7 +161,7 @@ impl ToolProvider for TavilyProvider {
                         let mut output = String::new();
 
                         if response.results.is_empty() {
-                            output.push_str("Не удалось извлечь контент из указанных URL.\n");
+                            output.push_str("Failed to extract content from the specified URLs.\n");
                         } else {
                             for result in response.results {
                                 let _ = write!(
@@ -175,7 +175,7 @@ impl ToolProvider for TavilyProvider {
 
                         Ok(output)
                     }
-                    Err(e) => Ok(format!("Ошибка извлечения контента: {e}")),
+                    Err(e) => Ok(format!("Content extraction error: {e}")),
                 }
             }
             _ => anyhow::bail!("Unknown Tavily tool: {tool_name}"),

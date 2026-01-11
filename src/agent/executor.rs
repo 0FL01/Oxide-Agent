@@ -188,7 +188,7 @@ impl AgentExecutor {
             Err(_) => {
                 self.session.timeout();
                 Err(anyhow!(
-                    "Задача превысила лимит времени ({} минут)",
+                    "Task exceeded timeout limit ({} minutes)",
                     AGENT_TIMEOUT_SECS / 60
                 ))
             }

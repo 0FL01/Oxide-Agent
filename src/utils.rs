@@ -367,8 +367,8 @@ pub fn split_long_message(message: &str, max_length: usize) -> Vec<String> {
 ///
 /// ```
 /// use oxide_agent::utils::truncate_str;
-/// let s = "Привет, мир!";
-/// assert_eq!(truncate_str(s, 6), "Привет");
+/// let s = "Hello, world!";
+/// assert_eq!(truncate_str(s, 6), "Hello");
 /// ```
 pub fn truncate_str(s: impl AsRef<str>, max_chars: usize) -> String {
     let s = s.as_ref();
@@ -461,9 +461,9 @@ mod tests {
 
     #[test]
     fn test_truncate_str_unicode() {
-        let s = "Привет, мир!";
-        assert_eq!(truncate_str(s, 6), "Привет");
-        assert_eq!(truncate_str(s, 50), "Привет, мир!");
+        let s = "Hello, world!";
+        assert_eq!(truncate_str(s, 6), "Hello");
+        assert_eq!(truncate_str(s, 50), "Hello, world!");
     }
 
     #[test]

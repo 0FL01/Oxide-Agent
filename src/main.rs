@@ -259,7 +259,7 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
         )
         .branch(
             Update::filter_message().branch(
-                // Основная ветка для авторизованных пользователей
+                // Main branch for authorized users
                 dptree::filter(|msg: Message, settings: Arc<Settings>| {
                     settings.allowed_users().contains(&get_user_id_safe(&msg))
                 })
@@ -322,7 +322,7 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
             ),
         )
         .branch(
-            // Все, кто не попал в фильтр выше — неавторизованы
+            // All who are not in the filter above — unauthorized
             Update::filter_message().endpoint(handle_unauthorized),
         )
 }

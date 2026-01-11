@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn parses_json_with_leading_text() {
         let raw =
-            "Ответ:\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\"}\nСпасибо";
+            "Answer:\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\"}\nThank you";
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(matches!(
             result,

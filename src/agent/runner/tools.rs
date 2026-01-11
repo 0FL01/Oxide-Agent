@@ -159,7 +159,7 @@ impl AgentRunner {
         }
 
         let context_message = format!(
-            "[Загружен модуль: {}]\n{}",
+            "[Loaded skill: {}]\n{}",
             skill.metadata.name, skill.content
         );
 

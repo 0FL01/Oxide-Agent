@@ -274,20 +274,20 @@ impl YtdlpProvider {
             // Check if this is a fatal, unrecoverable error
             if is_fatal_ytdlp_error(&error_msg) {
                 warn!(error = %error_msg, "Fatal yt-dlp error detected");
-                anyhow::bail!("yt-dlp фатальная ошибка: {error_msg}")
+                anyhow::bail!("yt-dlp fatal error: {error_msg}")
             }
 
             // Check if this is a retryable error (network issues, etc.)
             if is_retryable_ytdlp_error(&error_msg) {
                 warn!(error = %error_msg, "Retryable yt-dlp error detected");
                 return Ok(format!(
-                    "⚠️ Временная ошибка yt-dlp (возможен повтор): {error_msg}"
+                    "⚠️ Temporary yt-dlp error (possible retry): {error_msg}"
                 ));
             }
 
             // Non-fatal, non-retryable errors (e.g., format not available)
             // return as Ok with warning so agent can adjust
-            Ok(format!("yt-dlp предупреждение: {error_msg}"))
+            Ok(format!("yt-dlp warning: {error_msg}"))
         }
     }
 
@@ -318,10 +318,10 @@ impl YtdlpProvider {
             Ok(out) => out,
             Err(e) => {
                 return Ok(format!(
-                    "❌ **Не удалось получить метаданные видео**\n\n\
-                     Причина: {e}\n\n\
-                     Это может означать, что видео недоступно, приватное, \
-                     заблокировано в вашем регионе или требует авторизации."
+                    "❌ **Failed to retrieve video metadata**\n\n\
+                     Reason: {e}\n\n\
+                     This may mean the video is unavailable, private, \
+                     blocked in your region, or requires authentication."
                 ));
             }
         };
@@ -361,9 +361,9 @@ impl YtdlpProvider {
 
         if let Err(e) = self.exec_ytdlp(&ytdlp_args, cancellation_token).await {
             return Ok(format!(
-                "❌ **Не удалось скачать транскрипт**\n\n\
-                 Причина: {e}\n\n\
-                 Возможно, видео недоступно или не имеет субтитров."
+                "❌ **Failed to download transcript**\n\n\
+                 Reason: {e}\n\n\
+                 The video may be unavailable or have no subtitles."
             ));
         }
 
@@ -433,14 +433,14 @@ impl YtdlpProvider {
             Ok(out) => out,
             Err(e) => {
                 return Ok(format!(
-                    "❌ **Не удалось выполнить поиск видео**\n\n\
-                     Причина: {e}\n\n\
-                     Возможно, временные проблемы с доступом к YouTube."
+                    "❌ **Failed to execute video search**\n\n\
+                     Reason: {e}\n\n\
+                     Possible temporary issues with YouTube access."
                 ));
             }
         };
 
-        if output.starts_with("yt-dlp error:") || output.starts_with("yt-dlp предупреждение:")
+        if output.starts_with("yt-dlp error:") || output.starts_with("yt-dlp warning:")
         {
             return Ok(output);
         }
@@ -522,9 +522,9 @@ impl YtdlpProvider {
             Ok(out) => out,
             Err(e) => {
                 return Ok(format!(
-                    "❌ **Не удалось скачать видео**\n\n\
-                     Причина: {e}\n\n\
-                     Видео может быть недоступно, приватное или заблокировано."
+                    "❌ **Failed to download video**\n\n\
+                     Reason: {e}\n\n\
+                     The video may be unavailable, private, or blocked."
                 ));
             }
         };
@@ -598,9 +598,9 @@ impl YtdlpProvider {
             Ok(out) => out,
             Err(e) => {
                 return Ok(format!(
-                    "❌ **Не удалось извлечь аудио**\n\n\
-                     Причина: {e}\n\n\
-                     Видео может быть недоступно, приватное или заблокировано."
+                    "❌ **Failed to extract audio**\n\n\
+                     Reason: {e}\n\n\
+                     Video may be unavailable, private, or blocked."
                 ));
             }
         };

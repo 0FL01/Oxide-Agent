@@ -52,7 +52,7 @@ async fn cancellation_token_is_not_overwritten_by_task_start() {
         panic!("expected cancellation error");
     };
     assert!(
-        err.to_string().contains("отменена"),
+        err.to_string().contains("cancelled"),
         "unexpected error: {err}"
     );
     assert!(
