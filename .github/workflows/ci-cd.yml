@@ -26,7 +26,7 @@ jobs:
       R2_ACCESS_KEY_ID: dummy
       R2_SECRET_ACCESS_KEY: dummy
       R2_BUCKET_NAME: dummy
-      ZAI_API_KEY: dummy
+#       ZAI_API_KEY: dummy
       LOOP_DETECTION_ENABLED: "true"
       LOOP_TOOL_CALL_THRESHOLD: "5"
       LOOP_CONTENT_CHUNK_SIZE: "50"
@@ -102,7 +102,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+#           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           OPENROUTER_SITE_URL: ${{ secrets.OPENROUTER_SITE_URL }}
           OPENROUTER_SITE_NAME: ${{ secrets.OPENROUTER_SITE_NAME }}
           SYSTEM_MESSAGE: ${{ secrets.SYSTEM_MESSAGE }}
