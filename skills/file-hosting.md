@@ -1,56 +1,56 @@
 ---
 name: file-hosting
-description: Загрузка больших файлов через upload_file и получение ссылки.
-triggers: [загруз, ссылка, gofile, upload, 50 мб, 4 гб]
+description: Uploading large files via upload_file and getting a link.
+triggers: [upload, link, gofile, 50mb, 4gb]
 allowed_tools: [upload_file]
 weight: medium
 ---
-## Хостинг файлов (когда Telegram не принимает):
-- **upload_file**: загрузить файл из песочницы в GoFile и получить ссылку для пользователя
-  - Используй ВСЕГДА для файлов > 50 МБ (Telegram лимит)
-  - Лимит загрузки: 1 ГБ. Если файл больше — задача невыполнима
-  - После успешной загрузки файл удаляется из песочницы
+## File Hosting (when Telegram does not accept):
+- **upload_file**: upload a file from the sandbox to GoFile and get a link for the user
+  - ALWAYS use for files > 50 MB (Telegram limit)
+  - Upload limit: 1 GB. If the file is larger — the task is impossible
+  - After successful upload, the file is deleted from the sandbox
 
-## ФАЙЛЫ: Доставка пользователю
-- До 50 МБ: `send_file_to_user`
-- 50 МБ – 4 ГБ: `upload_file`
-- Больше 4 ГБ: задача невыполнима — сообщи пользователю об отказе
+## FILES: Delivery to User
+- Up to 50 MB: `send_file_to_user`
+- 50 MB – 4 GB: `upload_file`
+- Over 4 GB: task impossible — inform the user of refusal
 
-## ⚠️ КРИТИЧНО: Очистка песочницы после загрузки
+## ⚠️ CRITICAL: Sandbox Cleanup after Upload
 
-**ОБЯЗАТЕЛЬНЫЕ правила работы с `upload_file`:**
+**MANDATORY rules for working with `upload_file`:**
 
-1. **Проверка успешности загрузки:**
-   - После вызова `upload_file` **ОБЯЗАТЕЛЬНО** проверь результат инструмента
-   - Убедись, что получена корректная ссылка на файл (начинается с `https://`)
-   - Если в результате ошибка — **НЕ удаляй** файл, сообщи пользователю о проблеме
+1. **Check upload success:**
+   - After calling `upload_file`, **MUST** check the tool result
+   - Ensure a valid file link is received (starts with `https://`)
+   - If the result is an error — **DO NOT delete** the file, inform the user of the problem
 
-2. **Удаление файла после успешной загрузки:**
-   - ✅ Если загрузка успешна и ссылка получена — **НЕМЕДЛЕННО удали** файл из песочницы
-   - Используй команду: `execute_command` с `rm /workspace/filename`
-   - **НЕЛЬЗЯ мусорить в песочнице** — это общий ресурс
+2. **Delete file after successful upload:**
+   - ✅ If upload is successful and link is received — **IMMEDIATELY delete** the file from the sandbox
+   - Use command: `execute_command` with `rm /workspace/filename`
+   - **DO NOT litter in the sandbox** — it is a shared resource
 
-3. **Последовательность действий:**
+3. **Sequence of actions:**
    ```
-   1. Вызвать upload_file с путем к файлу
-   2. Получить результат и проверить наличие ссылки
-   3. Если ссылка есть → удалить файл через execute_command
-   4. Если ошибка → НЕ удалять файл, сообщить пользователю
+   1. Call upload_file with path to file
+   2. Receive result and check for link
+   3. If link exists → delete file via execute_command
+   4. If error → DO NOT delete file, inform user
    ```
 
-**Пример правильного workflow:**
+**Example of correct workflow:**
 ```markdown
-User: "Загрузи большой файл video.mp4 в облако"
+User: "Upload big file video.mp4 to cloud"
 
 Agent:
-1. [Вызывает upload_file для /workspace/video.mp4]
-2. [Получает результат: "https://gofile.io/d/abc123"]
-3. [Проверяет: ссылка корректна ✅]
-4. [Вызывает execute_command: "rm /workspace/video.mp4"]
-5. Ответ: "Файл успешно загружен: https://gofile.io/d/abc123. Локальная копия удалена из песочницы."
+1. [Calls upload_file for /workspace/video.mp4]
+2. [Receives result: "https://gofile.io/d/abc123"]
+3. [Checks: link is valid ✅]
+4. [Calls execute_command: "rm /workspace/video.mp4"]
+5. Answer: "File successfully uploaded: https://gofile.io/d/abc123. Local copy deleted from sandbox."
 ```
 
-**❌ ОШИБКИ, которых нужно избегать:**
-- НЕ удаляй файл ДО проверки результата загрузки
-- НЕ оставляй файлы в песочнице после успешной загрузки
-- НЕ удаляй файл, если загрузка завершилась ошибкой
+**❌ ERRORS to avoid:**
+- DO NOT delete the file BEFORE checking the upload result
+- DO NOT leave files in the sandbox after successful upload
+- DO NOT delete the file if the upload failed

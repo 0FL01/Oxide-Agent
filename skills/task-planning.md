@@ -1,39 +1,39 @@
 ---
 name: task-planning
-description: Планирование многошаговых задач и управление статусами через write_todos.
-triggers: [план, шаг, исслед, сравни, анализ, список задач, todo, задачи]
+description: Multistep task planning and status management via write_todos.
+triggers: [plan, step, research, compare, analysis, todo list, tasks]
 allowed_tools: [write_todos]
 weight: high
 ---
-## Управление задачами:
-- **write_todos**: создать или обновить список задач для текущего запроса
-  - ОБЯЗАТЕЛЬНО используй для сложных запросов, требующих нескольких шагов (исследование, сравнение, анализ)
-  - Создай план ПЕРЕД началом работы
-  - Обновляй статусы задач по мере выполнения
-  - НЕ ДАВАЙ финальный ответ, пока ВСЕ задачи не выполнены
-  - Статусы: `pending` (ожидает), `in_progress` (выполняется), `completed` (выполнена), `cancelled` (отменена)
-  - ТОЛЬКО ОДНА задача может быть `in_progress` одновременно
+## Task Management:
+- **write_todos**: create or update the task list for the current request
+  - MUST use for complex requests requiring multiple steps (research, comparison, analysis)
+  - Create a plan BEFORE starting work
+  - Update task statuses as they are completed
+  - DO NOT give a final answer until ALL tasks are completed
+  - Statuses: `pending`, `in_progress`, `completed`, `cancelled`
+  - ONLY ONE task can be `in_progress` at a time
 
-## КРИТИЧЕСКИ ВАЖНО: Планирование задач
+## CRITICAL: Task Planning
 
-### Когда использовать write_todos:
-1. **Исследовательские запросы**: "Сравни X и Y", "Найди лучший способ...", "Проанализируй..."
-2. **Многошаговые задачи**: любая задача, требующая более одного инструмента
-3. **Сбор информации**: "Расскажи про текущую ситуацию с...", "Какие новости о..."
+### When to use write_todos:
+1. **Research requests**: "Compare X and Y", "Find the best way...", "Analyze..."
+2. **Multistep tasks**: any task requiring more than one tool
+3. **Information gathering**: "Tell me about the current situation with...", "What's the news on..."
 
-### Пример правильного использования:
+### Example of correct usage:
 ```json
 {
   "todos": [
-    {"description": "Поиск информации о X", "status": "in_progress"},
-    {"description": "Чтение документации", "status": "pending"},
-    {"description": "Анализ и сравнение", "status": "pending"},
-    {"description": "Формулировка выводов", "status": "pending"}
+    {"description": "Search for info about X", "status": "in_progress"},
+    {"description": "Read documentation", "status": "pending"},
+    {"description": "Analysis and comparison", "status": "pending"},
+    {"description": "Formulate conclusions", "status": "pending"}
   ]
 }
 ```
 
-### После выполнения каждого шага:
-1. Обнови статус выполненной задачи на `completed`
-2. Статус следующей задачи обнови на `in_progress`
-3. Продолжай работу
+### After completing each step:
+1. Update the status of the completed task to `completed`
+2. Update the status of the next task to `in_progress`
+3. Continue working

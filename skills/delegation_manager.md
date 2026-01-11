@@ -1,31 +1,31 @@
 ---
 name: delegation_manager
-description: Делегирование черновой работы (файлы, git, поиск) саб-агенту.
-triggers: [делегир, субагент, подзадача, исследование, обзор, сравнение, массив данных, git, clone, repo, сканирование, чтение файлов, индексация, изучение]
+description: Delegating grunt work (files, git, search) to a sub-agent.
+triggers: [delegate, subagent, subtask, research, overview, comparison, dataset, git, clone, repo, scan, file reading, indexing, study]
 allowed_tools: [delegate_to_sub_agent]
 weight: high
 ---
-## Когда делегировать
-- Объемные исследовательские задачи (поиск, сбор данных, чтение длинных материалов)
-- **Работа с файловой системой: клонирование репозиториев, чтение множества файлов, grep-поиск, индексация кода**
-- Черновые этапы: агрегация источников, первичная фильтрация, формирование чернового списка
-- Параллельные подзадачи, которые можно отделить от основного диалога
+## When to Delegate
+- Voluminous research tasks (search, data collection, reading long materials)
+- **File system work: cloning repositories, reading many files, grep search, code indexing**
+- Draft stages: source aggregation, initial filtering, creating a draft list
+- Parallel subtasks that can be separated from the main dialogue
 
-## Почему это важно
-**Саб-агент работает в ТОМ ЖЕ SANDBOX, что и ты.**
-Все файлы, скачанные или созданные саб-агентом (например, через `git clone`), будут доступны тебе по тем же путям.
-Делегируй ему рутину (setup, exploration), чтобы сэкономить свой контекст и токены.
+## Why this is Important
+**The sub-agent works in the SAME SANDBOX as you.**
+All files downloaded or created by the sub-agent (e.g., via `git clone`) will be available to you at the same paths.
+Delegate routine work (setup, exploration) to it to save your context and tokens.
 
-## Как формулировать задачу
-1. Кратко опиши цель и желаемый формат результата
-2. Явно задай список разрешенных инструментов
-3. Добавь уточняющий контекст (если важно), но без лишней истории
+## How to Formulate a Task
+1. Briefly describe the goal and desired result format
+2. Explicitly specify the list of allowed tools
+3. Add clarifying context (if important), but without unnecessary history
 
-## Пример вызова
+## Example Call
 ```json
 {
-  "task": "Собери 5 актуальных источников по теме X и кратко опиши ключевые факты",
+  "task": "Collect 5 relevant sources on topic X and briefly describe key facts",
   "tools": ["web_search", "web_extract"],
-  "context": "Используй источники не старше 12 месяцев. Итог — краткий список с ссылками."
+  "context": "Use sources no older than 12 months. Result — brief list with links."
 }
 ```

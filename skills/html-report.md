@@ -1,19 +1,18 @@
 ---
 name: html-report
-description: Навык для генерации HTML-отчетов, дашбордов и страниц в стиле Playful Material Design 3.
-triggers: [html, отчёт, report, web, design, дизайн, страница, css, верстка]
+description: Skill for generating HTML reports, dashboards, and pages in Playful Material Design 3 style.
+triggers: [html, report, web, design, page, css, layout]
 weight: medium
 ---
+When generating HTML pages, reports, or web interfaces, follow the **Playful Material Design 3** style.
 
-При генерации HTML-страниц, отчетов или веб-интерфейсов, следуй стилю **Playful Material Design 3**.
+### Design Principles
+1. **Playful & Dynamic**: Use saturated colors, playful shapes, and animations.
+2. **Pill-Shaped Buttons**: All buttons must have full roundedness (border-radius: 9999px).
+3. **Distinct Elevation**: Use shadows to create depth. Elements should "float" above the surface.
+4. **Micro-interactions**: Add hover effects (scale, shadow lift), click effects (ripple).
 
-### Принципы дизайна
-1.  **Playful & Dynamic**: Используй насыщенные цвета, игривые формы и анимации.
-2.  **Pill-Shaped Buttons**: Все кнопки должны иметь полную скругленность (border-radius: 9999px).
-3.  **Distinct Elevation**: Используй тени для создания глубины. Элементы должны "парить" над поверхностью.
-4.  **Micro-interactions**: Добавляй эффекты при наведении (scale, shadow lift), нажатии (ripple).
-
-### Базовый CSS шаблон (обязательно включи или адаптируй это в `<style>`):
+### Basic CSS Template (MUST include or adapt this in `<style>`):
 
 ```css
 :root {
@@ -121,9 +120,9 @@ h1 { font-size: 3rem; background: linear-gradient(135deg, var(--md-sys-color-pri
 }
 ```
 
-### Рекомендации по контенту
-- **Google Fonts**: Подключи `<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">`.
-- **Иконки**: Используй Material Icons или SVG.
-- **Интерактивность**: Если требуется JS, добавь скрипт для простых взаимодействий (табы, фильтрация).
+### Content Recommendations
+- **Google Fonts**: Include `<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">`.
+- **Icons**: Use Material Icons or SVG.
+- **Interactivity**: If JS is required, add a script for simple interactions (tabs, filtering).
 
-Когда пользователь просит отчет, используй этот стиль по умолчанию, если не указано иное.
+When a user requests a report, use this style by default unless specified otherwise.

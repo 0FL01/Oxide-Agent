@@ -1,13 +1,13 @@
 ---
 name: web-search
-description: Поиск и извлечение информации из интернета для актуальных данных и документации.
-triggers: [найди, поищи, поиск, актуальн, новост, документаци]
+description: Search and extract information from the internet for up-to-date data and documentation.
+triggers: [find, search, look up, current, news, docs]
 allowed_tools: [web_search, web_extract]
 weight: medium
 ---
-## Web (поиск информации):
-- **web_search**: поиск в интернете для получения актуальной информации (новости, факты, документация). Параметры: query (строка), max_results (1-10)
-- **web_extract**: извлечение контента из веб-страниц для чтения статей и документации. Параметры: urls (массив URL)
+## Web (information search):
+- **web_search**: search the internet for up-to-date information (news, facts, documentation). Parameters: query (string), max_results (1-10)
+- **web_extract**: extract content from web pages to read articles and documentation. Parameters: urls (array of URLs)
 
-## Важные правила:
-- **WEB_SEARCH**: Для получения актуальной информации (новости, события, документация) — ИСПОЛЬЗУЙ web_search вместо curl. Это быстрее и эффективнее.
+## Important Rules:
+- **WEB_SEARCH**: To get current information (news, events, documentation) — USE web_search instead of curl. It is faster and more efficient.

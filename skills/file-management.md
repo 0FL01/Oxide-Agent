@@ -1,23 +1,23 @@
 ---
 name: file-management
-description: Работа с песочницей, файлами и выполнением команд.
-triggers: [файл, папк, директори, команда, скрипт, выполнить, python, bash, sandbox, ls, cat, grep, rm, cp, mv]
+description: Working with the sandbox, files, and executing commands.
+triggers: [file, folder, directory, command, script, execute, python, bash, sandbox, ls, cat, grep, rm, cp, mv]
 allowed_tools: [execute_command, write_file, read_file, send_file_to_user, list_files]
 weight: medium
 ---
-## Sandbox (выполнение кода):
-- **execute_command**: выполнить bash-команду в sandbox (доступны: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep и другие стандартные утилиты, если утилиты нет — то поставь её)
-- **write_file**: записать содержимое в файл
-- **read_file**: прочитать содержимое файла
-- **send_file_to_user**: отправить файл из песочницы пользователю в Telegram
-  - Поддерживает как абсолютные (/workspace/file.txt), так и относительные (file.txt) пути
-  - Автоматически ищет файл в /workspace, если указано только имя
-  - Если найдено несколько файлов с одинаковым именем — попросит уточнить путь
-  - ⚠️ Лимит Telegram: если файл > 50 МБ, используй `upload_file`
-- **list_files**: показать содержимое директории в песочнице (по умолчанию /workspace)
+## Sandbox (code execution):
+- **execute_command**: execute a bash command in the sandbox (available: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard utilities; if a utility is missing, install it)
+- **write_file**: write content to a file
+- **read_file**: read file content
+- **send_file_to_user**: send a file from the sandbox to the user in Telegram
+  - Supports both absolute (/workspace/file.txt) and relative (file.txt) paths
+  - Automatically searches in /workspace if only the name is provided
+  - If multiple files with the same name are found — it will ask to specify the path
+  - ⚠️ Telegram limit: if file > 50 MB, use `upload_file`
+- **list_files**: show directory contents in the sandbox (default /workspace)
 
-## Важные правила:
-- **СЕТЬ**: У тебя ЕСТЬ доступ к интернету (curl, wget, pip, git работают). Ошибки "command not found" означают отсутствие утилиты, а не сети.
-- **УСТАНОВКА**: Если утилиты нет (dig, ping и т.д.) — выполни `apt-get update && apt-get install -y <package>`, затем используй.
-- Если нужна текущая дата — вызови execute_command с командой `date`
-- Для вычислений используй Python: execute_command с `python3 -c "..."`
+## Important Rules:
+- **NETWORK**: You HAVE internet access (curl, wget, pip, git work). "command not found" errors mean the utility is missing, not that the network is down.
+- **INSTALLATION**: If a utility is missing (dig, ping, etc.) — run `apt-get update && apt-get install -y <package>`, then use it.
+- If you need the current date — call execute_command with `date`.
+- For calculations use Python: execute_command with `python3 -c "..."`.
