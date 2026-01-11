@@ -149,12 +149,12 @@ Output ONLY valid JSON in this exact format:
 Rules:
 - headline: 3-5 words, action-oriented (e.g., "Searching for Dependencies", "Writing Python Script")
 - content: Describe ONLY the action. Do not explain why it is useful. Never use phrases like "This will help", "To achieve this", "In order to".
-- Use Russian language for output
+- Use English language for output
 - Be concise and professional
 - Do NOT include raw technical details or code
 
 Example:
-{"headline": "Анализ структуры проекта", "content": "Агент изучает файловую структуру и конфигурационные файлы проекта."}"#
+{"headline": "Analyzing Project Structure", "content": "Agent examines file structure and configuration files."}"#
             .to_string()
     }
 }

@@ -114,16 +114,16 @@ pub async fn handle_agent_message(
     // Check for control commands
     if let Some(text) = msg.text() {
         match text {
-            "❌ Отменить задачу" => {
+            "❌ Cancel Task" => {
                 return cancel_agent_task(bot, msg, dialogue).await;
             }
-            "🗑 Очистить память" => {
+            "🗑 Clear Memory" => {
                 return clear_agent_memory(bot, msg, storage).await;
             }
-            "🔄 Пересоздать контейнер" => {
+            "🔄 Recreate Container" => {
                 return confirm_agent_wipe(bot, msg, dialogue).await;
             }
-            "⬅️ Выйти из режима агента" => {
+            "⬅️ Exit Agent Mode" => {
                 return exit_agent_mode(bot, msg, dialogue, storage).await;
             }
             _ => {}
@@ -136,7 +136,7 @@ pub async fn handle_agent_message(
     if is_agent_task_running(user_id).await {
         bot.send_message(
             chat_id,
-            "⏳ Задача уже выполняется. Нажмите ❌ Отменить задачу, если нужно прекратить.",
+            "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
         )
         .reply_markup(get_agent_keyboard())
         .await?;
@@ -160,7 +160,7 @@ pub async fn handle_agent_message(
 
         if let Err(e) = run_agent_task(ctx).await {
             let _ = task_bot
-                .send_message(task_msg.chat.id, format!("❌ Ошибка: {e}"))
+                .send_message(task_msg.chat.id, format!("❌ Error: {e}"))
                 .await;
         }
     });
@@ -471,7 +471,7 @@ async fn send_loop_detected_message(
     iteration: usize,
 ) -> Result<()> {
     let text = format!(
-        "🔁 <b>Обнаружена петля в выполнении задачи</b>\nТип: {}\nИтерация: {}\n\nВыберите действие:",
+        "🔁 <b>Loop Detected in Task Execution</b>\nType: {}\nIteration: {}\n\nSelect an action:",
         loop_type_label(loop_type),
         iteration
     );
@@ -498,7 +498,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
                 super::resilient::send_message_resilient(
                     &ctx.bot,
                     chat_id,
-                    "🚫 Агент не может обработать этот файл.\nТребуется подключение Gemini/OpenRouter для работы со зрением и слухом.",
+                    "🚫 Agent cannot process this file.\nGemini/OpenRouter connection required for vision and audio capabilities.",
                     None,
                 )
                 .await?;
@@ -517,7 +517,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let progress_msg = super::resilient::send_message_resilient(
         &ctx.bot,
         chat_id,
-        "⏳ Обработка задачи...",
+        "⏳ Processing task...",
         Some(ParseMode::Html),
     )
     .await?;
@@ -552,7 +552,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
             // Sanitize error text to prevent Telegram HTML parse errors
             // (errors from API may contain raw HTML like Nginx error pages)
             let sanitized_error = crate::utils::sanitize_html_error(&e.to_string());
-            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{sanitized_error}");
+            let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
             super::resilient::edit_message_safe_resilient(
                 &ctx.bot,
                 chat_id,
@@ -576,7 +576,7 @@ async fn run_agent_task_with_text(
     let progress_msg = super::resilient::send_message_resilient(
         &bot,
         chat_id,
-        "⏳ Обработка задачи...",
+        "⏳ Processing task...",
         Some(ParseMode::Html),
     )
     .await?;
@@ -604,7 +604,7 @@ async fn run_agent_task_with_text(
         Err(e) => {
             // Sanitize error text to prevent Telegram HTML parse errors
             let sanitized_error = crate::utils::sanitize_html_error(&e.to_string());
-            let error_text = format!("{progress_text}\n\n❌ <b>Ошибка:</b>\n\n{sanitized_error}");
+            let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
             super::resilient::edit_message_safe_resilient(
                 &bot,
                 chat_id,
@@ -649,7 +649,7 @@ async fn execute_agent_task(
     if executor.is_timed_out() {
         executor.reset();
         return Err(anyhow::anyhow!(
-            "Предыдущая сессия истекла по таймауту. Начинаю новую сессию."
+            "Previous session timed out. Starting a new session."
         ));
     }
 
@@ -856,12 +856,9 @@ pub async fn exit_agent_mode(
     dialogue.update(State::Start).await?;
 
     let keyboard = crate::bot::handlers::get_main_keyboard();
-    bot.send_message(
-        msg.chat.id,
-        "👋 Вышли из режима агента. Выберите режим работы:",
-    )
-    .reply_markup(keyboard)
-    .await?;
+    bot.send_message(msg.chat.id, "👋 Exited agent mode. Select a working mode:")
+        .reply_markup(keyboard)
+        .await?;
     Ok(())
 }
 
@@ -895,7 +892,7 @@ pub async fn handle_agent_wipe_confirmation(
     let text = msg.text().unwrap_or("");
     let chat_id = msg.chat.id;
 
-    if text != "✅ Да" && text != "❌ Отмена" {
+    if text != "✅ Yes" && text != "❌ Cancel" {
         bot.send_message(chat_id, DefaultAgentView::select_keyboard_option())
             .await?;
         return Ok(());
@@ -905,7 +902,7 @@ pub async fn handle_agent_wipe_confirmation(
     let keyboard = get_agent_keyboard();
 
     match text {
-        "✅ Да" => {
+        "✅ Yes" => {
             // Ensure session exists (restores from DB if needs be, or creates new)
             ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
             match SESSION_REGISTRY
@@ -934,7 +931,7 @@ pub async fn handle_agent_wipe_confirmation(
                         .await?;
                 }
                 Ok(Err(AgentWipeError::Recreate(e))) => {
-                    bot.send_message(chat_id, format!("Ошибка при пересоздании: {e}"))
+                    bot.send_message(chat_id, format!("Error during recreation: {e}"))
                         .reply_markup(keyboard)
                         .await?;
                 }
@@ -954,7 +951,7 @@ pub async fn handle_agent_wipe_confirmation(
                 }
             }
         }
-        "❌ Отмена" => {
+        "❌ Cancel" => {
             bot.send_message(chat_id, DefaultAgentView::operation_cancelled())
                 .reply_markup(keyboard)
                 .await?;

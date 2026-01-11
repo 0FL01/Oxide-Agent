@@ -94,111 +94,111 @@ pub trait AgentView {
 // Default implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Default Russian-language implementation of `AgentView`
+/// Default English-language implementation of `AgentView`
 pub struct DefaultAgentView;
 
 impl AgentView for DefaultAgentView {
     fn welcome_message() -> &'static str {
-        r#"🤖 <b>Режим Агента активирован</b>
+        r#"🤖 <b>Agent Mode Activated</b>
 
-Жду задачу. Отправьте запрос в любом формате:
-• 📝 Текст
-• 🎤 Голосовое сообщение
-• 🖼 Изображение
+Waiting for a task. Send your request in any format:
+• 📝 Text
+• 🎤 Voice message
+• 🖼 Image
 
-Я работаю автономно: сам составлю план, выполню код и предоставлю результат."#
+I work autonomously: I'll create a plan, execute code, and provide the result."#
     }
 
     fn task_processing() -> &'static str {
-        "⏳ Обработка задачи..."
+        "⏳ Processing task..."
     }
 
     fn task_cancelled(cleared_todos: bool) -> &'static str {
         if cleared_todos {
-            "❌ Задача отменяется...\n📋 Список задач очищен."
+            "❌ Cancelling task...\n📋 Task list cleared."
         } else {
-            "❌ Задача отменяется..."
+            "❌ Cancelling task..."
         }
     }
 
     fn memory_cleared() -> &'static str {
-        "🗑 Память агента очищена"
+        "🗑 Agent memory cleared"
     }
 
     fn exiting_agent() -> &'static str {
-        "👋 Вышли из режима агента"
+        "👋 Exited agent mode"
     }
 
     fn no_active_task() -> &'static str {
-        "⚠️ Нет активной задачи для отмены"
+        "⚠️ No active task to cancel"
     }
 
     fn task_already_running() -> &'static str {
-        "⏳ Задача уже выполняется. Нажмите ❌ Отменить задачу, если нужно прекратить."
+        "⏳ Task is already running. Press ❌ Cancel Task to stop it."
     }
 
     fn session_not_found() -> &'static str {
-        "⚠️ Сессия агента не найдена."
+        "⚠️ Agent session not found."
     }
 
     fn clear_blocked_by_task() -> &'static str {
-        "⚠️ Очистка контекста невозможна, пока выполняется задача.\nНажмите «Отменить задачу», дождитесь отмены и затем повторите очистку."
+        "⚠️ Cannot clear context while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
     }
 
     fn container_recreate_blocked_by_task() -> &'static str {
-        "⚠️ Пересоздание контейнера невозможно, пока выполняется задача.\nНажмите «Отменить задачу», дождитесь отмены и затем повторите действие."
+        "⚠️ Cannot recreate container while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
     }
 
     fn container_recreated() -> &'static str {
-        "✅ Контейнер успешно пересоздан."
+        "✅ Container successfully recreated."
     }
 
     fn operation_cancelled() -> &'static str {
-        "Отменено."
+        "Cancelled."
     }
 
     fn select_keyboard_option() -> &'static str {
-        "Пожалуйста, выберите вариант на клавиатуре."
+        "Please select an option on the keyboard."
     }
 
     fn ready_to_work() -> &'static str {
-        "Готов к работе."
+        "Ready to work."
     }
 
     fn no_saved_task() -> &'static str {
-        "⚠️ Нет сохранённой задачи для повтора."
+        "⚠️ No saved task to retry."
     }
 
     fn task_reset() -> &'static str {
-        "🔄 Задача сброшена."
+        "🔄 Task reset."
     }
 
     fn reset_blocked_by_task() -> &'static str {
-        "⚠️ Нельзя сбросить задачу, пока она выполняется."
+        "⚠️ Cannot reset task while it is running."
     }
 
     fn loop_detected_message(loop_type: LoopType, iteration: usize) -> String {
         format!(
-            "🔁 <b>Обнаружена петля в выполнении задачи</b>\nТип: {}\nИтерация: {}\n\nВыберите действие:",
+            "🔁 <b>Loop detected in task execution</b>\nType: {}\nIteration: {}\n\nChoose an action:",
             loop_type_label(loop_type),
             iteration
         )
     }
 
     fn error_message(error: &str) -> String {
-        format!("❌ Ошибка: {error}")
+        format!("❌ Error: {error}")
     }
 
     fn wipe_confirmation() -> &'static str {
-        "⚠️ <b>Внимание!</b>\n\nЭто действие удалит текущий контейнер агента и все файлы внутри него. История переписки сохранится.\n\nВы уверены?"
+        "⚠️ <b>Warning!</b>\n\nThis action will delete the current agent container and all files inside it. Chat history will be preserved.\n\nAre you sure?"
     }
 
     fn container_error(error: &str) -> String {
-        format!("Ошибка при пересоздании: {error}")
+        format!("Error during recreation: {error}")
     }
 
     fn sandbox_access_error() -> &'static str {
-        "Ошибка доступа к менеджеру песочницы."
+        "Sandbox manager access error."
     }
 }
 
@@ -210,9 +210,9 @@ impl AgentView for DefaultAgentView {
 #[must_use]
 pub fn loop_type_label(loop_type: LoopType) -> &'static str {
     match loop_type {
-        LoopType::ToolCallLoop => "Повторяющиеся вызовы",
-        LoopType::ContentLoop => "Повторяющийся текст",
-        LoopType::CognitiveLoop => "Застревание",
+        LoopType::ToolCallLoop => "Repetitive calls",
+        LoopType::ContentLoop => "Repetitive text",
+        LoopType::CognitiveLoop => "Stuck",
     }
 }
 
@@ -232,10 +232,10 @@ pub fn loop_type_label(loop_type: LoopType) -> &'static str {
 #[must_use]
 pub fn get_agent_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![
-        vec![KeyboardButton::new("❌ Отменить задачу")],
-        vec![KeyboardButton::new("🗑 Очистить память")],
-        vec![KeyboardButton::new("🔄 Пересоздать контейнер")],
-        vec![KeyboardButton::new("⬅️ Выйти из режима агента")],
+        vec![KeyboardButton::new("❌ Cancel Task")],
+        vec![KeyboardButton::new("🗑 Clear Memory")],
+        vec![KeyboardButton::new("🔄 Recreate Container")],
+        vec![KeyboardButton::new("⬅️ Exit Agent Mode")],
     ])
     .resize_keyboard()
 }
@@ -245,11 +245,11 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
 pub fn loop_action_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![
         vec![
-            InlineKeyboardButton::callback("Повторить без детекции", LOOP_CALLBACK_RETRY),
-            InlineKeyboardButton::callback("Сбросить задачу", LOOP_CALLBACK_RESET),
+            InlineKeyboardButton::callback("Retry w/o detection", LOOP_CALLBACK_RETRY),
+            InlineKeyboardButton::callback("Reset task", LOOP_CALLBACK_RESET),
         ],
         vec![InlineKeyboardButton::callback(
-            "Отменить",
+            "Cancel",
             LOOP_CALLBACK_CANCEL,
         )],
     ])
@@ -259,8 +259,8 @@ pub fn loop_action_keyboard() -> InlineKeyboardMarkup {
 #[must_use]
 pub fn wipe_confirmation_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![vec![
-        KeyboardButton::new("✅ Да"),
-        KeyboardButton::new("❌ Отмена"),
+        KeyboardButton::new("✅ Yes"),
+        KeyboardButton::new("❌ Cancel"),
     ]])
     .resize_keyboard()
 }

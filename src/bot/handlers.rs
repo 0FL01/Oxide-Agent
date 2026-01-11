@@ -75,19 +75,19 @@ async fn check_state_and_redirect(
 
 /// Supported commands for the bot
 #[derive(BotCommands, Clone)]
-#[command(rename_rule = "lowercase", description = "Поддерживаемые команды:")]
+#[command(rename_rule = "lowercase", description = "Supported commands:")]
 pub enum Command {
     /// Start the bot and show welcome message
-    #[command(description = "Начать работу.")]
+    #[command(description = "Start the bot.")]
     Start,
     /// Clear chat history
-    #[command(description = "Очистить историю чата.")]
+    #[command(description = "Clear chat history.")]
     Clear,
     /// Check bot health
-    #[command(description = "Проверка работоспособности.")]
+    #[command(description = "Check bot health.")]
     Healthcheck,
     /// Show bot statistics
-    #[command(description = "Показать статистику бота.")]
+    #[command(description = "Show bot statistics.")]
     Stats,
 }
 
@@ -103,8 +103,8 @@ pub enum Command {
 #[must_use]
 pub fn get_main_keyboard() -> KeyboardMarkup {
     let keyboard = vec![vec![
-        KeyboardButton::new("🤖 Режим Агента"),
-        KeyboardButton::new("💬 Режим чата"),
+        KeyboardButton::new("🤖 Agent Mode"),
+        KeyboardButton::new("💬 Chat Mode"),
     ]];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
@@ -114,12 +114,12 @@ pub fn get_main_keyboard() -> KeyboardMarkup {
 pub fn get_chat_keyboard() -> KeyboardMarkup {
     let keyboard = vec![
         vec![
-            KeyboardButton::new("Очистить контекст"),
-            KeyboardButton::new("Сменить модель"),
+            KeyboardButton::new("Clear Context"),
+            KeyboardButton::new("Change Model"),
         ],
         vec![
-            KeyboardButton::new("Доп функции"),
-            KeyboardButton::new("Назад"),
+            KeyboardButton::new("Extra Functions"),
+            KeyboardButton::new("Back"),
         ],
     ];
     KeyboardMarkup::new(keyboard).resize_keyboard()
@@ -137,8 +137,8 @@ pub fn get_chat_keyboard() -> KeyboardMarkup {
 #[must_use]
 pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
     let keyboard = vec![vec![
-        KeyboardButton::new("Изменить промпт"),
-        KeyboardButton::new("Назад"),
+        KeyboardButton::new("Edit Prompt"),
+        KeyboardButton::new("Back"),
     ]];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
@@ -158,7 +158,7 @@ pub fn get_model_keyboard() -> KeyboardMarkup {
     for model_name in MODELS.iter().map(|(n, _)| n) {
         keyboard.push(vec![KeyboardButton::new(model_name.to_string())]);
     }
-    keyboard.push(vec![KeyboardButton::new("Назад")]);
+    keyboard.push(vec![KeyboardButton::new("Back")]);
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
@@ -193,14 +193,15 @@ pub async fn start(
     let model = saved_model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
     info!("User {user_id} ({user_name}) is allowed. Set model to {model}");
 
-    let text = "👋 <b>Я Oxide Agent.</b>\n\n\
-         Я здесь, чтобы автоматизировать вашу рутину. Переключите меня в <b>Режим Агента</b>, и я смогу:\n\n\
-         • Писать и запускать код\n\
-         • Скачивать и обрабатывать видео/файлы\n\
-         • Гуглить информацию за вас\n\n\
-         Я не просто отвечаю на вопросы — я решаю задачи.\n\n\
-         <i>Также доступен <b>Режим чата</b> для простых вопросов.</i>\n\n\
-         👇 <b>Включить полную мощность:</b>".to_string();
+    let text = "👋 <b>I am Oxide Agent.</b>\n\n\
+         I am here to automate your routine. Switch me to <b>Agent Mode</b>, and I can:\n\n\
+         • Write and run code\n\
+         • Download and process video/files\n\
+         • Google information for you\n\n\
+         I don't just answer questions — I solve tasks.\n\n\
+         <i>Also available: <b>Chat Mode</b> for simple questions.</i>\n\n\
+         👇 <b>Enable full power:</b>"
+        .to_string();
 
     info!("Sending welcome message to user {user_id}.");
     bot.send_message(msg.chat.id, text)
@@ -225,15 +226,18 @@ pub async fn clear(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()
     match storage.clear_chat_history(user_id).await {
         Ok(()) => {
             info!("Chat history successfully cleared for user {user_id}.");
-            bot.send_message(msg.chat.id, "<b>История чата очищена.</b>")
+            bot.send_message(msg.chat.id, "<b>Chat history cleared.</b>")
                 .parse_mode(ParseMode::Html)
                 .reply_markup(get_chat_keyboard())
                 .await?;
         }
         Err(e) => {
             error!("Error clearing chat history for user {user_id}: {e}");
-            bot.send_message(msg.chat.id, "Произошла ошибка при очистке истории чата.")
-                .await?;
+            bot.send_message(
+                msg.chat.id,
+                "An error occurred while clearing chat history.",
+            )
+            .await?;
         }
     }
 
@@ -266,12 +270,12 @@ pub async fn stats(bot: Bot, msg: Message, cache: Arc<UnauthorizedCache>) -> Res
     let cooldown_mins = cooldown_secs / 60;
 
     let stats_text = format!(
-        "<b>📊 Статистика бота</b>\n\n\
-        <b>Защита от спама (Access Denied):</b>\n\
-        • Период затишья: {} мин.\n\
-        • Записей в кэше: {}\n\
-        • Заблокировано уведомлений: {}\n\n\
-        <i>Бот отвечает «Access Denied» не чаще чем раз в {} минут для одного пользователя, чтобы избежать бана от Telegram.</i>",
+        "<b>📊 Bot Statistics</b>\n\n\
+        <b>Anti-spam protection (Access Denied):</b>\n\
+        • Cooldown period: {} min.\n\
+        • Cache entries: {}\n\
+        • Blocked notifications: {}\n\n\
+        <i>Bot responds with \"Access Denied\" no more than once every {} minutes per user to avoid being banned by Telegram.</i>",
         cooldown_mins,
         cache.entry_count(),
         cache.silenced_count(),
@@ -322,7 +326,7 @@ pub async fn handle_text(
 
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
-        bot.send_message(msg.chat.id, "Пожалуйста, выберите режим работы:")
+        bot.send_message(msg.chat.id, "Please select a mode:")
             .reply_markup(get_main_keyboard())
             .await?;
         return Ok(());
@@ -331,7 +335,7 @@ pub async fn handle_text(
     if MODELS.iter().any(|(name, _)| *name == text) {
         info!("User {user_id} selected model '{text}' via text input.");
         storage.update_user_model(user_id, text.clone()).await?;
-        bot.send_message(msg.chat.id, format!("Модель изменена на <b>{text}</b>"))
+        bot.send_message(msg.chat.id, format!("Model changed to <b>{text}</b>"))
             .parse_mode(ParseMode::Html)
             .reply_markup(get_chat_keyboard())
             .await?;
@@ -352,7 +356,7 @@ async fn handle_menu_commands(
 ) -> Result<bool> {
     let user_id = get_user_id_safe(msg);
     match text {
-        "💬 Режим чата" => {
+        "💬 Chat Mode" => {
             dialogue
                 .update(State::ChatMode)
                 .await
@@ -363,30 +367,30 @@ async fn handle_menu_commands(
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string());
             bot.send_message(
                 msg.chat.id,
-                format!("<b>Активирован режим чата.</b>\nТекущая модель: <b>{model}</b>"),
+                format!("<b>Chat mode activated.</b>\nCurrent model: <b>{model}</b>"),
             )
             .parse_mode(ParseMode::Html)
             .reply_markup(get_chat_keyboard())
             .await?;
             Ok(true)
         }
-        "Очистить контекст" => {
+        "Clear Context" => {
             clear(bot.clone(), msg.clone(), storage.clone()).await?;
             Ok(true)
         }
-        "Сменить модель" => {
-            bot.send_message(msg.chat.id, "Выберите модель:")
+        "Change Model" => {
+            bot.send_message(msg.chat.id, "Select a model:")
                 .reply_markup(get_model_keyboard())
                 .await?;
             Ok(true)
         }
-        "Доп функции" => {
-            bot.send_message(msg.chat.id, "Выберите действие:")
+        "Extra Functions" => {
+            bot.send_message(msg.chat.id, "Select an action:")
                 .reply_markup(get_extra_functions_keyboard())
                 .await?;
             Ok(true)
         }
-        "🤖 Режим Агента" => {
+        "🤖 Agent Mode" => {
             if check_agent_access(bot, msg, settings, user_id).await? {
                 crate::bot::agent_handlers::activate_agent_mode(
                     bot.clone(),
@@ -399,42 +403,41 @@ async fn handle_menu_commands(
             }
             Ok(true)
         }
-        "Изменить промпт" => {
+        "Edit Prompt" => {
             dialogue
                 .update(State::EditingPrompt)
                 .await
                 .map_err(|e| anyhow!(e.to_string()))?;
             bot.send_message(
                 msg.chat.id,
-                "Введите новый системный промпт. Для отмены введите 'Назад':",
+                "Enter a new system prompt. To cancel, type 'Back':",
             )
             .reply_markup(get_extra_functions_keyboard())
             .await?;
             Ok(true)
         }
-        "Назад" => {
+        "Back" => {
             let state = dialogue.get().await?.unwrap_or(State::Start);
             if matches!(state, State::ChatMode) || matches!(state, State::EditingPrompt) {
                 dialogue
                     .update(State::Start)
                     .await
                     .map_err(|e| anyhow!(e.to_string()))?;
-                bot.send_message(msg.chat.id, "Выберите режим работы:")
+                bot.send_message(msg.chat.id, "Please select a mode:")
                     .reply_markup(get_main_keyboard())
                     .await?;
             } else {
-                bot.send_message(msg.chat.id, "Выберите режим работы:")
+                bot.send_message(msg.chat.id, "Please select a mode:")
                     .reply_markup(get_main_keyboard())
                     .await?;
             }
             Ok(true)
         }
-        "⬅️ Выйти из режима агента" | "❌ Отменить задачу" | "🗑 Очистить память" =>
-        {
+        "⬅️ Exit Agent Mode" | "❌ Cancel Task" | "🗑 Clear Memory" => {
             let response = match text {
-                "⬅️ Выйти из режима агента" => "👋 Вышли из режима агента",
-                "❌ Отменить задачу" => "Нет активной задачи для отмены.",
-                _ => "Память агента не активна.",
+                "⬅️ Exit Agent Mode" => "👋 Exited agent mode",
+                "❌ Cancel Task" => "No active task to cancel.",
+                _ => "Agent memory is not active.",
             };
             bot.send_message(msg.chat.id, response)
                 .reply_markup(get_main_keyboard())
@@ -455,14 +458,14 @@ async fn check_agent_access(
     if !agent_allowed.contains(&user_id) && !agent_allowed.is_empty() {
         bot.send_message(
             msg.chat.id,
-            "⛔️ У вас нет прав для доступа к режиму агента.",
+            "⛔️ You do not have permission to access agent mode.",
         )
         .await?;
         return Ok(false);
     } else if agent_allowed.is_empty() {
         bot.send_message(
             msg.chat.id,
-            "⛔️ Режим агента временно недоступен (не настроен доступ).",
+            "⛔️ Agent mode is temporarily unavailable (access not configured).",
         )
         .await?;
         return Ok(false);
@@ -484,12 +487,12 @@ pub async fn handle_editing_prompt(
     let text = msg.text().unwrap_or("");
     let user_id = get_user_id_safe(&msg);
 
-    if text == "Назад" {
+    if text == "Back" {
         dialogue
             .update(State::ChatMode)
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
-        bot.send_message(msg.chat.id, "Отмена обновления системного промпта.")
+        bot.send_message(msg.chat.id, "System prompt update canceled.")
             .reply_markup(get_chat_keyboard())
             .await?;
     } else {
@@ -500,7 +503,7 @@ pub async fn handle_editing_prompt(
             .update(State::ChatMode)
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
-        bot.send_message(msg.chat.id, "Системный промпт обновлен.")
+        bot.send_message(msg.chat.id, "System prompt updated.")
             .reply_markup(get_chat_keyboard())
             .await?;
     }
@@ -553,7 +556,7 @@ async fn process_llm_request(
             send_long_message(&bot, msg.chat.id, &response).await?;
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("<b>Ошибка:</b> {e}"))
+            bot.send_message(msg.chat.id, format!("<b>Error:</b> {e}"))
                 .parse_mode(ParseMode::Html)
                 .await?;
         }
@@ -588,7 +591,7 @@ pub async fn handle_voice(
 
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
-        bot.send_message(msg.chat.id, "Пожалуйста, выберите режим работы:")
+        bot.send_message(msg.chat.id, "Please select a mode:")
             .reply_markup(get_main_keyboard())
             .await?;
         return Ok(());
@@ -597,7 +600,7 @@ pub async fn handle_voice(
     if !llm.is_multimodal_available() {
         bot.send_message(
             msg.chat.id,
-            "🚫 Функция недоступна.\nОбработка медиа отключена, так как не настроен провайдер Gemini или OpenRouter.",
+            "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
         )
         .await?;
         return Ok(());
@@ -634,19 +637,19 @@ pub async fn handle_voice(
         Ok(text) => {
             if text.starts_with("(Gemini):") || text.starts_with("(OpenRouter):") || text.is_empty()
             {
-                bot.send_message(msg.chat.id, "Не удалось распознать речь.")
+                bot.send_message(msg.chat.id, "Failed to recognize speech.")
                     .await?;
             } else {
                 bot.send_message(
                     msg.chat.id,
-                    format!("Распознано: \"{text}\"\n\nОбрабатываю запрос..."),
+                    format!("Recognized: \"{text}\"\n\nProcessing request..."),
                 )
                 .await?;
                 process_llm_request(bot, msg, storage, llm, text).await?;
             }
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Ошибка распознавания: {e}"))
+            bot.send_message(msg.chat.id, format!("Recognition error: {e}"))
                 .await?;
         }
     }
@@ -676,7 +679,7 @@ pub async fn handle_photo(
 
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
-        bot.send_message(msg.chat.id, "Пожалуйста, выберите режим работы:")
+        bot.send_message(msg.chat.id, "Please select a mode:")
             .reply_markup(get_main_keyboard())
             .await?;
         return Ok(());
@@ -685,7 +688,7 @@ pub async fn handle_photo(
     if !llm.is_multimodal_available() {
         bot.send_message(
             msg.chat.id,
-            "🚫 Функция недоступна.\nОбработка медиа отключена, так как не настроен провайдер Gemini или OpenRouter.",
+            "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
         )
         .await?;
         return Ok(());
@@ -695,7 +698,7 @@ pub async fn handle_photo(
         .photo()
         .and_then(|p| p.last())
         .ok_or_else(|| anyhow!("No photo found"))?;
-    let caption = msg.caption().unwrap_or("Опиши это изображение.");
+    let caption = msg.caption().unwrap_or("Describe this image.");
     let model = storage
         .get_user_model(user_id)
         .await?
@@ -725,11 +728,7 @@ pub async fn handle_photo(
     {
         Ok(response) => {
             storage
-                .save_message(
-                    user_id,
-                    "user".to_string(),
-                    format!("[Изображение] {caption}"),
-                )
+                .save_message(user_id, "user".to_string(), format!("[Image] {caption}"))
                 .await?;
             storage
                 .save_message(user_id, "assistant".to_string(), response.clone())
@@ -737,7 +736,7 @@ pub async fn handle_photo(
             send_long_message(&bot, msg.chat.id, &response).await?;
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Ошибка анализа изображения: {e}"))
+            bot.send_message(msg.chat.id, format!("Image analysis error: {e}"))
                 .await?;
         }
     }
@@ -767,8 +766,8 @@ pub async fn handle_document(
     } else {
         bot.send_message(
             msg.chat.id,
-            "📁 Загрузка файлов доступна только в режиме Агента.\n\n\
-             Используйте /agent для активации.",
+            "📁 File upload is available only in Agent Mode.\n\n\
+             Use /agent to activate.",
         )
         .await?;
         Ok(())
