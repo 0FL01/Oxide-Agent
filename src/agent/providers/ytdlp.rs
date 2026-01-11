@@ -440,8 +440,7 @@ impl YtdlpProvider {
             }
         };
 
-        if output.starts_with("yt-dlp error:") || output.starts_with("yt-dlp warning:")
-        {
+        if output.starts_with("yt-dlp error:") || output.starts_with("yt-dlp warning:") {
             return Ok(output);
         }
 

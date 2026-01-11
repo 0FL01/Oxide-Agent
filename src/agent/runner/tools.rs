@@ -158,10 +158,7 @@ impl AgentRunner {
             return Ok(());
         }
 
-        let context_message = format!(
-            "[Loaded skill: {}]\n{}",
-            skill.metadata.name, skill.content
-        );
+        let context_message = format!("[Loaded skill: {}]\n{}", skill.metadata.name, skill.content);
 
         ctx.agent
             .memory_mut()
