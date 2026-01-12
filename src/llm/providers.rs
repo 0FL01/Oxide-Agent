@@ -70,23 +70,8 @@ impl LlmProvider for GroqProvider {
 }
 
 #[derive(serde::Deserialize, Debug)]
-struct LenientToolCallFunction {
-    name: String,
-    arguments: String,
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct LenientToolCall {
-    id: String,
-    #[serde(rename = "type")]
-    _type: Option<String>, // We don't care if it's missing
-    function: LenientToolCallFunction,
-}
-
-#[derive(serde::Deserialize, Debug)]
 struct LenientMessage {
     content: Option<String>,
-    tool_calls: Option<Vec<LenientToolCall>>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -194,104 +179,6 @@ impl MistralProvider {
             }
         }
         messages
-    }
-
-    #[allow(dead_code)]
-    fn prepare_messages(system_prompt: &str, history: &[super::Message]) -> Vec<serde_json::Value> {
-        let mut messages = vec![json!({
-            "role": "system",
-            "content": system_prompt
-        })];
-
-        for msg in history {
-            match msg.role.as_str() {
-                "tool" => {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": msg.tool_call_id,
-                        "content": msg.content
-                    }));
-                }
-                "assistant" => {
-                    let mut m = json!({
-                        "role": "assistant",
-                        "content": msg.content
-                    });
-
-                    // If we have tool calls, include them
-                    if let Some(tool_calls) = &msg.tool_calls {
-                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
-                            .iter()
-                            .map(|tc| {
-                                json!({
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments
-                                    }
-                                })
-                            })
-                            .collect();
-
-                        m["tool_calls"] = json!(api_tool_calls);
-                    }
-
-                    messages.push(m);
-                }
-                _ => {
-                    let m = json!({
-                        "role": msg.role,
-                        "content": msg.content
-                    });
-                    messages.push(m);
-                }
-            }
-        }
-        messages
-    }
-
-    #[allow(dead_code)]
-    fn parse_mistral_response(
-        res_json: &LenientResponse,
-    ) -> Result<super::ChatResponse, super::LlmError> {
-        let choice = res_json
-            .choices
-            .first()
-            .ok_or_else(|| super::LlmError::ApiError("Empty response".to_string()))?;
-
-        let content = choice.message.content.clone();
-        let finish_reason = choice
-            .finish_reason
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let tool_calls = choice
-            .message
-            .tool_calls
-            .as_ref()
-            .map(|calls| {
-                calls
-                    .iter()
-                    .map(|tc| super::ToolCall {
-                        id: tc.id.clone(),
-                        function: super::ToolCallFunction {
-                            name: tc.function.name.clone(),
-                            arguments: tc.function.arguments.clone(),
-                        },
-                        is_recovered: false,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(super::ChatResponse {
-            content,
-            tool_calls,
-            finish_reason,
-            reasoning_content: None, // Mistral doesn't support reasoning
-            usage: None,             // Mistral doesn't provide usage in this response format
-        })
     }
 
     /// Generate an embedding vector using the Mistral embeddings endpoint.
