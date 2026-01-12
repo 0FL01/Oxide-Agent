@@ -29,6 +29,8 @@ Rules:
 - If the answer is ready: `tool_call` = null, `final_answer` = string.
 - `tool_call.arguments` is always a JSON object.
 - No markdown, XML, explanations, or text outside the JSON.
+- In `final_answer`, ALWAYS use markdown code blocks (```language) for code, logs, terminal outputs, and file contents.
+- Use backticks (`) for inline code, such as file paths, variables, and short commands.
 - Tool results arrive in messages with the "tool" role.
 - If a tool has already been executed — use its result, DO NOT call it again.
 
@@ -36,7 +38,7 @@ Rules:
 {"thought":"Need to read a file","tool_call":{"name":"read_file","arguments":{"path":"docker-compose.yml"}},"final_answer":null}
 
 ### Example Final Answer
-{"thought":"File read, answer ready","tool_call":null,"final_answer":"Here is the content of docker-compose.yml: ..."}
+{"thought":"File read, answer ready","tool_call":null,"final_answer":"Here is the content of `docker-compose.yml`:\n\n```yaml\nservices:\n  app:\n    build: .\n    restart: always\n    environment:\n      - DEBUG=true\n```"}
 
 ## Memory and Dialogue Context
 
