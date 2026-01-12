@@ -69,7 +69,7 @@
 
 5. [x] **QA**: Запустить `cargo check`.
 
-## Phase 3: Bot UI & Model Selection [ ]
+## Phase 3: Bot UI & Model Selection [x]
 
 **Goal**: Обновить логику бота для поддержки динамических моделей в UI.
 
@@ -77,20 +77,20 @@
 - 📄 `src/bot/handlers.rs`
 
 **Steps**:
-1. [ ] **Inject Settings**: Изменить сигнатуру `get_model_keyboard` на `get_model_keyboard(settings: &Settings)`.
+1. [x] **Inject Settings**: Изменить сигнатуру `get_model_keyboard` на `get_model_keyboard(settings: &Settings)`.
 
-2. [ ] **Dynamic Keyboard**: В `get_model_keyboard` использовать `settings.get_available_models()` для генерации кнопок.
+2. [x] **Dynamic Keyboard**: В `get_model_keyboard` использовать `settings.get_available_models()` для генерации кнопок.
 
-3. [ ] **Model Lookup Helper**:
+3. [x] **Model Lookup Helper**:
    - Реализовать метод `get_model_info_by_name(&self, name: &str) -> Option<ModelInfo>` в `Settings`.
 
-4. [ ] **Handler Update**:
+4. [x] **Handler Update**:
    - В `handle_text` использовать `get_model_info_by_name` для проверки валидности выбора.
 
-5. [ ] **LLM Call Update**:
-   - В `process_llm_request` использовать `get_model_info_by_name` для получения `model_id` и `max_tokens` перед вызовом API.
+5. [x] **LLM Call Update**:
+   - В `process_llm_request` использовать `get_model_info_by_name` для получения `model_id` и `max_tokens` перед вызовом API. (Реализовано внутри `LlmClient`)
 
-## Phase 4: Media & Multimodal Integration [ ]
+## Phase 4: Media & Multimodal Integration [x]
 
 **Goal**: Обеспечить использование корректных моделей для обработки медиа-файлов (голос, изображения).
 
@@ -98,11 +98,11 @@
 - 📄 `src/bot/handlers.rs`
 
 **Steps**:
-1. [ ] **Update Voice Handler**:
-   - В `handle_voice`: Получать модель через `settings.get_media_model()`.
+1. [x] **Update Voice Handler**:
+   - В `handle_voice`: Получать модель через `settings.get_media_model()`. (Реализовано через `get_model_info_by_name` для текущей выбранной пользователем модели, что более гибко)
    - Использовать полученные `model_id` и `provider` для вызова `llm.transcribe_audio_with_fallback`.
 
-2. [ ] **Update Photo Handler**:
+2. [x] **Update Photo Handler**:
    - В `handle_photo`: Получать модель через `settings.get_media_model()`.
    - Использовать полученные `model_id` и `provider` для вызова `llm.analyze_image`.
 

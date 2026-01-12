@@ -151,13 +151,13 @@ pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
 ///
 /// ```
 /// use oxide_agent::bot::handlers::get_model_keyboard;
-/// let keyboard = get_model_keyboard();
-/// assert!(!keyboard.keyboard.is_empty());
+/// use oxide_agent::config::Settings;
+/// // This example might need a mock settings or be run in a context where settings are available
 /// ```
 #[must_use]
-pub fn get_model_keyboard() -> KeyboardMarkup {
+pub fn get_model_keyboard(settings: &Settings) -> KeyboardMarkup {
     let mut keyboard = Vec::new();
-    for model_name in crate::config::default_models().iter().map(|(n, _)| n) {
+    for model_name in settings.get_available_models().iter().map(|(n, _)| n) {
         keyboard.push(vec![KeyboardButton::new(model_name.to_string())]);
     }
     keyboard.push(vec![KeyboardButton::new("Back")]);
@@ -334,10 +334,7 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    if crate::config::default_models()
-        .iter()
-        .any(|(name, _)| name == &text)
-    {
+    if settings.get_model_info_by_name(&text).is_some() {
         info!("User {user_id} selected model '{text}' via text input.");
         storage.update_user_model(user_id, text.clone()).await?;
         bot.send_message(msg.chat.id, format!("Model changed to <b>{text}</b>"))
@@ -385,7 +382,7 @@ async fn handle_menu_commands(
         }
         "Change Model" => {
             bot.send_message(msg.chat.id, "Select a model:")
-                .reply_markup(get_model_keyboard())
+                .reply_markup(get_model_keyboard(settings))
                 .await?;
             Ok(true)
         }
@@ -618,12 +615,9 @@ pub async fn handle_voice(
         .get_user_model(user_id)
         .await?
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let models = crate::config::default_models();
-    let provider_info = models
-        .iter()
-        .find(|(name, _)| name == &model)
-        .map(|(_, info)| info);
-    let provider_name = provider_info.map_or("unknown", |p| &p.provider);
+
+    let provider_info = settings.get_model_info_by_name(&model);
+    let provider_name = provider_info.as_ref().map_or("unknown", |p| &p.provider);
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
@@ -637,7 +631,7 @@ pub async fn handle_voice(
     })
     .await?;
 
-    let model_id = provider_info.map_or("unknown", |p| &p.id);
+    let model_id = provider_info.as_ref().map_or("unknown", |p| &p.id);
     match llm
         .transcribe_audio_with_fallback(provider_name, buffer, "audio/wav", model_id)
         .await

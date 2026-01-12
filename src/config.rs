@@ -266,6 +266,14 @@ impl Settings {
             "openrouter".to_string(),
         )
     }
+
+    /// Returns model info by its display name
+    pub fn get_model_info_by_name(&self, name: &str) -> Option<ModelInfo> {
+        self.get_available_models()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, info)| info)
+    }
 }
 
 #[cfg(test)]
