@@ -96,8 +96,19 @@ struct LenientChoice {
 }
 
 #[derive(serde::Deserialize, Debug)]
+struct MistralUsage {
+    #[serde(rename = "prompt_tokens")]
+    prompt: u32,
+    #[serde(rename = "completion_tokens")]
+    completion: u32,
+    #[serde(rename = "total_tokens")]
+    total: u32,
+}
+
+#[derive(serde::Deserialize, Debug)]
 struct LenientResponse {
     choices: Vec<LenientChoice>,
+    usage: Option<MistralUsage>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -131,6 +142,61 @@ impl MistralProvider {
         }
     }
 
+    fn prepare_structured_messages(
+        system_prompt: &str,
+        history: &[super::Message],
+    ) -> Vec<serde_json::Value> {
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": system_prompt
+        })];
+
+        for msg in history {
+            match msg.role.as_str() {
+                "system" => {
+                    messages.push(json!({
+                        "role": "system",
+                        "content": msg.content
+                    }));
+                }
+                "assistant" => {
+                    let mut content = msg.content.clone();
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        if !tool_calls.is_empty() {
+                            let tool_calls_json = json!({ "tool_calls": tool_calls });
+                            let tool_calls_str =
+                                serde_json::to_string(&tool_calls_json).unwrap_or_default();
+                            if content.is_empty() {
+                                content = tool_calls_str;
+                            } else {
+                                content = format!("{content}\n\n{tool_calls_str}");
+                            }
+                        }
+                    }
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": content
+                    }));
+                }
+                "tool" => {
+                    // [Tool Output] <content>
+                    messages.push(json!({
+                        "role": "user",
+                        "content": format!("[Tool Output] {}", msg.content)
+                    }));
+                }
+                _ => {
+                    messages.push(json!({
+                        "role": "user",
+                        "content": msg.content
+                    }));
+                }
+            }
+        }
+        messages
+    }
+
+    #[allow(dead_code)]
     fn prepare_messages(system_prompt: &str, history: &[super::Message]) -> Vec<serde_json::Value> {
         let mut messages = vec![json!({
             "role": "system",
@@ -185,6 +251,7 @@ impl MistralProvider {
         messages
     }
 
+    #[allow(dead_code)]
     fn parse_mistral_response(
         res_json: &LenientResponse,
     ) -> Result<super::ChatResponse, super::LlmError> {
@@ -228,6 +295,11 @@ impl MistralProvider {
     }
 
     /// Generate an embedding vector using the Mistral embeddings endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` if the response
+    /// is empty or has a non-success status code, or `LlmError::JsonError` if parsing fails.
     pub async fn generate_embedding(&self, text: &str, model: &str) -> Result<Vec<f32>, LlmError> {
         let body = json!({
             "model": model,
@@ -306,36 +378,18 @@ impl LlmProvider for MistralProvider {
         &self,
         system_prompt: &str,
         history: &[super::Message],
-        tools: &[super::ToolDefinition],
+        _tools: &[super::ToolDefinition],
         model_id: &str,
         max_tokens: u32,
     ) -> Result<super::ChatResponse, super::LlmError> {
-        // Manually implement request to handle missing "type" field in tool_calls
-        // which async-openai strictly requires but Mistral/OpenRouter might omit.
-
         let url = "https://api.mistral.ai/v1/chat/completions";
 
-        let messages = MistralProvider::prepare_messages(system_prompt, history);
-
-        // Add tool definitions
-        let openai_tools: Vec<serde_json::Value> = tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters
-                    }
-                })
-            })
-            .collect();
+        let messages = MistralProvider::prepare_structured_messages(system_prompt, history);
 
         let body = json!({
             "model": model_id,
             "messages": messages,
-            "tools": openai_tools,
+            "response_format": { "type": "json_object" },
             "max_tokens": max_tokens,
             "temperature": 0.7
         });
@@ -362,7 +416,30 @@ impl LlmProvider for MistralProvider {
             .await
             .map_err(|e| super::LlmError::JsonError(e.to_string()))?;
 
-        MistralProvider::parse_mistral_response(&res_json)
+        let choice = res_json
+            .choices
+            .first()
+            .ok_or_else(|| super::LlmError::ApiError("Empty response".to_string()))?;
+
+        let content = choice.message.content.clone();
+        let finish_reason = choice
+            .finish_reason
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let usage = res_json.usage.as_ref().map(|u| super::TokenUsage {
+            prompt_tokens: u.prompt,
+            completion_tokens: u.completion,
+            total_tokens: u.total,
+        });
+
+        Ok(super::ChatResponse {
+            content,
+            tool_calls: vec![],
+            finish_reason,
+            reasoning_content: None,
+            usage,
+        })
     }
 }
 
@@ -381,9 +458,12 @@ struct ZaiStreamChunk {
 
 #[derive(serde::Deserialize, Debug)]
 struct ZaiStreamUsage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
+    #[serde(rename = "prompt_tokens")]
+    prompt: u32,
+    #[serde(rename = "completion_tokens")]
+    completion: u32,
+    #[serde(rename = "total_tokens")]
+    total: u32,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -594,16 +674,16 @@ impl ZaiProvider {
 
                         // Update finish reason
                         if let Some(ref reason) = choice.finish_reason {
-                            finish_reason = reason.clone();
+                            finish_reason.clone_from(reason);
                         }
                     }
 
                     // Capture usage statistics (usually in last chunk)
                     if let Some(ref u) = parsed.usage {
                         usage = Some(super::TokenUsage {
-                            prompt_tokens: u.prompt_tokens,
-                            completion_tokens: u.completion_tokens,
-                            total_tokens: u.total_tokens,
+                            prompt_tokens: u.prompt,
+                            completion_tokens: u.completion,
+                            total_tokens: u.total,
                         });
                     }
                 }
