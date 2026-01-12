@@ -236,6 +236,10 @@ pub struct LlmClient {
     openrouter: Option<providers::OpenRouterProvider>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
+    /// Narrator model ID
+    pub narrator_model: String,
+    /// Narrator provider name
+    pub narrator_provider: String,
 }
 
 impl LlmClient {
@@ -267,6 +271,8 @@ impl LlmClient {
                 )
             }),
             models: settings.get_available_models(),
+            narrator_model: settings.get_configured_narrator_model().0,
+            narrator_provider: settings.get_configured_narrator_model().1,
         }
     }
 

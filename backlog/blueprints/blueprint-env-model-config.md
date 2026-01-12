@@ -139,4 +139,27 @@
 # Default is google/gemini-3.0-flash-preview (OpenRouter)
 # MEDIA_MODEL_ID="google/gemini-3.0-flash-preview"
 # MEDIA_MODEL_PROVIDER="openrouter"
+
+# 5. Narrator Model (Sidecar LLM for status updates)
+# Default is labs-mistral-small-creative (Mistral)
+# NARRATOR_MODEL_ID="labs-mistral-small-creative"
+# NARRATOR_MODEL_PROVIDER="mistral"
 ```
+
+## Phase 6: Narrator Model Configuration [x]
+
+**Goal**: Добавить поддержку динамической конфигурации модели `Narrator` через переменные окружения.
+
+**Resource Context**:
+- 📄 `src/config.rs`
+- 📄 `src/llm/mod.rs`
+- 📄 `src/agent/narrator.rs`
+- 📄 `.env.example`
+
+**Steps**:
+1. [x] **Update Settings**: Добавить `narrator_model_id` и `narrator_model_provider` в `Settings`.
+2. [x] **Implement Getter**: Создать `get_configured_narrator_model(&self) -> (String, String)`.
+3. [x] **Inject into LlmClient**: Сохранять настройки нарратора в `LlmClient` при инициализации.
+4. [x] **Refactor Narrator**: Использовать динамические настройки из `llm_client` в `Narrator::generate`.
+5. [x] **Cleanup**: Удалить устаревшие статические функции в `config.rs`.
+6. [x] **Update Env Example**: Добавить секцию Narrator в `.env.example`.

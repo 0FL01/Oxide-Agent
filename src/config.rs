@@ -80,6 +80,11 @@ pub struct Settings {
     pub media_model_id: Option<String>,
     /// Media model provider override
     pub media_model_provider: Option<String>,
+
+    /// Narrator model ID override
+    pub narrator_model_id: Option<String>,
+    /// Narrator model provider override
+    pub narrator_model_provider: Option<String>,
 }
 
 const fn default_openrouter_site_url() -> String {
@@ -267,6 +272,16 @@ impl Settings {
         )
     }
 
+    /// Returns the configured narrator model (id, provider)
+    pub fn get_configured_narrator_model(&self) -> (String, String) {
+        if let (Some(id), Some(provider)) = (&self.narrator_model_id, &self.narrator_model_provider)
+        {
+            return (id.clone(), provider.clone());
+        }
+        // Default: Mistral creative model
+        (NARRATOR_MODEL.to_string(), NARRATOR_PROVIDER.to_string())
+    }
+
     /// Returns model info by its display name
     pub fn get_model_info_by_name(&self, name: &str) -> Option<ModelInfo> {
         self.get_available_models()
@@ -360,6 +375,8 @@ mod tests {
             sub_agent_model_max_tokens: None,
             media_model_id: None,
             media_model_provider: None,
+            narrator_model_id: None,
+            narrator_model_provider: None,
         };
 
         // Test comma
@@ -526,19 +543,6 @@ pub const NARRATOR_MODEL: &str = "labs-mistral-small-creative";
 pub const NARRATOR_PROVIDER: &str = "mistral";
 /// Maximum tokens for narrator response (concise output)
 pub const NARRATOR_MAX_TOKENS: u32 = 256;
-
-/// Get narrator model from env or default
-#[must_use]
-pub fn get_narrator_model() -> &'static str {
-    // Static string required, so we don't support env override for now
-    NARRATOR_MODEL
-}
-
-/// Get narrator provider from env or default
-#[must_use]
-pub fn get_narrator_provider() -> &'static str {
-    NARRATOR_PROVIDER
-}
 
 // Skill system configuration
 /// Skills directory (contains modular prompt files)
