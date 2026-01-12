@@ -324,15 +324,15 @@ impl LlmClient {
         user_message: &str,
         model_name: &str,
     ) -> Result<String, LlmError> {
-        use crate::config::MODELS;
+        let models = crate::config::default_models();
 
-        let model_info = MODELS
+        let model_info = models
             .iter()
-            .find(|(name, _)| *name == model_name)
+            .find(|(name, _)| name == model_name)
             .map(|(_, info)| info)
             .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))?;
 
-        let provider = self.get_provider(model_info.provider)?;
+        let provider = self.get_provider(&model_info.provider)?;
 
         // Special case for OpenRouter with retry/fallback as in Python
         if model_name == "OR Gemini 3 Flash" && model_info.provider == "openrouter" {
@@ -360,7 +360,7 @@ impl LlmClient {
                 system_prompt,
                 history,
                 user_message,
-                model_info.id,
+                &model_info.id,
                 model_info.max_tokens,
             )
             .await;
@@ -403,19 +403,19 @@ impl LlmClient {
         tools: &[ToolDefinition],
         model_name: &str,
     ) -> Result<ChatResponse, LlmError> {
-        use crate::config::MODELS;
-
         // Retry configuration (hardcoded with reasonable defaults)
         const MAX_RETRIES: usize = 5;
 
-        let model_info = MODELS
+        let models = crate::config::default_models();
+
+        let model_info = models
             .iter()
-            .find(|(name, _)| *name == model_name)
+            .find(|(name, _)| name == model_name)
             .map(|(_, info)| info)
             .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))?;
 
         // Get provider and call its chat_with_tools method (via trait)
-        let provider = self.get_provider(model_info.provider)?;
+        let provider = self.get_provider(&model_info.provider)?;
 
         debug!(
             model = model_name,
@@ -432,7 +432,7 @@ impl LlmClient {
                     system_prompt,
                     messages,
                     tools,
-                    model_info.id,
+                    &model_info.id,
                     model_info.max_tokens,
                 )
                 .await;
@@ -651,9 +651,9 @@ impl LlmClient {
         }
 
         let model_info = Self::get_model_info(model_name)?;
-        let provider = self.get_provider(model_info.provider)?;
+        let provider = self.get_provider(&model_info.provider)?;
         provider
-            .transcribe_audio(audio_bytes, mime_type, model_info.id)
+            .transcribe_audio(audio_bytes, mime_type, &model_info.id)
             .await
     }
 
@@ -757,9 +757,9 @@ impl LlmClient {
         model_name: &str,
     ) -> Result<String, LlmError> {
         let model_info = Self::get_model_info(model_name)?;
-        let provider = self.get_provider(model_info.provider)?;
+        let provider = self.get_provider(&model_info.provider)?;
         provider
-            .analyze_image(image_bytes, text_prompt, system_prompt, model_info.id)
+            .analyze_image(image_bytes, text_prompt, system_prompt, &model_info.id)
             .await
     }
 
@@ -768,10 +768,10 @@ impl LlmClient {
     /// # Errors
     ///
     /// Returns `LlmError::Unknown` if the model is not found.
-    fn get_model_info(model_name: &str) -> Result<&'static crate::config::ModelInfo, LlmError> {
-        crate::config::MODELS
-            .iter()
-            .find(|(name, _)| *name == model_name)
+    fn get_model_info(model_name: &str) -> Result<crate::config::ModelInfo, LlmError> {
+        crate::config::default_models()
+            .into_iter()
+            .find(|(name, _)| name == model_name)
             .map(|(_, info)| info)
             .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))
     }

@@ -1,6 +1,6 @@
 use crate::bot::state::State;
 use crate::bot::UnauthorizedCache;
-use crate::config::{Settings, DEFAULT_MODEL, MODELS};
+use crate::config::{Settings, DEFAULT_MODEL};
 use crate::llm::{LlmClient, Message as LlmMessage};
 use crate::storage::R2Storage;
 use crate::utils::truncate_str;
@@ -155,7 +155,7 @@ pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
 #[must_use]
 pub fn get_model_keyboard() -> KeyboardMarkup {
     let mut keyboard = Vec::new();
-    for model_name in MODELS.iter().map(|(n, _)| n) {
+    for model_name in crate::config::default_models().iter().map(|(n, _)| n) {
         keyboard.push(vec![KeyboardButton::new(model_name.to_string())]);
     }
     keyboard.push(vec![KeyboardButton::new("Back")]);
@@ -332,7 +332,10 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    if MODELS.iter().any(|(name, _)| *name == text) {
+    if crate::config::default_models()
+        .iter()
+        .any(|(name, _)| name == &text)
+    {
         info!("User {user_id} selected model '{text}' via text input.");
         storage.update_user_model(user_id, text.clone()).await?;
         bot.send_message(msg.chat.id, format!("Model changed to <b>{text}</b>"))
@@ -611,11 +614,12 @@ pub async fn handle_voice(
         .get_user_model(user_id)
         .await?
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let provider_info = MODELS
+    let models = crate::config::default_models();
+    let provider_info = models
         .iter()
         .find(|(name, _)| name == &model)
         .map(|(_, info)| info);
-    let provider_name = provider_info.map_or("unknown", |p| p.provider);
+    let provider_name = provider_info.map_or("unknown", |p| &p.provider);
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
@@ -629,7 +633,7 @@ pub async fn handle_voice(
     })
     .await?;
 
-    let model_id = provider_info.map_or("unknown", |p| p.id);
+    let model_id = provider_info.map_or("unknown", |p| &p.id);
     match llm
         .transcribe_audio_with_fallback(provider_name, buffer, "audio/wav", model_id)
         .await

@@ -51,6 +51,35 @@ pub struct Settings {
 
     /// Default system message
     pub system_message: Option<String>,
+
+    // Dynamic Model Configuration
+    /// Chat model ID override
+    pub chat_model_id: Option<String>,
+    /// Chat model display name override
+    pub chat_model_name: Option<String>,
+    /// Chat model provider override
+    pub chat_model_provider: Option<String>,
+    /// Chat model max tokens override
+    pub chat_model_max_tokens: Option<u32>,
+
+    /// Agent model ID override
+    pub agent_model_id: Option<String>,
+    /// Agent model provider override
+    pub agent_model_provider: Option<String>,
+    /// Agent model max tokens override
+    pub agent_model_max_tokens: Option<u32>,
+
+    /// Sub-agent model ID override
+    pub sub_agent_model_id: Option<String>,
+    /// Sub-agent model provider override
+    pub sub_agent_model_provider: Option<String>,
+    /// Sub-agent model max tokens override
+    pub sub_agent_model_max_tokens: Option<u32>,
+
+    /// Media model ID override (for voice/images)
+    pub media_model_id: Option<String>,
+    /// Media model provider override
+    pub media_model_provider: Option<String>,
 }
 
 const fn default_openrouter_site_url() -> String {
@@ -168,6 +197,75 @@ impl Settings {
             })
             .unwrap_or_default()
     }
+
+    /// Returns a list of available models, merging defaults with environment overrides
+    pub fn get_available_models(&self) -> Vec<(String, ModelInfo)> {
+        let mut models = default_models();
+
+        // If CHAT_MODEL_ID and CHAT_MODEL_NAME are set, add/replace the model
+        if let (Some(id), Some(name)) = (&self.chat_model_id, &self.chat_model_name) {
+            let provider = self
+                .chat_model_provider
+                .clone()
+                .unwrap_or_else(|| "openrouter".to_string());
+            let max_tokens = self.chat_model_max_tokens.unwrap_or(64000);
+
+            let new_model = ModelInfo {
+                id: id.clone(),
+                max_tokens,
+                provider,
+            };
+
+            // Check if model with this name already exists
+            if let Some(pos) = models.iter().position(|(n, _)| n == name) {
+                models[pos] = (name.clone(), new_model);
+            } else {
+                models.push((name.clone(), new_model));
+            }
+        }
+
+        models
+    }
+
+    /// Returns the configured agent model (id, provider, max_tokens)
+    pub fn get_configured_agent_model(&self) -> (String, String, u32) {
+        if let (Some(id), Some(provider)) = (&self.agent_model_id, &self.agent_model_provider) {
+            return (
+                id.clone(),
+                provider.clone(),
+                self.agent_model_max_tokens.unwrap_or(128000),
+            );
+        }
+        // Default: ZAI GLM-4.7
+        ("glm-4.7".to_string(), "zai".to_string(), 128000)
+    }
+
+    /// Returns the configured sub-agent model (id, provider, max_tokens)
+    pub fn get_configured_sub_agent_model(&self) -> (String, String, u32) {
+        if let (Some(id), Some(provider)) =
+            (&self.sub_agent_model_id, &self.sub_agent_model_provider)
+        {
+            return (
+                id.clone(),
+                provider.clone(),
+                self.sub_agent_model_max_tokens.unwrap_or(64000),
+            );
+        }
+        // Default: ZAI GLM-4.5-Air
+        ("glm-4.5-air".to_string(), "zai".to_string(), 64000)
+    }
+
+    /// Returns the configured media model (id, provider)
+    pub fn get_media_model(&self) -> (String, String) {
+        if let (Some(id), Some(provider)) = (&self.media_model_id, &self.media_model_provider) {
+            return (id.clone(), provider.clone());
+        }
+        // Default: OpenRouter Gemini 3 Flash
+        (
+            "google/gemini-3-flash-preview".to_string(),
+            "openrouter".to_string(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +340,18 @@ mod tests {
             openrouter_site_url: String::new(),
             openrouter_site_name: String::new(),
             system_message: None,
+            chat_model_id: None,
+            chat_model_name: None,
+            chat_model_provider: None,
+            chat_model_max_tokens: None,
+            agent_model_id: None,
+            agent_model_provider: None,
+            agent_model_max_tokens: None,
+            sub_agent_model_id: None,
+            sub_agent_model_provider: None,
+            sub_agent_model_max_tokens: None,
+            media_model_id: None,
+            media_model_provider: None,
         };
 
         // Test comma
@@ -278,80 +388,82 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// Internal model identifier
-    pub id: &'static str,
+    pub id: String,
     /// Maximum allowed output tokens
     pub max_tokens: u32,
     /// Provider name
-    pub provider: &'static str,
+    pub provider: String,
 }
 
-/// List of all supported models and their configurations
-pub const MODELS: &[(&str, ModelInfo)] = &[
-    (
-        "OR Gemini 3 Flash",
-        ModelInfo {
-            id: "google/gemini-3-flash-preview",
-            max_tokens: 64000,
-            provider: "openrouter",
-        },
-    ),
-    (
-        "ZAI GLM-4.7",
-        ModelInfo {
-            id: "glm-4.7",
-            max_tokens: 128000,
-            provider: "zai",
-        },
-    ),
-    (
-        "ZAI GLM-4.5-Air",
-        ModelInfo {
-            id: "glm-4.5-air",
-            max_tokens: 64000,
-            provider: "zai",
-        },
-    ),
-    (
-        "Mistral Large",
-        ModelInfo {
-            id: "mistral-large-latest",
-            max_tokens: 64000,
-            provider: "mistral",
-        },
-    ),
-    (
-        "Gemini 2.5 Flash Lite",
-        ModelInfo {
-            id: "gemini-2.5-flash-lite",
-            max_tokens: 64000,
-            provider: "gemini",
-        },
-    ),
-    (
-        "Devstral 2512",
-        ModelInfo {
-            id: "devstral-2512",
-            max_tokens: 64000,
-            provider: "mistral",
-        },
-    ),
-    (
-        "labs-devstral-small-2512",
-        ModelInfo {
-            id: "labs-devstral-small-2512",
-            max_tokens: 64000,
-            provider: "mistral",
-        },
-    ),
-    (
-        "labs-mistral-small-creative",
-        ModelInfo {
-            id: "labs-mistral-small-creative",
-            max_tokens: 32000,
-            provider: "mistral",
-        },
-    ),
-];
+/// Returns the default list of supported models and their configurations
+pub fn default_models() -> Vec<(String, ModelInfo)> {
+    vec![
+        (
+            "OR Gemini 3 Flash".to_string(),
+            ModelInfo {
+                id: "google/gemini-3-flash-preview".to_string(),
+                max_tokens: 64000,
+                provider: "openrouter".to_string(),
+            },
+        ),
+        (
+            "ZAI GLM-4.7".to_string(),
+            ModelInfo {
+                id: "glm-4.7".to_string(),
+                max_tokens: 128000,
+                provider: "zai".to_string(),
+            },
+        ),
+        (
+            "ZAI GLM-4.5-Air".to_string(),
+            ModelInfo {
+                id: "glm-4.5-air".to_string(),
+                max_tokens: 64000,
+                provider: "zai".to_string(),
+            },
+        ),
+        (
+            "Mistral Large".to_string(),
+            ModelInfo {
+                id: "mistral-large-latest".to_string(),
+                max_tokens: 64000,
+                provider: "mistral".to_string(),
+            },
+        ),
+        (
+            "Gemini 2.5 Flash Lite".to_string(),
+            ModelInfo {
+                id: "gemini-2.5-flash-lite".to_string(),
+                max_tokens: 64000,
+                provider: "gemini".to_string(),
+            },
+        ),
+        (
+            "Devstral 2512".to_string(),
+            ModelInfo {
+                id: "devstral-2512".to_string(),
+                max_tokens: 64000,
+                provider: "mistral".to_string(),
+            },
+        ),
+        (
+            "labs-devstral-small-2512".to_string(),
+            ModelInfo {
+                id: "labs-devstral-small-2512".to_string(),
+                max_tokens: 64000,
+                provider: "mistral".to_string(),
+            },
+        ),
+        (
+            "labs-mistral-small-creative".to_string(),
+            ModelInfo {
+                id: "labs-mistral-small-creative".to_string(),
+                max_tokens: 32000,
+                provider: "mistral".to_string(),
+            },
+        ),
+    ]
+}
 
 /// Default model for chat
 pub const DEFAULT_MODEL: &str = "OR Gemini 3 Flash";
