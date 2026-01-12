@@ -37,6 +37,20 @@ jobs:
       LOOP_LLM_CONFIDENCE_THRESHOLD: "0.9"
       LOOP_LLM_HISTORY_COUNT: "20"
       LOOP_SCOUT_MODEL: labs-devstral-small-2512
+      CHAT_MODEL_ID: google/gemini-3-flash-preview
+      CHAT_MODEL_NAME: "✨ Gemini 3.0 Flash"
+      CHAT_MODEL_PROVIDER: openrouter
+      CHAT_MODEL_MAX_TOKENS: "64000"
+      AGENT_MODEL_ID: glm-4.7
+      AGENT_MODEL_PROVIDER: zai
+      AGENT_MODEL_MAX_TOKENS: "200000"
+      SUB_AGENT_MODEL_ID: glm-4.5-air
+      SUB_AGENT_MODEL_PROVIDER: zai
+      SUB_AGENT_MODEL_MAX_TOKENS: "128000"
+      MEDIA_MODEL_ID: google/gemini-3-flash-preview
+      MEDIA_MODEL_PROVIDER: openrouter
+      NARRATOR_MODEL_ID: labs-mistral-small-creative
+      NARRATOR_MODEL_PROVIDER: mistral
 
     steps:
       - name: Checkout code
@@ -116,6 +130,20 @@ jobs:
           LOOP_LLM_CONFIDENCE_THRESHOLD: ${{ secrets.LOOP_LLM_CONFIDENCE_THRESHOLD || '0.9' }}
           LOOP_LLM_HISTORY_COUNT: ${{ secrets.LOOP_LLM_HISTORY_COUNT || '20' }}
           LOOP_SCOUT_MODEL: ${{ secrets.LOOP_SCOUT_MODEL || 'labs-devstral-small-2512' }}
+          CHAT_MODEL_ID: ${{ secrets.CHAT_MODEL_ID || 'google/gemini-3-flash-preview' }}
+          CHAT_MODEL_NAME: ${{ secrets.CHAT_MODEL_NAME || '✨ Gemini 3.0 Flash' }}
+          CHAT_MODEL_PROVIDER: ${{ secrets.CHAT_MODEL_PROVIDER || 'openrouter' }}
+          CHAT_MODEL_MAX_TOKENS: ${{ secrets.CHAT_MODEL_MAX_TOKENS || '64000' }}
+          AGENT_MODEL_ID: ${{ secrets.AGENT_MODEL_ID || 'glm-4.7' }}
+          AGENT_MODEL_PROVIDER: ${{ secrets.AGENT_MODEL_PROVIDER || 'zai' }}
+          AGENT_MODEL_MAX_TOKENS: ${{ secrets.AGENT_MODEL_MAX_TOKENS || '200000' }}
+          SUB_AGENT_MODEL_ID: ${{ secrets.SUB_AGENT_MODEL_ID || 'glm-4.5-air' }}
+          SUB_AGENT_MODEL_PROVIDER: ${{ secrets.SUB_AGENT_MODEL_PROVIDER || 'zai' }}
+          SUB_AGENT_MODEL_MAX_TOKENS: ${{ secrets.SUB_AGENT_MODEL_MAX_TOKENS || '128000' }}
+          MEDIA_MODEL_ID: ${{ secrets.MEDIA_MODEL_ID || 'google/gemini-3-flash-preview' }}
+          MEDIA_MODEL_PROVIDER: ${{ secrets.MEDIA_MODEL_PROVIDER || 'openrouter' }}
+          NARRATOR_MODEL_ID: ${{ secrets.NARRATOR_MODEL_ID || 'labs-mistral-small-creative' }}
+          NARRATOR_MODEL_PROVIDER: ${{ secrets.NARRATOR_MODEL_PROVIDER || 'mistral' }}
           SKILL_TOKEN_BUDGET: ${{ secrets.SKILL_TOKEN_BUDGET || '4096' }}
         run: cargo test --test integration_validation -- --ignored --nocapture
 
@@ -178,12 +206,28 @@ jobs:
           LOOP_LLM_CONFIDENCE_THRESHOLD: ${{ secrets.LOOP_LLM_CONFIDENCE_THRESHOLD }}
           LOOP_LLM_HISTORY_COUNT: ${{ secrets.LOOP_LLM_HISTORY_COUNT }}
           LOOP_SCOUT_MODEL: ${{ secrets.LOOP_SCOUT_MODEL }}
+          CHAT_MODEL_ID: ${{ secrets.CHAT_MODEL_ID }}
+          CHAT_MODEL_NAME: ${{ secrets.CHAT_MODEL_NAME }}
+          CHAT_MODEL_PROVIDER: ${{ secrets.CHAT_MODEL_PROVIDER }}
+          CHAT_MODEL_MAX_TOKENS: ${{ secrets.CHAT_MODEL_MAX_TOKENS }}
+          AGENT_MODEL_ID: ${{ secrets.AGENT_MODEL_ID }}
+          AGENT_MODEL_PROVIDER: ${{ secrets.AGENT_MODEL_PROVIDER }}
+          AGENT_MODEL_MAX_TOKENS: ${{ secrets.AGENT_MODEL_MAX_TOKENS }}
+          SUB_AGENT_MODEL_ID: ${{ secrets.SUB_AGENT_MODEL_ID }}
+          SUB_AGENT_MODEL_PROVIDER: ${{ secrets.SUB_AGENT_MODEL_PROVIDER }}
+          SUB_AGENT_MODEL_MAX_TOKENS: ${{ secrets.SUB_AGENT_MODEL_MAX_TOKENS }}
+          MEDIA_MODEL_ID: ${{ secrets.MEDIA_MODEL_ID }}
+          MEDIA_MODEL_PROVIDER: ${{ secrets.MEDIA_MODEL_PROVIDER }}
+          NARRATOR_MODEL_ID: ${{ secrets.NARRATOR_MODEL_ID }}
+          NARRATOR_MODEL_PROVIDER: ${{ secrets.NARRATOR_MODEL_PROVIDER }}
         with:
           host: ${{ secrets.SSH_HOST }}
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: GROQ_API_KEY,TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,GEMINI_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,SYSTEM_MESSAGE,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_ENDPOINT_URL,R2_BUCKET_NAME,OPENROUTER_SITE_URL,OPENROUTER_SITE_NAME,TAVILY_API_KEY,LOOP_DETECTION_ENABLED,LOOP_TOOL_CALL_THRESHOLD,LOOP_CONTENT_CHUNK_SIZE,LOOP_CONTENT_THRESHOLD,LOOP_MAX_HISTORY_LENGTH,LOOP_LLM_CHECK_AFTER_TURNS,LOOP_LLM_CHECK_INTERVAL,LOOP_LLM_CONFIDENCE_THRESHOLD,LOOP_LLM_HISTORY_COUNT,LOOP_SCOUT_MODEL,SKILL_TOKEN_BUDGET
+          envs: GROQ_API_KEY,TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,GEMINI_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,SYSTEM_MESSAGE,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_ENDPOINT_URL,R2_BUCKET_NAME,OPENROUTER_SITE_URL,OPENROUTER_SITE_NAME,TAVILY_API_KEY,LOOP_DETECTION_ENABLED,LOOP_TOOL_CALL_THRESHOLD,LOOP_CONTENT_CHUNK_SIZE,LOOP_CONTENT_THRESHOLD,LOOP_MAX_HISTORY_LENGTH,LOOP_LLM_CHECK_AFTER_TURNS,LOOP_LLM_CHECK_INTERVAL,LOOP_LLM_CONFIDENCE_THRESHOLD,LOOP_LLM_HISTORY_COUNT,LOOP_SCOUT_MODEL,SKILL_TOKEN_BUDGET,CHAT_MODEL_ID,CHAT_MODEL_NAME,CHAT_MODEL_PROVIDER,CHAT_MODEL_MAX_TOKENS,AGENT_MODEL_ID,AGENT_MODEL_PROVIDER,AGENT_MODEL_MAX_TOKENS,SUB_AGENT_MODEL_ID,SUB_AGENT_MODEL_PROVIDER,SUB_AGENT_MODEL_MAX_TOKENS,MEDIA_MODEL_ID,MEDIA_MODEL_PROVIDER,NARRATOR_MODEL_ID,NARRATOR_MODEL_PROVIDER
+
+
           timeout: 60s
           command_timeout: 30m
           script: |
@@ -225,6 +269,20 @@ jobs:
             test -n "$LOOP_LLM_CONFIDENCE_THRESHOLD"; or set LOOP_LLM_CONFIDENCE_THRESHOLD 0.9
             test -n "$LOOP_LLM_HISTORY_COUNT"; or set LOOP_LLM_HISTORY_COUNT 20
             test -n "$LOOP_SCOUT_MODEL"; or set LOOP_SCOUT_MODEL labs-devstral-small-2512
+            test -n "$CHAT_MODEL_ID"; or set CHAT_MODEL_ID "google/gemini-3-flash-preview"
+            test -n "$CHAT_MODEL_NAME"; or set CHAT_MODEL_NAME "✨ Gemini 3.0 Flash"
+            test -n "$CHAT_MODEL_PROVIDER"; or set CHAT_MODEL_PROVIDER "openrouter"
+            test -n "$CHAT_MODEL_MAX_TOKENS"; or set CHAT_MODEL_MAX_TOKENS 64000
+            test -n "$AGENT_MODEL_ID"; or set AGENT_MODEL_ID "glm-4.7"
+            test -n "$AGENT_MODEL_PROVIDER"; or set AGENT_MODEL_PROVIDER "zai"
+            test -n "$AGENT_MODEL_MAX_TOKENS"; or set AGENT_MODEL_MAX_TOKENS 200000
+            test -n "$SUB_AGENT_MODEL_ID"; or set SUB_AGENT_MODEL_ID "glm-4.5-air"
+            test -n "$SUB_AGENT_MODEL_PROVIDER"; or set SUB_AGENT_MODEL_PROVIDER "zai"
+            test -n "$SUB_AGENT_MODEL_MAX_TOKENS"; or set SUB_AGENT_MODEL_MAX_TOKENS 128000
+            test -n "$MEDIA_MODEL_ID"; or set MEDIA_MODEL_ID "google/gemini-3-flash-preview"
+            test -n "$MEDIA_MODEL_PROVIDER"; or set MEDIA_MODEL_PROVIDER "openrouter"
+            test -n "$NARRATOR_MODEL_ID"; or set NARRATOR_MODEL_ID "labs-mistral-small-creative"
+            test -n "$NARRATOR_MODEL_PROVIDER"; or set NARRATOR_MODEL_PROVIDER "mistral"
             test -n "$SKILL_TOKEN_BUDGET"; or set SKILL_TOKEN_BUDGET 4096
 
             printf "LOOP_DETECTION_ENABLED=%s\n" "$LOOP_DETECTION_ENABLED" >> .env
@@ -237,7 +295,22 @@ jobs:
             printf "LOOP_LLM_CONFIDENCE_THRESHOLD=%s\n" "$LOOP_LLM_CONFIDENCE_THRESHOLD" >> .env
             printf "LOOP_LLM_HISTORY_COUNT=%s\n" "$LOOP_LLM_HISTORY_COUNT" >> .env
             printf "LOOP_SCOUT_MODEL=%s\n" "$LOOP_SCOUT_MODEL" >> .env
+            printf "CHAT_MODEL_ID=%s\n" "$CHAT_MODEL_ID" >> .env
+            printf "CHAT_MODEL_NAME=%s\n" "$CHAT_MODEL_NAME" >> .env
+            printf "CHAT_MODEL_PROVIDER=%s\n" "$CHAT_MODEL_PROVIDER" >> .env
+            printf "CHAT_MODEL_MAX_TOKENS=%s\n" "$CHAT_MODEL_MAX_TOKENS" >> .env
+            printf "AGENT_MODEL_ID=%s\n" "$AGENT_MODEL_ID" >> .env
+            printf "AGENT_MODEL_PROVIDER=%s\n" "$AGENT_MODEL_PROVIDER" >> .env
+            printf "AGENT_MODEL_MAX_TOKENS=%s\n" "$AGENT_MODEL_MAX_TOKENS" >> .env
+            printf "SUB_AGENT_MODEL_ID=%s\n" "$SUB_AGENT_MODEL_ID" >> .env
+            printf "SUB_AGENT_MODEL_PROVIDER=%s\n" "$SUB_AGENT_MODEL_PROVIDER" >> .env
+            printf "SUB_AGENT_MODEL_MAX_TOKENS=%s\n" "$SUB_AGENT_MODEL_MAX_TOKENS" >> .env
+            printf "MEDIA_MODEL_ID=%s\n" "$MEDIA_MODEL_ID" >> .env
+            printf "MEDIA_MODEL_PROVIDER=%s\n" "$MEDIA_MODEL_PROVIDER" >> .env
+            printf "NARRATOR_MODEL_ID=%s\n" "$NARRATOR_MODEL_ID" >> .env
+            printf "NARRATOR_MODEL_PROVIDER=%s\n" "$NARRATOR_MODEL_PROVIDER" >> .env
             printf "SKILL_TOKEN_BUDGET=%s\n" "$SKILL_TOKEN_BUDGET" >> .env
+
             echo ".env file created."
 
             # Create docker-compose.yml
