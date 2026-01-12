@@ -54,6 +54,7 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
 ### 🔑 API Keys (Mandatory)
 | Provider | Variable | Description |
 | :--- | :--- | :--- |
+| **ZAI** | `ZAI_API_KEY` | **Mandatory for Agent** (`glm-4.7`, Default Agent Model). [Zhipu AI](https://z.ai/) |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | **Cloudflare R2** | `R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
 | **Mistral AI** | `MISTRAL_API_KEY` | **Critical for Agent** (`mistral-embed` model for skill selection) |
@@ -62,7 +63,7 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
 *   **OpenRouter** (`OPENROUTER_API_KEY`) — used for chat (`gemini-3-flash`).
     > [!IMPORTANT]
     > **Gemini 3 Flash** model (via OpenRouter) is **required** for voice message recognition and image analysis. Without it, these functions will not work.
-*   **ZAI** (`ZAI_API_KEY`) — used for agent (`glm-4.7`, **Default Agent Model**). **ZAI** is [Zhipu AI](https://z.ai/).
+*   **ZAI** (`ZAI_API_KEY`) — **Required for agent** (`glm-4.7`, **Default Agent Model**). **ZAI** is [Zhipu AI](https://z.ai/).
 
 ### 🛠 Infrastructure
 *   **Docker** — run code sandbox (`agent-sandbox:latest`)
