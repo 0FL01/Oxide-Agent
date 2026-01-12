@@ -106,7 +106,7 @@
    - В `handle_photo`: Получать модель через `settings.get_media_model()`.
    - Использовать полученные `model_id` и `provider` для вызова `llm.analyze_image`.
 
-## Phase 5: Documentation & Environment Examples [ ]
+## Phase 5: Documentation & Environment Examples [x]
 
 **Goal**: Документировать новые переменные.
 
@@ -114,7 +114,7 @@
 - 📄 `.env.example`
 
 **Steps**:
-1. [ ] **Update .env.example**: Добавить секцию с примерами.
+1. [x] **Update .env.example**: Добавить секцию с примерами.
 
 ```bash
 # --- Dynamic Model Configuration ---
