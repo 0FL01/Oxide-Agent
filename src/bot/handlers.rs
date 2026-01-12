@@ -47,6 +47,7 @@ async fn check_state_and_redirect(
     storage: &Arc<R2Storage>,
     llm: &Arc<LlmClient>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
+    settings: &Arc<Settings>,
 ) -> Result<bool> {
     let user_id = get_user_id_safe(msg);
 
@@ -64,6 +65,7 @@ async fn check_state_and_redirect(
                 storage.clone(),
                 llm.clone(),
                 dialogue.clone(),
+                settings.clone(),
             ))
             .await?;
 
@@ -313,7 +315,7 @@ pub async fn handle_text(
     );
 
     if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue,
+        &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
     .await?
     {
@@ -401,6 +403,7 @@ async fn handle_menu_commands(
                     dialogue.clone(),
                     llm.clone(),
                     storage.clone(),
+                    settings.clone(),
                 )
                 .await?;
             }
@@ -582,10 +585,11 @@ pub async fn handle_voice(
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
     if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue,
+        &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
     .await?
     {
@@ -671,10 +675,11 @@ pub async fn handle_photo(
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
     if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue,
+        &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
     .await?
     {
@@ -759,12 +764,13 @@ pub async fn handle_document(
     dialogue: Dialogue<State, InMemStorage<State>>,
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
+    settings: Arc<Settings>,
 ) -> Result<()> {
     let state = dialogue.get().await?.unwrap_or(State::Start);
 
     if matches!(state, State::AgentMode) {
         Box::pin(super::agent_handlers::handle_agent_message(
-            bot, msg, storage, llm, dialogue,
+            bot, msg, storage, llm, dialogue, settings,
         ))
         .await
     } else {

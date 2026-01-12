@@ -12,7 +12,7 @@ use crate::agent::providers::{FileHosterProvider, SandboxProvider, TodosProvider
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use crate::config::{
-    AGENT_CONTINUATION_LIMIT, SUB_AGENT_MAX_ITERATIONS, SUB_AGENT_MAX_TOKENS, SUB_AGENT_MODEL_ZAI,
+    AGENT_CONTINUATION_LIMIT, SUB_AGENT_MAX_ITERATIONS, SUB_AGENT_MAX_TOKENS,
     SUB_AGENT_TIMEOUT_SECS,
 };
 use crate::llm::ToolDefinition;
@@ -38,15 +38,21 @@ const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
 pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
     user_id: i64,
+    settings: Arc<crate::config::Settings>,
 }
 
 impl DelegationProvider {
     /// Create a new delegation provider.
     #[must_use]
-    pub fn new(llm_client: Arc<crate::llm::LlmClient>, user_id: i64) -> Self {
+    pub fn new(
+        llm_client: Arc<crate::llm::LlmClient>,
+        user_id: i64,
+        settings: Arc<crate::config::Settings>,
+    ) -> Self {
         Self {
             llm_client,
             user_id,
+            settings,
         }
     }
 
@@ -227,11 +233,10 @@ If the sub-agent doesn't finish, a partial report will be returned."
             messages: &mut messages,
             agent: &mut sub_session,
             skill_registry: None,
-            config: AgentRunnerConfig::new(
-                SUB_AGENT_MODEL_ZAI,
-                SUB_AGENT_MAX_ITERATIONS,
-                AGENT_CONTINUATION_LIMIT,
-            ),
+            config: {
+                let (model_id, _, _) = self.settings.get_configured_sub_agent_model();
+                AgentRunnerConfig::new(model_id, SUB_AGENT_MAX_ITERATIONS, AGENT_CONTINUATION_LIMIT)
+            },
         };
 
         info!(task_id = %task_id, "Running sub-agent delegation");

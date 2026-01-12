@@ -59,6 +59,7 @@ pub async fn activate_agent_mode(
     dialogue: AgentDialogue,
     llm: Arc<LlmClient>,
     storage: Arc<R2Storage>,
+    settings: Arc<crate::config::Settings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = msg.chat.id.0;
@@ -74,7 +75,7 @@ pub async fn activate_agent_mode(
         info!("Loaded agent memory for user {user_id}");
     }
 
-    let executor = AgentExecutor::new(llm.clone(), session);
+    let executor = AgentExecutor::new(llm.clone(), session, settings);
 
     // Store session in registry
     SESSION_REGISTRY.insert(user_id, executor).await;
@@ -107,6 +108,7 @@ pub async fn handle_agent_message(
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
     dialogue: AgentDialogue,
+    settings: Arc<crate::config::Settings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = msg.chat.id;
@@ -131,7 +133,7 @@ pub async fn handle_agent_message(
     }
 
     // Get or create session
-    ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
+    ensure_session_exists(user_id, chat_id.0, &llm, &storage, &settings).await;
 
     if is_agent_task_running(user_id).await {
         bot.send_message(
@@ -173,6 +175,7 @@ async fn ensure_session_exists(
     chat_id: i64,
     llm: &Arc<LlmClient>,
     storage: &Arc<R2Storage>,
+    settings: &Arc<crate::config::Settings>,
 ) {
     if SESSION_REGISTRY.contains(&user_id).await {
         debug!(user_id = user_id, "Session already exists in cache");
@@ -196,7 +199,7 @@ async fn ensure_session_exists(
         );
     }
 
-    let executor = AgentExecutor::new(llm.clone(), session);
+    let executor = AgentExecutor::new(llm.clone(), session, settings.clone());
     SESSION_REGISTRY.insert(user_id, executor).await;
 }
 
@@ -670,6 +673,7 @@ pub async fn handle_loop_callback(
     q: CallbackQuery,
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
+    settings: Arc<crate::config::Settings>,
 ) -> Result<()> {
     let Some(data) = q.data.as_deref() else {
         return Ok(());
@@ -692,7 +696,7 @@ pub async fn handle_loop_callback(
                 return Ok(());
             }
 
-            ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
+            ensure_session_exists(user_id, chat_id.0, &llm, &storage, &settings).await;
             renew_cancellation_token(user_id).await;
 
             let executor_arc = SESSION_REGISTRY.get(&user_id).await;
@@ -887,6 +891,7 @@ pub async fn handle_agent_wipe_confirmation(
     dialogue: AgentDialogue,
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
+    settings: Arc<crate::config::Settings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let text = msg.text().unwrap_or("");
@@ -904,7 +909,7 @@ pub async fn handle_agent_wipe_confirmation(
     match text {
         "✅ Yes" => {
             // Ensure session exists (restores from DB if needs be, or creates new)
-            ensure_session_exists(user_id, chat_id.0, &llm, &storage).await;
+            ensure_session_exists(user_id, chat_id.0, &llm, &storage, &settings).await;
             match SESSION_REGISTRY
                 .with_executor_mut(&user_id, |executor| {
                     Box::pin(async move {

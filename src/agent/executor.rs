@@ -26,12 +26,17 @@ pub struct AgentExecutor {
     runner: AgentRunner,
     session: AgentSession,
     skill_registry: Option<SkillRegistry>,
+    settings: Arc<crate::config::Settings>,
 }
 
 impl AgentExecutor {
     /// Create a new agent executor
     #[must_use]
-    pub fn new(llm_client: Arc<LlmClient>, session: AgentSession) -> Self {
+    pub fn new(
+        llm_client: Arc<LlmClient>,
+        session: AgentSession,
+        settings: Arc<crate::config::Settings>,
+    ) -> Self {
         let mut runner = AgentRunner::new(llm_client.clone());
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(WorkloadDistributorHook::new()));
@@ -59,6 +64,7 @@ impl AgentExecutor {
             runner,
             session,
             skill_registry,
+            settings,
         }
     }
 
@@ -137,6 +143,7 @@ impl AgentExecutor {
         registry.register(Box::new(DelegationProvider::new(
             self.runner.llm_client(),
             self.session.user_id,
+            self.settings.clone(),
         )));
 
         #[cfg(feature = "tavily")]
@@ -170,7 +177,14 @@ impl AgentExecutor {
             messages: &mut messages,
             agent: &mut self.session,
             skill_registry: self.skill_registry.as_mut(),
-            config: AgentRunnerConfig::default(),
+            config: {
+                let (model_id, _, _) = self.settings.get_configured_agent_model();
+                AgentRunnerConfig::new(
+                    model_id,
+                    crate::config::AGENT_MAX_ITERATIONS,
+                    crate::config::AGENT_CONTINUATION_LIMIT,
+                )
+            },
         };
 
         let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);

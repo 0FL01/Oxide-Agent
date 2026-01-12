@@ -402,9 +402,10 @@ async fn handle_start_voice(
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::handlers::handle_voice(
-        bot, msg, storage, llm, dialogue,
+        bot, msg, storage, llm, dialogue, settings,
     ))
     .await
     {
@@ -419,8 +420,9 @@ async fn handle_start_photo(
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue).await {
+    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings).await {
         error!("Photo handler error: {}", e);
     }
     respond(())
@@ -432,8 +434,10 @@ async fn handle_start_document(
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm).await {
+    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings).await
+    {
         error!("Document handler error: {}", e);
     }
     respond(())
@@ -457,9 +461,10 @@ async fn handle_agent_message(
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::agent_handlers::handle_agent_message(
-        bot, msg, storage, llm, dialogue,
+        bot, msg, storage, llm, dialogue, settings,
     ))
     .await
     {
@@ -473,8 +478,10 @@ async fn handle_loop_callback(
     q: CallbackQuery,
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, storage, llm).await {
+    if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, storage, llm, settings).await
+    {
         error!("Loop callback handler error: {}", e);
     }
     respond(())
@@ -486,9 +493,12 @@ async fn handle_agent_wipe_confirmation(
     dialogue: Dialogue<State, InMemStorage<State>>,
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) =
-        bot::agent_handlers::handle_agent_wipe_confirmation(bot, msg, dialogue, storage, llm).await
+    if let Err(e) = bot::agent_handlers::handle_agent_wipe_confirmation(
+        bot, msg, dialogue, storage, llm, settings,
+    )
+    .await
     {
         error!("Agent wipe confirmation handler error: {}", e);
     }

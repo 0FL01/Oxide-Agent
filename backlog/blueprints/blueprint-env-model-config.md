@@ -45,7 +45,7 @@
 
 5. [x] **Verification**: Запустить `cargo check`.
 
-## Phase 2: Core Refactoring (Static to Dynamic) [ ]
+## Phase 2: Core Refactoring (Static to Dynamic) [x]
 
 **Goal**: Избавиться от использования `&'static str` в конфигурации агента.
 
@@ -55,19 +55,19 @@
 - 📄 `src/agent/providers/delegation.rs`
 
 **Steps**:
-1. [ ] **Refactor AgentRunnerConfig**:
+1. [x] **Refactor AgentRunnerConfig**:
    - В `src/agent/runner/types.rs` изменить поле `model_name` с `&'static str` на `String`.
    - Обновить конструктор `new` и `default` (использовать `.to_string()`).
 
-2. [ ] **Update AgentExecutor**:
+2. [x] **Update AgentExecutor**:
    - В `src/agent/executor.rs` использовать `settings.get_configured_agent_model()`.
 
-3. [ ] **Update Sub-Agent Logic**:
+3. [x] **Update Sub-Agent Logic**:
    - В `src/agent/providers/delegation.rs` использовать `settings.get_configured_sub_agent_model()`.
 
-4. [ ] **Update Usages**: Исправить ошибки типов (добавить `.clone()` или `.to_string()`).
+4. [x] **Update Usages**: Исправить ошибки типов (добавить `.clone()` или `.to_string()`).
 
-5. [ ] **QA**: Запустить `cargo check`.
+5. [x] **QA**: Запустить `cargo check`.
 
 ## Phase 3: Bot UI & Model Selection [ ]
 
