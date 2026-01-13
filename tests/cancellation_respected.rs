@@ -7,27 +7,15 @@ use tokio_util::sync::CancellationToken;
 fn settings_without_llm_providers() -> Settings {
     Settings {
         telegram_token: "dummy".to_string(),
-        allowed_users_str: None,
-        agent_allowed_users_str: None,
-        groq_api_key: None,
-        mistral_api_key: None,
-        zai_api_key: None,
-        gemini_api_key: None,
-        openrouter_api_key: None,
-        tavily_api_key: None,
-        r2_access_key_id: None,
-        r2_secret_access_key: None,
-        r2_endpoint_url: None,
-        r2_bucket_name: None,
-        openrouter_site_url: String::new(),
         openrouter_site_name: "Oxide Agent TG Bot".to_string(),
-        system_message: None,
+        ..Settings::default()
     }
 }
 
 #[tokio::test]
 async fn cancellation_token_is_not_overwritten_by_task_start() {
-    let llm = Arc::new(LlmClient::new(&settings_without_llm_providers()));
+    let settings = Arc::new(settings_without_llm_providers());
+    let llm = Arc::new(LlmClient::new(&settings));
     let mut session = AgentSession::new(1, 1);
 
     session.memory.todos.items = vec![
@@ -45,7 +33,7 @@ async fn cancellation_token_is_not_overwritten_by_task_start() {
     token.cancel();
     session.cancellation_token = token;
 
-    let mut executor = AgentExecutor::new(llm, session);
+    let mut executor = AgentExecutor::new(llm, session, settings);
     let result = executor.execute("test", None).await;
 
     let Err(err) = result else {

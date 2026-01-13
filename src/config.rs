@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// Application settings loaded from environment variables
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct Settings {
     /// Telegram Bot API token
     pub telegram_token: String,
