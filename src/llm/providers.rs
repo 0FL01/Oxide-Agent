@@ -743,8 +743,8 @@ impl LlmProvider for ZaiProvider {
         ))
     }
 
-    /// Chat completion with tool calling support for agent mode
-    /// Supports streaming tool calls and thinking/reasoning (always enabled for GLM-4.7)
+    /// Chat completion with tool calling support for agent mode.
+    /// Supports streaming tool calls.
     ///
     /// # Errors
     ///
@@ -778,13 +778,7 @@ impl LlmProvider for ZaiProvider {
             "tools": openai_tools,
             "max_tokens": max_tokens,
             "temperature": 0.95,
-            "stream": true,
-            "stream_options": { "include_usage": true },
-            "response_format": { "type": "json_object" },
-            "thinking": {
-                "type": "enabled",
-                "clear_thinking": true
-            }
+            "stream": true
         });
 
         let response = self.send_zai_request(url, &body).await?;
