@@ -70,6 +70,11 @@ impl EmbeddingProvider {
             .map(|d| d.embedding)
             .ok_or_else(|| LlmError::ApiError("Empty embedding response".to_string()))
     }
+
+    /// Probe the embedding dimension by generating a test embedding.
+    pub async fn probe_dimension(&self, model: &str) -> Option<usize> {
+        self.generate("test", model).await.ok().map(|v| v.len())
+    }
 }
 
 /// Get API base URL for known embedding providers.

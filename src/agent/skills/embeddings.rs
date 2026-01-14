@@ -6,7 +6,7 @@ use crate::llm::{LlmClient, LlmError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,7 +18,7 @@ struct EmbeddingCacheEntry {
 pub struct EmbeddingService {
     llm_client: Arc<LlmClient>,
     cache_dir: PathBuf,
-    dimension: usize,
+    dimension: Arc<Mutex<Option<usize>>>,
     in_memory: HashMap<String, Vec<f32>>,
 }
 
@@ -33,7 +33,7 @@ impl EmbeddingService {
         Self {
             llm_client,
             cache_dir: config.embedding_cache_dir.clone(),
-            dimension: config.embedding_dimension,
+            dimension: Arc::new(Mutex::new(None)),
             in_memory: HashMap::new(),
         }
     }
@@ -41,6 +41,29 @@ impl EmbeddingService {
     /// Clear in-memory embeddings cache.
     pub fn clear_cache(&mut self) {
         self.in_memory.clear();
+    }
+
+    /// Get or determine embedding dimension.
+    async fn get_dimension(&self) -> SkillResult<usize> {
+        {
+            let dim = self.dimension.lock().expect("Mutex should not be poisoned");
+            if let Some(d) = *dim {
+                return Ok(d);
+            }
+        }
+
+        let detected = self
+            .llm_client
+            .probe_embedding_dimension()
+            .await
+            .unwrap_or(1536);
+        info!(dimension = detected, "Auto-detected embedding dimension");
+
+        let mut dim = self.dimension.lock().expect("Mutex should not be poisoned");
+        if dim.is_none() {
+            *dim = Some(detected);
+        }
+        Ok(detected)
     }
 
     /// Compute semantic similarity scores for all skills.
@@ -94,7 +117,7 @@ impl EmbeddingService {
         }
 
         let embedding = self.generate_embedding(&meta.description).await?;
-        self.save_cached_embedding(&meta.name, &embedding)?;
+        self.save_cached_embedding(&meta.name, &embedding).await?;
         meta.embedding = Some(embedding.clone());
         Ok(Some(embedding))
     }
@@ -122,23 +145,34 @@ impl EmbeddingService {
             _ => SkillError::EmbeddingRequest(err.to_string()),
         })?;
 
-        self.ensure_dimension(&result)?;
-        Ok(result)
-    }
-
-    fn ensure_dimension(&self, embedding: &[f32]) -> SkillResult<()> {
-        if embedding.len() != self.dimension {
-            return Err(SkillError::EmbeddingDimensionMismatch {
-                expected: self.dimension,
-                actual: embedding.len(),
-            });
+        let expected_dim = self.get_dimension().await?;
+        if result.len() != expected_dim {
+            let mut dim = self.dimension.lock().expect("Mutex should not be poisoned");
+            *dim = Some(result.len());
+            info!(
+                old_dimension = expected_dim,
+                new_dimension = result.len(),
+                "Updated embedding dimension based on API response"
+            );
         }
-        Ok(())
+
+        Ok(result)
     }
 
     fn cache_path(&self, skill_name: &str) -> PathBuf {
         let file_name = format!("{skill_name}.json");
         self.cache_dir.join(file_name)
+    }
+
+    async fn ensure_dimension_match(&self, embedding: &[f32]) -> SkillResult<()> {
+        let expected_dim = self.get_dimension().await?;
+        if embedding.len() != expected_dim {
+            return Err(SkillError::EmbeddingDimensionMismatch {
+                expected: expected_dim,
+                actual: embedding.len(),
+            });
+        }
+        Ok(())
     }
 
     fn load_cached_embedding(&mut self, skill_name: &str) -> SkillResult<Option<Vec<f32>>> {
@@ -159,9 +193,17 @@ impl EmbeddingService {
             SkillError::EmbeddingCache(format!("failed to parse {}: {err}", path.display()))
         })?;
 
-        if let Err(err) = self.ensure_dimension(&entry.embedding) {
-            warn!(skill = %skill_name, ?err, "Cached embedding dimension mismatch, ignoring cache");
-            return Ok(None);
+        let current_dim = self.dimension.lock().expect("Mutex should not be poisoned");
+        if let Some(d) = *current_dim {
+            if entry.embedding.len() != d {
+                warn!(
+                    skill = %skill_name,
+                    cached_dim = entry.embedding.len(),
+                    current_dim = d,
+                    "Cached embedding dimension mismatch, ignoring cache"
+                );
+                return Ok(None);
+            }
         }
 
         self.in_memory
@@ -170,8 +212,12 @@ impl EmbeddingService {
         Ok(Some(entry.embedding))
     }
 
-    fn save_cached_embedding(&mut self, skill_name: &str, embedding: &[f32]) -> SkillResult<()> {
-        self.ensure_dimension(embedding)?;
+    async fn save_cached_embedding(
+        &mut self,
+        skill_name: &str,
+        embedding: &[f32],
+    ) -> SkillResult<()> {
+        self.ensure_dimension_match(embedding).await?;
         std::fs::create_dir_all(&self.cache_dir).map_err(|err| {
             SkillError::EmbeddingCache(format!(
                 "failed to create {}: {err}",

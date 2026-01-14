@@ -627,19 +627,8 @@ pub const SKILL_EMBEDDING_THRESHOLD: f32 = 0.6;
 pub const SKILL_MAX_SELECTED: usize = 3;
 /// TTL for skill metadata cache (seconds)
 pub const SKILL_CACHE_TTL_SECS: u64 = 3600;
-/// Expected embedding vector dimension
-pub const EMBEDDING_DIMENSION: usize = 1024;
 /// Embedding cache directory
 pub const EMBEDDING_CACHE_DIR: &str = ".embeddings_cache/skills";
-
-/// Get embedding dimension from env or default.
-#[must_use]
-pub fn get_embedding_dimension() -> usize {
-    std::env::var("EMBEDDING_DIMENSION")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(EMBEDDING_DIMENSION)
-}
 
 /// Get skills directory path from env or default.
 #[must_use]

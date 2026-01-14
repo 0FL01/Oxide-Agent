@@ -589,6 +589,14 @@ impl LlmClient {
         provider.generate(text, model).await
     }
 
+    /// Probe embedding dimension by making a test request.
+    ///
+    /// Returns `None` if embedding provider is not configured or the probe fails.
+    pub async fn probe_embedding_dimension(&self) -> Option<usize> {
+        let (provider, model) = self.embedding.as_ref()?;
+        provider.probe_dimension(model).await
+    }
+
     /// Transcribe audio to text
     ///
     /// # Errors
