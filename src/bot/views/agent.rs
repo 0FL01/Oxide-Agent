@@ -25,7 +25,7 @@ pub const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
 /// Provides all text messages and formatting for agent mode interactions.
 pub trait AgentView {
     /// Welcome message when agent mode is activated
-    fn welcome_message() -> &'static str;
+    fn welcome_message(model_name: &str) -> String;
 
     /// Message shown while task is processing
     fn task_processing() -> &'static str;
@@ -98,15 +98,19 @@ pub trait AgentView {
 pub struct DefaultAgentView;
 
 impl AgentView for DefaultAgentView {
-    fn welcome_message() -> &'static str {
-        r#"🤖 <b>Agent Mode Activated</b>
+    fn welcome_message(model_name: &str) -> String {
+        format!(
+            r#"🤖 <b>Agent Mode Activated</b>
+<code>{}</code>
 
 Waiting for a task. Send your request in any format:
 • 📝 Text
 • 🎤 Voice message
 • 🖼 Image
 
-I work autonomously: I'll create a plan, execute code, and provide the result."#
+I work autonomously: I'll create a plan, execute code, and provide the result."#,
+            model_name
+        )
     }
 
     fn task_processing() -> &'static str {

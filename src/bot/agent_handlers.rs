@@ -75,7 +75,7 @@ pub async fn activate_agent_mode(
         info!("Loaded agent memory for user {user_id}");
     }
 
-    let executor = AgentExecutor::new(llm.clone(), session, settings);
+    let executor = AgentExecutor::new(llm.clone(), session, settings.clone());
 
     // Store session in registry
     SESSION_REGISTRY.insert(user_id, executor).await;
@@ -89,7 +89,8 @@ pub async fn activate_agent_mode(
     dialogue.update(State::AgentMode).await?;
 
     // Send welcome message
-    bot.send_message(msg.chat.id, DefaultAgentView::welcome_message())
+    let (model_id, _, _) = settings.get_configured_agent_model();
+    bot.send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
         .parse_mode(ParseMode::Html)
         .reply_markup(get_agent_keyboard())
         .await?;

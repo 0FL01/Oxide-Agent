@@ -151,12 +151,7 @@ impl Preprocessor {
 
         let description = self
             .llm_client
-            .analyze_image(
-                image_bytes,
-                &prompt,
-                system_prompt,
-                model_name,
-            )
+            .analyze_image(image_bytes, &prompt, system_prompt, model_name)
             .await
             .map_err(|e| anyhow::anyhow!("Image analysis failed: {e}"))?;
 

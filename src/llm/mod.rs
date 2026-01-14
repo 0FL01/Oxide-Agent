@@ -256,9 +256,7 @@ impl LlmClient {
     pub fn new(settings: &crate::config::Settings) -> Self {
         let chat_model_name = settings.get_default_chat_model_name();
         let (media_model_id, media_model_provider) = match settings.get_media_model() {
-            (id, provider) if !id.is_empty() && !provider.is_empty() => {
-                (Some(id), Some(provider))
-            }
+            (id, provider) if !id.is_empty() && !provider.is_empty() => (Some(id), Some(provider)),
             _ => (None, None),
         };
         let media_model_name = media_model_id.clone();
@@ -610,9 +608,7 @@ impl LlmClient {
                     .as_deref()
                     .ok_or_else(|| LlmError::MissingConfig("media_model_id".to_string()))?;
 
-                info!(
-                    "ZAI does not support audio, falling back to media model {media_model_id}"
-                );
+                info!("ZAI does not support audio, falling back to media model {media_model_id}");
                 let provider = self.get_provider(media_provider)?;
                 provider
                     .transcribe_audio(audio_bytes, mime_type, media_model_id)

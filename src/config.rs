@@ -221,11 +221,7 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    fn upsert_model(
-        models: &mut Vec<(String, ModelInfo)>,
-        name: String,
-        info: ModelInfo,
-    ) {
+    fn upsert_model(models: &mut Vec<(String, ModelInfo)>, name: String, info: ModelInfo) {
         if let Some(pos) = models.iter().position(|(n, _)| n == &name) {
             models[pos] = (name, info);
         } else {
