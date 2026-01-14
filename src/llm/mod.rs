@@ -3,6 +3,7 @@
 //! Provides a unified interface to various LLM providers (Groq, Mistral, Gemini, OpenRouter).
 
 mod common;
+pub mod embeddings;
 mod http_utils;
 mod openai_compat;
 /// Implementations of specific LLM providers
@@ -234,6 +235,7 @@ pub struct LlmClient {
     zai: Option<providers::ZaiProvider>,
     gemini: Option<providers::GeminiProvider>,
     openrouter: Option<providers::OpenRouterProvider>,
+    embedding: Option<(embeddings::EmbeddingProvider, String)>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Narrator model ID
@@ -251,6 +253,26 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
+    fn create_embedding_provider(
+        settings: &crate::config::Settings,
+    ) -> Option<(embeddings::EmbeddingProvider, String)> {
+        let provider_name = settings.embedding_provider.as_ref()?;
+        let model_id = settings.embedding_model_id.clone()?;
+
+        let api_key = match provider_name.to_lowercase().as_str() {
+            "mistral" => settings.mistral_api_key.clone()?,
+            "openrouter" => settings.openrouter_api_key.clone()?,
+            _ => return None,
+        };
+
+        let api_base = embeddings::get_api_base(provider_name)?;
+
+        Some((
+            embeddings::EmbeddingProvider::new(api_key, api_base.to_string()),
+            model_id,
+        ))
+    }
+
     /// Create a new LLM client with providers configured from settings
     #[must_use]
     pub fn new(settings: &crate::config::Settings) -> Self {
@@ -285,6 +307,7 @@ impl LlmClient {
                     settings.openrouter_site_name.clone(),
                 )
             }),
+            embedding: Self::create_embedding_provider(settings),
             models: settings.get_available_models(),
             narrator_model: settings.get_configured_narrator_model().0,
             narrator_provider: settings.get_configured_narrator_model().1,
@@ -301,7 +324,13 @@ impl LlmClient {
         self.gemini.is_some() || self.openrouter.is_some()
     }
 
-    /// Returns true if the requested provider is configured.
+    /// Returns true if embedding provider is configured.
+    #[must_use]
+    pub fn is_embedding_available(&self) -> bool {
+        self.embedding.is_some()
+    }
+
+    /// Returns true if requested provider is configured.
     #[must_use]
     pub fn is_provider_available(&self, name: &str) -> bool {
         if name.eq_ignore_ascii_case("groq") {
@@ -547,18 +576,17 @@ impl LlmClient {
         }
     }
 
-    /// Generate an embedding vector using the Mistral embeddings endpoint.
+    /// Generate an embedding vector using configured provider.
     ///
     /// # Errors
     ///
-    /// Returns `LlmError::MissingConfig` if Mistral is not configured, or any provider error.
-    pub async fn generate_embedding(&self, text: &str, model: &str) -> Result<Vec<f32>, LlmError> {
-        let provider = self
-            .mistral
-            .as_ref()
-            .ok_or_else(|| LlmError::MissingConfig("mistral".to_string()))?;
+    /// Returns `LlmError::MissingConfig` if embedding provider is not configured, or any provider error.
+    pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        let (provider, model) = self.embedding.as_ref().ok_or_else(|| {
+            LlmError::MissingConfig("embedding provider not configured".to_string())
+        })?;
 
-        provider.generate_embedding(text, model).await
+        provider.generate(text, model).await
     }
 
     /// Transcribe audio to text

@@ -17,7 +17,6 @@ struct EmbeddingCacheEntry {
 /// Embedding service for skill descriptions.
 pub struct EmbeddingService {
     llm_client: Arc<LlmClient>,
-    model: String,
     cache_dir: PathBuf,
     dimension: usize,
     in_memory: HashMap<String, Vec<f32>>,
@@ -27,13 +26,12 @@ impl EmbeddingService {
     /// Create a new embedding service from config.
     #[must_use]
     pub fn new(llm_client: Arc<LlmClient>, config: &SkillConfig) -> Self {
-        if !llm_client.is_provider_available("mistral") {
+        if !llm_client.is_embedding_available() {
             warn!("Embeddings disabled, using keyword matching only");
         }
 
         Self {
             llm_client,
-            model: config.embedding_model.clone(),
             cache_dir: config.embedding_cache_dir.clone(),
             dimension: config.embedding_dimension,
             in_memory: HashMap::new(),
@@ -107,7 +105,7 @@ impl EmbeddingService {
 
         const EMBEDDING_TIMEOUT_SECS: u64 = 30;
 
-        let embedding_future = self.llm_client.generate_embedding(text, &self.model);
+        let embedding_future = self.llm_client.generate_embedding(text);
 
         let result = timeout(
             Duration::from_secs(EMBEDDING_TIMEOUT_SECS),

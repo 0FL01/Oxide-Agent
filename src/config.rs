@@ -74,7 +74,7 @@ pub struct Settings {
     /// Sub-agent model provider override
     pub sub_agent_model_provider: Option<String>,
     /// Sub-agent model max tokens override
-    pub sub_agent_model_max_tokens: Option<u32>,
+    pub sub_agent_max_tokens: Option<u32>,
 
     /// Media model ID override (for voice/images)
     pub media_model_id: Option<String>,
@@ -85,6 +85,11 @@ pub struct Settings {
     pub narrator_model_id: Option<String>,
     /// Narrator model provider override
     pub narrator_model_provider: Option<String>,
+
+    /// Embedding provider name (mistral, openrouter, openai)
+    pub embedding_provider: Option<String>,
+    /// Embedding model ID
+    pub embedding_model_id: Option<String>,
 }
 
 const fn default_openrouter_site_url() -> String {
@@ -190,6 +195,22 @@ impl Settings {
             ));
         }
 
+        // Fallback for embedding configuration
+        if settings.embedding_provider.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_PROVIDER") {
+                if !val.is_empty() {
+                    settings.embedding_provider = Some(val);
+                }
+            }
+        }
+        if settings.embedding_model_id.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_MODEL_ID") {
+                if !val.is_empty() {
+                    settings.embedding_model_id = Some(val);
+                }
+            }
+        }
+
         Ok(settings)
     }
 
@@ -263,7 +284,7 @@ impl Settings {
     fn sub_agent_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.sub_agent_model_id.as_ref()?;
         let provider = self.sub_agent_model_provider.as_ref()?;
-        let max_tokens = self.sub_agent_model_max_tokens.unwrap_or(64000);
+        let max_tokens = self.sub_agent_max_tokens.unwrap_or(64000);
 
         Some((
             id.clone(),
@@ -377,7 +398,7 @@ impl Settings {
             return (
                 id.clone(),
                 provider.clone(),
-                self.sub_agent_model_max_tokens.unwrap_or(64000),
+                self.sub_agent_max_tokens.unwrap_or(64000),
             );
         }
         if let Some((_, info)) = self.agent_model_spec() {
@@ -511,11 +532,13 @@ mod tests {
             agent_model_max_tokens: None,
             sub_agent_model_id: None,
             sub_agent_model_provider: None,
-            sub_agent_model_max_tokens: None,
+            sub_agent_max_tokens: None,
             media_model_id: None,
             media_model_provider: None,
             narrator_model_id: None,
             narrator_model_provider: None,
+            embedding_provider: None,
+            embedding_model_id: None,
         };
 
         // Test comma
@@ -660,16 +683,33 @@ pub fn get_skill_cache_ttl_secs() -> u64 {
         .unwrap_or(SKILL_CACHE_TTL_SECS)
 }
 
-/// Get embedding model name from env.
+/// Get embedding provider from env.
 #[must_use]
-pub fn get_mistral_embed_model() -> String {
-    std::env::var("MISTRAL_EMBED_MODEL").unwrap_or_default()
+pub fn get_embedding_provider() -> Option<String> {
+    std::env::var("EMBEDDING_PROVIDER")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Get embedding model ID from env.
+#[must_use]
+pub fn get_embedding_model_id() -> Option<String> {
+    std::env::var("EMBEDDING_MODEL_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 /// Get embedding cache directory from env or default.
+/// Appends provider/model subdirectory for cache isolation.
 #[must_use]
 pub fn get_embedding_cache_dir() -> String {
-    std::env::var("EMBEDDING_CACHE_DIR").unwrap_or_else(|_| EMBEDDING_CACHE_DIR.to_string())
+    let base =
+        std::env::var("EMBEDDING_CACHE_DIR").unwrap_or_else(|_| EMBEDDING_CACHE_DIR.to_string());
+
+    match (get_embedding_provider(), get_embedding_model_id()) {
+        (Some(provider), Some(model)) => format!("{base}/{provider}/{model}"),
+        _ => base,
+    }
 }
 
 // Sandbox configuration
