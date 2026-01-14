@@ -100,8 +100,7 @@ pub struct DefaultAgentView;
 impl AgentView for DefaultAgentView {
     fn welcome_message(model_name: &str) -> String {
         format!(
-            r#"🤖 <b>Agent Mode Activated</b>
-<code>{}</code>
+            r#"🤖 <b>Agent Mode Activated - {}</b>
 
 Waiting for a task. Send your request in any format:
 • 📝 Text
