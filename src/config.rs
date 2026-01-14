@@ -1,6 +1,6 @@
 //! Configuration and settings management
 //!
-//! Loads settings from environment variables and defines model constants.
+//! Loads settings from environment variables and defines configuration constants.
 //!
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
@@ -171,6 +171,24 @@ impl Settings {
                 "Critical: ZAI_API_KEY is required for operation".to_string(),
             ));
         }
+        if settings
+            .chat_model_id
+            .as_ref()
+            .is_none_or(|val| val.trim().is_empty())
+        {
+            return Err(ConfigError::Message(
+                "Critical: CHAT_MODEL_ID is required for operation".to_string(),
+            ));
+        }
+        if settings
+            .chat_model_provider
+            .as_ref()
+            .is_none_or(|val| val.trim().is_empty())
+        {
+            return Err(ConfigError::Message(
+                "Critical: CHAT_MODEL_PROVIDER is required for operation".to_string(),
+            ));
+        }
 
         Ok(settings)
     }
@@ -203,33 +221,141 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    /// Returns a list of available models, merging defaults with environment overrides
-    pub fn get_available_models(&self) -> Vec<(String, ModelInfo)> {
-        let mut models = default_models();
+    fn upsert_model(
+        models: &mut Vec<(String, ModelInfo)>,
+        name: String,
+        info: ModelInfo,
+    ) {
+        if let Some(pos) = models.iter().position(|(n, _)| n == &name) {
+            models[pos] = (name, info);
+        } else {
+            models.push((name, info));
+        }
+    }
 
-        // If CHAT_MODEL_ID and CHAT_MODEL_NAME are set, add/replace the model
-        if let (Some(id), Some(name)) = (&self.chat_model_id, &self.chat_model_name) {
-            let provider = self
-                .chat_model_provider
-                .clone()
-                .unwrap_or_else(|| "openrouter".to_string());
-            let max_tokens = self.chat_model_max_tokens.unwrap_or(64000);
+    fn chat_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.chat_model_id.as_ref()?;
+        let provider = self.chat_model_provider.as_ref()?;
+        let name = self.chat_model_name.as_deref().unwrap_or(id);
+        let max_tokens = self.chat_model_max_tokens.unwrap_or(64000);
 
-            let new_model = ModelInfo {
+        Some((
+            name.to_string(),
+            ModelInfo {
                 id: id.clone(),
                 max_tokens,
-                provider,
-            };
+                provider: provider.clone(),
+            },
+        ))
+    }
 
-            // Check if model with this name already exists
-            if let Some(pos) = models.iter().position(|(n, _)| n == name) {
-                models[pos] = (name.clone(), new_model);
-            } else {
-                models.push((name.clone(), new_model));
-            }
+    fn agent_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.agent_model_id.as_ref()?;
+        let provider = self.agent_model_provider.as_ref()?;
+        let max_tokens = self.agent_model_max_tokens.unwrap_or(128000);
+
+        Some((
+            id.clone(),
+            ModelInfo {
+                id: id.clone(),
+                max_tokens,
+                provider: provider.clone(),
+            },
+        ))
+    }
+
+    fn sub_agent_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.sub_agent_model_id.as_ref()?;
+        let provider = self.sub_agent_model_provider.as_ref()?;
+        let max_tokens = self.sub_agent_model_max_tokens.unwrap_or(64000);
+
+        Some((
+            id.clone(),
+            ModelInfo {
+                id: id.clone(),
+                max_tokens,
+                provider: provider.clone(),
+            },
+        ))
+    }
+
+    fn narrator_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.narrator_model_id.as_ref()?;
+        let provider = self.narrator_model_provider.as_ref()?;
+
+        Some((
+            id.clone(),
+            ModelInfo {
+                id: id.clone(),
+                max_tokens: NARRATOR_MAX_TOKENS,
+                provider: provider.clone(),
+            },
+        ))
+    }
+
+    fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.media_model_id.as_ref()?;
+        let provider = self.media_model_provider.as_ref()?;
+
+        Some((
+            id.clone(),
+            ModelInfo {
+                id: id.clone(),
+                max_tokens: self.chat_model_max_tokens.unwrap_or(64000),
+                provider: provider.clone(),
+            },
+        ))
+    }
+
+    /// Returns a list of chat models configured from environment variables
+    pub fn get_chat_models(&self) -> Vec<(String, ModelInfo)> {
+        let mut models = Vec::new();
+
+        if let Some((name, info)) = self.chat_model_spec() {
+            Self::upsert_model(&mut models, name, info);
         }
 
         models
+    }
+
+    /// Returns a list of available models configured from environment variables
+    pub fn get_available_models(&self) -> Vec<(String, ModelInfo)> {
+        let mut models = Vec::new();
+
+        if let Some((name, info)) = self.chat_model_spec() {
+            let id = info.id.clone();
+            let name_for_check = name.clone();
+            Self::upsert_model(&mut models, name, info.clone());
+            if name_for_check != id {
+                Self::upsert_model(&mut models, id, info);
+            }
+        }
+
+        if let Some((name, info)) = self.agent_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
+        if let Some((name, info)) = self.sub_agent_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
+        if let Some((name, info)) = self.narrator_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
+        if let Some((name, info)) = self.media_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
+        models
+    }
+
+    /// Returns the default chat model name for chat mode
+    pub fn get_default_chat_model_name(&self) -> String {
+        self.chat_model_name
+            .clone()
+            .or_else(|| self.chat_model_id.clone())
+            .unwrap_or_default()
     }
 
     /// Returns the configured agent model (id, provider, max_tokens)
@@ -241,8 +367,10 @@ impl Settings {
                 self.agent_model_max_tokens.unwrap_or(128000),
             );
         }
-        // Default: ZAI GLM-4.7
-        ("glm-4.7".to_string(), "zai".to_string(), 128000)
+        if let Some((_, info)) = self.chat_model_spec() {
+            return (info.id, info.provider, info.max_tokens);
+        }
+        (String::new(), String::new(), 0)
     }
 
     /// Returns the configured sub-agent model (id, provider, max_tokens)
@@ -256,8 +384,13 @@ impl Settings {
                 self.sub_agent_model_max_tokens.unwrap_or(64000),
             );
         }
-        // Default: ZAI GLM-4.5-Air
-        ("glm-4.5-air".to_string(), "zai".to_string(), 64000)
+        if let Some((_, info)) = self.agent_model_spec() {
+            return (info.id, info.provider, info.max_tokens);
+        }
+        if let Some((_, info)) = self.chat_model_spec() {
+            return (info.id, info.provider, info.max_tokens);
+        }
+        (String::new(), String::new(), 0)
     }
 
     /// Returns the configured media model (id, provider)
@@ -265,11 +398,7 @@ impl Settings {
         if let (Some(id), Some(provider)) = (&self.media_model_id, &self.media_model_provider) {
             return (id.clone(), provider.clone());
         }
-        // Default: OpenRouter Gemini 3 Flash
-        (
-            "google/gemini-3-flash-preview".to_string(),
-            "openrouter".to_string(),
-        )
+        (String::new(), String::new())
     }
 
     /// Returns the configured narrator model (id, provider)
@@ -278,13 +407,15 @@ impl Settings {
         {
             return (id.clone(), provider.clone());
         }
-        // Default: Mistral creative model
-        (NARRATOR_MODEL.to_string(), NARRATOR_PROVIDER.to_string())
+        if let Some((_, info)) = self.chat_model_spec() {
+            return (info.id, info.provider);
+        }
+        (String::new(), String::new())
     }
 
     /// Returns model info by its display name
     pub fn get_model_info_by_name(&self, name: &str) -> Option<ModelInfo> {
-        self.get_available_models()
+        self.get_chat_models()
             .into_iter()
             .find(|(n, _)| n == name)
             .map(|(_, info)| info)
@@ -304,6 +435,8 @@ mod tests {
         // 1. Test standard loading
         env::set_var("R2_ENDPOINT_URL", "https://example.com");
         env::set_var("TELEGRAM_TOKEN", "dummy_token");
+        env::set_var("CHAT_MODEL_ID", "test-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
 
         let settings = Settings::new()?;
         assert_eq!(
@@ -313,10 +446,14 @@ mod tests {
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("TELEGRAM_TOKEN");
+        env::remove_var("CHAT_MODEL_ID");
+        env::remove_var("CHAT_MODEL_PROVIDER");
 
         // 2. Test empty env var
         env::set_var("R2_ENDPOINT_URL", "");
         env::set_var("TELEGRAM_TOKEN", "dummy_token");
+        env::set_var("CHAT_MODEL_ID", "test-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
 
         let settings = Settings::new()?;
         // With our fallback logic, if it's empty in env, config might ignore it (or treating as unset).
@@ -326,10 +463,14 @@ mod tests {
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("TELEGRAM_TOKEN");
+        env::remove_var("CHAT_MODEL_ID");
+        env::remove_var("CHAT_MODEL_PROVIDER");
 
         // 3. Test explicit mapping case (Upper to lower)
         env::set_var("R2_ENDPOINT_URL", "https://mapping.test");
         env::set_var("TELEGRAM_TOKEN", "dummy");
+        env::set_var("CHAT_MODEL_ID", "test-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
 
         let settings = Settings::new()?;
         assert_eq!(
@@ -339,6 +480,8 @@ mod tests {
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("TELEGRAM_TOKEN");
+        env::remove_var("CHAT_MODEL_ID");
+        env::remove_var("CHAT_MODEL_PROVIDER");
 
         env::remove_var("ZAI_API_KEY");
         Ok(())
@@ -420,101 +563,15 @@ pub struct ModelInfo {
     pub provider: String,
 }
 
-/// Returns the default list of supported models and their configurations
-pub fn default_models() -> Vec<(String, ModelInfo)> {
-    vec![
-        (
-            "OR Gemini 3 Flash".to_string(),
-            ModelInfo {
-                id: "google/gemini-3-flash-preview".to_string(),
-                max_tokens: 64000,
-                provider: "openrouter".to_string(),
-            },
-        ),
-        (
-            "ZAI GLM-4.7".to_string(),
-            ModelInfo {
-                id: "glm-4.7".to_string(),
-                max_tokens: 128000,
-                provider: "zai".to_string(),
-            },
-        ),
-        (
-            "ZAI GLM-4.5-Air".to_string(),
-            ModelInfo {
-                id: "glm-4.5-air".to_string(),
-                max_tokens: 64000,
-                provider: "zai".to_string(),
-            },
-        ),
-        (
-            "Mistral Large".to_string(),
-            ModelInfo {
-                id: "mistral-large-latest".to_string(),
-                max_tokens: 64000,
-                provider: "mistral".to_string(),
-            },
-        ),
-        (
-            "Gemini 2.5 Flash Lite".to_string(),
-            ModelInfo {
-                id: "gemini-2.5-flash-lite".to_string(),
-                max_tokens: 64000,
-                provider: "gemini".to_string(),
-            },
-        ),
-        (
-            "Devstral 2512".to_string(),
-            ModelInfo {
-                id: "devstral-2512".to_string(),
-                max_tokens: 64000,
-                provider: "mistral".to_string(),
-            },
-        ),
-        (
-            "labs-devstral-small-2512".to_string(),
-            ModelInfo {
-                id: "labs-devstral-small-2512".to_string(),
-                max_tokens: 64000,
-                provider: "mistral".to_string(),
-            },
-        ),
-        (
-            "labs-mistral-small-creative".to_string(),
-            ModelInfo {
-                id: "labs-mistral-small-creative".to_string(),
-                max_tokens: 32000,
-                provider: "mistral".to_string(),
-            },
-        ),
-    ]
-}
-
-/// Default model for chat
-pub const DEFAULT_MODEL: &str = "OR Gemini 3 Flash";
-
-// Agent Mode configuration
-/// Model used for agent tasks (ZAI GLM-4.7)
-pub const AGENT_MODEL_ZAI: &str = "ZAI GLM-4.7";
-/// Model used for sub-agent tasks (ZAI GLM-4.5-Air)
-pub const SUB_AGENT_MODEL_ZAI: &str = "ZAI GLM-4.5-Air";
-/// Model used for agent tasks (Mistral Devstral 2512)
-pub const AGENT_MODEL_MISTRAL: &str = "Devstral 2512";
-
-/// Get the agent model based on environment variable or default to ZAI
-///
-/// Set `AGENT_MODEL_PROVIDER=mistral` to use Devstral 2512 instead of GLM-4.7
+/// Get the agent model name from environment.
 #[must_use]
-pub fn get_agent_model() -> &'static str {
-    match std::env::var("AGENT_MODEL_PROVIDER") {
-        Ok(ref val) if val == "mistral" => AGENT_MODEL_MISTRAL,
-        _ => AGENT_MODEL_ZAI, // Default to ZAI GLM-4.7
-    }
+pub fn get_agent_model() -> String {
+    std::env::var("AGENT_MODEL_ID")
+        .ok()
+        .or_else(|| std::env::var("AGENT_MODEL_NAME").ok())
+        .or_else(|| std::env::var("CHAT_MODEL_ID").ok())
+        .unwrap_or_default()
 }
-
-/// Default agent model constant (deprecated, use `get_agent_model()` instead)
-#[deprecated(since = "0.2.0", note = "Use `get_agent_model()` instead")]
-pub const AGENT_MODEL: &str = "ZAI GLM-4.7";
 
 /// Maximum iterations for agent loop
 pub const AGENT_MAX_ITERATIONS: usize = 200;
@@ -537,10 +594,6 @@ pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto
 pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when todos incomplete
 
 // Narrator system configuration
-/// Model used for narrative generation (sidecar LLM)
-pub const NARRATOR_MODEL: &str = "labs-mistral-small-creative";
-/// Provider for narrator model
-pub const NARRATOR_PROVIDER: &str = "mistral";
 /// Maximum tokens for narrator response (concise output)
 pub const NARRATOR_MAX_TOKENS: u32 = 256;
 
@@ -555,8 +608,6 @@ pub const SKILL_EMBEDDING_THRESHOLD: f32 = 0.6;
 pub const SKILL_MAX_SELECTED: usize = 3;
 /// TTL for skill metadata cache (seconds)
 pub const SKILL_CACHE_TTL_SECS: u64 = 3600;
-/// Default embedding model for skills
-pub const MISTRAL_EMBED_MODEL: &str = "mistral-embed";
 /// Expected embedding vector dimension
 pub const EMBEDDING_DIMENSION: usize = 1024;
 /// Embedding cache directory
@@ -613,10 +664,10 @@ pub fn get_skill_cache_ttl_secs() -> u64 {
         .unwrap_or(SKILL_CACHE_TTL_SECS)
 }
 
-/// Get embedding model name from env or default.
+/// Get embedding model name from env.
 #[must_use]
 pub fn get_mistral_embed_model() -> String {
-    std::env::var("MISTRAL_EMBED_MODEL").unwrap_or_else(|_| MISTRAL_EMBED_MODEL.to_string())
+    std::env::var("MISTRAL_EMBED_MODEL").unwrap_or_default()
 }
 
 /// Get embedding cache directory from env or default.

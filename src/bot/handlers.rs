@@ -1,6 +1,6 @@
 use crate::bot::state::State;
 use crate::bot::UnauthorizedCache;
-use crate::config::{Settings, DEFAULT_MODEL};
+use crate::config::Settings;
 use crate::llm::{LlmClient, Message as LlmMessage};
 use crate::storage::R2Storage;
 use crate::utils::truncate_str;
@@ -27,6 +27,15 @@ fn get_user_name(msg: &Message) -> String {
         }
     }
     "Unknown".to_string()
+}
+
+fn resolve_chat_model(settings: &Settings, stored_model: Option<String>) -> String {
+    if let Some(name) = stored_model {
+        if settings.get_model_info_by_name(&name).is_some() {
+            return name;
+        }
+    }
+    settings.get_default_chat_model_name()
 }
 
 /// Safe extraction of user ID from a message.
@@ -157,7 +166,7 @@ pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
 #[must_use]
 pub fn get_model_keyboard(settings: &Settings) -> KeyboardMarkup {
     let mut keyboard = Vec::new();
-    for model_name in settings.get_available_models().iter().map(|(n, _)| n) {
+    for model_name in settings.get_chat_models().iter().map(|(n, _)| n) {
         keyboard.push(vec![KeyboardButton::new(model_name.to_string())]);
     }
     keyboard.push(vec![KeyboardButton::new("Back")]);
@@ -173,6 +182,7 @@ pub async fn start(
     bot: Bot,
     msg: Message,
     storage: Arc<R2Storage>,
+    settings: Arc<Settings>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
@@ -192,7 +202,7 @@ pub async fn start(
         .await;
 
     let saved_model = storage.get_user_model(user_id).await.unwrap_or(None);
-    let model = saved_model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let model = resolve_chat_model(&settings, saved_model);
     info!("User {user_id} ({user_name}) is allowed. Set model to {model}");
 
     let text = "👋 <b>I am Oxide Agent.</b>\n\n\
@@ -344,7 +354,7 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    process_llm_request(bot, msg, storage, llm, text).await
+    process_llm_request(bot, msg, storage, llm, settings, text).await
 }
 
 async fn handle_menu_commands(
@@ -363,10 +373,8 @@ async fn handle_menu_commands(
                 .update(State::ChatMode)
                 .await
                 .map_err(|e| anyhow!(e.to_string()))?;
-            let model = storage
-                .get_user_model(user_id)
-                .await?
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+            let saved_model = storage.get_user_model(user_id).await?;
+            let model = resolve_chat_model(settings, saved_model);
             bot.send_message(
                 msg.chat.id,
                 format!("<b>Chat mode activated.</b>\nCurrent model: <b>{model}</b>"),
@@ -518,6 +526,7 @@ async fn process_llm_request(
     msg: Message,
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
+    settings: Arc<Settings>,
     text: String,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
@@ -526,10 +535,8 @@ async fn process_llm_request(
         .await?
         .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
     let history = storage.get_chat_history(user_id, 10).await?;
-    let model = storage
-        .get_user_model(user_id)
-        .await?
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let saved_model = storage.get_user_model(user_id).await?;
+    let model = resolve_chat_model(&settings, saved_model);
 
     storage
         .save_message(user_id, "user".to_string(), text.clone())
@@ -611,10 +618,8 @@ pub async fn handle_voice(
     }
 
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
-    let model = storage
-        .get_user_model(user_id)
-        .await?
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let saved_model = storage.get_user_model(user_id).await?;
+    let model = resolve_chat_model(&settings, saved_model);
 
     let provider_info = settings.get_model_info_by_name(&model);
     let provider_name = provider_info.as_ref().map_or("unknown", |p| &p.provider);
@@ -647,7 +652,7 @@ pub async fn handle_voice(
                     format!("Recognized: \"{text}\"\n\nProcessing request..."),
                 )
                 .await?;
-                process_llm_request(bot, msg, storage, llm, text).await?;
+                process_llm_request(bot, msg, storage, llm, settings, text).await?;
             }
         }
         Err(e) => {
@@ -702,10 +707,8 @@ pub async fn handle_photo(
         .and_then(|p| p.last())
         .ok_or_else(|| anyhow!("No photo found"))?;
     let caption = msg.caption().unwrap_or("Describe this image.");
-    let model = storage
-        .get_user_model(user_id)
-        .await?
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let saved_model = storage.get_user_model(user_id).await?;
+    let model = resolve_chat_model(&settings, saved_model);
     let system_prompt = storage
         .get_user_prompt(user_id)
         .await?

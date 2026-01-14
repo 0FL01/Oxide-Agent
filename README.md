@@ -59,11 +59,14 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, AWS SDK for Cl
 | **Cloudflare R2** | `R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
 | **Mistral AI** | `MISTRAL_API_KEY` | **Critical for Agent** (`mistral-embed` model for skill selection) |
 
-### 🤖 LLM Providers (Default)
-*   **OpenRouter** (`OPENROUTER_API_KEY`) — used for chat (`gemini-3-flash`).
-    > [!IMPORTANT]
-    > **Gemini 3 Flash** model (via OpenRouter) is **required** for voice message recognition and image analysis. Without it, these functions will not work.
-*   **ZAI** (`ZAI_API_KEY`) — **Required for agent** (`glm-4.7`, **Default Agent Model**). **ZAI** is [Zhipu AI](https://z.ai/).
+### 🤖 LLM Providers (Configured via `.env`)
+*   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
+*   **ZAI** (`ZAI_API_KEY`) — primary provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). ZAI is [Zhipu AI](https://z.ai/) and provides tool-aware chat completions.
+*   **Mistral** (`MISTRAL_API_KEY`) — great for cost-effective agent/chat combos (e.g., `devstral-2512`, `mistral-large-latest`). Pair a Mistral chat model with the same provider via `CHAT_MODEL_PROVIDER=mistral`.
+*   **Groq** (`GROQ_API_KEY`) — optional provider for specialized workloads (set `AGENT_MODEL_PROVIDER=groq` + `AGENT_MODEL_ID=groq-trooper-1`).
+
+> [!NOTE]
+> Voice recognition and image analysis depend on whichever multimodal model you configure via `CHAT_MODEL_*`/`MEDIA_MODEL_*`. The bot exposes only the models you declare in `.env`, so `Change Model` will only list those names.
 
 ### 🛠 Infrastructure
 *   **Docker** — run code sandbox (`agent-sandbox:latest`)
@@ -122,7 +125,53 @@ TAVILY_API_KEY=... # Tavily key for web search in Agent mode (optional)
 ```
 </details>
 
+## Model Configuration
+
+Set available chat/agent models through `.env`. Only declared model names appear in the bot's menus and multimodal handlers.
+
+### Chat model (multimodal)
+```dotenv
+CHAT_MODEL_ID="google/gemini-3-flash-preview"
+CHAT_MODEL_PROVIDER="openrouter"
+CHAT_MODEL_NAME="✨ Gemini 3.0 Flash"
+CHAT_MODEL_MAX_TOKENS=64000
+```
+Swap `CHAT_MODEL_PROVIDER`/`CHAT_MODEL_ID` and adjust the name when you need a different multimodal provider (e.g., `mistral-large-latest`).
+
+### Agent & Sub-agent
+```dotenv
+AGENT_MODEL_ID="glm-4.7"
+AGENT_MODEL_PROVIDER="zai"
+AGENT_MODEL_MAX_TOKENS=200000
+
+SUB_AGENT_MODEL_ID="glm-4.5-air"
+SUB_AGENT_MODEL_PROVIDER="zai"
+SUB_AGENT_MODEL_MAX_TOKENS=128000
+```
+Omitting the sub-agent block falls back to the agent model settings.
+
+### Optional overrides
+```dotenv
+MEDIA_MODEL_ID="google/gemini-3-flash-preview"
+MEDIA_MODEL_PROVIDER="openrouter"
+
+NARRATOR_MODEL_ID="labs-mistral-small-creative"
+NARRATOR_MODEL_PROVIDER="mistral"
+```
+
+### Alternate provider example
+```
+CHAT_MODEL_ID="mistral-large-latest"
+CHAT_MODEL_PROVIDER="mistral"
+
+AGENT_MODEL_ID="devstral-2512"
+AGENT_MODEL_PROVIDER="mistral"
+```
+
+Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
+
 ## Agent Architecture
+
 
 <details>
 <summary>🏗 Internal Structure, Skills, Hooks</summary>
@@ -244,16 +293,6 @@ Dockerfile                     # Main application Dockerfile
 docker-compose.yml
 ```
 </details>
-
-## Available Models
-
-| Name | Provider | Features |
-| :--- | :--- | :--- |
-| **OR Gemini 3 Flash** | OpenRouter | Multimodal, default chat model |
-| **ZAI GLM-4.7** | ZAI (Zhipu AI) | Default Agent Model, GLM Coding Plan |
-| **Mistral Large** | Mistral | Free and generous |
-| **Gemini 2.5 Flash Lite** | Google | Cheap and efficient |
-| **Devstral 2512** | Mistral | Top free choice for coding and Agent work |
 
 ## Key Dependencies
 

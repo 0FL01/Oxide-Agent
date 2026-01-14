@@ -36,7 +36,7 @@ impl AgentRunnerConfig {
 impl Default for AgentRunnerConfig {
     fn default() -> Self {
         Self::new(
-            get_agent_model().to_string(),
+            get_agent_model(),
             AGENT_MAX_ITERATIONS,
             AGENT_CONTINUATION_LIMIT,
         )

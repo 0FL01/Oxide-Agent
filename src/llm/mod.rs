@@ -240,12 +240,29 @@ pub struct LlmClient {
     pub narrator_model: String,
     /// Narrator provider name
     pub narrator_provider: String,
+    /// Default chat model name for user-facing requests
+    pub chat_model_name: String,
+    /// Optional media model name for multimodal requests
+    pub media_model_name: Option<String>,
+    /// Optional media model ID for audio/image fallbacks
+    pub media_model_id: Option<String>,
+    /// Optional media model provider for audio/image fallbacks
+    pub media_model_provider: Option<String>,
 }
 
 impl LlmClient {
     /// Create a new LLM client with providers configured from settings
     #[must_use]
     pub fn new(settings: &crate::config::Settings) -> Self {
+        let chat_model_name = settings.get_default_chat_model_name();
+        let (media_model_id, media_model_provider) = match settings.get_media_model() {
+            (id, provider) if !id.is_empty() && !provider.is_empty() => {
+                (Some(id), Some(provider))
+            }
+            _ => (None, None),
+        };
+        let media_model_name = media_model_id.clone();
+
         Self {
             groq: settings
                 .groq_api_key
@@ -273,6 +290,10 @@ impl LlmClient {
             models: settings.get_available_models(),
             narrator_model: settings.get_configured_narrator_model().0,
             narrator_provider: settings.get_configured_narrator_model().1,
+            chat_model_name,
+            media_model_name,
+            media_model_id,
+            media_model_provider,
         }
     }
 
@@ -336,14 +357,6 @@ impl LlmClient {
         let model_info = self.get_model_info(model_name)?;
 
         let provider = self.get_provider(&model_info.provider)?;
-
-        // Special case for OpenRouter with retry/fallback as in Python
-        if model_name == "OR Gemini 3 Flash" && model_info.provider == "openrouter" {
-            debug!("Using OpenRouter fallback logic for Gemini 3 Flash");
-            return self
-                .openrouter_chat_with_fallback(system_prompt, history, user_message)
-                .await;
-        }
 
         debug!(
             model = model_name,
@@ -550,82 +563,6 @@ impl LlmClient {
         provider.generate_embedding(text, model).await
     }
 
-    /// # Errors
-    ///
-    /// Returns `LlmError::MissingConfig` if `OpenRouter` is not configured, or any error from the provider.
-    async fn openrouter_chat_with_fallback(
-        &self,
-        system_prompt: &str,
-        history: &[Message],
-        user_message: &str,
-    ) -> Result<String, LlmError> {
-        let provider = self
-            .openrouter
-            .as_ref()
-            .ok_or_else(|| LlmError::MissingConfig("openrouter".to_string()))?;
-
-        // Primary model: google/gemini-3-flash-preview
-        let primary_model = "google/gemini-3-flash-preview";
-        let fallback_model = "google/gemini-2.5-flash";
-
-        for attempt in 1..=3 {
-            let start = std::time::Instant::now();
-            info!("OpenRouter: Attempting with {primary_model}, attempt {attempt}/3");
-            match provider
-                .chat_completion(system_prompt, history, user_message, primary_model, 64000)
-                .await
-            {
-                Ok(res) => {
-                    info!(
-                        model = primary_model,
-                        duration_ms = start.elapsed().as_millis(),
-                        "OpenRouter: Success on attempt {attempt}"
-                    );
-                    return Ok(res);
-                }
-                Err(e) => {
-                    warn!(
-                        model = primary_model,
-                        duration_ms = start.elapsed().as_millis(),
-                        error = %e,
-                        "OpenRouter: Error on attempt {attempt}"
-                    );
-                    if attempt < 3 {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-                }
-            }
-        }
-
-        info!(
-            "OpenRouter: All attempts with {primary_model} failed, switching to {fallback_model}"
-        );
-
-        for attempt in 1..=5 {
-            info!("OpenRouter: Attempting with {fallback_model}, attempt {attempt}/5");
-            match provider
-                .chat_completion(system_prompt, history, user_message, fallback_model, 64000)
-                .await
-            {
-                Ok(res) => return Ok(res),
-                Err(e) => {
-                    warn!("OpenRouter: Error with {fallback_model} on attempt {attempt}: {e}");
-                    match Self::get_retry_delay(&e, attempt) {
-                        Some(delay) => {
-                            tokio::time::sleep(delay).await;
-                            continue;
-                        }
-                        None => return Err(e),
-                    }
-                }
-            }
-        }
-
-        Err(LlmError::ApiError(
-            "All fallback attempts failed".to_string(),
-        ))
-    }
-
     /// Transcribe audio to text
     ///
     /// # Errors
@@ -637,16 +574,6 @@ impl LlmClient {
         mime_type: &str,
         model_name: &str,
     ) -> Result<String, LlmError> {
-        // As per Python logic, transcribe usually uses Gemini or OpenRouter
-        // We'll use the provider associated with the model, or fallback if it's the "retry_with_model_fallback" case
-        // In Python it's a decorator, here we just implement it.
-
-        if model_name == "Gemini 2.5 Flash Lite" {
-            return self
-                .gemini_transcribe_with_fallback(audio_bytes, mime_type)
-                .await;
-        }
-
         let model_info = self.get_model_info(model_name)?;
         let provider = self.get_provider(&model_info.provider)?;
         provider
@@ -674,71 +601,25 @@ impl LlmClient {
         {
             Ok(text) => Ok(text),
             Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_GEMINI" => {
-                // Fallback to OpenRouter with Gemini 3 Flash for transcription
-                info!("ZAI does not support audio, falling back to OpenRouter with Gemini 3 Flash");
-                let openrouter = self
-                    .openrouter
-                    .as_ref()
-                    .ok_or_else(|| LlmError::MissingConfig("openrouter".to_string()))?;
-                let fallback_model = "google/gemini-3-flash-preview";
-                openrouter
-                    .transcribe_audio(audio_bytes, mime_type, fallback_model)
+                let media_provider = self
+                    .media_model_provider
+                    .as_deref()
+                    .ok_or_else(|| LlmError::MissingConfig("media_model_provider".to_string()))?;
+                let media_model_id = self
+                    .media_model_id
+                    .as_deref()
+                    .ok_or_else(|| LlmError::MissingConfig("media_model_id".to_string()))?;
+
+                info!(
+                    "ZAI does not support audio, falling back to media model {media_model_id}"
+                );
+                let provider = self.get_provider(media_provider)?;
+                provider
+                    .transcribe_audio(audio_bytes, mime_type, media_model_id)
                     .await
             }
             Err(e) => Err(e),
         }
-    }
-
-    /// # Errors
-    ///
-    /// Returns `LlmError::MissingConfig` if Gemini is not configured, or any error from the provider.
-    async fn gemini_transcribe_with_fallback(
-        &self,
-        audio_bytes: Vec<u8>,
-        mime_type: &str,
-    ) -> Result<String, LlmError> {
-        let provider = self
-            .gemini
-            .as_ref()
-            .ok_or_else(|| LlmError::MissingConfig("gemini".to_string()))?;
-
-        let primary_model = "gemini-flash-latest";
-        let fallback_model = "gemini-2.5-flash";
-
-        for attempt in 1..=3 {
-            match provider
-                .transcribe_audio(audio_bytes.clone(), mime_type, primary_model)
-                .await
-            {
-                Ok(res) => return Ok(res),
-                Err(e) => {
-                    warn!("Gemini transcription error (primary {primary_model}): {e}");
-                    if attempt < 3 {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-                }
-            }
-        }
-
-        for attempt in 1..=5 {
-            match provider
-                .transcribe_audio(audio_bytes.clone(), mime_type, fallback_model)
-                .await
-            {
-                Ok(res) => return Ok(res),
-                Err(e) => {
-                    warn!("Gemini transcription error (fallback {fallback_model}): {e}");
-                    if attempt < 5 {
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    } else {
-                        return Err(e);
-                    }
-                }
-            }
-        }
-        Err(LlmError::ApiError(
-            "All transcription fallback attempts failed".to_string(),
-        ))
     }
 
     /// Analyze an image with a text prompt

@@ -365,9 +365,10 @@ async fn handle_command(
     storage: Arc<storage::R2Storage>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     cache: Arc<UnauthorizedCache>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
     let res = match cmd {
-        Command::Start => bot::handlers::start(bot, msg, storage, dialogue).await,
+        Command::Start => bot::handlers::start(bot, msg, storage, settings, dialogue).await,
         Command::Clear => bot::handlers::clear(bot, msg, storage).await,
         Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
         Command::Stats => bot::handlers::stats(bot, msg, cache).await,

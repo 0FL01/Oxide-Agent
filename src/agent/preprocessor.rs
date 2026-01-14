@@ -1,7 +1,7 @@
 //! Input preprocessor for multimodal content
 //!
-//! Handles voice and image preprocessing using Gemini Flash
-//! before passing to the agent for execution.
+//! Handles voice and image preprocessing using the configured
+//! multimodal model before passing to the agent for execution.
 
 use crate::llm::LlmClient;
 use crate::sandbox::SandboxManager;
@@ -41,9 +41,7 @@ impl Preprocessor {
         }
     }
 
-    /// Transcribe voice audio to text using Gemini Flash
-    ///
-    /// Uses the existing transcription infrastructure with `OpenRouter` Gemini
+    /// Transcribe voice audio to text using the configured multimodal model
     ///
     /// # Examples
     ///
@@ -76,10 +74,15 @@ impl Preprocessor {
             audio_bytes.len()
         );
 
-        // Use Gemini Flash for transcription (via OpenRouter)
+        let model_name = self
+            .llm_client
+            .media_model_name
+            .as_deref()
+            .unwrap_or(&self.llm_client.chat_model_name);
+
         let transcription = self
             .llm_client
-            .transcribe_audio(audio_bytes, mime_type, "OR Gemini 3 Flash")
+            .transcribe_audio(audio_bytes, mime_type, model_name)
             .await
             .map_err(|e| anyhow::anyhow!("Transcription failed: {e}"))?;
 
@@ -140,13 +143,19 @@ impl Preprocessor {
         let system_prompt = "You are a visual analyzer for an AI agent. \
                             Your task is to create a detailed text description of the image that allows the agent to understand its content without accessing the image itself.";
 
+        let model_name = self
+            .llm_client
+            .media_model_name
+            .as_deref()
+            .unwrap_or(&self.llm_client.chat_model_name);
+
         let description = self
             .llm_client
             .analyze_image(
                 image_bytes,
                 &prompt,
                 system_prompt,
-                "OR Gemini 3 Flash", // Use Gemini for multimodal
+                model_name,
             )
             .await
             .map_err(|e| anyhow::anyhow!("Image analysis failed: {e}"))?;
