@@ -14,6 +14,9 @@ pub const MISTRAL_CHAT_TEMPERATURE: f32 = 0.9;
 /// Temperature used when Mistral runs tool-enabled chat requests.
 pub const MISTRAL_TOOL_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for ZAI chat completions.
+// NOTE: Hardcoded to 0.95 in ZaiProvider to avoid f32 serialization issues.
+// Kept here for reference only - do NOT use in code.
+#[deprecated(note = "Hardcoded in ZaiProvider to avoid f32 serialization issues. Do not use.")]
 pub const ZAI_CHAT_TEMPERATURE: f32 = 0.95;
 /// Default temperature used for Gemini chat responses.
 pub const GEMINI_CHAT_TEMPERATURE: f32 = 1.0;

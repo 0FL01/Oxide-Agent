@@ -117,6 +117,8 @@ impl LlmProvider for ZaiProvider {
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
+            // Hardcoded to 0.95 as officially recommended by ZAI.
+            // DO NOT change to f32 constant to avoid serialization issues.
             "temperature": 0.95
         });
 
@@ -220,6 +222,8 @@ impl LlmProvider for ZaiProvider {
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
+            // Hardcoded to 0.95 as officially recommended by ZAI.
+            // DO NOT change to f32 constant to avoid serialization issues.
             "temperature": 0.95,
             "stream": true
         });
