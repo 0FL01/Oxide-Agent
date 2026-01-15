@@ -936,28 +936,38 @@ impl OpenRouterProvider {
                     }));
                 }
                 "assistant" => {
-                    let mut content = msg.content.clone();
+                    let mut m = json!({
+                        "role": "assistant",
+                        "content": msg.content
+                    });
+
                     if let Some(tool_calls) = &msg.tool_calls {
-                        if !tool_calls.is_empty() {
-                            let tool_calls_json = json!({ "tool_calls": tool_calls });
-                            let tool_calls_str =
-                                serde_json::to_string(&tool_calls_json).unwrap_or_default();
-                            if content.is_empty() {
-                                content = tool_calls_str;
-                            } else {
-                                content = format!("{content}\n\n{tool_calls_str}");
-                            }
+                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        if !api_tool_calls.is_empty() {
+                            m["tool_calls"] = json!(api_tool_calls);
                         }
                     }
-                    messages.push(json!({
-                        "role": "assistant",
-                        "content": content
-                    }));
+
+                    messages.push(m);
                 }
                 "tool" => {
                     messages.push(json!({
-                        "role": "user",
-                        "content": format!("[Tool Output] {}", msg.content)
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content
                     }));
                 }
                 _ => {
@@ -969,6 +979,22 @@ impl OpenRouterProvider {
             }
         }
         messages
+    }
+
+    fn prepare_tools_json(tools: &[super::ToolDefinition]) -> Vec<serde_json::Value> {
+        tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
+            })
+            .collect()
     }
 }
 
@@ -1112,20 +1138,25 @@ If there is no speech in the file or the file does not contain an audio track, s
         &self,
         system_prompt: &str,
         history: &[super::Message],
-        _tools: &[super::ToolDefinition],
+        tools: &[super::ToolDefinition],
         model_id: &str,
         max_tokens: u32,
     ) -> Result<super::ChatResponse, super::LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
 
         let messages = Self::prepare_structured_messages(system_prompt, history);
+        let openai_tools = Self::prepare_tools_json(tools);
 
-        let body = json!({
+        let mut body = json!({
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": 0.7
         });
+
+        if !openai_tools.is_empty() {
+            body["tools"] = json!(openai_tools);
+        }
 
         let mut extra_headers = Vec::new();
         if !self.site_url.is_empty() {
@@ -1139,7 +1170,36 @@ If there is no speech in the file or the file does not contain an audio track, s
         let res_json =
             send_json_request(&self.http_client, url, &body, Some(&auth), &extra_headers).await?;
 
-        let content = extract_text_content(&res_json, &["choices", "0", "message", "content"])?;
+        let content = res_json
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string);
+
+        let tool_calls_value = res_json
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("tool_calls"));
+
+        let tool_calls = match tool_calls_value {
+            Some(value) if value.is_null() => Vec::new(),
+            Some(value) if value.is_array() => serde_json::from_value(value.clone())
+                .map_err(|e| super::LlmError::JsonError(e.to_string()))?,
+            Some(_) => {
+                return Err(super::LlmError::JsonError(
+                    "Invalid tool_calls format from OpenRouter".to_string(),
+                ))
+            }
+            None => Vec::new(),
+        };
+
+        if content.is_none() && tool_calls.is_empty() {
+            return Err(super::LlmError::ApiError("Empty response".to_string()));
+        }
+
         let finish_reason = res_json["choices"][0]["finish_reason"]
             .as_str()
             .unwrap_or("unknown")
@@ -1154,8 +1214,8 @@ If there is no speech in the file or the file does not contain an audio track, s
         });
 
         Ok(super::ChatResponse {
-            content: Some(content),
-            tool_calls: vec![],
+            content,
+            tool_calls,
             finish_reason,
             reasoning_content: None,
             usage,
