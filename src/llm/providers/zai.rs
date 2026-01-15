@@ -1,6 +1,5 @@
 mod stream;
 
-use crate::config::ZAI_CHAT_TEMPERATURE;
 use crate::llm::{http_utils, ChatResponse, LlmError, LlmProvider, Message, ToolDefinition};
 use async_trait::async_trait;
 use reqwest::Client as HttpClient;
@@ -118,7 +117,7 @@ impl LlmProvider for ZaiProvider {
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": ZAI_CHAT_TEMPERATURE
+            "temperature": 0.95
         });
 
         debug!(
@@ -221,7 +220,7 @@ impl LlmProvider for ZaiProvider {
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": ZAI_CHAT_TEMPERATURE,
+            "temperature": 0.95,
             "stream": true
         });
 
