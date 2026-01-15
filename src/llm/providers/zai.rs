@@ -30,14 +30,11 @@ impl ZaiProvider {
         for msg in history {
             match msg.role.as_str() {
                 "tool" => {
-                    let mut tool_message = json!({
+                    messages.push(json!({
                         "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
                         "content": msg.content
-                    });
-                    if let Some(tool_call_id) = &msg.tool_call_id {
-                        tool_message["tool_call_id"] = json!(tool_call_id);
-                    }
-                    messages.push(tool_message);
+                    }));
                 }
                 "assistant" => {
                     let mut m = json!({
@@ -47,23 +44,21 @@ impl ZaiProvider {
 
                     // If we have tool calls, include them
                     if let Some(tool_calls) = &msg.tool_calls {
-                        if !tool_calls.is_empty() {
-                            let api_tool_calls: Vec<serde_json::Value> = tool_calls
-                                .iter()
-                                .map(|tc| {
-                                    json!({
-                                        "id": tc.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": tc.function.name,
-                                            "arguments": tc.function.arguments
-                                        }
-                                    })
+                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
                                 })
-                                .collect();
+                            })
+                            .collect();
 
-                            m["tool_calls"] = json!(api_tool_calls);
-                        }
+                        m["tool_calls"] = json!(api_tool_calls);
                     }
 
                     messages.push(m);
@@ -230,9 +225,7 @@ impl LlmProvider for ZaiProvider {
             "stream": true
         });
 
-        if !openai_tools.is_empty() {
-            body["tools"] = json!(openai_tools);
-        }
+        body["tools"] = json!(openai_tools);
 
         debug!(
             "ZAI: tools array: {}",
