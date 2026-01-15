@@ -94,66 +94,6 @@ impl ZaiProvider {
             })
             .collect()
     }
-
-    async fn send_zai_request(
-        &self,
-        url: &str,
-        body: &serde_json::Value,
-    ) -> Result<reqwest::Response, LlmError> {
-        let response = self
-            .http_client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .header("HTTP-Referer", "https://opencode.ai/")
-            .header("X-Title", "opencode")
-            .header(
-                "User-Agent",
-                "Opencode/0.1.0 (compatible; ai-sdk/openai-compatible)",
-            )
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-
-            // Handle 429 Too Many Requests specifically
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let wait_secs = crate::llm::http_utils::parse_retry_after(response.headers());
-                let error_text = response.text().await.unwrap_or_default();
-                return Err(LlmError::RateLimit {
-                    wait_secs,
-                    message: error_text,
-                });
-            }
-
-            let error_text = response.text().await.unwrap_or_default();
-
-            // Detect HTML error pages from Nginx/proxies
-            let is_html = error_text.trim_start().starts_with("<!DOCTYPE")
-                || error_text.trim_start().starts_with("<html")
-                || error_text.trim_start().starts_with("<HTML");
-
-            let clean_message = if is_html {
-                // Don't include raw HTML in error message
-                format!("ZAI API error: {status} (Server returned HTML error page)")
-            } else {
-                // Truncate very long error messages to avoid token bloat
-                let truncated = if error_text.len() > 500 {
-                    format!("{}... (truncated)", &error_text[..500])
-                } else {
-                    error_text
-                };
-                format!("ZAI API error: {status} - {truncated}")
-            };
-
-            return Err(LlmError::ApiError(clean_message));
-        }
-
-        Ok(response)
-    }
 }
 
 #[async_trait]
@@ -267,20 +207,17 @@ impl LlmProvider for ZaiProvider {
 
         let url = "https://api.z.ai/api/paas/v4/chat/completions";
 
-        // Prepare messages and tools
         let messages = Self::prepare_zai_messages(system_prompt, history);
         let openai_tools = Self::prepare_tools_json(tools);
 
-        let mut body = json!({
+        let body = json!({
             "model": model_id,
             "messages": messages,
+            "tools": openai_tools,
             "max_tokens": max_tokens,
             "temperature": ZAI_CHAT_TEMPERATURE,
             "stream": true
         });
-
-        // Always include tools in request (even if empty) - matches original implementation
-        body["tools"] = json!(openai_tools);
 
         debug!(
             "ZAI: Sending request body (model: {}, tools_count: {}): {}",
@@ -289,9 +226,30 @@ impl LlmProvider for ZaiProvider {
             serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string())
         );
 
-        let response = self.send_zai_request(url, &body).await?;
+        let response = self
+            .http_client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://opencode.ai/")
+            .header("X-Title", "opencode")
+            .header(
+                "User-Agent",
+                "Opencode/0.1.0 (compatible; ai-sdk/openai-compatible)",
+            )
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
 
-        // Process streaming response
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::ApiError(format!(
+                "ZAI API error: {status} - {error_text}"
+            )));
+        }
+
         let stream = response.bytes_stream().eventsource();
         process_zai_stream(stream).await
     }
