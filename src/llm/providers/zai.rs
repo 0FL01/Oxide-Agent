@@ -281,7 +281,6 @@ impl LlmProvider for ZaiProvider {
 
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);
-            body["tool_choice"] = json!("auto");
         }
 
         let response = self.send_zai_request(url, &body).await?;
