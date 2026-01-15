@@ -279,9 +279,15 @@ impl LlmProvider for ZaiProvider {
             "stream": true
         });
 
-        if !openai_tools.is_empty() {
-            body["tools"] = json!(openai_tools);
-        }
+        // Always include tools in request (even if empty) - matches original implementation
+        body["tools"] = json!(openai_tools);
+
+        debug!(
+            "ZAI: Sending request body (model: {}, tools_count: {}): {}",
+            model_id,
+            openai_tools.len(),
+            serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string())
+        );
 
         let response = self.send_zai_request(url, &body).await?;
 
