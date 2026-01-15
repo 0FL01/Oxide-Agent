@@ -917,6 +917,59 @@ impl OpenRouterProvider {
             site_name,
         }
     }
+
+    fn prepare_structured_messages(
+        system_prompt: &str,
+        history: &[super::Message],
+    ) -> Vec<serde_json::Value> {
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": system_prompt
+        })];
+
+        for msg in history {
+            match msg.role.as_str() {
+                "system" => {
+                    messages.push(json!({
+                        "role": "system",
+                        "content": msg.content
+                    }));
+                }
+                "assistant" => {
+                    let mut content = msg.content.clone();
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        if !tool_calls.is_empty() {
+                            let tool_calls_json = json!({ "tool_calls": tool_calls });
+                            let tool_calls_str =
+                                serde_json::to_string(&tool_calls_json).unwrap_or_default();
+                            if content.is_empty() {
+                                content = tool_calls_str;
+                            } else {
+                                content = format!("{content}\n\n{tool_calls_str}");
+                            }
+                        }
+                    }
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": content
+                    }));
+                }
+                "tool" => {
+                    messages.push(json!({
+                        "role": "user",
+                        "content": format!("[Tool Output] {}", msg.content)
+                    }));
+                }
+                _ => {
+                    messages.push(json!({
+                        "role": "user",
+                        "content": msg.content
+                    }));
+                }
+            }
+        }
+        messages
+    }
 }
 
 #[async_trait]
@@ -1053,5 +1106,59 @@ If there is no speech in the file or the file does not contain an audio track, s
         let auth = format!("Bearer {}", self.api_key);
         let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
+    }
+
+    async fn chat_with_tools(
+        &self,
+        system_prompt: &str,
+        history: &[super::Message],
+        _tools: &[super::ToolDefinition],
+        model_id: &str,
+        max_tokens: u32,
+    ) -> Result<super::ChatResponse, super::LlmError> {
+        let url = "https://openrouter.ai/api/v1/chat/completions";
+
+        let messages = Self::prepare_structured_messages(system_prompt, history);
+
+        let body = json!({
+            "model": model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.7
+        });
+
+        let mut extra_headers = Vec::new();
+        if !self.site_url.is_empty() {
+            extra_headers.push(("HTTP-Referer", self.site_url.as_str()));
+        }
+        if !self.site_name.is_empty() {
+            extra_headers.push(("X-Title", self.site_name.as_str()));
+        }
+
+        let auth = format!("Bearer {}", self.api_key);
+        let res_json =
+            send_json_request(&self.http_client, url, &body, Some(&auth), &extra_headers).await?;
+
+        let content = extract_text_content(&res_json, &["choices", "0", "message", "content"])?;
+        let finish_reason = res_json["choices"][0]["finish_reason"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+
+        let usage = res_json.get("usage").and_then(|u| {
+            Some(super::TokenUsage {
+                prompt_tokens: u.get("prompt_tokens")?.as_u64()? as u32,
+                completion_tokens: u.get("completion_tokens")?.as_u64()? as u32,
+                total_tokens: u.get("total_tokens")?.as_u64()? as u32,
+            })
+        });
+
+        Ok(super::ChatResponse {
+            content: Some(content),
+            tool_calls: vec![],
+            finish_reason,
+            reasoning_content: None,
+            usage,
+        })
     }
 }
