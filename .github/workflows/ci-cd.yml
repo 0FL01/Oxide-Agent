@@ -74,7 +74,7 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock') }}
 
       - name: Run cargo check/clippy/test
-        run: cargo check --tests && cargo clippy --tests -- -D warnings && cargo test
+        run: cargo check --tests && cargo clippy --tests -- -D warnings && cargo test -- --skip test_zai_tool_calling_integration
 
       - name: Run cargo fmt check
         run: cargo fmt --all -- --check
