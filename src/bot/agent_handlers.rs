@@ -12,10 +12,10 @@ use crate::agent::{
 };
 use crate::bot::agent::extract_agent_input;
 use crate::bot::messaging::send_long_message;
-use crate::bot::state::State;
+use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
-    get_agent_keyboard, loop_action_keyboard, loop_type_label, wipe_confirmation_keyboard,
-    AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
+    confirmation_keyboard, get_agent_keyboard, loop_action_keyboard, loop_type_label, AgentView,
+    DefaultAgentView, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
 use crate::config::AGENT_MAX_ITERATIONS;
 use crate::llm::LlmClient;
@@ -121,10 +121,22 @@ pub async fn handle_agent_message(
                 return cancel_agent_task(bot, msg, dialogue).await;
             }
             "🗑 Clear Memory" => {
-                return clear_agent_memory(bot, msg, storage).await;
+                return confirm_destructive_action(
+                    ConfirmationType::ClearMemory,
+                    bot,
+                    msg,
+                    dialogue,
+                )
+                .await;
             }
             "🔄 Recreate Container" => {
-                return confirm_agent_wipe(bot, msg, dialogue).await;
+                return confirm_destructive_action(
+                    ConfirmationType::RecreateContainer,
+                    bot,
+                    msg,
+                    dialogue,
+                )
+                .await;
             }
             "⬅️ Exit Agent Mode" => {
                 return exit_agent_mode(bot, msg, dialogue, storage).await;
@@ -807,38 +819,6 @@ async fn cancel_agent_task_by_id(bot: Bot, user_id: i64, chat_id: ChatId) -> Res
     Ok(())
 }
 
-/// Clear agent memory
-///
-/// # Errors
-///
-/// Returns an error if the confirmation message cannot be sent.
-pub async fn clear_agent_memory(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
-    let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    info!(user_id = user_id, "User requested memory clear via button");
-
-    match SESSION_REGISTRY.reset(&user_id).await {
-        Ok(()) => {
-            let _ = storage.clear_agent_memory(user_id).await;
-            bot.send_message(msg.chat.id, DefaultAgentView::memory_cleared())
-                .reply_markup(get_agent_keyboard())
-                .await?;
-        }
-        Err("Cannot reset while task is running") => {
-            bot.send_message(msg.chat.id, DefaultAgentView::clear_blocked_by_task())
-                .reply_markup(get_agent_keyboard())
-                .await?;
-        }
-        Err(_) => {
-            // No session — just clear storage
-            let _ = storage.clear_agent_memory(user_id).await;
-            bot.send_message(msg.chat.id, DefaultAgentView::memory_cleared())
-                .reply_markup(get_agent_keyboard())
-                .await?;
-        }
-    }
-    Ok(())
-}
-
 /// Exit agent mode
 ///
 /// # Errors
@@ -867,29 +847,43 @@ pub async fn exit_agent_mode(
     Ok(())
 }
 
-/// Ask for confirmation to recreate container
+/// Ask for confirmation for destructive action (clear memory or recreate container)
 ///
 /// # Errors
 ///
 /// Returns an error if the confirmation message cannot be sent.
-pub async fn confirm_agent_wipe(bot: Bot, msg: Message, dialogue: AgentDialogue) -> Result<()> {
-    dialogue.update(State::AgentWipeConfirmation).await?;
-    bot.send_message(msg.chat.id, DefaultAgentView::wipe_confirmation())
+pub async fn confirm_destructive_action(
+    action: ConfirmationType,
+    bot: Bot,
+    msg: Message,
+    dialogue: AgentDialogue,
+) -> Result<()> {
+    dialogue
+        .update(State::AgentConfirmation(action.clone()))
+        .await?;
+
+    let message_text = match action {
+        ConfirmationType::ClearMemory => DefaultAgentView::memory_clear_confirmation(),
+        ConfirmationType::RecreateContainer => DefaultAgentView::container_wipe_confirmation(),
+    };
+
+    bot.send_message(msg.chat.id, message_text)
         .parse_mode(ParseMode::Html)
-        .reply_markup(wipe_confirmation_keyboard())
+        .reply_markup(confirmation_keyboard())
         .await?;
     Ok(())
 }
 
-/// Handle confirmation for wiping agent container
+/// Handle confirmation for destructive agent actions
 ///
 /// # Errors
 ///
-/// Returns an error if the container cannot be recreated or message cannot be sent.
-pub async fn handle_agent_wipe_confirmation(
+/// Returns an error if the action cannot be performed or message cannot be sent.
+pub async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,
     dialogue: AgentDialogue,
+    action: ConfirmationType,
     storage: Arc<R2Storage>,
     llm: Arc<LlmClient>,
     settings: Arc<crate::config::Settings>,
@@ -908,56 +902,86 @@ pub async fn handle_agent_wipe_confirmation(
     let keyboard = get_agent_keyboard();
 
     match text {
-        "✅ Yes" => {
-            // Ensure session exists (restores from DB if needs be, or creates new)
-            ensure_session_exists(user_id, chat_id.0, &llm, &storage, &settings).await;
-            match SESSION_REGISTRY
-                .with_executor_mut(&user_id, |executor| {
-                    Box::pin(async move {
-                        let sandbox = executor
-                            .session_mut()
-                            .ensure_sandbox()
-                            .await
-                            .map_err(AgentWipeError::SandboxAccess)?;
-                        sandbox.recreate().await.map_err(AgentWipeError::Recreate)?;
-                        Ok(())
-                    })
-                })
-                .await
-            {
-                Ok(Ok(())) => {
-                    bot.send_message(chat_id, DefaultAgentView::container_recreated())
-                        .reply_markup(keyboard)
-                        .await?;
-                }
-                Ok(Err(AgentWipeError::SandboxAccess(e))) => {
-                    warn!(error = %e, "Sandbox access failed during container recreate");
-                    bot.send_message(chat_id, DefaultAgentView::sandbox_access_error())
-                        .reply_markup(keyboard)
-                        .await?;
-                }
-                Ok(Err(AgentWipeError::Recreate(e))) => {
-                    bot.send_message(chat_id, format!("Error during recreation: {e}"))
-                        .reply_markup(keyboard)
-                        .await?;
-                }
-                Err("Cannot reset while task is running") => {
-                    bot.send_message(
-                        chat_id,
-                        DefaultAgentView::container_recreate_blocked_by_task(),
-                    )
-                    .reply_markup(keyboard)
-                    .await?;
-                }
-                Err(_) => {
-                    // Should be unreachable due to ensure_session_exists, but just in case
-                    bot.send_message(chat_id, DefaultAgentView::session_not_found())
-                        .reply_markup(keyboard)
-                        .await?;
+        "✅ Yes" => match action {
+            ConfirmationType::ClearMemory => {
+                info!(user_id = user_id, "User confirmed memory clear");
+                match SESSION_REGISTRY.reset(&user_id).await {
+                    Ok(()) => {
+                        let _ = storage.clear_agent_memory(user_id).await;
+                        bot.send_message(chat_id, DefaultAgentView::memory_cleared())
+                            .reply_markup(keyboard)
+                            .await?;
+                    }
+                    Err("Cannot reset while task is running") => {
+                        bot.send_message(chat_id, DefaultAgentView::clear_blocked_by_task())
+                            .reply_markup(keyboard)
+                            .await?;
+                    }
+                    Err(_) => {
+                        // No session — just clear storage
+                        let _ = storage.clear_agent_memory(user_id).await;
+                        bot.send_message(chat_id, DefaultAgentView::memory_cleared())
+                            .reply_markup(keyboard)
+                            .await?;
+                    }
                 }
             }
-        }
+            ConfirmationType::RecreateContainer => {
+                info!(user_id = user_id, "User confirmed container recreation");
+                // Ensure session exists (restores from DB if needs be, or creates new)
+                ensure_session_exists(user_id, chat_id.0, &llm, &storage, &settings).await;
+                match SESSION_REGISTRY
+                    .with_executor_mut(&user_id, |executor| {
+                        Box::pin(async move {
+                            let sandbox = executor
+                                .session_mut()
+                                .ensure_sandbox()
+                                .await
+                                .map_err(AgentWipeError::SandboxAccess)?;
+                            sandbox.recreate().await.map_err(AgentWipeError::Recreate)?;
+                            Ok(())
+                        })
+                    })
+                    .await
+                {
+                    Ok(Ok(())) => {
+                        bot.send_message(chat_id, DefaultAgentView::container_recreated())
+                            .reply_markup(keyboard)
+                            .await?;
+                    }
+                    Ok(Err(AgentWipeError::SandboxAccess(e))) => {
+                        warn!(error = %e, "Sandbox access failed during container recreate");
+                        bot.send_message(chat_id, DefaultAgentView::sandbox_access_error())
+                            .reply_markup(keyboard)
+                            .await?;
+                    }
+                    Ok(Err(AgentWipeError::Recreate(e))) => {
+                        warn!(error = %e, "Container recreation failed");
+                        bot.send_message(
+                            chat_id,
+                            DefaultAgentView::container_error(&e.to_string()),
+                        )
+                        .reply_markup(keyboard)
+                        .await?;
+                    }
+                    Err("Cannot reset while task is running") => {
+                        bot.send_message(
+                            chat_id,
+                            DefaultAgentView::container_recreate_blocked_by_task(),
+                        )
+                        .reply_markup(keyboard)
+                        .await?;
+                    }
+                    Err(_) => {
+                        bot.send_message(chat_id, DefaultAgentView::sandbox_access_error())
+                            .reply_markup(keyboard)
+                            .await?;
+                    }
+                }
+            }
+        },
         "❌ Cancel" => {
+            info!(user_id = user_id, action = ?action, "User cancelled destructive action");
             bot.send_message(chat_id, DefaultAgentView::operation_cancelled())
                 .reply_markup(keyboard)
                 .await?;

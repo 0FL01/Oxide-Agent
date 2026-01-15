@@ -139,7 +139,6 @@ Set available chat/agent models through `.env`. Only declared model names appear
 CHAT_MODEL_ID="google/gemini-3-flash-preview"
 CHAT_MODEL_PROVIDER="openrouter"
 CHAT_MODEL_NAME="✨ Gemini 3.0 Flash"
-CHAT_MODEL_MAX_TOKENS=64000
 ```
 Swap `CHAT_MODEL_PROVIDER`/`CHAT_MODEL_ID` and adjust the name when you need a different multimodal provider (e.g., `mistral-large-latest`).
 
@@ -148,11 +147,9 @@ Swap `CHAT_MODEL_PROVIDER`/`CHAT_MODEL_ID` and adjust the name when you need a d
 ```dotenv
 AGENT_MODEL_ID="glm-4.7"
 AGENT_MODEL_PROVIDER="zai"
-AGENT_MODEL_MAX_TOKENS=200000
 
 SUB_AGENT_MODEL_ID="glm-4.5-air"
 SUB_AGENT_MODEL_PROVIDER="zai"
-SUB_AGENT_MODEL_MAX_TOKENS=128000
 ```
 Omitting the sub-agent block falls back to the agent model settings.
 

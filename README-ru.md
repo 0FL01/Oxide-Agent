@@ -135,7 +135,6 @@ TAVILY_API_KEY=... # Ключ Tavily для веб-поиска в режиме 
 CHAT_MODEL_ID="google/gemini-3-flash-preview"
 CHAT_MODEL_PROVIDER="openrouter"
 CHAT_MODEL_NAME="✨ Gemini 3.0 Flash"
-CHAT_MODEL_MAX_TOKENS=64000
 ```
 Чтобы использовать другую мультимодальную модель (например, `mistral-large-latest`), поменяйте `CHAT_MODEL_PROVIDER` и `CHAT_MODEL_ID`, сохраняйте те же названия переменных.
 
@@ -145,11 +144,9 @@ CHAT_MODEL_MAX_TOKENS=64000
 ```dotenv
 AGENT_MODEL_ID="glm-4.7"
 AGENT_MODEL_PROVIDER="zai"
-AGENT_MODEL_MAX_TOKENS=200000
 
 SUB_AGENT_MODEL_ID="glm-4.5-air"
 SUB_AGENT_MODEL_PROVIDER="zai"
-SUB_AGENT_MODEL_MAX_TOKENS=128000
 ```
 Если блок под-агента пропущен, используются настройки основного агента.
 

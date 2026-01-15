@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// Type of destructive action requiring confirmation
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConfirmationType {
+    /// Clear agent memory (history)
+    ClearMemory,
+    /// Recreate agent container
+    RecreateContainer,
+}
+
 /// Represents the current state of the user dialogue
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub enum State {
@@ -12,6 +21,6 @@ pub enum State {
     AgentMode,
     /// Normal chat mode with management buttons
     ChatMode,
-    /// Confirmation for wiping agent memory/container
-    AgentWipeConfirmation,
+    /// Confirmation for destructive agent actions
+    AgentConfirmation(ConfirmationType),
 }

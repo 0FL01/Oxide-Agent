@@ -316,8 +316,8 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                 .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
                 .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
                 .branch(
-                    dptree::case![State::AgentWipeConfirmation]
-                        .endpoint(handle_agent_wipe_confirmation),
+                    dptree::case![State::AgentConfirmation(action)]
+                        .endpoint(handle_agent_confirmation),
                 ),
             ),
         )
@@ -488,20 +488,21 @@ async fn handle_loop_callback(
     respond(())
 }
 
-async fn handle_agent_wipe_confirmation(
+async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    action: bot::state::ConfirmationType,
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::agent_handlers::handle_agent_wipe_confirmation(
-        bot, msg, dialogue, storage, llm, settings,
+    if let Err(e) = bot::agent_handlers::handle_agent_confirmation(
+        bot, msg, dialogue, action, storage, llm, settings,
     )
     .await
     {
-        error!("Agent wipe confirmation handler error: {}", e);
+        error!("Agent confirmation handler error: {}", e);
     }
     respond(())
 }
