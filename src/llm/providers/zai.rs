@@ -126,6 +126,12 @@ impl LlmProvider for ZaiProvider {
             "temperature": ZAI_CHAT_TEMPERATURE
         });
 
+        debug!(
+            "ZAI: Sending chat request body (model: {}): {}",
+            model_id,
+            serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string())
+        );
+
         let response = self
             .http_client
             .post(url)
