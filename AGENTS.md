@@ -90,7 +90,17 @@ src/
 │   ├── embeddings.rs          # векторные представления
 │   ├── http_utils.rs
 │   ├── openai_compat.rs
-│   └── providers.rs
+│   └── providers/
+│       ├── mod.rs
+│       ├── gemini.rs
+│       ├── groq.rs
+│       ├── mistral.rs
+│       ├── openrouter.rs
+│       ├── openrouter/
+│       │   └── helpers.rs
+│       ├── zai.rs
+│       └── zai/
+│           └── stream.rs
 ├── sandbox/                   # управление изолированной средой
 │   ├── mod.rs
 │   └── manager.rs
