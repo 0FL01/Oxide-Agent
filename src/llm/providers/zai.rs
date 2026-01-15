@@ -225,7 +225,10 @@ impl LlmProvider for ZaiProvider {
             "stream": true
         });
 
-        body["tools"] = json!(openai_tools);
+        if !openai_tools.is_empty() {
+            body["tools"] = json!(openai_tools);
+            body["tool_choice"] = json!("auto");
+        }
 
         debug!(
             "ZAI: tools array: {}",
