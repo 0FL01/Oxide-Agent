@@ -216,14 +216,17 @@ impl LlmProvider for ZaiProvider {
         let messages = Self::prepare_zai_messages(system_prompt, history);
         let openai_tools = Self::prepare_tools_json(tools);
 
-        let body = json!({
+        let mut body = json!({
             "model": model_id,
             "messages": messages,
-            "tools": openai_tools,
             "max_tokens": max_tokens,
             "temperature": ZAI_CHAT_TEMPERATURE,
             "stream": true
         });
+
+        if !openai_tools.is_empty() {
+            body["tools"] = json!(openai_tools);
+        }
 
         debug!(
             "ZAI: Sending request body (model: {}, tools_count: {}): {}",
