@@ -106,7 +106,7 @@ pub async fn execute_single_tool_call(
                 }
                 return Err(anyhow::anyhow!("Task cancelled by user"));
             },
-            res = timeout(tool_timeout, ctx.registry.execute(&name, &args, Some(&ctx.cancellation_token))) => {
+            res = timeout(tool_timeout, ctx.registry.execute(&name, &args, ctx.progress_tx, Some(&ctx.cancellation_token))) => {
                 match res {
                     Ok(Ok(r)) => r,
                     Ok(Err(e)) => format!("Tool execution error: {e}"),

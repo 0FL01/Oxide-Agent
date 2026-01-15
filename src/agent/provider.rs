@@ -3,6 +3,7 @@
 //! This trait provides a unified interface for all tool providers.
 //! Implementations include `SandboxProvider`, `TavilyProvider`, and future MCP providers.
 
+use crate::agent::progress::AgentEvent;
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -26,11 +27,13 @@ pub trait ToolProvider: Send + Sync {
     ///
     /// * `tool_name` - Name of the tool to execute
     /// * `arguments` - JSON-encoded arguments for the tool
+    /// * `progress_tx` - Optional channel for emitting progress events
     /// * `cancellation_token` - Optional token to allow cancellation of long-running operations
     async fn execute(
         &self,
         tool_name: &str,
         arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String>;
 }

@@ -3,6 +3,7 @@
 //! Collects tools from all registered providers and routes tool calls appropriately.
 
 use super::provider::ToolProvider;
+use crate::agent::progress::AgentEvent;
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Result};
 use tracing::{debug, info, warn};
@@ -42,6 +43,7 @@ impl ToolRegistry {
         &self,
         tool_name: &str,
         arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         debug!(tool = tool_name, "Looking for provider to handle tool");
@@ -54,7 +56,7 @@ impl ToolRegistry {
                     "Found provider for tool"
                 );
                 return provider
-                    .execute(tool_name, arguments, cancellation_token)
+                    .execute(tool_name, arguments, progress_tx, cancellation_token)
                     .await;
             }
         }

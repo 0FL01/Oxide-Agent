@@ -19,7 +19,7 @@ async fn sub_agent_delegation_smoke_test() -> anyhow::Result<()> {
     });
 
     let result = provider
-        .execute("delegate_to_sub_agent", &args.to_string(), None)
+        .execute("delegate_to_sub_agent", &args.to_string(), None, None)
         .await?;
 
     assert!(!result.trim().is_empty());
