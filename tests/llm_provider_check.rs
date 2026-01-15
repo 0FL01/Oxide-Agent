@@ -19,7 +19,6 @@ fn init_test_env() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ZAI_API_KEY"]
 async fn test_zai_tool_calling_integration() -> Result<()> {
     init_test_env();
 
@@ -62,8 +61,9 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
     // but the critical part is that the API accepts the `tools` parameter without 400ing.
     // So we'll try to trigger it.
 
-    // Use "glm-4.5-air" as requested by the user (prod model)
-    let model_id = "glm-4.5-air";
+    let model_id = env::var("ZAI_MODEL_ID")
+        .or_else(|_| env::var("AGENT_MODEL_ID"))
+        .unwrap_or_else(|_| "glm-4.5-air".to_string());
 
     // We need to send a message that *might* trigger a tool, but even if it doesn't,
     // a successful 200 OK response proves the schema is valid.
@@ -71,7 +71,7 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
 
     info!("Sending request to ZAI (model: {})...", model_id);
     let result = provider
-        .chat_with_tools(system_prompt, &messages, &tools, model_id, 1024)
+        .chat_with_tools(system_prompt, &messages, &tools, &model_id, 1024)
         .await;
 
     match result {
