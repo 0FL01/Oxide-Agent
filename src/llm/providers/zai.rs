@@ -206,6 +206,12 @@ impl LlmProvider for ZaiProvider {
         use eventsource_stream::Eventsource;
 
         debug!(
+            "ZAI: *** CHAT_WITH_TOOLS ENTRY *** model={model_id} tools_count={} history_size={}",
+            tools.len(),
+            history.len()
+        );
+
+        debug!(
             "ZAI: Starting tool-enabled chat completion (model: {model_id}, tools: {}, history: {})",
             tools.len(),
             history.len()
