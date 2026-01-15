@@ -235,6 +235,15 @@ impl LlmProvider for ZaiProvider {
         }
 
         debug!(
+            "ZAI: tools array: {}",
+            if !openai_tools.is_empty() {
+                "EXISTS in body"
+            } else {
+                "OMITTED (empty)"
+            }
+        );
+
+        debug!(
             "ZAI: Sending request body (model: {}, tools_count: {}): {}",
             model_id,
             openai_tools.len(),
