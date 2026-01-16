@@ -73,6 +73,10 @@ pub struct Settings {
     pub openrouter_api_key: Option<String>,
     /// Tavily API key
     pub tavily_api_key: Option<String>,
+    /// Crawl4AI base URL
+    pub crawl4ai_url: Option<String>,
+    /// Crawl4AI request timeout (seconds)
+    pub crawl4ai_timeout_secs: Option<u64>,
 
     /// R2 Storage access key ID
     pub r2_access_key_id: Option<String>,
@@ -557,6 +561,8 @@ mod tests {
             gemini_api_key: None,
             openrouter_api_key: None,
             tavily_api_key: None,
+            crawl4ai_url: None,
+            crawl4ai_timeout_secs: None,
             r2_access_key_id: None,
             r2_secret_access_key: None,
             r2_endpoint_url: None,
@@ -804,6 +810,31 @@ pub const TELEGRAM_API_MAX_RETRIES: usize = 3;
 pub const TELEGRAM_API_INITIAL_BACKOFF_MS: u64 = 500;
 /// Maximum backoff delay in milliseconds for Telegram API retries
 pub const TELEGRAM_API_MAX_BACKOFF_MS: u64 = 4000;
+
+// Crawl4AI HTTP client configuration
+/// Default timeout for Crawl4AI requests (seconds)
+pub const CRAWL4AI_DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+/// Get Crawl4AI base URL from env.
+///
+/// Environment variable: `CRAWL4AI_URL`
+#[must_use]
+pub fn get_crawl4ai_url() -> Option<String> {
+    std::env::var("CRAWL4AI_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Get Crawl4AI timeout from env or default
+///
+/// Environment variable: `CRAWL4AI_TIMEOUT_SECS`
+#[must_use]
+pub fn get_crawl4ai_timeout() -> u64 {
+    std::env::var("CRAWL4AI_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(CRAWL4AI_DEFAULT_TIMEOUT_SECS)
+}
 
 // LLM HTTP client configuration
 /// Default timeout for LLM API HTTP requests (seconds)

@@ -8,7 +8,7 @@ weight: medium
 ## File Hosting (when Telegram does not accept):
 - **upload_file**: upload a file from the sandbox to GoFile and get a link for the user
   - ALWAYS use for files > 50 MB (Telegram limit)
-  - Upload limit: 1 GB. If the file is larger — the task is impossible
+  - Upload limit: 4 GB. If the file is larger — the task is impossible
   - After successful upload, the file is deleted from the sandbox
 
 ## FILES: Delivery to User

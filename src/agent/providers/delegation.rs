@@ -30,6 +30,8 @@ use uuid::Uuid;
 
 #[cfg(feature = "tavily")]
 use crate::agent::providers::TavilyProvider;
+#[cfg(feature = "crawl4ai")]
+use crate::agent::providers::Crawl4aiProvider;
 
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &["delegate_to_sub_agent", "send_file_to_user"];
 const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
@@ -89,7 +91,7 @@ impl DelegationProvider {
         ];
 
         #[cfg(not(feature = "tavily"))]
-        let providers: Vec<Box<dyn ToolProvider>> = vec![
+        let mut providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(TodosProvider::new(todos_arc)),
             Box::new(sandbox_provider),
             Box::new(FileHosterProvider::new(self.user_id)),
@@ -102,6 +104,13 @@ impl DelegationProvider {
                 if let Ok(provider) = TavilyProvider::new(&tavily_key) {
                     providers.push(Box::new(provider));
                 }
+            }
+        }
+
+        #[cfg(feature = "crawl4ai")]
+        if let Ok(url) = std::env::var("CRAWL4AI_URL") {
+            if !url.is_empty() {
+                providers.push(Box::new(Crawl4aiProvider::new(&url)));
             }
         }
 

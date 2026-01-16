@@ -67,6 +67,7 @@ src/
 │       ├── filehoster.rs
 │       ├── path.rs
 │       ├── sandbox.rs
+│       ├── crawl4ai.rs
 │       ├── tavily.rs
 │       ├── todos.rs
 │       └── ytdlp.rs

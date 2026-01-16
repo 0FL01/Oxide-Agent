@@ -6,6 +6,10 @@
 use super::hooks::{CompletionCheckHook, DelegationGuardHook, WorkloadDistributorHook};
 use super::memory::AgentMessage;
 use super::prompt::create_agent_system_prompt;
+use super::providers::{
+    DelegationProvider, FileHosterProvider, SandboxProvider, TodosProvider, YtdlpProvider,
+};
+use super::registry::ToolRegistry;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use super::session::AgentSession;
 use super::skills::SkillRegistry;
@@ -17,6 +21,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
+
+#[cfg(feature = "crawl4ai")]
+use super::providers::Crawl4aiProvider;
+#[cfg(feature = "tavily")]
+use super::providers::TavilyProvider;
 
 // Re-export sanitize_xml_tags for backward compatibility
 pub use super::recovery::sanitize_xml_tags as public_sanitize_xml_tags;
@@ -90,42 +99,15 @@ impl AgentExecutor {
         self.session.last_task.as_deref()
     }
 
-    /// Execute a task with iterative tool calling (agentic loop)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the LLM call fails, tool execution fails, or the iteration/timeout limits are exceeded.
-    #[tracing::instrument(skip(self, progress_tx), fields(user_id = self.session.user_id, chat_id = self.session.chat_id))]
-    pub async fn execute(
-        &mut self,
-        task: &str,
-        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Result<String> {
-        #[cfg(feature = "tavily")]
-        use super::providers::TavilyProvider;
-        use super::providers::{
-            DelegationProvider, FileHosterProvider, SandboxProvider, TodosProvider, YtdlpProvider,
-        };
-        use super::registry::ToolRegistry;
-
-        self.session.start_task();
-        let task_id = self.session.current_task_id.clone().unwrap_or_default();
-        self.session.remember_task(task);
-        info!(
-            task = %task,
-            task_id = %task_id,
-            memory_messages = self.session.memory.get_messages().len(),
-            memory_tokens = self.session.memory.token_count(),
-            "Starting agent task"
-        );
-
-        self.session.memory.add_message(AgentMessage::user(task));
-
-        let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-
+    fn build_tool_registry(
+        &self,
+        todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
-        let sandbox_provider = if let Some(ref tx) = progress_tx {
+
+        let sandbox_provider = if let Some(tx) = progress_tx {
             SandboxProvider::new(self.session.user_id).with_progress_tx(tx.clone())
         } else {
             SandboxProvider::new(self.session.user_id)
@@ -133,7 +115,7 @@ impl AgentExecutor {
         registry.register(Box::new(sandbox_provider));
         registry.register(Box::new(FileHosterProvider::new(self.session.user_id)));
 
-        let ytdlp_provider = if let Some(ref tx) = progress_tx {
+        let ytdlp_provider = if let Some(tx) = progress_tx {
             YtdlpProvider::new(self.session.user_id).with_progress_tx(tx.clone())
         } else {
             YtdlpProvider::new(self.session.user_id)
@@ -154,6 +136,44 @@ impl AgentExecutor {
                 }
             }
         }
+
+        #[cfg(feature = "crawl4ai")]
+        if let Ok(url) = std::env::var("CRAWL4AI_URL") {
+            if !url.is_empty() {
+                registry.register(Box::new(Crawl4aiProvider::new(&url)));
+            }
+        }
+
+        registry
+    }
+
+    /// Execute a task with iterative tool calling (agentic loop)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LLM call fails, tool execution fails, or the iteration/timeout limits are exceeded.
+    #[tracing::instrument(skip(self, progress_tx), fields(user_id = self.session.user_id, chat_id = self.session.chat_id))]
+    pub async fn execute(
+        &mut self,
+        task: &str,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Result<String> {
+        self.session.start_task();
+        let task_id = self.session.current_task_id.clone().unwrap_or_default();
+        self.session.remember_task(task);
+        info!(
+            task = %task,
+            task_id = %task_id,
+            memory_messages = self.session.memory.get_messages().len(),
+            memory_tokens = self.session.memory.token_count(),
+            "Starting agent task"
+        );
+
+        self.session.memory.add_message(AgentMessage::user(task));
+
+        let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
+
+        let registry = self.build_tool_registry(Arc::clone(&todos_arc), progress_tx.as_ref());
 
         let tools = registry.all_tools();
         let system_prompt = create_agent_system_prompt(

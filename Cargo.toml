@@ -60,4 +60,4 @@ ignored = ["serde_bytes"]
 [features]
 default = []
 tavily = ["dep:tavily"]
-
+crawl4ai = []

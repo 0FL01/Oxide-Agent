@@ -4,14 +4,48 @@ services:
       context: .
     image: oxide-agent:latest
     container_name: oxide_agent
-    network_mode: "host"
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - CRAWL4AI_URL=http://crawl4ai:11235
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - oxide_network
+    depends_on:
+      crawl4ai:
+        condition: service_healthy
     logging:
       driver: json-file
       options:
         max-size: "1m"
         max-file: "3"
+
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    container_name: crawl4ai
+    restart: unless-stopped
+    networks:
+      - oxide_network
+    volumes:
+      - /dev/shm:/dev/shm
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+networks:
+  oxide_network:
+    driver: bridge
