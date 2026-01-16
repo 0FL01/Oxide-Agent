@@ -251,6 +251,7 @@ If the sub-agent doesn't finish, a partial report will be returned."
             config: {
                 let (model_id, _, _) = self.settings.get_configured_sub_agent_model();
                 AgentRunnerConfig::new(model_id, SUB_AGENT_MAX_ITERATIONS, AGENT_CONTINUATION_LIMIT)
+                    .with_sub_agent(true)
             },
         };
 

@@ -24,6 +24,7 @@ impl AgentRunner {
             0,
             ctx.config.continuation_limit,
         )
+        .with_sub_agent(ctx.config.is_sub_agent)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -51,6 +52,7 @@ impl AgentRunner {
             state.continuation_count,
             ctx.config.continuation_limit,
         )
+        .with_sub_agent(ctx.config.is_sub_agent)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -79,6 +81,7 @@ impl AgentRunner {
             state.continuation_count,
             ctx.config.continuation_limit,
         )
+        .with_sub_agent(ctx.config.is_sub_agent)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -121,6 +124,7 @@ impl AgentRunner {
             state.continuation_count,
             ctx.config.continuation_limit,
         )
+        .with_sub_agent(ctx.config.is_sub_agent)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -150,6 +154,7 @@ impl AgentRunner {
             state.continuation_count,
             ctx.config.continuation_limit,
         )
+        .with_sub_agent(ctx.config.is_sub_agent)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),

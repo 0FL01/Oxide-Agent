@@ -48,6 +48,10 @@ impl WorkloadDistributorHook {
         None
     }
 
+    fn is_crawl4ai_tool(&self, tool_name: &str) -> bool {
+        matches!(tool_name, "deep_crawl" | "web_markdown" | "web_pdf")
+    }
+
     fn is_complex_prompt(&self, prompt: &str) -> bool {
         let normalized = prompt.to_lowercase();
         let word_count = normalized.split_whitespace().count();
@@ -107,7 +111,7 @@ impl Hook for WorkloadDistributorHook {
         "workload_distributor"
     }
 
-    fn handle(&self, event: &HookEvent, _context: &HookContext) -> HookResult {
+    fn handle(&self, event: &HookEvent, context: &HookContext) -> HookResult {
         match event {
             // 1. Context Injection for Complex Prompts
             HookEvent::BeforeAgent { prompt } => {
@@ -115,24 +119,40 @@ impl Hook for WorkloadDistributorHook {
                     return HookResult::InjectContext(
                         "[SYSTEM NOTICE: High Complexity Detected]\n\
                         You must SPLIT your workflow to handle this request efficiently:\n\
-                        1. 🟢 DELEGATE retrieval tasks (git clone, grep, find, cat) to `delegate_to_sub_agent`.\n\
-                           - Goal: Get raw data/files.\n\
+                        1. 🟢 DELEGATE retrieval tasks (git clone, grep, find, cat, deep_crawl, web_markdown) to `delegate_to_sub_agent`.\n\
+                           - Goal: Get raw data/files/web content.\n\
                            - Forbidden for sub-agent: analysis, reasoning, explaining \"why\".\n\
                         2. 🧠 RETAIN analysis tasks for yourself.\n\
-                           - Goal: Read the files returned by the sub-agent and perform the high-level reasoning.\n\
-                           - Do NOT try to clone repos or scan thousands of files yourself.\n\
-                        Example of GOOD delegation: \"Clone repo X and list files containing 'hook'\".\n\
-                        Example of BAD delegation: \"Analyze how the hook system works\"."
+                           - Goal: Read the files/content returned by the sub-agent and perform high-level reasoning.\n\
+                        Example of GOOD delegation: \"Use deep_crawl to find news about X\".\n\
+                        Example of BAD delegation: \"Analyze why project X is failing\"."
                             .to_string(),
                     );
                 }
             }
 
-            // 2. Hard Blocking of Heavy Commands
+            // 2. Hard Blocking of Heavy Commands and Direct Search
             HookEvent::BeforeTool {
                 tool_name,
                 arguments,
             } => {
+                // Sub-agents are allowed to run everything
+                if context.is_sub_agent {
+                    return HookResult::Continue;
+                }
+
+                // Block direct Crawl4AI calls for Main Agent
+                if self.is_crawl4ai_tool(tool_name) {
+                    return HookResult::Block {
+                        reason: format!(
+                            "⛔ DIRECT SEARCH BLOCKED: You are trying to use '{}' directly. \
+                            For efficiency and context saving, you MUST delegate web crawling/extraction to a sub-agent.\n\
+                            ACTION REQUIRED: Use `delegate_to_sub_agent` with tool '{}' in the whitelist.",
+                            tool_name, tool_name
+                        ),
+                    };
+                }
+
                 if tool_name == "execute_command" {
                     // Parse JSON arguments to get the command string
                     let command = match serde_json::from_str::<Value>(arguments) {

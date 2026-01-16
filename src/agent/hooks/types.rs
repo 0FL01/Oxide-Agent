@@ -81,6 +81,8 @@ pub struct HookContext<'a> {
     pub token_count: usize,
     /// Maximum allowed tokens for memory
     pub max_tokens: usize,
+    /// Whether this is a sub-agent
+    pub is_sub_agent: bool,
 }
 
 impl<'a> HookContext<'a> {
@@ -99,7 +101,15 @@ impl<'a> HookContext<'a> {
             max_continuations,
             token_count: 0,
             max_tokens: usize::MAX,
+            is_sub_agent: false,
         }
+    }
+
+    /// Add sub-agent status to the hook context.
+    #[must_use]
+    pub const fn with_sub_agent(mut self, is_sub_agent: bool) -> Self {
+        self.is_sub_agent = is_sub_agent;
+        self
     }
 
     /// Add token usage metadata to the hook context.

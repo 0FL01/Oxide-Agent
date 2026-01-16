@@ -19,6 +19,8 @@ pub struct AgentRunnerConfig {
     pub max_iterations: usize,
     /// Maximum forced continuations before stopping.
     pub continuation_limit: usize,
+    /// Whether this runner is for a sub-agent.
+    pub is_sub_agent: bool,
 }
 
 impl AgentRunnerConfig {
@@ -29,7 +31,15 @@ impl AgentRunnerConfig {
             model_name,
             max_iterations,
             continuation_limit,
+            is_sub_agent: false,
         }
+    }
+
+    /// Set whether this runner is for a sub-agent.
+    #[must_use]
+    pub fn with_sub_agent(mut self, is_sub_agent: bool) -> Self {
+        self.is_sub_agent = is_sub_agent;
+        self
     }
 }
 
