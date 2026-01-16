@@ -36,10 +36,7 @@ pub(super) fn is_json_response(content_type: &str, bytes: &[u8]) -> bool {
     if content_type.contains("application/json") {
         return true;
     }
-    let trimmed = bytes
-        .iter()
-        .copied()
-        .find(|b| !b.is_ascii_whitespace());
+    let trimmed = bytes.iter().copied().find(|b| !b.is_ascii_whitespace());
     matches!(trimmed, Some(b'{') | Some(b'['))
 }
 
@@ -103,11 +100,7 @@ fn format_pdf_bytes(bytes: &[u8]) -> Result<String> {
     }
 
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Ok(format!(
-        "PDF (base64, {} bytes):\n{}",
-        bytes.len(),
-        encoded
-    ))
+    Ok(format!("PDF (base64, {} bytes):\n{}", bytes.len(), encoded))
 }
 
 fn format_pdf_json(value: &Value) -> String {

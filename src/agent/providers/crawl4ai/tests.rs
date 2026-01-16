@@ -14,18 +14,17 @@ fn test_args_deserialize() {
         assert_eq!(args.max_depth, Some(2));
     }
 
-    let md: Result<WebMarkdownArgs, _> =
-        serde_json::from_str(r#"{"url":"https://example.com"}"#);
+    let md: Result<WebMarkdownArgs, _> = serde_json::from_str(r#"{"url":"https://example.com"}"#);
     assert!(md.is_ok());
 
-    let pdf: Result<WebPdfArgs, _> =
-        serde_json::from_str(r#"{"url":"https://example.com"}"#);
+    let pdf: Result<WebPdfArgs, _> = serde_json::from_str(r#"{"url":"https://example.com"}"#);
     assert!(pdf.is_ok());
 }
 
 #[test]
 fn test_url_building() {
-    let provider = Crawl4aiProvider::with_timeout("http://localhost:11235/", Duration::from_secs(1));
+    let provider =
+        Crawl4aiProvider::with_timeout("http://localhost:11235/", Duration::from_secs(1));
     let url = provider.endpoint_url("/crawl");
     assert_eq!(url, "http://localhost:11235/crawl");
 }

@@ -820,9 +820,7 @@ pub const CRAWL4AI_DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// Environment variable: `CRAWL4AI_URL`
 #[must_use]
 pub fn get_crawl4ai_url() -> Option<String> {
-    std::env::var("CRAWL4AI_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
+    std::env::var("CRAWL4AI_URL").ok().filter(|s| !s.is_empty())
 }
 
 /// Get Crawl4AI timeout from env or default
