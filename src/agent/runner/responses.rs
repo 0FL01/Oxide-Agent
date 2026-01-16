@@ -98,7 +98,9 @@ impl AgentRunner {
         self.save_final_response(ctx, &input.raw_json, input.reasoning);
 
         if let Some(tx) = ctx.progress_tx {
-            let _ = tx.send(AgentEvent::Finished).await;
+            if !ctx.config.is_sub_agent {
+                let _ = tx.send(AgentEvent::Finished).await;
+            }
         }
         Ok(Some(final_response))
     }

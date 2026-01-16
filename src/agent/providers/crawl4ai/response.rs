@@ -13,17 +13,29 @@ pub(super) enum ResponsePayload {
 }
 
 pub(super) fn build_crawl_body(urls: Vec<String>, max_depth: Option<u8>) -> Value {
-    let mut params = Map::new();
-    params.insert("cache_mode".to_string(), json!("bypass"));
+    let mut config_params = Map::new();
+    config_params.insert("cache_mode".to_string(), json!("bypass"));
+    config_params.insert("magic_markdown".to_string(), json!(true));
+
     if let Some(depth) = max_depth {
-        params.insert("max_depth".to_string(), json!(depth));
+        let mut strategy_params = Map::new();
+        strategy_params.insert("max_depth".to_string(), json!(depth));
+        strategy_params.insert("include_external".to_string(), json!(false));
+
+        config_params.insert(
+            "deep_crawl_strategy".to_string(),
+            json!({
+                "type": "BFSDeepCrawlStrategy",
+                "params": strategy_params
+            }),
+        );
     }
 
     json!({
         "urls": urls,
         "crawler_config": {
             "type": "CrawlerRunConfig",
-            "params": params
+            "params": config_params
         }
     })
 }

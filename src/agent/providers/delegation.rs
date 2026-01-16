@@ -124,6 +124,48 @@ impl DelegationProvider {
         }
         registry
     }
+
+    fn filter_allowed_tools(
+        &self,
+        requested_tools: Vec<String>,
+        available_tools: &HashSet<String>,
+        task_id: &str,
+    ) -> Result<HashSet<String>> {
+        let blocked = Self::blocked_tool_set();
+        let requested: HashSet<String> = requested_tools.into_iter().collect();
+        let allowed: HashSet<String> = requested
+            .iter()
+            .filter(|name| !blocked.contains(*name))
+            .filter(|name| available_tools.contains(*name))
+            .cloned()
+            .collect();
+
+        if allowed.is_empty() {
+            warn!(
+                task_id = %task_id,
+                requested = ?requested,
+                available = ?available_tools,
+                "No allowed tools left after filtering"
+            );
+            return Err(anyhow!(
+                "No allowed tools left after filtering (blocked or unavailable). Requested: {:?}, Available: {:?}",
+                requested,
+                available_tools
+            ));
+        }
+        Ok(allowed)
+    }
+
+    fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
+        let mut runner = AgentRunner::new(self.llm_client.clone());
+        runner.register_hook(Box::new(CompletionCheckHook::new()));
+        runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
+            max_iterations: SUB_AGENT_MAX_ITERATIONS,
+            max_tokens: SUB_AGENT_MAX_TOKENS,
+            blocked_tools: blocked,
+        })));
+        runner
+    }
 }
 
 #[async_trait]
@@ -191,6 +233,8 @@ If the sub-agent doesn't finish, a partial report will be returned."
             context,
         } = args;
 
+        let task_id = format!("sub-{}", Uuid::new_v4());
+
         let mut sub_session = EphemeralSession::new(SUB_AGENT_MAX_TOKENS);
         sub_session
             .memory_mut()
@@ -204,38 +248,17 @@ If the sub-agent doesn't finish, a partial report will be returned."
             .map(|tool| tool.name)
             .collect();
 
-        let blocked = Self::blocked_tool_set();
-        let requested: HashSet<String> = requested_tools.into_iter().collect();
-        let allowed: HashSet<String> = requested
-            .iter()
-            .filter(|name| !blocked.contains(*name))
-            .filter(|name| available_tools.contains(*name))
-            .cloned()
-            .collect();
-
-        if allowed.is_empty() {
-            return Err(anyhow!(
-                "No allowed tools left after filtering (blocked or unavailable)"
-            ));
-        }
-
+        let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
         let registry = self.build_registry(&allowed, providers);
         let tools = registry.all_tools();
 
         let mut messages =
             AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages());
 
-        let task_id = format!("sub-{}", Uuid::new_v4());
         let system_prompt =
             create_sub_agent_system_prompt(task.as_str(), &tools, context.as_deref());
 
-        let mut runner = AgentRunner::new(self.llm_client.clone());
-        runner.register_hook(Box::new(CompletionCheckHook::new()));
-        runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
-            max_iterations: SUB_AGENT_MAX_ITERATIONS,
-            max_tokens: SUB_AGENT_MAX_TOKENS,
-            blocked_tools: blocked,
-        })));
+        let mut runner = self.create_sub_agent_runner(Self::blocked_tool_set());
 
         let mut ctx = AgentRunnerContext {
             task: task.as_str(),
