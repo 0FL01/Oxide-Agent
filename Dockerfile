@@ -17,11 +17,11 @@ FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 # Build dependencies - this layer is cached unless dependencies change
-RUN cargo chef cook --release --features tavily --recipe-path recipe.json
+RUN cargo chef cook --release --features crawl4ai --recipe-path recipe.json
 
 # Build application - this layer is rebuilt when source changes
 COPY . .
-RUN cargo build --release --features tavily
+RUN cargo build --release --features crawl4ai
 
 # Runtime stage - Debian Trixie (stable)
 FROM debian:trixie-slim
