@@ -750,21 +750,29 @@ pub async fn handle_loop_callback(
                 }
             });
         }
-        LOOP_CALLBACK_RESET => match SESSION_REGISTRY.reset(&user_id).await {
-            Ok(()) => {
-                bot.send_message(chat_id, DefaultAgentView::task_reset())
-                    .reply_markup(get_agent_keyboard())
-                    .await?;
+        LOOP_CALLBACK_RESET => {
+            // Cancel any running task first to release the executor lock.
+            SESSION_REGISTRY.cancel(&user_id).await;
+
+            // Brief yield to allow the run loop to observe cancellation and release locks.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            match SESSION_REGISTRY.reset(&user_id).await {
+                Ok(()) => {
+                    bot.send_message(chat_id, DefaultAgentView::task_reset())
+                        .reply_markup(get_agent_keyboard())
+                        .await?;
+                }
+                Err("Session not found") => {
+                    bot.send_message(chat_id, DefaultAgentView::session_not_found())
+                        .await?;
+                }
+                Err(_) => {
+                    bot.send_message(chat_id, DefaultAgentView::reset_blocked_by_task())
+                        .await?;
+                }
             }
-            Err("Session not found") => {
-                bot.send_message(chat_id, DefaultAgentView::session_not_found())
-                    .await?;
-            }
-            Err(_) => {
-                bot.send_message(chat_id, DefaultAgentView::reset_blocked_by_task())
-                    .await?;
-            }
-        },
+        }
         LOOP_CALLBACK_CANCEL => {
             cancel_agent_task_by_id(bot.clone(), user_id, chat_id).await?;
         }

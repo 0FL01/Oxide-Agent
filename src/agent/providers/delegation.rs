@@ -213,7 +213,7 @@ If the sub-agent doesn't finish, a partial report will be returned."
         tool_name: &str,
         arguments: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         if tool_name != "delegate_to_sub_agent" {
             return Err(anyhow!("Unknown delegation tool: {tool_name}"));
@@ -235,7 +235,14 @@ If the sub-agent doesn't finish, a partial report will be returned."
 
         let task_id = format!("sub-{}", Uuid::new_v4());
 
-        let mut sub_session = EphemeralSession::new(SUB_AGENT_MAX_TOKENS);
+        // Create sub-session linked to parent's cancellation token.
+        // When parent is cancelled (including on loop detection), sub-agent stops too.
+        let mut sub_session = match cancellation_token {
+            Some(parent_token) => {
+                EphemeralSession::with_parent_token(SUB_AGENT_MAX_TOKENS, parent_token)
+            }
+            None => EphemeralSession::new(SUB_AGENT_MAX_TOKENS),
+        };
         sub_session
             .memory_mut()
             .add_message(AgentMessage::user(task.as_str()));

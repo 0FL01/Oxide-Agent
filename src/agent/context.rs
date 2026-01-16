@@ -43,6 +43,20 @@ impl EphemeralSession {
         }
     }
 
+    /// Create a new ephemeral session with a child token linked to the parent.
+    ///
+    /// When the parent token is cancelled, the child token is also cancelled,
+    /// ensuring sub-agents stop when the parent agent is cancelled.
+    #[must_use]
+    pub fn with_parent_token(max_tokens: usize, parent: &CancellationToken) -> Self {
+        Self {
+            memory: AgentMemory::new(max_tokens),
+            cancellation_token: parent.child_token(),
+            loaded_skills: HashSet::new(),
+            skill_token_count: 0,
+        }
+    }
+
     /// Convenience constructor with default agent limits.
     #[must_use]
     pub fn with_default_limits() -> Self {

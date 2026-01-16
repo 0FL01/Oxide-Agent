@@ -18,6 +18,9 @@ impl AgentRunner {
     }
 
     /// Build and emit a loop-detected error.
+    ///
+    /// Cancels the agent's cancellation token to ensure the run loop terminates
+    /// before the UI notification reaches the user (fixes race condition with reset).
     pub(super) async fn loop_detected_error(
         &self,
         ctx: &mut AgentRunnerContext<'_>,
@@ -35,6 +38,10 @@ impl AgentRunner {
             iteration = event.iteration,
             "Loop detected in agent execution"
         );
+
+        // Cancel the token BEFORE sending the UI event.
+        // This ensures the run loop terminates before user can press "Reset".
+        ctx.agent.cancellation_token().cancel();
 
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
