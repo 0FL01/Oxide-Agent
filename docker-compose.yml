@@ -23,7 +23,7 @@ services:
         max-file: "3"
 
   crawl4ai:
-    image: unclecode/crawl4ai:latest
+    image: unclecode/crawl4ai:0.8
     container_name: crawl4ai
     restart: unless-stopped
     networks:
