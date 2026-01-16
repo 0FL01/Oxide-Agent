@@ -224,6 +224,7 @@ impl ToolProvider for TodosProvider {
         &self,
         tool_name: &str,
         arguments: &str,
+        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         debug!(tool = tool_name, "Executing todos tool");
@@ -384,7 +385,7 @@ mod tests {
             ]
         }"#;
 
-        let result = provider.execute("write_todos", args, None).await?;
+        let result = provider.execute("write_todos", args, None, None).await?;
         assert!(result.contains("Task list updated"));
         assert!(result.contains("1/3 completed"));
         assert!(result.contains("Task 2"));

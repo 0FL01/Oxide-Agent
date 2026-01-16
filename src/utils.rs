@@ -49,7 +49,7 @@ static RE_CODE_BLOCK: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"```[\s\S]*?
 
 /// Match code blocks with optional language: ```language\ncode```
 static RE_CODE_BLOCK_FENCE: lazy_regex::Lazy<regex::Regex> =
-    lazy_regex!(r"```(\w+)?\n([\s\S]*?)```");
+    lazy_regex!(r"```(\w+)?[ \t]*\r?\n([\s\S]*?)```");
 
 /// Match bullet points at start of line: *
 static RE_BULLET: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"(?m)^\* ");
@@ -496,6 +496,19 @@ mod tests {
     fn test_format_text_code_blocks() {
         let input = "Code:\n```rust\nlet x = 1;\n```";
         let expected = "Code:\n<pre><code class=\"rust\">let x = 1;</code></pre>";
+        assert_eq!(format_text(input), expected);
+    }
+
+    #[test]
+    fn test_format_text_code_blocks_with_whitespace() {
+        // Test with trailing space after language
+        let input = "Code:\n```rust \nlet x = 1;\n```";
+        let expected = "Code:\n<pre><code class=\"rust\">let x = 1;</code></pre>";
+        assert_eq!(format_text(input), expected);
+
+        // Test with trailing space and no language
+        let input = "Code:\n``` \nlet x = 1;\n```";
+        let expected = "Code:\n<pre><code class=\"\">let x = 1;</code></pre>";
         assert_eq!(format_text(input), expected);
     }
 

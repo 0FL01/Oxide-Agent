@@ -56,10 +56,11 @@ src/
 │   ├── hooks/                 # хуки выполнения (completion и др.)
 │   │   ├── mod.rs
 │   │   ├── completion.rs
-│   │   ├── complexity.rs      # оценка сложности задачи
-│   │   ├── sub_agent_safety.rs # проверка безопасности делегирования
+│   │   ├── delegation_guard.rs # защита делегирования
 │   │   ├── registry.rs
-│   │   └── types.rs
+│   │   ├── sub_agent_safety.rs # проверка безопасности делегирования
+│   │   ├── types.rs
+│   │   └── workload.rs         # управление рабочей нагрузкой
 │   └── providers/             # провайдеры инструментов (Sandbox, Tavily, и т.д.)
 │       ├── mod.rs
 │       ├── delegation.rs      # делегирование под-агентам
@@ -86,9 +87,20 @@ src/
 ├── llm/                       # интеграции с провайдерами LLM
 │   ├── mod.rs
 │   ├── common.rs
-│   ├── providers.rs
+│   ├── embeddings.rs          # векторные представления
+│   ├── http_utils.rs
 │   ├── openai_compat.rs
-│   └── http_utils.rs
+│   └── providers/
+│       ├── mod.rs
+│       ├── gemini.rs
+│       ├── groq.rs
+│       ├── mistral.rs
+│       ├── openrouter.rs
+│       ├── openrouter/
+│       │   └── helpers.rs
+│       ├── zai.rs
+│       └── zai/
+│           └── stream.rs
 ├── sandbox/                   # управление изолированной средой
 │   ├── mod.rs
 │   └── manager.rs

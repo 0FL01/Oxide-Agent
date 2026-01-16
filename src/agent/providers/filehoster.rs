@@ -230,6 +230,7 @@ impl ToolProvider for FileHosterProvider {
         &self,
         tool_name: &str,
         arguments: &str,
+        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         debug!(tool = tool_name, "Executing filehoster tool");

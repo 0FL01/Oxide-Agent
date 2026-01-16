@@ -25,7 +25,7 @@ pub const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
 /// Provides all text messages and formatting for agent mode interactions.
 pub trait AgentView {
     /// Welcome message when agent mode is activated
-    fn welcome_message() -> &'static str;
+    fn welcome_message(model_name: &str) -> String;
 
     /// Message shown while task is processing
     fn task_processing() -> &'static str;
@@ -80,8 +80,11 @@ pub trait AgentView {
     /// Format error message
     fn error_message(error: &str) -> String;
 
-    /// Wipe confirmation message
-    fn wipe_confirmation() -> &'static str;
+    /// Container wipe confirmation message
+    fn container_wipe_confirmation() -> &'static str;
+
+    /// Memory clear confirmation message
+    fn memory_clear_confirmation() -> &'static str;
 
     /// Format container recreation error
     fn container_error(error: &str) -> String;
@@ -98,15 +101,18 @@ pub trait AgentView {
 pub struct DefaultAgentView;
 
 impl AgentView for DefaultAgentView {
-    fn welcome_message() -> &'static str {
-        r#"🤖 <b>Agent Mode Activated</b>
+    fn welcome_message(model_name: &str) -> String {
+        format!(
+            r#"🤖 <b>Agent Mode Activated - {}</b>
 
 Waiting for a task. Send your request in any format:
 • 📝 Text
 • 🎤 Voice message
 • 🖼 Image
 
-I work autonomously: I'll create a plan, execute code, and provide the result."#
+I work autonomously: I'll create a plan, execute code, and provide the result."#,
+            model_name
+        )
     }
 
     fn task_processing() -> &'static str {
@@ -189,8 +195,12 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
         format!("❌ Error: {error}")
     }
 
-    fn wipe_confirmation() -> &'static str {
+    fn container_wipe_confirmation() -> &'static str {
         "⚠️ <b>Warning!</b>\n\nThis action will delete the current agent container and all files inside it. Chat history will be preserved.\n\nAre you sure?"
+    }
+
+    fn memory_clear_confirmation() -> &'static str {
+        "⚠️ <b>Warning!</b>\n\nThis action will clear the agent's entire conversation history. The container and files will remain intact.\n\nAre you sure?"
     }
 
     fn container_error(error: &str) -> String {
@@ -255,9 +265,9 @@ pub fn loop_action_keyboard() -> InlineKeyboardMarkup {
     ])
 }
 
-/// Get the wipe confirmation keyboard
+/// Get the confirmation keyboard for destructive actions
 #[must_use]
-pub fn wipe_confirmation_keyboard() -> KeyboardMarkup {
+pub fn confirmation_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![vec![
         KeyboardButton::new("✅ Yes"),
         KeyboardButton::new("❌ Cancel"),

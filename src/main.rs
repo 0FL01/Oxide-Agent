@@ -316,8 +316,8 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                 .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
                 .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
                 .branch(
-                    dptree::case![State::AgentWipeConfirmation]
-                        .endpoint(handle_agent_wipe_confirmation),
+                    dptree::case![State::AgentConfirmation(action)]
+                        .endpoint(handle_agent_confirmation),
                 ),
             ),
         )
@@ -365,9 +365,10 @@ async fn handle_command(
     storage: Arc<storage::R2Storage>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     cache: Arc<UnauthorizedCache>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
     let res = match cmd {
-        Command::Start => bot::handlers::start(bot, msg, storage, dialogue).await,
+        Command::Start => bot::handlers::start(bot, msg, storage, settings, dialogue).await,
         Command::Clear => bot::handlers::clear(bot, msg, storage).await,
         Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
         Command::Stats => bot::handlers::stats(bot, msg, cache).await,
@@ -402,9 +403,10 @@ async fn handle_start_voice(
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::handlers::handle_voice(
-        bot, msg, storage, llm, dialogue,
+        bot, msg, storage, llm, dialogue, settings,
     ))
     .await
     {
@@ -419,8 +421,9 @@ async fn handle_start_photo(
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue).await {
+    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings).await {
         error!("Photo handler error: {}", e);
     }
     respond(())
@@ -432,8 +435,10 @@ async fn handle_start_document(
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm).await {
+    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings).await
+    {
         error!("Document handler error: {}", e);
     }
     respond(())
@@ -457,9 +462,10 @@ async fn handle_agent_message(
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::agent_handlers::handle_agent_message(
-        bot, msg, storage, llm, dialogue,
+        bot, msg, storage, llm, dialogue, settings,
     ))
     .await
     {
@@ -473,24 +479,30 @@ async fn handle_loop_callback(
     q: CallbackQuery,
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, storage, llm).await {
+    if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, storage, llm, settings).await
+    {
         error!("Loop callback handler error: {}", e);
     }
     respond(())
 }
 
-async fn handle_agent_wipe_confirmation(
+async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    action: bot::state::ConfirmationType,
     storage: Arc<storage::R2Storage>,
     llm: Arc<llm::LlmClient>,
+    settings: Arc<Settings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) =
-        bot::agent_handlers::handle_agent_wipe_confirmation(bot, msg, dialogue, storage, llm).await
+    if let Err(e) = bot::agent_handlers::handle_agent_confirmation(
+        bot, msg, dialogue, action, storage, llm, settings,
+    )
+    .await
     {
-        error!("Agent wipe confirmation handler error: {}", e);
+        error!("Agent confirmation handler error: {}", e);
     }
     respond(())
 }

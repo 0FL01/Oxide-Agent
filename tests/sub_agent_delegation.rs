@@ -8,9 +8,9 @@ use std::sync::Arc;
 #[tokio::test]
 #[ignore = "Requires real LLM provider credentials and network access"]
 async fn sub_agent_delegation_smoke_test() -> anyhow::Result<()> {
-    let settings = Settings::new()?;
+    let settings = Arc::new(Settings::new()?);
     let llm = Arc::new(LlmClient::new(&settings));
-    let provider = DelegationProvider::new(llm, 1);
+    let provider = DelegationProvider::new(llm, 1, settings.clone());
 
     let args = json!({
         "task": "Make a short summary of what Rust is and where it is used.",
@@ -19,7 +19,7 @@ async fn sub_agent_delegation_smoke_test() -> anyhow::Result<()> {
     });
 
     let result = provider
-        .execute("delegate_to_sub_agent", &args.to_string(), None)
+        .execute("delegate_to_sub_agent", &args.to_string(), None, None)
         .await?;
 
     assert!(!result.trim().is_empty());

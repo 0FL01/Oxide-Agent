@@ -108,6 +108,7 @@ impl ToolProvider for TavilyProvider {
         &self,
         tool_name: &str,
         arguments: &str,
+        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         use std::fmt::Write;

@@ -11,10 +11,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Configuration for the agent runner.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AgentRunnerConfig {
     /// Model name to use for LLM calls.
-    pub model_name: &'static str,
+    pub model_name: String,
     /// Maximum iterations before aborting.
     pub max_iterations: usize,
     /// Maximum forced continuations before stopping.
@@ -24,11 +24,7 @@ pub struct AgentRunnerConfig {
 impl AgentRunnerConfig {
     /// Create a new config with explicit values.
     #[must_use]
-    pub const fn new(
-        model_name: &'static str,
-        max_iterations: usize,
-        continuation_limit: usize,
-    ) -> Self {
+    pub fn new(model_name: String, max_iterations: usize, continuation_limit: usize) -> Self {
         Self {
             model_name,
             max_iterations,

@@ -75,7 +75,7 @@ impl AgentRunner {
                 ctx.system_prompt,
                 ctx.messages,
                 ctx.tools,
-                ctx.config.model_name,
+                &ctx.config.model_name,
             )
             .await;
 

@@ -3,7 +3,6 @@
 //! Uses a lightweight sidecar LLM to interpret the primary agent's reasoning
 //! and tool calls into concise narrative updates.
 
-use crate::config::{get_narrator_model, get_narrator_provider};
 use crate::llm::{LlmClient, LlmError, Message, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -43,14 +42,15 @@ impl Narrator {
             return None;
         }
 
-        if !self.llm_client.is_provider_available("mistral") {
-            warn!("Narrator disabled: Mistral provider not configured");
+        let model = &self.llm_client.narrator_model;
+        let provider = &self.llm_client.narrator_provider;
+
+        if !self.llm_client.is_provider_available(provider) {
+            warn!("Narrator disabled: {provider} provider not configured");
             return None;
         }
 
         let user_message = self.build_user_message(reasoning_content, tool_calls);
-        let model = get_narrator_model();
-        let provider = get_narrator_provider();
 
         debug!(
             model = %model,

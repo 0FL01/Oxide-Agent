@@ -6,13 +6,14 @@
 use crate::agent::context::{AgentContext, EphemeralSession};
 use crate::agent::hooks::{CompletionCheckHook, SubAgentSafetyConfig, SubAgentSafetyHook};
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
+use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{FileHosterProvider, SandboxProvider, TodosProvider, YtdlpProvider};
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use crate::config::{
-    AGENT_CONTINUATION_LIMIT, SUB_AGENT_MAX_ITERATIONS, SUB_AGENT_MAX_TOKENS, SUB_AGENT_MODEL_ZAI,
+    AGENT_CONTINUATION_LIMIT, SUB_AGENT_MAX_ITERATIONS, SUB_AGENT_MAX_TOKENS,
     SUB_AGENT_TIMEOUT_SECS,
 };
 use crate::llm::ToolDefinition;
@@ -38,15 +39,21 @@ const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
 pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
     user_id: i64,
+    settings: Arc<crate::config::Settings>,
 }
 
 impl DelegationProvider {
     /// Create a new delegation provider.
     #[must_use]
-    pub fn new(llm_client: Arc<crate::llm::LlmClient>, user_id: i64) -> Self {
+    pub fn new(
+        llm_client: Arc<crate::llm::LlmClient>,
+        user_id: i64,
+        settings: Arc<crate::config::Settings>,
+    ) -> Self {
         Self {
             llm_client,
             user_id,
+            settings,
         }
     }
 
@@ -60,21 +67,33 @@ impl DelegationProvider {
     fn build_sub_agent_providers(
         &self,
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Vec<Box<dyn ToolProvider>> {
+        let sandbox_provider = if let Some(tx) = progress_tx {
+            SandboxProvider::new(self.user_id).with_progress_tx(tx.clone())
+        } else {
+            SandboxProvider::new(self.user_id)
+        };
+        let ytdlp_provider = if let Some(tx) = progress_tx {
+            YtdlpProvider::new(self.user_id).with_progress_tx(tx.clone())
+        } else {
+            YtdlpProvider::new(self.user_id)
+        };
+
         #[cfg(feature = "tavily")]
         let mut providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(TodosProvider::new(todos_arc)),
-            Box::new(SandboxProvider::new(self.user_id)),
+            Box::new(sandbox_provider),
             Box::new(FileHosterProvider::new(self.user_id)),
-            Box::new(YtdlpProvider::new(self.user_id)),
+            Box::new(ytdlp_provider),
         ];
 
         #[cfg(not(feature = "tavily"))]
         let providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(TodosProvider::new(todos_arc)),
-            Box::new(SandboxProvider::new(self.user_id)),
+            Box::new(sandbox_provider),
             Box::new(FileHosterProvider::new(self.user_id)),
-            Box::new(YtdlpProvider::new(self.user_id)),
+            Box::new(ytdlp_provider),
         ];
 
         #[cfg(feature = "tavily")]
@@ -150,6 +169,7 @@ If the sub-agent doesn't finish, a partial report will be returned."
         &self,
         tool_name: &str,
         arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         if tool_name != "delegate_to_sub_agent" {
@@ -176,7 +196,7 @@ If the sub-agent doesn't finish, a partial report will be returned."
             .add_message(AgentMessage::user(task.as_str()));
 
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
-        let providers = self.build_sub_agent_providers(Arc::clone(&todos_arc));
+        let providers = self.build_sub_agent_providers(Arc::clone(&todos_arc), progress_tx);
         let available_tools: HashSet<String> = providers
             .iter()
             .flat_map(|provider| provider.tools())
@@ -221,17 +241,16 @@ If the sub-agent doesn't finish, a partial report will be returned."
             system_prompt: &system_prompt,
             tools: &tools,
             registry: &registry,
-            progress_tx: None,
+            progress_tx,
             todos_arc: &todos_arc,
             task_id: &task_id,
             messages: &mut messages,
             agent: &mut sub_session,
             skill_registry: None,
-            config: AgentRunnerConfig::new(
-                SUB_AGENT_MODEL_ZAI,
-                SUB_AGENT_MAX_ITERATIONS,
-                AGENT_CONTINUATION_LIMIT,
-            ),
+            config: {
+                let (model_id, _, _) = self.settings.get_configured_sub_agent_model();
+                AgentRunnerConfig::new(model_id, SUB_AGENT_MAX_ITERATIONS, AGENT_CONTINUATION_LIMIT)
+            },
         };
 
         info!(task_id = %task_id, "Running sub-agent delegation");
@@ -308,6 +327,7 @@ impl ToolProvider for RestrictedToolProvider {
         &self,
         tool_name: &str,
         arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         if !self.allowed_tools.contains(tool_name) {
@@ -316,7 +336,7 @@ impl ToolProvider for RestrictedToolProvider {
         }
 
         self.inner
-            .execute(tool_name, arguments, cancellation_token)
+            .execute(tool_name, arguments, progress_tx, cancellation_token)
             .await
     }
 }
