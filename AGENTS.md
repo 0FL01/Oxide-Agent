@@ -67,7 +67,7 @@ src/
 │       ├── filehoster.rs
 │       ├── path.rs
 │       ├── sandbox.rs
-│       ├── crawl4ai.rs
+│       ├── crawl4ai/
 │       ├── tavily.rs
 │       ├── todos.rs
 │       └── ytdlp.rs
@@ -123,12 +123,13 @@ skills/                       # определения навыков в фор�
 tests/                        # интеграционные и функциональные тесты
 ├── agent_xml_leak_prevention.rs
 ├── cancellation_respected.rs
+├── crawl4ai_provider.rs
 ├── integration_validation.rs
+├── llm_provider_check.rs
 └── sub_agent_delegation.rs
 
 backlog/                      # документация и планы
 ├── blueprints/
-├── bugs/
 ├── docs/                     # спецификации компонентов
 └── done/                     # завершенные задачи
 
