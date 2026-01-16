@@ -15,7 +15,6 @@ pub(super) enum ResponsePayload {
 pub(super) fn build_crawl_body(urls: Vec<String>, max_depth: Option<u8>) -> Value {
     let mut config_params = Map::new();
     config_params.insert("cache_mode".to_string(), json!("bypass"));
-    config_params.insert("magic_markdown".to_string(), json!(true));
 
     if let Some(depth) = max_depth {
         let mut strategy_params = Map::new();
