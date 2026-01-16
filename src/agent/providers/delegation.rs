@@ -28,10 +28,10 @@ use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-#[cfg(feature = "tavily")]
-use crate::agent::providers::TavilyProvider;
 #[cfg(feature = "crawl4ai")]
 use crate::agent::providers::Crawl4aiProvider;
+#[cfg(feature = "tavily")]
+use crate::agent::providers::TavilyProvider;
 
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &["delegate_to_sub_agent", "send_file_to_user"];
 const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
@@ -82,15 +82,7 @@ impl DelegationProvider {
             YtdlpProvider::new(self.user_id)
         };
 
-        #[cfg(feature = "tavily")]
-        let mut providers: Vec<Box<dyn ToolProvider>> = vec![
-            Box::new(TodosProvider::new(todos_arc)),
-            Box::new(sandbox_provider),
-            Box::new(FileHosterProvider::new(self.user_id)),
-            Box::new(ytdlp_provider),
-        ];
-
-        #[cfg(not(feature = "tavily"))]
+        #[cfg_attr(not(any(feature = "tavily", feature = "crawl4ai")), allow(unused_mut))]
         let mut providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(TodosProvider::new(todos_arc)),
             Box::new(sandbox_provider),
