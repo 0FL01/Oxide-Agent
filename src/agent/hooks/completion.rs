@@ -54,6 +54,12 @@ impl Hook for CompletionCheckHook {
             return HookResult::Continue;
         }
 
+        // CRITICAL: LLMs are inherently "lazy" and will often try to finish early
+        // to save tokens or effort, even if tasks remain.
+        // This deterministic check is MANDATORY to guarantee work completion.
+        // DO NOT relax this check or allow the agent to self-judge its completion
+        // if there are pending items in the todo list.
+        // We previously tried to relax this, which led to significant task skipping.
         // Check if all todos are complete
         if context.todos.is_complete() {
             info!(
