@@ -68,7 +68,8 @@ pub struct Settings {
     /// `ZAI` (Zhipu AI) API key
     pub zai_api_key: Option<String>,
     /// `ZAI` (Zhipu AI) API base URL
-    pub zai_api_base: Option<String>,
+    #[serde(default = "default_zai_api_base")]
+    pub zai_api_base: String,
     /// Gemini API key
     pub gemini_api_key: Option<String>,
     /// `OpenRouter` API key
@@ -146,6 +147,10 @@ pub struct Settings {
 
 const fn default_openrouter_site_url() -> String {
     String::new()
+}
+
+fn default_zai_api_base() -> String {
+    "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string()
 }
 
 fn default_openrouter_site_name() -> String {
@@ -576,7 +581,7 @@ mod tests {
             groq_api_key: None,
             mistral_api_key: None,
             zai_api_key: None,
-            zai_api_base: None,
+            zai_api_base: default_zai_api_base(),
             gemini_api_key: None,
             openrouter_api_key: None,
             tavily_api_key: None,

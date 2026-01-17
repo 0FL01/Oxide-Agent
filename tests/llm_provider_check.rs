@@ -39,7 +39,10 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
     // but the critical part is that the API accepts the `tools` parameter without 400ing.
     // So we'll try to trigger it.
 
-    let provider = ZaiProvider::new(api_key, None);
+    let provider = ZaiProvider::new(
+        api_key,
+        "https://api.z.ai/api/paas/v4/chat/completions".to_string(),
+    );
 
     // Define a simple tool
     let tools = vec![ToolDefinition {

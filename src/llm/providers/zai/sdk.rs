@@ -52,7 +52,7 @@ impl ZaiProvider {
                     model,
                     messages,
                     &self.api_key,
-                    self.api_base.as_deref(),
+                    &self.api_base,
                     max_tokens,
                 )?;
                 client.send().await.map_err(map_zai_error)?
@@ -80,7 +80,7 @@ impl ZaiProvider {
             GLM4_5v {},
             messages,
             &self.api_key,
-            self.api_base.as_deref(),
+            &self.api_base,
             ZAI_IMAGE_MAX_TOKENS,
         )?;
 
@@ -101,13 +101,8 @@ impl ZaiProvider {
 
         match select_model(model_id)? {
             ZaiModel::Main(model) => {
-                let mut client = build_text_request(
-                    model,
-                    messages,
-                    &self.api_key,
-                    self.api_base.as_deref(),
-                    max_tokens,
-                )?;
+                let mut client =
+                    build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
@@ -115,13 +110,8 @@ impl ZaiProvider {
                 stream_text_response(client).await
             }
             ZaiModel::Sub(model) => {
-                let mut client = build_text_request(
-                    model,
-                    messages,
-                    &self.api_key,
-                    self.api_base.as_deref(),
-                    max_tokens,
-                )?;
+                let mut client =
+                    build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
@@ -147,13 +137,8 @@ impl ZaiProvider {
         (N, TextMessage): zai_rs::model::traits::Bounded,
     {
         let messages = convert_to_text_messages(system_prompt, history, Some(user_message));
-        let client = build_text_request(
-            model,
-            messages,
-            &self.api_key,
-            self.api_base.as_deref(),
-            max_tokens,
-        )?;
+        let client =
+            build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
         client.send().await.map_err(map_zai_error)
     }
 }
@@ -174,7 +159,7 @@ fn build_text_request<N>(
     model: N,
     messages: Vec<TextMessage>,
     api_key: &str,
-    api_base: Option<&str>,
+    api_base: &str,
     max_tokens: u32,
 ) -> Result<ChatCompletion<N, TextMessage>, LlmError>
 where
@@ -187,13 +172,10 @@ where
         .ok_or_else(|| LlmError::ApiError("ZAI request has no messages".to_string()))?;
 
     let mut client = ChatCompletion::new(model, first, api_key.to_string())
+        .with_url(api_base)
         .with_temperature(ZAI_TEMPERATURE)
         .with_max_tokens(max_tokens)
         .with_thinking(ThinkingType::Enabled);
-
-    if let Some(base) = api_base {
-        client = client.with_url(base);
-    }
 
     for message in iter {
         client = client.add_messages(message);
@@ -206,7 +188,7 @@ fn build_vision_request(
     model: GLM4_5v,
     messages: Vec<VisionMessage>,
     api_key: &str,
-    api_base: Option<&str>,
+    api_base: &str,
     max_tokens: u32,
 ) -> Result<ChatCompletion<GLM4_5v, VisionMessage>, LlmError> {
     let mut iter = messages.into_iter();
@@ -215,12 +197,9 @@ fn build_vision_request(
         .ok_or_else(|| LlmError::ApiError("ZAI request has no messages".to_string()))?;
 
     let mut client = ChatCompletion::new(model, first, api_key.to_string())
+        .with_url(api_base)
         .with_temperature(ZAI_TEMPERATURE)
         .with_max_tokens(max_tokens);
-
-    if let Some(base) = api_base {
-        client = client.with_url(base);
-    }
 
     for message in iter {
         client = client.add_messages(message);
