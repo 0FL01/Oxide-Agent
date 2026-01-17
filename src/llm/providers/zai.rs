@@ -78,6 +78,8 @@ impl ZaiProvider {
         messages
     }
 
+    // TODO: Временно отключено для тестов, удалить после проверки.
+    #[allow(dead_code)]
     fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
         tools
             .iter()

@@ -658,6 +658,8 @@ pub const SUB_AGENT_MAX_TOKENS: usize = 64_000;
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
 /// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when todos incomplete
+/// Default limit for search tool calls per agent session
+pub const AGENT_SEARCH_LIMIT: usize = 10;
 
 // Narrator system configuration
 /// Maximum tokens for narrator response (concise output)
@@ -746,6 +748,15 @@ pub fn get_embedding_cache_dir() -> String {
         (Some(provider), Some(model)) => format!("{base}/{provider}/{model}"),
         _ => base,
     }
+}
+
+/// Get agent search limit from env or default.
+#[must_use]
+pub fn get_agent_search_limit() -> usize {
+    std::env::var("AGENT_SEARCH_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(AGENT_SEARCH_LIMIT)
 }
 
 // Sandbox configuration

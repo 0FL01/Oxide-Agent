@@ -6,6 +6,7 @@
 pub mod completion;
 pub mod delegation_guard;
 pub mod registry;
+pub mod search_budget;
 pub mod sub_agent_safety;
 pub mod types;
 pub mod workload;
@@ -13,6 +14,7 @@ pub mod workload;
 pub use completion::CompletionCheckHook;
 pub use delegation_guard::DelegationGuardHook;
 pub use registry::{Hook, HookRegistry};
+pub use search_budget::SearchBudgetHook;
 pub use sub_agent_safety::{SubAgentSafetyConfig, SubAgentSafetyHook};
 pub use types::{HookContext, HookEvent, HookResult};
 pub use workload::WorkloadDistributorHook;

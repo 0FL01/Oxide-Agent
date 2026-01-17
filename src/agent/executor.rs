@@ -3,7 +3,9 @@
 //! Handles orchestration around the core agent runner, including
 //! session lifecycle, skill prompts, and tool registry setup.
 
-use super::hooks::{CompletionCheckHook, DelegationGuardHook, WorkloadDistributorHook};
+use super::hooks::{
+    CompletionCheckHook, DelegationGuardHook, SearchBudgetHook, WorkloadDistributorHook,
+};
 use super::memory::AgentMessage;
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
@@ -14,7 +16,7 @@ use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use super::session::AgentSession;
 use super::skills::SkillRegistry;
 use crate::agent::progress::AgentEvent;
-use crate::config::AGENT_TIMEOUT_SECS;
+use crate::config::{get_agent_search_limit, AGENT_TIMEOUT_SECS};
 use crate::llm::LlmClient;
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
@@ -50,6 +52,7 @@ impl AgentExecutor {
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(WorkloadDistributorHook::new()));
         runner.register_hook(Box::new(DelegationGuardHook::new()));
+        runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
 
         let skill_registry = match SkillRegistry::from_env(llm_client.clone()) {
             Ok(Some(registry)) => {

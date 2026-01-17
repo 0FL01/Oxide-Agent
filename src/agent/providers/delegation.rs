@@ -4,7 +4,9 @@
 //! with a lightweight model and restricted toolset.
 
 use crate::agent::context::{AgentContext, EphemeralSession};
-use crate::agent::hooks::{CompletionCheckHook, SubAgentSafetyConfig, SubAgentSafetyHook};
+use crate::agent::hooks::{
+    CompletionCheckHook, SearchBudgetHook, SubAgentSafetyConfig, SubAgentSafetyHook,
+};
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
@@ -13,8 +15,8 @@ use crate::agent::providers::{FileHosterProvider, SandboxProvider, TodosProvider
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use crate::config::{
-    AGENT_CONTINUATION_LIMIT, SUB_AGENT_MAX_ITERATIONS, SUB_AGENT_MAX_TOKENS,
-    SUB_AGENT_TIMEOUT_SECS,
+    get_agent_search_limit, AGENT_CONTINUATION_LIMIT, SUB_AGENT_MAX_ITERATIONS,
+    SUB_AGENT_MAX_TOKENS, SUB_AGENT_TIMEOUT_SECS,
 };
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Result};
@@ -164,6 +166,7 @@ impl DelegationProvider {
             max_tokens: SUB_AGENT_MAX_TOKENS,
             blocked_tools: blocked,
         })));
+        runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
         runner
     }
 }
