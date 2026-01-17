@@ -657,7 +657,7 @@ pub const SUB_AGENT_MAX_TOKENS: usize = 64_000;
 /// Threshold to trigger memory compaction
 pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
 /// Max forced continuations when todos incomplete
-pub const AGENT_CONTINUATION_LIMIT: usize = 20; // Max forced continuations when todos incomplete
+pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when todos incomplete
 
 // Narrator system configuration
 /// Maximum tokens for narrator response (concise output)

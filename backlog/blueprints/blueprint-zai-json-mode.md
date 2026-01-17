@@ -50,7 +50,7 @@
 
 ---
 
-## Phase 3: Relax Completion Hook [ ]
+## Phase 3: Relax Completion Hook [x]
 
 **Goal**: Allow early exit when LLM provides valid `final_answer`, even with incomplete todos.
 
@@ -73,23 +73,23 @@ if !todos.is_complete() && no_final_answer → ForceIteration
 ```
 
 **Steps**:
-1. [ ] **Extend HookEvent**: Add `has_final_answer: bool` field to `AfterAgent` variant
-2. [ ] **Update hook logic**: Check for final_answer before forcing continuation
-3. [ ] **Pass context**: Modify `handle_final_response()` to include final_answer status in hook event
+1. [x] **Extend HookEvent**: Add `has_final_answer: bool` field to `AfterAgent` variant
+2. [x] **Update hook logic**: Check for final_answer before forcing continuation
+3. [x] **Pass context**: Modify `handle_final_response()` to include final_answer status in hook event
 
 ### 3.2 Add Structured Output Failure Limit
 
 **Goal**: Fail-fast after N consecutive structured output errors instead of 19 retries.
 
 **Steps**:
-1. [ ] **Add counter**: Track `structured_output_failures` in `RunState` (separate from `continuation_count`)
-2. [ ] **Set limit**: After 3-5 consecutive failures, accept raw response as final_answer with warning
-3. [ ] **Reset counter**: Reset on successful parse
-4. [ ] **QA**: Run `cargo-check` and `cargo-test`
+1. [x] **Add counter**: Track `structured_output_failures` in `RunState` (separate from `continuation_count`)
+2. [x] **Set limit**: After 3-5 consecutive failures, accept raw response as final_answer with warning
+3. [x] **Reset counter**: Reset on successful parse
+4. [x] **QA**: Run `cargo-check` and `cargo-test`
 
 ---
 
-## Phase 4: Reduce AGENT_CONTINUATION_LIMIT [ ]
+## Phase 4: Reduce AGENT_CONTINUATION_LIMIT [x]
 
 **Goal**: Reduce maximum forced continuations as fail-safe.
 
@@ -97,18 +97,18 @@ if !todos.is_complete() && no_final_answer → ForceIteration
 - 📄 `src/config.rs` - configuration constants
 
 **Steps**:
-1. [ ] **Reduce limit**: Change `AGENT_CONTINUATION_LIMIT` from 20 to 8-10
-2. [ ] **QA**: Run `cargo-check`
+1. [x] **Reduce limit**: Change `AGENT_CONTINUATION_LIMIT` from 20 to 8-10
+2. [x] **QA**: Run `cargo-check`
 
 ---
 
-## Verification Checklist [ ]
+## Verification Checklist [x]
 
 After all phases complete:
 
-1. [ ] Run `cargo-check --all-targets`
-2. [ ] Run `cargo-test`
-3. [ ] Run `cargo-clippy`
+1. [x] Run `cargo-check --all-targets`
+2. [x] Run `cargo-test`
+3. [x] Run `cargo-clippy`
 4. [ ] Manual test: Send agent task that previously caused 15+ min execution
 5. [ ] Verify logs show 0-2 continuations instead of 19
 
