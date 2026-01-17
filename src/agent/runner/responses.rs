@@ -103,7 +103,7 @@ impl AgentRunner {
         let final_response = input.final_answer;
 
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
-        let hook_result = self.after_agent_hook_result(ctx, state, &final_response, true);
+        let hook_result = self.after_agent_hook_result(ctx, state, &final_response);
 
         if let crate::agent::hooks::HookResult::ForceIteration { reason, context } = hook_result {
             state.continuation_count += 1;

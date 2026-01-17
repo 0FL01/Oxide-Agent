@@ -125,7 +125,6 @@ mod tests {
         let context = HookContext::new(&todos, 0, 0, AGENT_CONTINUATION_LIMIT);
         let event = HookEvent::AfterAgent {
             response: "test".to_string(),
-            has_final_answer: true,
         };
 
         let result = registry.execute(&event, &context);
@@ -158,7 +157,6 @@ mod tests {
         let context = HookContext::new(&todos, 0, 0, AGENT_CONTINUATION_LIMIT);
         let event = HookEvent::AfterAgent {
             response: "test".to_string(),
-            has_final_answer: true,
         };
 
         let result = registry.execute(&event, &context);
