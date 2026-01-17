@@ -59,9 +59,18 @@ Rules:
 - `tool_call.arguments` is always a JSON object
 - No extra keys, markdown, XML, explanations, or text outside JSON
 - Tool results arrive in messages with role `tool`
+- In `final_answer`, ALWAYS use markdown code blocks (```language) for code, logs, terminal outputs, and file contents
+- Use backticks (`) for inline code, such as file paths, variables, and short commands
+
+### Example Tool Call
+{{"thought":"Need to read a file","tool_call":{{"name":"read_file","arguments":{{"filePath":"/abs/path/to/file.txt"}}}},"final_answer":null}}
+
+### Example Final Answer
+{{"thought":"File read, answer ready","tool_call":null,"final_answer":"Here is the content of `file.txt`:\n\n```rust\nfn main() {{\n    println!(\"Hello world\");\n}}\n```"}}
 
 ## Available Tools (JSON schema)
-{tools_json}"#
+{tools_json}"#,
+        tools_json = tools_json
     )
 }
 
