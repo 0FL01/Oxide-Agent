@@ -75,6 +75,7 @@ impl AgentRunner {
     }
 
     async fn call_llm_with_tools(&self, ctx: &mut AgentRunnerContext<'_>) -> Result<ChatResponse> {
+        let json_mode = self.requires_structured_output(&ctx.config.model_name);
         let response = self
             .llm_client
             .chat_with_tools(
@@ -82,7 +83,7 @@ impl AgentRunner {
                 ctx.messages,
                 ctx.tools,
                 &ctx.config.model_name,
-                true, // json_mode
+                json_mode,
             )
             .await;
 
@@ -113,29 +114,16 @@ impl AgentRunner {
             .to_string();
 
         if !response.tool_calls.is_empty() {
-            let tool_calls = sanitize_tool_calls(std::mem::take(&mut response.tool_calls));
+            return self
+                .handle_tool_calls_response(&mut response, &raw_json, ctx, state)
+                .await;
+        }
 
-            self.spawn_narrative_task(
-                response.reasoning_content.as_deref(),
-                &tool_calls,
-                ctx.progress_tx,
-            );
-
-            if self.tool_loop_detected(&tool_calls).await {
-                return Err(self
-                    .loop_detected_error(
-                        ctx,
-                        state,
-                        crate::agent::loop_detection::LoopType::ToolCallLoop,
-                    )
-                    .await);
-            }
-
-            self.record_assistant_tool_call(ctx, &raw_json, &tool_calls);
-            if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
-                return Ok(Some(res));
-            }
-            return Ok(None);
+        if !self.requires_structured_output(&ctx.config.model_name) {
+            let reasoning = response.reasoning_content.take();
+            return self
+                .handle_unstructured_response(reasoning, raw_json.clone(), ctx, state)
+                .await;
         }
 
         let parsed = match parse_structured_output(&raw_json, ctx.tools) {
@@ -201,6 +189,86 @@ impl AgentRunner {
             return Ok(Some(res));
         }
         Ok(None)
+    }
+
+    async fn handle_tool_calls_response(
+        &mut self,
+        response: &mut ChatResponse,
+        raw_json: &str,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+    ) -> Result<Option<String>> {
+        let tool_calls = sanitize_tool_calls(std::mem::take(&mut response.tool_calls));
+
+        self.spawn_narrative_task(
+            response.reasoning_content.as_deref(),
+            &tool_calls,
+            ctx.progress_tx,
+        );
+
+        if self.tool_loop_detected(&tool_calls).await {
+            return Err(self
+                .loop_detected_error(
+                    ctx,
+                    state,
+                    crate::agent::loop_detection::LoopType::ToolCallLoop,
+                )
+                .await);
+        }
+
+        self.record_assistant_tool_call(ctx, raw_json, &tool_calls);
+        if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
+            return Ok(Some(res));
+        }
+        Ok(None)
+    }
+
+    async fn handle_unstructured_response(
+        &mut self,
+        reasoning: Option<String>,
+        raw_output: String,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+    ) -> Result<Option<String>> {
+        self.spawn_narrative_task(reasoning.as_deref(), &[], ctx.progress_tx);
+
+        let final_answer = if raw_output.trim().is_empty() {
+            "Task completed, but answer is empty.".to_string()
+        } else {
+            raw_output.clone()
+        };
+
+        if self.content_loop_detected(final_answer.as_str()).await {
+            return Err(self
+                .loop_detected_error(
+                    ctx,
+                    state,
+                    crate::agent::loop_detection::LoopType::ContentLoop,
+                )
+                .await);
+        }
+
+        let input = FinalResponseInput {
+            final_answer,
+            raw_json: raw_output,
+            reasoning,
+        };
+
+        self.handle_final_response(ctx, state, input).await
+    }
+
+    fn requires_structured_output(&self, model_name: &str) -> bool {
+        match self.llm_client.get_model_info(model_name) {
+            Ok(info) => !info.provider.eq_ignore_ascii_case("zai"),
+            Err(error) => {
+                warn!(
+                    model = model_name,
+                    error = %error,
+                    "Failed to resolve model info; defaulting to structured output"
+                );
+                true
+            }
+        }
     }
 
     async fn preprocess_llm_response(

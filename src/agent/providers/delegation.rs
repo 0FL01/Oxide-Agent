@@ -267,8 +267,14 @@ If the sub-agent doesn't finish, a partial report will be returned."
         let mut messages =
             AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages());
 
-        let system_prompt =
-            create_sub_agent_system_prompt(task.as_str(), &tools, context.as_deref());
+        let (_, provider, _) = self.settings.get_configured_sub_agent_model();
+        let structured_output = !provider.eq_ignore_ascii_case("zai");
+        let system_prompt = create_sub_agent_system_prompt(
+            task.as_str(),
+            &tools,
+            structured_output,
+            context.as_deref(),
+        );
 
         let mut runner = self.create_sub_agent_runner(Self::blocked_tool_set());
 

@@ -74,6 +74,14 @@ Rules:
     )
 }
 
+fn strip_structured_output_requirement(prompt: &str) -> String {
+    prompt
+        .lines()
+        .filter(|line| !line.contains("Respond ONLY with valid JSON"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Create the system prompt for the agent
 ///
 /// This function builds the complete system prompt by:
@@ -82,6 +90,7 @@ Rules:
 pub async fn create_agent_system_prompt(
     task: &str,
     tools: &[ToolDefinition],
+    structured_output: bool,
     skill_registry: Option<&mut SkillRegistry>,
     session: &mut AgentSession,
 ) -> String {
@@ -127,8 +136,18 @@ pub async fn create_agent_system_prompt(
         }
     };
 
-    let structured_output = build_structured_output_instructions(tools);
-    format!("{date_context}{base_prompt}\n\n{structured_output}")
+    let base_prompt = if structured_output {
+        base_prompt
+    } else {
+        strip_structured_output_requirement(&base_prompt)
+    };
+
+    if structured_output {
+        let structured_output = build_structured_output_instructions(tools);
+        format!("{date_context}{base_prompt}\n\n{structured_output}")
+    } else {
+        format!("{date_context}{base_prompt}")
+    }
 }
 
 /// Create a minimal system prompt for sub-agent execution.
@@ -136,6 +155,7 @@ pub async fn create_agent_system_prompt(
 pub fn create_sub_agent_system_prompt(
     task: &str,
     tools: &[ToolDefinition],
+    structured_output: bool,
     extra_context: Option<&str>,
 ) -> String {
     let date_context = build_date_context();
@@ -154,8 +174,18 @@ Do not call delegate_to_sub_agent and do not send files to the user."
         }
     }
 
-    let structured_output = build_structured_output_instructions(tools);
-    format!("{date_context}{base_prompt}\n\n{structured_output}")
+    let base_prompt = if structured_output {
+        base_prompt
+    } else {
+        strip_structured_output_requirement(&base_prompt)
+    };
+
+    if structured_output {
+        let structured_output = build_structured_output_instructions(tools);
+        format!("{date_context}{base_prompt}\n\n{structured_output}")
+    } else {
+        format!("{date_context}{base_prompt}")
+    }
 }
 
 #[cfg(test)]

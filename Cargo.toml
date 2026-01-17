@@ -53,6 +53,7 @@ tokio-retry = "0.3"
 unicode-segmentation = "1.12.0"
 sha2 = "0.10.9"
 serde_yaml = "0.9.34"
+zai-rs = "0.1.10"
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]

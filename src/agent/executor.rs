@@ -181,9 +181,12 @@ impl AgentExecutor {
         let registry = self.build_tool_registry(Arc::clone(&todos_arc), progress_tx.as_ref());
 
         let tools = registry.all_tools();
+        let (_, provider, _) = self.settings.get_configured_agent_model();
+        let structured_output = !provider.eq_ignore_ascii_case("zai");
         let system_prompt = create_agent_system_prompt(
             task,
             &tools,
+            structured_output,
             self.skill_registry.as_mut(),
             &mut self.session,
         )
