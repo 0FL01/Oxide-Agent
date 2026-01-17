@@ -7,13 +7,14 @@ use tracing::debug;
 /// LLM provider implementation for Zai (`ZeroAI`)
 pub struct ZaiProvider {
     api_key: String,
+    api_base: Option<String>,
 }
 
 impl ZaiProvider {
     /// Create a new Zai provider instance
     #[must_use]
-    pub fn new(api_key: String) -> Self {
-        Self { api_key }
+    pub fn new(api_key: String, api_base: Option<String>) -> Self {
+        Self { api_key, api_base }
     }
 }
 

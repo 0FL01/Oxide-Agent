@@ -296,7 +296,7 @@ impl LlmClient {
             zai: settings
                 .zai_api_key
                 .as_ref()
-                .map(|k| providers::ZaiProvider::new(k.clone())),
+                .map(|k| providers::ZaiProvider::new(k.clone(), settings.zai_api_base.clone())),
             gemini: settings
                 .gemini_api_key
                 .as_ref()
