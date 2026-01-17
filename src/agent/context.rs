@@ -21,6 +21,8 @@ pub trait AgentContext: Send {
     fn is_skill_loaded(&self, name: &str) -> bool;
     /// Register a skill as loaded and update token accounting.
     fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool;
+    /// Get elapsed time in seconds since task start.
+    fn elapsed_secs(&self) -> u64;
 }
 
 /// Ephemeral session used for isolated sub-agent execution.
@@ -29,6 +31,7 @@ pub struct EphemeralSession {
     cancellation_token: CancellationToken,
     loaded_skills: HashSet<String>,
     skill_token_count: usize,
+    started_at: std::time::Instant,
 }
 
 impl EphemeralSession {
@@ -40,6 +43,7 @@ impl EphemeralSession {
             cancellation_token: CancellationToken::new(),
             loaded_skills: HashSet::new(),
             skill_token_count: 0,
+            started_at: std::time::Instant::now(),
         }
     }
 
@@ -54,6 +58,7 @@ impl EphemeralSession {
             cancellation_token: parent.child_token(),
             loaded_skills: HashSet::new(),
             skill_token_count: 0,
+            started_at: std::time::Instant::now(),
         }
     }
 
@@ -95,6 +100,10 @@ impl AgentContext for AgentSession {
     fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool {
         self.register_loaded_skill(name, token_count)
     }
+
+    fn elapsed_secs(&self) -> u64 {
+        self.elapsed_secs()
+    }
 }
 
 impl AgentContext for EphemeralSession {
@@ -121,5 +130,9 @@ impl AgentContext for EphemeralSession {
         }
 
         false
+    }
+
+    fn elapsed_secs(&self) -> u64 {
+        self.started_at.elapsed().as_secs()
     }
 }

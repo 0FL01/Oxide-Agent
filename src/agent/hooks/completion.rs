@@ -98,11 +98,19 @@ impl Hook for CompletionCheckHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::memory::AgentMemory;
     use crate::agent::providers::{TodoItem, TodoList, TodoStatus};
     use crate::config::AGENT_CONTINUATION_LIMIT;
 
     fn create_context(todos: &TodoList, continuation_count: usize) -> HookContext<'_> {
-        HookContext::new(todos, 0, continuation_count, AGENT_CONTINUATION_LIMIT)
+        let memory = Box::leak(Box::new(AgentMemory::new(1000)));
+        HookContext::new(
+            todos,
+            memory,
+            0,
+            continuation_count,
+            AGENT_CONTINUATION_LIMIT,
+        )
     }
 
     #[test]

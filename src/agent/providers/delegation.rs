@@ -6,6 +6,7 @@
 use crate::agent::context::{AgentContext, EphemeralSession};
 use crate::agent::hooks::{
     CompletionCheckHook, SearchBudgetHook, SubAgentSafetyConfig, SubAgentSafetyHook,
+    TimeoutReportHook,
 };
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
@@ -16,7 +17,7 @@ use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use crate::config::{
     get_agent_search_limit, AGENT_CONTINUATION_LIMIT, SUB_AGENT_MAX_ITERATIONS,
-    SUB_AGENT_MAX_TOKENS, SUB_AGENT_TIMEOUT_SECS,
+    SUB_AGENT_MAX_TOKENS,
 };
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Result};
@@ -167,6 +168,7 @@ impl DelegationProvider {
             blocked_tools: blocked,
         })));
         runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
+        runner.register_hook(Box::new(TimeoutReportHook::new()));
         runner
     }
 }
@@ -283,14 +285,20 @@ If the sub-agent doesn't finish, a partial report will be returned."
             skill_registry: None,
             config: {
                 let (model_id, _, _) = self.settings.get_configured_sub_agent_model();
-                AgentRunnerConfig::new(model_id, SUB_AGENT_MAX_ITERATIONS, AGENT_CONTINUATION_LIMIT)
-                    .with_sub_agent(true)
+                AgentRunnerConfig::new(
+                    model_id,
+                    SUB_AGENT_MAX_ITERATIONS,
+                    AGENT_CONTINUATION_LIMIT,
+                    self.settings.get_sub_agent_timeout_secs(),
+                )
+                .with_sub_agent(true)
             },
         };
 
         info!(task_id = %task_id, "Running sub-agent delegation");
 
-        let timeout_duration = Duration::from_secs(SUB_AGENT_TIMEOUT_SECS);
+        let timeout_secs = self.settings.get_sub_agent_timeout_secs();
+        let timeout_duration = Duration::from_secs(timeout_secs + 30);
         match timeout(timeout_duration, runner.run(&mut ctx)).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(err)) => {
@@ -300,18 +308,21 @@ If the sub-agent doesn't finish, a partial report will be returned."
                     status: SubAgentReportStatus::Error,
                     error: Some(err.to_string()),
                     memory: sub_session.memory(),
+                    timeout_secs: self.settings.get_sub_agent_timeout_secs(),
                 }))
             }
             Err(_) => {
-                warn!(task_id = %task_id, "Sub-agent timed out");
+                warn!(task_id = %task_id, "Sub-agent hard timed out");
+                let limit = self.settings.get_sub_agent_timeout_secs();
                 Ok(build_sub_agent_report(SubAgentReportContext {
                     task_id: &task_id,
                     status: SubAgentReportStatus::Timeout,
                     error: Some(format!(
-                        "Sub-agent timed out after {} seconds",
-                        SUB_AGENT_TIMEOUT_SECS
+                        "Sub-agent hard timed out after {} seconds",
+                        limit + 30
                     )),
                     memory: sub_session.memory(),
+                    timeout_secs: limit,
                 }))
             }
         }
@@ -395,6 +406,7 @@ struct SubAgentReportContext<'a> {
     status: SubAgentReportStatus,
     error: Option<String>,
     memory: &'a AgentMemory,
+    timeout_secs: u64,
 }
 
 fn build_sub_agent_report(ctx: SubAgentReportContext<'_>) -> String {
@@ -403,7 +415,7 @@ fn build_sub_agent_report(ctx: SubAgentReportContext<'_>) -> String {
         "task_id": ctx.task_id,
         "error": ctx.error,
         "note": "Sub-agent did not finish the task. Use partial results below.",
-        "timeout_secs": SUB_AGENT_TIMEOUT_SECS,
+        "timeout_secs": ctx.timeout_secs,
         "tokens": ctx.memory.token_count(),
         "todos": &ctx.memory.todos,
         "recent_messages": summarize_recent_messages(ctx.memory),

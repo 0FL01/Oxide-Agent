@@ -10,6 +10,7 @@ use super::AgentRunner;
 pub(super) enum ToolHookDecision {
     Continue,
     Blocked { reason: String },
+    Finish { report: String },
 }
 
 impl AgentRunner {
@@ -20,6 +21,7 @@ impl AgentRunner {
     ) -> anyhow::Result<()> {
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
+            ctx.agent.memory(),
             0,
             0,
             ctx.config.continuation_limit,
@@ -37,7 +39,7 @@ impl AgentRunner {
             &hook_context,
         );
 
-        self.apply_hook_result(result, ctx)
+        self.apply_hook_result(result, ctx).map(|_| ())
     }
 
     /// Apply hooks before a loop iteration begins.
@@ -48,6 +50,7 @@ impl AgentRunner {
     ) -> anyhow::Result<()> {
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
+            ctx.agent.memory(),
             state.iteration,
             state.continuation_count,
             ctx.config.continuation_limit,
@@ -65,7 +68,7 @@ impl AgentRunner {
             &hook_context,
         );
 
-        self.apply_hook_result(result, ctx)
+        self.apply_hook_result(result, ctx).map(|_| ())
     }
 
     /// Apply hooks before executing a tool call.
@@ -77,6 +80,7 @@ impl AgentRunner {
     ) -> anyhow::Result<ToolHookDecision> {
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
+            ctx.agent.memory(),
             state.iteration,
             state.continuation_count,
             ctx.config.continuation_limit,
@@ -108,6 +112,7 @@ impl AgentRunner {
                 Ok(ToolHookDecision::Blocked { reason })
             }
             HookResult::Block { reason } => Ok(ToolHookDecision::Blocked { reason }),
+            HookResult::Finish(report) => Ok(ToolHookDecision::Finish { report }),
         }
     }
 
@@ -120,6 +125,7 @@ impl AgentRunner {
     ) {
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
+            ctx.agent.memory(),
             state.iteration,
             state.continuation_count,
             ctx.config.continuation_limit,
@@ -150,6 +156,7 @@ impl AgentRunner {
     ) -> HookResult {
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
+            ctx.agent.memory(),
             state.iteration,
             state.continuation_count,
             ctx.config.continuation_limit,
@@ -168,19 +175,46 @@ impl AgentRunner {
         )
     }
 
+    /// Apply timeout hooks when time limit is reached.
+    pub(super) fn apply_timeout_hook(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &RunState,
+    ) -> anyhow::Result<Option<String>> {
+        let hook_context = HookContext::new(
+            &ctx.agent.memory().todos,
+            ctx.agent.memory(),
+            state.iteration,
+            state.continuation_count,
+            ctx.config.continuation_limit,
+        )
+        .with_sub_agent(ctx.config.is_sub_agent)
+        .with_tokens(
+            ctx.agent.memory().token_count(),
+            ctx.agent.memory().max_tokens(),
+        );
+
+        let result = self
+            .hook_registry
+            .execute(&HookEvent::Timeout, &hook_context);
+
+        self.apply_hook_result(result, ctx)
+    }
+
     fn apply_hook_result(
         &mut self,
         result: HookResult,
         ctx: &mut AgentRunnerContext<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<String>> {
         match result {
-            HookResult::Continue => Ok(()),
+            HookResult::Continue => Ok(None),
             HookResult::InjectContext(context) => {
                 self.inject_system_context(ctx, context);
-                Ok(())
+                Ok(None)
             }
             HookResult::Block { reason } => Err(anyhow::anyhow!(reason)),
-            HookResult::ForceIteration { .. } => Ok(()),
+            HookResult::ForceIteration { .. } => Ok(None),
+            HookResult::Finish(report) => Ok(Some(report)),
         }
     }
 

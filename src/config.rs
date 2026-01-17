@@ -135,6 +135,11 @@ pub struct Settings {
     pub embedding_provider: Option<String>,
     /// Embedding model ID
     pub embedding_model_id: Option<String>,
+
+    /// Agent timeout in seconds
+    pub agent_timeout_secs: Option<u64>,
+    /// Sub-agent timeout in seconds
+    pub sub_agent_timeout_secs: Option<u64>,
 }
 
 const fn default_openrouter_site_url() -> String {
@@ -482,6 +487,17 @@ impl Settings {
             .find(|(n, _)| n == name)
             .map(|(_, info)| info)
     }
+
+    /// Returns the configured agent timeout in seconds
+    pub fn get_agent_timeout_secs(&self) -> u64 {
+        self.agent_timeout_secs.unwrap_or(AGENT_TIMEOUT_SECS)
+    }
+
+    /// Returns the configured sub-agent timeout in seconds
+    pub fn get_sub_agent_timeout_secs(&self) -> u64 {
+        self.sub_agent_timeout_secs
+            .unwrap_or(SUB_AGENT_TIMEOUT_SECS)
+    }
 }
 
 #[cfg(test)]
@@ -586,6 +602,8 @@ mod tests {
             narrator_model_provider: None,
             embedding_provider: None,
             embedding_model_id: None,
+            agent_timeout_secs: None,
+            sub_agent_timeout_secs: None,
         };
 
         // Test comma

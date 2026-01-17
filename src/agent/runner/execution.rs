@@ -27,6 +27,12 @@ impl AgentRunner {
                 return Err(self.cancelled_error(ctx).await);
             }
 
+            if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs {
+                if let Some(res) = self.apply_timeout_hook(ctx, &state)? {
+                    return Ok(res);
+                }
+            }
+
             self.apply_before_iteration_hooks(ctx, &state)?;
 
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
@@ -126,7 +132,9 @@ impl AgentRunner {
             }
 
             self.record_assistant_tool_call(ctx, &raw_json, &tool_calls);
-            self.execute_tools(ctx, state, tool_calls).await?;
+            if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
+                return Ok(Some(res));
+            }
             return Ok(None);
         }
 
@@ -189,7 +197,9 @@ impl AgentRunner {
         }
 
         self.record_assistant_tool_call(ctx, &raw_json, &tool_calls);
-        self.execute_tools(ctx, state, tool_calls).await?;
+        if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
+            return Ok(Some(res));
+        }
         Ok(None)
     }
 

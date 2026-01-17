@@ -4,7 +4,8 @@
 //! session lifecycle, skill prompts, and tool registry setup.
 
 use super::hooks::{
-    CompletionCheckHook, DelegationGuardHook, SearchBudgetHook, WorkloadDistributorHook,
+    CompletionCheckHook, DelegationGuardHook, SearchBudgetHook, TimeoutReportHook,
+    WorkloadDistributorHook,
 };
 use super::memory::AgentMessage;
 use super::prompt::create_agent_system_prompt;
@@ -53,6 +54,7 @@ impl AgentExecutor {
         runner.register_hook(Box::new(WorkloadDistributorHook::new()));
         runner.register_hook(Box::new(DelegationGuardHook::new()));
         runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
+        runner.register_hook(Box::new(TimeoutReportHook::new()));
 
         let skill_registry = match SkillRegistry::from_env(llm_client.clone()) {
             Ok(Some(registry)) => {
@@ -206,6 +208,7 @@ impl AgentExecutor {
                     model_id,
                     crate::config::AGENT_MAX_ITERATIONS,
                     crate::config::AGENT_CONTINUATION_LIMIT,
+                    self.settings.get_agent_timeout_secs(),
                 )
             },
         };
@@ -224,9 +227,10 @@ impl AgentExecutor {
             },
             Err(_) => {
                 self.session.timeout();
+                let limit_mins = self.settings.get_agent_timeout_secs() / 60;
                 Err(anyhow!(
                     "Task exceeded timeout limit ({} minutes)",
-                    AGENT_TIMEOUT_SECS / 60
+                    limit_mins
                 ))
             }
         }
@@ -247,7 +251,7 @@ impl AgentExecutor {
     /// Check if the session is timed out
     #[must_use]
     pub fn is_timed_out(&self) -> bool {
-        self.session.is_timed_out()
+        self.session.elapsed_secs() >= self.settings.get_agent_timeout_secs()
     }
 }
 

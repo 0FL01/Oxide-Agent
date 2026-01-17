@@ -53,7 +53,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &RunState,
         tool_calls: Vec<ToolCall>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<String>> {
         for tool_call in &tool_calls {
             self.load_skill_context_for_tool(ctx, &tool_call.function.name)
                 .await?;
@@ -63,6 +63,9 @@ impl AgentRunner {
                     self.record_blocked_tool_result(ctx, tool_call, &reason)
                         .await;
                     continue;
+                }
+                ToolHookDecision::Finish { report } => {
+                    return Ok(Some(report));
                 }
             }
             let cancellation_token = ctx.agent.cancellation_token().clone();
@@ -78,7 +81,7 @@ impl AgentRunner {
             let tool_result = execute_single_tool_call(tool_call.clone(), &mut tool_ctx).await?;
             self.apply_after_tool_hooks(ctx, state, &tool_result);
         }
-        Ok(())
+        Ok(None)
     }
 
     async fn record_blocked_tool_result(

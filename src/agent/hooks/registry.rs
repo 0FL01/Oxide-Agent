@@ -72,6 +72,14 @@ impl HookRegistry {
                     );
                     return result;
                 }
+                HookResult::Finish(report) => {
+                    info!(
+                        hook = hook.name(),
+                        report_len = report.len(),
+                        "Hook requested finish"
+                    );
+                    return result;
+                }
             }
         }
 
@@ -122,7 +130,8 @@ mod tests {
     fn test_empty_registry() {
         let registry = HookRegistry::new();
         let todos = TodoList::new();
-        let context = HookContext::new(&todos, 0, 0, AGENT_CONTINUATION_LIMIT);
+        let memory = crate::agent::memory::AgentMemory::new(1000);
+        let context = HookContext::new(&todos, &memory, 0, 0, AGENT_CONTINUATION_LIMIT);
         let event = HookEvent::AfterAgent {
             response: "test".to_string(),
         };
@@ -154,7 +163,8 @@ mod tests {
         }));
 
         let todos = TodoList::new();
-        let context = HookContext::new(&todos, 0, 0, AGENT_CONTINUATION_LIMIT);
+        let memory = crate::agent::memory::AgentMemory::new(1000);
+        let context = HookContext::new(&todos, &memory, 0, 0, AGENT_CONTINUATION_LIMIT);
         let event = HookEvent::AfterAgent {
             response: "test".to_string(),
         };

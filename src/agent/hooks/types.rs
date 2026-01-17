@@ -40,6 +40,8 @@ pub enum HookEvent {
         /// Result returned by the tool
         result: String,
     },
+    /// Soft timeout reached
+    Timeout,
 }
 
 /// Result of executing a hook
@@ -65,12 +67,16 @@ pub enum HookResult {
         /// Reason for blocking
         reason: String,
     },
+    /// Finish execution immediately with the provided result
+    Finish(String),
 }
 
 /// Context provided to hooks during execution
 pub struct HookContext<'a> {
     /// Current todo list
     pub todos: &'a TodoList,
+    /// Current agent memory
+    pub memory: &'a crate::agent::memory::AgentMemory,
     /// Current iteration number in the agent loop
     pub iteration: usize,
     /// Number of times the agent has been forced to continue
@@ -90,12 +96,14 @@ impl<'a> HookContext<'a> {
     #[must_use]
     pub const fn new(
         todos: &'a TodoList,
+        memory: &'a crate::agent::memory::AgentMemory,
         iteration: usize,
         continuation_count: usize,
         max_continuations: usize,
     ) -> Self {
         Self {
             todos,
+            memory,
             iteration,
             continuation_count,
             max_continuations,

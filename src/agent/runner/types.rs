@@ -21,17 +21,25 @@ pub struct AgentRunnerConfig {
     pub continuation_limit: usize,
     /// Whether this runner is for a sub-agent.
     pub is_sub_agent: bool,
+    /// Soft timeout in seconds.
+    pub timeout_secs: u64,
 }
 
 impl AgentRunnerConfig {
     /// Create a new config with explicit values.
     #[must_use]
-    pub fn new(model_name: String, max_iterations: usize, continuation_limit: usize) -> Self {
+    pub fn new(
+        model_name: String,
+        max_iterations: usize,
+        continuation_limit: usize,
+        timeout_secs: u64,
+    ) -> Self {
         Self {
             model_name,
             max_iterations,
             continuation_limit,
             is_sub_agent: false,
+            timeout_secs,
         }
     }
 
@@ -49,6 +57,7 @@ impl Default for AgentRunnerConfig {
             get_agent_model(),
             AGENT_MAX_ITERATIONS,
             AGENT_CONTINUATION_LIMIT,
+            crate::config::AGENT_TIMEOUT_SECS,
         )
     }
 }
