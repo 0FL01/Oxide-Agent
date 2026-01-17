@@ -85,6 +85,8 @@ pub(super) struct RunState {
     pub iteration: usize,
     /// Number of forced continuations so far.
     pub continuation_count: usize,
+    /// Number of consecutive structured output failures.
+    pub structured_output_failures: usize,
 }
 
 impl RunState {
@@ -93,6 +95,7 @@ impl RunState {
         Self {
             iteration: 0,
             continuation_count: 0,
+            structured_output_failures: 0,
         }
     }
 }

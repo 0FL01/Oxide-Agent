@@ -23,6 +23,8 @@ pub enum HookEvent {
     AfterAgent {
         /// The agent's response text
         response: String,
+        /// Whether the agent provided a final answer
+        has_final_answer: bool,
     },
 
     /// Before a tool is executed

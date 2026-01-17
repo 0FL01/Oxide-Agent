@@ -13,12 +13,39 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
         failure: StructuredOutputFailure,
-    ) {
+    ) -> anyhow::Result<Option<String>> {
         warn!(
             error = %failure.error,
             raw_preview = %crate::utils::truncate_str(&failure.raw_json, 200),
             "Structured output validation failed"
         );
+
+        state.structured_output_failures += 1;
+
+        // Fail-fast: if we have too many consecutive failures, treat raw response as final answer
+        if state.structured_output_failures >= 3 {
+            warn!(
+                failures = state.structured_output_failures,
+                "Too many structured output failures, accepting raw response as final answer"
+            );
+
+            if let Some(tx) = ctx.progress_tx {
+                let _ = tx
+                    .send(AgentEvent::Continuation {
+                        reason: "Too many JSON errors, falling back to raw response".to_string(),
+                        count: state.continuation_count,
+                    })
+                    .await;
+            }
+
+            let input = FinalResponseInput {
+                final_answer: failure.raw_json.clone(),
+                raw_json: failure.raw_json,
+                reasoning: None,
+            };
+
+            return self.handle_final_response(ctx, state, input).await;
+        }
 
         state.continuation_count += 1;
         if let Some(tx) = ctx.progress_tx {
@@ -38,6 +65,8 @@ impl AgentRunner {
         );
         ctx.messages
             .push(crate::llm::Message::system(&system_message));
+
+        Ok(None)
     }
 
     fn save_final_response(
@@ -74,7 +103,7 @@ impl AgentRunner {
         let final_response = input.final_answer;
 
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
-        let hook_result = self.after_agent_hook_result(ctx, state, &final_response);
+        let hook_result = self.after_agent_hook_result(ctx, state, &final_response, true);
 
         if let crate::agent::hooks::HookResult::ForceIteration { reason, context } = hook_result {
             state.continuation_count += 1;

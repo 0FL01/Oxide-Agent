@@ -131,12 +131,15 @@ impl AgentRunner {
         }
 
         let parsed = match parse_structured_output(&raw_json, ctx.tools) {
-            Ok(parsed) => parsed,
+            Ok(parsed) => {
+                state.structured_output_failures = 0;
+                parsed
+            }
             Err(error) => {
                 let failure = StructuredOutputFailure { error, raw_json };
-                self.handle_structured_output_error(ctx, state, failure)
+                return self
+                    .handle_structured_output_error(ctx, state, failure)
                     .await;
-                return Ok(None);
             }
         };
 

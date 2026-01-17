@@ -147,6 +147,7 @@ impl AgentRunner {
         ctx: &AgentRunnerContext<'_>,
         state: &RunState,
         final_response: &str,
+        has_final_answer: bool,
     ) -> HookResult {
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
@@ -163,6 +164,7 @@ impl AgentRunner {
         self.hook_registry.execute(
             &HookEvent::AfterAgent {
                 response: final_response.to_string(),
+                has_final_answer,
             },
             &hook_context,
         )

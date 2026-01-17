@@ -35,7 +35,11 @@ impl Hook for CompletionCheckHook {
 
     fn handle(&self, event: &HookEvent, context: &HookContext) -> HookResult {
         // Only handle AfterAgent events
-        let HookEvent::AfterAgent { response: _ } = event else {
+        let HookEvent::AfterAgent {
+            response: _,
+            has_final_answer,
+        } = event
+        else {
             return HookResult::Continue;
         };
 
@@ -46,6 +50,12 @@ impl Hook for CompletionCheckHook {
                 max = context.max_continuations,
                 "Continuation limit reached, allowing completion"
             );
+            return HookResult::Continue;
+        }
+
+        // If the agent explicitly provided a final answer, trust it and allow exit
+        if *has_final_answer {
+            info!("Agent provided a final answer, allowing completion");
             return HookResult::Continue;
         }
 
@@ -106,6 +116,7 @@ mod tests {
         let context = create_context(&todos, 0);
         let event = HookEvent::AfterAgent {
             response: "Done!".to_string(),
+            has_final_answer: false,
         };
 
         let result = hook.handle(&event, &context);
@@ -128,6 +139,7 @@ mod tests {
         let context = create_context(&todos, 0);
         let event = HookEvent::AfterAgent {
             response: "Done!".to_string(),
+            has_final_answer: false,
         };
 
         let result = hook.handle(&event, &context);
@@ -150,6 +162,7 @@ mod tests {
         let context = create_context(&todos, 0);
         let event = HookEvent::AfterAgent {
             response: "Done!".to_string(),
+            has_final_answer: false,
         };
 
         let result = hook.handle(&event, &context);
@@ -174,6 +187,7 @@ mod tests {
         let context = create_context(&todos, AGENT_CONTINUATION_LIMIT);
         let event = HookEvent::AfterAgent {
             response: "Done!".to_string(),
+            has_final_answer: false,
         };
 
         let result = hook.handle(&event, &context);
