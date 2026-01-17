@@ -8,7 +8,7 @@
 
 ---
 
-## Phase 1: Enable Native JSON Mode in ZaiProvider [ ]
+## Phase 1: Enable Native JSON Mode in ZaiProvider [x]
 
 **Goal**: Add `response_format: { type: "json_object" }` to Z.AI API requests for agent completions.
 
@@ -19,11 +19,11 @@
 - 📚 **Docs**: `backlog/docs/zai/structure-output.md` - Z.AI JSON mode documentation
 
 **Steps**:
-1. [ ] **Analyze trait**: Read `LlmProvider` trait to understand current method signatures
-2. [ ] **Extend trait**: Add optional `json_mode: bool` parameter to `chat_with_tools` or create dedicated `agent_completion` method
-3. [ ] **Implement in ZaiProvider**: Add `response_format: { type: "json_object" }` to request body when json_mode=true
-4. [ ] **Update callers**: Modify agent executor to pass json_mode=true for agent requests
-5. [ ] **QA**: Run `cargo-check` to verify compilation
+1. [x] **Analyze trait**: Read `LlmProvider` trait to understand current method signatures
+2. [x] **Extend trait**: Add optional `json_mode: bool` parameter to `chat_with_tools` or create dedicated `agent_completion` method
+3. [x] **Implement in ZaiProvider**: Add `response_format: { type: "json_object" }` to request body when json_mode=true
+4. [x] **Update callers**: Modify agent executor to pass json_mode=true for agent requests
+5. [x] **QA**: Run `cargo-check` to verify compilation
 
 > [!IMPORTANT]
 > Z.AI does NOT support streaming with OpenAI crate. All agent requests are non-streaming.

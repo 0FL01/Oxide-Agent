@@ -67,7 +67,7 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
 
     info!("Sending request to ZAI (model: {})...", model_id);
     let result = provider
-        .chat_with_tools(system_prompt, &messages, &tools, model_id, 1024)
+        .chat_with_tools(system_prompt, &messages, &tools, model_id, 1024, false)
         .await;
 
     match result {

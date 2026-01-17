@@ -221,6 +221,7 @@ pub trait LlmProvider: Send + Sync {
         _tools: &[ToolDefinition],
         _model_id: &str,
         _max_tokens: u32,
+        _json_mode: bool,
     ) -> Result<ChatResponse, LlmError> {
         Err(LlmError::Unknown(
             "Tool calling not supported by this provider".to_string(),
@@ -445,6 +446,7 @@ impl LlmClient {
         messages: &[Message],
         tools: &[ToolDefinition],
         model_name: &str,
+        json_mode: bool,
     ) -> Result<ChatResponse, LlmError> {
         // Retry configuration (hardcoded with reasonable defaults)
         const MAX_RETRIES: usize = 5;
@@ -459,6 +461,7 @@ impl LlmClient {
             provider = model_info.provider,
             tools_count = tools.len(),
             messages_count = messages.len(),
+            json_mode = json_mode,
             "Sending tool-enabled request to LLM"
         );
 
@@ -471,6 +474,7 @@ impl LlmClient {
                     tools,
                     &model_info.id,
                     model_info.max_tokens,
+                    json_mode,
                 )
                 .await;
             let duration = start.elapsed();

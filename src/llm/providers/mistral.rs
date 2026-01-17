@@ -165,6 +165,7 @@ impl LlmProvider for MistralProvider {
         _tools: &[ToolDefinition],
         model_id: &str,
         max_tokens: u32,
+        _json_mode: bool,
     ) -> Result<ChatResponse, LlmError> {
         let url = "https://api.mistral.ai/v1/chat/completions";
 

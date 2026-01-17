@@ -198,13 +198,15 @@ impl LlmProvider for ZaiProvider {
         tools: &[ToolDefinition],
         model_id: &str,
         max_tokens: u32,
+        json_mode: bool,
     ) -> Result<ChatResponse, LlmError> {
         use eventsource_stream::Eventsource;
 
         debug!(
-            "ZAI: *** CHAT_WITH_TOOLS ENTRY *** model={model_id} tools_count={} history_size={}",
+            "ZAI: *** CHAT_WITH_TOOLS ENTRY *** model={model_id} tools_count={} history_size={} json_mode={}",
             tools.len(),
-            history.len()
+            history.len(),
+            json_mode
         );
 
         debug!(
@@ -227,6 +229,10 @@ impl LlmProvider for ZaiProvider {
             "temperature": 0.95,
             "stream": true
         });
+
+        if json_mode {
+            body["response_format"] = json!({ "type": "json_object" });
+        }
 
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);

@@ -174,6 +174,7 @@ impl LlmProvider for OpenRouterProvider {
         tools: &[ToolDefinition],
         model_id: &str,
         max_tokens: u32,
+        _json_mode: bool,
     ) -> Result<ChatResponse, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
 

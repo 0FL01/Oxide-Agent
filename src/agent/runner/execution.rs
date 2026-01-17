@@ -76,6 +76,7 @@ impl AgentRunner {
                 ctx.messages,
                 ctx.tools,
                 &ctx.config.model_name,
+                true, // json_mode
             )
             .await;
 
