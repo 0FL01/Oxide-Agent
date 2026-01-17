@@ -2,7 +2,6 @@ use super::map_zai_error;
 use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall, ToolCallFunction};
 use futures_util::StreamExt;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use zai_rs::model::chat::ChatCompletion;
 use zai_rs::model::chat_base_response::{ToolCallMessage, Usage};
 use zai_rs::model::chat_message_types::TextMessage;
@@ -27,7 +26,7 @@ where
     let mut content = String::new();
     let mut finish_reason = String::from("unknown");
     let mut usage: Option<TokenUsage> = None;
-    let mut pending_tool_calls: BTreeMap<usize, PendingToolCall> = BTreeMap::new();
+    let mut pending_tool_calls: Vec<PendingToolCall> = Vec::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(map_zai_error)?;
@@ -79,41 +78,49 @@ fn map_usage(usage: Usage) -> TokenUsage {
     }
 }
 
-fn apply_tool_call_delta(
-    tool_calls: &[ToolCallMessage],
-    pending: &mut BTreeMap<usize, PendingToolCall>,
-) {
-    for (idx, call) in tool_calls.iter().enumerate() {
+fn apply_tool_call_delta(tool_calls: &[ToolCallMessage], pending: &mut Vec<PendingToolCall>) {
+    for call in tool_calls {
         if let Some(call_type) = call.type_.as_deref() {
             if call_type != "function" {
                 continue;
             }
         }
 
-        let entry = pending.entry(idx).or_insert_with(|| PendingToolCall {
-            id: call.id.clone(),
-            name: None,
-            arguments: String::new(),
-        });
+        let is_new_id = if let Some(id) = &call.id {
+            pending.last().and_then(|p| p.id.as_ref()) != Some(id)
+        } else {
+            false
+        };
 
-        if entry.id.is_none() {
-            entry.id = call.id.clone();
+        if pending.is_empty() || is_new_id {
+            pending.push(PendingToolCall {
+                id: call.id.clone(),
+                name: None,
+                arguments: String::new(),
+            });
         }
 
-        if let Some(function) = &call.function {
-            if entry.name.is_none() {
-                entry.name = function.name.clone();
+        if let Some(entry) = pending.last_mut() {
+            if entry.id.is_none() && call.id.is_some() {
+                entry.id = call.id.clone();
             }
-            if let Some(arguments) = &function.arguments {
-                entry.arguments.push_str(arguments);
+
+            if let Some(function) = &call.function {
+                if entry.name.is_none() && function.name.is_some() {
+                    entry.name = function.name.clone();
+                }
+                if let Some(arguments) = &function.arguments {
+                    entry.arguments.push_str(arguments);
+                }
             }
         }
     }
 }
 
-fn finalize_tool_calls(pending: BTreeMap<usize, PendingToolCall>) -> Vec<ToolCall> {
+fn finalize_tool_calls(pending: Vec<PendingToolCall>) -> Vec<ToolCall> {
     pending
         .into_iter()
+        .enumerate()
         .filter_map(|(idx, call)| {
             let name = call.name?;
             let id = call.id.unwrap_or_else(|| format!("zai-tool-{idx}"));
