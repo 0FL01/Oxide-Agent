@@ -15,7 +15,7 @@ src/
 │   ├── executor.rs
 │   ├── context.rs             # контекст выполнения агента
 │   ├── recovery.rs            # восстановление malformed ответов
-│   ├── structured_output.rs    # парсинг и валидация структурированных ответов
+│   ├── structured_output.rs   # парсинг и валидация структурированных ответов
 │   ├── tool_bridge.rs         # мост исполнения инструментов
 │   ├── session_registry.rs    # реестр сессий агентов
 │   ├── thoughts.rs            # генерация мыслей агента
@@ -58,7 +58,9 @@ src/
 │   │   ├── completion.rs
 │   │   ├── delegation_guard.rs # защита делегирования
 │   │   ├── registry.rs
+│   │   ├── search_budget.rs   # управление бюджетом поисковых запросов
 │   │   ├── sub_agent_safety.rs # проверка безопасности делегирования
+│   │   ├── timeout_report.rs  # обработка и отчет о таймаутах инструментов
 │   │   ├── types.rs
 │   │   └── workload.rs         # управление рабочей нагрузкой
 │   └── providers/             # провайдеры инструментов (Sandbox, Tavily, и т.д.)
@@ -67,7 +69,10 @@ src/
 │       ├── filehoster.rs
 │       ├── path.rs
 │       ├── sandbox.rs
-│       ├── crawl4ai/
+│       ├── crawl4ai/           # провайдер Crawl4AI
+│       │   ├── mod.rs
+│       │   ├── response.rs
+│       │   └── tests.rs
 │       ├── tavily.rs
 │       ├── todos.rs
 │       └── ytdlp.rs
@@ -99,9 +104,13 @@ src/
 │       ├── openrouter.rs
 │       ├── openrouter/
 │       │   └── helpers.rs
-│       ├── zai.rs
-│       └── zai/
-│           └── stream.rs
+│       └── zai/                # провайдер ZAI/Zhipu AI
+│           ├── mod.rs
+│           ├── zai.rs          # реализация провайдера
+│           ├── sdk.rs          # логика SDK
+│           └── sdk/
+│               ├── messages.rs
+│               └── stream.rs   # поддержка потоковой передачи
 ├── sandbox/                   # управление изолированной средой
 │   ├── mod.rs
 │   └── manager.rs
@@ -129,7 +138,7 @@ tests/                        # интеграционные и функцион
 └── sub_agent_delegation.rs
 
 backlog/                      # документация и планы
-├── blueprints/
+├── blueprints/               # чертежи новых функций
 ├── docs/                     # спецификации компонентов
 └── done/                     # завершенные задачи
 
