@@ -190,6 +190,37 @@ pub fn extract_first_json(input: &str) -> Option<String> {
     None
 }
 
+/// Extract JSON content from markdown code fences.
+pub fn extract_fenced_json(input: &str) -> Option<String> {
+    let fence = "```";
+    let start = input.find(fence)?;
+    let after_start = &input[start + fence.len()..];
+    let end = after_start.find(fence)?;
+    let mut block = after_start[..end].trim().to_string();
+
+    block = strip_fence_language(&block);
+    if block.is_empty() {
+        None
+    } else {
+        Some(block)
+    }
+}
+
+fn strip_fence_language(block: &str) -> String {
+    let mut lines = block.lines();
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+
+    let first_trim = first.trim();
+    if first_trim.eq_ignore_ascii_case("json") || first_trim.eq_ignore_ascii_case("jsonc") {
+        let rest = lines.collect::<Vec<_>>().join("\n");
+        return rest.trim().to_string();
+    }
+
+    block.trim().to_string()
+}
+
 /// Sanitize a vector of tool calls
 pub fn sanitize_tool_calls(tool_calls: Vec<ToolCall>) -> Vec<ToolCall> {
     tool_calls

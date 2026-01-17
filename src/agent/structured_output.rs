@@ -3,10 +3,11 @@
 //! Parses the strict JSON response format used by the agent loop and validates
 //! that it conforms to the expected schema.
 
-use crate::agent::recovery::extract_first_json;
+use crate::agent::recovery::{extract_fenced_json, extract_first_json};
 use crate::llm::ToolDefinition;
 use serde::Deserialize;
 use std::fmt;
+use tracing::warn;
 
 /// Error returned when structured output parsing or validation fails.
 #[derive(Debug, Clone)]
@@ -87,14 +88,23 @@ pub fn parse_structured_output(
     let sanitized = strip_control_chars(trimmed);
     if sanitized != trimmed {
         match try_parse_structured_output(&sanitized, tools) {
-            Ok(parsed) => return Ok(parsed),
+            Ok(parsed) => {
+                warn!("Structured output required control character stripping. This should be rare in JSON mode.");
+                return Ok(parsed);
+            }
             Err(err) => last_error = err.message().to_string(),
         }
     }
 
     for recovered in recovery_candidates(&sanitized) {
         match try_parse_structured_output(&recovered, tools) {
-            Ok(parsed) => return Ok(parsed),
+            Ok(parsed) => {
+                warn!(
+                    raw_content = %trimmed,
+                    "Structured output required fallback parsing. This should be rare in JSON mode."
+                );
+                return Ok(parsed);
+            }
             Err(err) => last_error = err.message().to_string(),
         }
     }
@@ -148,36 +158,6 @@ fn recovery_candidates(input: &str) -> Vec<String> {
     }
 
     candidates
-}
-
-fn extract_fenced_json(input: &str) -> Option<String> {
-    let fence = "```";
-    let start = input.find(fence)?;
-    let after_start = &input[start + fence.len()..];
-    let end = after_start.find(fence)?;
-    let mut block = after_start[..end].trim().to_string();
-
-    block = strip_fence_language(&block);
-    if block.is_empty() {
-        None
-    } else {
-        Some(block)
-    }
-}
-
-fn strip_fence_language(block: &str) -> String {
-    let mut lines = block.lines();
-    let Some(first) = lines.next() else {
-        return String::new();
-    };
-
-    let first_trim = first.trim();
-    if first_trim.eq_ignore_ascii_case("json") || first_trim.eq_ignore_ascii_case("jsonc") {
-        let rest = lines.collect::<Vec<_>>().join("\n");
-        return rest.trim().to_string();
-    }
-
-    block.trim().to_string()
 }
 
 fn validate_structured_output(

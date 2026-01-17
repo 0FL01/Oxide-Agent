@@ -31,7 +31,7 @@
 
 ---
 
-## Phase 2: Simplify Structured Output Validation [ ]
+## Phase 2: Simplify Structured Output Validation [x]
 
 **Goal**: Reduce recovery complexity since native JSON mode guarantees valid JSON.
 
@@ -40,10 +40,10 @@
 - 📄 `src/agent/recovery.rs` - malformed response recovery
 
 **Steps**:
-1. [ ] **Simplify recovery**: Remove or deprecate `extract_fenced_json()` and markdown fence handling - not needed with native JSON mode
-2. [ ] **Keep schema validation**: Retain validation for `thought`, `tool_call`, `final_answer` structure
-3. [ ] **Add metrics**: Log when recovery fallbacks are triggered (should be rare now)
-4. [ ] **QA**: Run `cargo-test --package oxide_agent` for structured_output tests
+1. [x] **Simplify recovery**: Move `extract_fenced_json()` and markdown fence handling to `recovery.rs` as fallback
+2. [x] **Keep schema validation**: Retain validation for `thought`, `tool_call`, `final_answer` structure
+3. [x] **Add metrics**: Log when recovery fallbacks are triggered (should be rare now)
+4. [x] **QA**: Run `cargo-test --package oxide-agent` for structured_output tests
 
 > [!NOTE]
 > Recovery mechanisms remain as fallback for edge cases, but should rarely trigger with native JSON mode.
