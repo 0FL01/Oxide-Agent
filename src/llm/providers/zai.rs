@@ -29,38 +29,43 @@ impl ZaiProvider {
         for msg in history {
             match msg.role.as_str() {
                 "tool" => {
+                    // Convert tool outputs to user messages to avoid "tool call without tools" errors
+                    // since we are disabling native tools.
                     messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": msg.tool_call_id,
-                        "content": msg.content
+                        "role": "user",
+                        "content": format!("[Tool Output] {}", msg.content)
                     }));
                 }
                 "assistant" => {
-                    let mut m = json!({
-                        "role": "assistant",
-                        "content": msg.content
-                    });
+                    let mut content = msg.content.clone();
 
-                    // If we have tool calls, include them
+                    // If we have tool calls, convert them to the expected JSON schema format
+                    // because we are treating ZAI as a text-only model now.
                     if let Some(tool_calls) = &msg.tool_calls {
-                        let api_tool_calls: Vec<serde_json::Value> = tool_calls
-                            .iter()
-                            .map(|tc| {
-                                json!({
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments
-                                    }
-                                })
-                            })
-                            .collect();
+                        if content.trim().is_empty() {
+                            // Synthesize a structured response for history
+                            if let Some(first_tool) = tool_calls.first() {
+                                let arguments: serde_json::Value =
+                                    serde_json::from_str(&first_tool.function.arguments)
+                                        .unwrap_or(json!({}));
 
-                        m["tool_calls"] = json!(api_tool_calls);
+                                let structured = json!({
+                                    "thought": "Delegating to tool",
+                                    "tool_call": {
+                                        "name": first_tool.function.name,
+                                        "arguments": arguments
+                                    },
+                                    "final_answer": serde_json::Value::Null
+                                });
+                                content = structured.to_string();
+                            }
+                        }
                     }
 
-                    messages.push(m);
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": content
+                    }));
                 }
                 _ => {
                     messages.push(json!({
@@ -218,7 +223,11 @@ impl LlmProvider for ZaiProvider {
         let url = "https://api.z.ai/api/paas/v4/chat/completions";
 
         let messages = Self::prepare_zai_messages(system_prompt, history);
-        let openai_tools = Self::prepare_tools_json(tools);
+
+        // DISABLE NATIVE TOOLS for ZAI to prevent conflict with JSON schema in prompt.
+        // We force the model to use the structured JSON output format defined in the system prompt.
+        // let openai_tools = Self::prepare_tools_json(tools);
+        let openai_tools: Vec<serde_json::Value> = vec![];
 
         let mut body = json!({
             "model": model_id,
@@ -234,9 +243,10 @@ impl LlmProvider for ZaiProvider {
             body["response_format"] = json!({ "type": "json_object" });
         }
 
-        if !openai_tools.is_empty() {
-            body["tools"] = json!(openai_tools);
-        }
+        // Native tools disabled
+        // if !openai_tools.is_empty() {
+        //     body["tools"] = json!(openai_tools);
+        // }
 
         debug!(
             "ZAI: tools array: {}",
