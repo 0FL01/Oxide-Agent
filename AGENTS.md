@@ -155,7 +155,7 @@ docker-compose.yml
 - **Feature Isolation**: Maintain feature-based directory structure. `agent/` modules must not depend on `bot/`.
 - **Module Hierarchy**: Every directory must have a `mod.rs` defining clear public exports.
 - **Error Handling**: Use `thiserror` for libraries and `anyhow` for apps.
-  > *Note: `unwrap()`, `expect()`, and files >300 lines are strictly blocked by system hooks.*
+  > *Note: `unwrap()`, `expect()` are strictly blocked by system hooks.*
 
 ### 2. Operational Workflow
 **Tools are enforced by the environment.**

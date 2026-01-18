@@ -4,7 +4,7 @@ use crate::llm::{ChatResponse, LlmError, LlmProvider, Message, ToolDefinition};
 use async_trait::async_trait;
 use tracing::debug;
 
-/// LLM provider implementation for Zai (`ZeroAI`)
+/// LLM provider implementation for Zai (Zhipu AI)
 pub struct ZaiProvider {
     api_key: String,
     api_base: String,
