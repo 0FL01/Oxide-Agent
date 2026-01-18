@@ -145,6 +145,10 @@ backlog/                      # документация и планы
 sandbox/                      # конфигурация Docker для песочницы
 └── Dockerfile.sandbox
 
+.github/                      # GitHub Actions CI/CD
+└── workflows/
+    └── ci-cd.yml             # пайплайн тестирования и деплоя
+
 Dockerfile                     # Dockerfile основного приложения
 docker-compose.yml
 ```
@@ -162,22 +166,12 @@ docker-compose.yml
 - **Compilation**: Use `cargo-check` for quick validation. Only use `cargo-build` for final binaries.
 - **Dependencies**: Use `cargo-add`, `cargo-remove`, `cargo-update`.
 - **Metadata**: Use `workspace-info` for project topology and `cargo-info` for crate details.
-- **Cleanup**: Periodically run `cargo-machete`.
 
-### 3. Debugging Strategy
-1. **Analyze**: If compiler throws an error code (e.g., E0308), run `rustc-explain E0308` FIRST.
-2. **Search**: Use `tavily-search` -> `tavily-extract` for external docs/errors.
-3. **Test**: Use `cargo-test` for logic and `cargo-hack` for feature flag combinations.
-
-### 4. Code Quality
+### 3. Code Quality
 - **Linting**: Run `cargo-clippy` before finishing a task.
 - **Formatting**: **Automatic.** The system auto-formats on save. Do not run `cargo fmt` manually.
-- **Security**: Run `cargo-deny-check` for audits.
 
 ## ⚡ Tool Intent Map
 | Intent | Tool |
 | :--- | :--- |
-| "Check syntax/types" | `cargo-check` |
-| "Check crate features" | `cargo-info [crate]` |
-| "Understand error" | `rustc-explain [code]` |
 | "Find docs/solutions" | `tavily-search` |
