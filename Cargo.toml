@@ -58,6 +58,6 @@ zai-rs = "0.1.10"
 ignored = ["serde_bytes"]
 
 [features]
-default = []
+default = ["tavily"]
 tavily = ["dep:tavily"]
 crawl4ai = []

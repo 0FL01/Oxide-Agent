@@ -133,20 +133,32 @@ impl AgentExecutor {
             self.settings.clone(),
         )));
 
-        #[cfg(feature = "tavily")]
-        if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
-            if !tavily_key.is_empty() {
-                if let Ok(p) = TavilyProvider::new(&tavily_key) {
-                    registry.register(Box::new(p));
+        // Register web search provider based on configuration
+        let search_provider = crate::config::get_search_provider();
+        match search_provider.as_str() {
+            "tavily" => {
+                #[cfg(feature = "tavily")]
+                if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
+                    if !tavily_key.is_empty() {
+                        if let Ok(p) = TavilyProvider::new(&tavily_key) {
+                            registry.register(Box::new(p));
+                        }
+                    }
                 }
+                #[cfg(not(feature = "tavily"))]
+                warn!("Tavily requested but feature not enabled");
             }
-        }
-
-        #[cfg(feature = "crawl4ai")]
-        if let Ok(url) = std::env::var("CRAWL4AI_URL") {
-            if !url.is_empty() {
-                registry.register(Box::new(Crawl4aiProvider::new(&url)));
+            "crawl4ai" => {
+                #[cfg(feature = "crawl4ai")]
+                if let Ok(url) = std::env::var("CRAWL4AI_URL") {
+                    if !url.is_empty() {
+                        registry.register(Box::new(Crawl4aiProvider::new(&url)));
+                    }
+                }
+                #[cfg(not(feature = "crawl4ai"))]
+                warn!("Crawl4AI requested but feature not enabled");
             }
+            _ => unreachable!(), // get_search_provider() guarantees valid value
         }
 
         registry

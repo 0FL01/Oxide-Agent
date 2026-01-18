@@ -81,6 +81,9 @@ pub struct Settings {
     /// Crawl4AI request timeout (seconds)
     pub crawl4ai_timeout_secs: Option<u64>,
 
+    /// Web search provider: "tavily" or "crawl4ai"
+    pub search_provider: Option<String>,
+
     /// R2 Storage access key ID
     pub r2_access_key_id: Option<String>,
     /// R2 Storage secret access key
@@ -220,6 +223,30 @@ impl Settings {
             if let Ok(val) = std::env::var("R2_BUCKET_NAME") {
                 if !val.is_empty() {
                     settings.r2_bucket_name = Some(val);
+                }
+            }
+        }
+
+        if settings.search_provider.is_none() {
+            if let Ok(val) = std::env::var("SEARCH_PROVIDER") {
+                if !val.is_empty() {
+                    settings.search_provider = Some(val);
+                }
+            }
+        }
+
+        if settings.tavily_api_key.is_none() {
+            if let Ok(val) = std::env::var("TAVILY_API_KEY") {
+                if !val.is_empty() {
+                    settings.tavily_api_key = Some(val);
+                }
+            }
+        }
+
+        if settings.crawl4ai_url.is_none() {
+            if let Ok(val) = std::env::var("CRAWL4AI_URL") {
+                if !val.is_empty() {
+                    settings.crawl4ai_url = Some(val);
                 }
             }
         }
@@ -587,6 +614,7 @@ mod tests {
             tavily_api_key: None,
             crawl4ai_url: None,
             crawl4ai_timeout_secs: None,
+            search_provider: None,
             r2_access_key_id: None,
             r2_secret_access_key: None,
             r2_endpoint_url: None,
@@ -869,6 +897,21 @@ pub fn get_crawl4ai_timeout() -> u64 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(CRAWL4AI_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Default web search provider
+pub const DEFAULT_SEARCH_PROVIDER: &str = "tavily";
+
+/// Get web search provider from env or default
+///
+/// Environment variable: `SEARCH_PROVIDER`
+/// Valid values: "tavily" or "crawl4ai"
+#[must_use]
+pub fn get_search_provider() -> String {
+    std::env::var("SEARCH_PROVIDER")
+        .ok()
+        .filter(|s| matches!(s.as_str(), "tavily" | "crawl4ai"))
+        .unwrap_or_else(|| DEFAULT_SEARCH_PROVIDER.to_string())
 }
 
 // LLM HTTP client configuration

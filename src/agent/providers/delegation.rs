@@ -85,7 +85,6 @@ impl DelegationProvider {
             YtdlpProvider::new(self.user_id)
         };
 
-        #[cfg_attr(not(any(feature = "tavily", feature = "crawl4ai")), allow(unused_mut))]
         let mut providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(TodosProvider::new(todos_arc)),
             Box::new(sandbox_provider),
@@ -93,20 +92,32 @@ impl DelegationProvider {
             Box::new(ytdlp_provider),
         ];
 
-        #[cfg(feature = "tavily")]
-        if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
-            if !tavily_key.is_empty() {
-                if let Ok(provider) = TavilyProvider::new(&tavily_key) {
-                    providers.push(Box::new(provider));
+        // Register web search provider based on configuration
+        let search_provider = crate::config::get_search_provider();
+        match search_provider.as_str() {
+            "tavily" => {
+                #[cfg(feature = "tavily")]
+                if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
+                    if !tavily_key.is_empty() {
+                        if let Ok(provider) = TavilyProvider::new(&tavily_key) {
+                            providers.push(Box::new(provider));
+                        }
+                    }
                 }
+                #[cfg(not(feature = "tavily"))]
+                warn!("Tavily requested but feature not enabled");
             }
-        }
-
-        #[cfg(feature = "crawl4ai")]
-        if let Ok(url) = std::env::var("CRAWL4AI_URL") {
-            if !url.is_empty() {
-                providers.push(Box::new(Crawl4aiProvider::new(&url)));
+            "crawl4ai" => {
+                #[cfg(feature = "crawl4ai")]
+                if let Ok(url) = std::env::var("CRAWL4AI_URL") {
+                    if !url.is_empty() {
+                        providers.push(Box::new(Crawl4aiProvider::new(&url)));
+                    }
+                }
+                #[cfg(not(feature = "crawl4ai"))]
+                warn!("Crawl4AI requested but feature not enabled");
             }
+            _ => unreachable!(), // get_search_provider() guarantees valid value
         }
 
         providers

@@ -10,9 +10,6 @@ pub mod ytdlp;
 
 mod path;
 
-#[cfg(all(feature = "tavily", feature = "crawl4ai"))]
-compile_error!("features \"tavily\" and \"crawl4ai\" are mutually exclusive");
-
 #[cfg(feature = "tavily")]
 pub mod tavily;
 
