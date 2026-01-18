@@ -46,7 +46,10 @@ impl EmbeddingService {
     /// Get or determine embedding dimension.
     async fn get_dimension(&self) -> SkillResult<usize> {
         {
-            let dim = self.dimension.lock().expect("Mutex should not be poisoned");
+            let dim = self
+                .dimension
+                .lock()
+                .map_err(|e| SkillError::EmbeddingRequest(format!("Mutex poisoned: {}", e)))?;
             if let Some(d) = *dim {
                 return Ok(d);
             }
@@ -59,7 +62,10 @@ impl EmbeddingService {
             .unwrap_or(1536);
         info!(dimension = detected, "Auto-detected embedding dimension");
 
-        let mut dim = self.dimension.lock().expect("Mutex should not be poisoned");
+        let mut dim = self
+            .dimension
+            .lock()
+            .map_err(|e| SkillError::EmbeddingRequest(format!("Mutex poisoned: {}", e)))?;
         if dim.is_none() {
             *dim = Some(detected);
         }
@@ -147,7 +153,10 @@ impl EmbeddingService {
 
         let expected_dim = self.get_dimension().await?;
         if result.len() != expected_dim {
-            let mut dim = self.dimension.lock().expect("Mutex should not be poisoned");
+            let mut dim = self
+                .dimension
+                .lock()
+                .map_err(|e| SkillError::EmbeddingRequest(format!("Mutex poisoned: {}", e)))?;
             *dim = Some(result.len());
             info!(
                 old_dimension = expected_dim,
@@ -193,7 +202,10 @@ impl EmbeddingService {
             SkillError::EmbeddingCache(format!("failed to parse {}: {err}", path.display()))
         })?;
 
-        let current_dim = self.dimension.lock().expect("Mutex should not be poisoned");
+        let current_dim = self
+            .dimension
+            .lock()
+            .map_err(|e| SkillError::EmbeddingRequest(format!("Mutex poisoned: {}", e)))?;
         if let Some(d) = *current_dim {
             if entry.embedding.len() != d {
                 warn!(
