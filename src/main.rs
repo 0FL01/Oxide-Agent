@@ -190,7 +190,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn init_logging(patterns: Arc<RedactionPatterns>) {
     let make_writer = RedactingMakeWriter::new(io::stderr, patterns);
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    // Проверка переменной DEBUG_MODE для verbose режима
+    let debug_mode = std::env::var("DEBUG_MODE")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    let filter = if debug_mode {
+        // Verbose режим: всё на уровне debug
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"))
+    } else {
+        // Production режим: фильтрованные настройки
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("oxide_agent=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn"))
+    };
 
     tracing_subscriber::registry()
         .with(filter)

@@ -4,6 +4,10 @@
 
 Бот разработан с использованием **Rust 1.92**, библиотеки `teloxide`, AWS SDK для взаимодействия с Cloudflare R2, и нативной интеграции с провайдерами ИИ (Groq, Mistral AI, Google Gemini, OpenRouter, ZAI/Zhipu AI).
 
+## Branch
+
+The default branch in this repo is `testing`.
+
 ## 🏗 Структура проекта
 
 ```
@@ -163,12 +167,12 @@ docker-compose.yml
 
 ### 2. Operational Workflow
 **Tools are enforced by the environment.**
-- **Compilation**: Use `cargo-check` for quick validation. Only use `cargo-build` for final binaries.
-- **Dependencies**: Use `cargo-add`, `cargo-remove`, `cargo-update`.
-- **Metadata**: Use `workspace-info` for project topology and `cargo-info` for crate details.
+- **Compilation**: Use `cargo check` for quick validation. Only use `cargo build` for final binaries.
+- **Dependencies**: Use `cargo add`, `cargo remove`, `cargo update`.
+- **Metadata**: Use `workspace info` for project topology and `cargo info` for crate details.
 
 ### 3. Code Quality
-- **Linting**: Run `cargo-clippy` before finishing a task.
+- **Linting**: Run `cargo clippy` before finishing a task.
 - **Formatting**: **Automatic.** The system auto-formats on save. Do not run `cargo fmt` manually.
 
 ## ⚡ Tool Intent Map

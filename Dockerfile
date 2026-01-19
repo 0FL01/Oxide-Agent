@@ -37,6 +37,7 @@ COPY skills/ /app/skills/
 
 
 # Set environment variables
-ENV RUST_LOG=info
+ENV RUST_LOG=oxide_agent=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+ENV DEBUG_MODE=false
 
 CMD ["./oxide-agent"]

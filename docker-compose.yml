@@ -9,6 +9,8 @@ services:
       - .env
     environment:
       - CRAWL4AI_URL=http://crawl4ai:11235
+      - RUST_LOG=oxide_agent=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+      - DEBUG_MODE=false
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

@@ -10,7 +10,7 @@ on:
 
 env:
   DOCKER_IMAGE: oxide-agent # Local usage only/naming convention
-  RUST_LOG: info
+  RUST_LOG: oxide_agent=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
 
 jobs:
   test:
@@ -241,7 +241,7 @@ jobs:
 
             # Create .env file using environment variables
             echo "Creating .env file..."
-            printf "RUST_LOG=info\n" > .env
+            printf "RUST_LOG=oxide_agent=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn\n" > .env
             printf "GROQ_API_KEY=%s\n" "$GROQ_API_KEY" >> .env
             printf "TELEGRAM_TOKEN=%s\n" "$TELEGRAM_TOKEN" >> .env
             printf "OPENROUTER_API_KEY=%s\n" "$OPENROUTER_API_KEY" >> .env
