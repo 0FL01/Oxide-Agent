@@ -34,6 +34,7 @@ services:
       resources:
         limits:
           memory: 6G
+          cpus: '4'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
       interval: 10s
