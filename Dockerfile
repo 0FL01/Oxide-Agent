@@ -17,11 +17,11 @@ FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 # Build dependencies - this layer is cached unless dependencies change
-RUN cargo chef cook --release --workspace --features crawl4ai --recipe-path recipe.json
+RUN cargo chef cook --release --workspace --features oxide-agent-core/crawl4ai --recipe-path recipe.json
 
 # Build application - this layer is rebuilt when source changes
 COPY . .
-RUN cargo build --release -p oxide-agent-telegram-bot --features crawl4ai
+RUN cargo build --release -p oxide-agent-telegram-bot -F oxide-agent-core/crawl4ai
 
 # Runtime stage - Debian Trixie (stable)
 FROM debian:trixie-slim
