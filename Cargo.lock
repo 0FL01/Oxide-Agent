@@ -2834,7 +2834,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
-name = "oxide-agent"
+name = "oxide-agent-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2865,7 +2865,6 @@ dependencies = [
  "shell-escape",
  "tar",
  "tavily",
- "teloxide",
  "thiserror 2.0.18",
  "tiktoken-rs",
  "tokio",
@@ -2876,6 +2875,54 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "zai-rs",
+]
+
+[[package]]
+name = "oxide-agent-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "oxide-agent-core",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "oxide-agent-telegram-bot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "aws-types",
+ "dotenvy",
+ "oxide-agent-core",
+ "oxide-agent-transport-telegram",
+ "regex",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "oxide-agent-transport-telegram"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "config",
+ "html-escape",
+ "lazy-regex",
+ "moka",
+ "oxide-agent-core",
+ "oxide-agent-runtime",
+ "serde",
+ "teloxide",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

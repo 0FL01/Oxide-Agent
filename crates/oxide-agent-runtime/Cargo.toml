@@ -1,0 +1,22 @@
+[package]
+name = "oxide-agent-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+authors = ["@0FL01"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "forbid"
+too_many_lines = "forbid"
+too_many_arguments = "forbid"
+
+[dependencies]
+oxide-agent-core = { path = "../oxide-agent-core" }
+tokio = { version = "1.48", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+async-trait = "0.1.89"
+anyhow = "1.0.100"
