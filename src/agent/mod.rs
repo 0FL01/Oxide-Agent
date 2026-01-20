@@ -3,7 +3,7 @@
 //! This module provides an agent system that can:
 //! - Accept tasks from users (text, voice, images)
 //! - Decompose and execute tasks iteratively
-//! - Report progress via Telegram message updates
+//! - Report progress via transport adapters
 //! - Manage conversation memory with auto-compaction
 
 /// Context abstractions for runner execution
@@ -28,6 +28,8 @@ pub mod recovery;
 pub mod registry;
 /// Core agent runner (execution loop)
 pub mod runner;
+/// Transport-agnostic runtime helpers (progress loops, delivery orchestration)
+pub mod runtime;
 /// Agent session management
 pub mod session;
 /// Session registry for managing multiple concurrent sessions
@@ -48,7 +50,7 @@ pub mod narrator;
 /// Loop detection subsystem
 pub mod loop_detection;
 
-/// Progress tracking and Telegram status updates
+/// Progress tracking and runtime events
 pub mod progress;
 
 pub use context::{AgentContext, EphemeralSession};
@@ -58,6 +60,7 @@ pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::AgentMemory;
 pub use progress::{AgentEvent, ProgressState};
 pub use provider::ToolProvider;
+pub use runtime::{AgentTransport, DeliveryMode, ProgressRuntimeConfig};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;

@@ -5,28 +5,30 @@
 
 use crate::agent::{
     executor::AgentExecutor,
-    loop_detection::LoopType,
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
     AgentSession, TelegramSessionRegistry,
 };
 use crate::bot::agent::extract_agent_input;
+use crate::bot::agent_transport::TelegramAgentTransport;
 use crate::bot::messaging::send_long_message;
+use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
-    confirmation_keyboard, get_agent_keyboard, loop_action_keyboard, loop_type_label, AgentView,
-    DefaultAgentView, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
+    confirmation_keyboard, get_agent_keyboard, AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL,
+    LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
 use crate::config::AGENT_MAX_ITERATIONS;
 use crate::llm::LlmClient;
 use crate::storage::R2Storage;
+use crate::agent::runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
 use anyhow::{Error, Result};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQuery, InputFile, MessageId, ParseMode};
-use tracing::{debug, error, info, warn};
+use teloxide::types::{CallbackQuery, ParseMode};
+use tracing::{debug, info, warn};
 
 /// Type alias for dialogue
 pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
@@ -233,273 +235,6 @@ async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
     }
 }
 
-/// Spawn task to handle progress updates and file delivery
-fn spawn_progress_updater(
-    bot: Bot,
-    chat_id: ChatId,
-    msg_id: MessageId,
-    mut rx: tokio::sync::mpsc::Receiver<AgentEvent>,
-) -> tokio::task::JoinHandle<String> {
-    tokio::spawn(async move {
-        let mut state = ProgressState::new(AGENT_MAX_ITERATIONS);
-        let mut last_update = std::time::Instant::now();
-        let mut needs_update = false;
-        let throttle_duration = std::time::Duration::from_millis(1500);
-
-        while let Some(event) = rx.recv().await {
-            log_agent_event_info(&event);
-            // Handle file sending separately (side effect)
-            match &event {
-                AgentEvent::FileToSend {
-                    ref file_name,
-                    ref content,
-                } => {
-                    if let Err(e) = send_file_smart(&bot, chat_id, file_name, content).await {
-                        tracing::error!("Failed to send file {}: {}", file_name, e);
-                    }
-                }
-                AgentEvent::FileToSendWithConfirmation {
-                    file_name: _,
-                    content: _,
-                    sandbox_path: _,
-                    ..
-                } => {
-                    // Extract the confirmation channel
-                    // We need to destructure the event to move confirmation_tx out
-                    if let AgentEvent::FileToSendWithConfirmation {
-                        file_name: fname,
-                        content: fcontent,
-                        sandbox_path: spath,
-                        confirmation_tx,
-                    } = event
-                    {
-                        // Retry logic with exponential backoff
-                        let result = crate::utils::retry_telegram_operation(|| async {
-                            send_file_smart(&bot, chat_id, &fname, &fcontent)
-                                .await
-                                .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
-                        })
-                        .await;
-
-                        match result {
-                            Ok(_) => {
-                                info!(file_name = %fname, sandbox_path = %spath, "File delivered successfully");
-                                let _ = confirmation_tx.send(Ok(()));
-                            }
-                            Err(e) => {
-                                error!(file_name = %fname, error = %e, "Failed to deliver file after retries");
-                                let _ = confirmation_tx.send(Err(e.to_string()));
-                            }
-                        }
-                        // Don't update state for this variant, we already handled it
-                        needs_update = true;
-                        continue;
-                    }
-                }
-                AgentEvent::LoopDetected {
-                    loop_type,
-                    iteration,
-                } => {
-                    if let Err(e) =
-                        send_loop_detected_message(&bot, chat_id, *loop_type, *iteration).await
-                    {
-                        warn!("Failed to send loop notification: {e}");
-                    }
-                }
-                _ => {}
-            }
-
-            state.update(event);
-            needs_update = true;
-
-            if last_update.elapsed() >= throttle_duration {
-                let text = state.format_telegram();
-                super::resilient::edit_message_safe_resilient(&bot, chat_id, msg_id, &text).await;
-                last_update = std::time::Instant::now();
-                needs_update = false;
-            }
-        }
-
-        let final_text = state.format_telegram();
-        if needs_update {
-            super::resilient::edit_message_safe_resilient(&bot, chat_id, msg_id, &final_text).await;
-        }
-        final_text
-    })
-}
-
-fn log_agent_event_info(event: &AgentEvent) {
-    let _handled = log_agent_file_event(event)
-        || log_agent_tool_event(event)
-        || log_agent_progress_event(event)
-        || log_agent_misc_event(event);
-}
-
-fn log_agent_file_event(event: &AgentEvent) -> bool {
-    match event {
-        AgentEvent::FileToSend { file_name, content } => {
-            info!(
-                event = "file_to_send",
-                file_name = %file_name,
-                size_bytes = content.len(),
-                "Agent event"
-            );
-            true
-        }
-        AgentEvent::FileToSendWithConfirmation {
-            file_name,
-            content,
-            sandbox_path,
-            ..
-        } => {
-            info!(
-                event = "file_to_send_confirm",
-                file_name = %file_name,
-                size_bytes = content.len(),
-                sandbox_path = %sandbox_path,
-                "Agent event"
-            );
-            true
-        }
-        _ => false,
-    }
-}
-
-fn log_agent_tool_event(event: &AgentEvent) -> bool {
-    match event {
-        AgentEvent::ToolCall {
-            name,
-            input,
-            command_preview,
-        } => {
-            let input_preview = crate::utils::truncate_str(input, 200);
-            let command_preview = command_preview
-                .as_deref()
-                .map(|preview| crate::utils::truncate_str(preview, 120));
-            info!(
-                event = "tool_call",
-                tool_name = %name,
-                command_preview = ?command_preview,
-                input_preview = %input_preview,
-                "Agent event"
-            );
-            true
-        }
-        AgentEvent::ToolResult { name, output } => {
-            let output_preview = crate::utils::truncate_str(output, 200);
-            info!(
-                event = "tool_result",
-                tool_name = %name,
-                output_preview = %output_preview,
-                "Agent event"
-            );
-            true
-        }
-        AgentEvent::Cancelling { tool_name } => {
-            info!(event = "cancelling", tool_name = %tool_name, "Agent event");
-            true
-        }
-        _ => false,
-    }
-}
-
-fn log_agent_progress_event(event: &AgentEvent) -> bool {
-    match event {
-        AgentEvent::Thinking { tokens } => {
-            info!(event = "thinking", tokens = *tokens, "Agent event");
-            true
-        }
-        AgentEvent::Continuation { reason, count } => {
-            let reason_preview = crate::utils::truncate_str(reason, 200);
-            info!(
-                event = "continuation",
-                count = *count,
-                reason_preview = %reason_preview,
-                "Agent event"
-            );
-            true
-        }
-        AgentEvent::TodosUpdated { todos } => {
-            info!(
-                event = "todos_updated",
-                total = todos.items.len(),
-                completed = todos.completed_count(),
-                pending = todos.pending_count(),
-                "Agent event"
-            );
-            true
-        }
-        AgentEvent::Finished => {
-            info!(event = "finished", "Agent event");
-            true
-        }
-        AgentEvent::Cancelled => {
-            info!(event = "cancelled", "Agent event");
-            true
-        }
-        _ => false,
-    }
-}
-
-fn log_agent_misc_event(event: &AgentEvent) -> bool {
-    match event {
-        AgentEvent::Error(message) => {
-            let preview = crate::utils::truncate_str(message, 200);
-            info!(event = "error", message = %preview, "Agent event");
-            true
-        }
-        AgentEvent::Reasoning { summary } => {
-            let preview = crate::utils::truncate_str(summary, 200);
-            info!(event = "reasoning", summary_preview = %preview, "Agent event");
-            true
-        }
-        AgentEvent::LoopDetected {
-            loop_type,
-            iteration,
-        } => {
-            info!(
-                event = "loop_detected",
-                loop_type = ?loop_type,
-                iteration = *iteration,
-                "Agent event"
-            );
-            true
-        }
-        AgentEvent::Narrative { headline, content } => {
-            let headline_preview = crate::utils::truncate_str(headline, 120);
-            let content_preview = crate::utils::truncate_str(content, 200);
-            info!(
-                event = "narrative",
-                headline = %headline_preview,
-                content_preview = %content_preview,
-                "Agent event"
-            );
-            true
-        }
-        _ => false,
-    }
-}
-
-async fn send_loop_detected_message(
-    bot: &Bot,
-    chat_id: ChatId,
-    loop_type: LoopType,
-    iteration: usize,
-) -> Result<()> {
-    let text = format!(
-        "🔁 <b>Loop Detected in Task Execution</b>\nType: {}\nIteration: {}\n\nSelect an action:",
-        loop_type_label(loop_type),
-        iteration
-    );
-
-    bot.send_message(chat_id, text)
-        .parse_mode(ParseMode::Html)
-        .reply_markup(loop_action_keyboard())
-        .await?;
-
-    Ok(())
-}
-
 async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let user_id = ctx.msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = ctx.msg.chat.id;
@@ -540,13 +275,20 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
 
     // Create progress tracking channel
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-
-    // Spawn progress updater task
-    let progress_handle = spawn_progress_updater(ctx.bot.clone(), chat_id, progress_msg.id, rx);
+    let transport = TelegramAgentTransport::new(ctx.bot.clone(), chat_id, progress_msg.id);
+    let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
+    let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
     // Execute the task
     let result = execute_agent_task(user_id, &task_text, Some(tx)).await;
-    let progress_text = progress_handle.await.unwrap_or_default();
+    let state = match progress_handle.await {
+        Ok(state) => state,
+        Err(err) => {
+            warn!(error = %err, "Progress runtime task failed");
+            ProgressState::new(AGENT_MAX_ITERATIONS)
+        }
+    };
+    let progress_text = render_progress_html(&state);
 
     // Save agent memory after task execution
     save_memory_after_task(user_id, &ctx.storage).await;
@@ -598,10 +340,19 @@ async fn run_agent_task_with_text(
     .await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-    let progress_handle = spawn_progress_updater(bot.clone(), chat_id, progress_msg.id, rx);
+    let transport = TelegramAgentTransport::new(bot.clone(), chat_id, progress_msg.id);
+    let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
+    let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
     let result = execute_agent_task(user_id, &task_text, Some(tx)).await;
-    let progress_text = progress_handle.await.unwrap_or_default();
+    let state = match progress_handle.await {
+        Ok(state) => state,
+        Err(err) => {
+            warn!(error = %err, "Progress runtime task failed");
+            ProgressState::new(AGENT_MAX_ITERATIONS)
+        }
+    };
+    let progress_text = render_progress_html(&state);
 
     save_memory_after_task(user_id, &storage).await;
 
@@ -998,63 +749,4 @@ pub async fn handle_agent_confirmation(
     }
 
     Ok(())
-}
-
-static VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm"];
-static AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "m4a", "flac"];
-
-/// Smart file sending that chooses send_video/send_audio/send_document based on extension
-///
-/// Implements fallback logic: if native media sending fails, retries as a document.
-/// Accepts &[u8] to avoid unnecessary cloning.
-async fn send_file_smart(
-    bot: &Bot,
-    chat_id: ChatId,
-    file_name: &str,
-    content: &[u8],
-) -> Result<teloxide::types::Message> {
-    let extension = std::path::Path::new(file_name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase());
-
-    let file_name_owned = file_name.to_string();
-    let make_file = || InputFile::memory(content.to_vec()).file_name(file_name_owned.clone());
-
-    if let Some(ext) = extension.as_deref() {
-        if VIDEO_EXTENSIONS.contains(&ext) {
-            return match bot.send_video(chat_id, make_file()).await {
-                Ok(msg) => Ok(msg),
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to send video '{}' as native media: {}. Fallback to document.",
-                        file_name,
-                        e
-                    );
-                    bot.send_document(chat_id, make_file())
-                        .await
-                        .map_err(Into::into)
-                }
-            };
-        }
-        if AUDIO_EXTENSIONS.contains(&ext) {
-            return match bot.send_audio(chat_id, make_file()).await {
-                Ok(msg) => Ok(msg),
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to send audio '{}' as native media: {}. Fallback to document.",
-                        file_name,
-                        e
-                    );
-                    bot.send_document(chat_id, make_file())
-                        .await
-                        .map_err(Into::into)
-                }
-            };
-        }
-    }
-
-    bot.send_document(chat_id, make_file())
-        .await
-        .map_err(Into::into)
 }

@@ -115,6 +115,7 @@ mod integration_tests {
 #[cfg(test)]
 mod progress_integration_tests {
     use oxide_agent::agent::progress::{AgentEvent, ProgressState};
+    use oxide_agent::bot::progress_render::render_progress_html;
 
     #[test]
     fn test_progress_state_with_sanitized_tool_name() {
@@ -127,7 +128,7 @@ mod progress_integration_tests {
             command_preview: None,
         });
 
-        let output = state.format_telegram();
+        let output = render_progress_html(&state);
 
         // Should NOT contain XML tags in the formatted output
         assert!(!output.contains("<arg_key>"));
@@ -147,7 +148,7 @@ mod progress_integration_tests {
             command_preview: None,
         });
 
-        let output = state.format_telegram();
+        let output = render_progress_html(&state);
         // Current step should show with ⏳ prefix
         assert!(output.contains("⏳ Execution: web_search"));
     }
@@ -163,7 +164,7 @@ mod progress_integration_tests {
             command_preview: Some("pip install pandas".to_string()),
         });
 
-        let output = state.format_telegram();
+        let output = render_progress_html(&state);
 
         // Should show the command preview with ⏳ prefix, not "Execution: execute_command"
         assert!(output.contains("⏳ 🔧 pip install pandas"));
@@ -201,7 +202,7 @@ mod progress_integration_tests {
             command_preview: Some("ls -la".to_string()),
         });
 
-        let output = state.format_telegram();
+        let output = render_progress_html(&state);
 
         // Should show grouped completed steps
         assert!(output.contains("✅ web_search ×2"));
@@ -216,7 +217,7 @@ mod progress_integration_tests {
         // Simulate thinking event
         state.update(AgentEvent::Thinking { tokens: 5700 });
 
-        let output = state.format_telegram();
+        let output = render_progress_html(&state);
 
         // Check header format
         assert!(output.contains("🤖 <b>Oxide Agent</b>"));

@@ -18,9 +18,18 @@ fn init_test_env() {
         .try_init();
 }
 
+fn should_run_provider_checks() -> bool {
+    matches!(env::var("RUN_LLM_PROVIDER_CHECKS").as_deref(), Ok("1"))
+}
+
 #[tokio::test]
 async fn test_zai_tool_calling_integration() -> Result<()> {
     init_test_env();
+
+    if !should_run_provider_checks() {
+        warn!("Skipping ZAI integration test: RUN_LLM_PROVIDER_CHECKS != 1");
+        return Ok(());
+    }
 
     let api_key = match env::var("ZAI_API_KEY") {
         Ok(k) if !k.is_empty() && k != "dummy" => k,
@@ -81,8 +90,8 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
 
                 // Verify tool call structure is correct (regression check)
                 for tool_call in &response.tool_calls {
-                    assert!(!tool_call.id.is_empty(), "Tool call ID must not be empty");
-                    assert!(
+                    anyhow::ensure!(!tool_call.id.is_empty(), "Tool call ID must not be empty");
+                    anyhow::ensure!(
                         !tool_call.function.name.is_empty(),
                         "Tool call function name must not be empty"
                     );
@@ -101,14 +110,25 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
             }
 
             // Verify response structure (regression check)
-            assert!(
+            anyhow::ensure!(
                 !response.finish_reason.is_empty(),
                 "Finish reason must not be empty"
             );
         }
         Err(e) => {
-            // If we get a 400 Bad Request, that's exactly what we want to fail the test on.
-            panic!("ZAI API request failed: {}", e);
+            let message = e.to_string().to_lowercase();
+            let is_rate_limited = message.contains("rate limit") || message.contains("too many requests");
+            let is_insufficient_balance = message.contains("insufficient") || message.contains("balance");
+
+            if is_rate_limited || is_insufficient_balance {
+                warn!(
+                    "Skipping ZAI integration test due to API limits or balance: {}",
+                    e
+                );
+                return Ok(());
+            }
+
+            return Err(anyhow::Error::new(e));
         }
     }
 
