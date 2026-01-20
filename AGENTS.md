@@ -11,159 +11,36 @@ The default branch in this repo is `testing`.
 ## 🏗 Структура проекта
 
 ```
-src/
-├── main.rs                    # точка входа
-├── lib.rs                     # библиотечный корень
-├── agent/                     # ядро агента и логика выполнения
-│   ├── mod.rs
-│   ├── executor.rs
-│   ├── context.rs             # контекст выполнения агента
-│   ├── recovery.rs            # восстановление malformed ответов
-│   ├── structured_output.rs   # парсинг и валидация структурированных ответов
-│   ├── tool_bridge.rs         # мост исполнения инструментов
-│   ├── session_registry.rs    # реестр сессий агентов
-│   ├── thoughts.rs            # генерация мыслей агента
-│   ├── prompt/                # сборка системных промптов
-│   │   ├── mod.rs
-│   │   └── composer.rs
-│   ├── loop_detection/        # детектирование зацикливаний
-│   │   ├── mod.rs
-│   │   ├── config.rs
-│   │   ├── content_detector.rs
-│   │   ├── llm_detector.rs
-│   │   ├── service.rs
-│   │   ├── tool_detector.rs
-│   │   └── types.rs
-│   ├── runner/                # вспомогательные модули исполнения
-│   │   ├── mod.rs
-│   │   ├── execution.rs
-│   │   ├── hooks.rs
-│   │   ├── loop_detection.rs
-│   │   ├── responses.rs
-│   │   ├── tools.rs
-│   │   └── types.rs
-│   ├── skills/                # подсистема навыков (RAG/embeddings)
-│   │   ├── mod.rs
-│   │   ├── cache.rs
-│   │   ├── embeddings.rs
-│   │   ├── loader.rs
-│   │   ├── matcher.rs
-│   │   ├── registry.rs
-│   │   └── types.rs
-│   ├── session.rs
-│   ├── memory.rs
-│   ├── preprocessor.rs
-│   ├── progress.rs
-│   ├── narrator.rs            # генерация нарратива статусов
-│   ├── provider.rs
-│   ├── registry.rs
-│   ├── hooks/                 # хуки выполнения (completion и др.)
-│   │   ├── mod.rs
-│   │   ├── completion.rs
-│   │   ├── delegation_guard.rs # защита делегирования
-│   │   ├── registry.rs
-│   │   ├── search_budget.rs   # управление бюджетом поисковых запросов
-│   │   ├── sub_agent_safety.rs # проверка безопасности делегирования
-│   │   ├── timeout_report.rs  # обработка и отчет о таймаутах инструментов
-│   │   ├── types.rs
-│   │   └── workload.rs         # управление рабочей нагрузкой
-│   └── providers/             # провайдеры инструментов (Sandbox, Tavily, и т.д.)
-│       ├── mod.rs
-│       ├── delegation.rs      # делегирование под-агентам
-│       ├── filehoster.rs
-│       ├── path.rs
-│       ├── sandbox.rs
-│       ├── crawl4ai/           # провайдер Crawl4AI
-│       │   ├── mod.rs
-│       │   ├── response.rs
-│       │   └── tests.rs
-│       ├── tavily.rs
-│       ├── todos.rs
-│       └── ytdlp.rs
-├── bot/                       # логика Telegram-бота и хендлеры
-│   ├── mod.rs
-│   ├── handlers.rs
-│   ├── agent_handlers.rs
-│   ├── messaging.rs           # отправка и разбиение сообщений
-│   ├── resilient.rs           # устойчивая отправка с ретраями
-│   ├── state.rs
-│   ├── unauthorized_cache.rs
-│   ├── views/                 # шаблоны сообщений и UI
-│   │   ├── mod.rs
-│   │   └── agent.rs
-│   └── agent/                 # бот-специфичная логика агента
-│       ├── mod.rs
-│       └── media.rs
-├── llm/                       # интеграции с провайдерами LLM
-│   ├── mod.rs
-│   ├── common.rs
-│   ├── embeddings.rs          # векторные представления
-│   ├── http_utils.rs
-│   ├── openai_compat.rs
-│   └── providers/
-│       ├── mod.rs
-│       ├── gemini.rs
-│       ├── groq.rs
-│       ├── mistral.rs
-│       ├── openrouter.rs
-│       ├── openrouter/
-│       │   └── helpers.rs
-│       └── zai/                # провайдер ZAI/Zhipu AI
-│           ├── mod.rs
-│           ├── zai.rs          # реализация провайдера
-│           ├── sdk.rs          # логика SDK
-│           └── sdk/
-│               ├── messages.rs
-│               └── stream.rs   # поддержка потоковой передачи
-├── sandbox/                   # управление изолированной средой
-│   ├── mod.rs
-│   └── manager.rs
-├── storage.rs
-├── config.rs
-└── utils.rs
-
-skills/                       # определения навыков в формате markdown
-├── core.md
-├── delegation_manager.md      # управление делегированием
-├── ffmpeg-conversion.md
-├── file-hosting.md
-├── file-management.md
-├── html-report.md
-├── task-planning.md
-├── video-processing.md
-└── web-search.md
-
-tests/                        # интеграционные и функциональные тесты
-├── agent_xml_leak_prevention.rs
-├── cancellation_respected.rs
-├── crawl4ai_provider.rs
-├── integration_validation.rs
-├── llm_provider_check.rs
-└── sub_agent_delegation.rs
-
-backlog/                      # документация и планы
-├── blueprints/               # чертежи новых функций
-├── docs/                     # спецификации компонентов
-└── done/                     # завершенные задачи
-
-sandbox/                      # конфигурация Docker для песочницы
-└── Dockerfile.sandbox
-
-.github/                      # GitHub Actions CI/CD
-└── workflows/
-    └── ci-cd.yml             # пайплайн тестирования и деплоя
-
-Dockerfile                     # Dockerfile основного приложения
+crates/
+├── oxide-agent-core/                # ядро агента, LLM, хуки, навыки, storage
+├── oxide-agent-runtime/             # цикл исполнения, провайдеры, sandbox, сессии
+├── oxide-agent-transport-telegram/  # Telegram transport + handlers (teloxide)
+└── oxide-agent-telegram-bot/         # бинарь Telegram-бота и сборка приложения
+skills/                               # определения навыков в формате markdown
+docs/                                 # документация и спецификации
+backlog/                              # планы и завершенные задачи
+sandbox/                              # Docker-конфигурация песочницы
+.github/workflows/                    # GitHub Actions CI/CD
+Dockerfile                            # Dockerfile основного приложения
 docker-compose.yml
 ```
+
+### Workspace crates
+- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage.
+- `oxide-agent-runtime`: оркестрация сессий, цикл исполнения, провайдеры инструментов, sandbox.
+- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, телеметрия доставки.
+- `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
 ## 🦀 Rust Architecture & Workflow
 
 ### 1. Architecture & Structure
-- **Feature Isolation**: Maintain feature-based directory structure. `agent/` modules must not depend on `bot/`.
-- **Module Hierarchy**: Every directory must have a `mod.rs` defining clear public exports.
+- **Feature Isolation**: `oxide-agent-core` и `oxide-agent-runtime` не должны зависеть от транспортных crate; транспорты зависят от core/runtime.
+- **Transport Boundaries**: `teloxide` используется только в `oxide-agent-transport-telegram` (и бинарях, которые ее подключают).
+- **Module Hierarchy**: В каждом crate сохраняем явные `mod.rs` и публичные экспорты модулей.
 - **Error Handling**: Use `thiserror` for libraries and `anyhow` for apps.
   > *Note: `unwrap()`, `expect()` are strictly blocked by system hooks.*
+
+Чтобы добавить новый transport (Discord/Slack), создайте `crates/oxide-agent-transport-<name>`, держите SDK и обработчики внутри transport crate, подключите адаптер к runtime, и при необходимости добавьте отдельный бинарь `oxide-agent-<name>-bot` для запуска.
 
 ### 2. Operational Workflow
 **Tools are enforced by the environment.**
@@ -174,8 +51,3 @@ docker-compose.yml
 ### 3. Code Quality
 - **Linting**: Run `cargo clippy` before finishing a task.
 - **Formatting**: **Automatic.** The system auto-formats on save. Do not run `cargo fmt` manually.
-
-## ⚡ Tool Intent Map
-| Intent | Tool |
-| :--- | :--- |
-| "Find docs/solutions" | `tavily-search` |

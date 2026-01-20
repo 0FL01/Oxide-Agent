@@ -17,11 +17,11 @@ FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 # Build dependencies - this layer is cached unless dependencies change
-RUN cargo chef cook --release --features crawl4ai --recipe-path recipe.json
+RUN cargo chef cook --release --workspace --features crawl4ai --recipe-path recipe.json
 
 # Build application - this layer is rebuilt when source changes
 COPY . .
-RUN cargo build --release --features crawl4ai
+RUN cargo build --release -p oxide-agent-telegram-bot --features crawl4ai
 
 # Runtime stage - Debian Trixie (stable)
 FROM debian:trixie-slim
@@ -32,12 +32,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/oxide-agent /app/oxide-agent
+COPY --from=builder /app/target/release/oxide-agent-telegram-bot /app/oxide-agent-telegram-bot
 COPY skills/ /app/skills/
 
 
 # Set environment variables
-ENV RUST_LOG=oxide_agent=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+ENV RUST_LOG=oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
 ENV DEBUG_MODE=false
 
-CMD ["./oxide-agent"]
+CMD ["./oxide-agent-telegram-bot"]
