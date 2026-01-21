@@ -16,9 +16,15 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, and integrates
 
 ## Features
 
+*   **🏗️ Workspace Architecture:** Modular crate design with clear separation of concerns:
+    - `oxide-agent-core` - Domain logic, LLM integrations, hooks, skills, storage
+    - `oxide-agent-runtime` - Session orchestration, execution cycle, tool providers, sandbox
+    - `oxide-agent-transport-telegram` - Telegram transport layer (teloxide integration)
+    - `oxide-agent-telegram-bot` - Binary entry point and configuration
+
 *   **🤖 Agent Mode:**
         <img width="974" height="747" alt="image_2026-01-11_20-58-21" src="https://github.com/user-attachments/assets/c99e55e4-8933-4ec8-9f50-22f7cbca4c77" />
-    
+
     *   **Integrated Sandbox:** Safe execution of Python code and Bash commands in isolated Docker containers (`debian:trixie-slim`).
     *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
     *   **📋 Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
@@ -28,9 +34,17 @@ The bot is developed using **Rust 1.92**, the `teloxide` library, and integrates
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
 
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
-    *   **Web Search and Data Extraction:** Tavily API integration for retrieving up-to-date information from the web.
-    *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior (Completion Hook, Registry).
+    *   **Web Search and Data Extraction:** Tavily API or Crawl4AI integration for retrieving up-to-date information from the web (configurable via `SEARCH_PROVIDER`).
+    *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
+        - Completion Check Hook - validates task completion
+        - Workload Distributor - enforces separation of duties by blocking heavy manual operations in the Main Agent
+        - Search Budget Hook - prevents infinite loops in tool calls
+        - Delegation Guard - controls sub-agent delegation behavior
+        - Soft Timeout Report Hook - provides detailed timeout reporting
+        - Sub-Agent Safety - ensures safe execution environments
+        - Registry - centralized hook management
     *   **🔄 Loop Detection:** Three levels of protection (Content Detector, Tool Detector, LLM Detector) to prevent infinite loops.
+    *   **⏱️ Universal Runtime:** Transport-agnostic progress rendering system that can be adapted for Discord, Slack, and other transports.
     *   **👥 Hierarchical Delegation:** The Main Agent acts as an orchestrator, delegating heavy retrieval and mechanical tasks (git clone, searching) to Sub-Agents to maximize efficiency and context preservation.
     *   **Autonomy:** Agent plans steps and selects tools itself.
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
@@ -76,6 +90,7 @@ The bot supports 3 main providers for both standard chat and advanced Agent mode
 ### 🛠 Infrastructure
 *   **Docker** — run code sandbox (`agent-sandbox:latest`)
 *   **Tavily API** — optional for web search (`TAVILY_API_KEY`)
+*   **Crawl4AI** — alternative deep web crawling provider with markdown extraction and PDF parsing capabilities
 </details>
 
 ## Installation and Launch
@@ -113,6 +128,11 @@ The bot supports 3 main providers for both standard chat and advanced Agent mode
 TELEGRAM_TOKEN=YOUR_TOKEN
 ALLOWED_USERS=ID1,ID2 # List of allowed Telegram IDs (basic access)
 AGENT_ACCESS_IDS=ID1 # Access to Agent Mode (consumes many tokens)
+
+# Agent Configuration
+AGENT_TIMEOUT_SECS=300          # Agent execution timeout
+SEARCH_PROVIDER=tavily          # Search provider (tavily/crawl4ai)
+DEBUG_MODE=false                # Debug logging mode
 
 # Cloudflare R2 (S3)
 R2_ACCESS_KEY_ID=...
@@ -204,6 +224,7 @@ Extensible architecture for personalizing agent behavior:
 The agent uses a modular provider system, each offering a specialized set of tools:
 - **Sandbox Provider** (`sandbox.rs`, ~20KB) — code execution, file read/write, shell commands
 - **Tavily Provider** (`tavily.rs`) — web search and data extraction
+- **Crawl4AI Provider** (`crawl4ai.rs`) — deep web crawling with markdown extraction and PDF parsing
 - **Todos Provider** (`todos.rs`) — task list management for long-term planning
 - **YT-DLP Provider** (`ytdlp.rs`, ~33KB) — video and audio download from various platforms
 - **File Hoster Provider** (`filehoster.rs`) — public file upload to temporary hosting (up to 4GB)
@@ -235,65 +256,30 @@ The agent uses a modular provider system, each offering a specialized set of too
 <summary>📂 File Tree (expand)</summary>
 
 ```text
-src/
-├── main.rs                    # entry point
-├── lib.rs                     # library root
-├── agent/                     # agent core and execution logic
-│   ├── mod.rs
-│   ├── executor.rs            # main agent executor
-│   ├── context.rs             # agent execution context
-│   ├── recovery.rs            # malformed response recovery
-│   ├── structured_output.rs    # parsed and validated structured response
-│   ├── tool_bridge.rs         # tool execution bridge
-│   ├── session_registry.rs    # agent session registry
-│   ├── runner/                # execution runner modules
-│   ├── loop_detection/        # loop detection (content, tool, llm)
-│   ├── skills/                # skills subsystem (RAG/embeddings)
-│   ├── hooks/                 # execution hooks (Completion, Workload, Delegation, Safety)
-│   ├── prompt/                # system prompt assembly (Composer)
-│   ├── providers/             # tool providers (Sandbox, Tavily, Delegation, etc.)
-│   ├── session.rs             # session state
-│   ├── memory.rs              # memory and context handling
-│   ├── preprocessor.rs        # input media preprocessing
-│   ├── progress.rs            # progress display management
-│   ├── thoughts.rs            # analytical thoughts generation
-│   └── registry.rs            # global tool registry
-├── bot/                       # Telegram bot logic
-│   ├── handlers.rs            # main handlers
-│   ├── agent_handlers.rs      # agent mode handlers
-│   ├── views/                 # message templates and UI (agent.rs)
-│   ├── agent/                 # bot-specific logic (media.rs)
-│   └── mod.rs
-├── llm/                       # LLM provider integrations (OpenAI, Zai, etc.)
-├── sandbox/                   # Docker sandbox management
-├── storage.rs                 # Cloudflare R2/S3 operations
-├── config.rs                  # configuration and constants
-└── utils.rs                   # helper utilities
+crates/
+├── oxide-agent-core/           # Domain logic, LLM integrations, hooks, skills, storage
+│   └── src/
+│       ├── agent/              # Agent core and execution logic
+│       │   ├── hooks/          # Execution hooks (Completion, Workload, Delegation, Safety)
+│       │   ├── loop_detection/ # Loop detection (content, tool, llm)
+│       │   ├── providers/      # Tool providers (Sandbox, Tavily, Crawl4AI, Delegation, etc.)
+│       │   └── skills/         # Skills subsystem (RAG/embeddings)
+│       ├── llm/                # LLM provider integrations
+│       └── config.rs
+├── oxide-agent-runtime/        # Session orchestration, execution cycle, tool providers, sandbox
+│   └── src/
+├── oxide-agent-transport-telegram/  # Telegram transport layer (teloxide integration)
+│   └── src/
+│       ├── handlers/           # Telegram handlers
+│       └── views/              # Message templates and UI
+└── oxide-agent-telegram-bot/   # Binary entry point and configuration
+    └── src/
+        └── main.rs
 
-skills/                        # skill definitions (markdown)
-├── core.md                    # base concepts
-├── delegation_manager.md      # delegation and sub-agents
-├── ffmpeg-conversion.md       # FFmpeg conversion
-├── file-hosting.md            # file hosting operations
-├── file-management.md         # file management
-├── html-report.md             # HTML report generation
-├── task-planning.md           # task planning
-├── video-processing.md        # video processing
-└── web-search.md              # web search
-
-backlog/                       # documentation, plans and blueprints
-├── blueprints/                # implementation plans
-├── docs/                      # detailed component specifications
-├── bugs/                      # tracked issues
-└── done/                      # completed architectural changes
-
-tests/                         # integration and functional tests
-
-sandbox/                       # Docker configuration for sandbox
-└── Dockerfile.sandbox
-
-Dockerfile                     # Main application Dockerfile
-docker-compose.yml
+skills/                         # Skill definitions (markdown)
+backlog/                        # Documentation, plans and blueprints
+tests/                          # Integration and functional tests
+sandbox/                        # Docker configuration for sandbox
 ```
 </details>
 
