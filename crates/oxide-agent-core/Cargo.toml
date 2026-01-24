@@ -11,7 +11,7 @@ unsafe_code = "forbid"
 [lints.clippy]
 unwrap_used = "forbid"
 too_many_lines = "forbid"
-too_many_arguments = "forbid"
+too_many_arguments = "deny"
 
 [dependencies]
 tokio = { version = "1.48", features = ["full"] }

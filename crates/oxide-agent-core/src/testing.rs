@@ -2,9 +2,8 @@
 //!
 //! Provides convenient constructors for mocked LLM and storage providers.
 
-use crate::agent::memory::AgentMemory;
-use crate::llm::{LlmError, LlmProvider};
-use crate::storage::{Message as StorageMessage, StorageProvider, UserConfig};
+use crate::llm::LlmError;
+use crate::storage::UserConfig;
 use mockall::predicate::*;
 
 /// Create a mock LLM provider that returns a simple text response.
