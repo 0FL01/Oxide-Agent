@@ -1,10 +1,10 @@
 use crate::bot::state::State;
 use crate::bot::UnauthorizedCache;
 use crate::config::BotSettings;
+use anyhow::{anyhow, Result};
 use oxide_agent_core::llm::{LlmClient, Message as LlmMessage};
 use oxide_agent_core::storage::R2Storage;
 use oxide_agent_core::utils::truncate_str;
-use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use teloxide::{
     dispatching::dialogue::InMemStorage,

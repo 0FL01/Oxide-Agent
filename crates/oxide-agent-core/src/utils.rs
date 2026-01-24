@@ -438,8 +438,7 @@ where
     Fut: std::future::Future<Output = Result<T>>,
 {
     use crate::config::{
-        TRANSPORT_API_INITIAL_BACKOFF_MS, TRANSPORT_API_MAX_BACKOFF_MS,
-        TRANSPORT_API_MAX_RETRIES,
+        TRANSPORT_API_INITIAL_BACKOFF_MS, TRANSPORT_API_MAX_BACKOFF_MS, TRANSPORT_API_MAX_RETRIES,
     };
 
     let retry_strategy = ExponentialBackoff::from_millis(TRANSPORT_API_INITIAL_BACKOFF_MS)

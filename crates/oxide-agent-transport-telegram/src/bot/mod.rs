@@ -1,9 +1,9 @@
 /// Agent-specific bot logic (media extraction)
 pub mod agent;
-/// Telegram transport adapter for the agent runtime
-pub mod agent_transport;
 /// Handler for agent-related Telegram events
 pub mod agent_handlers;
+/// Telegram transport adapter for the agent runtime
+pub mod agent_transport;
 /// General command and message handlers
 pub mod handlers;
 /// Common messaging utilities (split long messages, formatting)

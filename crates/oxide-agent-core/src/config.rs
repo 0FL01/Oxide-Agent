@@ -49,7 +49,6 @@ pub const OPENROUTER_AUDIO_TRANSCRIBE_PROMPT: &str = concat!(
 /// Agent settings loaded from environment variables.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AgentSettings {
-
     /// Groq API key
     pub groq_api_key: Option<String>,
     /// Mistral API key
@@ -560,7 +559,6 @@ mod tests {
         env::remove_var("ZAI_API_KEY");
         Ok(())
     }
-
 }
 
 /// Information about a supported LLM model

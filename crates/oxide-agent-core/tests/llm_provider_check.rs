@@ -117,8 +117,10 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
         }
         Err(e) => {
             let message = e.to_string().to_lowercase();
-            let is_rate_limited = message.contains("rate limit") || message.contains("too many requests");
-            let is_insufficient_balance = message.contains("insufficient") || message.contains("balance");
+            let is_rate_limited =
+                message.contains("rate limit") || message.contains("too many requests");
+            let is_insufficient_balance =
+                message.contains("insufficient") || message.contains("balance");
 
             if is_rate_limited || is_insufficient_balance {
                 warn!(

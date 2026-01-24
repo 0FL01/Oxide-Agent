@@ -3,8 +3,8 @@
 //! Contains reusable functions for sending formatted messages,
 //! handling long message splitting, and other Telegram-specific transformations.
 
-use oxide_agent_core::utils;
 use anyhow::Result;
+use oxide_agent_core::utils;
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, ParseMode};
 

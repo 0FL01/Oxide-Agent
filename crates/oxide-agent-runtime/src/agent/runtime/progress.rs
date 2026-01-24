@@ -1,7 +1,7 @@
-use oxide_agent_core::agent::loop_detection::LoopType;
-use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
 use anyhow::Result;
 use async_trait::async_trait;
+use oxide_agent_core::agent::loop_detection::LoopType;
+use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
@@ -199,7 +199,10 @@ mod tests {
         let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
 
         let send_result = tx.send(AgentEvent::Thinking { tokens: 1 }).await;
-        assert!(send_result.is_ok(), "failed to send event to runtime channel");
+        assert!(
+            send_result.is_ok(),
+            "failed to send event to runtime channel"
+        );
         drop(tx);
 
         let _state = match handle.await {
@@ -222,11 +225,11 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel();
         let send_result = tx
             .send(AgentEvent::FileToSendWithConfirmation {
-            file_name: "out.txt".to_string(),
-            content: vec![1, 2, 3],
-            sandbox_path: "/workspace/out.txt".to_string(),
-            confirmation_tx: ack_tx,
-        })
+                file_name: "out.txt".to_string(),
+                content: vec![1, 2, 3],
+                sandbox_path: "/workspace/out.txt".to_string(),
+                confirmation_tx: ack_tx,
+            })
             .await;
         assert!(send_result.is_ok(), "failed to send file event");
 
@@ -262,11 +265,11 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel();
         let send_result = tx
             .send(AgentEvent::FileToSendWithConfirmation {
-            file_name: "out.txt".to_string(),
-            content: vec![1, 2, 3],
-            sandbox_path: "/workspace/out.txt".to_string(),
-            confirmation_tx: ack_tx,
-        })
+                file_name: "out.txt".to_string(),
+                content: vec![1, 2, 3],
+                sandbox_path: "/workspace/out.txt".to_string(),
+                confirmation_tx: ack_tx,
+            })
             .await;
         assert!(send_result.is_ok(), "failed to send file event");
 

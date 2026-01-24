@@ -3,13 +3,6 @@
 //! Provides handlers for activating agent mode, processing messages,
 //! and managing agent sessions.
 
-use oxide_agent_core::agent::{
-    executor::AgentExecutor,
-    preprocessor::Preprocessor,
-    progress::{AgentEvent, ProgressState},
-    AgentSession, SessionId,
-};
-use oxide_agent_runtime::SessionRegistry;
 use crate::bot::agent::extract_agent_input;
 use crate::bot::agent_transport::TelegramAgentTransport;
 use crate::bot::messaging::send_long_message;
@@ -20,11 +13,18 @@ use crate::bot::views::{
     LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
 use crate::config::BotSettings;
+use anyhow::{Error, Result};
+use oxide_agent_core::agent::{
+    executor::AgentExecutor,
+    preprocessor::Preprocessor,
+    progress::{AgentEvent, ProgressState},
+    AgentSession, SessionId,
+};
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::R2Storage;
+use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
-use anyhow::{Error, Result};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
@@ -550,7 +550,9 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
     let cancelled = SESSION_REGISTRY.cancel(&SessionId::from(user_id)).await;
 
     // Best-effort: clear todos without waiting for executor locks.
-    let cleared_todos = SESSION_REGISTRY.clear_todos(&SessionId::from(user_id)).await;
+    let cleared_todos = SESSION_REGISTRY
+        .clear_todos(&SessionId::from(user_id))
+        .await;
 
     let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {

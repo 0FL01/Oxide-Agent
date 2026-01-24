@@ -2,8 +2,8 @@
 //!
 //! Converts Telegram message types (voice, photo, document) to `AgentInput`.
 
-use oxide_agent_core::agent::preprocessor::AgentInput;
 use anyhow::Result;
+use oxide_agent_core::agent::preprocessor::AgentInput;
 use teloxide::net::Download;
 use teloxide::prelude::*;
 use tracing::info;

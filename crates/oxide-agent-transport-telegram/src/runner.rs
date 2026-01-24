@@ -93,7 +93,10 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
             Update::filter_message().branch(
                 // Main branch for authorized users
                 dptree::filter(|msg: Message, settings: Arc<BotSettings>| {
-                    settings.telegram.allowed_users().contains(&get_user_id_safe(&msg))
+                    settings
+                        .telegram
+                        .allowed_users()
+                        .contains(&get_user_id_safe(&msg))
                 })
                 .enter_dialogue::<Message, InMemStorage<State>, State>()
                 .branch(

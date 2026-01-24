@@ -1,10 +1,10 @@
-use oxide_agent_core::agent::loop_detection::LoopType;
-use oxide_agent_core::agent::progress::ProgressState;
-use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::{loop_action_keyboard, loop_type_label};
 use anyhow::Result;
 use async_trait::async_trait;
+use oxide_agent_core::agent::loop_detection::LoopType;
+use oxide_agent_core::agent::progress::ProgressState;
+use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, InputFile, MessageId, ParseMode};
 use tracing::warn;
@@ -139,5 +139,7 @@ async fn send_file_smart(
         }
     }
 
-    bot.send_document(chat_id, make_file()).await.map_err(Into::into)
+    bot.send_document(chat_id, make_file())
+        .await
+        .map_err(Into::into)
 }

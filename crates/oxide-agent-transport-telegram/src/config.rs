@@ -1,9 +1,9 @@
 //! Telegram transport settings.
 
 use config::ConfigError;
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// Telegram transport settings loaded from environment variables.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -30,10 +30,7 @@ pub struct BotSettings {
 impl BotSettings {
     /// Create a new combined settings bundle.
     #[must_use]
-    pub fn new(
-        agent: oxide_agent_core::config::AgentSettings,
-        telegram: TelegramSettings,
-    ) -> Self {
+    pub fn new(agent: oxide_agent_core::config::AgentSettings, telegram: TelegramSettings) -> Self {
         Self {
             agent: Arc::new(agent),
             telegram: Arc::new(telegram),

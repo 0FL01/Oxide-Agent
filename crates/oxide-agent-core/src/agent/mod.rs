@@ -10,10 +10,10 @@
 pub mod context;
 /// Executor for iterative task processing
 pub mod executor;
-/// Transport-agnostic agent identity types
-pub mod identity;
 /// Hook system for intercepting agent events
 pub mod hooks;
+/// Transport-agnostic agent identity types
+pub mod identity;
 /// Memory management with auto-compaction
 pub mod memory;
 /// Preprocessor for different input types (voice, photo, etc)
