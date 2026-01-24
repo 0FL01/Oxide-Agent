@@ -53,6 +53,7 @@ pub struct UserConfig {
 /// Interface for storage providers
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait StorageProvider: Send + Sync {
     /// Get user configuration
     async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError>;

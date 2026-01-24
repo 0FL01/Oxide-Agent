@@ -186,6 +186,7 @@ pub struct ChatResponse {
 /// Interface for all LLM providers
 #[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait LlmProvider: Send + Sync {
     /// Generate a chat completion
     async fn chat_completion(
