@@ -193,6 +193,18 @@ AGENT_MODEL_PROVIDER="mistral"
 
 Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
 
+## Available Models
+
+| Name | Provider | Features |
+| :--- | :--- | :--- |
+| **OR Gemini 3 Flash** | OpenRouter | Multimodal, default chat model |
+| **ZAI GLM-4.7** | ZAI (Zhipu AI) | Default agent model, GLM Coding Plan |
+| **Mistral Large** | Mistral | Free and generous |
+| **Gemini 2.5 Flash Lite** | Google | Cheap and efficient |
+| **Devstral 2512** | Mistral | Top free for coding and agent work |
+
+> **Note:** The models listed above are recommended configurations. Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
+
 ## Agent Architecture
 
 
@@ -328,6 +340,19 @@ cargo fmt
 # Build with feature flags
 cargo build --release --features tavily
 ```
+
+### Testing Infrastructure
+
+The project uses a comprehensive testing approach:
+
+- **Hermetic Tests**: Isolated tests in `tests/hermetic_agent.rs` (236 lines) using mock implementations
+- **Property-Based Testing**: Fuzzing tests in `tests/proptest_recovery.rs` (66 lines) for robustness validation
+- **Snapshot Testing**: Regression tests in `tests/snapshot_prompts.rs` (26 lines) for prompt validation
+- **Test Utilities**: Helper functions in `src/testing.rs` for quick mock setup
+
+**Testing Dependencies:**
+- `mockall` (0.14.0) - Trait-based mocking framework
+- `insta` (1.46.1) - Snapshot testing framework
 
 ### CI/CD
 
