@@ -9,6 +9,9 @@ mod openai_compat;
 /// Implementations of specific LLM providers
 pub mod providers;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info, instrument, trace, warn};
@@ -181,6 +184,7 @@ pub struct ChatResponse {
 }
 
 /// Interface for all LLM providers
+#[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Generate a chat completion
@@ -237,6 +241,7 @@ pub struct LlmClient {
     gemini: Option<providers::GeminiProvider>,
     openrouter: Option<providers::OpenRouterProvider>,
     embedding: Option<(embeddings::EmbeddingProvider, String)>,
+    custom_providers: HashMap<String, Arc<dyn LlmProvider>>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Narrator model ID
@@ -316,7 +321,13 @@ impl LlmClient {
             media_model_name,
             media_model_id,
             media_model_provider,
+            custom_providers: HashMap::new(),
         }
+    }
+
+    /// Register a custom/mock LLM provider
+    pub fn register_provider(&mut self, name: String, provider: Arc<dyn LlmProvider>) {
+        self.custom_providers.insert(name, provider);
     }
 
     /// Returns true if at least one multimodal provider is configured.
@@ -358,6 +369,9 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` if the provider is not configured.
     fn get_provider(&self, provider_name: &str) -> Result<&dyn LlmProvider, LlmError> {
+        if let Some(provider) = self.custom_providers.get(provider_name) {
+            return Ok(provider.as_ref());
+        }
         match provider_name {
             "groq" => self.groq.as_ref().map(|p| p as &dyn LlmProvider),
             "mistral" => self.mistral.as_ref().map(|p| p as &dyn LlmProvider),

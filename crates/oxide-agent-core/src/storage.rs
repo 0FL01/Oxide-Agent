@@ -4,6 +4,7 @@
 
 use crate::agent::memory::AgentMemory;
 use crate::config::AgentSettings;
+use async_trait::async_trait;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::get_object::GetObjectError;
@@ -47,6 +48,66 @@ pub struct UserConfig {
     pub model_name: Option<String>,
     /// Current dialogue state
     pub state: Option<String>,
+}
+
+/// Interface for storage providers
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait StorageProvider: Send + Sync {
+    /// Get user configuration
+    async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError>;
+    /// Update user configuration
+    async fn update_user_config(
+        &self,
+        user_id: i64,
+        config: UserConfig,
+    ) -> Result<(), StorageError>;
+    /// Update user system prompt
+    async fn update_user_prompt(
+        &self,
+        user_id: i64,
+        system_prompt: String,
+    ) -> Result<(), StorageError>;
+    /// Get user system prompt
+    async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError>;
+    /// Update user model
+    async fn update_user_model(&self, user_id: i64, model_name: String)
+        -> Result<(), StorageError>;
+    /// Get user model
+    async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError>;
+    /// Update user state
+    async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError>;
+    /// Get user state
+    async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError>;
+    /// Save message to chat history
+    async fn save_message(
+        &self,
+        user_id: i64,
+        role: String,
+        content: String,
+    ) -> Result<(), StorageError>;
+    /// Get chat history for a user
+    async fn get_chat_history(
+        &self,
+        user_id: i64,
+        limit: usize,
+    ) -> Result<Vec<Message>, StorageError>;
+    /// Clear chat history for a user
+    async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError>;
+    /// Save agent memory to storage
+    async fn save_agent_memory(
+        &self,
+        user_id: i64,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError>;
+    /// Load agent memory from storage
+    async fn load_agent_memory(&self, user_id: i64) -> Result<Option<AgentMemory>, StorageError>;
+    /// Clear agent memory for a user
+    async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError>;
+    /// Clear all context (history and memory) for a user
+    async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError>;
+    /// Check connection to storage
+    async fn check_connection(&self) -> Result<(), String>;
 }
 
 /// A message in the chat history
@@ -219,33 +280,6 @@ impl R2Storage {
         Ok(())
     }
 
-    // --- High-level User Config Functions ---
-
-    /// Get user configuration
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if configuration loading fails.
-    pub async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError> {
-        Ok(self
-            .load_json(&user_config_key(user_id))
-            .await?
-            .unwrap_or_default())
-    }
-
-    /// Update user configuration
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if saving fails.
-    pub async fn update_user_config(
-        &self,
-        user_id: i64,
-        config: UserConfig,
-    ) -> Result<(), StorageError> {
-        self.save_json(&user_config_key(user_id), &config).await
-    }
-
     /// Atomically modify user config using a closure.
     ///
     /// # Errors
@@ -259,13 +293,29 @@ impl R2Storage {
         modifier(&mut config);
         self.update_user_config(user_id, config).await
     }
+}
+
+#[async_trait]
+impl StorageProvider for R2Storage {
+    /// Get user configuration
+    async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError> {
+        Ok(self
+            .load_json(&user_config_key(user_id))
+            .await?
+            .unwrap_or_default())
+    }
+
+    /// Update user configuration
+    async fn update_user_config(
+        &self,
+        user_id: i64,
+        config: UserConfig,
+    ) -> Result<(), StorageError> {
+        self.save_json(&user_config_key(user_id), &config).await
+    }
 
     /// Update user system prompt
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if saving fails.
-    pub async fn update_user_prompt(
+    async fn update_user_prompt(
         &self,
         user_id: i64,
         system_prompt: String,
@@ -277,21 +327,13 @@ impl R2Storage {
     }
 
     /// Get user system prompt
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if configuration loading fails.
-    pub async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError> {
+    async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError> {
         let config = self.get_user_config(user_id).await?;
         Ok(config.system_prompt)
     }
 
     /// Update user model
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if saving fails.
-    pub async fn update_user_model(
+    async fn update_user_model(
         &self,
         user_id: i64,
         model_name: String,
@@ -303,21 +345,13 @@ impl R2Storage {
     }
 
     /// Get user model
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if configuration loading fails.
-    pub async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError> {
+    async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError> {
         let config = self.get_user_config(user_id).await?;
         Ok(config.model_name)
     }
 
     /// Update user state
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if saving fails.
-    pub async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
+    async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
         self.modify_user_config(user_id, |config| {
             config.state = Some(state);
         })
@@ -325,23 +359,13 @@ impl R2Storage {
     }
 
     /// Get user state
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if configuration loading fails.
-    pub async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
+    async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
         let config = self.get_user_config(user_id).await?;
         Ok(config.state)
     }
 
-    // --- History Functions ---
-
     /// Save message to chat history
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if history loading or saving fails.
-    pub async fn save_message(
+    async fn save_message(
         &self,
         user_id: i64,
         role: String,
@@ -354,11 +378,7 @@ impl R2Storage {
     }
 
     /// Get chat history for a user
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if history loading fails.
-    pub async fn get_chat_history(
+    async fn get_chat_history(
         &self,
         user_id: i64,
         limit: usize,
@@ -372,22 +392,12 @@ impl R2Storage {
     }
 
     /// Clear chat history for a user
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if deletion fails.
-    pub async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError> {
+    async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError> {
         self.delete_object(&user_history_key(user_id)).await
     }
 
-    // --- Agent Memory Functions ---
-
     /// Save agent memory to storage
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if saving fails.
-    pub async fn save_agent_memory(
+    async fn save_agent_memory(
         &self,
         user_id: i64,
         memory: &AgentMemory,
@@ -397,43 +407,24 @@ impl R2Storage {
     }
 
     /// Load agent memory from storage
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if loading fails.
-    pub async fn load_agent_memory(
-        &self,
-        user_id: i64,
-    ) -> Result<Option<AgentMemory>, StorageError> {
+    async fn load_agent_memory(&self, user_id: i64) -> Result<Option<AgentMemory>, StorageError> {
         self.load_json(&user_agent_memory_key(user_id)).await
     }
 
     /// Clear agent memory for a user
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if deletion fails.
-    pub async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError> {
+    async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError> {
         self.delete_object(&user_agent_memory_key(user_id)).await
     }
 
     /// Clear all context (history and memory) for a user
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if clearing history or memory fails.
-    pub async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
+    async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
         self.clear_chat_history(user_id).await?;
         self.clear_agent_memory(user_id).await?;
         Ok(())
     }
 
     /// Check connection to R2 storage
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if listing buckets fails.
-    pub async fn check_connection(&self) -> Result<(), String> {
+    async fn check_connection(&self) -> Result<(), String> {
         match self.client.list_buckets().send().await {
             Ok(_) => {
                 info!("Successfully connected to R2 storage.");

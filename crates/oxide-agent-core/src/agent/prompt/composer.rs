@@ -20,7 +20,8 @@ fn build_date_context() -> String {
 }
 
 /// Get the fallback prompt when AGENT.md is missing
-fn get_fallback_prompt() -> String {
+#[must_use]
+pub fn get_fallback_prompt() -> String {
     r"You are an AI agent with access to a sandbox environment and web search.
 ## Available Tools (Basic Examples):
 - **execute_command**: execute bash command in sandbox (available: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep and other standard utilities)
@@ -37,7 +38,9 @@ fn get_fallback_prompt() -> String {
         .to_string()
 }
 
-fn build_structured_output_instructions(tools: &[ToolDefinition]) -> String {
+/// Build instructions for mandatory structured output (JSON).
+#[must_use]
+pub fn build_structured_output_instructions(tools: &[ToolDefinition]) -> String {
     let tools_json = serde_json::to_string_pretty(&tools).unwrap_or_else(|_| "[]".to_string());
 
     format!(

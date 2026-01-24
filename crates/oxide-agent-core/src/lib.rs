@@ -15,3 +15,6 @@ pub mod sandbox;
 pub mod storage;
 /// Utility functions.
 pub mod utils;
+
+#[cfg(test)]
+pub mod testing;

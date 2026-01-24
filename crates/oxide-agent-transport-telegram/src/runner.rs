@@ -6,6 +6,7 @@ use crate::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
     BotSettings,
 };
+use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
 use teloxide::dispatching::dialogue::InMemStorage;
@@ -42,7 +43,7 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
         .await;
 }
 
-async fn init_storage(settings: &BotSettings) -> Arc<storage::R2Storage> {
+async fn init_storage(settings: &BotSettings) -> Arc<dyn storage::StorageProvider> {
     match storage::R2Storage::new(settings.agent.as_ref()).await {
         Ok(s) => {
             info!("R2 Storage initialized.");
@@ -51,7 +52,7 @@ async fn init_storage(settings: &BotSettings) -> Arc<storage::R2Storage> {
             } else {
                 error!("R2 Storage connection check returned error.");
             }
-            Arc::new(s)
+            Arc::new(s) as Arc<dyn storage::StorageProvider>
         }
         Err(e) => {
             error!("Failed to initialize R2 Storage: {}", e);
@@ -197,7 +198,7 @@ async fn handle_command(
     bot: Bot,
     msg: Message,
     cmd: Command,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     cache: Arc<UnauthorizedCache>,
     settings: Arc<BotSettings>,
@@ -217,7 +218,7 @@ async fn handle_command(
 async fn handle_start_text(
     bot: Bot,
     msg: Message,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
@@ -235,7 +236,7 @@ async fn handle_start_text(
 async fn handle_start_voice(
     bot: Bot,
     msg: Message,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
@@ -253,7 +254,7 @@ async fn handle_start_voice(
 async fn handle_start_photo(
     bot: Bot,
     msg: Message,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
@@ -267,7 +268,7 @@ async fn handle_start_photo(
 async fn handle_start_document(
     bot: Bot,
     msg: Message,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
@@ -282,7 +283,7 @@ async fn handle_start_document(
 async fn handle_editing_prompt(
     bot: Bot,
     msg: Message,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = bot::handlers::handle_editing_prompt(bot, msg, storage, dialogue).await {
@@ -294,7 +295,7 @@ async fn handle_editing_prompt(
 async fn handle_agent_message(
     bot: Bot,
     msg: Message,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
@@ -312,7 +313,7 @@ async fn handle_agent_message(
 async fn handle_loop_callback(
     bot: Bot,
     q: CallbackQuery,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
@@ -328,7 +329,7 @@ async fn handle_agent_confirmation(
     msg: Message,
     dialogue: Dialogue<State, InMemStorage<State>>,
     action: bot::state::ConfirmationType,
-    storage: Arc<storage::R2Storage>,
+    storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {

@@ -12,17 +12,55 @@ The default branch in this repo is `testing`.
 
 ```
 crates/
-├── oxide-agent-core/                # ядро агента, LLM, хуки, навыки, storage
-├── oxide-agent-runtime/             # цикл исполнения, провайдеры, sandbox, сессии
-├── oxide-agent-transport-telegram/  # Telegram transport + handlers (teloxide)
-└── oxide-agent-telegram-bot/         # бинарь Telegram-бота и сборка приложения
-skills/                               # определения навыков в формате markdown
-docs/                                 # документация и спецификации
-backlog/                              # планы и завершенные задачи
-sandbox/                              # Docker-конфигурация песочницы
-.github/workflows/                    # GitHub Actions CI/CD
-Dockerfile                            # Dockerfile основного приложения
-docker-compose.yml
+├── oxide-agent-core/                # Ядро: домен, LLM, storage, тесты
+│   ├── Cargo.toml
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── config.rs                # Конфигурация агента
+│   │   ├── storage.rs               # StorageProvider trait + R2 impl
+│   │   ├── testing.rs               # TestKit: моки и хелперы
+│   │   ├── utils.rs
+│   │   ├── agent/                   # Логика агента
+│   │   │   ├── mod.rs
+│   │   │   ├── runner/              # Цикл исполнения (Loop, Hooks)
+│   │   │   ├── loop_detection/      # Детектор зацикливания
+│   │   │   ├── prompt/              # Компоновщик промптов (Composer)
+│   │   │   ├── skills/              # Реестр и поиск навыков
+│   │   │   ├── recovery.rs          # Восстановление XML/JSON
+│   │   │   └── ...
+│   │   ├── llm/                     # Интеграции с AI
+│   │   │   ├── client.rs            # LlmClient (с поддержкой моков)
+│   │   │   ├── providers/           # Groq, Mistral, ZAI, OpenRouter
+│   │   │   └── ...
+│   │   └── sandbox/                 # Docker-менеджер
+│   └── tests/                       # Интеграционные тесты
+│       ├── hermetic_agent.rs        # Hermetic logic tests
+│       ├── proptest_recovery.rs     # Fuzzing tests
+│       ├── snapshot_prompts.rs      # Snapshot tests
+│       └── ...
+├── oxide-agent-runtime/             # Runtime: сессии и оркестрация
+│   ├── src/
+│   │   ├── session_registry.rs      # Управление сессиями пользователей
+│   │   ├── agent/
+│   │   │   └── runtime/             # Реализация AgentRuntime
+│   │   └── sandbox/                 # Runtime-компоненты песочницы
+├── oxide-agent-transport-telegram/  # Транспорт: Telegram Bot API
+│   ├── src/
+│   │   ├── runner.rs                # Инициализация бота и DI
+│   │   ├── bot/
+│   │   │   ├── handlers.rs          # Обработчики команд
+│   │   │   ├── agent_handlers.rs    # Обработчики сообщений агенту
+│   │   │   ├── agent_transport.rs   # Реализация AgentTransport
+│   │   │   └── ...
+└── oxide-agent-telegram-bot/        # Application Entry Point
+    └── src/
+        └── main.rs                  # Запуск приложения
+sandbox/
+└── Dockerfile.sandbox               # Образ песочницы (Ubuntu + Python/Node)
+.github/workflows/
+└── ci-cd.yml                        # GitHub Actions (Build, Test, Deploy)
+docker-compose.yml                   # Локальный запуск
+Dockerfile                           # Сборка основного Rust-приложения
 ```
 
 ### Workspace crates

@@ -22,7 +22,7 @@ use oxide_agent_core::agent::{
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
-use oxide_agent_core::storage::R2Storage;
+use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
 use std::sync::Arc;
@@ -39,7 +39,7 @@ pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
 struct AgentTaskContext {
     bot: Bot,
     msg: Message,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
 }
 
@@ -61,7 +61,7 @@ pub async fn activate_agent_mode(
     msg: Message,
     dialogue: AgentDialogue,
     llm: Arc<LlmClient>,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
@@ -109,7 +109,7 @@ pub async fn activate_agent_mode(
 pub async fn handle_agent_message(
     bot: Bot,
     msg: Message,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: AgentDialogue,
     settings: Arc<BotSettings>,
@@ -189,7 +189,7 @@ pub async fn handle_agent_message(
 async fn ensure_session_exists(
     user_id: i64,
     llm: &Arc<LlmClient>,
-    storage: &Arc<R2Storage>,
+    storage: &Arc<dyn StorageProvider>,
     settings: &Arc<BotSettings>,
 ) {
     let session_id = SessionId::from(user_id);
@@ -229,7 +229,7 @@ async fn renew_cancellation_token(user_id: i64) {
     SESSION_REGISTRY.renew_cancellation_token(&session_id).await;
 }
 
-async fn save_memory_after_task(user_id: i64, storage: &Arc<R2Storage>) {
+async fn save_memory_after_task(user_id: i64, storage: &Arc<dyn StorageProvider>) {
     let session_id = SessionId::from(user_id);
     if let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await {
         let executor = executor_arc.read().await;
@@ -333,7 +333,7 @@ async fn run_agent_task_with_text(
     chat_id: ChatId,
     user_id: i64,
     task_text: String,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
 ) -> Result<()> {
     let progress_msg = super::resilient::send_message_resilient(
         &bot,
@@ -440,7 +440,7 @@ async fn execute_agent_task(
 pub async fn handle_loop_callback(
     bot: Bot,
     q: CallbackQuery,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
@@ -595,7 +595,7 @@ pub async fn exit_agent_mode(
     bot: Bot,
     msg: Message,
     dialogue: AgentDialogue,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
@@ -651,7 +651,7 @@ pub async fn handle_agent_confirmation(
     msg: Message,
     dialogue: AgentDialogue,
     action: ConfirmationType,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {

@@ -3,7 +3,7 @@ use crate::bot::UnauthorizedCache;
 use crate::config::BotSettings;
 use anyhow::{anyhow, Result};
 use oxide_agent_core::llm::{LlmClient, Message as LlmMessage};
-use oxide_agent_core::storage::R2Storage;
+use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::utils::truncate_str;
 use std::sync::Arc;
 use teloxide::{
@@ -53,7 +53,7 @@ pub fn get_user_id_safe(msg: &Message) -> i64 {
 async fn check_state_and_redirect(
     bot: &Bot,
     msg: &Message,
-    storage: &Arc<R2Storage>,
+    storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
     settings: &Arc<BotSettings>,
@@ -181,7 +181,7 @@ pub fn get_model_keyboard(settings: &BotSettings) -> KeyboardMarkup {
 pub async fn start(
     bot: Bot,
     msg: Message,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     settings: Arc<BotSettings>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
@@ -229,7 +229,7 @@ pub async fn start(
 /// # Errors
 ///
 /// Returns an error if chat history cannot be cleared or message cannot be sent.
-pub async fn clear(bot: Bot, msg: Message, storage: Arc<R2Storage>) -> Result<()> {
+pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
@@ -310,7 +310,7 @@ pub async fn stats(bot: Bot, msg: Message, cache: Arc<UnauthorizedCache>) -> Res
 pub async fn handle_text(
     bot: Bot,
     msg: Message,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
@@ -360,7 +360,7 @@ pub async fn handle_text(
 async fn handle_menu_commands(
     bot: &Bot,
     msg: &Message,
-    storage: &Arc<R2Storage>,
+    storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
     settings: &Arc<BotSettings>,
@@ -492,7 +492,7 @@ async fn check_agent_access(
 pub async fn handle_editing_prompt(
     bot: Bot,
     msg: Message,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
     let text = msg.text().unwrap_or("");
@@ -524,7 +524,7 @@ pub async fn handle_editing_prompt(
 async fn process_llm_request(
     bot: Bot,
     msg: Message,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
     text: String,
@@ -586,7 +586,7 @@ use super::messaging::send_long_message;
 pub async fn handle_voice(
     bot: Bot,
     msg: Message,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
@@ -671,7 +671,7 @@ pub async fn handle_voice(
 pub async fn handle_photo(
     bot: Bot,
     msg: Message,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
@@ -759,7 +759,7 @@ pub async fn handle_document(
     bot: Bot,
     msg: Message,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
