@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-01-24
+
+### Added
+
+- **Comprehensive Testing Infrastructure**:
+  - Added `mockall` (0.14.0) dependency for trait-based mocking
+  - Added `insta` (1.46.1) dependency for snapshot testing
+  - New `testing.rs` module with helper functions (`mock_llm_simple()`, `mock_storage_noop()`)
+  - Hermetic agent tests (`tests/hermetic_agent.rs` - 236 lines) with SuccessMock and FailureMock
+  - Property-based fuzzing tests (`tests/proptest_recovery.rs` - 66 lines) for XML/JSON recovery
+  - Snapshot tests (`tests/snapshot_prompts.rs` - 26 lines) for prompt regression testing
+- **Mock Implementations**:
+  - `MockLlmProvider` for testing LLM interactions
+  - `MockStorageProvider` for testing storage operations
+- **Development Tooling**:
+  - OpenCode plugin (`rust-git-guard.ts`) for automated code review checks
+
+### Changed
+
+- **Storage Provider**: Refactored to support mock implementations and improve testability
+- **Testing Strategy**: Introduced hermetic testing to reduce external dependencies in tests
+- **Documentation**: Updated `AGENTS.md` with testing infrastructure documentation (+60 lines)
+
+### Fixed
+
+- **Clippy Linting**: Resolved clippy conflicts in testing.rs
+- **Code Quality**: Removed unused imports in core and testing modules
+
 ## [0.3.0] - 2026-01-21
 
 ### Added
