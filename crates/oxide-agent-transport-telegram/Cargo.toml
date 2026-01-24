@@ -1,0 +1,30 @@
+[package]
+name = "oxide-agent-transport-telegram"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+authors = ["@0FL01"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "forbid"
+too_many_lines = "forbid"
+too_many_arguments = "forbid"
+
+[dependencies]
+oxide-agent-core = { path = "../oxide-agent-core" }
+oxide-agent-runtime = { path = "../oxide-agent-runtime" }
+teloxide = { version = "0.17.0", features = ["ctrlc_handler", "macros", "rustls"], default-features = false }
+tokio = { version = "1.48", features = ["full"] }
+anyhow = "1.0.100"
+async-trait = "0.1.89"
+tracing = "0.1"
+html-escape = "0.2.13"
+serde = { version = "1.0", features = ["derive"] }
+config = "0.15"
+moka = { version = "0.12", features = ["future"] }
+
+[dev-dependencies]
+lazy-regex = "3.5.1"

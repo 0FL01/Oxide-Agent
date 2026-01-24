@@ -1,0 +1,249 @@
+//! Agent session management
+//!
+//! Manages the lifecycle of an agent session, including
+//! timeout tracking, session state, and sandbox.
+
+use super::identity::SessionId;
+use super::memory::AgentMemory;
+// use super::providers::TodoList;
+use crate::config::{AGENT_MAX_TOKENS, AGENT_TIMEOUT_SECS};
+use crate::sandbox::SandboxManager;
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::time::Instant;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info};
+
+/// Status of an agent session
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum AgentStatus {
+    /// Agent is idle, waiting for a task
+    #[default]
+    Idle,
+    /// Agent is processing a task
+    Processing {
+        /// Current step description
+        step: String,
+        /// Estimated progress percentage (0-100)
+        progress_percent: u8,
+    },
+    /// Agent has completed the task
+    Completed,
+    /// Agent timed out (30 minute limit)
+    TimedOut,
+    /// Agent encountered an error
+    Error(String),
+}
+
+/// Represents an active agent session
+pub struct AgentSession {
+    /// Transport-agnostic session ID
+    pub session_id: SessionId,
+    /// Conversation memory with auto-compaction
+    pub memory: AgentMemory,
+    /// Docker sandbox for code execution (lazily initialized)
+    sandbox: Option<SandboxManager>,
+    /// When the current task started
+    started_at: Option<Instant>,
+    /// Unique ID for the current task execution (for log correlation)
+    pub current_task_id: Option<String>,
+    /// Current status
+    pub status: AgentStatus,
+    /// Cancellation token for the current active task
+    /// Set by the caller before starting a task (e.g. bot handler) so that external
+    /// cancellation requests are observed by the executor.
+    pub cancellation_token: CancellationToken,
+    /// Last task text for retry actions.
+    pub last_task: Option<String>,
+    /// Loaded skills for the current system prompt or dynamic context.
+    loaded_skills: HashSet<String>,
+    /// Token count for loaded skills.
+    skill_token_count: usize,
+}
+
+impl AgentSession {
+    /// Create a new agent session for a transport session
+    #[must_use]
+    pub fn new(session_id: SessionId) -> Self {
+        Self {
+            session_id,
+            memory: AgentMemory::new(AGENT_MAX_TOKENS),
+            sandbox: None,
+            started_at: None,
+            current_task_id: None,
+            status: AgentStatus::Idle,
+            cancellation_token: CancellationToken::new(),
+            last_task: None,
+            loaded_skills: HashSet::new(),
+            skill_token_count: 0,
+        }
+    }
+
+    /// Renew the cancellation token before a new task
+    /// CRITICAL: Prevents old cancellation signals from affecting new tasks
+    pub fn renew_cancellation_token(&mut self) {
+        self.cancellation_token = CancellationToken::new();
+    }
+
+    /// Start a new task, resetting the timer and generating a task ID
+    pub fn start_task(&mut self) {
+        self.started_at = Some(Instant::now());
+        self.current_task_id = Some(uuid::Uuid::new_v4().to_string());
+        self.status = AgentStatus::Processing {
+            step: "Initializing...".to_string(),
+            progress_percent: 0,
+        };
+    }
+
+    /// Check if the session has exceeded the timeout limit
+    #[must_use]
+    pub fn is_timed_out(&self) -> bool {
+        self.started_at
+            .is_some_and(|start| start.elapsed().as_secs() > AGENT_TIMEOUT_SECS)
+    }
+
+    /// Get elapsed time in seconds since task start
+    #[must_use]
+    pub fn elapsed_secs(&self) -> u64 {
+        self.started_at.map_or(0, |start| start.elapsed().as_secs())
+    }
+
+    /// Update the progress status
+    pub fn update_progress(&mut self, step: String, progress_percent: u8) {
+        self.status = AgentStatus::Processing {
+            step,
+            progress_percent: progress_percent.min(100),
+        };
+    }
+
+    /// Mark the task as completed
+    pub fn complete(&mut self) {
+        self.status = AgentStatus::Completed;
+        self.started_at = None;
+    }
+
+    /// Mark the task as timed out
+    pub fn timeout(&mut self) {
+        self.status = AgentStatus::TimedOut;
+        self.started_at = None;
+    }
+
+    /// Mark the task as failed with an error
+    pub fn fail(&mut self, error: String) {
+        self.status = AgentStatus::Error(error);
+        self.started_at = None;
+    }
+
+    /// Reset the session (clear memory, todos, reset status)
+    /// Note: Sandbox is persistent and not destroyed here
+    pub fn reset(&mut self) {
+        self.memory.clear();
+        self.status = AgentStatus::Idle;
+        self.started_at = None;
+        self.current_task_id = None;
+        self.last_task = None;
+        self.loaded_skills.clear();
+        self.skill_token_count = 0;
+
+        // Sandbox is persistent, do NOT destroy it here
+        // if let Some(mut sandbox) = self.sandbox.take() { ... }
+    }
+
+    /// Store the last task text for retries.
+    pub fn remember_task(&mut self, task: &str) {
+        self.last_task = Some(task.to_string());
+    }
+
+    /// Reset loaded skills based on the active system prompt.
+    pub fn set_loaded_skills(&mut self, skills: &[crate::agent::skills::SkillContext]) {
+        self.loaded_skills = skills.iter().map(|skill| skill.name.clone()).collect();
+        self.skill_token_count = skills.iter().map(|skill| skill.token_count).sum();
+    }
+
+    /// Register a dynamically loaded skill, returns true if it was new.
+    pub fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool {
+        if self.loaded_skills.insert(name.to_string()) {
+            self.skill_token_count = self.skill_token_count.saturating_add(token_count);
+            return true;
+        }
+
+        false
+    }
+
+    /// Check if a skill is already loaded.
+    #[must_use]
+    pub fn is_skill_loaded(&self, name: &str) -> bool {
+        self.loaded_skills.contains(name)
+    }
+
+    /// Get total tokens used by loaded skills.
+    #[must_use]
+    pub const fn skill_token_count(&self) -> usize {
+        self.skill_token_count
+    }
+
+    /// Clear only the todos list (keeps memory intact)
+    pub fn clear_todos(&mut self) {
+        self.memory.todos.clear();
+    }
+
+    /// Check if the session is currently processing a task
+    #[must_use]
+    pub const fn is_processing(&self) -> bool {
+        matches!(self.status, AgentStatus::Processing { .. })
+    }
+
+    /// Check if sandbox is available
+    #[must_use]
+    pub fn has_sandbox(&self) -> bool {
+        self.sandbox
+            .as_ref()
+            .is_some_and(SandboxManager::is_running)
+    }
+
+    /// Ensure sandbox is running, creating it if necessary
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox creation fails.
+    pub async fn ensure_sandbox(&mut self) -> Result<&mut SandboxManager> {
+        let needs_new = self.sandbox.as_ref().is_none_or(|s| !s.is_running());
+
+        if needs_new {
+            debug!(session_id = %self.session_id, "Creating new sandbox");
+            let mut sandbox = SandboxManager::new(self.session_id.as_i64()).await?;
+            sandbox.create_sandbox().await?;
+            self.sandbox = Some(sandbox);
+            info!(session_id = %self.session_id, "Sandbox created for session");
+        }
+
+        self.sandbox
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
+    }
+
+    /// Get sandbox reference if running
+    #[must_use]
+    pub fn sandbox(&self) -> Option<&SandboxManager> {
+        self.sandbox.as_ref().filter(|s| s.is_running())
+    }
+
+    /// Get mutable sandbox reference if running
+    pub fn sandbox_mut(&mut self) -> Option<&mut SandboxManager> {
+        self.sandbox.as_mut().filter(|s| s.is_running())
+    }
+
+    /// Destroy sandbox if running
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox destruction fails.
+    pub async fn destroy_sandbox(&mut self) -> Result<()> {
+        if let Some(mut sandbox) = self.sandbox.take() {
+            sandbox.destroy().await?;
+            info!(session_id = %self.session_id, "Sandbox destroyed");
+        }
+        Ok(())
+    }
+}

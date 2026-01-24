@@ -10,7 +10,7 @@ on:
 
 env:
   DOCKER_IMAGE: oxide-agent # Local usage only/naming convention
-  RUST_LOG: info
+  RUST_LOG: oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
 
 jobs:
   test:
@@ -51,6 +51,7 @@ jobs:
       MEDIA_MODEL_PROVIDER: openrouter
       NARRATOR_MODEL_ID: labs-mistral-small-creative
       NARRATOR_MODEL_PROVIDER: mistral
+      RUN_LLM_PROVIDER_CHECKS: "0"
 
     steps:
       - name: Checkout code
@@ -74,7 +75,7 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock') }}
 
       - name: Run cargo check/clippy/test
-        run: cargo check --tests && cargo clippy --tests -- -D warnings && cargo test -- --skip test_zai_tool_calling_integration
+        run: cargo check --workspace --all-targets && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace
 
       - name: Run cargo fmt check
         run: cargo fmt --all -- --check
@@ -145,7 +146,7 @@ jobs:
           NARRATOR_MODEL_ID: ${{ secrets.NARRATOR_MODEL_ID || 'labs-mistral-small-creative' }}
           NARRATOR_MODEL_PROVIDER: ${{ secrets.NARRATOR_MODEL_PROVIDER || 'mistral' }}
           SKILL_TOKEN_BUDGET: ${{ secrets.SKILL_TOKEN_BUDGET || '4096' }}
-        run: cargo test --test integration_validation -- --ignored --nocapture
+        run: cargo test -p oxide-agent-telegram-bot --test integration_validation -- --ignored --nocapture
 
   deploy:
     needs: validate-credentials
@@ -241,7 +242,7 @@ jobs:
 
             # Create .env file using environment variables
             echo "Creating .env file..."
-            printf "RUST_LOG=info\n" > .env
+            printf "RUST_LOG=oxide_agent_core=info,oxide_agent_runtime=info,oxide_agent_transport_telegram=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn\n" > .env
             printf "GROQ_API_KEY=%s\n" "$GROQ_API_KEY" >> .env
             printf "TELEGRAM_TOKEN=%s\n" "$TELEGRAM_TOKEN" >> .env
             printf "OPENROUTER_API_KEY=%s\n" "$OPENROUTER_API_KEY" >> .env

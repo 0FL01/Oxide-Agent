@@ -21,11 +21,8 @@ Delegate routine work (setup, exploration) to it to save your context and tokens
 2. Explicitly specify the list of allowed tools
 3. Add clarifying context (if important), but without unnecessary history
 
-## Example Call
-```json
 {
   "task": "Collect 5 relevant sources on topic X and briefly describe key facts",
-  "tools": ["web_search", "web_extract"],
+  "tools": ["web_markdown", "deep_crawl", "web_search", "web_extract"],
   "context": "Use sources no older than 12 months. Result — brief list with links."
 }
-```
