@@ -58,7 +58,7 @@ impl FileHosterProvider {
 
     async fn handle_upload_file(
         &self,
-        sandbox: &SandboxManager,
+        sandbox: &mut SandboxManager,
         arguments: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
@@ -236,7 +236,7 @@ impl ToolProvider for FileHosterProvider {
         debug!(tool = tool_name, "Executing filehoster tool");
 
         self.ensure_sandbox().await?;
-        let sandbox = {
+        let mut sandbox = {
             let guard = self.sandbox.lock().await;
             guard
                 .as_ref()
@@ -246,7 +246,7 @@ impl ToolProvider for FileHosterProvider {
 
         match tool_name {
             "upload_file" => {
-                self.handle_upload_file(&sandbox, arguments, cancellation_token)
+                self.handle_upload_file(&mut sandbox, arguments, cancellation_token)
                     .await
             }
             _ => anyhow::bail!("Unknown filehoster tool: {tool_name}"),

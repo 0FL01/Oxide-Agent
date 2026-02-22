@@ -44,7 +44,6 @@ struct AgentTaskContext {
 }
 
 enum AgentWipeError {
-    SandboxAccess(Error),
     Recreate(Error),
 }
 
@@ -700,12 +699,11 @@ pub async fn handle_agent_confirmation(
                 match SESSION_REGISTRY
                     .with_executor_mut(&SessionId::from(user_id), |executor| {
                         Box::pin(async move {
-                            let sandbox = executor
+                            executor
                                 .session_mut()
-                                .ensure_sandbox()
+                                .force_recreate_sandbox()
                                 .await
-                                .map_err(AgentWipeError::SandboxAccess)?;
-                            sandbox.recreate().await.map_err(AgentWipeError::Recreate)?;
+                                .map_err(AgentWipeError::Recreate)?;
                             Ok(())
                         })
                     })
@@ -713,12 +711,6 @@ pub async fn handle_agent_confirmation(
                 {
                     Ok(Ok(())) => {
                         bot.send_message(chat_id, DefaultAgentView::container_recreated())
-                            .reply_markup(keyboard)
-                            .await?;
-                    }
-                    Ok(Err(AgentWipeError::SandboxAccess(e))) => {
-                        warn!(error = %e, "Sandbox access failed during container recreate");
-                        bot.send_message(chat_id, DefaultAgentView::sandbox_access_error())
                             .reply_markup(keyboard)
                             .await?;
                     }
