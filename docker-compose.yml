@@ -1,4 +1,11 @@
 services:
+  sandbox_image:
+    profiles: ["build"]
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.sandbox
+    image: agent-sandbox:latest
+
   oxide_agent:
     build:
       context: .

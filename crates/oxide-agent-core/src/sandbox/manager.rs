@@ -92,6 +92,17 @@ impl SandboxManager {
         )
     }
 
+    fn is_image_not_found_error(error: &DockerError, image_name: &str) -> bool {
+        if !Self::is_not_found_error(error) {
+            return false;
+        }
+
+        let error_message = error.to_string().to_ascii_lowercase();
+        let image_name = image_name.to_ascii_lowercase();
+
+        error_message.contains("no such image") && error_message.contains(&image_name)
+    }
+
     async fn get_container_id_by_name(&self, container_name: &str) -> Result<Option<String>> {
         let mut filters = HashMap::new();
         filters.insert("name".to_string(), vec![container_name.to_string()]);
@@ -318,6 +329,14 @@ impl SandboxManager {
 
                 info!(container_id = %resolved_id, "Resolved sandbox container after create conflict");
                 resolved_id
+            }
+            Err(error) if Self::is_image_not_found_error(&error, &self.image_name) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Sandbox image '{}' not found. Build it with `docker compose --profile build build sandbox_image`",
+                        self.image_name
+                    )
+                });
             }
             Err(error) => return Err(error).context("Failed to create sandbox container"),
         };
