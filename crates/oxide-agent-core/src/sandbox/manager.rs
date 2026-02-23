@@ -23,7 +23,7 @@ use tokio::time::sleep;
 use tracing::{debug, info, instrument, warn};
 
 use crate::config::{
-    SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_IMAGE,
+    get_sandbox_image, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS,
     SANDBOX_MEMORY_LIMIT,
 };
 
@@ -143,7 +143,7 @@ impl SandboxManager {
         Ok(Self {
             docker,
             container_id: None,
-            image_name: SANDBOX_IMAGE.to_string(),
+            image_name: get_sandbox_image(),
             user_id,
         })
     }
