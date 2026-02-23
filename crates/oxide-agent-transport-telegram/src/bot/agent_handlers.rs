@@ -718,7 +718,7 @@ pub async fn handle_agent_confirmation(
                         warn!(error = %e, "Container recreation failed");
                         bot.send_message(
                             chat_id,
-                            DefaultAgentView::container_error(&e.to_string()),
+                            DefaultAgentView::container_error(&format!("{e:#}")),
                         )
                         .reply_markup(keyboard)
                         .await?;
