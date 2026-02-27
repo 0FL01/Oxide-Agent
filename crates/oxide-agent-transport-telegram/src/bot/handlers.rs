@@ -79,6 +79,13 @@ async fn check_state_and_redirect(
             .await?;
 
             return Ok(true);
+        } else if state_str == "chat_mode" {
+            info!("Restoring chat mode for user {user_id} based on persisted state.");
+            dialogue
+                .update(State::ChatMode)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+            return Ok(false);
         }
     }
     Ok(false)
@@ -369,6 +376,10 @@ async fn handle_menu_commands(
     let user_id = get_user_id_safe(msg);
     match text {
         "💬 Chat Mode" => {
+            // Save state to DB
+            let _ = storage
+                .update_user_state(user_id, "chat_mode".to_string())
+                .await;
             dialogue
                 .update(State::ChatMode)
                 .await

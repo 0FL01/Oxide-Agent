@@ -76,7 +76,6 @@ Dockerfile                           # Сборка основного Rust-пр
 - **Transport Boundaries**: `teloxide` используется только в `oxide-agent-transport-telegram` (и бинарях, которые ее подключают).
 - **Module Hierarchy**: В каждом crate сохраняем явные `mod.rs` и публичные экспорты модулей.
 - **Error Handling**: Use `thiserror` for libraries and `anyhow` for apps.
-  > *Note: `unwrap()`, `expect()` are strictly blocked by system hooks.*
 
 Чтобы добавить новый transport (Discord/Slack), создайте `crates/oxide-agent-transport-<name>`, держите SDK и обработчики внутри transport crate, подключите адаптер к runtime, и при необходимости добавьте отдельный бинарь `oxide-agent-<name>-bot` для запуска.
 
@@ -88,4 +87,4 @@ Dockerfile                           # Сборка основного Rust-пр
 
 ### 3. Code Quality
 - **Linting**: Run `cargo clippy` before finishing a task.
-- **Formatting**: **Automatic.** The system auto-formats on save. Do not run `cargo fmt` manually.
+- **Formatting**: Run `cargo fmt` before commit

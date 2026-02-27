@@ -150,7 +150,7 @@ impl SandboxProvider {
     }
 
     async fn handle_execute_command(
-        sandbox: &SandboxManager,
+        sandbox: &mut SandboxManager,
         arguments: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
@@ -180,7 +180,7 @@ impl SandboxProvider {
         }
     }
 
-    async fn handle_write_file(sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+    async fn handle_write_file(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
         let args: WriteFileArgs = serde_json::from_str(arguments)?;
         match sandbox
             .write_file(&args.path, args.content.as_bytes())
@@ -191,7 +191,7 @@ impl SandboxProvider {
         }
     }
 
-    async fn handle_read_file(sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+    async fn handle_read_file(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
         let args: ReadFileArgs = serde_json::from_str(arguments)?;
         match sandbox.read_file(&args.path).await {
             Ok(content) => Ok(String::from_utf8_lossy(&content).to_string()),
@@ -199,7 +199,11 @@ impl SandboxProvider {
         }
     }
 
-    async fn handle_send_file(&self, sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+    async fn handle_send_file(
+        &self,
+        sandbox: &mut SandboxManager,
+        arguments: &str,
+    ) -> Result<String> {
         let args: SendFileArgs = serde_json::from_str(arguments)?;
         info!(path = %args.path, "send_file_to_user called");
 
@@ -255,7 +259,7 @@ impl SandboxProvider {
         }
     }
 
-    async fn handle_list_files(sandbox: &SandboxManager, arguments: &str) -> Result<String> {
+    async fn handle_list_files(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
         #[derive(Debug, Deserialize)]
         struct ListFilesArgs {
             #[serde(default = "default_workspace_path")]
@@ -517,7 +521,7 @@ impl ToolProvider for SandboxProvider {
         // Ensure sandbox is running
         self.ensure_sandbox().await?;
 
-        let sandbox = {
+        let mut sandbox = {
             let guard = self.sandbox.lock().await;
             guard
                 .as_ref()
@@ -527,12 +531,12 @@ impl ToolProvider for SandboxProvider {
 
         match tool_name {
             "execute_command" => {
-                Self::handle_execute_command(&sandbox, arguments, cancellation_token).await
+                Self::handle_execute_command(&mut sandbox, arguments, cancellation_token).await
             }
-            "write_file" => Self::handle_write_file(&sandbox, arguments).await,
-            "read_file" => Self::handle_read_file(&sandbox, arguments).await,
-            "send_file_to_user" => self.handle_send_file(&sandbox, arguments).await,
-            "list_files" => Self::handle_list_files(&sandbox, arguments).await,
+            "write_file" => Self::handle_write_file(&mut sandbox, arguments).await,
+            "read_file" => Self::handle_read_file(&mut sandbox, arguments).await,
+            "send_file_to_user" => self.handle_send_file(&mut sandbox, arguments).await,
+            "list_files" => Self::handle_list_files(&mut sandbox, arguments).await,
             _ => anyhow::bail!("Unknown sandbox tool: {tool_name}"),
         }
     }

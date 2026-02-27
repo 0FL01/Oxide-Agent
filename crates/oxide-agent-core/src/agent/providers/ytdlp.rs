@@ -132,7 +132,7 @@ impl YtdlpProvider {
         // Cleanup old downloads (files older than 7 days) on sandbox init
         // This runs at most once per sandbox lifecycle
         tokio::spawn({
-            let sb = sandbox.clone();
+            let mut sb = sandbox.clone();
             async move {
                 if let Ok(count) = sb.cleanup_old_downloads().await {
                     if count > 0 {
@@ -161,7 +161,7 @@ impl YtdlpProvider {
     /// Send file to user with automatic cleanup after successful delivery
     async fn send_file_with_cleanup(
         &self,
-        sandbox: &SandboxManager,
+        sandbox: &mut SandboxManager,
         file_path: &str,
         file_name: &str,
     ) -> Result<String> {
@@ -256,7 +256,7 @@ impl YtdlpProvider {
         args: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
-        let sandbox = self.get_sandbox().await?;
+        let mut sandbox = self.get_sandbox().await?;
         let cmd = format!("yt-dlp {args}");
         debug!(cmd = %cmd, "Executing yt-dlp command");
 
@@ -368,7 +368,7 @@ impl YtdlpProvider {
         }
 
         // Read and clean transcript
-        let sandbox = self.get_sandbox().await?;
+        let mut sandbox = self.get_sandbox().await?;
 
         // Try to find the subtitle file
         let find_result = sandbox
@@ -533,7 +533,7 @@ impl YtdlpProvider {
         }
 
         // Find the downloaded file
-        let sandbox = self.get_sandbox().await?;
+        let mut sandbox = self.get_sandbox().await?;
         let find_result = sandbox
             .exec_command(
                 &format!("ls -1t {DOWNLOADS_DIR}/*.mp4 2>/dev/null | head -1"),
@@ -563,7 +563,7 @@ impl YtdlpProvider {
         if args.send_to_user {
             // Auto-send to user with confirmation for cleanup
             return self
-                .send_file_with_cleanup(&sandbox, video_path, &filename)
+                .send_file_with_cleanup(&mut sandbox, video_path, &filename)
                 .await;
         }
 
@@ -609,7 +609,7 @@ impl YtdlpProvider {
         }
 
         // Find the downloaded file
-        let sandbox = self.get_sandbox().await?;
+        let mut sandbox = self.get_sandbox().await?;
         let find_result = sandbox
             .exec_command(
                 &format!("ls -1t {DOWNLOADS_DIR}/*.mp3 2>/dev/null | head -1"),
@@ -639,7 +639,7 @@ impl YtdlpProvider {
         if args.send_to_user {
             // Auto-send to user with confirmation for cleanup
             return self
-                .send_file_with_cleanup(&sandbox, audio_path, &filename)
+                .send_file_with_cleanup(&mut sandbox, audio_path, &filename)
                 .await;
         }
 
