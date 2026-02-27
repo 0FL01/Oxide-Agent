@@ -9,3 +9,4 @@ __pycache__
 **/target
 .embeddings_cache/
 .claude
+.env.monitoring

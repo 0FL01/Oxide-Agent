@@ -15,7 +15,7 @@ use tracing::{info, warn};
 /// # Errors
 ///
 /// Returns an error if the file is not found or if multiple matches exist.
-pub(super) async fn resolve_file_path(sandbox: &SandboxManager, path: &str) -> Result<String> {
+pub(super) async fn resolve_file_path(sandbox: &mut SandboxManager, path: &str) -> Result<String> {
     if path.starts_with('/') {
         return Ok(path.to_string());
     }

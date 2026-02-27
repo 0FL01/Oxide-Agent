@@ -714,6 +714,17 @@ pub const SANDBOX_CPU_QUOTA: i64 = 200_000; // 2 CPUs (200% of period)
 /// Timeout for individual command execution in sandbox
 pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 60; // 1 minute per command
 
+/// Get sandbox image from env or default.
+///
+/// Environment variable: `SANDBOX_IMAGE`
+#[must_use]
+pub fn get_sandbox_image() -> String {
+    std::env::var("SANDBOX_IMAGE")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| SANDBOX_IMAGE.to_string())
+}
+
 /// Transport API retry configuration for file operations.
 pub const TRANSPORT_API_MAX_RETRIES: usize = 3;
 /// Initial backoff delay in milliseconds for transport retries.

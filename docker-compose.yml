@@ -1,4 +1,11 @@
 services:
+  sandbox_image:
+    profiles: ["build"]
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.sandbox
+    image: ${SANDBOX_IMAGE:-agent-sandbox:latest}
+
   oxide_agent:
     build:
       context: .
@@ -11,6 +18,7 @@ services:
       - CRAWL4AI_URL=http://crawl4ai:11235
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

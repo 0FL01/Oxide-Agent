@@ -223,6 +223,25 @@ impl AgentSession {
             .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
     }
 
+    /// Force sandbox recreation, wiping previous container state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sandbox manager initialization or recreation fails.
+    pub async fn force_recreate_sandbox(&mut self) -> Result<()> {
+        if self.sandbox.is_none() {
+            self.sandbox = Some(SandboxManager::new(self.session_id.as_i64()).await?);
+        }
+
+        if let Some(sandbox) = self.sandbox.as_mut() {
+            sandbox.recreate().await?;
+            info!(session_id = %self.session_id, "Sandbox force recreated for session");
+            return Ok(());
+        }
+
+        Err(anyhow::anyhow!("Sandbox not initialized"))
+    }
+
     /// Get sandbox reference if running
     #[must_use]
     pub fn sandbox(&self) -> Option<&SandboxManager> {

@@ -4,11 +4,12 @@
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
+use bollard::errors::Error as DockerError;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
-    CreateContainerOptions, DownloadFromContainerOptions, RemoveContainerOptions,
-    StartContainerOptions, UploadToContainerOptions,
+    CreateContainerOptions, DownloadFromContainerOptions, InspectContainerOptions,
+    RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
 };
 use bollard::Docker;
 use bytes::Bytes;
@@ -17,10 +18,12 @@ use http_body_util::{Either, Full};
 use shell_escape::escape;
 use std::collections::HashMap;
 use std::io::Read;
+use std::time::Duration;
+use tokio::time::sleep;
 use tracing::{debug, info, instrument, warn};
 
 use crate::config::{
-    SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_IMAGE,
+    get_sandbox_image, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS,
     SANDBOX_MEMORY_LIMIT,
 };
 
@@ -64,7 +67,61 @@ pub struct SandboxManager {
     user_id: i64,
 }
 
+const RECREATE_REMOVE_MAX_ATTEMPTS: usize = 8;
+const RECREATE_REMOVE_INITIAL_BACKOFF_MS: u64 = 50;
+const RECREATE_REMOVE_MAX_BACKOFF_MS: u64 = 800;
+
 impl SandboxManager {
+    fn is_not_found_error(error: &DockerError) -> bool {
+        matches!(
+            error,
+            DockerError::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }
+        )
+    }
+
+    fn is_conflict_error(error: &DockerError) -> bool {
+        matches!(
+            error,
+            DockerError::DockerResponseServerError {
+                status_code: 409,
+                ..
+            }
+        )
+    }
+
+    fn is_image_not_found_error(error: &DockerError, image_name: &str) -> bool {
+        if !Self::is_not_found_error(error) {
+            return false;
+        }
+
+        let error_message = error.to_string().to_ascii_lowercase();
+        let image_name = image_name.to_ascii_lowercase();
+
+        error_message.contains("no such image") && error_message.contains(&image_name)
+    }
+
+    async fn get_container_id_by_name(&self, container_name: &str) -> Result<Option<String>> {
+        let mut filters = HashMap::new();
+        filters.insert("name".to_string(), vec![container_name.to_string()]);
+
+        let containers = self
+            .docker
+            .list_containers(Some(bollard::query_parameters::ListContainersOptions {
+                all: true,
+                filters: Some(filters),
+                ..Default::default()
+            }))
+            .await
+            .context("Failed to list containers by name")?;
+
+        Ok(containers
+            .first()
+            .and_then(|container| container.id.clone()))
+    }
+
     /// Create a new sandbox manager
     ///
     /// # Errors
@@ -86,7 +143,7 @@ impl SandboxManager {
         Ok(Self {
             docker,
             container_id: None,
-            image_name: SANDBOX_IMAGE.to_string(),
+            image_name: get_sandbox_image(),
             user_id,
         })
     }
@@ -97,29 +154,50 @@ impl SandboxManager {
         self.container_id.is_some()
     }
 
+    /// Validate tracked container liveness and clear stale state.
+    async fn refresh_container_liveness(&mut self) -> bool {
+        let Some(container_id) = self.container_id.clone() else {
+            return false;
+        };
+
+        match self
+            .docker
+            .inspect_container(&container_id, None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(_) => true,
+            Err(error) => {
+                if Self::is_not_found_error(&error) {
+                    warn!(
+                        user_id = self.user_id,
+                        container_id = %container_id,
+                        error = %error,
+                        "Sandbox container not found, resetting tracked container_id"
+                    );
+                    self.container_id = None;
+                    false
+                } else {
+                    warn!(
+                        user_id = self.user_id,
+                        container_id = %container_id,
+                        error = %error,
+                        "Sandbox container inspect failed, preserving tracked container_id"
+                    );
+                    true
+                }
+            }
+        }
+    }
+
     /// Get container ID if running
     #[must_use]
     pub fn container_id(&self) -> Option<&str> {
         self.container_id.as_deref()
     }
 
-    /// Create and start a new sandbox container
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if container creation or starting fails.
-    #[instrument(skip(self), fields(user_id = self.user_id))]
-    pub async fn create_sandbox(&mut self) -> Result<()> {
-        if self.container_id.is_some() {
-            // Already tracked in this object
-            return Ok(());
-        }
-
-        let container_name = format!("agent-sandbox-{}", self.user_id);
-
-        // Check if container already exists
+    async fn has_container_with_name(&self, container_name: &str) -> Result<bool> {
         let mut filters = HashMap::new();
-        filters.insert("name".to_string(), vec![container_name.clone()]);
+        filters.insert("name".to_string(), vec![container_name.to_string()]);
 
         let containers = self
             .docker
@@ -129,10 +207,55 @@ impl SandboxManager {
                 ..Default::default()
             }))
             .await
-            .context("Failed to list containers")?;
+            .context("Failed to list containers by name")?;
 
-        if let Some(container) = containers.first() {
-            let id = container.id.clone().unwrap_or_default();
+        Ok(!containers.is_empty())
+    }
+
+    async fn wait_for_container_removal_by_name(&self, container_name: &str) -> Result<()> {
+        let mut backoff_ms = RECREATE_REMOVE_INITIAL_BACKOFF_MS;
+
+        for attempt in 1..=RECREATE_REMOVE_MAX_ATTEMPTS {
+            if !self.has_container_with_name(container_name).await? {
+                debug!(
+                    user_id = self.user_id,
+                    container_name, attempt, "Container name is free for recreate"
+                );
+                return Ok(());
+            }
+
+            warn!(
+                user_id = self.user_id,
+                container_name,
+                attempt,
+                backoff_ms,
+                "Container still exists after remove request, waiting before recreate"
+            );
+            sleep(Duration::from_millis(backoff_ms)).await;
+            backoff_ms = (backoff_ms.saturating_mul(2)).min(RECREATE_REMOVE_MAX_BACKOFF_MS);
+        }
+
+        Err(anyhow!(
+            "Timed out waiting for container removal: {container_name}"
+        ))
+    }
+
+    /// Create and start a new sandbox container
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if container creation or starting fails.
+    #[instrument(skip(self), fields(user_id = self.user_id))]
+    pub async fn create_sandbox(&mut self) -> Result<()> {
+        if self.refresh_container_liveness().await {
+            // Already tracked in this object
+            return Ok(());
+        }
+
+        let container_name = format!("agent-sandbox-{}", self.user_id);
+
+        // Check if container already exists
+        if let Some(id) = self.get_container_id_by_name(&container_name).await? {
             info!(user_id = self.user_id, container_id = %id, "Found existing sandbox container");
             self.container_id = Some(id.clone());
 
@@ -181,14 +304,42 @@ impl SandboxManager {
         };
 
         // Create container
-        let response = self
-            .docker
-            .create_container(Some(options), config)
-            .await
-            .context("Failed to create sandbox container")?;
+        let container_id = match self.docker.create_container(Some(options), config).await {
+            Ok(response) => {
+                let container_id = response.id;
+                info!(container_id = %container_id, "Sandbox container created");
+                container_id
+            }
+            Err(error) if Self::is_conflict_error(&error) => {
+                warn!(
+                    user_id = self.user_id,
+                    container_name = %container_name,
+                    error = %error,
+                    "Sandbox create conflicted, resolving existing container by name"
+                );
 
-        let container_id = response.id;
-        info!(container_id = %container_id, "Sandbox container created");
+                let resolved_id = self
+                    .get_container_id_by_name(&container_name)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Sandbox create conflicted but no container found by name: {container_name}"
+                        )
+                    })?;
+
+                info!(container_id = %resolved_id, "Resolved sandbox container after create conflict");
+                resolved_id
+            }
+            Err(error) if Self::is_image_not_found_error(&error, &self.image_name) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Sandbox image '{}' not found. Build it with `docker compose --profile build build sandbox_image`",
+                        self.image_name
+                    )
+                });
+            }
+            Err(error) => return Err(error).context("Failed to create sandbox container"),
+        };
 
         // Start container
         self.docker
@@ -252,13 +403,18 @@ impl SandboxManager {
     /// Returns an error if sandbox is not running, exec creation fails, execution times out, or is cancelled.
     #[instrument(skip(self, cancellation_token), fields(container_id = ?self.container_id))]
     pub async fn exec_command(
-        &self,
+        &mut self,
         cmd: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<ExecResult> {
+        if !self.refresh_container_liveness().await {
+            self.create_sandbox().await?;
+        }
+
         let container_id = self
             .container_id
             .as_ref()
+            .cloned()
             .ok_or_else(|| anyhow!("Sandbox not running"))?;
 
         debug!(cmd = %cmd, "Executing command in sandbox");
@@ -273,7 +429,7 @@ impl SandboxManager {
 
         let exec = self
             .docker
-            .create_exec(container_id, exec_options)
+            .create_exec(&container_id, exec_options)
             .await
             .context("Failed to create exec")?;
 
@@ -356,7 +512,7 @@ impl SandboxManager {
     ///
     /// Returns an error if sandbox is not running or file writing fails.
     #[instrument(skip(self, content), fields(path = %path, content_len = content.len()))]
-    pub async fn write_file(&self, path: &str, content: &[u8]) -> Result<()> {
+    pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
         if self.container_id.is_none() {
             return Err(anyhow!("Sandbox not running"));
         }
@@ -386,7 +542,7 @@ impl SandboxManager {
     ///
     /// Returns an error if file reading or decoding fails.
     #[instrument(skip(self), fields(path = %path))]
-    pub async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+    pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
         let cmd = format!("base64 {}", shell_escape::escape(path.into()));
 
         let result = self.exec_command(&cmd, None).await?;
@@ -412,10 +568,11 @@ impl SandboxManager {
     ///
     /// Returns an error if sandbox is not running, directory creation fails, or upload fails.
     #[instrument(skip(self, content), fields(path = %container_path, content_len = content.len()))]
-    pub async fn upload_file(&self, container_path: &str, content: &[u8]) -> Result<()> {
+    pub async fn upload_file(&mut self, container_path: &str, content: &[u8]) -> Result<()> {
         let container_id = self
             .container_id
             .as_ref()
+            .cloned()
             .ok_or_else(|| anyhow!("Sandbox not running"))?;
 
         let path = std::path::Path::new(container_path);
@@ -452,7 +609,7 @@ impl SandboxManager {
 
         self.docker
             .upload_to_container(
-                container_id,
+                &container_id,
                 Some(UploadToContainerOptions {
                     path: parent,
                     ..Default::default()
@@ -481,10 +638,11 @@ impl SandboxManager {
     ///
     /// Returns an error if sandbox is not running, file doesn't exist, file is too large, or download/extraction fails.
     #[instrument(skip(self), fields(path = %container_path))]
-    pub async fn download_file(&self, container_path: &str) -> Result<Vec<u8>> {
+    pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>> {
         let container_id = self
             .container_id
             .as_ref()
+            .cloned()
             .ok_or_else(|| anyhow!("Sandbox not running"))?;
 
         // Get file size to check limits (50MB max for transport delivery)
@@ -503,7 +661,7 @@ impl SandboxManager {
         let stream = self
             .docker
             .download_from_container(
-                container_id,
+                &container_id,
                 Some(DownloadFromContainerOptions {
                     path: container_path.to_string(),
                 }),
@@ -543,7 +701,7 @@ impl SandboxManager {
     ///
     /// Returns an error if the command execution fails or the output cannot be parsed.
     #[instrument(skip(self))]
-    pub async fn get_uploads_size(&self) -> Result<u64> {
+    pub async fn get_uploads_size(&mut self) -> Result<u64> {
         let result = self
             .exec_command("du -sb /workspace/uploads 2>/dev/null || echo '0'", None)
             .await?;
@@ -563,7 +721,7 @@ impl SandboxManager {
     ///
     /// Returns an error if the cleanup command fails.
     #[instrument(skip(self))]
-    pub async fn cleanup_old_downloads(&self) -> Result<u64> {
+    pub async fn cleanup_old_downloads(&mut self) -> Result<u64> {
         // Find and count files older than 7 days
         let count_cmd = "find /workspace/downloads -type f -mtime +7 2>/dev/null | wc -l";
         let count_result = self.exec_command(count_cmd, None).await?;
@@ -618,24 +776,38 @@ impl SandboxManager {
     pub async fn recreate(&mut self) -> Result<()> {
         info!("Recreating sandbox");
 
+        // Clear stale in-memory ID before recreation attempts.
+        self.refresh_container_liveness().await;
+
+        let container_name = format!("agent-sandbox-{}", self.user_id);
+
         // Force destroy current container
         if self.container_id.is_some() {
             self.destroy().await?;
-        } else {
-            // Even if not in memory, check docker for the named container
-            let container_name = format!("agent-sandbox-{}", self.user_id);
-            // Best effort cleanup by name if we lost the ID
-            let _ = self
-                .docker
-                .remove_container(
-                    &container_name,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        ..Default::default()
-                    }),
-                )
-                .await;
         }
+
+        // Best effort cleanup by name in case ID was stale/lost or removal is still converging.
+        if let Err(error) = self
+            .docker
+            .remove_container(
+                &container_name,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+        {
+            debug!(
+                user_id = self.user_id,
+                container_name = %container_name,
+                error = %error,
+                "Remove-by-name before recreate returned error"
+            );
+        }
+
+        self.wait_for_container_removal_by_name(&container_name)
+            .await?;
 
         // Create new one
         self.create_sandbox().await
@@ -648,7 +820,7 @@ impl SandboxManager {
     /// Returns an error if sandbox is not running, file doesn't exist, or output can't be parsed.
     #[instrument(skip(self, cancellation_token), fields(path = %container_path))]
     pub async fn file_size_bytes(
-        &self,
+        &mut self,
         container_path: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<u64> {
@@ -712,6 +884,22 @@ mod tests {
         // Cleanup
         sandbox.destroy().await?;
         assert!(!sandbox.is_running());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_exec_self_heals_stale_container_id() -> Result<(), Box<dyn std::error::Error>> {
+        let mut sandbox = SandboxManager::new(12346).await?;
+        sandbox.create_sandbox().await?;
+
+        sandbox.container_id = Some("stale-container-id".to_string());
+
+        let result = sandbox.exec_command("echo 'healed'", None).await?;
+        assert!(result.success());
+        assert!(result.stdout.contains("healed"));
+
+        sandbox.destroy().await?;
         Ok(())
     }
 }
