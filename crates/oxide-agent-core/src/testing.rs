@@ -50,6 +50,7 @@ pub fn mock_llm_simple(response_text: &'static str) -> crate::llm::MockLlmProvid
 /// - `get_user_prompt` / `get_user_model` / `get_user_state` return `Ok(None)`
 /// - `save_message` returns `Ok(())`
 /// - `get_chat_history` returns an empty `Vec<Message>`
+/// - `save_message_for_chat` / `get_chat_history_for_chat` / `clear_chat_history_for_chat` return `Ok(())`/empty
 /// - `clear_chat_history` / `clear_agent_memory` / `clear_all_context` return `Ok(())`
 /// - `save_agent_memory` returns `Ok(())`
 /// - `load_agent_memory` returns `Ok(None)`
@@ -90,6 +91,15 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
         .returning(|_, _| Ok(Vec::new()));
 
     mock.expect_clear_chat_history().returning(|_| Ok(()));
+
+    mock.expect_save_message_for_chat()
+        .returning(|_, _, _, _| Ok(()));
+
+    mock.expect_get_chat_history_for_chat()
+        .returning(|_, _, _| Ok(Vec::new()));
+
+    mock.expect_clear_chat_history_for_chat()
+        .returning(|_, _| Ok(()));
 
     mock.expect_save_agent_memory().returning(|_, _| Ok(()));
 

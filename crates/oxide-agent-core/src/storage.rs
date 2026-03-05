@@ -18,6 +18,7 @@ use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
 
 /// Errors that can occur during storage operations
 #[derive(Error, Debug)]
@@ -48,6 +49,8 @@ pub struct UserConfig {
     pub model_name: Option<String>,
     /// Current dialogue state
     pub state: Option<String>,
+    /// Active chat UUID for chat mode context isolation
+    pub current_chat_uuid: Option<String>,
 }
 
 /// Interface for storage providers
@@ -95,6 +98,27 @@ pub trait StorageProvider: Send + Sync {
     ) -> Result<Vec<Message>, StorageError>;
     /// Clear chat history for a user
     async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError>;
+    /// Save message to chat history scoped by chat UUID
+    async fn save_message_for_chat(
+        &self,
+        user_id: i64,
+        chat_uuid: String,
+        role: String,
+        content: String,
+    ) -> Result<(), StorageError>;
+    /// Get chat history for a user scoped by chat UUID
+    async fn get_chat_history_for_chat(
+        &self,
+        user_id: i64,
+        chat_uuid: String,
+        limit: usize,
+    ) -> Result<Vec<Message>, StorageError>;
+    /// Clear chat history for a user scoped by chat UUID
+    async fn clear_chat_history_for_chat(
+        &self,
+        user_id: i64,
+        chat_uuid: String,
+    ) -> Result<(), StorageError>;
     /// Save agent memory to storage
     async fn save_agent_memory(
         &self,
@@ -397,6 +421,45 @@ impl StorageProvider for R2Storage {
         self.delete_object(&user_history_key(user_id)).await
     }
 
+    /// Save message to chat history for a specific chat UUID
+    async fn save_message_for_chat(
+        &self,
+        user_id: i64,
+        chat_uuid: String,
+        role: String,
+        content: String,
+    ) -> Result<(), StorageError> {
+        let key = user_chat_history_key(user_id, &chat_uuid);
+        let mut history: Vec<Message> = self.load_json(&key).await?.unwrap_or_default();
+        history.push(Message { role, content });
+        self.save_json(&key, &history).await
+    }
+
+    /// Get chat history for a specific chat UUID
+    async fn get_chat_history_for_chat(
+        &self,
+        user_id: i64,
+        chat_uuid: String,
+        limit: usize,
+    ) -> Result<Vec<Message>, StorageError> {
+        let history: Vec<Message> = self
+            .load_json(&user_chat_history_key(user_id, &chat_uuid))
+            .await?
+            .unwrap_or_default();
+        let start = history.len().saturating_sub(limit);
+        Ok(history[start..].to_vec())
+    }
+
+    /// Clear chat history for a specific chat UUID
+    async fn clear_chat_history_for_chat(
+        &self,
+        user_id: i64,
+        chat_uuid: String,
+    ) -> Result<(), StorageError> {
+        self.delete_object(&user_chat_history_key(user_id, &chat_uuid))
+            .await
+    }
+
     /// Save agent memory to storage
     async fn save_agent_memory(
         &self,
@@ -452,8 +515,62 @@ pub fn user_history_key(user_id: i64) -> String {
     format!("users/{user_id}/history.json")
 }
 
+/// Returns the R2 key for a user's chat history file scoped by chat UUID
+#[must_use]
+pub fn user_chat_history_key(user_id: i64, chat_uuid: &str) -> String {
+    format!("users/{user_id}/chats/{chat_uuid}/history.json")
+}
+
 /// Returns the R2 key for a user's agent memory file
 #[must_use]
 pub fn user_agent_memory_key(user_id: i64) -> String {
     format!("users/{user_id}/agent_memory.json")
+}
+
+/// Generates a new random chat UUID (v4)
+#[must_use]
+pub fn generate_chat_uuid() -> String {
+    Uuid::new_v4().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{generate_chat_uuid, user_chat_history_key, user_history_key, UserConfig};
+    use uuid::Uuid;
+
+    #[test]
+    fn user_chat_history_key_uses_chat_uuid_namespace() {
+        let key = user_chat_history_key(42, "chat-123");
+        assert_eq!(key, "users/42/chats/chat-123/history.json");
+    }
+
+    #[test]
+    fn legacy_user_history_key_stays_unchanged() {
+        let key = user_history_key(42);
+        assert_eq!(key, "users/42/history.json");
+    }
+
+    #[test]
+    fn generate_chat_uuid_returns_v4_uuid() {
+        let chat_uuid = generate_chat_uuid();
+        let parsed = Uuid::parse_str(&chat_uuid);
+        assert!(parsed.is_ok());
+        let version = parsed.map(|uuid| uuid.get_version_num());
+        assert_eq!(version, Ok(4));
+    }
+
+    #[test]
+    fn user_config_deserializes_without_current_chat_uuid() {
+        let json = r#"{
+            "system_prompt": "You are helpful",
+            "model_name": "gpt",
+            "state": "idle"
+        }"#;
+
+        let parsed: Result<UserConfig, serde_json::Error> = serde_json::from_str(json);
+        assert!(parsed.is_ok());
+        let config = parsed.ok();
+        assert!(config.is_some());
+        assert_eq!(config.and_then(|cfg| cfg.current_chat_uuid), None);
+    }
 }
