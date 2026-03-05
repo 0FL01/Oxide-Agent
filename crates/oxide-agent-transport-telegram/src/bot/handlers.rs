@@ -324,6 +324,21 @@ fn is_valid_chat_uuid(uuid: &str) -> bool {
     true
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ChatFlowCallbackData<'a> {
+    Attach(&'a str),
+    Detach,
+}
+
+fn parse_chat_flow_callback_data(data: &str) -> Option<ChatFlowCallbackData<'_>> {
+    if data == CHAT_DETACH_CALLBACK {
+        return Some(ChatFlowCallbackData::Detach);
+    }
+
+    data.strip_prefix(CHAT_ATTACH_PREFIX)
+        .map(ChatFlowCallbackData::Attach)
+}
+
 fn short_uuid(uuid: &str) -> String {
     uuid.chars().take(8).collect()
 }
@@ -344,9 +359,9 @@ pub async fn handle_chat_flow_callback(
         return Ok(false);
     };
 
-    if data != CHAT_DETACH_CALLBACK && !data.starts_with(CHAT_ATTACH_PREFIX) {
+    let Some(callback_data) = parse_chat_flow_callback_data(data) else {
         return Ok(false);
-    }
+    };
 
     let user_id = q.from.id.0.cast_signed();
     let user_state = storage.get_user_state(user_id).await?;
@@ -357,33 +372,35 @@ pub async fn handle_chat_flow_callback(
         return Ok(true);
     }
 
-    if data == CHAT_DETACH_CALLBACK {
-        let mut config = storage.get_user_config(user_id).await?;
-        let new_chat_uuid = generate_chat_uuid();
-        config.current_chat_uuid = Some(new_chat_uuid.clone());
-        storage.update_user_config(user_id, config).await?;
+    match callback_data {
+        ChatFlowCallbackData::Detach => {
+            let mut config = storage.get_user_config(user_id).await?;
+            let new_chat_uuid = generate_chat_uuid();
+            config.current_chat_uuid = Some(new_chat_uuid.clone());
+            storage.update_user_config(user_id, config).await?;
 
-        bot.answer_callback_query(q.id.clone())
-            .text(format!("Detached: {}", short_uuid(&new_chat_uuid)))
-            .await?;
-        return Ok(true);
+            bot.answer_callback_query(q.id.clone())
+                .text(format!("Detached: {}", short_uuid(&new_chat_uuid)))
+                .await?;
+        }
+        ChatFlowCallbackData::Attach(selected_uuid) => {
+            if !is_valid_chat_uuid(selected_uuid) {
+                bot.answer_callback_query(q.id.clone())
+                    .text("Invalid chat UUID")
+                    .await?;
+                return Ok(true);
+            }
+
+            let mut config = storage.get_user_config(user_id).await?;
+            config.current_chat_uuid = Some(selected_uuid.to_string());
+            storage.update_user_config(user_id, config).await?;
+
+            bot.answer_callback_query(q.id.clone())
+                .text(format!("Attached: {}", short_uuid(selected_uuid)))
+                .await?;
+        }
     }
 
-    let selected_uuid = &data[CHAT_ATTACH_PREFIX.len()..];
-    if !is_valid_chat_uuid(selected_uuid) {
-        bot.answer_callback_query(q.id.clone())
-            .text("Invalid chat UUID")
-            .await?;
-        return Ok(true);
-    }
-
-    let mut config = storage.get_user_config(user_id).await?;
-    config.current_chat_uuid = Some(selected_uuid.to_string());
-    storage.update_user_config(user_id, config).await?;
-
-    bot.answer_callback_query(q.id.clone())
-        .text(format!("Attached: {}", short_uuid(selected_uuid)))
-        .await?;
     Ok(true)
 }
 
@@ -935,5 +952,65 @@ pub async fn handle_document(
         )
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_valid_chat_uuid, parse_chat_flow_callback_data, ChatFlowCallbackData,
+        CHAT_ATTACH_PREFIX, CHAT_DETACH_CALLBACK,
+    };
+
+    #[test]
+    fn is_valid_chat_uuid_accepts_canonical_uuid() {
+        assert!(is_valid_chat_uuid("123e4567-e89b-12d3-a456-426614174000"));
+    }
+
+    #[test]
+    fn is_valid_chat_uuid_rejects_invalid_length() {
+        assert!(!is_valid_chat_uuid("123e4567-e89b-12d3-a456-42661417400"));
+    }
+
+    #[test]
+    fn is_valid_chat_uuid_rejects_wrong_hyphen_positions() {
+        assert!(!is_valid_chat_uuid("123e4567e-89b-12d3-a456-426614174000"));
+    }
+
+    #[test]
+    fn is_valid_chat_uuid_rejects_non_hex_characters() {
+        assert!(!is_valid_chat_uuid("123e4567-e89b-12d3-a456-42661417400z"));
+    }
+
+    #[test]
+    fn parse_chat_flow_callback_data_parses_detach() {
+        assert_eq!(
+            parse_chat_flow_callback_data(CHAT_DETACH_CALLBACK),
+            Some(ChatFlowCallbackData::Detach)
+        );
+    }
+
+    #[test]
+    fn parse_chat_flow_callback_data_parses_attach_payload() {
+        let callback = "chat_attach:123e4567-e89b-12d3-a456-426614174000";
+        assert_eq!(
+            parse_chat_flow_callback_data(callback),
+            Some(ChatFlowCallbackData::Attach(
+                "123e4567-e89b-12d3-a456-426614174000"
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_chat_flow_callback_data_treats_empty_attach_payload_as_attach() {
+        assert_eq!(
+            parse_chat_flow_callback_data(CHAT_ATTACH_PREFIX),
+            Some(ChatFlowCallbackData::Attach(""))
+        );
+    }
+
+    #[test]
+    fn parse_chat_flow_callback_data_rejects_unknown_callback() {
+        assert_eq!(parse_chat_flow_callback_data("unknown"), None);
     }
 }
