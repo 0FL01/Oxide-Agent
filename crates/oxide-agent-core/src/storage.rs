@@ -535,7 +535,9 @@ pub fn generate_chat_uuid() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_chat_uuid, user_chat_history_key, user_history_key, UserConfig};
+    use super::{
+        generate_chat_uuid, user_chat_history_key, user_config_key, user_history_key, UserConfig,
+    };
     use uuid::Uuid;
 
     #[test]
@@ -548,6 +550,17 @@ mod tests {
     fn legacy_user_history_key_stays_unchanged() {
         let key = user_history_key(42);
         assert_eq!(key, "users/42/history.json");
+    }
+
+    #[test]
+    fn user_chat_history_key_isolated_by_user_and_chat_uuid() {
+        let key_a = user_chat_history_key(1, "chat-a");
+        let key_b = user_chat_history_key(1, "chat-b");
+        let key_c = user_chat_history_key(2, "chat-a");
+
+        assert_ne!(key_a, key_b);
+        assert_ne!(key_a, key_c);
+        assert_ne!(key_b, key_c);
     }
 
     #[test]
@@ -572,5 +585,34 @@ mod tests {
         let config = parsed.ok();
         assert!(config.is_some());
         assert_eq!(config.and_then(|cfg| cfg.current_chat_uuid), None);
+    }
+
+    #[test]
+    fn user_config_roundtrip_preserves_current_chat_uuid() {
+        let config = UserConfig {
+            system_prompt: Some("You are helpful".to_string()),
+            model_name: Some("gpt".to_string()),
+            state: Some("chat_mode".to_string()),
+            current_chat_uuid: Some("123e4567-e89b-12d3-a456-426614174000".to_string()),
+        };
+
+        let json = serde_json::to_string(&config);
+        assert!(json.is_ok());
+
+        let parsed: Result<UserConfig, serde_json::Error> =
+            serde_json::from_str(&json.unwrap_or_default());
+        assert!(parsed.is_ok());
+
+        let parsed = parsed.unwrap_or_default();
+        assert_eq!(
+            parsed.current_chat_uuid,
+            Some("123e4567-e89b-12d3-a456-426614174000".to_string())
+        );
+    }
+
+    #[test]
+    fn user_config_key_stays_stable() {
+        let key = user_config_key(42);
+        assert_eq!(key, "users/42/config.json");
     }
 }
