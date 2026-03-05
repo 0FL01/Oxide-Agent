@@ -85,10 +85,10 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                 .filter(|q: CallbackQuery, settings: Arc<BotSettings>| {
                     settings
                         .telegram
-                        .agent_allowed_users()
+                        .allowed_users()
                         .contains(&q.from.id.0.cast_signed())
                 })
-                .endpoint(handle_loop_callback),
+                .endpoint(handle_callback),
         )
         .branch(
             Update::filter_message().branch(
@@ -310,13 +310,32 @@ async fn handle_agent_message(
     respond(())
 }
 
-async fn handle_loop_callback(
+async fn handle_callback(
     bot: Bot,
     q: CallbackQuery,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
+    match bot::handlers::handle_chat_flow_callback(&bot, &q, &storage).await {
+        Ok(true) => {
+            return respond(());
+        }
+        Ok(false) => {}
+        Err(e) => {
+            error!("Chat flow callback handler error: {}", e);
+            return respond(());
+        }
+    }
+
+    if !settings
+        .telegram
+        .agent_allowed_users()
+        .contains(&q.from.id.0.cast_signed())
+    {
+        return respond(());
+    }
+
     if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, storage, llm, settings).await
     {
         error!("Loop callback handler error: {}", e);
