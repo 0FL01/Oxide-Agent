@@ -10,10 +10,16 @@ use teloxide::{
     dispatching::dialogue::InMemStorage,
     net::Download,
     prelude::*,
-    types::{KeyboardButton, KeyboardMarkup, ParseMode},
+    types::{
+        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup,
+        ParseMode,
+    },
     utils::command::BotCommands,
 };
 use tracing::info;
+
+const CHAT_ATTACH_PREFIX: &str = "chat_attach:";
+const CHAT_DETACH_CALLBACK: &str = "chat_detach";
 
 // Helper function to get user name from Message
 fn get_user_name(msg: &Message) -> String {
@@ -231,7 +237,10 @@ pub async fn start(
     Ok(())
 }
 
-async fn ensure_current_chat_uuid(storage: &Arc<dyn StorageProvider>, user_id: i64) -> Result<String> {
+async fn ensure_current_chat_uuid(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+) -> Result<String> {
     let mut config = storage.get_user_config(user_id).await?;
 
     if let Some(chat_uuid) = config.current_chat_uuid {
@@ -277,6 +286,105 @@ async fn get_current_chat_uuid(storage: &Arc<dyn StorageProvider>, user_id: i64)
     }
 
     ensure_current_chat_uuid(storage, user_id).await
+}
+
+fn chat_flow_controls_keyboard(chat_uuid: &str) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("Attach", format!("{CHAT_ATTACH_PREFIX}{chat_uuid}")),
+        InlineKeyboardButton::callback("Detach", CHAT_DETACH_CALLBACK),
+    ]])
+}
+
+async fn send_chat_flow_controls(bot: &Bot, chat_id: ChatId, chat_uuid: &str) -> Result<()> {
+    bot.send_message(chat_id, "Flow controls:")
+        .reply_markup(chat_flow_controls_keyboard(chat_uuid))
+        .await?;
+    Ok(())
+}
+
+fn is_valid_chat_uuid(uuid: &str) -> bool {
+    if uuid.len() != 36 {
+        return false;
+    }
+
+    for (idx, ch) in uuid.chars().enumerate() {
+        let is_hyphen_pos = matches!(idx, 8 | 13 | 18 | 23);
+        if is_hyphen_pos {
+            if ch != '-' {
+                return false;
+            }
+            continue;
+        }
+
+        if !ch.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn short_uuid(uuid: &str) -> String {
+    uuid.chars().take(8).collect()
+}
+
+/// Handle chat flow Attach/Detach inline callbacks.
+///
+/// Returns true when callback belongs to chat flow controls.
+///
+/// # Errors
+///
+/// Returns an error if storage or Telegram API operations fail.
+pub async fn handle_chat_flow_callback(
+    bot: &Bot,
+    q: &CallbackQuery,
+    storage: &Arc<dyn StorageProvider>,
+) -> Result<bool> {
+    let Some(data) = q.data.as_deref() else {
+        return Ok(false);
+    };
+
+    if data != CHAT_DETACH_CALLBACK && !data.starts_with(CHAT_ATTACH_PREFIX) {
+        return Ok(false);
+    }
+
+    let user_id = q.from.id.0.cast_signed();
+    let user_state = storage.get_user_state(user_id).await?;
+    if user_state.as_deref() != Some("chat_mode") {
+        bot.answer_callback_query(q.id.clone())
+            .text("Chat Mode only")
+            .await?;
+        return Ok(true);
+    }
+
+    if data == CHAT_DETACH_CALLBACK {
+        let mut config = storage.get_user_config(user_id).await?;
+        let new_chat_uuid = generate_chat_uuid();
+        config.current_chat_uuid = Some(new_chat_uuid.clone());
+        storage.update_user_config(user_id, config).await?;
+
+        bot.answer_callback_query(q.id.clone())
+            .text(format!("Detached: {}", short_uuid(&new_chat_uuid)))
+            .await?;
+        return Ok(true);
+    }
+
+    let selected_uuid = &data[CHAT_ATTACH_PREFIX.len()..];
+    if !is_valid_chat_uuid(selected_uuid) {
+        bot.answer_callback_query(q.id.clone())
+            .text("Invalid chat UUID")
+            .await?;
+        return Ok(true);
+    }
+
+    let mut config = storage.get_user_config(user_id).await?;
+    config.current_chat_uuid = Some(selected_uuid.to_string());
+    storage.update_user_config(user_id, config).await?;
+
+    bot.answer_callback_query(q.id.clone())
+        .text(format!("Attached: {}", short_uuid(selected_uuid)))
+        .await?;
+    Ok(true)
 }
 
 /// Healthcheck handler
@@ -594,12 +702,13 @@ async fn process_llm_request(
             storage
                 .save_message_for_chat(
                     user_id,
-                    chat_uuid,
+                    chat_uuid.clone(),
                     "assistant".to_string(),
                     response.clone(),
                 )
                 .await?;
             send_long_message(&bot, msg.chat.id, &response).await?;
+            send_chat_flow_controls(&bot, msg.chat.id, &chat_uuid).await?;
         }
         Err(e) => {
             bot.send_message(msg.chat.id, format!("<b>Error:</b> {e}"))
@@ -769,10 +878,11 @@ pub async fn handle_photo(
         .await
     {
         Ok(response) => {
+            let chat_uuid = get_current_chat_uuid(&storage, user_id).await?;
             storage
                 .save_message_for_chat(
                     user_id,
-                    get_current_chat_uuid(&storage, user_id).await?,
+                    chat_uuid.clone(),
                     "user".to_string(),
                     format!("[Image] {caption}"),
                 )
@@ -780,12 +890,13 @@ pub async fn handle_photo(
             storage
                 .save_message_for_chat(
                     user_id,
-                    get_current_chat_uuid(&storage, user_id).await?,
+                    chat_uuid.clone(),
                     "assistant".to_string(),
                     response.clone(),
                 )
                 .await?;
             send_long_message(&bot, msg.chat.id, &response).await?;
+            send_chat_flow_controls(&bot, msg.chat.id, &chat_uuid).await?;
         }
         Err(e) => {
             bot.send_message(msg.chat.id, format!("Image analysis error: {e}"))
