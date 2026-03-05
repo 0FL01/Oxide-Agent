@@ -3,7 +3,7 @@ use crate::bot::UnauthorizedCache;
 use crate::config::BotSettings;
 use anyhow::{anyhow, Result};
 use oxide_agent_core::llm::{LlmClient, Message as LlmMessage};
-use oxide_agent_core::storage::StorageProvider;
+use oxide_agent_core::storage::{generate_chat_uuid, StorageProvider};
 use oxide_agent_core::utils::truncate_str;
 use std::sync::Arc;
 use teloxide::{
@@ -13,7 +13,7 @@ use teloxide::{
     types::{KeyboardButton, KeyboardMarkup, ParseMode},
     utils::command::BotCommands,
 };
-use tracing::{error, info};
+use tracing::info;
 
 // Helper function to get user name from Message
 fn get_user_name(msg: &Message) -> String {
@@ -132,7 +132,7 @@ pub fn get_main_keyboard() -> KeyboardMarkup {
 pub fn get_chat_keyboard() -> KeyboardMarkup {
     let keyboard = vec![
         vec![
-            KeyboardButton::new("Clear Context"),
+            KeyboardButton::new("Clear Flow"),
             KeyboardButton::new("Change Model"),
         ],
         vec![
@@ -231,36 +231,52 @@ pub async fn start(
     Ok(())
 }
 
-/// Clear context handler
+async fn ensure_current_chat_uuid(storage: &Arc<dyn StorageProvider>, user_id: i64) -> Result<String> {
+    let mut config = storage.get_user_config(user_id).await?;
+
+    if let Some(chat_uuid) = config.current_chat_uuid {
+        return Ok(chat_uuid);
+    }
+
+    let chat_uuid = generate_chat_uuid();
+    config.current_chat_uuid = Some(chat_uuid.clone());
+    storage.update_user_config(user_id, config).await?;
+
+    Ok(chat_uuid)
+}
+
+/// Clear flow handler
 ///
 /// # Errors
 ///
-/// Returns an error if chat history cannot be cleared or message cannot be sent.
+/// Returns an error if user config cannot be updated or message cannot be sent.
 pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
-    info!("User {user_id} ({user_name}) initiated context clear.");
+    info!("User {user_id} ({user_name}) initiated flow clear.");
 
-    match storage.clear_chat_history(user_id).await {
-        Ok(()) => {
-            info!("Chat history successfully cleared for user {user_id}.");
-            bot.send_message(msg.chat.id, "<b>Chat history cleared.</b>")
-                .parse_mode(ParseMode::Html)
-                .reply_markup(get_chat_keyboard())
-                .await?;
-        }
-        Err(e) => {
-            error!("Error clearing chat history for user {user_id}: {e}");
-            bot.send_message(
-                msg.chat.id,
-                "An error occurred while clearing chat history.",
-            )
-            .await?;
-        }
-    }
+    let mut config = storage.get_user_config(user_id).await?;
+    let new_chat_uuid = generate_chat_uuid();
+    config.current_chat_uuid = Some(new_chat_uuid.clone());
+    storage.update_user_config(user_id, config).await?;
+
+    info!("Started new chat flow for user {user_id}: {new_chat_uuid}");
+    bot.send_message(msg.chat.id, "<b>Flow cleared.</b>")
+        .parse_mode(ParseMode::Html)
+        .reply_markup(get_chat_keyboard())
+        .await?;
 
     Ok(())
+}
+
+async fn get_current_chat_uuid(storage: &Arc<dyn StorageProvider>, user_id: i64) -> Result<String> {
+    let config = storage.get_user_config(user_id).await?;
+    if let Some(chat_uuid) = config.current_chat_uuid {
+        return Ok(chat_uuid);
+    }
+
+    ensure_current_chat_uuid(storage, user_id).await
 }
 
 /// Healthcheck handler
@@ -376,6 +392,7 @@ async fn handle_menu_commands(
     let user_id = get_user_id_safe(msg);
     match text {
         "💬 Chat Mode" => {
+            let _chat_uuid = ensure_current_chat_uuid(storage, user_id).await?;
             // Save state to DB
             let _ = storage
                 .update_user_state(user_id, "chat_mode".to_string())
@@ -395,7 +412,7 @@ async fn handle_menu_commands(
             .await?;
             Ok(true)
         }
-        "Clear Context" => {
+        "Clear Flow" => {
             clear(bot.clone(), msg.clone(), storage.clone()).await?;
             Ok(true)
         }
@@ -545,12 +562,15 @@ async fn process_llm_request(
         .get_user_prompt(user_id)
         .await?
         .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
-    let history = storage.get_chat_history(user_id, 10).await?;
+    let chat_uuid = get_current_chat_uuid(&storage, user_id).await?;
+    let history = storage
+        .get_chat_history_for_chat(user_id, chat_uuid.clone(), 10)
+        .await?;
     let saved_model = storage.get_user_model(user_id).await?;
     let model = resolve_chat_model(&settings, saved_model);
 
     storage
-        .save_message(user_id, "user".to_string(), text.clone())
+        .save_message_for_chat(user_id, chat_uuid.clone(), "user".to_string(), text.clone())
         .await?;
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
@@ -572,7 +592,12 @@ async fn process_llm_request(
     {
         Ok(response) => {
             storage
-                .save_message(user_id, "assistant".to_string(), response.clone())
+                .save_message_for_chat(
+                    user_id,
+                    chat_uuid,
+                    "assistant".to_string(),
+                    response.clone(),
+                )
                 .await?;
             send_long_message(&bot, msg.chat.id, &response).await?;
         }
@@ -745,10 +770,20 @@ pub async fn handle_photo(
     {
         Ok(response) => {
             storage
-                .save_message(user_id, "user".to_string(), format!("[Image] {caption}"))
+                .save_message_for_chat(
+                    user_id,
+                    get_current_chat_uuid(&storage, user_id).await?,
+                    "user".to_string(),
+                    format!("[Image] {caption}"),
+                )
                 .await?;
             storage
-                .save_message(user_id, "assistant".to_string(), response.clone())
+                .save_message_for_chat(
+                    user_id,
+                    get_current_chat_uuid(&storage, user_id).await?,
+                    "assistant".to_string(),
+                    response.clone(),
+                )
                 .await?;
             send_long_message(&bot, msg.chat.id, &response).await?;
         }
