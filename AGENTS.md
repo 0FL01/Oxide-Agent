@@ -2,7 +2,7 @@
 
 Этот проект представляет собой Telegram-бота, который интегрируется с различными API больших языковых моделей (LLM) для предоставления пользователям многофункционального ИИ-ассистента. Бот может обрабатывать текстовые, голосовые, видео сообщения и изображения, работать с документами, управлять историей диалога и выполнять сложные задачи в изолированной песочнице.
 
-Бот разработан с использованием **Rust 1.92**, библиотеки `teloxide`, AWS SDK для взаимодействия с Cloudflare R2, и нативной интеграции с провайдерами ИИ (Groq, Mistral AI, Google Gemini, OpenRouter, ZAI/Zhipu AI).
+Бот разработан с использованием **Rust 1.93**, библиотеки `teloxide`, AWS SDK для взаимодействия с Cloudflare R2, и нативной интеграции с провайдерами ИИ (Groq, Mistral AI, Google Gemini, OpenRouter, ZAI/Zhipu AI).
 
 ## Branch
 
@@ -22,6 +22,7 @@ crates/
 │   │   ├── utils.rs
 │   │   ├── agent/                   # Логика агента
 │   │   │   ├── mod.rs
+│   │   │   ├── task.rs              # Task domain: TaskId/TaskState/Snapshot/TaskEvent
 │   │   │   ├── runner/              # Цикл исполнения (Loop, Hooks)
 │   │   │   ├── loop_detection/      # Детектор зацикливания
 │   │   │   ├── prompt/              # Компоновщик промптов (Composer)
@@ -40,10 +41,12 @@ crates/
 │       └── ...
 ├── oxide-agent-runtime/             # Runtime: сессии и оркестрация
 │   ├── src/
+│   │   ├── lib.rs
 │   │   ├── session_registry.rs      # Управление сессиями пользователей
+│   │   ├── task_registry.rs         # Runtime registry для TaskId и cancellation tokens
+│   │   ├── task_events.rs           # Transport-agnostic task event publishing
 │   │   ├── agent/
 │   │   │   └── runtime/             # Реализация AgentRuntime
-│   │   └── sandbox/                 # Runtime-компоненты песочницы
 ├── oxide-agent-transport-telegram/  # Транспорт: Telegram Bot API
 │   ├── src/
 │   │   ├── runner.rs                # Инициализация бота и DI
@@ -64,8 +67,8 @@ Dockerfile                           # Сборка основного Rust-пр
 ```
 
 ### Workspace crates
-- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage.
-- `oxide-agent-runtime`: оркестрация сессий, цикл исполнения, провайдеры инструментов, sandbox.
+- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, task domain и persistence contract.
+- `oxide-agent-runtime`: оркестрация сессий, task registry, task event publishing, цикл исполнения и runtime-компоненты.
 - `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, телеметрия доставки.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
