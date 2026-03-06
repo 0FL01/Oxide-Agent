@@ -11,6 +11,8 @@ pub mod session_registry;
 pub mod task_events;
 /// Task registry and lifecycle utilities.
 pub mod task_registry;
+/// Detached background worker lifecycle utilities.
+pub mod worker_manager;
 
 pub use agent::runtime::{
     spawn_progress_runtime, AgentTransport, DeliveryMode, ProgressRuntimeConfig,
@@ -20,3 +22,4 @@ pub use task_events::{
     ChannelTaskEventPublisher, NoopTaskEventPublisher, SharedTaskEventPublisher, TaskEventPublisher,
 };
 pub use task_registry::{TaskRecord, TaskRegistry, TaskRegistryError};
+pub use worker_manager::{WorkerManager, WorkerManagerError};
