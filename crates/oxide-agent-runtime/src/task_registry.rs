@@ -229,6 +229,21 @@ impl TaskRegistry {
             .get(task_id)
             .map(|entry| Arc::clone(&entry.cancellation_token))
     }
+
+    /// Remove a task from the runtime registry.
+    pub async fn remove(&self, task_id: &TaskId) -> Option<TaskRecord> {
+        let mut state = self.state.write().await;
+        let entry = state.tasks.remove(task_id)?;
+
+        if let Some(task_ids) = state.session_tasks.get_mut(&entry.session_id) {
+            task_ids.retain(|candidate| candidate != task_id);
+            if task_ids.is_empty() {
+                state.session_tasks.remove(&entry.session_id);
+            }
+        }
+
+        Some(TaskRecord::from(entry))
+    }
 }
 
 fn sort_task_records(records: &mut [TaskRecord]) {
