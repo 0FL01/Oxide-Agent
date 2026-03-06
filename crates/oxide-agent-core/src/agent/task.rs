@@ -220,6 +220,8 @@ impl TaskSnapshot {
 pub struct TaskEvent {
     /// Event log schema version.
     pub schema_version: u32,
+    /// Task identifier that owns this event log entry.
+    pub task_id: TaskId,
     /// Monotonic sequence number within the task event log.
     pub sequence: u64,
     /// Event classification for replay and audit.
@@ -236,6 +238,7 @@ impl TaskEvent {
     /// Create a new task event.
     #[must_use]
     pub fn new(
+        task_id: TaskId,
         sequence: u64,
         kind: TaskEventKind,
         state: TaskState,
@@ -243,6 +246,7 @@ impl TaskEvent {
     ) -> Self {
         Self {
             schema_version: TASK_EVENT_LOG_SCHEMA_VERSION,
+            task_id,
             sequence,
             kind,
             state,
@@ -280,9 +284,10 @@ pub enum TaskStateTransitionError {
 #[cfg(test)]
 mod tests {
     use super::{
-        TaskEvent, TaskEventKind, TaskMetadata, TaskSnapshot, TaskState, TaskStateTransitionError,
-        TASK_EVENT_LOG_SCHEMA_VERSION, TASK_SNAPSHOT_SCHEMA_VERSION,
+        TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot, TaskState,
+        TaskStateTransitionError, TASK_EVENT_LOG_SCHEMA_VERSION, TASK_SNAPSHOT_SCHEMA_VERSION,
     };
+    use chrono::Utc;
 
     #[test]
     fn task_state_reports_terminal_semantics() {
@@ -395,8 +400,10 @@ mod tests {
     }
 
     #[test]
-    fn task_event_roundtrip_preserves_baseline_event_log_contract() {
+    fn task_events_roundtrip_preserves_baseline_event_log_contract() {
+        let task_id = TaskId::new();
         let event = TaskEvent::new(
+            task_id,
             7,
             TaskEventKind::StateChanged,
             TaskState::Running,
@@ -412,9 +419,11 @@ mod tests {
 
         let parsed = parsed.unwrap_or(event.clone());
         assert_eq!(parsed.schema_version, TASK_EVENT_LOG_SCHEMA_VERSION);
+        assert_eq!(parsed.task_id, task_id);
         assert_eq!(parsed.sequence, 7);
         assert_eq!(parsed.kind, TaskEventKind::StateChanged);
         assert_eq!(parsed.state, TaskState::Running);
         assert_eq!(parsed.message.as_deref(), Some("worker lease renewed"));
+        assert!(parsed.recorded_at <= Utc::now());
     }
 }

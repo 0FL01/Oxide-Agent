@@ -1,7 +1,8 @@
 //! In-memory registry for runtime task metadata and cancellation.
 
+use crate::task_events::{NoopTaskEventPublisher, SharedTaskEventPublisher};
 use oxide_agent_core::agent::{
-    SessionId, TaskId, TaskMetadata, TaskState, TaskStateTransitionError,
+    SessionId, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskState, TaskStateTransitionError,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -12,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug)]
 struct TaskEntry {
     metadata: TaskMetadata,
+    last_event_sequence: u64,
     session_id: SessionId,
     cancellation_token: Arc<CancellationToken>,
 }
@@ -69,6 +71,7 @@ impl From<TaskStateTransitionError> for TaskRegistryError {
 /// In-memory runtime registry for tasks, ownership, and cancellation tokens.
 pub struct TaskRegistry {
     state: RwLock<TaskRegistryState>,
+    publisher: SharedTaskEventPublisher,
 }
 
 impl Default for TaskRegistry {
@@ -81,8 +84,15 @@ impl TaskRegistry {
     /// Create a new empty task registry.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_event_publisher(Arc::new(NoopTaskEventPublisher))
+    }
+
+    /// Create a new empty task registry with a task event publisher.
+    #[must_use]
+    pub fn with_event_publisher(publisher: SharedTaskEventPublisher) -> Self {
         Self {
             state: RwLock::new(TaskRegistryState::default()),
+            publisher,
         }
     }
 
@@ -90,20 +100,26 @@ impl TaskRegistry {
     pub async fn create(&self, session_id: SessionId) -> TaskRecord {
         let metadata = TaskMetadata::new();
         let task_id = metadata.id;
+        let event = TaskEvent::new(task_id, 1, TaskEventKind::Created, metadata.state, None);
         let entry = TaskEntry {
             metadata,
+            last_event_sequence: event.sequence,
             session_id,
             cancellation_token: Arc::new(CancellationToken::new()),
         };
-        let record = TaskRecord::from(entry.clone());
+        let record = {
+            let mut state = self.state.write().await;
+            state.tasks.insert(task_id, entry.clone());
+            state
+                .session_tasks
+                .entry(session_id)
+                .or_default()
+                .push(task_id);
 
-        let mut state = self.state.write().await;
-        state.tasks.insert(task_id, entry);
-        state
-            .session_tasks
-            .entry(session_id)
-            .or_default()
-            .push(task_id);
+            TaskRecord::from(entry)
+        };
+
+        self.publisher.publish(event).await;
 
         record
     }
@@ -154,13 +170,29 @@ impl TaskRegistry {
         task_id: &TaskId,
         next_state: TaskState,
     ) -> Result<TaskRecord, TaskRegistryError> {
-        let mut state = self.state.write().await;
-        let entry = state
-            .tasks
-            .get_mut(task_id)
-            .ok_or(TaskRegistryError::TaskNotFound(*task_id))?;
-        entry.metadata.transition_to(next_state)?;
-        Ok(TaskRecord::from(entry.clone()))
+        let (record, event) = {
+            let mut state = self.state.write().await;
+            let entry = state
+                .tasks
+                .get_mut(task_id)
+                .ok_or(TaskRegistryError::TaskNotFound(*task_id))?;
+            entry.metadata.transition_to(next_state)?;
+            entry.last_event_sequence += 1;
+
+            let event = TaskEvent::new(
+                entry.metadata.id,
+                entry.last_event_sequence,
+                TaskEventKind::StateChanged,
+                entry.metadata.state,
+                None,
+            );
+
+            (TaskRecord::from(entry.clone()), event)
+        };
+
+        self.publisher.publish(event).await;
+
+        Ok(record)
     }
 
     /// Request cancellation for a task.
@@ -215,9 +247,27 @@ fn sort_task_records(records: &mut [TaskRecord]) {
 #[cfg(test)]
 mod tests {
     use super::{TaskRegistry, TaskRegistryError};
-    use oxide_agent_core::agent::{SessionId, TaskState, TaskStateTransitionError};
+    use crate::task_events::{ChannelTaskEventPublisher, TaskEventPublisher};
+    use async_trait::async_trait;
+    use oxide_agent_core::agent::{SessionId, TaskEventKind, TaskState, TaskStateTransitionError};
     use std::sync::Arc;
+    use tokio::sync::{mpsc::unbounded_channel, Notify};
     use tokio::task::yield_now;
+    use tokio::time::{timeout, Duration};
+
+    #[derive(Debug)]
+    struct BlockingTaskEventPublisher {
+        publish_started: Arc<Notify>,
+        release_publish: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl TaskEventPublisher for BlockingTaskEventPublisher {
+        async fn publish(&self, _event: oxide_agent_core::agent::TaskEvent) {
+            self.publish_started.notify_one();
+            self.release_publish.notified().await;
+        }
+    }
 
     #[tokio::test]
     async fn task_registry_creates_and_updates_task_state() {
@@ -433,5 +483,112 @@ mod tests {
             registry.session_id_for_task(&second.metadata.id).await,
             Some(SessionId::from(200))
         );
+    }
+
+    #[tokio::test]
+    async fn task_events_are_published_for_task_lifecycle() {
+        let (sender, mut receiver) = unbounded_channel();
+        let registry =
+            TaskRegistry::with_event_publisher(Arc::new(ChannelTaskEventPublisher::new(sender)));
+
+        let created = registry.create(SessionId::from(9)).await;
+        let running = registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await;
+
+        assert!(running.is_ok());
+
+        let created_event = receiver.recv().await;
+        assert!(matches!(
+            created_event,
+            Some(event)
+                if event.task_id == created.metadata.id
+                    && event.sequence == 1
+                    && event.kind == TaskEventKind::Created
+                    && event.state == TaskState::Pending
+        ));
+
+        let running_event = receiver.recv().await;
+        assert!(matches!(
+            running_event,
+            Some(event)
+                if event.task_id == created.metadata.id
+                    && event.sequence == 2
+                    && event.kind == TaskEventKind::StateChanged
+                    && event.state == TaskState::Running
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_events_keep_sequences_isolated_per_task() {
+        let (sender, mut receiver) = unbounded_channel();
+        let registry =
+            TaskRegistry::with_event_publisher(Arc::new(ChannelTaskEventPublisher::new(sender)));
+
+        let first = registry.create(SessionId::from(1)).await;
+        let second = registry.create(SessionId::from(2)).await;
+
+        let first_running = registry
+            .update_state(&first.metadata.id, TaskState::Running)
+            .await;
+        let second_running = registry
+            .update_state(&second.metadata.id, TaskState::Running)
+            .await;
+
+        assert!(first_running.is_ok());
+        assert!(second_running.is_ok());
+
+        let mut events = Vec::new();
+        for _ in 0..4 {
+            let event = receiver.recv().await;
+            assert!(event.is_some());
+            if let Some(event) = event {
+                events.push(event);
+            }
+        }
+
+        let first_sequences = events
+            .iter()
+            .filter(|event| event.task_id == first.metadata.id)
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>();
+        let second_sequences = events
+            .iter()
+            .filter(|event| event.task_id == second.metadata.id)
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_sequences, vec![1, 2]);
+        assert_eq!(second_sequences, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn task_registry_create_releases_lock_before_publishing() {
+        let publish_started = Arc::new(Notify::new());
+        let release_publish = Arc::new(Notify::new());
+        let registry = Arc::new(TaskRegistry::with_event_publisher(Arc::new(
+            BlockingTaskEventPublisher {
+                publish_started: Arc::clone(&publish_started),
+                release_publish: Arc::clone(&release_publish),
+            },
+        )));
+        let session_id = SessionId::from(321);
+
+        let create_registry = Arc::clone(&registry);
+        let create_handle = tokio::spawn(async move { create_registry.create(session_id).await });
+
+        publish_started.notified().await;
+
+        let list_result = timeout(
+            Duration::from_millis(200),
+            registry.list_by_session(&session_id),
+        )
+        .await;
+        assert!(matches!(list_result, Ok(records) if records.len() == 1));
+
+        release_publish.notify_waiters();
+
+        let create_result = create_handle.await;
+        assert!(matches!(create_result, Ok(record) if record.session_id == session_id));
     }
 }

@@ -7,6 +7,8 @@
 pub mod agent;
 /// Session registry and lifecycle utilities.
 pub mod session_registry;
+/// Task event publishing abstractions.
+pub mod task_events;
 /// Task registry and lifecycle utilities.
 pub mod task_registry;
 
@@ -14,4 +16,7 @@ pub use agent::runtime::{
     spawn_progress_runtime, AgentTransport, DeliveryMode, ProgressRuntimeConfig,
 };
 pub use session_registry::SessionRegistry;
+pub use task_events::{
+    ChannelTaskEventPublisher, NoopTaskEventPublisher, SharedTaskEventPublisher, TaskEventPublisher,
+};
 pub use task_registry::{TaskRecord, TaskRegistry, TaskRegistryError};

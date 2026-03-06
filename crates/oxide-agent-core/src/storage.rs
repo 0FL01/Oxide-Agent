@@ -52,6 +52,14 @@ pub enum StorageError {
         /// Provided sequence value.
         actual: u64,
     },
+    /// Task event payload does not belong to the requested task stream.
+    #[error("task event task id mismatch: expected {expected}, got {actual}")]
+    TaskEventTaskMismatch {
+        /// Task identifier of the append target.
+        expected: TaskId,
+        /// Task identifier carried by the event payload.
+        actual: TaskId,
+    },
 }
 
 /// User-specific configuration persisted in storage
@@ -372,6 +380,13 @@ fn validate_task_event_sequence(
     existing_events: &[TaskEvent],
     event: &TaskEvent,
 ) -> Result<(), StorageError> {
+    if event.task_id != task_id {
+        return Err(StorageError::TaskEventTaskMismatch {
+            expected: task_id,
+            actual: event.task_id,
+        });
+    }
+
     let expected = existing_events.last().map_or(1, |last| last.sequence + 1);
 
     if event.sequence == expected {
@@ -953,11 +968,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn storage_task_event_log_appends_and_loads_events_in_order() {
+    async fn storage_task_events_append_and_load_in_order() {
         let storage = InMemoryStorage::default();
         let task_id = TaskMetadata::new().id;
-        let created = TaskEvent::new(1, TaskEventKind::Created, TaskState::Pending, None);
+        let created = TaskEvent::new(task_id, 1, TaskEventKind::Created, TaskState::Pending, None);
         let running = TaskEvent::new(
+            task_id,
             2,
             TaskEventKind::StateChanged,
             TaskState::Running,
@@ -974,11 +990,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn storage_task_event_log_rejects_duplicate_sequence_values() {
+    async fn storage_task_events_reject_duplicate_sequence_values() {
         let storage = InMemoryStorage::default();
         let task_id = TaskMetadata::new().id;
-        let created = TaskEvent::new(1, TaskEventKind::Created, TaskState::Pending, None);
+        let created = TaskEvent::new(task_id, 1, TaskEventKind::Created, TaskState::Pending, None);
         let duplicate = TaskEvent::new(
+            task_id,
             1,
             TaskEventKind::StateChanged,
             TaskState::Running,
@@ -1000,10 +1017,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn storage_task_event_log_rejects_out_of_order_sequence_values() {
+    async fn storage_task_events_reject_out_of_order_sequence_values() {
         let storage = InMemoryStorage::default();
         let task_id = TaskMetadata::new().id;
         let skipped = TaskEvent::new(
+            task_id,
             2,
             TaskEventKind::StateChanged,
             TaskState::Running,
@@ -1019,6 +1037,28 @@ mod tests {
                 expected: 1,
                 actual: 2,
             }) if actual_task_id == task_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn storage_task_events_reject_mismatched_task_ids() {
+        let storage = InMemoryStorage::default();
+        let task_id = TaskMetadata::new().id;
+        let other_task_id = TaskMetadata::new().id;
+        let event = TaskEvent::new(
+            other_task_id,
+            1,
+            TaskEventKind::Created,
+            TaskState::Pending,
+            None,
+        );
+
+        let result = storage.append_task_event(task_id, event).await;
+
+        assert!(matches!(
+            result,
+            Err(StorageError::TaskEventTaskMismatch { expected, actual })
+                if expected == task_id && actual == other_task_id
         ));
     }
 }
