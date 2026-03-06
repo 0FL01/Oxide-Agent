@@ -30,6 +30,9 @@ pub enum StorageError {
     /// Error putting object into S3
     #[error("S3 put error: {0}")]
     S3Put(String),
+    /// Error listing objects from S3.
+    #[error("S3 list error: {0}")]
+    S3List(String),
     /// Error during JSON serialization or deserialization
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
@@ -167,6 +170,12 @@ pub trait StorageProvider: Send + Sync {
         let _ = task_id;
         Err(StorageError::Unsupported(
             "task snapshot loading".to_string(),
+        ))
+    }
+    /// Enumerate all persisted task snapshots for boot-time reconciliation.
+    async fn list_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StorageError> {
+        Err(StorageError::Unsupported(
+            "task snapshot enumeration".to_string(),
         ))
     }
     /// Append a baseline event entry to the task event log.
@@ -581,6 +590,50 @@ impl StorageProvider for R2Storage {
         self.load_json(&task_snapshot_key(task_id)).await
     }
 
+    /// Enumerate persisted task snapshots.
+    async fn list_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StorageError> {
+        let mut snapshots = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut request = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix("tasks/");
+            if let Some(token) = continuation_token.as_deref() {
+                request = request.continuation_token(token);
+            }
+
+            let output = request
+                .send()
+                .await
+                .map_err(|error| StorageError::S3List(error.to_string()))?;
+
+            for object in output.contents() {
+                let Some(key) = object.key() else {
+                    continue;
+                };
+
+                if !key.ends_with("/snapshot.json") {
+                    continue;
+                }
+
+                if let Some(snapshot) = self.load_json::<TaskSnapshot>(key).await? {
+                    snapshots.push(snapshot);
+                }
+            }
+
+            if output.is_truncated().unwrap_or(false) {
+                continuation_token = output.next_continuation_token().map(str::to_owned);
+            } else {
+                break;
+            }
+        }
+
+        Ok(snapshots)
+    }
+
     /// Append an event to the baseline task event log.
     async fn append_task_event(
         &self,
@@ -836,6 +889,23 @@ mod tests {
             self.load_json(task_snapshot_key(task_id)).await
         }
 
+        async fn list_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StorageError> {
+            let documents = self.documents.lock().await;
+            let mut snapshots = documents
+                .iter()
+                .filter(|(key, _)| key.starts_with("tasks/") && key.ends_with("/snapshot.json"))
+                .map(|(_, value)| serde_json::from_value::<TaskSnapshot>(value.clone()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(StorageError::from)?;
+            snapshots.sort_by(|left, right| {
+                left.metadata
+                    .created_at
+                    .cmp(&right.metadata.created_at)
+                    .then_with(|| left.metadata.id.as_uuid().cmp(&right.metadata.id.as_uuid()))
+            });
+            Ok(snapshots)
+        }
+
         async fn append_task_event(
             &self,
             task_id: crate::agent::task::TaskId,
@@ -957,7 +1027,12 @@ mod tests {
         let storage = InMemoryStorage::default();
         let metadata = TaskMetadata::new();
         let task_id = metadata.id;
-        let snapshot = TaskSnapshot::new(metadata, "synchronize backlog".to_string(), 2);
+        let snapshot = TaskSnapshot::new(
+            metadata,
+            crate::agent::SessionId::from(42),
+            "synchronize backlog".to_string(),
+            2,
+        );
 
         let saved = storage.save_task_snapshot(&snapshot).await;
         assert!(saved.is_ok());
@@ -965,6 +1040,30 @@ mod tests {
         let loaded = storage.load_task_snapshot(task_id).await;
         assert!(loaded.is_ok());
         assert_eq!(loaded.ok().flatten(), Some(snapshot));
+    }
+
+    #[tokio::test]
+    async fn storage_task_snapshot_enumeration_lists_all_snapshots() {
+        let storage = InMemoryStorage::default();
+        let first_snapshot = TaskSnapshot::new(
+            TaskMetadata::new(),
+            crate::agent::SessionId::from(1),
+            "first".to_string(),
+            1,
+        );
+        let second_snapshot = TaskSnapshot::new(
+            TaskMetadata::new(),
+            crate::agent::SessionId::from(2),
+            "second".to_string(),
+            1,
+        );
+
+        assert!(storage.save_task_snapshot(&first_snapshot).await.is_ok());
+        assert!(storage.save_task_snapshot(&second_snapshot).await.is_ok());
+
+        let snapshots = storage.list_task_snapshots().await;
+        assert!(snapshots.is_ok());
+        assert_eq!(snapshots.unwrap_or_default().len(), 2);
     }
 
     #[tokio::test]

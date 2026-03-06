@@ -1,9 +1,11 @@
 //! Agent session identity types.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Transport-agnostic session identifier.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SessionId(i64);
 
 impl SessionId {

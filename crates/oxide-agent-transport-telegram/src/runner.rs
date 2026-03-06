@@ -6,8 +6,10 @@ use crate::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
     BotSettings,
 };
+use anyhow::Context;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::{llm, storage};
+use oxide_agent_runtime::{TaskRecovery, TaskRecoveryOptions, TaskRegistry};
 use std::sync::Arc;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::UpdateHandler;
@@ -16,8 +18,10 @@ use teloxide::types::CallbackQuery;
 use tracing::{error, info};
 
 /// Run the Telegram transport runtime.
-pub async fn run_bot(settings: Arc<BotSettings>) {
-    let storage = init_storage(&settings).await;
+pub async fn run_bot(settings: Arc<BotSettings>) -> anyhow::Result<()> {
+    let storage = init_storage(&settings).await?;
+    let task_registry = Arc::new(TaskRegistry::new());
+    run_startup_recovery(Arc::clone(&storage), Arc::clone(&task_registry)).await?;
 
     let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
     info!("LLM Client initialized.");
@@ -32,6 +36,7 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![
             storage,
+            task_registry,
             llm_client,
             settings,
             bot_state,
@@ -41,9 +46,11 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
         .build()
         .dispatch()
         .await;
+
+    Ok(())
 }
 
-async fn init_storage(settings: &BotSettings) -> Arc<dyn storage::StorageProvider> {
+async fn init_storage(settings: &BotSettings) -> anyhow::Result<Arc<dyn storage::StorageProvider>> {
     match storage::R2Storage::new(settings.agent.as_ref()).await {
         Ok(s) => {
             info!("R2 Storage initialized.");
@@ -52,13 +59,34 @@ async fn init_storage(settings: &BotSettings) -> Arc<dyn storage::StorageProvide
             } else {
                 error!("R2 Storage connection check returned error.");
             }
-            Arc::new(s) as Arc<dyn storage::StorageProvider>
+            Ok(Arc::new(s) as Arc<dyn storage::StorageProvider>)
         }
-        Err(e) => {
-            error!("Failed to initialize R2 Storage: {}", e);
-            std::process::exit(1);
-        }
+        Err(error) => Err(anyhow::Error::new(error).context("failed to initialize R2 storage")),
     }
+}
+
+async fn run_startup_recovery(
+    storage: Arc<dyn storage::StorageProvider>,
+    task_registry: Arc<TaskRegistry>,
+) -> anyhow::Result<()> {
+    let recovery = TaskRecovery::new(TaskRecoveryOptions {
+        task_registry,
+        storage,
+    });
+
+    let report = recovery
+        .reconcile()
+        .await
+        .context("boot-time task recovery failed")?;
+
+    info!(
+        total_snapshots = report.total_snapshots,
+        restored_records = report.restored_records,
+        failed_recoveries = report.failed_recoveries,
+        "Boot-time task recovery completed"
+    );
+
+    Ok(())
 }
 
 fn init_bot_state() -> Arc<InMemStorage<State>> {
@@ -360,4 +388,203 @@ async fn handle_agent_confirmation(
         error!("Agent confirmation handler error: {}", e);
     }
     respond(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_startup_recovery;
+    use async_trait::async_trait;
+    use oxide_agent_core::agent::{AgentMemory, SessionId, TaskMetadata, TaskSnapshot, TaskState};
+    use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
+    use oxide_agent_runtime::TaskRegistry;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecoveryStorage {
+        snapshots: Mutex<HashMap<oxide_agent_core::agent::TaskId, TaskSnapshot>>,
+    }
+
+    #[async_trait]
+    impl StorageProvider for RecoveryStorage {
+        async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
+            Ok(UserConfig::default())
+        }
+
+        async fn update_user_config(
+            &self,
+            _user_id: i64,
+            _config: UserConfig,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn update_user_prompt(
+            &self,
+            _user_id: i64,
+            _prompt: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_user_model(
+            &self,
+            _user_id: i64,
+            _model_name: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_user_state(
+            &self,
+            _user_id: i64,
+            _state: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn save_message(
+            &self,
+            _user_id: i64,
+            _role: String,
+            _content: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_chat_history(
+            &self,
+            _user_id: i64,
+            _limit: usize,
+        ) -> Result<Vec<Message>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_message_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+            _role: String,
+            _content: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_chat_history_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+            _limit: usize,
+        ) -> Result<Vec<Message>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn clear_chat_history_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_agent_memory(
+            &self,
+            _user_id: i64,
+            _memory: &AgentMemory,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn load_agent_memory(
+            &self,
+            _user_id: i64,
+        ) -> Result<Option<AgentMemory>, StorageError> {
+            Ok(None)
+        }
+
+        async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn clear_all_context(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_task_snapshot(&self, snapshot: &TaskSnapshot) -> Result<(), StorageError> {
+            self.snapshots
+                .lock()
+                .await
+                .insert(snapshot.metadata.id, snapshot.clone());
+            Ok(())
+        }
+
+        async fn load_task_snapshot(
+            &self,
+            task_id: oxide_agent_core::agent::TaskId,
+        ) -> Result<Option<TaskSnapshot>, StorageError> {
+            Ok(self.snapshots.lock().await.get(&task_id).cloned())
+        }
+
+        async fn list_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StorageError> {
+            Ok(self.snapshots.lock().await.values().cloned().collect())
+        }
+
+        async fn check_connection(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn task_recovery_runs_before_dispatcher_starts_and_retains_registry_entries() {
+        let storage = Arc::new(RecoveryStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+
+        let mut snapshot = TaskSnapshot::new(
+            TaskMetadata::new(),
+            SessionId::from(7),
+            "running".to_string(),
+            1,
+        );
+        snapshot.metadata.state = TaskState::Running;
+        let task_id = snapshot.metadata.id;
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let result = run_startup_recovery(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(snapshot.is_ok());
+        let snapshot = snapshot.ok().flatten();
+        assert!(matches!(
+            snapshot,
+            Some(ref snapshot) if snapshot.metadata.state == TaskState::Failed
+        ));
+
+        let recovered_record = task_registry.get(&task_id).await;
+        assert!(matches!(
+            recovered_record,
+            Some(ref record) if record.metadata.state == TaskState::Failed
+        ));
+    }
 }

@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load settings
     let settings = init_settings();
 
-    run_bot(settings).await;
+    run_bot(settings).await?;
 
     Ok(())
 }

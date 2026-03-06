@@ -124,6 +124,38 @@ impl TaskRegistry {
         record
     }
 
+    /// Restore a persisted task record into the runtime registry without emitting new events.
+    pub async fn restore(
+        &self,
+        metadata: TaskMetadata,
+        session_id: SessionId,
+        last_event_sequence: u64,
+    ) -> TaskRecord {
+        let task_id = metadata.id;
+        let entry = TaskEntry {
+            metadata,
+            last_event_sequence,
+            session_id,
+            cancellation_token: Arc::new(CancellationToken::new()),
+        };
+        let record = TaskRecord::from(entry.clone());
+
+        let mut state = self.state.write().await;
+        state.tasks.insert(task_id, entry);
+        let mut task_ids = state
+            .session_tasks
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_default();
+        if !task_ids.contains(&task_id) {
+            task_ids.push(task_id);
+        }
+        sort_task_ids(&mut task_ids, &state.tasks);
+        state.session_tasks.insert(session_id, task_ids);
+
+        record
+    }
+
     /// Get a task record by task identifier.
     pub async fn get(&self, task_id: &TaskId) -> Option<TaskRecord> {
         let state = self.state.read().await;
@@ -256,6 +288,22 @@ fn sort_task_records(records: &mut [TaskRecord]) {
                 let right_id = right.metadata.id.as_uuid();
                 left_id.cmp(&right_id)
             })
+    });
+}
+
+fn sort_task_ids(task_ids: &mut [TaskId], tasks: &HashMap<TaskId, TaskEntry>) {
+    task_ids.sort_by(|left, right| {
+        let left_entry = tasks.get(left);
+        let right_entry = tasks.get(right);
+
+        match (left_entry, right_entry) {
+            (Some(left_entry), Some(right_entry)) => left_entry
+                .metadata
+                .created_at
+                .cmp(&right_entry.metadata.created_at)
+                .then_with(|| left.as_uuid().cmp(&right.as_uuid())),
+            _ => left.as_uuid().cmp(&right.as_uuid()),
+        }
     });
 }
 

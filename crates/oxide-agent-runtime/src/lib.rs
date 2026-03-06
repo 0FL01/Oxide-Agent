@@ -11,6 +11,8 @@ pub mod session_registry;
 pub mod task_events;
 /// Detached runtime executor for long-running tasks.
 pub mod task_executor;
+/// Boot-time persisted task reconciliation.
+pub mod task_recovery;
 /// Task registry and lifecycle utilities.
 pub mod task_registry;
 /// Detached background worker lifecycle utilities.
@@ -27,5 +29,6 @@ pub use task_executor::{
     DetachedTaskSubmission, TaskExecutionBackend, TaskExecutionRequest, TaskExecutor,
     TaskExecutorError, TaskExecutorOptions,
 };
+pub use task_recovery::{TaskRecovery, TaskRecoveryError, TaskRecoveryOptions, TaskRecoveryReport};
 pub use task_registry::{TaskRecord, TaskRegistry, TaskRegistryError};
 pub use worker_manager::{WorkerManager, WorkerManagerError};

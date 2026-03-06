@@ -146,7 +146,12 @@ impl TaskExecutor {
         };
 
         if let Err(error) = self
-            .persist_snapshot(&record.metadata, &submission.task, CREATED_EVENT_SEQUENCE)
+            .persist_snapshot(
+                &record.metadata,
+                record.session_id,
+                &submission.task,
+                CREATED_EVENT_SEQUENCE,
+            )
             .await
         {
             self.task_registry.remove(&task_id).await;
@@ -185,7 +190,7 @@ impl TaskExecutor {
             })
             .await
         {
-            self.persist_pre_start_failure(&record.metadata, &submission.task)
+            self.persist_pre_start_failure(&record.metadata, record.session_id, &submission.task)
                 .await;
             return Err(error.into());
         }
@@ -196,16 +201,27 @@ impl TaskExecutor {
     async fn persist_snapshot(
         &self,
         metadata: &TaskMetadata,
+        session_id: SessionId,
         task: &str,
         last_event_sequence: u64,
     ) -> Result<(), TaskExecutorError> {
-        let snapshot = TaskSnapshot::new(metadata.clone(), task.to_string(), last_event_sequence);
+        let snapshot = TaskSnapshot::new(
+            metadata.clone(),
+            session_id,
+            task.to_string(),
+            last_event_sequence,
+        );
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
     }
 
-    async fn persist_pre_start_failure(&self, metadata: &TaskMetadata, task: &str) {
-        let snapshot = pre_start_failure_snapshot(metadata, task);
+    async fn persist_pre_start_failure(
+        &self,
+        metadata: &TaskMetadata,
+        session_id: SessionId,
+        task: &str,
+    ) {
+        let snapshot = pre_start_failure_snapshot(metadata, session_id, task);
 
         if let Err(error) = self.storage.save_task_snapshot(&snapshot).await {
             error!(
@@ -275,7 +291,12 @@ impl DetachedTaskRun {
         metadata: &TaskMetadata,
         last_event_sequence: u64,
     ) -> Result<(), TaskExecutorError> {
-        let snapshot = TaskSnapshot::new(metadata.clone(), self.task.clone(), last_event_sequence);
+        let snapshot = TaskSnapshot::new(
+            metadata.clone(),
+            self.session_id,
+            self.task.clone(),
+            last_event_sequence,
+        );
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
     }
@@ -343,9 +364,18 @@ fn failed_metadata(metadata: &TaskMetadata) -> TaskMetadata {
     failed_metadata
 }
 
-fn pre_start_failure_snapshot(metadata: &TaskMetadata, task: &str) -> TaskSnapshot {
+fn pre_start_failure_snapshot(
+    metadata: &TaskMetadata,
+    session_id: SessionId,
+    task: &str,
+) -> TaskSnapshot {
     let failed_metadata = failed_metadata(metadata);
-    let mut snapshot = TaskSnapshot::new(failed_metadata, task.to_string(), CREATED_EVENT_SEQUENCE);
+    let mut snapshot = TaskSnapshot::new(
+        failed_metadata,
+        session_id,
+        task.to_string(),
+        CREATED_EVENT_SEQUENCE,
+    );
     snapshot.metadata.updated_at = snapshot.checkpoint.persisted_at;
     snapshot
 }
@@ -615,6 +645,18 @@ mod tests {
             task_id: TaskId,
         ) -> Result<Option<TaskSnapshot>, StorageError> {
             Ok(self.snapshots.lock().await.get(&task_id).cloned())
+        }
+
+        async fn list_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StorageError> {
+            let snapshots = self.snapshots.lock().await;
+            let mut values = snapshots.values().cloned().collect::<Vec<_>>();
+            values.sort_by(|left, right| {
+                left.metadata
+                    .created_at
+                    .cmp(&right.metadata.created_at)
+                    .then_with(|| left.metadata.id.as_uuid().cmp(&right.metadata.id.as_uuid()))
+            });
+            Ok(values)
         }
 
         async fn check_connection(&self) -> Result<(), String> {

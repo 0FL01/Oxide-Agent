@@ -1,5 +1,6 @@
 //! Domain types for persistent agent tasks.
 
+use crate::agent::SessionId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -156,7 +157,7 @@ impl Default for TaskMetadata {
 }
 
 /// Schema version for persisted task snapshots.
-pub const TASK_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const TASK_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 /// Schema version for persisted task event logs.
 pub const TASK_EVENT_LOG_SCHEMA_VERSION: u32 = 1;
@@ -194,23 +195,36 @@ pub struct TaskSnapshot {
     pub schema_version: u32,
     /// Stable metadata for the task instance.
     pub metadata: TaskMetadata,
+    /// Owning session persisted for deterministic runtime recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
     /// Transport-agnostic task input payload.
     pub task: String,
     /// Latest persisted recovery checkpoint.
     pub checkpoint: TaskCheckpoint,
+    /// Optional recovery note written when the runtime cannot safely resume execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_note: Option<String>,
 }
 
 impl TaskSnapshot {
     /// Create a new persisted snapshot for a task.
     #[must_use]
-    pub fn new(metadata: TaskMetadata, task: String, last_event_sequence: u64) -> Self {
+    pub fn new(
+        metadata: TaskMetadata,
+        session_id: SessionId,
+        task: String,
+        last_event_sequence: u64,
+    ) -> Self {
         let checkpoint = TaskCheckpoint::new(metadata.state, last_event_sequence);
 
         Self {
             schema_version: TASK_SNAPSHOT_SCHEMA_VERSION,
             metadata,
+            session_id: Some(session_id),
             task,
             checkpoint,
+            recovery_note: None,
         }
     }
 }
@@ -287,6 +301,7 @@ mod tests {
         TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot, TaskState,
         TaskStateTransitionError, TASK_EVENT_LOG_SCHEMA_VERSION, TASK_SNAPSHOT_SCHEMA_VERSION,
     };
+    use crate::agent::SessionId;
     use chrono::Utc;
 
     #[test]
@@ -382,7 +397,9 @@ mod tests {
     #[test]
     fn task_snapshot_roundtrip_preserves_recovery_contract() {
         let metadata = TaskMetadata::new();
-        let snapshot = TaskSnapshot::new(metadata.clone(), "rebuild index".to_string(), 3);
+        let session_id = SessionId::from(42);
+        let snapshot =
+            TaskSnapshot::new(metadata.clone(), session_id, "rebuild index".to_string(), 3);
 
         let json = serde_json::to_string(&snapshot);
         assert!(json.is_ok());
@@ -394,9 +411,11 @@ mod tests {
         let parsed = parsed.unwrap_or_else(|_| snapshot.clone());
         assert_eq!(parsed.schema_version, TASK_SNAPSHOT_SCHEMA_VERSION);
         assert_eq!(parsed.metadata, metadata);
+        assert_eq!(parsed.session_id, Some(session_id));
         assert_eq!(parsed.task, "rebuild index");
         assert_eq!(parsed.checkpoint.state, TaskState::Pending);
         assert_eq!(parsed.checkpoint.last_event_sequence, 3);
+        assert_eq!(parsed.recovery_note, None);
     }
 
     #[test]
