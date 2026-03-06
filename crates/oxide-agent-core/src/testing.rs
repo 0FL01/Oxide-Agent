@@ -54,6 +54,9 @@ pub fn mock_llm_simple(response_text: &'static str) -> crate::llm::MockLlmProvid
 /// - `clear_chat_history` / `clear_agent_memory` / `clear_all_context` return `Ok(())`
 /// - `save_agent_memory` returns `Ok(())`
 /// - `load_agent_memory` returns `Ok(None)`
+/// - `save_task_snapshot` / `append_task_event` return `Ok(())`
+/// - `load_task_snapshot` returns `Ok(None)`
+/// - `load_task_events` returns an empty event log
 /// - `check_connection` returns `Ok(())`
 ///
 /// # Example
@@ -108,6 +111,14 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
     mock.expect_clear_agent_memory().returning(|_| Ok(()));
 
     mock.expect_clear_all_context().returning(|_| Ok(()));
+
+    mock.expect_save_task_snapshot().returning(|_| Ok(()));
+
+    mock.expect_load_task_snapshot().returning(|_| Ok(None));
+
+    mock.expect_append_task_event().returning(|_, _| Ok(()));
+
+    mock.expect_load_task_events().returning(|_| Ok(Vec::new()));
 
     mock.expect_check_connection().returning(|| Ok(()));
 

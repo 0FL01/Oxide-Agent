@@ -155,6 +155,115 @@ impl Default for TaskMetadata {
     }
 }
 
+/// Schema version for persisted task snapshots.
+pub const TASK_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+/// Schema version for persisted task event logs.
+pub const TASK_EVENT_LOG_SCHEMA_VERSION: u32 = 1;
+
+/// Persisted checkpoint used for restart-safe task recovery.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskCheckpoint {
+    /// Schema version for checkpoint compatibility.
+    pub schema_version: u32,
+    /// Current lifecycle state persisted at checkpoint time.
+    pub state: TaskState,
+    /// Latest task event sequence included in the checkpoint.
+    pub last_event_sequence: u64,
+    /// Timestamp when the checkpoint was written.
+    pub persisted_at: DateTime<Utc>,
+}
+
+impl TaskCheckpoint {
+    /// Create a new checkpoint for the current task state.
+    #[must_use]
+    pub fn new(state: TaskState, last_event_sequence: u64) -> Self {
+        Self {
+            schema_version: TASK_SNAPSHOT_SCHEMA_VERSION,
+            state,
+            last_event_sequence,
+            persisted_at: Utc::now(),
+        }
+    }
+}
+
+/// Restart-safe persisted task snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSnapshot {
+    /// Schema version for snapshot compatibility.
+    pub schema_version: u32,
+    /// Stable metadata for the task instance.
+    pub metadata: TaskMetadata,
+    /// Transport-agnostic task input payload.
+    pub task: String,
+    /// Latest persisted recovery checkpoint.
+    pub checkpoint: TaskCheckpoint,
+}
+
+impl TaskSnapshot {
+    /// Create a new persisted snapshot for a task.
+    #[must_use]
+    pub fn new(metadata: TaskMetadata, task: String, last_event_sequence: u64) -> Self {
+        let checkpoint = TaskCheckpoint::new(metadata.state, last_event_sequence);
+
+        Self {
+            schema_version: TASK_SNAPSHOT_SCHEMA_VERSION,
+            metadata,
+            task,
+            checkpoint,
+        }
+    }
+}
+
+/// Baseline persisted task event entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskEvent {
+    /// Event log schema version.
+    pub schema_version: u32,
+    /// Monotonic sequence number within the task event log.
+    pub sequence: u64,
+    /// Event classification for replay and audit.
+    pub kind: TaskEventKind,
+    /// Task state after this event is applied.
+    pub state: TaskState,
+    /// Transport-agnostic event details.
+    pub message: Option<String>,
+    /// Timestamp when the event was recorded.
+    pub recorded_at: DateTime<Utc>,
+}
+
+impl TaskEvent {
+    /// Create a new task event.
+    #[must_use]
+    pub fn new(
+        sequence: u64,
+        kind: TaskEventKind,
+        state: TaskState,
+        message: Option<String>,
+    ) -> Self {
+        Self {
+            schema_version: TASK_EVENT_LOG_SCHEMA_VERSION,
+            sequence,
+            kind,
+            state,
+            message,
+            recorded_at: Utc::now(),
+        }
+    }
+}
+
+/// Baseline task event kinds persisted for recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEventKind {
+    /// Task registration has been persisted.
+    Created,
+    /// Task lifecycle state changed.
+    StateChanged,
+    /// Recovery checkpoint was persisted.
+    CheckpointSaved,
+}
+
 /// Errors returned by task state validation.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TaskStateTransitionError {
@@ -170,7 +279,10 @@ pub enum TaskStateTransitionError {
 
 #[cfg(test)]
 mod tests {
-    use super::{TaskMetadata, TaskState, TaskStateTransitionError};
+    use super::{
+        TaskEvent, TaskEventKind, TaskMetadata, TaskSnapshot, TaskState, TaskStateTransitionError,
+        TASK_EVENT_LOG_SCHEMA_VERSION, TASK_SNAPSHOT_SCHEMA_VERSION,
+    };
 
     #[test]
     fn task_state_reports_terminal_semantics() {
@@ -260,5 +372,49 @@ mod tests {
                 to: TaskState::Running,
             })
         );
+    }
+
+    #[test]
+    fn task_snapshot_roundtrip_preserves_recovery_contract() {
+        let metadata = TaskMetadata::new();
+        let snapshot = TaskSnapshot::new(metadata.clone(), "rebuild index".to_string(), 3);
+
+        let json = serde_json::to_string(&snapshot);
+        assert!(json.is_ok());
+
+        let parsed: Result<TaskSnapshot, serde_json::Error> =
+            serde_json::from_str(&json.unwrap_or_default());
+        assert!(parsed.is_ok());
+
+        let parsed = parsed.unwrap_or_else(|_| snapshot.clone());
+        assert_eq!(parsed.schema_version, TASK_SNAPSHOT_SCHEMA_VERSION);
+        assert_eq!(parsed.metadata, metadata);
+        assert_eq!(parsed.task, "rebuild index");
+        assert_eq!(parsed.checkpoint.state, TaskState::Pending);
+        assert_eq!(parsed.checkpoint.last_event_sequence, 3);
+    }
+
+    #[test]
+    fn task_event_roundtrip_preserves_baseline_event_log_contract() {
+        let event = TaskEvent::new(
+            7,
+            TaskEventKind::StateChanged,
+            TaskState::Running,
+            Some("worker lease renewed".to_string()),
+        );
+
+        let json = serde_json::to_string(&event);
+        assert!(json.is_ok());
+
+        let parsed: Result<TaskEvent, serde_json::Error> =
+            serde_json::from_str(&json.unwrap_or_default());
+        assert!(parsed.is_ok());
+
+        let parsed = parsed.unwrap_or(event.clone());
+        assert_eq!(parsed.schema_version, TASK_EVENT_LOG_SCHEMA_VERSION);
+        assert_eq!(parsed.sequence, 7);
+        assert_eq!(parsed.kind, TaskEventKind::StateChanged);
+        assert_eq!(parsed.state, TaskState::Running);
+        assert_eq!(parsed.message.as_deref(), Some("worker lease renewed"));
     }
 }

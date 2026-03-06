@@ -67,4 +67,7 @@ pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{AgentSession, AgentStatus};
 pub use skills::SkillRegistry;
-pub use task::{TaskId, TaskMetadata, TaskState, TaskStateTransitionError};
+pub use task::{
+    TaskCheckpoint, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot, TaskState,
+    TaskStateTransitionError,
+};
