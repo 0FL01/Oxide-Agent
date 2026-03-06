@@ -1,12 +1,14 @@
 //! Detached runtime executor for long-running agent tasks.
 
 use crate::{
-    task_registry::{TaskRecord, TaskRegistry, TaskRegistryError},
+    task_registry::{TaskCancellation, TaskRecord, TaskRegistry, TaskRegistryError},
     worker_manager::{WorkerManager, WorkerManagerError},
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use oxide_agent_core::agent::{SessionId, TaskId, TaskMetadata, TaskSnapshot, TaskState};
+use oxide_agent_core::agent::{
+    SessionId, TaskId, TaskMetadata, TaskSnapshot, TaskState, TaskStateTransitionError,
+};
 use oxide_agent_core::storage::{StorageError, StorageProvider};
 use std::fmt;
 use std::sync::Arc;
@@ -14,8 +16,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 const CREATED_EVENT_SEQUENCE: u64 = 1;
-const RUNNING_EVENT_SEQUENCE: u64 = 2;
-const TERMINAL_EVENT_SEQUENCE: u64 = 3;
 
 /// Options required to construct a detached task executor.
 pub struct TaskExecutorOptions {
@@ -67,6 +67,8 @@ pub enum TaskExecutorError {
     Storage(StorageError),
     /// Task registry did not contain a cancellation token for a created task.
     MissingCancellationToken(TaskId),
+    /// Task snapshot for a runtime-owned task was missing during persistence.
+    MissingTaskSnapshot(TaskId),
 }
 
 impl fmt::Display for TaskExecutorError {
@@ -77,6 +79,9 @@ impl fmt::Display for TaskExecutorError {
             Self::Storage(error) => write!(f, "{error}"),
             Self::MissingCancellationToken(task_id) => {
                 write!(f, "missing cancellation token for task: {task_id}")
+            }
+            Self::MissingTaskSnapshot(task_id) => {
+                write!(f, "missing task snapshot for task: {task_id}")
             }
         }
     }
@@ -198,6 +203,39 @@ impl TaskExecutor {
         Ok(record)
     }
 
+    /// Cancel a runtime-owned task by task identifier.
+    pub async fn cancel_task(&self, task_id: &TaskId) -> Result<TaskRecord, TaskExecutorError> {
+        match self.task_registry.cancel(task_id).await? {
+            TaskCancellation::Cancelled(update) => {
+                self.persist_cancelled_snapshot(&update.record, update.event_sequence)
+                    .await?;
+                Ok(update.record)
+            }
+            TaskCancellation::AlreadyTerminal(update) => {
+                if update.record.metadata.state == TaskState::Cancelled {
+                    self.persist_cancelled_snapshot(&update.record, update.event_sequence)
+                        .await?;
+                }
+                Ok(update.record)
+            }
+        }
+    }
+
+    async fn persist_cancelled_snapshot(
+        &self,
+        record: &TaskRecord,
+        last_event_sequence: u64,
+    ) -> Result<(), TaskExecutorError> {
+        let task = self.load_task_payload(record.metadata.id).await?;
+        self.persist_snapshot(
+            &record.metadata,
+            record.session_id,
+            &task,
+            last_event_sequence,
+        )
+        .await
+    }
+
     async fn persist_snapshot(
         &self,
         metadata: &TaskMetadata,
@@ -213,6 +251,15 @@ impl TaskExecutor {
         );
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
+    }
+
+    async fn load_task_payload(&self, task_id: TaskId) -> Result<String, TaskExecutorError> {
+        let snapshot = self
+            .storage
+            .load_task_snapshot(task_id)
+            .await?
+            .ok_or(TaskExecutorError::MissingTaskSnapshot(task_id))?;
+        Ok(snapshot.task)
     }
 
     async fn persist_pre_start_failure(
@@ -250,13 +297,21 @@ impl DetachedTaskRun {
     where
         B: TaskExecutionBackend,
     {
-        let running_record = self
+        let running_update = match self
             .task_registry
             .update_state(&self.task_id, TaskState::Running)
-            .await?;
+            .await
+        {
+            Ok(update) => update,
+            Err(error) if cancellation_already_won(&error) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
 
         if let Err(error) = self
-            .persist_snapshot(&running_record.metadata, RUNNING_EVENT_SEQUENCE)
+            .persist_snapshot(
+                &running_update.record.metadata,
+                running_update.event_sequence,
+            )
             .await
         {
             self.persist_failed_start().await;
@@ -272,18 +327,16 @@ impl DetachedTaskRun {
             })
             .await;
 
-        let terminal_state = match execution_result {
-            Ok(()) => TaskState::Completed,
-            Err(_) if self.cancellation_token.is_cancelled() => TaskState::Cancelled,
-            Err(_) => TaskState::Failed,
+        let terminal_state = if self.cancellation_token.is_cancelled() {
+            TaskState::Cancelled
+        } else {
+            match execution_result {
+                Ok(()) => TaskState::Completed,
+                Err(_) => TaskState::Failed,
+            }
         };
 
-        let terminal_record = self
-            .task_registry
-            .update_state(&self.task_id, terminal_state)
-            .await?;
-        self.persist_snapshot(&terminal_record.metadata, TERMINAL_EVENT_SEQUENCE)
-            .await
+        self.persist_terminal_state(terminal_state).await
     }
 
     async fn persist_snapshot(
@@ -307,9 +360,9 @@ impl DetachedTaskRun {
             .update_state(&self.task_id, TaskState::Failed)
             .await
         {
-            Ok(record) => {
+            Ok(update) => {
                 if let Err(error) = self
-                    .persist_snapshot(&record.metadata, TERMINAL_EVENT_SEQUENCE)
+                    .persist_snapshot(&update.record.metadata, update.event_sequence)
                     .await
                 {
                     error!(
@@ -330,32 +383,52 @@ impl DetachedTaskRun {
     }
 
     async fn persist_panic_failure(&self) {
-        match self
-            .task_registry
-            .update_state(&self.task_id, TaskState::Failed)
-            .await
-        {
-            Ok(record) => {
-                if let Err(error) = self
-                    .persist_snapshot(&record.metadata, TERMINAL_EVENT_SEQUENCE)
-                    .await
-                {
-                    error!(
-                        task_id = %self.task_id,
-                        error = %error,
-                        "Failed to persist terminal snapshot after backend panic"
-                    );
-                }
-            }
-            Err(error) => {
-                error!(
-                    task_id = %self.task_id,
-                    error = %error,
-                    "Failed to mark task as failed after backend panic"
-                );
-            }
+        if let Err(error) = self.persist_terminal_state(TaskState::Failed).await {
+            error!(
+                task_id = %self.task_id,
+                error = %error,
+                "Failed to persist terminal snapshot after backend panic"
+            );
         }
     }
+
+    async fn persist_terminal_state(
+        &self,
+        terminal_state: TaskState,
+    ) -> Result<(), TaskExecutorError> {
+        match self
+            .task_registry
+            .update_state(&self.task_id, terminal_state)
+            .await
+        {
+            Ok(update) => {
+                self.persist_snapshot(&update.record.metadata, update.event_sequence)
+                    .await
+            }
+            Err(error) if terminal_transition_is_already_committed(&error) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+fn cancellation_already_won(error: &TaskRegistryError) -> bool {
+    matches!(
+        error,
+        TaskRegistryError::InvalidStateTransition(TaskStateTransitionError::InvalidTransition {
+            from: TaskState::Cancelled,
+            to: TaskState::Running,
+        })
+    )
+}
+
+fn terminal_transition_is_already_committed(error: &TaskRegistryError) -> bool {
+    matches!(
+        error,
+        TaskRegistryError::InvalidStateTransition(TaskStateTransitionError::InvalidTransition {
+            from,
+            ..
+        }) if from.is_terminal()
+    )
 }
 
 fn failed_metadata(metadata: &TaskMetadata) -> TaskMetadata {
@@ -457,6 +530,7 @@ mod tests {
         snapshots: Mutex<HashMap<TaskId, TaskSnapshot>>,
         snapshot_history: Mutex<HashMap<TaskId, Vec<TaskSnapshot>>>,
         fail_save_calls: Mutex<Vec<usize>>,
+        fail_save_states: Mutex<Vec<TaskState>>,
         save_calls: Mutex<usize>,
     }
 
@@ -466,6 +540,7 @@ mod tests {
                 snapshots: Mutex::new(HashMap::new()),
                 snapshot_history: Mutex::new(HashMap::new()),
                 fail_save_calls: Mutex::new(vec![call]),
+                fail_save_states: Mutex::new(Vec::new()),
                 save_calls: Mutex::new(0),
             }
         }
@@ -475,6 +550,17 @@ mod tests {
                 snapshots: Mutex::new(HashMap::new()),
                 snapshot_history: Mutex::new(HashMap::new()),
                 fail_save_calls: Mutex::new(calls),
+                fail_save_states: Mutex::new(Vec::new()),
+                save_calls: Mutex::new(0),
+            }
+        }
+
+        fn fail_on_save_state(state: TaskState) -> Self {
+            Self {
+                snapshots: Mutex::new(HashMap::new()),
+                snapshot_history: Mutex::new(HashMap::new()),
+                fail_save_calls: Mutex::new(Vec::new()),
+                fail_save_states: Mutex::new(vec![state]),
                 save_calls: Mutex::new(0),
             }
         }
@@ -608,7 +694,7 @@ mod tests {
                 *save_calls
             };
 
-            let should_fail = {
+            let should_fail_call = {
                 let mut fail_save_calls = self.fail_save_calls.lock().await;
                 if let Some(index) = fail_save_calls
                     .iter()
@@ -621,7 +707,20 @@ mod tests {
                 }
             };
 
-            if should_fail {
+            let should_fail_state = {
+                let mut fail_save_states = self.fail_save_states.lock().await;
+                if let Some(index) = fail_save_states
+                    .iter()
+                    .position(|candidate| *candidate == snapshot.metadata.state)
+                {
+                    fail_save_states.remove(index);
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if should_fail_call || should_fail_state {
                 return Err(StorageError::Unsupported(format!(
                     "simulated snapshot save failure on call {call}"
                 )));
@@ -794,8 +893,11 @@ mod tests {
         };
 
         backend.wait_started().await;
-        let cancelled = registry.cancel(&task_id).await;
-        assert!(cancelled, "task cancellation was not requested");
+        let cancelled = executor.cancel_task(&task_id).await;
+        assert!(matches!(
+            cancelled,
+            Ok(record) if record.metadata.state == TaskState::Cancelled
+        ));
         backend.release();
 
         wait_for_state(&registry, task_id, TaskState::Cancelled).await;
@@ -812,6 +914,207 @@ mod tests {
         };
         assert_eq!(cancelled_snapshot.metadata.state, TaskState::Cancelled);
         assert_eq!(cancelled_snapshot.checkpoint.state, TaskState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancellation_persists_terminal_snapshot_when_requested_before_worker_starts() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+
+        let record = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(101),
+                    task: "cancel before start".to_string(),
+                },
+                Arc::new(ControlledBackend::new(BackendOutcome::Complete)),
+            )
+            .await;
+        assert!(record.is_ok(), "submit failed: {record:?}");
+        let task_id = match record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        let cancelled = executor.cancel_task(&task_id).await;
+        assert!(matches!(
+            cancelled,
+            Ok(record) if record.metadata.state == TaskState::Cancelled
+        ));
+
+        wait_for_state(&registry, task_id, TaskState::Cancelled).await;
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(snapshot.is_ok(), "failed to load cancelled snapshot");
+        let snapshot = match snapshot {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => panic!("cancelled snapshot missing"),
+            Err(error) => panic!("failed to load cancelled snapshot: {error}"),
+        };
+        assert_eq!(snapshot.metadata.state, TaskState::Cancelled);
+        assert_eq!(snapshot.checkpoint.state, TaskState::Cancelled);
+        assert_eq!(snapshot.checkpoint.last_event_sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn cancellation_returns_completed_record_when_completion_wins_race() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+
+        let record = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(102),
+                    task: "complete first".to_string(),
+                },
+                Arc::clone(&backend),
+            )
+            .await;
+        assert!(record.is_ok(), "submit failed: {record:?}");
+        let task_id = match record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        backend.wait_started().await;
+        backend.release();
+        wait_for_state(&registry, task_id, TaskState::Completed).await;
+
+        let cancelled = executor.cancel_task(&task_id).await;
+        assert!(matches!(
+            cancelled,
+            Ok(record) if record.metadata.state == TaskState::Completed
+        ));
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(snapshot.is_ok(), "failed to load completed snapshot");
+        let snapshot = match snapshot {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => panic!("completed snapshot missing"),
+            Err(error) => panic!("failed to load completed snapshot: {error}"),
+        };
+        assert_eq!(snapshot.metadata.state, TaskState::Completed);
+        assert_eq!(snapshot.checkpoint.state, TaskState::Completed);
+    }
+
+    #[tokio::test]
+    async fn cancellation_retries_persist_cancelled_snapshot_after_transient_failure() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::fail_on_save_state(TaskState::Cancelled));
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+
+        let record = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(103),
+                    task: "retry cancelled snapshot".to_string(),
+                },
+                Arc::new(ControlledBackend::new(BackendOutcome::Complete)),
+            )
+            .await;
+        assert!(record.is_ok(), "submit failed: {record:?}");
+        let task_id = match record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        let first_cancel = executor.cancel_task(&task_id).await;
+        assert!(matches!(first_cancel, Err(TaskExecutorError::Storage(_))));
+        wait_for_state(&registry, task_id, TaskState::Cancelled).await;
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(
+            snapshot.is_ok(),
+            "failed to load snapshot after failed cancel"
+        );
+        let snapshot = match snapshot {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => panic!("snapshot missing after failed cancel"),
+            Err(error) => panic!("failed to load snapshot after failed cancel: {error}"),
+        };
+        assert_eq!(snapshot.metadata.state, TaskState::Pending);
+
+        let retry_cancel = executor.cancel_task(&task_id).await;
+        assert!(matches!(
+            retry_cancel,
+            Ok(record) if record.metadata.state == TaskState::Cancelled
+        ));
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(
+            snapshot.is_ok(),
+            "failed to load repaired cancelled snapshot"
+        );
+        let snapshot = match snapshot {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => panic!("repaired cancelled snapshot missing"),
+            Err(error) => panic!("failed to load repaired cancelled snapshot: {error}"),
+        };
+        assert_eq!(snapshot.metadata.state, TaskState::Cancelled);
+        assert_eq!(snapshot.checkpoint.state, TaskState::Cancelled);
+        assert_eq!(snapshot.checkpoint.last_event_sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn completion_wins_late_cancellation_without_cancelling_runtime_token() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+
+        let record = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(104),
+                    task: "late completion wins".to_string(),
+                },
+                Arc::clone(&backend),
+            )
+            .await;
+        assert!(record.is_ok(), "submit failed: {record:?}");
+        let task_id = match record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        backend.wait_started().await;
+        backend.release();
+        wait_for_state(&registry, task_id, TaskState::Completed).await;
+
+        let token = registry.get_cancellation_token(&task_id).await;
+        assert!(matches!(token, Some(ref token) if !token.is_cancelled()));
+
+        let cancelled = executor.cancel_task(&task_id).await;
+        assert!(matches!(
+            cancelled,
+            Ok(record) if record.metadata.state == TaskState::Completed
+        ));
+
+        let token = registry.get_cancellation_token(&task_id).await;
+        assert!(matches!(token, Some(ref token) if !token.is_cancelled()));
     }
 
     #[tokio::test]

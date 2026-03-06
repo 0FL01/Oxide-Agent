@@ -33,11 +33,38 @@ pub struct TaskRecord {
     pub session_id: SessionId,
 }
 
+/// Result of a task state transition together with its event sequence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskStateUpdate {
+    /// Updated task record after the transition.
+    pub record: TaskRecord,
+    /// Event sequence assigned to the published lifecycle event.
+    pub event_sequence: u64,
+}
+
+/// Outcome of a runtime task cancellation request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskCancellation {
+    /// Cancellation transitioned the task into a terminal cancelled state.
+    Cancelled(TaskStateUpdate),
+    /// Cancellation was requested after the task already reached a terminal state.
+    AlreadyTerminal(TaskStateUpdate),
+}
+
 impl From<TaskEntry> for TaskRecord {
     fn from(value: TaskEntry) -> Self {
         Self {
             metadata: value.metadata,
             session_id: value.session_id,
+        }
+    }
+}
+
+impl TaskStateUpdate {
+    fn from_entry(entry: &TaskEntry) -> Self {
+        Self {
+            record: TaskRecord::from(entry.clone()),
+            event_sequence: entry.last_event_sequence,
         }
     }
 }
@@ -201,8 +228,8 @@ impl TaskRegistry {
         &self,
         task_id: &TaskId,
         next_state: TaskState,
-    ) -> Result<TaskRecord, TaskRegistryError> {
-        let (record, event) = {
+    ) -> Result<TaskStateUpdate, TaskRegistryError> {
+        let (update, event) = {
             let mut state = self.state.write().await;
             let entry = state
                 .tasks
@@ -219,27 +246,53 @@ impl TaskRegistry {
                 None,
             );
 
-            (TaskRecord::from(entry.clone()), event)
+            (TaskStateUpdate::from_entry(entry), event)
         };
 
         self.publisher.publish(event).await;
 
-        Ok(record)
+        Ok(update)
     }
 
     /// Request cancellation for a task.
-    pub async fn cancel(&self, task_id: &TaskId) -> bool {
-        let state = self.state.read().await;
-        if let Some(token) = state
-            .tasks
-            .get(task_id)
-            .map(|entry| &entry.cancellation_token)
-        {
-            token.cancel();
-            true
-        } else {
-            false
+    pub async fn cancel(&self, task_id: &TaskId) -> Result<TaskCancellation, TaskRegistryError> {
+        let (outcome, event) = {
+            let mut state = self.state.write().await;
+            let entry = state
+                .tasks
+                .get_mut(task_id)
+                .ok_or(TaskRegistryError::TaskNotFound(*task_id))?;
+
+            if entry.metadata.state.is_terminal() {
+                (
+                    TaskCancellation::AlreadyTerminal(TaskStateUpdate::from_entry(entry)),
+                    None,
+                )
+            } else {
+                entry.cancellation_token.cancel();
+                entry.metadata.transition_to(TaskState::Cancelled)?;
+                entry.last_event_sequence += 1;
+
+                let event = TaskEvent::new(
+                    entry.metadata.id,
+                    entry.last_event_sequence,
+                    TaskEventKind::StateChanged,
+                    entry.metadata.state,
+                    None,
+                );
+
+                (
+                    TaskCancellation::Cancelled(TaskStateUpdate::from_entry(entry)),
+                    Some(event),
+                )
+            }
+        };
+
+        if let Some(event) = event {
+            self.publisher.publish(event).await;
         }
+
+        Ok(outcome)
     }
 
     /// Renew the cancellation token for a task.
@@ -309,7 +362,7 @@ fn sort_task_ids(task_ids: &mut [TaskId], tasks: &HashMap<TaskId, TaskEntry>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{TaskRegistry, TaskRegistryError};
+    use super::{TaskCancellation, TaskRegistry, TaskRegistryError};
     use crate::task_events::{ChannelTaskEventPublisher, TaskEventPublisher};
     use async_trait::async_trait;
     use oxide_agent_core::agent::{SessionId, TaskEventKind, TaskState, TaskStateTransitionError};
@@ -344,7 +397,9 @@ mod tests {
         let running = registry
             .update_state(&created.metadata.id, TaskState::Running)
             .await;
-        assert!(matches!(running, Ok(record) if record.metadata.state == TaskState::Running));
+        assert!(
+            matches!(running, Ok(update) if update.record.metadata.state == TaskState::Running)
+        );
 
         let fetched = registry.get(&created.metadata.id).await;
         assert!(matches!(fetched, Some(record) if record.metadata.state == TaskState::Running));
@@ -410,7 +465,8 @@ mod tests {
                         .get_cancellation_token(&task.metadata.id)
                         .await
                         .is_some());
-                    assert!(reader_registry.cancel(&task.metadata.id).await);
+                    let cancellation = reader_registry.cancel(&task.metadata.id).await;
+                    assert!(cancellation.is_ok());
                 }
 
                 yield_now().await;
@@ -465,7 +521,8 @@ mod tests {
         let initial_token = registry.get_cancellation_token(&created.metadata.id).await;
         assert!(matches!(initial_token, Some(ref token) if !token.is_cancelled()));
 
-        assert!(registry.cancel(&created.metadata.id).await);
+        let cancellation = registry.cancel(&created.metadata.id).await;
+        assert!(matches!(cancellation, Ok(TaskCancellation::Cancelled(_))));
 
         let cancelled_token = registry.get_cancellation_token(&created.metadata.id).await;
         assert!(matches!(cancelled_token, Some(ref token) if token.is_cancelled()));
@@ -532,11 +589,11 @@ mod tests {
 
         assert!(matches!(
             first_result,
-            Ok(Ok(record)) if record.metadata.state == TaskState::Running
+            Ok(Ok(update)) if update.record.metadata.state == TaskState::Running
         ));
         assert!(matches!(
             second_result,
-            Ok(Ok(record)) if record.metadata.state == TaskState::Running
+            Ok(Ok(update)) if update.record.metadata.state == TaskState::Running
         ));
         assert_eq!(
             registry.session_id_for_task(&first.metadata.id).await,
@@ -623,6 +680,85 @@ mod tests {
 
         assert_eq!(first_sequences, vec![1, 2]);
         assert_eq!(second_sequences, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn task_registry_cancellation_transitions_active_task_to_terminal_cancelled() {
+        let registry = TaskRegistry::new();
+        let created = registry.create(SessionId::from(17)).await;
+        let running = registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await;
+        assert!(running.is_ok());
+
+        let cancellation = registry.cancel(&created.metadata.id).await;
+        assert!(matches!(
+            cancellation,
+            Ok(TaskCancellation::Cancelled(update))
+                if update.record.metadata.state == TaskState::Cancelled && update.event_sequence == 3
+        ));
+
+        let stored = registry.get(&created.metadata.id).await;
+        assert!(matches!(
+            stored,
+            Some(record) if record.metadata.state == TaskState::Cancelled
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_registry_cancellation_returns_existing_terminal_state_without_new_event() {
+        let (sender, mut receiver) = unbounded_channel();
+        let registry =
+            TaskRegistry::with_event_publisher(Arc::new(ChannelTaskEventPublisher::new(sender)));
+        let created = registry.create(SessionId::from(18)).await;
+        let running = registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await;
+        assert!(running.is_ok());
+        let completed = registry
+            .update_state(&created.metadata.id, TaskState::Completed)
+            .await;
+        assert!(completed.is_ok());
+
+        for _ in 0..3 {
+            let event = receiver.recv().await;
+            assert!(event.is_some());
+        }
+
+        let cancellation = registry.cancel(&created.metadata.id).await;
+        assert!(matches!(
+            cancellation,
+            Ok(TaskCancellation::AlreadyTerminal(record))
+                if record.record.metadata.state == TaskState::Completed
+        ));
+        assert!(timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn task_registry_does_not_cancel_token_for_late_terminal_cancellation() {
+        let registry = TaskRegistry::new();
+        let created = registry.create(SessionId::from(19)).await;
+        let task_id = created.metadata.id;
+
+        let token = registry.get_cancellation_token(&task_id).await;
+        assert!(matches!(token, Some(ref token) if !token.is_cancelled()));
+
+        let running = registry.update_state(&task_id, TaskState::Running).await;
+        assert!(running.is_ok());
+        let completed = registry.update_state(&task_id, TaskState::Completed).await;
+        assert!(completed.is_ok());
+
+        let cancellation = registry.cancel(&task_id).await;
+        assert!(matches!(
+            cancellation,
+            Ok(TaskCancellation::AlreadyTerminal(update))
+                if update.record.metadata.state == TaskState::Completed
+        ));
+
+        let token = registry.get_cancellation_token(&task_id).await;
+        assert!(matches!(token, Some(ref token) if !token.is_cancelled()));
     }
 
     #[tokio::test]
