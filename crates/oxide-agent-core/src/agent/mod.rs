@@ -36,6 +36,8 @@ pub mod session;
 pub mod skills;
 /// Structured output parsing and validation
 pub mod structured_output;
+/// Task domain model and state machine
+pub mod task;
 /// Tool execution bridge with timeout and cancellation
 pub mod tool_bridge;
 
@@ -65,3 +67,4 @@ pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{AgentSession, AgentStatus};
 pub use skills::SkillRegistry;
+pub use task::{TaskId, TaskMetadata, TaskState, TaskStateTransitionError};
