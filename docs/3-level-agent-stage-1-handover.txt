@@ -1,0 +1,77 @@
+Agent Mode v2 - Stage 1 handover
+
+Status
+Stage 1 completed and approved on branch arch-agent-mode.
+
+Related commits
+4233c4d feat(stage-1/slice-1): add task domain model
+36bed69 feat(stage-1/slice-2): add task persistence contract
+ca6f4c7 feat(stage-1/slice-3): add task registry
+a03ee24 feat(stage-1/slice-4): add task event publishing
+
+What was delivered
+Stage 1 foundation is now present in core and runtime without introducing transport UX.
+
+In oxide-agent-core:
+- Added task domain model in crates/oxide-agent-core/src/agent/task.rs.
+- Added TaskId, TaskState, TaskMetadata and explicit transition validation.
+- Added TaskSnapshot, TaskCheckpoint and persisted TaskEvent contract.
+- Extended StorageProvider additively for task snapshot and task event persistence.
+- Added dedicated task storage keys under tasks/{task_id}/...
+
+In oxide-agent-runtime:
+- Added TaskRegistry in crates/oxide-agent-runtime/src/task_registry.rs.
+- Added TaskId <-> SessionId linkage.
+- Added task-scoped cancellation tokens.
+- Added runtime task event publishing via crates/oxide-agent-runtime/src/task_events.rs.
+
+What did not change
+- Existing session-centric flows were left intact.
+- AgentSession current_task_id was not migrated and remains untouched for now.
+- Telegram transport was not updated with polls, web monitoring or task UI.
+- Detached workers, restart reconciliation, cancel/stop runtime flows and HITL are not part of Stage 1.
+
+Verification completed
+- cargo test -p oxide-agent-core
+- cargo test -p oxide-agent-runtime
+- cargo clippy -p oxide-agent-core --all-targets -- -D warnings
+- cargo clippy -p oxide-agent-runtime --all-targets -- -D warnings
+- cargo fmt --check
+
+Verification outcome
+- oxide-agent-core: tests passed
+- oxide-agent-runtime: tests passed
+- clippy: clean for both crates
+- fmt --check: passed
+
+Important implementation notes
+- TaskState transitions are intentionally strict: Pending -> Running or Cancelled; Running -> Completed, Failed or Cancelled.
+- StorageProvider task methods were added with default Unsupported behavior to keep the public trait additive for external implementors.
+- Task event sequence is validated as contiguous on append.
+- TaskRegistry was refactored to a single state container so task visibility, session linkage and cancellation token publication are atomic.
+- TaskRegistry publishes task lifecycle events outside the registry write lock.
+
+Known limitations carried into next stage
+- TaskRegistry is in-memory only; runtime does not yet own detached workers.
+- append_task_event currently uses read-modify-write semantics and is safe for the current single-writer assumption, but is not a multi-writer atomic log.
+- Runtime task event publishing is sink-based and not yet a multi-subscriber broadcaster.
+- No transport integration exists yet for task lifecycle presentation or control.
+
+Recommended next step
+Start Stage 2 Slice 2.1: Background Worker Manager.
+
+Suggested focus for Stage 2
+- Introduce runtime-owned detached worker handles keyed by TaskId.
+- Keep worker lifecycle separate from transport handlers.
+- Preserve the task registry as the source of task identity and state.
+- Be careful not to regress the atomic visibility and cancellation invariants introduced in Stage 1.
+
+Files to inspect first for Stage 2
+- crates/oxide-agent-runtime/src/task_registry.rs
+- crates/oxide-agent-runtime/src/task_events.rs
+- crates/oxide-agent-runtime/src/session_registry.rs
+- crates/oxide-agent-core/src/agent/task.rs
+- crates/oxide-agent-core/src/storage.rs
+
+Unrelated workspace state
+AGENTS.md is dirty in the working tree and was not part of Stage 1 changes.

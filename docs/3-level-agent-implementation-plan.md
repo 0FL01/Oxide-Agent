@@ -1,6 +1,11 @@
 ### Agent Mode v2: Implementation Plan
 
-Status: Draft
+Status: In Progress
+
+Progress update:
+
+- Stage 1 completed on `arch-agent-mode`.
+- Handover note: `docs/3-level-agent-stage-1-handover.txt`.
 
 Этот документ дополняет `docs/3-level-agent.md` и раскладывает внедрение Agent Mode v2 на конкретные стадии и небольшие auditable slices.
 
@@ -29,7 +34,19 @@ Status: Draft
 
 Цель stage: ввести новую domain model для фоновой задачи, не ломая текущий session-centric runtime.
 
+Status: Completed
+
+Implemented on branch `arch-agent-mode`:
+
+- Slice 1.1 - `4233c4d` `feat(stage-1/slice-1): add task domain model`
+- Slice 1.2 - `36bed69` `feat(stage-1/slice-2): add task persistence contract`
+- Slice 1.3 - `ca6f4c7` `feat(stage-1/slice-3): add task registry`
+- Slice 1.4 - `a03ee24` `feat(stage-1/slice-4): add task event publishing`
+- Stage 1 handover: `docs/3-level-agent-stage-1-handover.txt`
+
 #### Slice 1.1 - Task Domain Model
+
+Status: Done (`4233c4d`)
 
 Crates:
 
@@ -56,6 +73,8 @@ cargo clippy -p oxide-agent-core
 ```
 
 #### Slice 1.2 - Task Persistence Contract
+
+Status: Done (`36bed69`)
 
 Crates:
 
@@ -87,6 +106,8 @@ cargo clippy -p oxide-agent-core
 
 #### Slice 1.3 - Task Registry
 
+Status: Done (`ca6f4c7`)
+
 Crates:
 
 - `oxide-agent-runtime`
@@ -117,6 +138,8 @@ cargo clippy -p oxide-agent-runtime
 ```
 
 #### Slice 1.4 - Task Events
+
+Status: Done (`a03ee24`)
 
 Crates:
 
@@ -150,6 +173,8 @@ Exit criteria for Stage 1:
 
 - в системе есть минимальная task-centric модель, persistence contract и runtime registry;
 - transport еще не знает про polls/web, но runtime уже знает про задачи.
+
+Stage 1 review status: APPROVED
 
 ---
 
