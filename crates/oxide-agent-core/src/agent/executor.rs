@@ -174,6 +174,7 @@ impl AgentExecutor {
     pub async fn execute(
         &mut self,
         task: &str,
+        resume_input: Option<&str>,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<String> {
         self.session.start_task();
@@ -187,7 +188,15 @@ impl AgentExecutor {
             "Starting agent task"
         );
 
-        self.session.memory.add_message(AgentMessage::user(task));
+        match resume_input {
+            Some(input) => {
+                if self.session.memory.get_messages().is_empty() {
+                    self.session.memory.add_message(AgentMessage::user(task));
+                }
+                self.session.memory.add_message(AgentMessage::user(input));
+            }
+            None => self.session.memory.add_message(AgentMessage::user(task)),
+        }
 
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
 

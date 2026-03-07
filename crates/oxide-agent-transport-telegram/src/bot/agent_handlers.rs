@@ -20,7 +20,8 @@ use oxide_agent_core::agent::{
     executor::AgentExecutor,
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
-    AgentSession, PendingChoiceInput, PendingInputKind, SessionId, TaskId, TaskState,
+    AgentSession, PendingChoiceInput, PendingInputKind, PendingTextInput, SessionId, TaskId,
+    TaskState,
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
@@ -594,6 +595,11 @@ struct TelegramTaskExecutionBackend {
     task_runtime: Arc<AgentTaskRuntime>,
 }
 
+struct AgentExecutionInput {
+    task_text: String,
+    resume_input: Option<String>,
+}
+
 #[async_trait]
 impl TaskExecutionBackend for TelegramTaskExecutionBackend {
     async fn execute(&self, request: TaskExecutionRequest) -> Result<TaskExecutionOutcome> {
@@ -609,7 +615,10 @@ impl TaskExecutionBackend for TelegramTaskExecutionBackend {
             self.bot.clone(),
             self.chat_id,
             session_id.as_i64(),
-            resolve_execution_input(task, resume_input),
+            AgentExecutionInput {
+                task_text: task,
+                resume_input,
+            },
             Arc::clone(&self.storage),
             Arc::clone(&self.task_runtime),
             cancellation_token,
@@ -618,10 +627,6 @@ impl TaskExecutionBackend for TelegramTaskExecutionBackend {
 
         Ok(TaskExecutionOutcome::Completed)
     }
-}
-
-fn resolve_execution_input(task: String, resume_input: Option<String>) -> String {
-    resume_input.unwrap_or(task)
 }
 
 /// Global session registry for agent executors
@@ -682,8 +687,7 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
                     &bot,
                     msg.chat.id,
                     user_id,
-                    &context.storage,
-                    &context.task_runtime,
+                    context.as_ref(),
                     &record,
                 )
                 .await?;
@@ -742,31 +746,7 @@ pub async fn handle_agent_message(
         .active_task_for_session(session_id)
         .await
     {
-        let delivered_poll = deliver_waiting_choice_poll_if_needed(
-            &bot,
-            chat_id,
-            user_id,
-            &context.storage,
-            &context.task_runtime,
-            &record,
-        )
-        .await?;
-
-        if delivered_poll {
-            bot.send_message(
-                chat_id,
-                "⏳ Task is waiting for your response. Answer the active poll to continue.",
-            )
-            .reply_markup(get_agent_keyboard())
-            .await?;
-        } else {
-            bot.send_message(
-                chat_id,
-                "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
-            )
-            .reply_markup(get_agent_keyboard())
-            .await?;
-        }
+        handle_active_task_message(&bot, &msg, context.as_ref(), user_id, chat_id, &record).await?;
         return Ok(());
     }
 
@@ -800,6 +780,85 @@ pub async fn handle_agent_message(
     .await
 }
 
+async fn handle_active_task_message(
+    bot: &Bot,
+    msg: &Message,
+    context: &TelegramHandlerContext,
+    user_id: i64,
+    chat_id: ChatId,
+    record: &TaskRecord,
+) -> Result<()> {
+    if record.metadata.state == TaskState::WaitingInput {
+        if let Some(pending_input) = record.pending_input.as_ref() {
+            if let PendingInputKind::Text(pending_text) = &pending_input.kind {
+                let Some(input_text) = msg.text() else {
+                    bot.send_message(
+                        chat_id,
+                        "⏳ Task is waiting for text input. Send your response as a text message to continue.",
+                    )
+                    .reply_markup(get_agent_keyboard())
+                    .await?;
+                    return Ok(());
+                };
+
+                if let Some(validation_error) =
+                    validate_pending_text_resume_input(input_text, pending_text)
+                {
+                    bot.send_message(chat_id, validation_error)
+                        .reply_markup(get_agent_keyboard())
+                        .await?;
+                    return Ok(());
+                }
+
+                let resumed = resume_waiting_task_input(
+                    bot,
+                    context,
+                    ResumeTaskInput {
+                        user_id,
+                        chat_id,
+                        task_id: &record.metadata.id,
+                        input: input_text.to_string(),
+                    },
+                )
+                .await?;
+
+                if resumed {
+                    bot.send_message(chat_id, "✅ Input accepted. Continuing task...")
+                        .reply_markup(get_agent_keyboard())
+                        .await?;
+                } else {
+                    bot.send_message(chat_id, DefaultAgentView::task_already_running())
+                        .reply_markup(get_agent_keyboard())
+                        .await?;
+                }
+
+                return Ok(());
+            }
+        }
+    }
+
+    let delivered_poll =
+        deliver_waiting_choice_poll_if_needed(bot, chat_id, user_id, context, record).await?;
+
+    if delivered_poll {
+        bot.send_message(
+            chat_id,
+            "⏳ Task is waiting for your response. Answer the active poll to continue.",
+        )
+        .reply_markup(get_agent_keyboard())
+        .await?;
+    } else {
+        bot.send_message(
+            chat_id,
+            "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
+        )
+        .reply_markup(get_agent_keyboard())
+        .await?;
+    }
+
+    Ok(())
+}
+
 async fn ensure_session_exists(
     task_runtime: &AgentTaskRuntime,
     user_id: i64,
@@ -810,6 +869,13 @@ async fn ensure_session_exists(
     task_runtime
         .ensure_session_exists(user_id, llm, storage, settings)
         .await;
+}
+
+struct ResumeTaskInput<'a> {
+    user_id: i64,
+    chat_id: ChatId,
+    task_id: &'a TaskId,
+    input: String,
 }
 
 #[cfg(test)]
@@ -877,47 +943,109 @@ fn encode_poll_resume_input(option_ids: &[u8]) -> String {
         .join(",")
 }
 
+fn validate_pending_text_resume_input(
+    input: &str,
+    pending_text: &PendingTextInput,
+) -> Option<String> {
+    if !pending_text.multiline && (input.contains('\n') || input.contains('\r')) {
+        return Some("⚠️ This response must be a single line.".to_string());
+    }
+
+    let input_len = input.len();
+    if let Some(min_length) = pending_text.min_length {
+        if input_len < usize::from(min_length) {
+            return Some(format!(
+                "⚠️ Response is too short (minimum {min_length} bytes)."
+            ));
+        }
+    }
+
+    if let Some(max_length) = pending_text.max_length {
+        if input_len > usize::from(max_length) {
+            return Some(format!(
+                "⚠️ Response is too long (maximum {max_length} bytes)."
+            ));
+        }
+    }
+
+    None
+}
+
+async fn resume_waiting_task_input(
+    bot: &Bot,
+    context: &TelegramHandlerContext,
+    resume: ResumeTaskInput<'_>,
+) -> Result<bool> {
+    let backend = Arc::new(TelegramTaskExecutionBackend {
+        bot: bot.clone(),
+        chat_id: resume.chat_id,
+        storage: Arc::clone(&context.storage),
+        task_runtime: Arc::clone(&context.task_runtime),
+    });
+
+    resume_waiting_task_input_with_backend(context, resume, backend).await
+}
+
+async fn resume_waiting_task_input_with_backend<B>(
+    context: &TelegramHandlerContext,
+    resume: ResumeTaskInput<'_>,
+    backend: Arc<B>,
+) -> Result<bool>
+where
+    B: TaskExecutionBackend,
+{
+    ensure_session_exists(
+        &context.task_runtime,
+        resume.user_id,
+        &context.llm,
+        &context.storage,
+        &context.settings,
+    )
+    .await;
+
+    match context
+        .task_runtime
+        .resume_task(resume.task_id, resume.input, backend)
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            warn!(task_id = %resume.task_id, error = %error, "Failed to resume waiting task input");
+            Ok(false)
+        }
+    }
+}
+
 async fn resume_task_from_consumed_poll_answer(
     bot: &Bot,
-    storage: &Arc<dyn StorageProvider>,
-    task_runtime: &Arc<AgentTaskRuntime>,
+    context: &TelegramHandlerContext,
     pending_poll: &PendingInputPoll,
     option_ids: &[u8],
 ) -> Result<ConsumedPollResumeOutcome> {
-    let backend = Arc::new(TelegramTaskExecutionBackend {
-        bot: bot.clone(),
-        chat_id: ChatId(pending_poll.chat_id),
-        storage: Arc::clone(storage),
-        task_runtime: Arc::clone(task_runtime),
-    });
+    let resumed = resume_waiting_task_input(
+        bot,
+        context,
+        ResumeTaskInput {
+            user_id: pending_poll.owner_user_id,
+            chat_id: ChatId(pending_poll.chat_id),
+            task_id: &pending_poll.task_id,
+            input: encode_poll_resume_input(option_ids),
+        },
+    )
+    .await?;
 
-    let resume_result = task_runtime
-        .resume_task(
-            &pending_poll.task_id,
-            encode_poll_resume_input(option_ids),
-            backend,
-        )
-        .await;
-    match resume_result {
-        Ok(_) => {
-            match storage
-                .delete_pending_input_poll(pending_poll.task_id, &pending_poll.poll_id)
-                .await
-            {
-                Ok(()) => Ok(ConsumedPollResumeOutcome::Resumed),
-                Err(StorageError::Unsupported(_)) => Ok(ConsumedPollResumeOutcome::Resumed),
-                Err(error) => Err(error.into()),
-            }
+    if resumed {
+        match context
+            .storage
+            .delete_pending_input_poll(pending_poll.task_id, &pending_poll.poll_id)
+            .await
+        {
+            Ok(()) => Ok(ConsumedPollResumeOutcome::Resumed),
+            Err(StorageError::Unsupported(_)) => Ok(ConsumedPollResumeOutcome::Resumed),
+            Err(error) => Err(error.into()),
         }
-        Err(error) => {
-            warn!(
-                task_id = %pending_poll.task_id,
-                poll_id = %pending_poll.poll_id,
-                error = %error,
-                "Failed to resume task from consumed poll answer"
-            );
-            Ok(ConsumedPollResumeOutcome::Deferred)
-        }
+    } else {
+        Ok(ConsumedPollResumeOutcome::Deferred)
     }
 }
 
@@ -931,8 +1059,7 @@ async fn deliver_waiting_choice_poll_if_needed(
     bot: &Bot,
     chat_id: ChatId,
     user_id: i64,
-    storage: &Arc<dyn StorageProvider>,
-    task_runtime: &Arc<AgentTaskRuntime>,
+    context: &TelegramHandlerContext,
     record: &TaskRecord,
 ) -> Result<bool> {
     if record.metadata.state != TaskState::WaitingInput {
@@ -947,7 +1074,8 @@ async fn deliver_waiting_choice_poll_if_needed(
         return Ok(false);
     };
 
-    if let Some(existing_poll) = storage
+    if let Some(existing_poll) = context
+        .storage
         .load_pending_input_poll_by_task(record.metadata.id)
         .await?
     {
@@ -959,8 +1087,7 @@ async fn deliver_waiting_choice_poll_if_needed(
 
                 resume_task_from_consumed_poll_answer(
                     bot,
-                    storage,
-                    task_runtime,
+                    context,
                     &existing_poll,
                     &existing_poll.selected_option_ids,
                 )
@@ -999,7 +1126,8 @@ async fn deliver_waiting_choice_poll_if_needed(
         .poll()
         .ok_or_else(|| anyhow::anyhow!("Telegram poll response missing poll payload"))?;
 
-    storage
+    context
+        .storage
         .save_pending_input_poll(&PendingInputPoll {
             task_id: record.metadata.id,
             request_id: pending_input.request_id.clone(),
@@ -1028,7 +1156,7 @@ async fn run_agent_task_with_text(
     bot: Bot,
     chat_id: ChatId,
     user_id: i64,
-    task_text: String,
+    execution: AgentExecutionInput,
     storage: Arc<dyn StorageProvider>,
     task_runtime: Arc<AgentTaskRuntime>,
     cancellation_token: Arc<CancellationToken>,
@@ -1046,7 +1174,14 @@ async fn run_agent_task_with_text(
     let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
-    let result = execute_agent_task(user_id, &task_text, Some(tx), cancellation_token).await;
+    let result = execute_agent_task(
+        user_id,
+        &execution.task_text,
+        execution.resume_input.as_deref(),
+        Some(tx),
+        cancellation_token,
+    )
+    .await;
     let state = match progress_handle.await {
         Ok(state) => state,
         Err(err) => {
@@ -1094,6 +1229,7 @@ async fn run_agent_task_with_text(
 async fn execute_agent_task(
     user_id: i64,
     task: &str,
+    resume_input: Option<&str>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     cancellation_token: Arc<CancellationToken>,
 ) -> Result<String> {
@@ -1125,7 +1261,7 @@ async fn execute_agent_task(
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
 
     // Execute the task (now uses external token that can be cancelled lock-free)
-    executor.execute(task, progress_tx).await
+    executor.execute(task, resume_input, progress_tx).await
 }
 
 async fn submit_agent_task(
@@ -1343,8 +1479,7 @@ pub async fn handle_pending_input_poll_answer(
 
     let resume_outcome = resume_task_from_consumed_poll_answer(
         &bot,
-        &context.storage,
-        &context.task_runtime,
+        context.as_ref(),
         &pending_poll,
         &answer.option_ids,
     )
@@ -1741,6 +1876,12 @@ mod tests {
 
     struct CompletedBackend;
 
+    #[derive(Clone, Default)]
+    struct RecordingResumeBackend {
+        captured: Arc<Mutex<Vec<TaskExecutionRequest>>>,
+        started: Arc<Notify>,
+    }
+
     #[async_trait]
     impl TaskExecutionBackend for LockingBackend {
         async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
@@ -1800,6 +1941,15 @@ mod tests {
     #[async_trait]
     impl TaskExecutionBackend for CompletedBackend {
         async fn execute(&self, _request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
+            Ok(TaskExecutionOutcome::Completed)
+        }
+    }
+
+    #[async_trait]
+    impl TaskExecutionBackend for RecordingResumeBackend {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
+            self.captured.lock().await.push(request);
+            self.started.notify_waiters();
             Ok(TaskExecutionOutcome::Completed)
         }
     }
@@ -2136,14 +2286,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resume_execution_uses_supplied_input_payload() {
-        let resumed =
-            super::resolve_execution_input("original task".to_string(), Some("1,2".to_string()));
-        assert_eq!(resumed, "1,2");
-
-        let initial = super::resolve_execution_input("original task".to_string(), None);
-        assert_eq!(initial, "original task");
+    async fn wait_for_resume_request(backend: &RecordingResumeBackend) -> TaskExecutionRequest {
+        let waited = timeout(Duration::from_secs(2), backend.started.notified()).await;
+        assert!(waited.is_ok());
+        let requests = backend.captured.lock().await;
+        assert_eq!(requests.len(), 1);
+        requests[0].clone()
     }
 
     async fn assert_waiting_task_blocks_controls(
@@ -2949,6 +3097,236 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_resume_valid_input_resumes_waiting_task() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 740;
+        let session_id = SessionId::from(owner_user_id);
+        insert_test_session(session_id).await;
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input)
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "resume text task".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let context = Arc::new(make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        ));
+
+        SESSION_REGISTRY.remove(&session_id).await;
+        assert!(!SESSION_REGISTRY.contains(&session_id).await);
+
+        let resumed = super::resume_waiting_task_input(
+            &Bot::new("test-token"),
+            context.as_ref(),
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: "approved".to_string(),
+            },
+        )
+        .await;
+        assert!(matches!(resumed, Ok(true)));
+
+        let waited = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(record) = task_registry.get(&created.metadata.id).await {
+                    if record.metadata.state != TaskState::WaitingInput {
+                        break;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "task did not leave waiting state after text resume"
+        );
+        assert!(SESSION_REGISTRY.contains(&session_id).await);
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn text_resume_cold_restart_preserves_original_task_for_backend_request() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 742;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input)
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "resume text task original".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+
+        SESSION_REGISTRY.remove(&session_id).await;
+        assert!(!SESSION_REGISTRY.contains(&session_id).await);
+
+        let backend = Arc::new(RecordingResumeBackend::default());
+        let resumed = super::resume_waiting_task_input_with_backend(
+            &context,
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: "approved".to_string(),
+            },
+            Arc::clone(&backend),
+        )
+        .await;
+        assert!(matches!(resumed, Ok(true)));
+
+        let request = wait_for_resume_request(backend.as_ref()).await;
+        assert_eq!(request.task, "resume text task original");
+        assert_eq!(request.resume_input.as_deref(), Some("approved"));
+        assert!(SESSION_REGISTRY.contains(&session_id).await);
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn text_resume_invalid_and_late_inputs_are_rejected_safely() {
+        let pending_text = PendingTextInput {
+            min_length: Some(2),
+            max_length: Some(4),
+            multiline: false,
+        };
+        assert!(super::validate_pending_text_resume_input("x", &pending_text).is_some());
+        assert!(super::validate_pending_text_resume_input("x\ny", &pending_text).is_some());
+        assert!(super::validate_pending_text_resume_input("good", &pending_text).is_none());
+
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 741;
+        let session_id = SessionId::from(owner_user_id);
+        insert_test_session(session_id).await;
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, waiting_pending_input())
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "resume text duplicate".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let context = Arc::new(make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        ));
+
+        let first_resume = super::resume_waiting_task_input(
+            &Bot::new("test-token"),
+            context.as_ref(),
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: "done".to_string(),
+            },
+        )
+        .await;
+        assert!(matches!(first_resume, Ok(true)));
+
+        let waited = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(record) = task_registry.get(&created.metadata.id).await {
+                    if record.metadata.state != TaskState::WaitingInput {
+                        break;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "task did not leave waiting state after first text resume"
+        );
+
+        let late_resume = super::resume_waiting_task_input(
+            &Bot::new("test-token"),
+            context.as_ref(),
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: "redo".to_string(),
+            },
+        )
+        .await;
+        assert!(matches!(late_resume, Ok(false)));
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
     async fn poll_resume_valid_answer_resumes_task_and_cleans_poll_mapping() {
         let storage = Arc::new(TestStorage::default());
         let task_registry = Arc::new(TaskRegistry::new());
@@ -3000,6 +3378,9 @@ mod tests {
             Arc::clone(&storage) as Arc<dyn StorageProvider>,
             Arc::clone(&task_runtime),
         ));
+        SESSION_REGISTRY.remove(&session_id).await;
+        assert!(!SESSION_REGISTRY.contains(&session_id).await);
+
         let answer = build_poll_answer("poll-resume", owner_user_id, &[0]);
 
         let handled =
@@ -3022,7 +3403,6 @@ mod tests {
             waited.is_ok(),
             "task did not leave waiting state after poll resume"
         );
-
         let poll_by_id = storage.load_pending_input_poll_by_id("poll-resume").await;
         let poll_by_task = storage
             .load_pending_input_poll_by_task(created.metadata.id)
@@ -3031,6 +3411,71 @@ mod tests {
         assert!(poll_by_task.is_ok());
         assert!(poll_by_id.ok().flatten().is_none());
         assert!(poll_by_task.ok().flatten().is_none());
+        assert!(SESSION_REGISTRY.contains(&session_id).await);
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn poll_resume_cold_restart_preserves_original_task_for_backend_request() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 751;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_choice_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input)
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "resume poll task original".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+
+        SESSION_REGISTRY.remove(&session_id).await;
+        assert!(!SESSION_REGISTRY.contains(&session_id).await);
+
+        let resume_input = super::encode_poll_resume_input(&[0]);
+        let backend = Arc::new(RecordingResumeBackend::default());
+        let resumed = super::resume_waiting_task_input_with_backend(
+            &context,
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: resume_input.clone(),
+            },
+            Arc::clone(&backend),
+        )
+        .await;
+        assert!(matches!(resumed, Ok(true)));
+
+        let request = wait_for_resume_request(backend.as_ref()).await;
+        assert_eq!(request.task, "resume poll task original");
+        assert_eq!(request.resume_input.as_deref(), Some(resume_input.as_str()));
+        assert!(SESSION_REGISTRY.contains(&session_id).await);
 
         SESSION_REGISTRY.remove(&session_id).await;
     }
@@ -3066,8 +3511,7 @@ mod tests {
 
         let resumed = super::resume_task_from_consumed_poll_answer(
             &Bot::new("test-token"),
-            &context.storage,
-            &context.task_runtime,
+            context.as_ref(),
             &pending_poll,
             &[1],
         )
@@ -3098,6 +3542,10 @@ mod tests {
         ));
         let owner_user_id = 800;
         let session_id = SessionId::from(owner_user_id);
+        let context = Arc::new(make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        ));
         let created = task_registry.create(session_id).await;
         assert!(task_registry
             .update_state(&created.metadata.id, TaskState::Running)
@@ -3128,8 +3576,7 @@ mod tests {
             &Bot::new("test-token"),
             ChatId(owner_user_id),
             owner_user_id,
-            &(Arc::clone(&storage) as Arc<dyn StorageProvider>),
-            &task_runtime,
+            context.as_ref(),
             &waiting.record,
         )
         .await;
@@ -3157,8 +3604,7 @@ mod tests {
             &Bot::new("test-token"),
             ChatId(owner_user_id),
             owner_user_id,
-            &(Arc::clone(&storage) as Arc<dyn StorageProvider>),
-            &task_runtime,
+            context.as_ref(),
             &waiting.record,
         )
         .await;
