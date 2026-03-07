@@ -69,14 +69,8 @@ async fn check_state_and_redirect(
 ) -> Result<bool> {
     let user_id = get_user_id_safe(msg);
 
-    if let Ok(Some(state_str)) = context.storage.get_user_state(user_id).await {
-        if state_str == "agent_mode" {
-            info!("Restoring agent mode for user {user_id} based on persisted state.");
-            dialogue
-                .update(State::AgentMode)
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
-
+    if let Some(state) = restore_persisted_dialogue_state(user_id, dialogue, context).await? {
+        if matches!(state, State::AgentMode) {
             Box::pin(crate::bot::agent_handlers::handle_agent_message(
                 bot.clone(),
                 msg.clone(),
@@ -86,16 +80,39 @@ async fn check_state_and_redirect(
             .await?;
 
             return Ok(true);
-        } else if state_str == "chat_mode" {
-            info!("Restoring chat mode for user {user_id} based on persisted state.");
-            dialogue
-                .update(State::ChatMode)
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
-            return Ok(false);
         }
     }
     Ok(false)
+}
+
+async fn restore_persisted_dialogue_state(
+    user_id: i64,
+    dialogue: &Dialogue<State, InMemStorage<State>>,
+    context: &TelegramHandlerContext,
+) -> Result<Option<State>> {
+    if let Ok(Some(state_str)) = context.storage.get_user_state(user_id).await {
+        match state_str.as_str() {
+            "agent_mode" => {
+                info!("Restoring agent mode for user {user_id} based on persisted state.");
+                dialogue
+                    .update(State::AgentMode)
+                    .await
+                    .map_err(|e| anyhow!(e.to_string()))?;
+                return Ok(Some(State::AgentMode));
+            }
+            "chat_mode" => {
+                info!("Restoring chat mode for user {user_id} based on persisted state.");
+                dialogue
+                    .update(State::ChatMode)
+                    .await
+                    .map_err(|e| anyhow!(e.to_string()))?;
+                return Ok(Some(State::ChatMode));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(None)
 }
 
 /// Supported commands for the bot
@@ -988,9 +1005,7 @@ pub async fn handle_document(
     dialogue: Dialogue<State, InMemStorage<State>>,
     context: Arc<TelegramHandlerContext>,
 ) -> Result<()> {
-    let state = dialogue.get().await?.unwrap_or(State::Start);
-
-    if matches!(state, State::AgentMode) {
+    if should_route_document_to_agent(get_user_id_safe(&msg), &dialogue, &context).await? {
         Box::pin(super::agent_handlers::handle_agent_message(
             bot, msg, dialogue, context,
         ))
@@ -1006,11 +1021,30 @@ pub async fn handle_document(
     }
 }
 
+async fn should_route_document_to_agent(
+    user_id: i64,
+    dialogue: &Dialogue<State, InMemStorage<State>>,
+    context: &TelegramHandlerContext,
+) -> Result<bool> {
+    if matches!(
+        restore_persisted_dialogue_state(user_id, dialogue, context).await?,
+        Some(State::AgentMode)
+    ) {
+        return Ok(true);
+    }
+
+    Ok(matches!(
+        dialogue.get().await?.unwrap_or(State::Start),
+        State::AgentMode
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         is_valid_chat_uuid, parse_chat_flow_callback_data, prepare_start_state,
-        ChatFlowCallbackData, CHAT_ATTACH_PREFIX, CHAT_DETACH_CALLBACK,
+        should_route_document_to_agent, ChatFlowCallbackData, CHAT_ATTACH_PREFIX,
+        CHAT_DETACH_CALLBACK,
     };
     use crate::bot::agent_handlers::{AgentTaskRuntime, StartResetOutcome};
     use crate::bot::context::TelegramHandlerContext;
@@ -1370,5 +1404,66 @@ mod tests {
 
         let persisted_state = storage.get_user_state(user_id).await;
         assert!(matches!(persisted_state, Ok(None)));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_document_restore_reenters_agent_mode_from_start_state() {
+        let storage = Arc::new(StartTestStorage::default());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::new(TaskRegistry::new()),
+            1,
+        ));
+        let context = test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+        );
+
+        let user_id = 73;
+        let storage_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(storage_result.is_ok());
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let initial_state = dialogue.get().await;
+        assert!(matches!(initial_state, Ok(None)));
+
+        let restored = super::restore_persisted_dialogue_state(user_id, &dialogue, &context).await;
+        assert!(matches!(restored, Ok(Some(State::AgentMode))));
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::AgentMode))));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_document_route_restores_agent_mode_before_fallback_branch() {
+        let storage = Arc::new(StartTestStorage::default());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::new(TaskRegistry::new()),
+            1,
+        ));
+        let context = test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+        );
+
+        let user_id = 74;
+        let storage_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(storage_result.is_ok());
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let initial_state = dialogue.get().await;
+        assert!(matches!(initial_state, Ok(None)));
+
+        let should_route = should_route_document_to_agent(user_id, &dialogue, &context).await;
+        assert!(matches!(should_route, Ok(true)));
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::AgentMode))));
     }
 }
