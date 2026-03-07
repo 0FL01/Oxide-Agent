@@ -390,13 +390,12 @@ impl TaskExecutor {
             .task_registry
             .update_state(task_id, TaskState::Running)
             .await?;
-        self.save_snapshot(
+        self.persist_checkpoint(
             &running_update.record.metadata,
             running_update.record.session_id,
             &task,
             running_update.event_sequence,
-            None,
-            None,
+            TaskEventKind::StateChanged,
         )
         .await?;
 
@@ -445,6 +444,14 @@ impl TaskExecutor {
                 .update_state(task_id, TaskState::Failed)
                 .await
             {
+                let _ = self
+                    .append_task_event(
+                        failed_update.record.metadata.id,
+                        failed_update.event_sequence,
+                        TaskEventKind::StateChanged,
+                        failed_update.record.metadata.state,
+                    )
+                    .await;
                 let _ = self
                     .save_snapshot(
                         &failed_update.record.metadata,
@@ -849,7 +856,7 @@ mod tests {
         DetachedTaskSubmission, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
         TaskExecutor, TaskExecutorOptions, CREATED_EVENT_SEQUENCE,
     };
-    use crate::{TaskExecutorError, TaskRegistry, WorkerManager};
+    use crate::{TaskExecutorError, TaskRegistry, WorkerManager, WorkerManagerError};
     use anyhow::{anyhow, Result as AnyResult};
     use async_trait::async_trait;
     use oxide_agent_core::agent::{
@@ -988,6 +995,7 @@ mod tests {
         fail_save_calls: Mutex<Vec<usize>>,
         fail_save_states: Mutex<Vec<TaskState>>,
         save_calls: Mutex<usize>,
+        strict_event_sequence: bool,
     }
 
     impl TestStorage {
@@ -999,6 +1007,7 @@ mod tests {
                 fail_save_calls: Mutex::new(vec![call]),
                 fail_save_states: Mutex::new(Vec::new()),
                 save_calls: Mutex::new(0),
+                strict_event_sequence: false,
             }
         }
 
@@ -1010,6 +1019,7 @@ mod tests {
                 fail_save_calls: Mutex::new(calls),
                 fail_save_states: Mutex::new(Vec::new()),
                 save_calls: Mutex::new(0),
+                strict_event_sequence: false,
             }
         }
 
@@ -1021,6 +1031,19 @@ mod tests {
                 fail_save_calls: Mutex::new(Vec::new()),
                 fail_save_states: Mutex::new(vec![state]),
                 save_calls: Mutex::new(0),
+                strict_event_sequence: false,
+            }
+        }
+
+        fn strict_sequence_validation() -> Self {
+            Self {
+                snapshots: Mutex::new(HashMap::new()),
+                snapshot_history: Mutex::new(HashMap::new()),
+                events: Mutex::new(HashMap::new()),
+                fail_save_calls: Mutex::new(Vec::new()),
+                fail_save_states: Mutex::new(Vec::new()),
+                save_calls: Mutex::new(0),
+                strict_event_sequence: true,
             }
         }
     }
@@ -1222,12 +1245,28 @@ mod tests {
             task_id: TaskId,
             event: TaskEvent,
         ) -> Result<(), StorageError> {
-            self.events
-                .lock()
-                .await
-                .entry(task_id)
-                .or_default()
-                .push(event);
+            if self.strict_event_sequence && event.task_id != task_id {
+                return Err(StorageError::TaskEventTaskMismatch {
+                    expected: task_id,
+                    actual: event.task_id,
+                });
+            }
+
+            let mut events = self.events.lock().await;
+            let task_events = events.entry(task_id).or_default();
+
+            if self.strict_event_sequence {
+                let expected = task_events.last().map_or(1, |last| last.sequence + 1);
+                if event.sequence != expected {
+                    return Err(StorageError::InvalidTaskEventSequence {
+                        task_id,
+                        expected,
+                        actual: event.sequence,
+                    });
+                }
+            }
+
+            task_events.push(event);
             Ok(())
         }
 
@@ -1558,6 +1597,166 @@ mod tests {
                     && snapshot.pending_input.is_none()
         ));
         assert!(!worker_manager.contains(&task_id).await);
+    }
+
+    #[tokio::test]
+    async fn hitl_resume_persists_running_event_before_terminal_under_strict_sequences() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::strict_sequence_validation());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(116),
+                    task: "hitl strict resume persistence".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        waiting_backend.release();
+        wait_for_state(&registry, task_id, TaskState::WaitingInput).await;
+
+        let resumed = executor
+            .resume_task(
+                &task_id,
+                "ack".to_string(),
+                Arc::new(ResumeBackend {
+                    expected_resume_input: "ack".to_string(),
+                }),
+            )
+            .await;
+        assert!(matches!(
+            resumed,
+            Ok(record) if record.metadata.state == TaskState::Running
+        ));
+
+        wait_for_state(&registry, task_id, TaskState::Completed).await;
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Completed
+                    && snapshot.checkpoint.last_event_sequence == 5
+        ));
+
+        let events = storage.load_task_events(task_id).await;
+        assert!(matches!(
+            events,
+            Ok(events)
+                if events.iter().map(|event| event.sequence).collect::<Vec<_>>()
+                    == vec![1, 2, 3, 4, 5]
+        ));
+    }
+
+    #[tokio::test]
+    async fn hitl_resume_spawn_failure_persists_failed_event_under_strict_sequences() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(1));
+        let storage = Arc::new(TestStorage::strict_sequence_validation());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+        let waiting_submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(117),
+                    task: "hitl resume spawn failure".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(
+            waiting_submitted.is_ok(),
+            "submit failed: {waiting_submitted:?}"
+        );
+        let waiting_task_id = match waiting_submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        waiting_backend.release();
+        wait_for_state(&registry, waiting_task_id, TaskState::WaitingInput).await;
+        wait_for_worker_completion(&worker_manager, waiting_task_id).await;
+
+        let blocker_backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+        let blocker_submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(118),
+                    task: "hitl resume worker slot blocker".to_string(),
+                },
+                Arc::clone(&blocker_backend),
+            )
+            .await;
+        assert!(
+            blocker_submitted.is_ok(),
+            "submit failed: {blocker_submitted:?}"
+        );
+        let blocker_task_id = match blocker_submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        blocker_backend.wait_started().await;
+        wait_for_state(&registry, blocker_task_id, TaskState::Running).await;
+
+        let resumed = executor
+            .resume_task(
+                &waiting_task_id,
+                "ack".to_string(),
+                Arc::new(ResumeBackend {
+                    expected_resume_input: "ack".to_string(),
+                }),
+            )
+            .await;
+        assert!(matches!(
+            resumed,
+            Err(TaskExecutorError::WorkerManager(
+                WorkerManagerError::WorkerLimitReached { limit: 1 }
+            ))
+        ));
+
+        wait_for_state(&registry, waiting_task_id, TaskState::Failed).await;
+
+        let failed_snapshot = storage.load_task_snapshot(waiting_task_id).await;
+        assert!(matches!(
+            failed_snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Failed
+                    && snapshot.checkpoint.last_event_sequence == 5
+        ));
+
+        let events = storage.load_task_events(waiting_task_id).await;
+        assert!(matches!(
+            events,
+            Ok(events)
+                if events.iter().map(|event| event.sequence).collect::<Vec<_>>()
+                    == vec![1, 2, 3, 4, 5]
+                    && events.last().is_some_and(|event| event.state == TaskState::Failed)
+        ));
+
+        blocker_backend.release();
+        wait_for_state(&registry, blocker_task_id, TaskState::Completed).await;
     }
 
     #[tokio::test]
