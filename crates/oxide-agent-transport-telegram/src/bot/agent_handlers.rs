@@ -948,12 +948,21 @@ fn is_valid_poll_answer(option_ids: &[u8], choice: &PendingChoiceInput) -> bool 
     true
 }
 
-fn encode_poll_resume_input(option_ids: &[u8]) -> String {
-    option_ids
-        .iter()
-        .map(u8::to_string)
-        .collect::<Vec<_>>()
-        .join(",")
+fn encode_poll_resume_input(option_ids: &[u8], choice: &PendingChoiceInput) -> Result<String> {
+    let mut selected_options = Vec::with_capacity(option_ids.len());
+    for option_id in option_ids {
+        let index = usize::from(*option_id);
+        let Some(option) = choice.options.get(index) else {
+            return Err(anyhow::anyhow!(
+                "poll answer references unknown option index {option_id}"
+            ));
+        };
+        selected_options.push(option.clone());
+    }
+
+    Ok(format!(
+        "selected_option_ids={option_ids:?}\nselected_options={selected_options:?}"
+    ))
 }
 
 fn validate_pending_text_resume_input(
@@ -1081,8 +1090,10 @@ async fn resume_task_from_consumed_poll_answer(
     bot: &Bot,
     context: &TelegramHandlerContext,
     pending_poll: &PendingInputPoll,
+    choice: &PendingChoiceInput,
     option_ids: &[u8],
 ) -> Result<ConsumedPollResumeOutcome> {
+    let resume_input = encode_poll_resume_input(option_ids, choice)?;
     let resumed = resume_waiting_task_input(
         bot,
         context,
@@ -1090,7 +1101,7 @@ async fn resume_task_from_consumed_poll_answer(
             user_id: pending_poll.owner_user_id,
             chat_id: ChatId(pending_poll.chat_id),
             task_id: &pending_poll.task_id,
-            input: encode_poll_resume_input(option_ids),
+            input: resume_input,
         },
     )
     .await?;
@@ -1150,6 +1161,7 @@ async fn deliver_waiting_choice_poll_if_needed(
                     bot,
                     context,
                     &existing_poll,
+                    choice,
                     &existing_poll.selected_option_ids,
                 )
                 .await?;
@@ -1589,6 +1601,7 @@ pub async fn handle_pending_input_poll_answer(
         &bot,
         context.as_ref(),
         &pending_poll,
+        &choice,
         &answer.option_ids,
     )
     .await?;
@@ -4001,7 +4014,19 @@ mod tests {
         SESSION_REGISTRY.remove(&session_id).await;
         assert!(!SESSION_REGISTRY.contains(&session_id).await);
 
-        let resume_input = super::encode_poll_resume_input(&[0]);
+        let choice = match waiting.record.pending_input.as_ref() {
+            Some(PendingInput {
+                kind: PendingInputKind::Choice(choice),
+                ..
+            }) => choice.clone(),
+            _ => unreachable!(),
+        };
+
+        let resume_input = super::encode_poll_resume_input(&[0], &choice);
+        assert!(resume_input.is_ok());
+        let resume_input = resume_input.unwrap_or_else(|_| unreachable!());
+        assert!(resume_input.contains("blue-green"));
+        assert_ne!(resume_input, "0");
         let backend = Arc::new(RecordingResumeBackend::default());
         let resumed = super::resume_waiting_task_input_with_backend(
             &context,
@@ -4019,6 +4044,7 @@ mod tests {
         let request = wait_for_resume_request(backend.as_ref()).await;
         assert_eq!(request.task, "resume poll task original");
         assert_eq!(request.resume_input.as_deref(), Some(resume_input.as_str()));
+        assert_ne!(request.resume_input.as_deref(), Some("0"));
         assert!(SESSION_REGISTRY.contains(&session_id).await);
 
         SESSION_REGISTRY.remove(&session_id).await;
@@ -4053,10 +4079,16 @@ mod tests {
             task_runtime,
         ));
 
+        let choice = match waiting_choice_pending_input().kind {
+            PendingInputKind::Choice(choice) => choice,
+            _ => unreachable!(),
+        };
+
         let resumed = super::resume_task_from_consumed_poll_answer(
             &Bot::new("test-token"),
             context.as_ref(),
             &pending_poll,
+            &choice,
             &[1],
         )
         .await;
@@ -4073,6 +4105,25 @@ mod tests {
             stored.ok().flatten(),
             Some(poll) if poll.answered && poll.selected_option_ids == vec![1]
         ));
+    }
+
+    #[test]
+    fn encode_poll_resume_input_contains_selected_option_values() {
+        let choice = PendingChoiceInput {
+            options: vec!["blue-green".to_string(), "rolling".to_string()],
+            allow_multiple: true,
+            min_choices: 1,
+            max_choices: 2,
+        };
+
+        let payload = super::encode_poll_resume_input(&[1, 0], &choice);
+        assert!(payload.is_ok());
+        let payload = payload.unwrap_or_else(|_| unreachable!());
+        assert_ne!(payload, "1,0");
+        assert_eq!(
+            payload,
+            "selected_option_ids=[1, 0]\nselected_options=[\"rolling\", \"blue-green\"]"
+        );
     }
 
     #[tokio::test]
