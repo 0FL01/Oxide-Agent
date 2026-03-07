@@ -219,10 +219,23 @@ pub struct PendingChoiceInput {
     pub max_choices: u8,
 }
 
+const PENDING_CHOICE_MIN_OPTIONS: usize = 2;
+const PENDING_CHOICE_MAX_OPTIONS: usize = 10;
+
 impl PendingChoiceInput {
     fn validate(&self) -> Result<(), PendingInputValidationError> {
-        if self.options.is_empty() {
-            return Err(PendingInputValidationError::EmptyChoiceOptions);
+        if self.options.len() < PENDING_CHOICE_MIN_OPTIONS {
+            return Err(PendingInputValidationError::ChoiceOptionsBelowMinimum {
+                count: self.options.len(),
+                minimum: PENDING_CHOICE_MIN_OPTIONS,
+            });
+        }
+
+        if self.options.len() > PENDING_CHOICE_MAX_OPTIONS {
+            return Err(PendingInputValidationError::ChoiceOptionsAboveMaximum {
+                count: self.options.len(),
+                maximum: PENDING_CHOICE_MAX_OPTIONS,
+            });
         }
 
         let option_count = u8::try_from(self.options.len()).map_err(|_| {
@@ -325,9 +338,22 @@ pub enum PendingInputValidationError {
     /// Prompt cannot be empty.
     #[error("pending input prompt cannot be empty")]
     EmptyPrompt,
-    /// Choice input must contain at least one option.
-    #[error("choice input must contain at least one option")]
-    EmptyChoiceOptions,
+    /// Choice input must contain at least the required minimum options.
+    #[error("choice input must contain at least {minimum} options (got {count})")]
+    ChoiceOptionsBelowMinimum {
+        /// Number of options provided.
+        count: usize,
+        /// Minimum allowed option count.
+        minimum: usize,
+    },
+    /// Choice input cannot exceed the supported maximum option count.
+    #[error("choice input must contain at most {maximum} options (got {count})")]
+    ChoiceOptionsAboveMaximum {
+        /// Number of options provided.
+        count: usize,
+        /// Maximum allowed option count.
+        maximum: usize,
+    },
     /// Choice option value cannot be empty.
     #[error("choice option value cannot be empty")]
     EmptyChoiceOptionValue,
@@ -919,9 +945,9 @@ mod tests {
         assert_eq!(
             snapshot.validate(),
             Err(TaskSnapshotValidationError::InvalidPendingInput(
-                PendingInputValidationError::MaxChoicesExceedsOptions {
-                    max_choices: 2,
-                    options: 1,
+                PendingInputValidationError::ChoiceOptionsBelowMinimum {
+                    count: 1,
+                    minimum: 2,
                 },
             ))
         );
@@ -1013,6 +1039,42 @@ mod tests {
 
     #[test]
     fn pending_input_choice_validation_rejects_invalid_payloads() {
+        let too_few_options = PendingInput {
+            request_id: "choice-too-few".to_string(),
+            prompt: "Select one".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec!["only".to_string()],
+                allow_multiple: false,
+                min_choices: 1,
+                max_choices: 1,
+            }),
+        };
+        assert_eq!(
+            too_few_options.validate(),
+            Err(PendingInputValidationError::ChoiceOptionsBelowMinimum {
+                count: 1,
+                minimum: 2,
+            })
+        );
+
+        let too_many_options = PendingInput {
+            request_id: "choice-too-many".to_string(),
+            prompt: "Select targets".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: (1..=11).map(|index| format!("option-{index}")).collect(),
+                allow_multiple: true,
+                min_choices: 1,
+                max_choices: 3,
+            }),
+        };
+        assert_eq!(
+            too_many_options.validate(),
+            Err(PendingInputValidationError::ChoiceOptionsAboveMaximum {
+                count: 11,
+                maximum: 10,
+            })
+        );
+
         let invalid_bounds = PendingInput {
             request_id: "choice-2".to_string(),
             prompt: "Select items".to_string(),

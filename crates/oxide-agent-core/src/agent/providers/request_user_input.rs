@@ -133,12 +133,12 @@ impl ToolProvider for RequestUserInputProvider {
                             "options": {
                                 "type": "array",
                                 "items": { "type": "string" },
-                                "minItems": 1,
-                                "maxItems": 12
+                                "minItems": 2,
+                                "maxItems": 10
                             },
                             "allow_multiple": { "type": "boolean" },
-                            "min_choices": { "type": "integer", "minimum": 1, "maximum": 12 },
-                            "max_choices": { "type": "integer", "minimum": 1, "maximum": 12 }
+                            "min_choices": { "type": "integer", "minimum": 1, "maximum": 10 },
+                            "max_choices": { "type": "integer", "minimum": 1, "maximum": 10 }
                         },
                         "required": ["options"]
                     }
@@ -245,5 +245,40 @@ mod tests {
             panic!("expected choice payload validation error");
         };
         assert!(error.to_string().contains("requires a `choice` object"));
+    }
+
+    #[tokio::test]
+    async fn request_user_input_provider_rejects_telegram_unsupported_choice_option_counts() {
+        let provider = RequestUserInputProvider::new();
+
+        let too_few = provider
+            .execute(
+                "request_user_input",
+                r#"{"prompt":"Pick one","kind":"choice","choice":{"options":["only"],"allow_multiple":false,"min_choices":1,"max_choices":1}}"#,
+                None,
+                None,
+            )
+            .await;
+        let Err(too_few_error) = too_few else {
+            panic!("expected option lower-bound validation error");
+        };
+        assert!(too_few_error
+            .to_string()
+            .contains("must contain at least 2 options"));
+
+        let too_many = provider
+            .execute(
+                "request_user_input",
+                r#"{"prompt":"Pick several","kind":"choice","choice":{"options":["1","2","3","4","5","6","7","8","9","10","11"],"allow_multiple":true,"min_choices":1,"max_choices":3}}"#,
+                None,
+                None,
+            )
+            .await;
+        let Err(too_many_error) = too_many else {
+            panic!("expected option upper-bound validation error");
+        };
+        assert!(too_many_error
+            .to_string()
+            .contains("must contain at most 10 options"));
     }
 }
