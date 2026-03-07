@@ -44,13 +44,17 @@ crates/
 │   │   ├── lib.rs
 │   │   ├── session_registry.rs      # Управление сессиями пользователей
 │   │   ├── task_registry.rs         # Runtime registry для TaskId и cancellation tokens
+│   │   ├── task_executor.rs         # Detached task execution + checkpoint persistence
 │   │   ├── task_events.rs           # Transport-agnostic task event publishing
+│   │   ├── task_recovery.rs         # Boot-time reconciliation and stale snapshot repair
+│   │   ├── worker_manager.rs        # TaskId -> JoinHandle tracking and worker limits
 │   │   ├── agent/
 │   │   │   └── runtime/             # Реализация AgentRuntime
 ├── oxide-agent-transport-telegram/  # Транспорт: Telegram Bot API
 │   ├── src/
 │   │   ├── runner.rs                # Инициализация бота и DI
 │   │   ├── bot/
+│   │   │   ├── context.rs           # TelegramHandlerContext shared DI bundle
 │   │   │   ├── handlers.rs          # Обработчики команд
 │   │   │   ├── agent_handlers.rs    # Обработчики сообщений агенту
 │   │   │   ├── agent_transport.rs   # Реализация AgentTransport
@@ -68,8 +72,8 @@ Dockerfile                           # Сборка основного Rust-пр
 
 ### Workspace crates
 - `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, task domain и persistence contract.
-- `oxide-agent-runtime`: оркестрация сессий, task registry, task event publishing, цикл исполнения и runtime-компоненты.
-- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, телеметрия доставки.
+- `oxide-agent-runtime`: оркестрация сессий, worker manager, detached task executor, task recovery, task registry, task event publishing и runtime-компоненты.
+- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, runtime-aware Agent Mode routing, телеметрия доставки.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
 ## 🦀 Rust Architecture & Workflow

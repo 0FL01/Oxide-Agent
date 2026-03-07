@@ -6,6 +6,19 @@ Progress update:
 
 - Stage 1 completed on `arch-agent-mode`.
 - Handover note: `docs/3-level-agent-stage-1-handover.txt`.
+- Stage 2 implementation is partially landed on `arch-agent-mode`.
+- Completed Stage 2 commits:
+  - `c254516` `feat(stage-2/slice-1): add background worker manager`
+  - `5c19b3a` `feat(stage-2/slice-2): add detached task executor`
+  - `c9c40b3` `feat(stage-2/slice-3): add task recovery reconciliation`
+  - `b1471c4` `feat(stage-2/slice-4): add cascading task cancellation`
+  - `25e8924` `fix(stage-2/slice-4): make cancelled snapshots restart-safe`
+  - `384a1c2` `feat(stage-2/slice-5): wire telegram flow to runtime tasks`
+  - `5bc7058` `fix(stage-2/slice-5): guard start flow during runtime task`
+  - `3d31d76` `fix(stage-2/slice-5): align start handler call`
+  - `5baf644` `fix(stage-2/slice-5): restore document agent-mode routing`
+- Stage 2 handover note: `docs/3-level-agent-stage-2-handover.txt`.
+- Stage 2 is still not marked complete: final review found one remaining transport security gap around `agent_allowed_users` re-check on persisted-state re-entry.
 
 Этот документ дополняет `docs/3-level-agent.md` и раскладывает внедрение Agent Mode v2 на конкретные стадии и небольшие auditable slices.
 
@@ -182,6 +195,22 @@ Stage 1 review status: APPROVED
 
 Цель stage: отделить long-running execution от user-facing request flow.
 
+Status: In Progress
+
+Implemented on branch `arch-agent-mode` so far:
+
+- Slice 2.1 - `c254516` `feat(stage-2/slice-1): add background worker manager`
+- Slice 2.2 - `5c19b3a` `feat(stage-2/slice-2): add detached task executor`
+- Slice 2.3 - `c9c40b3` `feat(stage-2/slice-3): add task recovery reconciliation`
+- Slice 2.4 - `b1471c4` `feat(stage-2/slice-4): add cascading task cancellation`
+- Slice 2.4 follow-up - `25e8924` `fix(stage-2/slice-4): make cancelled snapshots restart-safe`
+- Stage 2 transport integration follow-ups:
+  - `384a1c2` `feat(stage-2/slice-5): wire telegram flow to runtime tasks`
+  - `5bc7058` `fix(stage-2/slice-5): guard start flow during runtime task`
+  - `3d31d76` `fix(stage-2/slice-5): align start handler call`
+  - `5baf644` `fix(stage-2/slice-5): restore document agent-mode routing`
+- Current blocker before Stage 2 approval: persisted-state re-entry must re-check `agent_allowed_users` before restoring Agent Mode after access revoke.
+
 #### Slice 2.1 - Background Worker Manager
 
 Crates:
@@ -277,6 +306,8 @@ cargo test -p oxide-agent-runtime task_recovery
 
 #### Slice 2.4 - Cascading Cancellation
 
+Status: Done (`b1471c4`), follow-up durability fix landed in `25e8924`
+
 Crates:
 
 - `oxide-agent-runtime`
@@ -303,6 +334,37 @@ Verification:
 
 ```bash
 cargo test -p oxide-agent-runtime cancellation
+```
+
+#### Slice 2.4 Follow-up - Durable Cancelled Snapshot Persistence
+
+Status: Done (`25e8924`)
+
+Crates:
+
+- `oxide-agent-runtime`
+
+Depends on:
+
+- Slice 2.4
+
+Deliverables:
+
+- durable cancellation path that appends task events before terminal cancelled snapshot writes;
+- retry/compensation path for already-terminal `Cancelled` tasks when snapshot persistence failed;
+- recovery repair for stale snapshots whose event log is ahead of the snapshot checkpoint.
+
+Acceptance criteria:
+
+- committed cancellation cannot be recovered after restart as non-terminal because one cancelled snapshot write failed;
+- worker finalization repairs stale cancelled snapshot state without requiring a second transport-level cancel;
+- recovery deterministically upgrades stale snapshot state from the persisted event log.
+
+Verification:
+
+```bash
+cargo test -p oxide-agent-runtime cancellation
+cargo test -p oxide-agent-runtime task_recovery
 ```
 
 Exit criteria for Stage 2:

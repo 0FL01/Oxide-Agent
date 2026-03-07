@@ -1,0 +1,73 @@
+Stage 2 handover note
+
+Branch
+arch-agent-mode
+
+Scope completed
+Stage 2 runtime background execution foundation is implemented and individually slice-reviewed for:
+- detached worker ownership in runtime
+- detached task executor and checkpoint persistence
+- boot-time task recovery and reconciliation
+- cascading cancellation
+- restart-safe durability follow-up for cancelled snapshot persistence
+- Telegram production flow rewired onto runtime-owned task/session coordination
+
+Relevant commits
+c254516 feat(stage-2/slice-1): add background worker manager
+5c19b3a feat(stage-2/slice-2): add detached task executor
+c9c40b3 feat(stage-2/slice-3): add task recovery reconciliation
+b1471c4 feat(stage-2/slice-4): add cascading task cancellation
+25e8924 fix(stage-2/slice-4): make cancelled snapshots restart-safe
+384a1c2 feat(stage-2/slice-5): wire telegram flow to runtime tasks
+5bc7058 fix(stage-2/slice-5): guard start flow during runtime task
+3d31d76 fix(stage-2/slice-5): align start handler call
+5baf644 fix(stage-2/slice-5): restore document agent-mode routing
+
+Current repo status at handoff
+Working tree should be clean after the latest runtime fix commit and docs update commit.
+
+What changed in code
+Runtime:
+- added worker manager for TaskId -> JoinHandle tracking
+- added detached task executor with persisted snapshots
+- added boot-time recovery and snapshot listing/rewrite path
+- cancellation now persists durable terminal evidence through event-log-backed repair
+
+Telegram transport:
+- create/run/cancel/retry/reset/exit/destructive paths moved under runtime-owned session/task coordination
+- /start and agent-mode re-entry guarded against live runtime tasks
+- document flow now restores persisted agent mode like text/voice/photo
+
+Important open blocker
+Stage 2 is still not APPROVED.
+
+Remaining blocker from final review:
+- persisted-state re-entry paths can restore Agent Mode without re-checking agent_allowed_users after access revoke
+
+Impact of blocker
+- a user whose access was revoked may still re-enter Agent Mode through persisted state restoration until authorization is re-checked on restore paths
+- because of this, Stage 2 final review is still red even though the runtime and transport ownership work is largely in place
+
+Recommended next step
+Implement a narrow transport follow-up:
+- re-check agent_allowed_users on all persisted-state restore/re-entry paths before returning to Agent Mode
+- if access is no longer allowed, clear/reset persisted/dialogue state to safe non-agent mode
+- add regressions for text/photo/voice/document restore with revoked access
+
+Verification commands used recently
+cargo test -p oxide-agent-runtime cancellation
+cargo test -p oxide-agent-runtime task_recovery
+cargo test -p oxide-agent-core
+cargo test -p oxide-agent-runtime
+cargo test -p oxide-agent-transport-telegram
+cargo clippy -p oxide-agent-core -p oxide-agent-runtime -p oxide-agent-transport-telegram -p oxide-agent-telegram-bot --all-targets -- -D warnings
+cargo fmt --check
+
+Files to inspect first for the remaining blocker
+crates/oxide-agent-transport-telegram/src/bot/handlers.rs
+crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs
+crates/oxide-agent-transport-telegram/src/runner.rs
+
+Notes
+Do not treat Stage 2 as approved yet.
+The main remaining work is transport authorization consistency, not runtime execution mechanics.
