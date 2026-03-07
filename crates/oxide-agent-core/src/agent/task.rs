@@ -57,6 +57,8 @@ pub enum TaskState {
     Pending,
     /// Task is actively executing.
     Running,
+    /// Task is paused and waiting for user-provided input.
+    WaitingInput,
     /// Task finished successfully.
     Completed,
     /// Task finished with a failure.
@@ -88,7 +90,8 @@ impl TaskState {
     ///
     /// Transition graph:
     /// Pending -> Running | Cancelled
-    /// Running -> Completed | Failed | Cancelled
+    /// Running -> WaitingInput | Completed | Failed | Cancelled
+    /// WaitingInput -> Running | Cancelled
     #[must_use]
     pub const fn can_transition_to(self, next: Self) -> bool {
         matches!(
@@ -96,8 +99,9 @@ impl TaskState {
             (Self::Pending, Self::Running | Self::Cancelled)
                 | (
                     Self::Running,
-                    Self::Completed | Self::Failed | Self::Cancelled
+                    Self::WaitingInput | Self::Completed | Self::Failed | Self::Cancelled
                 )
+                | (Self::WaitingInput, Self::Running | Self::Cancelled)
         )
     }
 
@@ -156,11 +160,233 @@ impl Default for TaskMetadata {
     }
 }
 
+/// Transport-agnostic pending input request persisted for HITL resume flows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInput {
+    /// Stable request identifier used by runtime/transport mapping layers.
+    pub request_id: String,
+    /// Human-readable prompt shown to the user.
+    pub prompt: String,
+    /// Typed payload for user response constraints.
+    #[serde(flatten)]
+    pub kind: PendingInputKind,
+}
+
+impl PendingInput {
+    /// Validate request fields and kind-specific constraints.
+    pub fn validate(&self) -> Result<(), PendingInputValidationError> {
+        if self.request_id.trim().is_empty() {
+            return Err(PendingInputValidationError::EmptyRequestId);
+        }
+
+        if self.prompt.trim().is_empty() {
+            return Err(PendingInputValidationError::EmptyPrompt);
+        }
+
+        self.kind.validate()
+    }
+}
+
+/// Typed pending input payload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PendingInputKind {
+    /// Choice-based request (poll-like UX).
+    Choice(PendingChoiceInput),
+    /// Free-form textual response request.
+    Text(PendingTextInput),
+}
+
+impl PendingInputKind {
+    fn validate(&self) -> Result<(), PendingInputValidationError> {
+        match self {
+            Self::Choice(choice) => choice.validate(),
+            Self::Text(text) => text.validate(),
+        }
+    }
+}
+
+/// Constraints for a choice-style input.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingChoiceInput {
+    /// Available user-visible choices.
+    pub options: Vec<String>,
+    /// True when multiple options may be selected.
+    pub allow_multiple: bool,
+    /// Minimum selected options required for a valid answer.
+    pub min_choices: u8,
+    /// Maximum selected options allowed for a valid answer.
+    pub max_choices: u8,
+}
+
+impl PendingChoiceInput {
+    fn validate(&self) -> Result<(), PendingInputValidationError> {
+        if self.options.is_empty() {
+            return Err(PendingInputValidationError::EmptyChoiceOptions);
+        }
+
+        let option_count = u8::try_from(self.options.len()).map_err(|_| {
+            PendingInputValidationError::TooManyChoiceOptions {
+                count: self.options.len(),
+            }
+        })?;
+
+        for option in &self.options {
+            if option.trim().is_empty() {
+                return Err(PendingInputValidationError::EmptyChoiceOptionValue);
+            }
+        }
+
+        for (index, left) in self.options.iter().enumerate() {
+            if self
+                .options
+                .iter()
+                .skip(index + 1)
+                .any(|right| left == right)
+            {
+                return Err(PendingInputValidationError::DuplicateChoiceOptionValue(
+                    left.clone(),
+                ));
+            }
+        }
+
+        if !self.allow_multiple {
+            if self.min_choices != 1 || self.max_choices != 1 {
+                return Err(PendingInputValidationError::SingleChoiceMustBeExactlyOne {
+                    min_choices: self.min_choices,
+                    max_choices: self.max_choices,
+                });
+            }
+            return Ok(());
+        }
+
+        if self.min_choices == 0 {
+            return Err(PendingInputValidationError::MinChoicesMustBePositive);
+        }
+
+        if self.min_choices > self.max_choices {
+            return Err(PendingInputValidationError::InconsistentChoiceBounds {
+                min_choices: self.min_choices,
+                max_choices: self.max_choices,
+            });
+        }
+
+        if self.max_choices > option_count {
+            return Err(PendingInputValidationError::MaxChoicesExceedsOptions {
+                max_choices: self.max_choices,
+                options: option_count,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// Constraints for a text-style input.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingTextInput {
+    /// Minimum input length in UTF-8 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<u16>,
+    /// Maximum input length in UTF-8 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<u16>,
+    /// True when multi-line responses are acceptable.
+    pub multiline: bool,
+}
+
+impl PendingTextInput {
+    fn validate(&self) -> Result<(), PendingInputValidationError> {
+        if let Some(max_length) = self.max_length {
+            if max_length == 0 {
+                return Err(PendingInputValidationError::TextMaxLengthMustBePositive);
+            }
+        }
+
+        if let (Some(min_length), Some(max_length)) = (self.min_length, self.max_length) {
+            if min_length > max_length {
+                return Err(PendingInputValidationError::InconsistentTextBounds {
+                    min_length,
+                    max_length,
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Errors returned by pending input payload validation.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PendingInputValidationError {
+    /// Request identifier cannot be empty.
+    #[error("pending input request id cannot be empty")]
+    EmptyRequestId,
+    /// Prompt cannot be empty.
+    #[error("pending input prompt cannot be empty")]
+    EmptyPrompt,
+    /// Choice input must contain at least one option.
+    #[error("choice input must contain at least one option")]
+    EmptyChoiceOptions,
+    /// Choice option value cannot be empty.
+    #[error("choice option value cannot be empty")]
+    EmptyChoiceOptionValue,
+    /// Choice options must be unique.
+    #[error("duplicate choice option value: {0}")]
+    DuplicateChoiceOptionValue(String),
+    /// Choice option count exceeds representable bounds for max choice constraints.
+    #[error("choice option count is too large: {count}")]
+    TooManyChoiceOptions {
+        /// Number of options provided.
+        count: usize,
+    },
+    /// Single-choice requests must enforce exactly one selection.
+    #[error(
+        "single-choice request must use min_choices=1 and max_choices=1 (got min={min_choices}, max={max_choices})"
+    )]
+    SingleChoiceMustBeExactlyOne {
+        /// Minimum selected options required.
+        min_choices: u8,
+        /// Maximum selected options allowed.
+        max_choices: u8,
+    },
+    /// Multi-select request must require at least one choice.
+    #[error("min_choices must be positive")]
+    MinChoicesMustBePositive,
+    /// Min/max choice constraints are invalid.
+    #[error("invalid choice bounds: min_choices={min_choices}, max_choices={max_choices}")]
+    InconsistentChoiceBounds {
+        /// Minimum selected options required.
+        min_choices: u8,
+        /// Maximum selected options allowed.
+        max_choices: u8,
+    },
+    /// Max choices cannot exceed number of available options.
+    #[error("max_choices={max_choices} exceeds options={options}")]
+    MaxChoicesExceedsOptions {
+        /// Maximum selected options allowed.
+        max_choices: u8,
+        /// Available options count.
+        options: u8,
+    },
+    /// Max text length must be positive when configured.
+    #[error("text max_length must be positive")]
+    TextMaxLengthMustBePositive,
+    /// Min/max text constraints are invalid.
+    #[error("invalid text bounds: min_length={min_length}, max_length={max_length}")]
+    InconsistentTextBounds {
+        /// Minimum input length.
+        min_length: u16,
+        /// Maximum input length.
+        max_length: u16,
+    },
+}
+
 /// Schema version for persisted task snapshots.
-pub const TASK_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const TASK_SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 /// Schema version for persisted task event logs.
-pub const TASK_EVENT_LOG_SCHEMA_VERSION: u32 = 1;
+pub const TASK_EVENT_LOG_SCHEMA_VERSION: u32 = 2;
 
 /// Persisted checkpoint used for restart-safe task recovery.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +431,9 @@ pub struct TaskSnapshot {
     /// Optional recovery note written when the runtime cannot safely resume execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_note: Option<String>,
+    /// Optional pending HITL request persisted for restart-safe resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_input: Option<PendingInput>,
 }
 
 impl TaskSnapshot {
@@ -225,8 +454,48 @@ impl TaskSnapshot {
             task,
             checkpoint,
             recovery_note: None,
+            pending_input: None,
         }
     }
+
+    /// Validate snapshot invariants required for persistence.
+    pub fn validate(&self) -> Result<(), TaskSnapshotValidationError> {
+        match self.metadata.state {
+            TaskState::WaitingInput => {
+                let pending_input = self
+                    .pending_input
+                    .as_ref()
+                    .ok_or(TaskSnapshotValidationError::MissingPendingInputForWaitingState)?;
+                pending_input
+                    .validate()
+                    .map_err(TaskSnapshotValidationError::InvalidPendingInput)
+            }
+            state => {
+                if self.pending_input.is_some() {
+                    Err(TaskSnapshotValidationError::UnexpectedPendingInputForState { state })
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// Errors returned by task snapshot invariant checks.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum TaskSnapshotValidationError {
+    /// Waiting input state must always persist a pending input payload.
+    #[error("waiting_input state requires pending_input payload")]
+    MissingPendingInputForWaitingState,
+    /// Pending input payload is only valid while waiting for input.
+    #[error("state {state:?} cannot carry pending_input payload")]
+    UnexpectedPendingInputForState {
+        /// State that carried an unexpected pending payload.
+        state: TaskState,
+    },
+    /// Pending payload does not pass validation constraints.
+    #[error("invalid pending input payload: {0}")]
+    InvalidPendingInput(PendingInputValidationError),
 }
 
 /// Baseline persisted task event entry.
@@ -298,8 +567,10 @@ pub enum TaskStateTransitionError {
 #[cfg(test)]
 mod tests {
     use super::{
-        TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot, TaskState,
-        TaskStateTransitionError, TASK_EVENT_LOG_SCHEMA_VERSION, TASK_SNAPSHOT_SCHEMA_VERSION,
+        PendingChoiceInput, PendingInput, PendingInputKind, PendingInputValidationError,
+        PendingTextInput, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot,
+        TaskSnapshotValidationError, TaskState, TaskStateTransitionError,
+        TASK_EVENT_LOG_SCHEMA_VERSION, TASK_SNAPSHOT_SCHEMA_VERSION,
     };
     use crate::agent::SessionId;
     use chrono::Utc;
@@ -311,9 +582,11 @@ mod tests {
         assert!(TaskState::Cancelled.is_terminal());
         assert!(TaskState::Pending.is_non_terminal());
         assert!(TaskState::Running.is_non_terminal());
+        assert!(TaskState::WaitingInput.is_non_terminal());
         assert!(!TaskState::Completed.is_non_terminal());
         assert!(!TaskState::Pending.is_active());
         assert!(TaskState::Running.is_active());
+        assert!(!TaskState::WaitingInput.is_active());
         assert!(!TaskState::Cancelled.is_active());
     }
 
@@ -327,11 +600,19 @@ mod tests {
     #[test]
     fn task_state_allows_valid_transitions_from_running() {
         for next in [
+            TaskState::WaitingInput,
             TaskState::Completed,
             TaskState::Failed,
             TaskState::Cancelled,
         ] {
             assert_eq!(TaskState::Running.validate_transition(next), Ok(()));
+        }
+    }
+
+    #[test]
+    fn task_state_allows_valid_transitions_from_waiting_input() {
+        for next in [TaskState::Running, TaskState::Cancelled] {
+            assert_eq!(TaskState::WaitingInput.validate_transition(next), Ok(()));
         }
     }
 
@@ -343,18 +624,25 @@ mod tests {
             (TaskState::Pending, TaskState::Failed),
             (TaskState::Running, TaskState::Pending),
             (TaskState::Running, TaskState::Running),
+            (TaskState::WaitingInput, TaskState::Pending),
+            (TaskState::WaitingInput, TaskState::WaitingInput),
+            (TaskState::WaitingInput, TaskState::Completed),
+            (TaskState::WaitingInput, TaskState::Failed),
             (TaskState::Completed, TaskState::Pending),
             (TaskState::Completed, TaskState::Running),
+            (TaskState::Completed, TaskState::WaitingInput),
             (TaskState::Completed, TaskState::Completed),
             (TaskState::Completed, TaskState::Failed),
             (TaskState::Completed, TaskState::Cancelled),
             (TaskState::Failed, TaskState::Pending),
             (TaskState::Failed, TaskState::Running),
+            (TaskState::Failed, TaskState::WaitingInput),
             (TaskState::Failed, TaskState::Completed),
             (TaskState::Failed, TaskState::Failed),
             (TaskState::Failed, TaskState::Cancelled),
             (TaskState::Cancelled, TaskState::Pending),
             (TaskState::Cancelled, TaskState::Running),
+            (TaskState::Cancelled, TaskState::WaitingInput),
             (TaskState::Cancelled, TaskState::Completed),
             (TaskState::Cancelled, TaskState::Failed),
             (TaskState::Cancelled, TaskState::Cancelled),
@@ -416,6 +704,287 @@ mod tests {
         assert_eq!(parsed.checkpoint.state, TaskState::Pending);
         assert_eq!(parsed.checkpoint.last_event_sequence, 3);
         assert_eq!(parsed.recovery_note, None);
+        assert_eq!(parsed.pending_input, None);
+    }
+
+    #[test]
+    fn task_snapshot_roundtrip_preserves_pending_input_payload() {
+        let mut metadata = TaskMetadata::new();
+        assert_eq!(metadata.transition_to(TaskState::Running), Ok(()));
+        assert_eq!(metadata.transition_to(TaskState::WaitingInput), Ok(()));
+
+        let mut snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(7), "collect logs".to_string(), 9);
+        snapshot.pending_input = Some(PendingInput {
+            request_id: "req-123".to_string(),
+            prompt: "Choose data sources".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec![
+                    "system".to_string(),
+                    "application".to_string(),
+                    "database".to_string(),
+                ],
+                allow_multiple: true,
+                min_choices: 1,
+                max_choices: 2,
+            }),
+        });
+        snapshot.checkpoint.state = TaskState::WaitingInput;
+
+        let json = serde_json::to_string(&snapshot);
+        assert!(json.is_ok());
+
+        let parsed: Result<TaskSnapshot, serde_json::Error> =
+            serde_json::from_str(&json.unwrap_or_default());
+        assert!(parsed.is_ok());
+
+        let parsed = parsed.unwrap_or(snapshot.clone());
+        assert_eq!(parsed.metadata.state, TaskState::WaitingInput);
+        assert_eq!(parsed.checkpoint.state, TaskState::WaitingInput);
+        assert_eq!(parsed.pending_input, snapshot.pending_input);
+        assert_eq!(parsed.validate(), Ok(()));
+    }
+
+    #[test]
+    fn task_snapshot_validation_rejects_waiting_input_without_pending_input() {
+        let mut metadata = TaskMetadata::new();
+        assert_eq!(metadata.transition_to(TaskState::Running), Ok(()));
+        assert_eq!(metadata.transition_to(TaskState::WaitingInput), Ok(()));
+
+        let snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(10), "collect data".to_string(), 1);
+
+        assert_eq!(
+            snapshot.validate(),
+            Err(TaskSnapshotValidationError::MissingPendingInputForWaitingState)
+        );
+    }
+
+    #[test]
+    fn task_snapshot_validation_rejects_pending_input_outside_waiting_state() {
+        let metadata = TaskMetadata::new();
+        let mut snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(10), "collect".to_string(), 1);
+        snapshot.pending_input = Some(PendingInput {
+            request_id: "req-1".to_string(),
+            prompt: "Choose one".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec!["a".to_string(), "b".to_string()],
+                allow_multiple: false,
+                min_choices: 1,
+                max_choices: 1,
+            }),
+        });
+
+        assert_eq!(
+            snapshot.validate(),
+            Err(
+                TaskSnapshotValidationError::UnexpectedPendingInputForState {
+                    state: TaskState::Pending,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn task_snapshot_validation_rejects_invalid_pending_input_payload() {
+        let mut metadata = TaskMetadata::new();
+        assert_eq!(metadata.transition_to(TaskState::Running), Ok(()));
+        assert_eq!(metadata.transition_to(TaskState::WaitingInput), Ok(()));
+
+        let mut snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(11), "collect".to_string(), 2);
+        snapshot.pending_input = Some(PendingInput {
+            request_id: "req-2".to_string(),
+            prompt: "Pick".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec!["only".to_string()],
+                allow_multiple: true,
+                min_choices: 2,
+                max_choices: 2,
+            }),
+        });
+
+        assert_eq!(
+            snapshot.validate(),
+            Err(TaskSnapshotValidationError::InvalidPendingInput(
+                PendingInputValidationError::MaxChoicesExceedsOptions {
+                    max_choices: 2,
+                    options: 1,
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn task_snapshot_deserializes_pre_slice_payload_without_pending_input() {
+        let snapshot_json = r#"{
+            "schema_version": 2,
+            "metadata": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "state": "running",
+                "created_at": "2026-03-07T00:00:00Z",
+                "updated_at": "2026-03-07T00:00:00Z"
+            },
+            "session_id": 42,
+            "task": "legacy snapshot",
+            "checkpoint": {
+                "schema_version": 2,
+                "state": "running",
+                "last_event_sequence": 5,
+                "persisted_at": "2026-03-07T00:00:00Z"
+            },
+            "recovery_note": null
+        }"#;
+
+        let parsed: Result<TaskSnapshot, serde_json::Error> = serde_json::from_str(snapshot_json);
+        assert!(parsed.is_ok());
+        let parsed = parsed.unwrap_or_else(|_| {
+            TaskSnapshot::new(
+                TaskMetadata::new(),
+                SessionId::from(42),
+                "fallback".to_string(),
+                0,
+            )
+        });
+        assert_eq!(parsed.schema_version, 2);
+        assert_eq!(parsed.pending_input, None);
+        assert_eq!(parsed.metadata.state, TaskState::Running);
+        assert_eq!(parsed.validate(), Ok(()));
+    }
+
+    #[test]
+    fn task_event_deserializes_pre_slice_payload_with_legacy_schema_version() {
+        let event_json = r#"{
+            "schema_version": 1,
+            "task_id": "11111111-1111-4111-8111-111111111111",
+            "sequence": 1,
+            "kind": "state_changed",
+            "state": "running",
+            "message": "legacy",
+            "recorded_at": "2026-03-07T00:00:00Z"
+        }"#;
+
+        let parsed: Result<TaskEvent, serde_json::Error> = serde_json::from_str(event_json);
+        assert!(parsed.is_ok());
+        let parsed = parsed.unwrap_or_else(|_| {
+            TaskEvent::new(
+                TaskId::new(),
+                1,
+                TaskEventKind::StateChanged,
+                TaskState::Running,
+                Some("fallback".to_string()),
+            )
+        });
+        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.state, TaskState::Running);
+    }
+
+    #[test]
+    fn pending_input_choice_validation_accepts_valid_payload() {
+        let input = PendingInput {
+            request_id: "choice-1".to_string(),
+            prompt: "Select reports to generate".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec![
+                    "daily".to_string(),
+                    "weekly".to_string(),
+                    "monthly".to_string(),
+                ],
+                allow_multiple: true,
+                min_choices: 1,
+                max_choices: 2,
+            }),
+        };
+
+        assert_eq!(input.validate(), Ok(()));
+    }
+
+    #[test]
+    fn pending_input_choice_validation_rejects_invalid_payloads() {
+        let invalid_bounds = PendingInput {
+            request_id: "choice-2".to_string(),
+            prompt: "Select items".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec!["a".to_string(), "b".to_string()],
+                allow_multiple: true,
+                min_choices: 2,
+                max_choices: 1,
+            }),
+        };
+        assert_eq!(
+            invalid_bounds.validate(),
+            Err(PendingInputValidationError::InconsistentChoiceBounds {
+                min_choices: 2,
+                max_choices: 1,
+            })
+        );
+
+        let duplicate_option = PendingInput {
+            request_id: "choice-3".to_string(),
+            prompt: "Select source".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec!["db".to_string(), "db".to_string()],
+                allow_multiple: false,
+                min_choices: 1,
+                max_choices: 1,
+            }),
+        };
+        assert_eq!(
+            duplicate_option.validate(),
+            Err(PendingInputValidationError::DuplicateChoiceOptionValue(
+                "db".to_string(),
+            ))
+        );
+
+        let invalid_single = PendingInput {
+            request_id: "choice-4".to_string(),
+            prompt: "Pick exactly one".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec!["x".to_string(), "y".to_string()],
+                allow_multiple: false,
+                min_choices: 1,
+                max_choices: 2,
+            }),
+        };
+        assert_eq!(
+            invalid_single.validate(),
+            Err(PendingInputValidationError::SingleChoiceMustBeExactlyOne {
+                min_choices: 1,
+                max_choices: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn pending_input_text_validation_handles_bounds() {
+        let valid = PendingInput {
+            request_id: "text-1".to_string(),
+            prompt: "Describe expected output".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(5),
+                max_length: Some(200),
+                multiline: true,
+            }),
+        };
+        assert_eq!(valid.validate(), Ok(()));
+
+        let invalid = PendingInput {
+            request_id: "text-2".to_string(),
+            prompt: "Describe expected output".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(300),
+                max_length: Some(200),
+                multiline: true,
+            }),
+        };
+        assert_eq!(
+            invalid.validate(),
+            Err(PendingInputValidationError::InconsistentTextBounds {
+                min_length: 300,
+                max_length: 200,
+            })
+        );
     }
 
     #[test]

@@ -68,6 +68,7 @@ pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{AgentSession, AgentStatus};
 pub use skills::SkillRegistry;
 pub use task::{
-    TaskCheckpoint, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot, TaskState,
-    TaskStateTransitionError,
+    PendingChoiceInput, PendingInput, PendingInputKind, PendingInputValidationError,
+    PendingTextInput, TaskCheckpoint, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot,
+    TaskSnapshotValidationError, TaskState, TaskStateTransitionError,
 };

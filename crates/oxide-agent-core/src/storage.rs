@@ -3,7 +3,7 @@
 //! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
 
 use crate::agent::memory::AgentMemory;
-use crate::agent::task::{TaskEvent, TaskId, TaskSnapshot};
+use crate::agent::task::{TaskEvent, TaskId, TaskSnapshot, TaskSnapshotValidationError};
 use crate::config::AgentSettings;
 use async_trait::async_trait;
 use aws_credential_types::Credentials;
@@ -63,6 +63,9 @@ pub enum StorageError {
         /// Task identifier carried by the event payload.
         actual: TaskId,
     },
+    /// Task snapshot payload violates core persistence invariants.
+    #[error("invalid task snapshot: {0}")]
+    InvalidTaskSnapshot(#[from] TaskSnapshotValidationError),
 }
 
 /// User-specific configuration persisted in storage
@@ -578,6 +581,7 @@ impl StorageProvider for R2Storage {
 
     /// Persist a task snapshot for restart recovery.
     async fn save_task_snapshot(&self, snapshot: &TaskSnapshot) -> Result<(), StorageError> {
+        snapshot.validate()?;
         self.save_json(&task_snapshot_key(snapshot.metadata.id), snapshot)
             .await
     }
@@ -718,7 +722,10 @@ mod tests {
         generate_chat_uuid, task_event_log_key, task_snapshot_key, user_chat_history_key,
         user_config_key, user_history_key, Message, StorageError, StorageProvider, UserConfig,
     };
-    use crate::agent::task::{TaskEvent, TaskEventKind, TaskMetadata, TaskSnapshot, TaskState};
+    use crate::agent::task::{
+        TaskEvent, TaskEventKind, TaskMetadata, TaskSnapshot, TaskSnapshotValidationError,
+        TaskState,
+    };
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -878,6 +885,7 @@ mod tests {
         }
 
         async fn save_task_snapshot(&self, snapshot: &TaskSnapshot) -> Result<(), StorageError> {
+            snapshot.validate()?;
             self.save_json(task_snapshot_key(snapshot.metadata.id), snapshot)
                 .await
         }
@@ -1064,6 +1072,29 @@ mod tests {
         let snapshots = storage.list_task_snapshots().await;
         assert!(snapshots.is_ok());
         assert_eq!(snapshots.unwrap_or_default().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn storage_task_snapshot_rejects_invalid_waiting_input_invariants() {
+        let storage = InMemoryStorage::default();
+        let mut metadata = TaskMetadata::new();
+        assert!(metadata.transition_to(TaskState::Running).is_ok());
+        assert!(metadata.transition_to(TaskState::WaitingInput).is_ok());
+
+        let snapshot = TaskSnapshot::new(
+            metadata,
+            crate::agent::SessionId::from(99),
+            "await response".to_string(),
+            3,
+        );
+
+        let saved = storage.save_task_snapshot(&snapshot).await;
+        assert!(matches!(
+            saved,
+            Err(StorageError::InvalidTaskSnapshot(
+                TaskSnapshotValidationError::MissingPendingInputForWaitingState
+            ))
+        ));
     }
 
     #[tokio::test]
