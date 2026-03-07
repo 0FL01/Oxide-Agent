@@ -16,7 +16,7 @@ use std::sync::Arc;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::UpdateHandler;
 use teloxide::prelude::*;
-use teloxide::types::CallbackQuery;
+use teloxide::types::{CallbackQuery, PollAnswer};
 use tracing::{error, info};
 
 /// Run the Telegram transport runtime.
@@ -118,6 +118,21 @@ fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
 
 fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
     dptree::entry()
+        .branch(
+            Update::filter_poll_answer()
+                .filter(|answer: PollAnswer, context: Arc<TelegramHandlerContext>| {
+                    if let Some(user) = answer.voter.user() {
+                        context
+                            .settings
+                            .telegram
+                            .agent_allowed_users()
+                            .contains(&user.id.0.cast_signed())
+                    } else {
+                        false
+                    }
+                })
+                .endpoint(handle_poll_answer),
+        )
         .branch(
             Update::filter_callback_query()
                 .filter(|q: CallbackQuery, context: Arc<TelegramHandlerContext>| {
@@ -359,6 +374,19 @@ async fn handle_callback(
 
     if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, context).await {
         error!("Loop callback handler error: {}", e);
+    }
+    respond(())
+}
+
+async fn handle_poll_answer(
+    bot: Bot,
+    answer: PollAnswer,
+    context: Arc<TelegramHandlerContext>,
+) -> Result<(), teloxide::RequestError> {
+    if let Err(e) =
+        bot::agent_handlers::handle_pending_input_poll_answer(bot, answer, context).await
+    {
+        error!("Poll answer handler error: {}", e);
     }
     respond(())
 }

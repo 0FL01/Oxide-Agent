@@ -20,11 +20,11 @@ use oxide_agent_core::agent::{
     executor::AgentExecutor,
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
-    AgentSession, SessionId,
+    AgentSession, PendingChoiceInput, PendingInputKind, SessionId, TaskState,
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
-use oxide_agent_core::storage::StorageProvider;
+use oxide_agent_core::storage::{PendingInputPoll, StorageProvider};
 use oxide_agent_runtime::{
     spawn_progress_runtime, CancellationToken, DetachedTaskSubmission, ProgressRuntimeConfig,
     SessionRegistry, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
@@ -36,9 +36,12 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQuery, ParseMode};
+use teloxide::types::{CallbackQuery, InputPollOption, MessageId, ParseMode, PollAnswer};
 use tokio::task::yield_now;
 use tracing::{debug, info, warn};
+
+const TELEGRAM_POLL_MIN_OPTIONS: usize = 2;
+const TELEGRAM_POLL_MAX_OPTIONS: usize = 10;
 
 /// Type alias for dialogue
 pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
@@ -98,6 +101,13 @@ enum RecreateContainerOutcome {
     SessionAccessError,
 }
 
+enum AgentControlCommand {
+    CancelTask,
+    ClearMemory,
+    RecreateContainer,
+    ExitAgentMode,
+}
+
 /// Inputs required to switch a Telegram user into agent mode.
 pub(crate) struct ActivateAgentModeParams {
     /// Telegram bot handle used for reply delivery.
@@ -108,6 +118,60 @@ pub(crate) struct ActivateAgentModeParams {
     pub dialogue: AgentDialogue,
     /// Shared runtime and dependency bundle for Telegram handlers.
     pub context: Arc<TelegramHandlerContext>,
+}
+
+fn parse_agent_control_command(text: &str) -> Option<AgentControlCommand> {
+    match text {
+        "❌ Cancel Task" => Some(AgentControlCommand::CancelTask),
+        "🗑 Clear Memory" => Some(AgentControlCommand::ClearMemory),
+        "🔄 Recreate Container" => Some(AgentControlCommand::RecreateContainer),
+        "⬅️ Exit Agent Mode" => Some(AgentControlCommand::ExitAgentMode),
+        _ => None,
+    }
+}
+
+async fn handle_agent_control_command(
+    command: AgentControlCommand,
+    bot: Bot,
+    msg: Message,
+    dialogue: AgentDialogue,
+    context: Arc<TelegramHandlerContext>,
+) -> Result<()> {
+    match command {
+        AgentControlCommand::CancelTask => {
+            cancel_agent_task(bot, msg, dialogue, Arc::clone(&context.task_runtime)).await
+        }
+        AgentControlCommand::ClearMemory => {
+            confirm_destructive_action(
+                ConfirmationType::ClearMemory,
+                bot,
+                msg,
+                dialogue,
+                Arc::clone(&context.task_runtime),
+            )
+            .await
+        }
+        AgentControlCommand::RecreateContainer => {
+            confirm_destructive_action(
+                ConfirmationType::RecreateContainer,
+                bot,
+                msg,
+                dialogue,
+                Arc::clone(&context.task_runtime),
+            )
+            .await
+        }
+        AgentControlCommand::ExitAgentMode => {
+            exit_agent_mode(
+                bot,
+                msg,
+                dialogue,
+                Arc::clone(&context.storage),
+                Arc::clone(&context.task_runtime),
+            )
+            .await
+        }
+    }
 }
 
 impl AgentTaskRuntime {
@@ -574,6 +638,31 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
                 .await?;
         }
         AgentModeActivationOutcome::LiveTaskStillRunning => {
+            if let Some(record) = context
+                .task_runtime
+                .active_task_for_session(session_id)
+                .await
+            {
+                let delivered_poll = deliver_waiting_choice_poll_if_needed(
+                    &bot,
+                    msg.chat.id,
+                    user_id,
+                    &context.storage,
+                    &record,
+                )
+                .await?;
+
+                if delivered_poll {
+                    bot.send_message(
+                        msg.chat.id,
+                        "⏳ Task is waiting for your response. Answer the active poll to continue.",
+                    )
+                    .reply_markup(get_agent_keyboard())
+                    .await?;
+                    return Ok(());
+                }
+            }
+
             bot.send_message(msg.chat.id, DefaultAgentView::task_already_running())
                 .reply_markup(get_agent_keyboard())
                 .await?;
@@ -598,45 +687,8 @@ pub async fn handle_agent_message(
     let chat_id = msg.chat.id;
     let session_id = SessionId::from(user_id);
 
-    // Check for control commands
-    if let Some(text) = msg.text() {
-        match text {
-            "❌ Cancel Task" => {
-                return cancel_agent_task(bot, msg, dialogue, Arc::clone(&context.task_runtime))
-                    .await;
-            }
-            "🗑 Clear Memory" => {
-                return confirm_destructive_action(
-                    ConfirmationType::ClearMemory,
-                    bot,
-                    msg,
-                    dialogue,
-                    Arc::clone(&context.task_runtime),
-                )
-                .await;
-            }
-            "🔄 Recreate Container" => {
-                return confirm_destructive_action(
-                    ConfirmationType::RecreateContainer,
-                    bot,
-                    msg,
-                    dialogue,
-                    Arc::clone(&context.task_runtime),
-                )
-                .await;
-            }
-            "⬅️ Exit Agent Mode" => {
-                return exit_agent_mode(
-                    bot,
-                    msg,
-                    dialogue,
-                    Arc::clone(&context.storage),
-                    Arc::clone(&context.task_runtime),
-                )
-                .await;
-            }
-            _ => {}
-        }
+    if let Some(command) = msg.text().and_then(parse_agent_control_command) {
+        return handle_agent_control_command(command, bot, msg, dialogue, context).await;
     }
 
     // Get or create session
@@ -649,18 +701,35 @@ pub async fn handle_agent_message(
     )
     .await;
 
-    if context
+    if let Some(record) = context
         .task_runtime
         .active_task_for_session(session_id)
         .await
-        .is_some()
     {
-        bot.send_message(
+        let delivered_poll = deliver_waiting_choice_poll_if_needed(
+            &bot,
             chat_id,
-            "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
+            user_id,
+            &context.storage,
+            &record,
         )
-        .reply_markup(get_agent_keyboard())
         .await?;
+
+        if delivered_poll {
+            bot.send_message(
+                chat_id,
+                "⏳ Task is waiting for your response. Answer the active poll to continue.",
+            )
+            .reply_markup(get_agent_keyboard())
+            .await?;
+        } else {
+            bot.send_message(
+                chat_id,
+                "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
+            )
+            .reply_markup(get_agent_keyboard())
+            .await?;
+        }
         return Ok(());
     }
 
@@ -733,6 +802,115 @@ async fn destructive_action_block_message(
             DefaultAgentView::container_recreate_blocked_by_task()
         }
     })
+}
+
+fn is_valid_poll_answer(option_ids: &[u8], choice: &PendingChoiceInput) -> bool {
+    let selection_count = option_ids.len();
+    if selection_count == 0 {
+        return false;
+    }
+
+    if selection_count < usize::from(choice.min_choices)
+        || selection_count > usize::from(choice.max_choices)
+    {
+        return false;
+    }
+
+    if !choice.allow_multiple && selection_count != 1 {
+        return false;
+    }
+
+    let mut seen = vec![false; choice.options.len()];
+    for option_id in option_ids {
+        let index = usize::from(*option_id);
+        if index >= choice.options.len() || seen[index] {
+            return false;
+        }
+        seen[index] = true;
+    }
+
+    true
+}
+
+async fn deliver_waiting_choice_poll_if_needed(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: i64,
+    storage: &Arc<dyn StorageProvider>,
+    record: &TaskRecord,
+) -> Result<bool> {
+    if record.metadata.state != TaskState::WaitingInput {
+        return Ok(false);
+    }
+
+    let Some(pending_input) = record.pending_input.as_ref() else {
+        return Ok(false);
+    };
+
+    let PendingInputKind::Choice(choice) = &pending_input.kind else {
+        return Ok(false);
+    };
+
+    if let Some(existing_poll) = storage
+        .load_pending_input_poll_by_task(record.metadata.id)
+        .await?
+    {
+        if existing_poll.request_id == pending_input.request_id {
+            return Ok(true);
+        }
+    }
+
+    if !(TELEGRAM_POLL_MIN_OPTIONS..=TELEGRAM_POLL_MAX_OPTIONS).contains(&choice.options.len()) {
+        warn!(
+            task_id = %record.metadata.id,
+            options = choice.options.len(),
+            "Pending choice input cannot be delivered as Telegram poll"
+        );
+        return Ok(false);
+    }
+
+    let poll_message = bot
+        .send_poll(
+            chat_id,
+            pending_input.prompt.clone(),
+            choice
+                .options
+                .iter()
+                .cloned()
+                .map(InputPollOption::from)
+                .collect::<Vec<_>>(),
+        )
+        .is_anonymous(false)
+        .allows_multiple_answers(choice.allow_multiple)
+        .await?;
+
+    let poll = poll_message
+        .poll()
+        .ok_or_else(|| anyhow::anyhow!("Telegram poll response missing poll payload"))?;
+
+    storage
+        .save_pending_input_poll(&PendingInputPoll {
+            task_id: record.metadata.id,
+            request_id: pending_input.request_id.clone(),
+            owner_user_id: user_id,
+            poll_id: poll.id.to_string(),
+            chat_id: chat_id.0,
+            message_id: poll_message.id.0,
+            answered: false,
+            selected_option_ids: Vec::new(),
+        })
+        .await?;
+
+    Ok(true)
+}
+
+async fn mark_pending_poll_answered(
+    storage: &Arc<dyn StorageProvider>,
+    pending_poll: &mut PendingInputPoll,
+) -> Result<()> {
+    pending_poll.answered = true;
+    storage.save_pending_input_poll(pending_poll).await?;
+    Ok(())
 }
 
 async fn run_agent_task_with_text(
@@ -957,6 +1135,114 @@ pub async fn handle_loop_callback(
             .await?;
         }
         _ => {}
+    }
+
+    Ok(())
+}
+
+/// Handle Telegram poll answers for waiting choice input routing.
+///
+/// # Errors
+///
+/// Returns an error only for storage or Telegram API failures.
+pub async fn handle_pending_input_poll_answer(
+    bot: Bot,
+    answer: PollAnswer,
+    context: Arc<TelegramHandlerContext>,
+) -> Result<()> {
+    let Some(user) = answer.voter.user() else {
+        return Ok(());
+    };
+
+    let answering_user_id = user.id.0.cast_signed();
+    let Some(mut pending_poll) = context
+        .storage
+        .load_pending_input_poll_by_id(&answer.poll_id.0)
+        .await?
+    else {
+        return Ok(());
+    };
+
+    if pending_poll.poll_id != answer.poll_id.0 {
+        warn!(
+            expected_poll_id = %pending_poll.poll_id,
+            actual_poll_id = %answer.poll_id,
+            task_id = %pending_poll.task_id,
+            "Rejected mismatched poll answer mapping"
+        );
+        return Ok(());
+    }
+
+    if pending_poll.owner_user_id != answering_user_id {
+        warn!(
+            poll_id = %answer.poll_id,
+            expected_owner = pending_poll.owner_user_id,
+            actual_user = answering_user_id,
+            "Rejected foreign poll answer"
+        );
+        return Ok(());
+    }
+
+    if pending_poll.answered {
+        return Ok(());
+    }
+
+    let Some(record) = context
+        .task_runtime
+        .task_registry
+        .get(&pending_poll.task_id)
+        .await
+    else {
+        mark_pending_poll_answered(&context.storage, &mut pending_poll).await?;
+        return Ok(());
+    };
+
+    let Some(pending_input) = record.pending_input else {
+        mark_pending_poll_answered(&context.storage, &mut pending_poll).await?;
+        return Ok(());
+    };
+
+    if record.metadata.state != TaskState::WaitingInput
+        || pending_input.request_id != pending_poll.request_id
+    {
+        mark_pending_poll_answered(&context.storage, &mut pending_poll).await?;
+        return Ok(());
+    }
+
+    let PendingInputKind::Choice(choice) = pending_input.kind else {
+        mark_pending_poll_answered(&context.storage, &mut pending_poll).await?;
+        return Ok(());
+    };
+
+    if !is_valid_poll_answer(&answer.option_ids, &choice) {
+        warn!(
+            poll_id = %answer.poll_id,
+            task_id = %pending_poll.task_id,
+            "Rejected invalid poll answer payload"
+        );
+        return Ok(());
+    }
+
+    pending_poll.answered = true;
+    pending_poll.selected_option_ids = answer.option_ids.clone();
+    context
+        .storage
+        .save_pending_input_poll(&pending_poll)
+        .await?;
+
+    if let Err(error) = bot
+        .stop_poll(
+            ChatId(pending_poll.chat_id),
+            MessageId(pending_poll.message_id),
+        )
+        .await
+    {
+        warn!(
+            task_id = %pending_poll.task_id,
+            poll_id = %pending_poll.poll_id,
+            error = %error,
+            "Failed to close consumed Telegram poll"
+        );
     }
 
     Ok(())
@@ -1253,8 +1539,9 @@ mod tests {
     use anyhow::{anyhow, Result as AnyResult};
     use async_trait::async_trait;
     use oxide_agent_core::agent::{
-        AgentExecutor, AgentMemory, AgentSession, PendingInput, PendingInputKind, PendingTextInput,
-        SessionId, TaskEvent, TaskId, TaskMetadata, TaskSnapshot, TaskState, TodoItem, TodoStatus,
+        AgentExecutor, AgentMemory, AgentSession, PendingChoiceInput, PendingInput,
+        PendingInputKind, PendingTextInput, SessionId, TaskEvent, TaskId, TaskMetadata,
+        TaskSnapshot, TaskState, TodoItem, TodoStatus,
     };
     use oxide_agent_core::config::AgentSettings;
     use oxide_agent_core::llm::LlmClient;
@@ -1265,12 +1552,16 @@ mod tests {
     };
     use std::collections::HashMap;
     use std::sync::Arc;
+    use teloxide::types::{ChatId, MaybeAnonymousUser, PollAnswer, PollId, User, UserId};
+    use teloxide::Bot;
     use tokio::sync::{Barrier, Mutex, Notify};
     use tokio::task::{JoinError, JoinHandle};
     use tokio::time::{timeout, Duration};
 
     struct TestStorage {
         snapshots: Mutex<HashMap<TaskId, TaskSnapshot>>,
+        pending_polls_by_task: Mutex<HashMap<TaskId, oxide_agent_core::storage::PendingInputPoll>>,
+        pending_poll_task_by_id: Mutex<HashMap<String, TaskId>>,
         saved_memory_users: Mutex<Vec<i64>>,
         cleared_memory_users: Mutex<Vec<i64>>,
         block_first_task_snapshot_save: Mutex<bool>,
@@ -1282,6 +1573,8 @@ mod tests {
         fn default() -> Self {
             Self {
                 snapshots: Mutex::new(HashMap::new()),
+                pending_polls_by_task: Mutex::new(HashMap::new()),
+                pending_poll_task_by_id: Mutex::new(HashMap::new()),
                 saved_memory_users: Mutex::new(Vec::new()),
                 cleared_memory_users: Mutex::new(Vec::new()),
                 block_first_task_snapshot_save: Mutex::new(false),
@@ -1558,6 +1851,54 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn save_pending_input_poll(
+            &self,
+            poll: &oxide_agent_core::storage::PendingInputPoll,
+        ) -> Result<(), StorageError> {
+            self.pending_poll_task_by_id
+                .lock()
+                .await
+                .insert(poll.poll_id.clone(), poll.task_id);
+            self.pending_polls_by_task
+                .lock()
+                .await
+                .insert(poll.task_id, poll.clone());
+            Ok(())
+        }
+
+        async fn load_pending_input_poll_by_task(
+            &self,
+            task_id: TaskId,
+        ) -> Result<Option<oxide_agent_core::storage::PendingInputPoll>, StorageError> {
+            Ok(self
+                .pending_polls_by_task
+                .lock()
+                .await
+                .get(&task_id)
+                .cloned())
+        }
+
+        async fn load_pending_input_poll_by_id(
+            &self,
+            poll_id: &str,
+        ) -> Result<Option<oxide_agent_core::storage::PendingInputPoll>, StorageError> {
+            let task_id = self
+                .pending_poll_task_by_id
+                .lock()
+                .await
+                .get(poll_id)
+                .copied();
+            let Some(task_id) = task_id else {
+                return Ok(None);
+            };
+            Ok(self
+                .pending_polls_by_task
+                .lock()
+                .await
+                .get(&task_id)
+                .cloned())
+        }
+
         async fn check_connection(&self) -> Result<(), String> {
             Ok(())
         }
@@ -1630,6 +1971,36 @@ mod tests {
                 max_length: Some(120),
                 multiline: false,
             }),
+        }
+    }
+
+    fn waiting_choice_pending_input() -> PendingInput {
+        PendingInput {
+            request_id: "choice-request".to_string(),
+            prompt: "Pick deployment strategy".to_string(),
+            kind: PendingInputKind::Choice(PendingChoiceInput {
+                options: vec!["blue-green".to_string(), "rolling".to_string()],
+                allow_multiple: false,
+                min_choices: 1,
+                max_choices: 1,
+            }),
+        }
+    }
+
+    fn build_poll_answer(poll_id: &str, user_id: i64, option_ids: &[u8]) -> PollAnswer {
+        PollAnswer {
+            poll_id: PollId(poll_id.to_string()),
+            voter: MaybeAnonymousUser::User(User {
+                id: UserId(u64::try_from(user_id).unwrap_or_default()),
+                is_bot: false,
+                first_name: "tester".to_string(),
+                last_name: None,
+                username: None,
+                language_code: None,
+                is_premium: false,
+                added_to_attachment_menu: false,
+            }),
+            option_ids: option_ids.to_vec(),
         }
     }
 
@@ -2337,6 +2708,146 @@ mod tests {
         .await;
 
         SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn poll_answer_handler_rejects_foreign_owner() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 600;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_choice_pending_input();
+        assert!(task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input.clone())
+            .await
+            .is_ok());
+
+        let poll_id = "poll-foreign";
+        assert!(storage
+            .save_pending_input_poll(&oxide_agent_core::storage::PendingInputPoll {
+                task_id: created.metadata.id,
+                request_id: pending_input.request_id,
+                owner_user_id,
+                poll_id: poll_id.to_string(),
+                chat_id: owner_user_id,
+                message_id: 10,
+                answered: false,
+                selected_option_ids: Vec::new(),
+            })
+            .await
+            .is_ok());
+
+        let context = Arc::new(make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        ));
+        let answer = build_poll_answer(poll_id, 601, &[0]);
+
+        let handled =
+            super::handle_pending_input_poll_answer(Bot::new("test-token"), answer, context).await;
+        assert!(handled.is_ok());
+
+        let poll = storage.load_pending_input_poll_by_id(poll_id).await;
+        assert!(poll.is_ok());
+        assert!(matches!(poll.ok().flatten(), Some(poll) if !poll.answered));
+    }
+
+    #[tokio::test]
+    async fn poll_answer_handler_marks_late_answers_as_consumed() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 700;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        let pending_input = waiting_choice_pending_input();
+        assert!(storage
+            .save_pending_input_poll(&oxide_agent_core::storage::PendingInputPoll {
+                task_id: created.metadata.id,
+                request_id: pending_input.request_id,
+                owner_user_id,
+                poll_id: "poll-late".to_string(),
+                chat_id: owner_user_id,
+                message_id: 11,
+                answered: false,
+                selected_option_ids: Vec::new(),
+            })
+            .await
+            .is_ok());
+
+        let context = Arc::new(make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        ));
+        let answer = build_poll_answer("poll-late", owner_user_id, &[0]);
+
+        let handled =
+            super::handle_pending_input_poll_answer(Bot::new("test-token"), answer, context).await;
+        assert!(handled.is_ok());
+
+        let poll = storage.load_pending_input_poll_by_id("poll-late").await;
+        assert!(poll.is_ok());
+        assert!(matches!(poll.ok().flatten(), Some(poll) if poll.answered));
+    }
+
+    #[tokio::test]
+    async fn waiting_choice_poll_delivery_stays_suppressed_after_answer_capture() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let owner_user_id = 800;
+        let session_id = SessionId::from(owner_user_id);
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_choice_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input.clone())
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        assert!(storage
+            .save_pending_input_poll(&oxide_agent_core::storage::PendingInputPoll {
+                task_id: created.metadata.id,
+                request_id: pending_input.request_id,
+                owner_user_id,
+                poll_id: "poll-answered".to_string(),
+                chat_id: owner_user_id,
+                message_id: 15,
+                answered: true,
+                selected_option_ids: vec![0],
+            })
+            .await
+            .is_ok());
+
+        let delivered = super::deliver_waiting_choice_poll_if_needed(
+            &Bot::new("test-token"),
+            ChatId(owner_user_id),
+            owner_user_id,
+            &(Arc::clone(&storage) as Arc<dyn StorageProvider>),
+            &waiting.record,
+        )
+        .await;
+
+        assert!(matches!(delivered, Ok(true)));
     }
 
     #[tokio::test]

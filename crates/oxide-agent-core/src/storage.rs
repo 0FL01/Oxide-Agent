@@ -81,6 +81,28 @@ pub struct UserConfig {
     pub current_chat_uuid: Option<String>,
 }
 
+/// Persisted Telegram poll delivery metadata for waiting HITL choice inputs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingInputPoll {
+    /// Runtime task that owns this poll.
+    pub task_id: TaskId,
+    /// Stable pending-input request id from task snapshot.
+    pub request_id: String,
+    /// Telegram user id that is allowed to answer this poll.
+    pub owner_user_id: i64,
+    /// Telegram poll id used for answer routing.
+    pub poll_id: String,
+    /// Telegram chat id where poll was sent.
+    pub chat_id: i64,
+    /// Telegram message id containing the poll.
+    pub message_id: i32,
+    /// True once a valid owner answer has been consumed.
+    pub answered: bool,
+    /// Selected poll option ids captured from the first valid answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_option_ids: Vec<u8>,
+}
+
 /// Interface for storage providers
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
@@ -197,6 +219,33 @@ pub trait StorageProvider: Send + Sync {
     async fn load_task_events(&self, task_id: TaskId) -> Result<Vec<TaskEvent>, StorageError> {
         let _ = task_id;
         Err(StorageError::Unsupported("task event loading".to_string()))
+    }
+    /// Persist Telegram poll delivery metadata for a waiting input request.
+    async fn save_pending_input_poll(&self, poll: &PendingInputPoll) -> Result<(), StorageError> {
+        let _ = poll;
+        Err(StorageError::Unsupported(
+            "pending input poll persistence".to_string(),
+        ))
+    }
+    /// Load Telegram poll delivery metadata by runtime task id.
+    async fn load_pending_input_poll_by_task(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<PendingInputPoll>, StorageError> {
+        let _ = task_id;
+        Err(StorageError::Unsupported(
+            "pending input poll loading by task".to_string(),
+        ))
+    }
+    /// Load Telegram poll delivery metadata by poll id.
+    async fn load_pending_input_poll_by_id(
+        &self,
+        poll_id: &str,
+    ) -> Result<Option<PendingInputPoll>, StorageError> {
+        let _ = poll_id;
+        Err(StorageError::Unsupported(
+            "pending input poll loading by id".to_string(),
+        ))
     }
     /// Check connection to storage
     async fn check_connection(&self) -> Result<(), String>;
@@ -658,6 +707,27 @@ impl StorageProvider for R2Storage {
             .map(|events| events.unwrap_or_default())
     }
 
+    async fn save_pending_input_poll(&self, poll: &PendingInputPoll) -> Result<(), StorageError> {
+        self.save_json(&pending_input_poll_task_key(poll.task_id), poll)
+            .await?;
+        self.save_json(&pending_input_poll_index_key(&poll.poll_id), poll)
+            .await
+    }
+
+    async fn load_pending_input_poll_by_task(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<PendingInputPoll>, StorageError> {
+        self.load_json(&pending_input_poll_task_key(task_id)).await
+    }
+
+    async fn load_pending_input_poll_by_id(
+        &self,
+        poll_id: &str,
+    ) -> Result<Option<PendingInputPoll>, StorageError> {
+        self.load_json(&pending_input_poll_index_key(poll_id)).await
+    }
+
     /// Check connection to R2 storage
     async fn check_connection(&self) -> Result<(), String> {
         match self.client.list_buckets().send().await {
@@ -710,6 +780,18 @@ pub fn task_event_log_key(task_id: TaskId) -> String {
     format!("tasks/{task_id}/events.json")
 }
 
+/// Returns the R2 key for per-task pending-input poll metadata.
+#[must_use]
+pub fn pending_input_poll_task_key(task_id: TaskId) -> String {
+    format!("tasks/{task_id}/pending_input_poll.json")
+}
+
+/// Returns the R2 key for reverse poll-id to task-id mapping.
+#[must_use]
+pub fn pending_input_poll_index_key(poll_id: &str) -> String {
+    format!("pending_input_polls/{poll_id}.json")
+}
+
 /// Generates a new random chat UUID (v4)
 #[must_use]
 pub fn generate_chat_uuid() -> String {
@@ -719,8 +801,9 @@ pub fn generate_chat_uuid() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        generate_chat_uuid, task_event_log_key, task_snapshot_key, user_chat_history_key,
-        user_config_key, user_history_key, Message, StorageError, StorageProvider, UserConfig,
+        generate_chat_uuid, pending_input_poll_index_key, pending_input_poll_task_key,
+        task_event_log_key, task_snapshot_key, user_chat_history_key, user_config_key,
+        user_history_key, Message, PendingInputPoll, StorageError, StorageProvider, UserConfig,
     };
     use crate::agent::task::{
         TaskEvent, TaskEventKind, TaskMetadata, TaskSnapshot, TaskSnapshotValidationError,
@@ -935,6 +1018,30 @@ mod tests {
                 .map(|events| events.unwrap_or_default())
         }
 
+        async fn save_pending_input_poll(
+            &self,
+            poll: &PendingInputPoll,
+        ) -> Result<(), StorageError> {
+            self.save_json(pending_input_poll_task_key(poll.task_id), poll)
+                .await?;
+            self.save_json(pending_input_poll_index_key(&poll.poll_id), poll)
+                .await
+        }
+
+        async fn load_pending_input_poll_by_task(
+            &self,
+            task_id: crate::agent::task::TaskId,
+        ) -> Result<Option<PendingInputPoll>, StorageError> {
+            self.load_json(pending_input_poll_task_key(task_id)).await
+        }
+
+        async fn load_pending_input_poll_by_id(
+            &self,
+            poll_id: &str,
+        ) -> Result<Option<PendingInputPoll>, StorageError> {
+            self.load_json(pending_input_poll_index_key(poll_id)).await
+        }
+
         async fn check_connection(&self) -> Result<(), String> {
             Ok(())
         }
@@ -1028,6 +1135,78 @@ mod tests {
         let task_id = TaskMetadata::new().id;
         let key = task_event_log_key(task_id);
         assert_eq!(key, format!("tasks/{task_id}/events.json"));
+    }
+
+    #[test]
+    fn pending_input_poll_keys_use_dedicated_namespaces() {
+        let task_id = TaskMetadata::new().id;
+        assert_eq!(
+            pending_input_poll_task_key(task_id),
+            format!("tasks/{task_id}/pending_input_poll.json")
+        );
+        assert_eq!(
+            pending_input_poll_index_key("poll-id"),
+            "pending_input_polls/poll-id.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_input_poll_roundtrip_loads_by_task_and_poll_id() {
+        let storage = InMemoryStorage::default();
+        let task_id = TaskMetadata::new().id;
+        let poll = PendingInputPoll {
+            task_id,
+            request_id: "req-1".to_string(),
+            owner_user_id: 42,
+            poll_id: "poll-1".to_string(),
+            chat_id: 100,
+            message_id: 7,
+            answered: false,
+            selected_option_ids: Vec::new(),
+        };
+
+        assert!(storage.save_pending_input_poll(&poll).await.is_ok());
+
+        let by_task = storage.load_pending_input_poll_by_task(task_id).await;
+        let by_poll = storage.load_pending_input_poll_by_id("poll-1").await;
+
+        assert_eq!(by_task.ok().flatten(), Some(poll.clone()));
+        assert_eq!(by_poll.ok().flatten(), Some(poll));
+    }
+
+    #[tokio::test]
+    async fn pending_input_poll_lookup_by_poll_id_is_stable_after_task_record_changes() {
+        let storage = InMemoryStorage::default();
+        let task_id = TaskMetadata::new().id;
+        let first_poll = PendingInputPoll {
+            task_id,
+            request_id: "req-1".to_string(),
+            owner_user_id: 42,
+            poll_id: "poll-old".to_string(),
+            chat_id: 100,
+            message_id: 7,
+            answered: true,
+            selected_option_ids: vec![0],
+        };
+        let second_poll = PendingInputPoll {
+            task_id,
+            request_id: "req-2".to_string(),
+            owner_user_id: 42,
+            poll_id: "poll-new".to_string(),
+            chat_id: 101,
+            message_id: 8,
+            answered: false,
+            selected_option_ids: Vec::new(),
+        };
+
+        assert!(storage.save_pending_input_poll(&first_poll).await.is_ok());
+        assert!(storage.save_pending_input_poll(&second_poll).await.is_ok());
+
+        let old_lookup = storage.load_pending_input_poll_by_id("poll-old").await;
+        let new_lookup = storage.load_pending_input_poll_by_id("poll-new").await;
+
+        assert_eq!(old_lookup.ok().flatten(), Some(first_poll));
+        assert_eq!(new_lookup.ok().flatten(), Some(second_poll));
     }
 
     #[tokio::test]
