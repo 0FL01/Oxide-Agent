@@ -1060,9 +1060,9 @@ async fn restore_waiting_task_memory(
         })
         .await;
 
-    if let Err(error) = apply_result {
-        warn!(session_id = %session_id, error = error, "Failed to restore waiting-task memory into session");
-    }
+    apply_result.map_err(|error| {
+        anyhow::anyhow!("failed to restore waiting-task memory into session {session_id}: {error}")
+    })?;
 
     Ok(())
 }
@@ -3576,6 +3576,71 @@ mod tests {
         let first_message = wait_for_first_session_message(backend.as_ref()).await;
         assert_eq!(first_message.as_deref(), Some("paused for user input"));
 
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn text_resume_aborts_when_pause_memory_restore_cannot_lock_session() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 746;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input)
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "resume text lock failure".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        attach_waiting_snapshot_memory(&mut snapshot);
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+
+        insert_test_session(session_id).await;
+
+        let executor_arc = SESSION_REGISTRY.get(&session_id).await;
+        assert!(executor_arc.is_some());
+        let executor_arc = executor_arc.unwrap_or_else(|| unreachable!());
+        let guard = executor_arc.write().await;
+
+        let backend = Arc::new(RecordingResumeBackend::default());
+        let resumed = super::resume_waiting_task_input_with_backend(
+            &context,
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: "approved".to_string(),
+            },
+            Arc::clone(&backend),
+        )
+        .await;
+        assert!(matches!(resumed, Ok(false)));
+        assert_no_resume_request(backend.as_ref()).await;
+
+        drop(guard);
         SESSION_REGISTRY.remove(&session_id).await;
     }
 
