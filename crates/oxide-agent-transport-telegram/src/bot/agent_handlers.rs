@@ -20,8 +20,8 @@ use oxide_agent_core::agent::{
     executor::{AgentExecutionOutcome, AgentExecutor},
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
-    AgentSession, PendingChoiceInput, PendingInputKind, PendingTextInput, SessionId, TaskId,
-    TaskState,
+    AgentMemory, AgentSession, PendingChoiceInput, PendingInputKind, PendingTextInput, SessionId,
+    TaskId, TaskMetadata, TaskSnapshot, TaskState,
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
@@ -600,6 +600,11 @@ struct AgentExecutionInput {
     resume_input: Option<String>,
 }
 
+struct AgentExecutionResult {
+    outcome: AgentExecutionOutcome,
+    memory: AgentMemory,
+}
+
 #[async_trait]
 impl TaskExecutionBackend for TelegramTaskExecutionBackend {
     async fn execute(&self, request: TaskExecutionRequest) -> Result<TaskExecutionOutcome> {
@@ -1001,6 +1006,11 @@ where
     )
     .await;
 
+    if let Err(error) = restore_waiting_task_memory(context, resume.user_id, resume.task_id).await {
+        warn!(task_id = %resume.task_id, error = %error, "Refusing resume: waiting snapshot pause context is invalid");
+        return Ok(false);
+    }
+
     match context
         .task_runtime
         .resume_task(resume.task_id, resume.input, backend)
@@ -1012,6 +1022,49 @@ where
             Ok(false)
         }
     }
+}
+
+async fn restore_waiting_task_memory(
+    context: &TelegramHandlerContext,
+    user_id: i64,
+    task_id: &TaskId,
+) -> Result<()> {
+    let snapshot = context
+        .storage
+        .load_task_snapshot(*task_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing waiting task snapshot for resume"))?;
+
+    if snapshot.metadata.state != TaskState::WaitingInput {
+        return Ok(());
+    }
+
+    if snapshot.pending_input.is_none() {
+        return Err(anyhow::anyhow!(
+            "waiting task snapshot missing pending input payload"
+        ));
+    }
+
+    let Some(memory) = snapshot.parse_agent_memory()? else {
+        return Err(anyhow::anyhow!(
+            "waiting task snapshot missing pause memory payload"
+        ));
+    };
+
+    let session_id = SessionId::from(user_id);
+    let apply_result = SESSION_REGISTRY
+        .with_executor_mut(&session_id, move |executor| {
+            Box::pin(async move {
+                executor.session_mut().memory = memory;
+            })
+        })
+        .await;
+
+    if let Err(error) = apply_result {
+        warn!(session_id = %session_id, error = error, "Failed to restore waiting-task memory into session");
+    }
+
+    Ok(())
 }
 
 async fn resume_task_from_consumed_poll_answer(
@@ -1195,7 +1248,10 @@ async fn run_agent_task_with_text(
         .await;
 
     match result {
-        Ok(AgentExecutionOutcome::Completed(response)) => {
+        Ok(AgentExecutionResult {
+            outcome: AgentExecutionOutcome::Completed(response),
+            ..
+        }) => {
             super::resilient::edit_message_safe_resilient(
                 &bot,
                 chat_id,
@@ -1207,7 +1263,10 @@ async fn run_agent_task_with_text(
             send_long_message(&bot, chat_id, &response).await?;
             Ok(TaskExecutionOutcome::Completed)
         }
-        Ok(AgentExecutionOutcome::WaitingInput(pending_input)) => {
+        Ok(AgentExecutionResult {
+            outcome: AgentExecutionOutcome::WaitingInput(pending_input),
+            memory,
+        }) => {
             let waiting_text =
                 format_waiting_input_progress_text(&progress_text, &pending_input.prompt);
             super::resilient::edit_message_safe_resilient(
@@ -1218,7 +1277,20 @@ async fn run_agent_task_with_text(
             )
             .await;
 
-            Ok(TaskExecutionOutcome::WaitingInput(pending_input))
+            let mut snapshot = TaskSnapshot::new(
+                TaskMetadata::new(),
+                SessionId::from(user_id),
+                "serialize waiting memory".to_string(),
+                0,
+            );
+            snapshot.set_agent_memory(&memory)?;
+            let agent_memory = snapshot
+                .agent_memory
+                .ok_or_else(|| anyhow::anyhow!("missing serialized waiting memory payload"))?;
+            Ok(TaskExecutionOutcome::WaitingInput {
+                pending_input,
+                agent_memory,
+            })
         }
         Err(e) => {
             // Sanitize error text to prevent Telegram HTML parse errors
@@ -1251,7 +1323,7 @@ async fn execute_agent_task(
     resume_input: Option<&str>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     cancellation_token: Arc<CancellationToken>,
-) -> Result<AgentExecutionOutcome> {
+) -> Result<AgentExecutionResult> {
     let session_id = SessionId::from(user_id);
     // Get executor from registry
     let executor_arc = SESSION_REGISTRY
@@ -1280,9 +1352,12 @@ async fn execute_agent_task(
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
 
     // Execute the task (now uses external token that can be cancelled lock-free)
-    executor
+    let outcome = executor
         .execute_with_outcome(task, resume_input, progress_tx)
-        .await
+        .await?;
+    let memory = executor.session().memory.clone();
+
+    Ok(AgentExecutionResult { outcome, memory })
 }
 
 async fn submit_agent_task(
@@ -1908,6 +1983,12 @@ mod tests {
         started: Arc<Notify>,
     }
 
+    #[derive(Clone, Default)]
+    struct RecordingSessionMemoryBackend {
+        captured_first_message: Arc<Mutex<Option<String>>>,
+        started: Arc<Notify>,
+    }
+
     #[async_trait]
     impl TaskExecutionBackend for LockingBackend {
         async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
@@ -2039,6 +2120,26 @@ mod tests {
     impl TaskExecutionBackend for RecordingResumeBackend {
         async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
             self.captured.lock().await.push(request);
+            self.started.notify_waiters();
+            Ok(TaskExecutionOutcome::Completed)
+        }
+    }
+
+    #[async_trait]
+    impl TaskExecutionBackend for RecordingSessionMemoryBackend {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
+            let executor_arc = SESSION_REGISTRY
+                .get(&request.session_id)
+                .await
+                .ok_or_else(|| anyhow!("session missing for test backend"))?;
+            let executor = executor_arc.read().await;
+            let first_message = executor
+                .session()
+                .memory
+                .get_messages()
+                .first()
+                .map(|message| message.content.clone());
+            *self.captured_first_message.lock().await = first_message;
             self.started.notify_waiters();
             Ok(TaskExecutionOutcome::Completed)
         }
@@ -2369,6 +2470,14 @@ mod tests {
         }
     }
 
+    fn attach_waiting_snapshot_memory(snapshot: &mut TaskSnapshot) {
+        let mut memory = AgentMemory::new(4_096);
+        memory.add_message(oxide_agent_core::agent::memory::AgentMessage::assistant(
+            "paused for user input",
+        ));
+        assert!(snapshot.set_agent_memory(&memory).is_ok());
+    }
+
     fn build_poll_answer(poll_id: &str, user_id: i64, option_ids: &[u8]) -> PollAnswer {
         PollAnswer {
             poll_id: PollId(poll_id.to_string()),
@@ -2392,6 +2501,20 @@ mod tests {
         let requests = backend.captured.lock().await;
         assert_eq!(requests.len(), 1);
         requests[0].clone()
+    }
+
+    async fn assert_no_resume_request(backend: &RecordingResumeBackend) {
+        let waited = timeout(Duration::from_millis(200), backend.started.notified()).await;
+        assert!(waited.is_err());
+        assert!(backend.captured.lock().await.is_empty());
+    }
+
+    async fn wait_for_first_session_message(
+        backend: &RecordingSessionMemoryBackend,
+    ) -> Option<String> {
+        let waited = timeout(Duration::from_secs(2), backend.started.notified()).await;
+        assert!(waited.is_ok());
+        backend.captured_first_message.lock().await.clone()
     }
 
     async fn assert_waiting_task_blocks_controls(
@@ -2533,7 +2656,7 @@ mod tests {
             Err(error) => panic!("expected waiting-input outcome, got error: {error}"),
         };
 
-        match outcome {
+        match outcome.outcome {
             AgentExecutionOutcome::WaitingInput(pending_input) => {
                 assert_eq!(pending_input.prompt, "Provide release approval");
                 match pending_input.kind {
@@ -3286,6 +3409,7 @@ mod tests {
             waiting.event_sequence,
         );
         snapshot.pending_input = waiting.record.pending_input.clone();
+        attach_waiting_snapshot_memory(&mut snapshot);
         assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
 
         let context = Arc::new(make_test_context(
@@ -3360,6 +3484,7 @@ mod tests {
             waiting.event_sequence,
         );
         snapshot.pending_input = waiting.record.pending_input.clone();
+        attach_waiting_snapshot_memory(&mut snapshot);
         assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
 
         let context = make_test_context(
@@ -3388,6 +3513,187 @@ mod tests {
         assert_eq!(request.task, "resume text task original");
         assert_eq!(request.resume_input.as_deref(), Some("approved"));
         assert!(SESSION_REGISTRY.contains(&session_id).await);
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn text_resume_cold_restart_restores_pause_memory_before_resume() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 743;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input)
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "resume text with memory".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        attach_waiting_snapshot_memory(&mut snapshot);
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+
+        SESSION_REGISTRY.remove(&session_id).await;
+        assert!(!SESSION_REGISTRY.contains(&session_id).await);
+
+        let backend = Arc::new(RecordingSessionMemoryBackend::default());
+        let resumed = super::resume_waiting_task_input_with_backend(
+            &context,
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: "approved".to_string(),
+            },
+            Arc::clone(&backend),
+        )
+        .await;
+        assert!(matches!(resumed, Ok(true)));
+
+        let first_message = wait_for_first_session_message(backend.as_ref()).await;
+        assert_eq!(first_message.as_deref(), Some("paused for user input"));
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn text_resume_rejects_legacy_waiting_snapshot_without_pause_memory() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 744;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input)
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "legacy waiting without memory".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+
+        SESSION_REGISTRY.remove(&session_id).await;
+        assert!(!SESSION_REGISTRY.contains(&session_id).await);
+
+        let backend = Arc::new(RecordingResumeBackend::default());
+        let resumed = super::resume_waiting_task_input_with_backend(
+            &context,
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: "approved".to_string(),
+            },
+            Arc::clone(&backend),
+        )
+        .await;
+        assert!(matches!(resumed, Ok(false)));
+        assert_no_resume_request(backend.as_ref()).await;
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn text_resume_rejects_waiting_snapshot_with_corrupted_pause_memory() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 745;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input)
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "waiting with corrupted memory".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        snapshot.agent_memory = Some("{broken-json".to_string());
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+
+        SESSION_REGISTRY.remove(&session_id).await;
+        assert!(!SESSION_REGISTRY.contains(&session_id).await);
+
+        let backend = Arc::new(RecordingResumeBackend::default());
+        let resumed = super::resume_waiting_task_input_with_backend(
+            &context,
+            super::ResumeTaskInput {
+                user_id: owner_user_id,
+                chat_id: ChatId(owner_user_id),
+                task_id: &created.metadata.id,
+                input: "approved".to_string(),
+            },
+            Arc::clone(&backend),
+        )
+        .await;
+        assert!(matches!(resumed, Ok(false)));
+        assert_no_resume_request(backend.as_ref()).await;
 
         SESSION_REGISTRY.remove(&session_id).await;
     }
@@ -3432,6 +3738,7 @@ mod tests {
             waiting.event_sequence,
         );
         snapshot.pending_input = waiting.record.pending_input.clone();
+        attach_waiting_snapshot_memory(&mut snapshot);
         assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
 
         let context = Arc::new(make_test_context(
@@ -3516,6 +3823,7 @@ mod tests {
             waiting.event_sequence,
         );
         snapshot.pending_input = waiting.record.pending_input.clone();
+        attach_waiting_snapshot_memory(&mut snapshot);
         assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
 
         assert!(storage
@@ -3605,6 +3913,7 @@ mod tests {
             waiting.event_sequence,
         );
         snapshot.pending_input = waiting.record.pending_input.clone();
+        attach_waiting_snapshot_memory(&mut snapshot);
         assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
 
         let context = make_test_context(
@@ -3754,6 +4063,7 @@ mod tests {
             waiting.event_sequence,
         );
         snapshot.pending_input = waiting.record.pending_input.clone();
+        attach_waiting_snapshot_memory(&mut snapshot);
         assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
 
         insert_test_session(session_id).await;

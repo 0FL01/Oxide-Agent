@@ -68,7 +68,12 @@ pub enum TaskExecutionOutcome {
     /// Backend completed task work without requiring external input.
     Completed,
     /// Backend paused task execution and requires a pending HITL response.
-    WaitingInput(PendingInput),
+    WaitingInput {
+        /// Persisted request details for external HITL completion.
+        pending_input: PendingInput,
+        /// Serialized pause-time agent memory used for restart-safe continuation.
+        agent_memory: String,
+    },
 }
 
 /// Errors returned by detached task executor operations.
@@ -391,6 +396,7 @@ impl TaskExecutor {
             &task,
             running_update.event_sequence,
             None,
+            None,
         )
         .await?;
 
@@ -446,6 +452,7 @@ impl TaskExecutor {
                         &task,
                         failed_update.event_sequence,
                         None,
+                        None,
                     )
                     .await;
             }
@@ -478,6 +485,7 @@ impl TaskExecutor {
             &task,
             last_event_sequence,
             None,
+            None,
         )
         .await
     }
@@ -493,7 +501,7 @@ impl TaskExecutor {
         self.append_task_event(metadata.id, last_event_sequence, event_kind, metadata.state)
             .await?;
 
-        self.save_snapshot(metadata, session_id, task, last_event_sequence, None)
+        self.save_snapshot(metadata, session_id, task, last_event_sequence, None, None)
             .await
     }
 
@@ -504,6 +512,7 @@ impl TaskExecutor {
         task: &str,
         last_event_sequence: u64,
         pending_input: Option<PendingInput>,
+        agent_memory: Option<String>,
     ) -> Result<(), TaskExecutorError> {
         let mut snapshot = TaskSnapshot::new(
             metadata.clone(),
@@ -512,6 +521,7 @@ impl TaskExecutor {
             last_event_sequence,
         );
         snapshot.pending_input = pending_input;
+        snapshot.agent_memory = agent_memory;
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
     }
@@ -594,6 +604,7 @@ impl DetachedTaskRun {
                     &running_update.record.metadata,
                     running_update.event_sequence,
                     None,
+                    None,
                 )
                 .await
             {
@@ -620,8 +631,13 @@ impl DetachedTaskRun {
             Ok(TaskExecutionOutcome::Completed) => {
                 self.persist_terminal_state(TaskState::Completed).await
             }
-            Ok(TaskExecutionOutcome::WaitingInput(pending_input)) => {
-                let waiting_result = self.persist_waiting_input(pending_input).await;
+            Ok(TaskExecutionOutcome::WaitingInput {
+                pending_input,
+                agent_memory,
+            }) => {
+                let waiting_result = self
+                    .persist_waiting_input(pending_input, agent_memory)
+                    .await;
                 if let Err(error) = waiting_result {
                     self.persist_terminal_state(TaskState::Failed).await?;
                     return Err(error);
@@ -638,6 +654,7 @@ impl DetachedTaskRun {
         metadata: &TaskMetadata,
         last_event_sequence: u64,
         pending_input: Option<PendingInput>,
+        agent_memory: Option<String>,
     ) -> Result<(), TaskExecutorError> {
         self.append_task_event(
             metadata.id,
@@ -647,7 +664,7 @@ impl DetachedTaskRun {
         )
         .await?;
 
-        self.save_snapshot(last_event_sequence, metadata, pending_input)
+        self.save_snapshot(last_event_sequence, metadata, pending_input, agent_memory)
             .await
     }
 
@@ -672,6 +689,7 @@ impl DetachedTaskRun {
         last_event_sequence: u64,
         metadata: &TaskMetadata,
         pending_input: Option<PendingInput>,
+        agent_memory: Option<String>,
     ) -> Result<(), TaskExecutorError> {
         let mut snapshot = TaskSnapshot::new(
             metadata.clone(),
@@ -680,6 +698,7 @@ impl DetachedTaskRun {
             last_event_sequence,
         );
         snapshot.pending_input = pending_input;
+        snapshot.agent_memory = agent_memory;
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
     }
@@ -687,6 +706,7 @@ impl DetachedTaskRun {
     async fn persist_waiting_input(
         &self,
         pending_input: PendingInput,
+        agent_memory: String,
     ) -> Result<(), TaskExecutorError> {
         pending_input
             .validate()
@@ -700,6 +720,7 @@ impl DetachedTaskRun {
             &waiting_update.record.metadata,
             waiting_update.event_sequence,
             waiting_update.record.pending_input,
+            Some(agent_memory),
         )
         .await
     }
@@ -712,7 +733,7 @@ impl DetachedTaskRun {
         {
             Ok(update) => {
                 if let Err(error) = self
-                    .persist_snapshot(&update.record.metadata, update.event_sequence, None)
+                    .persist_snapshot(&update.record.metadata, update.event_sequence, None, None)
                     .await
                 {
                     error!(
@@ -752,7 +773,7 @@ impl DetachedTaskRun {
             .await
         {
             Ok(update) => {
-                self.persist_snapshot(&update.record.metadata, update.event_sequence, None)
+                self.persist_snapshot(&update.record.metadata, update.event_sequence, None, None)
                     .await
             }
             Err(error)
@@ -775,7 +796,7 @@ impl DetachedTaskRun {
             return Ok(());
         }
 
-        self.save_snapshot(update.event_sequence, &update.record.metadata, None)
+        self.save_snapshot(update.event_sequence, &update.record.metadata, None, None)
             .await
     }
 }
@@ -833,7 +854,7 @@ mod tests {
     use async_trait::async_trait;
     use oxide_agent_core::agent::{
         AgentMemory, PendingInput, PendingInputKind, PendingTextInput, SessionId, TaskEvent,
-        TaskId, TaskSnapshot, TaskState,
+        TaskId, TaskMetadata, TaskSnapshot, TaskState,
     };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use std::collections::HashMap;
@@ -853,6 +874,7 @@ mod tests {
     struct ControlledBackend {
         outcome: BackendOutcome,
         pending_input: Option<PendingInput>,
+        agent_memory: Option<String>,
         started: Arc<Notify>,
         release: Arc<Notify>,
     }
@@ -867,15 +889,31 @@ mod tests {
             Self {
                 outcome,
                 pending_input: None,
+                agent_memory: None,
                 started: Arc::new(Notify::new()),
                 release: Arc::new(Notify::new()),
             }
         }
 
         fn waiting_input(pending_input: PendingInput) -> Self {
+            let mut memory = AgentMemory::new(4_096);
+            memory.add_message(oxide_agent_core::agent::memory::AgentMessage::assistant(
+                "waiting for input",
+            ));
+            let mut snapshot = TaskSnapshot::new(
+                TaskMetadata::new(),
+                SessionId::from(1),
+                "serialize memory".to_string(),
+                1,
+            );
+            let agent_memory = match snapshot.set_agent_memory(&memory) {
+                Ok(()) => snapshot.agent_memory,
+                Err(_) => None,
+            };
             Self {
                 outcome: BackendOutcome::WaitingInput,
                 pending_input: Some(pending_input),
+                agent_memory,
                 started: Arc::new(Notify::new()),
                 release: Arc::new(Notify::new()),
             }
@@ -911,11 +949,19 @@ mod tests {
                 BackendOutcome::Fail => Err(anyhow!("simulated backend failure")),
                 BackendOutcome::Panic => unreachable!("panic outcome returns before release"),
                 BackendOutcome::WaitingInput => {
-                    if let Some(pending_input) = self.pending_input.clone() {
-                        Ok(TaskExecutionOutcome::WaitingInput(pending_input))
-                    } else {
-                        Err(anyhow!("missing waiting-input payload"))
-                    }
+                    let pending_input = self
+                        .pending_input
+                        .clone()
+                        .ok_or_else(|| anyhow!("missing waiting-input payload"))?;
+                    let agent_memory = self
+                        .agent_memory
+                        .clone()
+                        .ok_or_else(|| anyhow!("missing waiting-input memory payload"))?;
+
+                    Ok(TaskExecutionOutcome::WaitingInput {
+                        pending_input,
+                        agent_memory,
+                    })
                 }
             }
         }
@@ -1401,6 +1447,7 @@ mod tests {
                 if snapshot.metadata.state == TaskState::WaitingInput
                     && snapshot.checkpoint.state == TaskState::WaitingInput
                     && snapshot.pending_input == Some(pending_input)
+                    && snapshot.agent_memory.is_some()
         ));
 
         assert!(!worker_manager.contains(&task_id).await);

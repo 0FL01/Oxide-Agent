@@ -1339,6 +1339,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_task_snapshot_rejects_waiting_input_without_agent_memory() {
+        let storage = InMemoryStorage::default();
+        let mut metadata = TaskMetadata::new();
+        assert!(metadata.transition_to(TaskState::Running).is_ok());
+        assert!(metadata.transition_to(TaskState::WaitingInput).is_ok());
+
+        let mut snapshot = TaskSnapshot::new(
+            metadata,
+            crate::agent::SessionId::from(100),
+            "await approval".to_string(),
+            3,
+        );
+        snapshot.pending_input = Some(crate::agent::PendingInput {
+            request_id: "req-100".to_string(),
+            prompt: "Approve deployment".to_string(),
+            kind: crate::agent::PendingInputKind::Text(crate::agent::PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(120),
+                multiline: false,
+            }),
+        });
+
+        let saved = storage.save_task_snapshot(&snapshot).await;
+        assert!(matches!(
+            saved,
+            Err(StorageError::InvalidTaskSnapshot(
+                TaskSnapshotValidationError::MissingAgentMemoryForWaitingState
+            ))
+        ));
+    }
+
+    #[tokio::test]
     async fn storage_task_events_append_and_load_in_order() {
         let storage = InMemoryStorage::default();
         let task_id = TaskMetadata::new().id;

@@ -11,6 +11,8 @@ const RUNNING_TASK_RECOVERY_NOTE: &str =
     "task was marked failed during restart recovery because the previous runtime crashed while it was running";
 const MISSING_SESSION_RECOVERY_NOTE: &str =
     "task was marked failed during restart recovery because no persisted session ownership was available";
+const WAITING_CONTEXT_RECOVERY_NOTE: &str =
+    "task was marked failed during restart recovery because waiting_input snapshot did not contain valid pause context";
 const CANCELLED_EVENT_RECOVERY_NOTE: &str =
     "task snapshot was repaired from the persisted task event log after a cancelled checkpoint write failed";
 
@@ -140,6 +142,13 @@ async fn reconcile_owned_snapshot(
         return Ok(failed_snapshot);
     }
 
+    if snapshot.metadata.state == TaskState::WaitingInput && snapshot.validate().is_err() {
+        let failed_snapshot = fail_snapshot(snapshot, WAITING_CONTEXT_RECOVERY_NOTE);
+        storage.save_task_snapshot(&failed_snapshot).await?;
+        report.failed_recoveries += 1;
+        return Ok(failed_snapshot);
+    }
+
     let mut restored_snapshot = snapshot;
     restored_snapshot.session_id = Some(session_id);
     Ok(restored_snapshot)
@@ -176,6 +185,7 @@ fn fail_snapshot(mut snapshot: TaskSnapshot, note: &str) -> TaskSnapshot {
     snapshot.checkpoint = checkpoint;
     snapshot.recovery_note = Some(note.to_string());
     snapshot.pending_input = None;
+    snapshot.agent_memory = None;
     snapshot
 }
 
@@ -187,6 +197,7 @@ fn apply_event_state(mut snapshot: TaskSnapshot, state: TaskState, sequence: u64
     snapshot.checkpoint = checkpoint;
     snapshot.recovery_note = Some(CANCELLED_EVENT_RECOVERY_NOTE.to_string());
     snapshot.pending_input = None;
+    snapshot.agent_memory = None;
     snapshot
 }
 
@@ -194,7 +205,7 @@ fn apply_event_state(mut snapshot: TaskSnapshot, state: TaskState, sequence: u64
 mod tests {
     use super::{
         TaskRecovery, TaskRecoveryOptions, CANCELLED_EVENT_RECOVERY_NOTE,
-        MISSING_SESSION_RECOVERY_NOTE, RUNNING_TASK_RECOVERY_NOTE,
+        MISSING_SESSION_RECOVERY_NOTE, RUNNING_TASK_RECOVERY_NOTE, WAITING_CONTEXT_RECOVERY_NOTE,
     };
     use crate::TaskRegistry;
     use async_trait::async_trait;
@@ -574,6 +585,11 @@ mod tests {
             }),
         };
         waiting_snapshot.pending_input = Some(pending_input.clone());
+        let mut memory = AgentMemory::new(4_096);
+        memory.add_message(oxide_agent_core::agent::memory::AgentMessage::assistant(
+            "paused for approval",
+        ));
+        assert!(waiting_snapshot.set_agent_memory(&memory).is_ok());
         let task_id = waiting_snapshot.metadata.id;
         assert!(storage.save_task_snapshot(&waiting_snapshot).await.is_ok());
 
@@ -602,6 +618,111 @@ mod tests {
             Ok(Some(snapshot))
                 if snapshot.metadata.state == TaskState::WaitingInput
                     && snapshot.pending_input == Some(pending_input)
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_recovery_fails_legacy_waiting_snapshot_without_pause_memory() {
+        let storage = Arc::new(RecoveryStorage::default());
+        let registry = Arc::new(TaskRegistry::new());
+
+        let mut metadata = TaskMetadata::new();
+        metadata.state = TaskState::WaitingInput;
+        let mut waiting_snapshot = TaskSnapshot::new(
+            metadata,
+            SessionId::from(55),
+            "legacy waiting".to_string(),
+            2,
+        );
+        let pending_input = PendingInput {
+            request_id: "legacy-resume-req".to_string(),
+            prompt: "Provide deployment window".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(200),
+                multiline: false,
+            }),
+        };
+        waiting_snapshot.pending_input = Some(pending_input);
+        let task_id = waiting_snapshot.metadata.id;
+        assert!(storage.save_task_snapshot(&waiting_snapshot).await.is_ok());
+
+        let recovery = TaskRecovery::new(TaskRecoveryOptions {
+            task_registry: Arc::clone(&registry),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+
+        let report = recovery.reconcile().await;
+        assert!(report.is_ok());
+        let report = report.unwrap_or_default();
+        assert_eq!(report.restored_records, 1);
+        assert_eq!(report.failed_recoveries, 1);
+
+        let record = registry.get(&task_id).await;
+        assert!(matches!(
+            record,
+            Some(record) if record.metadata.state == TaskState::Failed
+        ));
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Failed
+                    && snapshot.recovery_note.as_deref() == Some(WAITING_CONTEXT_RECOVERY_NOTE)
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_recovery_fails_waiting_snapshot_with_corrupted_pause_memory() {
+        let storage = Arc::new(RecoveryStorage::default());
+        let registry = Arc::new(TaskRegistry::new());
+
+        let mut metadata = TaskMetadata::new();
+        metadata.state = TaskState::WaitingInput;
+        let mut waiting_snapshot = TaskSnapshot::new(
+            metadata,
+            SessionId::from(56),
+            "corrupted waiting".to_string(),
+            2,
+        );
+        let pending_input = PendingInput {
+            request_id: "corrupted-resume-req".to_string(),
+            prompt: "Provide deployment window".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(200),
+                multiline: false,
+            }),
+        };
+        waiting_snapshot.pending_input = Some(pending_input);
+        waiting_snapshot.agent_memory = Some("{broken-json".to_string());
+        let task_id = waiting_snapshot.metadata.id;
+        assert!(storage.save_task_snapshot(&waiting_snapshot).await.is_ok());
+
+        let recovery = TaskRecovery::new(TaskRecoveryOptions {
+            task_registry: Arc::clone(&registry),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+
+        let report = recovery.reconcile().await;
+        assert!(report.is_ok());
+        let report = report.unwrap_or_default();
+        assert_eq!(report.restored_records, 1);
+        assert_eq!(report.failed_recoveries, 1);
+
+        let record = registry.get(&task_id).await;
+        assert!(matches!(
+            record,
+            Some(record) if record.metadata.state == TaskState::Failed
+        ));
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Failed
+                    && snapshot.recovery_note.as_deref() == Some(WAITING_CONTEXT_RECOVERY_NOTE)
         ));
     }
 

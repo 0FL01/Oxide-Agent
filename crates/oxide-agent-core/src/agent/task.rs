@@ -1,6 +1,6 @@
 //! Domain types for persistent agent tasks.
 
-use crate::agent::SessionId;
+use crate::agent::{AgentMemory, SessionId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -383,7 +383,7 @@ pub enum PendingInputValidationError {
 }
 
 /// Schema version for persisted task snapshots.
-pub const TASK_SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+pub const TASK_SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 
 /// Schema version for persisted task event logs.
 pub const TASK_EVENT_LOG_SCHEMA_VERSION: u32 = 2;
@@ -434,6 +434,9 @@ pub struct TaskSnapshot {
     /// Optional pending HITL request persisted for restart-safe resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_input: Option<PendingInput>,
+    /// Optional serialized agent memory captured at the pause boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_memory: Option<String>,
 }
 
 impl TaskSnapshot {
@@ -455,7 +458,22 @@ impl TaskSnapshot {
             checkpoint,
             recovery_note: None,
             pending_input: None,
+            agent_memory: None,
         }
+    }
+
+    /// Persist a copy of agent memory in this snapshot.
+    pub fn set_agent_memory(&mut self, memory: &AgentMemory) -> Result<(), serde_json::Error> {
+        self.agent_memory = Some(serde_json::to_string(memory)?);
+        Ok(())
+    }
+
+    /// Restore agent memory persisted in this snapshot.
+    pub fn parse_agent_memory(&self) -> Result<Option<AgentMemory>, serde_json::Error> {
+        self.agent_memory
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
     }
 
     /// Validate snapshot invariants required for persistence.
@@ -468,11 +486,20 @@ impl TaskSnapshot {
                     .ok_or(TaskSnapshotValidationError::MissingPendingInputForWaitingState)?;
                 pending_input
                     .validate()
-                    .map_err(TaskSnapshotValidationError::InvalidPendingInput)
+                    .map_err(TaskSnapshotValidationError::InvalidPendingInput)?;
+                let _ = self
+                    .agent_memory
+                    .as_ref()
+                    .ok_or(TaskSnapshotValidationError::MissingAgentMemoryForWaitingState)?;
+                self.parse_agent_memory().map(|_| ()).map_err(|error| {
+                    TaskSnapshotValidationError::InvalidAgentMemory(error.to_string())
+                })
             }
             state => {
                 if self.pending_input.is_some() {
                     Err(TaskSnapshotValidationError::UnexpectedPendingInputForState { state })
+                } else if self.agent_memory.is_some() {
+                    Err(TaskSnapshotValidationError::UnexpectedAgentMemoryForState { state })
                 } else {
                     Ok(())
                 }
@@ -496,6 +523,18 @@ pub enum TaskSnapshotValidationError {
     /// Pending payload does not pass validation constraints.
     #[error("invalid pending input payload: {0}")]
     InvalidPendingInput(PendingInputValidationError),
+    /// Waiting input state must persist pre-pause memory.
+    #[error("waiting_input state requires agent_memory payload")]
+    MissingAgentMemoryForWaitingState,
+    /// Agent memory payload is only valid while waiting for input.
+    #[error("state {state:?} cannot carry agent_memory payload")]
+    UnexpectedAgentMemoryForState {
+        /// State that carried an unexpected agent memory payload.
+        state: TaskState,
+    },
+    /// Agent memory payload cannot be deserialized.
+    #[error("invalid agent memory payload: {0}")]
+    InvalidAgentMemory(String),
 }
 
 /// Baseline persisted task event entry.
@@ -572,7 +611,7 @@ mod tests {
         TaskSnapshotValidationError, TaskState, TaskStateTransitionError,
         TASK_EVENT_LOG_SCHEMA_VERSION, TASK_SNAPSHOT_SCHEMA_VERSION,
     };
-    use crate::agent::SessionId;
+    use crate::agent::{AgentMemory, SessionId};
     use chrono::Utc;
 
     #[test]
@@ -729,6 +768,11 @@ mod tests {
                 max_choices: 2,
             }),
         });
+        let mut memory = AgentMemory::new(4_096);
+        memory.add_message(crate::agent::memory::AgentMessage::user(
+            "collect diagnostics",
+        ));
+        assert!(snapshot.set_agent_memory(&memory).is_ok());
         snapshot.checkpoint.state = TaskState::WaitingInput;
 
         let json = serde_json::to_string(&snapshot);
@@ -742,6 +786,7 @@ mod tests {
         assert_eq!(parsed.metadata.state, TaskState::WaitingInput);
         assert_eq!(parsed.checkpoint.state, TaskState::WaitingInput);
         assert_eq!(parsed.pending_input, snapshot.pending_input);
+        assert_eq!(parsed.agent_memory, snapshot.agent_memory);
         assert_eq!(parsed.validate(), Ok(()));
     }
 
@@ -784,6 +829,72 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[test]
+    fn task_snapshot_validation_rejects_waiting_input_without_agent_memory() {
+        let mut metadata = TaskMetadata::new();
+        assert_eq!(metadata.transition_to(TaskState::Running), Ok(()));
+        assert_eq!(metadata.transition_to(TaskState::WaitingInput), Ok(()));
+
+        let mut snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(12), "collect".to_string(), 1);
+        snapshot.pending_input = Some(PendingInput {
+            request_id: "req-1".to_string(),
+            prompt: "Provide confirmation".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(64),
+                multiline: false,
+            }),
+        });
+
+        assert_eq!(
+            snapshot.validate(),
+            Err(TaskSnapshotValidationError::MissingAgentMemoryForWaitingState)
+        );
+    }
+
+    #[test]
+    fn task_snapshot_validation_rejects_agent_memory_outside_waiting_state() {
+        let metadata = TaskMetadata::new();
+        let mut snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(13), "collect".to_string(), 1);
+        let mut memory = AgentMemory::new(4_096);
+        memory.add_message(crate::agent::memory::AgentMessage::assistant("done"));
+        assert!(snapshot.set_agent_memory(&memory).is_ok());
+
+        assert_eq!(
+            snapshot.validate(),
+            Err(TaskSnapshotValidationError::UnexpectedAgentMemoryForState {
+                state: TaskState::Pending,
+            })
+        );
+    }
+
+    #[test]
+    fn task_snapshot_validation_rejects_invalid_agent_memory_payload() {
+        let mut metadata = TaskMetadata::new();
+        assert_eq!(metadata.transition_to(TaskState::Running), Ok(()));
+        assert_eq!(metadata.transition_to(TaskState::WaitingInput), Ok(()));
+
+        let mut snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(14), "collect".to_string(), 1);
+        snapshot.pending_input = Some(PendingInput {
+            request_id: "req-3".to_string(),
+            prompt: "Provide confirmation".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(64),
+                multiline: false,
+            }),
+        });
+        snapshot.agent_memory = Some("{not-json".to_string());
+
+        assert!(matches!(
+            snapshot.validate(),
+            Err(TaskSnapshotValidationError::InvalidAgentMemory(_))
+        ));
     }
 
     #[test]
