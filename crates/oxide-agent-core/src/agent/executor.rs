@@ -10,12 +10,14 @@ use super::hooks::{
 use super::memory::AgentMessage;
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
-    DelegationProvider, FileHosterProvider, SandboxProvider, TodosProvider, YtdlpProvider,
+    DelegationProvider, FileHosterProvider, RequestUserInputProvider, SandboxProvider,
+    TodosProvider, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
-use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
+use super::runner::{AgentRunOutcome, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use super::session::AgentSession;
 use super::skills::SkillRegistry;
+use super::task::PendingInput;
 use crate::agent::progress::AgentEvent;
 use crate::config::{get_agent_search_limit, AGENT_TIMEOUT_SECS};
 use crate::llm::LlmClient;
@@ -39,6 +41,15 @@ pub struct AgentExecutor {
     session: AgentSession,
     skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
+}
+
+/// Transport-agnostic agent execution outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentExecutionOutcome {
+    /// Task completed with a final answer.
+    Completed(String),
+    /// Task paused and requires external user input.
+    WaitingInput(PendingInput),
 }
 
 impl AgentExecutor {
@@ -111,6 +122,7 @@ impl AgentExecutor {
     ) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
+        registry.register(Box::new(RequestUserInputProvider::new()));
 
         let session_id = self.session.session_id.as_i64();
         let sandbox_provider = if let Some(tx) = progress_tx {
@@ -177,6 +189,30 @@ impl AgentExecutor {
         resume_input: Option<&str>,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<String> {
+        match self
+            .execute_with_outcome(task, resume_input, progress_tx)
+            .await?
+        {
+            AgentExecutionOutcome::Completed(response) => Ok(response),
+            AgentExecutionOutcome::WaitingInput(pending_input) => Err(anyhow!(
+                "Task paused waiting for user input: {}",
+                pending_input.prompt
+            )),
+        }
+    }
+
+    /// Execute a task and return a transport-agnostic outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LLM call fails, tool execution fails, or the iteration/timeout limits are exceeded.
+    #[tracing::instrument(skip(self, progress_tx), fields(session_id = %self.session.session_id))]
+    pub async fn execute_with_outcome(
+        &mut self,
+        task: &str,
+        resume_input: Option<&str>,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentExecutionOutcome> {
         self.session.start_task();
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
         self.session.remember_task(task);
@@ -241,9 +277,13 @@ impl AgentExecutor {
         let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);
         match timeout(timeout_duration, self.runner.run(&mut ctx)).await {
             Ok(inner) => match inner {
-                Ok(res) => {
+                Ok(AgentRunOutcome::Completed(res)) => {
                     self.session.complete();
-                    Ok(res)
+                    Ok(AgentExecutionOutcome::Completed(res))
+                }
+                Ok(AgentRunOutcome::WaitingInput(pending_input)) => {
+                    self.session.complete();
+                    Ok(AgentExecutionOutcome::WaitingInput(pending_input))
                 }
                 Err(e) => {
                     self.session.fail(e.to_string());

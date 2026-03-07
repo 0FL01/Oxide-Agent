@@ -17,7 +17,7 @@ use crate::config::BotSettings;
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use oxide_agent_core::agent::{
-    executor::AgentExecutor,
+    executor::{AgentExecutionOutcome, AgentExecutor},
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
     AgentSession, PendingChoiceInput, PendingInputKind, PendingTextInput, SessionId, TaskId,
@@ -623,9 +623,7 @@ impl TaskExecutionBackend for TelegramTaskExecutionBackend {
             Arc::clone(&self.task_runtime),
             cancellation_token,
         )
-        .await?;
-
-        Ok(TaskExecutionOutcome::Completed)
+        .await
     }
 }
 
@@ -1160,7 +1158,7 @@ async fn run_agent_task_with_text(
     storage: Arc<dyn StorageProvider>,
     task_runtime: Arc<AgentTaskRuntime>,
     cancellation_token: Arc<CancellationToken>,
-) -> Result<()> {
+) -> Result<TaskExecutionOutcome> {
     let progress_msg = super::resilient::send_message_resilient(
         &bot,
         chat_id,
@@ -1197,7 +1195,7 @@ async fn run_agent_task_with_text(
         .await;
 
     match result {
-        Ok(response) => {
+        Ok(AgentExecutionOutcome::Completed(response)) => {
             super::resilient::edit_message_safe_resilient(
                 &bot,
                 chat_id,
@@ -1207,6 +1205,20 @@ async fn run_agent_task_with_text(
             .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
             send_long_message(&bot, chat_id, &response).await?;
+            Ok(TaskExecutionOutcome::Completed)
+        }
+        Ok(AgentExecutionOutcome::WaitingInput(pending_input)) => {
+            let waiting_text =
+                format_waiting_input_progress_text(&progress_text, &pending_input.prompt);
+            super::resilient::edit_message_safe_resilient(
+                &bot,
+                chat_id,
+                progress_msg.id,
+                &waiting_text,
+            )
+            .await;
+
+            Ok(TaskExecutionOutcome::WaitingInput(pending_input))
         }
         Err(e) => {
             // Sanitize error text to prevent Telegram HTML parse errors
@@ -1219,10 +1231,17 @@ async fn run_agent_task_with_text(
                 &error_text,
             )
             .await;
+            Err(e)
         }
     }
+}
 
-    Ok(())
+fn format_waiting_input_progress_text(progress_text: &str, prompt: &str) -> String {
+    let escaped_prompt = html_escape::encode_text(prompt);
+    format!(
+        "{progress_text}\n\n⏸️ <b>Waiting for input:</b>\n\n{}",
+        escaped_prompt
+    )
 }
 
 /// Execute an agent task and return the result
@@ -1232,7 +1251,7 @@ async fn execute_agent_task(
     resume_input: Option<&str>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     cancellation_token: Arc<CancellationToken>,
-) -> Result<String> {
+) -> Result<AgentExecutionOutcome> {
     let session_id = SessionId::from(user_id);
     // Get executor from registry
     let executor_arc = SESSION_REGISTRY
@@ -1261,7 +1280,9 @@ async fn execute_agent_task(
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
 
     // Execute the task (now uses external token that can be cancelled lock-free)
-    executor.execute(task, resume_input, progress_tx).await
+    executor
+        .execute_with_outcome(task, resume_input, progress_tx)
+        .await
 }
 
 async fn submit_agent_task(
@@ -1796,16 +1817,19 @@ mod tests {
     use anyhow::{anyhow, Result as AnyResult};
     use async_trait::async_trait;
     use oxide_agent_core::agent::{
-        AgentExecutor, AgentMemory, AgentSession, PendingChoiceInput, PendingInput,
-        PendingInputKind, PendingTextInput, SessionId, TaskEvent, TaskId, TaskMetadata,
-        TaskSnapshot, TaskState, TodoItem, TodoStatus,
+        AgentExecutionOutcome, AgentExecutor, AgentMemory, AgentSession, PendingChoiceInput,
+        PendingInput, PendingInputKind, PendingTextInput, SessionId, TaskEvent, TaskId,
+        TaskMetadata, TaskSnapshot, TaskState, TodoItem, TodoStatus,
     };
     use oxide_agent_core::config::AgentSettings;
-    use oxide_agent_core::llm::LlmClient;
+    use oxide_agent_core::llm::{
+        ChatResponse, LlmClient, LlmError, LlmProvider, Message as LlmMessage, ToolCall,
+        ToolCallFunction, ToolDefinition,
+    };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use oxide_agent_runtime::{
-        TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest, TaskExecutorError,
-        TaskRegistry,
+        CancellationToken, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
+        TaskExecutorError, TaskRegistry,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1876,6 +1900,8 @@ mod tests {
 
     struct CompletedBackend;
 
+    struct WaitingInputLlmProvider;
+
     #[derive(Clone, Default)]
     struct RecordingResumeBackend {
         captured: Arc<Mutex<Vec<TaskExecutionRequest>>>,
@@ -1942,6 +1968,70 @@ mod tests {
     impl TaskExecutionBackend for CompletedBackend {
         async fn execute(&self, _request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
             Ok(TaskExecutionOutcome::Completed)
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for WaitingInputLlmProvider {
+        async fn chat_completion(
+            &self,
+            _system_prompt: &str,
+            _history: &[LlmMessage],
+            _user_message: &str,
+            _model_id: &str,
+            _max_tokens: u32,
+        ) -> Result<String, LlmError> {
+            Err(LlmError::Unknown(
+                "chat_completion is not used in this test".to_string(),
+            ))
+        }
+
+        async fn transcribe_audio(
+            &self,
+            _audio_bytes: Vec<u8>,
+            _mime_type: &str,
+            _model_id: &str,
+        ) -> Result<String, LlmError> {
+            Err(LlmError::Unknown(
+                "transcribe_audio is not used in this test".to_string(),
+            ))
+        }
+
+        async fn analyze_image(
+            &self,
+            _image_bytes: Vec<u8>,
+            _text_prompt: &str,
+            _system_prompt: &str,
+            _model_id: &str,
+        ) -> Result<String, LlmError> {
+            Err(LlmError::Unknown(
+                "analyze_image is not used in this test".to_string(),
+            ))
+        }
+
+        async fn chat_with_tools(
+            &self,
+            _system_prompt: &str,
+            _messages: &[LlmMessage],
+            _tools: &[ToolDefinition],
+            _model_id: &str,
+            _max_tokens: u32,
+            _json_mode: bool,
+        ) -> Result<ChatResponse, LlmError> {
+            Ok(ChatResponse {
+                content: Some("tool_call".to_string()),
+                tool_calls: vec![ToolCall {
+                    id: "call_waiting_input_telegram".to_string(),
+                    function: ToolCallFunction {
+                        name: "request_user_input".to_string(),
+                        arguments: r#"{"prompt":"Provide release approval","kind":"text","text":{"min_length":1,"max_length":32,"multiline":false}}"#.to_string(),
+                    },
+                    is_recovered: false,
+                }],
+                finish_reason: "tool_calls".to_string(),
+                reasoning_content: None,
+                usage: None,
+            })
         }
     }
 
@@ -2193,6 +2283,16 @@ mod tests {
         }
     }
 
+    fn settings_with_waiting_input_model() -> AgentSettings {
+        AgentSettings {
+            openrouter_site_name: "Oxide Agent Bot".to_string(),
+            agent_model_id: Some("test-model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
+            agent_model_max_tokens: Some(8_192),
+            ..AgentSettings::default()
+        }
+    }
+
     async fn insert_test_session(session_id: SessionId) {
         let settings = Arc::new(settings_without_llm_providers());
         let llm = Arc::new(LlmClient::new(&settings));
@@ -2395,6 +2495,64 @@ mod tests {
         })
         .await;
         assert!(waited.is_ok());
+    }
+
+    #[test]
+    fn waiting_input_progress_text_escapes_html_prompt() {
+        let text = super::format_waiting_input_progress_text(
+            "progress",
+            "Need <b>approval</b> & \"quote\"",
+        );
+
+        assert!(text.contains("&lt;b&gt;approval&lt;/b&gt;"));
+        assert!(text.contains("&amp;"));
+        assert!(!text.contains("<b>approval</b>"));
+    }
+
+    #[tokio::test]
+    async fn execute_agent_task_returns_waiting_input_for_real_executor_path() {
+        let session_id = SessionId::from(4_001);
+        let settings = Arc::new(settings_with_waiting_input_model());
+        let mut llm_client = LlmClient::new(settings.as_ref());
+        llm_client.register_provider("openrouter".to_string(), Arc::new(WaitingInputLlmProvider));
+        let llm = Arc::new(llm_client);
+        let executor = AgentExecutor::new(llm, AgentSession::new(session_id), settings);
+        SESSION_REGISTRY.insert(session_id, executor).await;
+
+        let result = super::execute_agent_task(
+            session_id.as_i64(),
+            "Need operator approval",
+            None,
+            None,
+            Arc::new(CancellationToken::new()),
+        )
+        .await;
+
+        let outcome = match result {
+            Ok(value) => value,
+            Err(error) => panic!("expected waiting-input outcome, got error: {error}"),
+        };
+
+        match outcome {
+            AgentExecutionOutcome::WaitingInput(pending_input) => {
+                assert_eq!(pending_input.prompt, "Provide release approval");
+                match pending_input.kind {
+                    PendingInputKind::Text(text) => {
+                        assert_eq!(text.min_length, Some(1));
+                        assert_eq!(text.max_length, Some(32));
+                        assert!(!text.multiline);
+                    }
+                    PendingInputKind::Choice(_) => {
+                        panic!("expected text pending input kind");
+                    }
+                }
+            }
+            AgentExecutionOutcome::Completed(answer) => {
+                panic!("expected waiting-input outcome, got completion: {answer}");
+            }
+        }
+
+        SESSION_REGISTRY.remove(&session_id).await;
     }
 
     #[tokio::test]

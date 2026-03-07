@@ -5,6 +5,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
 use crate::agent::skills::SkillRegistry;
+use crate::agent::task::PendingInput;
 use crate::config::{get_agent_model, AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS};
 use crate::llm::{Message, ToolDefinition};
 use std::sync::Arc;
@@ -86,6 +87,15 @@ pub struct AgentRunnerContext<'a> {
     pub skill_registry: Option<&'a mut SkillRegistry>,
     /// Runner configuration.
     pub config: AgentRunnerConfig,
+}
+
+/// Outcome produced by the runner after an execution attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRunOutcome {
+    /// Execution completed with a final model answer.
+    Completed(String),
+    /// Execution paused and requests external user input.
+    WaitingInput(PendingInput),
 }
 
 /// Internal run state for the current loop execution.

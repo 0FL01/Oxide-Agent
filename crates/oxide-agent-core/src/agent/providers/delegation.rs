@@ -182,6 +182,38 @@ impl DelegationProvider {
         runner.register_hook(Box::new(TimeoutReportHook::new()));
         runner
     }
+
+    fn waiting_input_not_supported_report(&self, task_id: &str, memory: &AgentMemory) -> String {
+        self.error_report(
+            task_id,
+            memory,
+            "Sub-agent requested external user input, which is not supported".to_string(),
+        )
+    }
+
+    fn error_report(&self, task_id: &str, memory: &AgentMemory, error: String) -> String {
+        build_sub_agent_report(SubAgentReportContext {
+            task_id,
+            status: SubAgentReportStatus::Error,
+            error: Some(error),
+            memory,
+            timeout_secs: self.settings.get_sub_agent_timeout_secs(),
+        })
+    }
+
+    fn timeout_report(&self, task_id: &str, memory: &AgentMemory) -> String {
+        let timeout_secs = self.settings.get_sub_agent_timeout_secs();
+        build_sub_agent_report(SubAgentReportContext {
+            task_id,
+            status: SubAgentReportStatus::Timeout,
+            error: Some(format!(
+                "Sub-agent hard timed out after {} seconds",
+                timeout_secs + 30
+            )),
+            memory,
+            timeout_secs,
+        })
+    }
 }
 
 #[async_trait]
@@ -317,30 +349,17 @@ If the sub-agent doesn't finish, a partial report will be returned."
         let timeout_secs = self.settings.get_sub_agent_timeout_secs();
         let timeout_duration = Duration::from_secs(timeout_secs + 30);
         match timeout(timeout_duration, runner.run(&mut ctx)).await {
-            Ok(Ok(result)) => Ok(result),
+            Ok(Ok(crate::agent::runner::AgentRunOutcome::Completed(result))) => Ok(result),
+            Ok(Ok(crate::agent::runner::AgentRunOutcome::WaitingInput(_))) => {
+                Ok(self.waiting_input_not_supported_report(&task_id, sub_session.memory()))
+            }
             Ok(Err(err)) => {
                 warn!(task_id = %task_id, error = %err, "Sub-agent failed");
-                Ok(build_sub_agent_report(SubAgentReportContext {
-                    task_id: &task_id,
-                    status: SubAgentReportStatus::Error,
-                    error: Some(err.to_string()),
-                    memory: sub_session.memory(),
-                    timeout_secs: self.settings.get_sub_agent_timeout_secs(),
-                }))
+                Ok(self.error_report(&task_id, sub_session.memory(), err.to_string()))
             }
             Err(_) => {
                 warn!(task_id = %task_id, "Sub-agent hard timed out");
-                let limit = self.settings.get_sub_agent_timeout_secs();
-                Ok(build_sub_agent_report(SubAgentReportContext {
-                    task_id: &task_id,
-                    status: SubAgentReportStatus::Timeout,
-                    error: Some(format!(
-                        "Sub-agent hard timed out after {} seconds",
-                        limit + 30
-                    )),
-                    memory: sub_session.memory(),
-                    timeout_secs: limit,
-                }))
+                Ok(self.timeout_report(&task_id, sub_session.memory()))
             }
         }
     }

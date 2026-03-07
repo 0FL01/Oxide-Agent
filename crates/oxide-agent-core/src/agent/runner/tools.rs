@@ -1,15 +1,20 @@
 //! Tool execution helpers for the agent runner.
 
 use super::hooks::ToolHookDecision;
-use super::types::{AgentRunnerContext, RunState};
+use super::types::{AgentRunOutcome, AgentRunnerContext, RunState};
 use super::AgentRunner;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_xml_tags;
-use crate::agent::tool_bridge::{execute_single_tool_call, ToolExecutionContext};
+use crate::agent::task::PendingInput;
+use crate::agent::tool_bridge::{
+    execute_single_tool_call, ToolExecutionContext, ToolExecutionResult,
+};
 use crate::llm::{Message, ToolCall, ToolCallFunction};
 use tracing::{info, warn};
 use uuid::Uuid;
+
+const REQUEST_USER_INPUT_TOOL: &str = "request_user_input";
 
 impl AgentRunner {
     /// Build a tool call payload from validated structured output.
@@ -53,7 +58,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &RunState,
         tool_calls: Vec<ToolCall>,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<Option<AgentRunOutcome>> {
         for tool_call in &tool_calls {
             self.load_skill_context_for_tool(ctx, &tool_call.function.name)
                 .await?;
@@ -65,7 +70,7 @@ impl AgentRunner {
                     continue;
                 }
                 ToolHookDecision::Finish { report } => {
-                    return Ok(Some(report));
+                    return Ok(Some(AgentRunOutcome::Completed(report)));
                 }
             }
             let cancellation_token = ctx.agent.cancellation_token().clone();
@@ -80,6 +85,9 @@ impl AgentRunner {
             };
             let tool_result = execute_single_tool_call(tool_call.clone(), &mut tool_ctx).await?;
             self.apply_after_tool_hooks(ctx, state, &tool_result);
+            if let Some(waiting_input) = waiting_input_from_tool_result(&tool_result) {
+                return Ok(Some(AgentRunOutcome::WaitingInput(waiting_input)));
+            }
         }
         Ok(None)
     }
@@ -180,5 +188,64 @@ impl AgentRunner {
         }
 
         Ok(())
+    }
+}
+
+fn waiting_input_from_tool_result(result: &ToolExecutionResult) -> Option<PendingInput> {
+    if result.tool_name != REQUEST_USER_INPUT_TOOL {
+        return None;
+    }
+
+    if is_tool_execution_failure_output(&result.output) {
+        return None;
+    }
+
+    let Ok(pending_input) = serde_json::from_str::<PendingInput>(&result.output) else {
+        return None;
+    };
+
+    if pending_input.validate().is_err() {
+        return None;
+    }
+
+    Some(pending_input)
+}
+
+fn is_tool_execution_failure_output(output: &str) -> bool {
+    output.starts_with("Tool execution error:")
+        || (output.starts_with("Tool '") && output.contains(" timed out"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::task::PendingInputKind;
+
+    #[test]
+    fn request_user_input_tool_error_output_does_not_trigger_waiting_state() {
+        let result = ToolExecutionResult {
+            tool_name: REQUEST_USER_INPUT_TOOL.to_string(),
+            output: "Tool execution error: Unknown tool: request_user_input".to_string(),
+        };
+
+        let waiting = waiting_input_from_tool_result(&result);
+        assert!(waiting.is_none());
+    }
+
+    #[test]
+    fn request_user_input_valid_payload_triggers_waiting_state() {
+        let result = ToolExecutionResult {
+            tool_name: REQUEST_USER_INPUT_TOOL.to_string(),
+            output: r#"{"request_id":"id-1","prompt":"Need input","kind":"text","min_length":1,"max_length":10,"multiline":false}"#.to_string(),
+        };
+
+        let waiting = waiting_input_from_tool_result(&result);
+        let pending = match waiting {
+            Some(value) => value,
+            None => panic!("expected waiting input"),
+        };
+
+        assert_eq!(pending.prompt, "Need input");
+        assert!(matches!(pending.kind, PendingInputKind::Text(_)));
     }
 }

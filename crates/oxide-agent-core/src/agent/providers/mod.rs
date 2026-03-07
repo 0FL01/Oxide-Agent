@@ -4,6 +4,8 @@
 
 pub mod delegation;
 pub mod filehoster;
+/// Provider exposing HITL input-request tool.
+pub mod request_user_input;
 pub mod sandbox;
 pub mod todos;
 pub mod ytdlp;
@@ -18,6 +20,7 @@ pub mod crawl4ai;
 
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
+pub use request_user_input::RequestUserInputProvider;
 pub use sandbox::SandboxProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use ytdlp::YtdlpProvider;
