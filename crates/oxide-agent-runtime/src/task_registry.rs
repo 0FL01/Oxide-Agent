@@ -2,7 +2,8 @@
 
 use crate::task_events::{NoopTaskEventPublisher, SharedTaskEventPublisher};
 use oxide_agent_core::agent::{
-    SessionId, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskState, TaskStateTransitionError,
+    PendingInput, SessionId, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskState,
+    TaskStateTransitionError,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -15,6 +16,7 @@ struct TaskEntry {
     metadata: TaskMetadata,
     last_event_sequence: u64,
     session_id: SessionId,
+    pending_input: Option<PendingInput>,
     cancellation_token: Arc<CancellationToken>,
 }
 
@@ -31,6 +33,8 @@ pub struct TaskRecord {
     pub metadata: TaskMetadata,
     /// Session that owns the task.
     pub session_id: SessionId,
+    /// Optional pending HITL input payload while task is paused.
+    pub pending_input: Option<PendingInput>,
 }
 
 /// Result of a task state transition together with its event sequence.
@@ -56,6 +60,7 @@ impl From<TaskEntry> for TaskRecord {
         Self {
             metadata: value.metadata,
             session_id: value.session_id,
+            pending_input: value.pending_input,
         }
     }
 }
@@ -132,6 +137,7 @@ impl TaskRegistry {
             metadata,
             last_event_sequence: event.sequence,
             session_id,
+            pending_input: None,
             cancellation_token: Arc::new(CancellationToken::new()),
         };
         let record = {
@@ -157,12 +163,14 @@ impl TaskRegistry {
         metadata: TaskMetadata,
         session_id: SessionId,
         last_event_sequence: u64,
+        pending_input: Option<PendingInput>,
     ) -> TaskRecord {
         let task_id = metadata.id;
         let entry = TaskEntry {
             metadata,
             last_event_sequence,
             session_id,
+            pending_input,
             cancellation_token: Arc::new(CancellationToken::new()),
         };
         let record = TaskRecord::from(entry.clone());
@@ -260,6 +268,41 @@ impl TaskRegistry {
                 .get_mut(task_id)
                 .ok_or(TaskRegistryError::TaskNotFound(*task_id))?;
             entry.metadata.transition_to(next_state)?;
+            if next_state != TaskState::WaitingInput {
+                entry.pending_input = None;
+            }
+            entry.last_event_sequence += 1;
+
+            let event = TaskEvent::new(
+                entry.metadata.id,
+                entry.last_event_sequence,
+                TaskEventKind::StateChanged,
+                entry.metadata.state,
+                None,
+            );
+
+            (TaskStateUpdate::from_entry(entry), event)
+        };
+
+        self.publisher.publish(event).await;
+
+        Ok(update)
+    }
+
+    /// Transition a running task into waiting-input state with a persisted pending payload.
+    pub async fn enter_waiting_input(
+        &self,
+        task_id: &TaskId,
+        pending_input: PendingInput,
+    ) -> Result<TaskStateUpdate, TaskRegistryError> {
+        let (update, event) = {
+            let mut state = self.state.write().await;
+            let entry = state
+                .tasks
+                .get_mut(task_id)
+                .ok_or(TaskRegistryError::TaskNotFound(*task_id))?;
+            entry.metadata.transition_to(TaskState::WaitingInput)?;
+            entry.pending_input = Some(pending_input);
             entry.last_event_sequence += 1;
 
             let event = TaskEvent::new(
@@ -295,6 +338,7 @@ impl TaskRegistry {
             } else {
                 entry.cancellation_token.cancel();
                 entry.metadata.transition_to(TaskState::Cancelled)?;
+                entry.pending_input = None;
                 entry.last_event_sequence += 1;
 
                 let event = TaskEvent::new(
@@ -389,7 +433,10 @@ mod tests {
     use super::{TaskCancellation, TaskRegistry, TaskRegistryError};
     use crate::task_events::{ChannelTaskEventPublisher, TaskEventPublisher};
     use async_trait::async_trait;
-    use oxide_agent_core::agent::{SessionId, TaskEventKind, TaskState, TaskStateTransitionError};
+    use oxide_agent_core::agent::{
+        PendingInput, PendingInputKind, PendingTextInput, SessionId, TaskEventKind, TaskState,
+        TaskStateTransitionError,
+    };
     use std::sync::Arc;
     use tokio::sync::{mpsc::unbounded_channel, Notify};
     use tokio::task::yield_now;
@@ -807,6 +854,56 @@ mod tests {
             .latest_non_terminal_by_session(&session_id)
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn task_registry_enters_waiting_input_once_and_clears_on_resume() {
+        let registry = TaskRegistry::new();
+        let created = registry.create(SessionId::from(22)).await;
+        let task_id = created.metadata.id;
+
+        let running = registry.update_state(&task_id, TaskState::Running).await;
+        assert!(running.is_ok());
+
+        let pending_input = PendingInput {
+            request_id: "req-1".to_string(),
+            prompt: "Choose action".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(20),
+                multiline: false,
+            }),
+        };
+        let waiting = registry
+            .enter_waiting_input(&task_id, pending_input.clone())
+            .await;
+        assert!(matches!(
+            waiting,
+            Ok(update)
+                if update.record.metadata.state == TaskState::WaitingInput
+                    && update.record.pending_input == Some(pending_input.clone())
+        ));
+
+        let duplicate_waiting = registry
+            .enter_waiting_input(&task_id, pending_input.clone())
+            .await;
+        assert_eq!(
+            duplicate_waiting,
+            Err(TaskRegistryError::InvalidStateTransition(
+                TaskStateTransitionError::InvalidTransition {
+                    from: TaskState::WaitingInput,
+                    to: TaskState::WaitingInput,
+                }
+            ))
+        );
+
+        let resumed = registry.update_state(&task_id, TaskState::Running).await;
+        assert!(matches!(
+            resumed,
+            Ok(update)
+                if update.record.metadata.state == TaskState::Running
+                    && update.record.pending_input.is_none()
+        ));
     }
 
     #[tokio::test]

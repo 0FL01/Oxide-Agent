@@ -26,8 +26,8 @@ pub use task_events::{
     ChannelTaskEventPublisher, NoopTaskEventPublisher, SharedTaskEventPublisher, TaskEventPublisher,
 };
 pub use task_executor::{
-    DetachedTaskSubmission, TaskExecutionBackend, TaskExecutionRequest, TaskExecutor,
-    TaskExecutorError, TaskExecutorOptions,
+    DetachedTaskSubmission, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
+    TaskExecutor, TaskExecutorError, TaskExecutorOptions,
 };
 pub use task_recovery::{TaskRecovery, TaskRecoveryError, TaskRecoveryOptions, TaskRecoveryReport};
 pub use task_registry::{TaskRecord, TaskRegistry, TaskRegistryError};

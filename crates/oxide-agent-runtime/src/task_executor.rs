@@ -7,8 +7,8 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::{
-    SessionId, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot, TaskState,
-    TaskStateTransitionError,
+    PendingInput, PendingInputValidationError, SessionId, TaskEvent, TaskEventKind, TaskId,
+    TaskMetadata, TaskSnapshot, TaskState, TaskStateTransitionError,
 };
 use oxide_agent_core::storage::{StorageError, StorageProvider};
 use std::collections::HashMap;
@@ -57,7 +57,16 @@ pub struct TaskExecutionRequest {
 #[async_trait]
 pub trait TaskExecutionBackend: Send + Sync + 'static {
     /// Execute the task payload until completion or failure.
-    async fn execute(&self, request: TaskExecutionRequest) -> Result<()>;
+    async fn execute(&self, request: TaskExecutionRequest) -> Result<TaskExecutionOutcome>;
+}
+
+/// Runtime-visible execution outcome returned by task backends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskExecutionOutcome {
+    /// Backend completed task work without requiring external input.
+    Completed,
+    /// Backend paused task execution and requires a pending HITL response.
+    WaitingInput(PendingInput),
 }
 
 /// Errors returned by detached task executor operations.
@@ -75,6 +84,8 @@ pub enum TaskExecutorError {
     MissingCancellationToken(TaskId),
     /// Task snapshot for a runtime-owned task was missing during persistence.
     MissingTaskSnapshot(TaskId),
+    /// Backend requested waiting-input state with an invalid payload.
+    InvalidPendingInput(PendingInputValidationError),
 }
 
 impl fmt::Display for TaskExecutorError {
@@ -92,6 +103,7 @@ impl fmt::Display for TaskExecutorError {
             Self::MissingTaskSnapshot(task_id) => {
                 write!(f, "missing task snapshot for task: {task_id}")
             }
+            Self::InvalidPendingInput(error) => write!(f, "{error}"),
         }
     }
 }
@@ -274,15 +286,10 @@ impl TaskExecutor {
     }
 
     async fn has_active_task_for_session(&self, session_id: SessionId) -> bool {
-        let records = self.task_registry.list_by_session(&session_id).await;
-
-        for record in records.into_iter().rev() {
-            if self.worker_manager.contains(&record.metadata.id).await {
-                return true;
-            }
-        }
-
-        false
+        self.task_registry
+            .latest_non_terminal_by_session(&session_id)
+            .await
+            .is_some()
     }
 
     /// Cancel a runtime-owned task by task identifier.
@@ -325,6 +332,7 @@ impl TaskExecutor {
             record.session_id,
             &task,
             last_event_sequence,
+            None,
         )
         .await
     }
@@ -340,7 +348,7 @@ impl TaskExecutor {
         self.append_task_event(metadata.id, last_event_sequence, event_kind, metadata.state)
             .await?;
 
-        self.save_snapshot(metadata, session_id, task, last_event_sequence)
+        self.save_snapshot(metadata, session_id, task, last_event_sequence, None)
             .await
     }
 
@@ -350,13 +358,15 @@ impl TaskExecutor {
         session_id: SessionId,
         task: &str,
         last_event_sequence: u64,
+        pending_input: Option<PendingInput>,
     ) -> Result<(), TaskExecutorError> {
-        let snapshot = TaskSnapshot::new(
+        let mut snapshot = TaskSnapshot::new(
             metadata.clone(),
             session_id,
             task.to_string(),
             last_event_sequence,
         );
+        snapshot.pending_input = pending_input;
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
     }
@@ -435,6 +445,7 @@ impl DetachedTaskRun {
             .persist_snapshot(
                 &running_update.record.metadata,
                 running_update.event_sequence,
+                None,
             )
             .await
         {
@@ -451,22 +462,32 @@ impl DetachedTaskRun {
             })
             .await;
 
-        let terminal_state = if self.cancellation_token.is_cancelled() {
-            TaskState::Cancelled
-        } else {
-            match execution_result {
-                Ok(()) => TaskState::Completed,
-                Err(_) => TaskState::Failed,
-            }
-        };
+        if self.cancellation_token.is_cancelled() {
+            return self.persist_terminal_state(TaskState::Cancelled).await;
+        }
 
-        self.persist_terminal_state(terminal_state).await
+        match execution_result {
+            Ok(TaskExecutionOutcome::Completed) => {
+                self.persist_terminal_state(TaskState::Completed).await
+            }
+            Ok(TaskExecutionOutcome::WaitingInput(pending_input)) => {
+                let waiting_result = self.persist_waiting_input(pending_input).await;
+                if let Err(error) = waiting_result {
+                    self.persist_terminal_state(TaskState::Failed).await?;
+                    return Err(error);
+                }
+
+                Ok(())
+            }
+            Err(_) => self.persist_terminal_state(TaskState::Failed).await,
+        }
     }
 
     async fn persist_snapshot(
         &self,
         metadata: &TaskMetadata,
         last_event_sequence: u64,
+        pending_input: Option<PendingInput>,
     ) -> Result<(), TaskExecutorError> {
         self.append_task_event(
             metadata.id,
@@ -476,7 +497,8 @@ impl DetachedTaskRun {
         )
         .await?;
 
-        self.save_snapshot(last_event_sequence, metadata).await
+        self.save_snapshot(last_event_sequence, metadata, pending_input)
+            .await
     }
 
     async fn append_task_event(
@@ -499,15 +521,37 @@ impl DetachedTaskRun {
         &self,
         last_event_sequence: u64,
         metadata: &TaskMetadata,
+        pending_input: Option<PendingInput>,
     ) -> Result<(), TaskExecutorError> {
-        let snapshot = TaskSnapshot::new(
+        let mut snapshot = TaskSnapshot::new(
             metadata.clone(),
             self.session_id,
             self.task.clone(),
             last_event_sequence,
         );
+        snapshot.pending_input = pending_input;
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
+    }
+
+    async fn persist_waiting_input(
+        &self,
+        pending_input: PendingInput,
+    ) -> Result<(), TaskExecutorError> {
+        pending_input
+            .validate()
+            .map_err(TaskExecutorError::InvalidPendingInput)?;
+
+        let waiting_update = self
+            .task_registry
+            .enter_waiting_input(&self.task_id, pending_input)
+            .await?;
+        self.persist_snapshot(
+            &waiting_update.record.metadata,
+            waiting_update.event_sequence,
+            waiting_update.record.pending_input,
+        )
+        .await
     }
 
     async fn persist_failed_start(&self) {
@@ -518,7 +562,7 @@ impl DetachedTaskRun {
         {
             Ok(update) => {
                 if let Err(error) = self
-                    .persist_snapshot(&update.record.metadata, update.event_sequence)
+                    .persist_snapshot(&update.record.metadata, update.event_sequence, None)
                     .await
                 {
                     error!(
@@ -558,7 +602,7 @@ impl DetachedTaskRun {
             .await
         {
             Ok(update) => {
-                self.persist_snapshot(&update.record.metadata, update.event_sequence)
+                self.persist_snapshot(&update.record.metadata, update.event_sequence, None)
                     .await
             }
             Err(error)
@@ -581,7 +625,7 @@ impl DetachedTaskRun {
             return Ok(());
         }
 
-        self.save_snapshot(update.event_sequence, &update.record.metadata)
+        self.save_snapshot(update.event_sequence, &update.record.metadata, None)
             .await
     }
 }
@@ -631,14 +675,15 @@ fn pre_start_failure_snapshot(
 #[cfg(test)]
 mod tests {
     use super::{
-        DetachedTaskSubmission, TaskExecutionBackend, TaskExecutionRequest, TaskExecutor,
-        TaskExecutorOptions, CREATED_EVENT_SEQUENCE,
+        DetachedTaskSubmission, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
+        TaskExecutor, TaskExecutorOptions, CREATED_EVENT_SEQUENCE,
     };
     use crate::{TaskExecutorError, TaskRegistry, WorkerManager};
     use anyhow::{anyhow, Result as AnyResult};
     use async_trait::async_trait;
     use oxide_agent_core::agent::{
-        AgentMemory, SessionId, TaskEvent, TaskId, TaskSnapshot, TaskState,
+        AgentMemory, PendingInput, PendingInputKind, PendingTextInput, SessionId, TaskEvent,
+        TaskId, TaskSnapshot, TaskState,
     };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use std::collections::HashMap;
@@ -646,16 +691,18 @@ mod tests {
     use tokio::sync::{Barrier, Mutex, Notify};
     use tokio::time::{sleep, timeout, Duration};
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     enum BackendOutcome {
         Complete,
         Fail,
         Panic,
+        WaitingInput,
     }
 
     #[derive(Clone)]
     struct ControlledBackend {
         outcome: BackendOutcome,
+        pending_input: Option<PendingInput>,
         started: Arc<Notify>,
         release: Arc<Notify>,
     }
@@ -664,6 +711,16 @@ mod tests {
         fn new(outcome: BackendOutcome) -> Self {
             Self {
                 outcome,
+                pending_input: None,
+                started: Arc::new(Notify::new()),
+                release: Arc::new(Notify::new()),
+            }
+        }
+
+        fn waiting_input(pending_input: PendingInput) -> Self {
+            Self {
+                outcome: BackendOutcome::WaitingInput,
+                pending_input: Some(pending_input),
                 started: Arc::new(Notify::new()),
                 release: Arc::new(Notify::new()),
             }
@@ -681,7 +738,7 @@ mod tests {
 
     #[async_trait]
     impl TaskExecutionBackend for ControlledBackend {
-        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<()> {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
             self.started.notify_waiters();
 
             if matches!(self.outcome, BackendOutcome::Panic) {
@@ -695,9 +752,16 @@ mod tests {
             }
 
             match self.outcome {
-                BackendOutcome::Complete => Ok(()),
+                BackendOutcome::Complete => Ok(TaskExecutionOutcome::Completed),
                 BackendOutcome::Fail => Err(anyhow!("simulated backend failure")),
                 BackendOutcome::Panic => unreachable!("panic outcome returns before release"),
+                BackendOutcome::WaitingInput => {
+                    if let Some(pending_input) = self.pending_input.clone() {
+                        Ok(TaskExecutionOutcome::WaitingInput(pending_input))
+                    } else {
+                        Err(anyhow!("missing waiting-input payload"))
+                    }
+                }
             }
         }
     }
@@ -1119,6 +1183,156 @@ mod tests {
         };
         assert_eq!(cancelled_snapshot.metadata.state, TaskState::Cancelled);
         assert_eq!(cancelled_snapshot.checkpoint.state, TaskState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn detached_executor_transitions_to_waiting_input_and_persists_pending_payload() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let pending_input = sample_pending_input();
+        let backend = Arc::new(ControlledBackend::waiting_input(pending_input.clone()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(110),
+                    task: "request approval".to_string(),
+                },
+                Arc::clone(&backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        backend.wait_started().await;
+        backend.release();
+
+        wait_for_state(&registry, task_id, TaskState::WaitingInput).await;
+
+        let waiting_record = registry.get(&task_id).await;
+        assert!(matches!(
+            waiting_record,
+            Some(record)
+                if record.metadata.state == TaskState::WaitingInput
+                    && record.pending_input == Some(pending_input.clone())
+        ));
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::WaitingInput
+                    && snapshot.checkpoint.state == TaskState::WaitingInput
+                    && snapshot.pending_input == Some(pending_input)
+        ));
+
+        assert!(!worker_manager.contains(&task_id).await);
+    }
+
+    #[tokio::test]
+    async fn detached_executor_rejects_new_submit_when_previous_task_waits_for_input() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let session_id = SessionId::from(111);
+
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+        let first = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id,
+                    task: "initial request".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(first.is_ok(), "first submit failed: {first:?}");
+        let first_task_id = match first {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        waiting_backend.release();
+        wait_for_state(&registry, first_task_id, TaskState::WaitingInput).await;
+
+        let second = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id,
+                    task: "should be blocked".to_string(),
+                },
+                Arc::new(ControlledBackend::new(BackendOutcome::Complete)),
+            )
+            .await;
+
+        assert!(matches!(
+            second,
+            Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id))
+                if rejected_session_id == session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn detached_executor_rejects_invalid_pending_input_without_entering_waiting_state() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let backend = Arc::new(ControlledBackend::waiting_input(invalid_pending_input()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(112),
+                    task: "invalid waiting payload".to_string(),
+                },
+                Arc::clone(&backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        backend.wait_started().await;
+        backend.release();
+
+        wait_for_worker_completion(&worker_manager, task_id).await;
+        wait_for_state(&registry, task_id, TaskState::Failed).await;
+
+        let record = registry.get(&task_id).await;
+        assert!(matches!(
+            record,
+            Some(record) if record.metadata.state == TaskState::Failed && record.pending_input.is_none()
+        ));
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Failed
+                    && snapshot.pending_input.is_none()
+        ));
     }
 
     #[tokio::test]
@@ -1663,6 +1877,30 @@ mod tests {
         .await;
     }
 
+    fn sample_pending_input() -> PendingInput {
+        PendingInput {
+            request_id: "hitl-request-1".to_string(),
+            prompt: "Please provide approval details".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(512),
+                multiline: true,
+            }),
+        }
+    }
+
+    fn invalid_pending_input() -> PendingInput {
+        PendingInput {
+            request_id: "".to_string(),
+            prompt: "invalid".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(16),
+                multiline: false,
+            }),
+        }
+    }
+
     async fn wait_for_state(registry: &TaskRegistry, task_id: TaskId, expected: TaskState) {
         let waited = timeout(Duration::from_secs(5), async {
             loop {
@@ -1695,5 +1933,19 @@ mod tests {
         .await;
 
         assert!(waited.is_ok(), "snapshot did not reach {expected:?}");
+    }
+
+    async fn wait_for_worker_completion(worker_manager: &WorkerManager, task_id: TaskId) {
+        let waited = timeout(Duration::from_secs(5), async {
+            loop {
+                if !worker_manager.contains(&task_id).await {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(waited.is_ok(), "worker did not complete for task {task_id}");
     }
 }

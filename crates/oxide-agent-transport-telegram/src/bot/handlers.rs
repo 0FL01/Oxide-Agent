@@ -1072,7 +1072,9 @@ mod tests {
     use oxide_agent_core::config::AgentSettings;
     use oxide_agent_core::llm::LlmClient;
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
-    use oxide_agent_runtime::{TaskExecutionBackend, TaskExecutionRequest, TaskRegistry};
+    use oxide_agent_runtime::{
+        TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest, TaskRegistry,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use teloxide::dispatching::dialogue::{Dialogue, InMemStorage};
@@ -1146,11 +1148,11 @@ mod tests {
 
     #[async_trait]
     impl TaskExecutionBackend for BlockingBackend {
-        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<()> {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
             self.started.notify_one();
             request.cancellation_token.cancelled().await;
             self.release.notify_one();
-            Ok(())
+            Ok(TaskExecutionOutcome::Completed)
         }
     }
 

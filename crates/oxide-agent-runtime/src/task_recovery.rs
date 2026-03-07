@@ -107,6 +107,7 @@ impl TaskRecovery {
                             snapshot.metadata,
                             session_id,
                             snapshot.checkpoint.last_event_sequence,
+                            snapshot.pending_input,
                         )
                         .await;
                     report.restored_records += 1;
@@ -174,6 +175,7 @@ fn fail_snapshot(mut snapshot: TaskSnapshot, note: &str) -> TaskSnapshot {
     snapshot.metadata.updated_at = checkpoint.persisted_at;
     snapshot.checkpoint = checkpoint;
     snapshot.recovery_note = Some(note.to_string());
+    snapshot.pending_input = None;
     snapshot
 }
 
@@ -184,6 +186,7 @@ fn apply_event_state(mut snapshot: TaskSnapshot, state: TaskState, sequence: u64
     snapshot.metadata.updated_at = checkpoint.persisted_at;
     snapshot.checkpoint = checkpoint;
     snapshot.recovery_note = Some(CANCELLED_EVENT_RECOVERY_NOTE.to_string());
+    snapshot.pending_input = None;
     snapshot
 }
 
@@ -197,7 +200,8 @@ mod tests {
     use async_trait::async_trait;
     use oxide_agent_core::agent::task::TASK_SNAPSHOT_SCHEMA_VERSION;
     use oxide_agent_core::agent::{
-        AgentMemory, SessionId, TaskEvent, TaskEventKind, TaskMetadata, TaskSnapshot, TaskState,
+        AgentMemory, PendingInput, PendingInputKind, PendingTextInput, SessionId, TaskEvent,
+        TaskEventKind, TaskMetadata, TaskSnapshot, TaskState,
     };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use std::collections::HashMap;
@@ -544,6 +548,60 @@ mod tests {
                 if snapshot.schema_version == TASK_SNAPSHOT_SCHEMA_VERSION
                     && snapshot.checkpoint.schema_version == TASK_SNAPSHOT_SCHEMA_VERSION
                     && snapshot.metadata.state == TaskState::Failed
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_recovery_keeps_waiting_input_snapshot_resumable() {
+        let storage = Arc::new(RecoveryStorage::default());
+        let registry = Arc::new(TaskRegistry::new());
+
+        let mut metadata = TaskMetadata::new();
+        metadata.state = TaskState::WaitingInput;
+        let mut waiting_snapshot = TaskSnapshot::new(
+            metadata,
+            SessionId::from(33),
+            "needs response".to_string(),
+            2,
+        );
+        let pending_input = PendingInput {
+            request_id: "resume-req-1".to_string(),
+            prompt: "Provide deployment window".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(200),
+                multiline: false,
+            }),
+        };
+        waiting_snapshot.pending_input = Some(pending_input.clone());
+        let task_id = waiting_snapshot.metadata.id;
+        assert!(storage.save_task_snapshot(&waiting_snapshot).await.is_ok());
+
+        let recovery = TaskRecovery::new(TaskRecoveryOptions {
+            task_registry: Arc::clone(&registry),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+
+        let report = recovery.reconcile().await;
+        assert!(report.is_ok());
+        let report = report.unwrap_or_default();
+        assert_eq!(report.restored_records, 1);
+        assert_eq!(report.failed_recoveries, 0);
+
+        let record = registry.get(&task_id).await;
+        assert!(matches!(
+            record,
+            Some(record)
+                if record.metadata.state == TaskState::WaitingInput
+                    && record.pending_input == Some(pending_input.clone())
+        ));
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::WaitingInput
+                    && snapshot.pending_input == Some(pending_input)
         ));
     }
 

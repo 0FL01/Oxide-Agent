@@ -386,7 +386,9 @@ mod tests {
     use async_trait::async_trait;
     use oxide_agent_core::agent::{AgentMemory, SessionId, TaskMetadata, TaskSnapshot, TaskState};
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
-    use oxide_agent_runtime::{TaskExecutionBackend, TaskExecutionRequest, TaskRegistry};
+    use oxide_agent_runtime::{
+        TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest, TaskRegistry,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::{Mutex, Notify};
@@ -395,6 +397,9 @@ mod tests {
     #[derive(Default)]
     struct RecoveryStorage {
         snapshots: Mutex<HashMap<oxide_agent_core::agent::TaskId, TaskSnapshot>>,
+        events: Mutex<
+            HashMap<oxide_agent_core::agent::TaskId, Vec<oxide_agent_core::agent::TaskEvent>>,
+        >,
     }
 
     struct BlockingBackend {
@@ -404,10 +409,10 @@ mod tests {
 
     #[async_trait]
     impl TaskExecutionBackend for BlockingBackend {
-        async fn execute(&self, _request: TaskExecutionRequest) -> AnyResult<()> {
+        async fn execute(&self, _request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
             self.started.notify_one();
             self.release.notified().await;
-            Ok(())
+            Ok(TaskExecutionOutcome::Completed)
         }
     }
 
@@ -549,6 +554,33 @@ mod tests {
 
         async fn list_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StorageError> {
             Ok(self.snapshots.lock().await.values().cloned().collect())
+        }
+
+        async fn append_task_event(
+            &self,
+            task_id: oxide_agent_core::agent::TaskId,
+            event: oxide_agent_core::agent::TaskEvent,
+        ) -> Result<(), StorageError> {
+            self.events
+                .lock()
+                .await
+                .entry(task_id)
+                .or_default()
+                .push(event);
+            Ok(())
+        }
+
+        async fn load_task_events(
+            &self,
+            task_id: oxide_agent_core::agent::TaskId,
+        ) -> Result<Vec<oxide_agent_core::agent::TaskEvent>, StorageError> {
+            Ok(self
+                .events
+                .lock()
+                .await
+                .get(&task_id)
+                .cloned()
+                .unwrap_or_default())
         }
 
         async fn check_connection(&self) -> Result<(), String> {

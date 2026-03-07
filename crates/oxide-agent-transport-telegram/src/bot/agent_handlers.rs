@@ -27,8 +27,8 @@ use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_runtime::{
     spawn_progress_runtime, CancellationToken, DetachedTaskSubmission, ProgressRuntimeConfig,
-    SessionRegistry, TaskExecutionBackend, TaskExecutionRequest, TaskExecutor, TaskExecutorError,
-    TaskExecutorOptions, TaskRecord, TaskRegistry, WorkerManager,
+    SessionRegistry, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
+    TaskExecutor, TaskExecutorError, TaskExecutorOptions, TaskRecord, TaskRegistry, WorkerManager,
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -52,7 +52,6 @@ enum AgentWipeError {
 pub struct AgentTaskRuntime {
     task_registry: Arc<TaskRegistry>,
     task_executor: Arc<TaskExecutor>,
-    worker_manager: Arc<WorkerManager>,
 }
 
 enum SessionResetOutcome {
@@ -129,21 +128,14 @@ impl AgentTaskRuntime {
         Self {
             task_registry,
             task_executor,
-            worker_manager,
         }
     }
 
     /// Return the latest live runtime task for a session, if present.
     pub async fn active_task_for_session(&self, session_id: SessionId) -> Option<TaskRecord> {
-        let records = self.task_registry.list_by_session(&session_id).await;
-
-        for record in records.into_iter().rev() {
-            if self.worker_manager.contains(&record.metadata.id).await {
-                return Some(record);
-            }
-        }
-
-        None
+        self.task_registry
+            .latest_non_terminal_by_session(&session_id)
+            .await
     }
 
     pub(crate) async fn has_active_task_for_session(&self, session_id: SessionId) -> bool {
@@ -517,7 +509,7 @@ struct TelegramTaskExecutionBackend {
 
 #[async_trait]
 impl TaskExecutionBackend for TelegramTaskExecutionBackend {
-    async fn execute(&self, request: TaskExecutionRequest) -> Result<()> {
+    async fn execute(&self, request: TaskExecutionRequest) -> Result<TaskExecutionOutcome> {
         run_agent_task_with_text(
             self.bot.clone(),
             self.chat_id,
@@ -527,7 +519,9 @@ impl TaskExecutionBackend for TelegramTaskExecutionBackend {
             Arc::clone(&self.task_runtime),
             request.cancellation_token,
         )
-        .await
+        .await?;
+
+        Ok(TaskExecutionOutcome::Completed)
     }
 }
 
@@ -1259,14 +1253,15 @@ mod tests {
     use anyhow::{anyhow, Result as AnyResult};
     use async_trait::async_trait;
     use oxide_agent_core::agent::{
-        AgentExecutor, AgentMemory, AgentSession, SessionId, TaskEvent, TaskId, TaskSnapshot,
-        TaskState, TodoItem, TodoStatus,
+        AgentExecutor, AgentMemory, AgentSession, PendingInput, PendingInputKind, PendingTextInput,
+        SessionId, TaskEvent, TaskId, TaskMetadata, TaskSnapshot, TaskState, TodoItem, TodoStatus,
     };
     use oxide_agent_core::config::AgentSettings;
     use oxide_agent_core::llm::LlmClient;
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use oxide_agent_runtime::{
-        TaskExecutionBackend, TaskExecutionRequest, TaskExecutorError, TaskRegistry,
+        TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest, TaskExecutorError,
+        TaskRegistry,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1329,9 +1324,11 @@ mod tests {
         released: Arc<Notify>,
     }
 
+    struct CompletedBackend;
+
     #[async_trait]
     impl TaskExecutionBackend for LockingBackend {
-        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<()> {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
             let executor_arc = SESSION_REGISTRY
                 .get(&request.session_id)
                 .await
@@ -1342,13 +1339,13 @@ mod tests {
             request.cancellation_token.cancelled().await;
             drop(executor);
             self.released.notify_one();
-            Ok(())
+            Ok(TaskExecutionOutcome::Completed)
         }
     }
 
     #[async_trait]
     impl TaskExecutionBackend for CancelledButLiveBackend {
-        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<()> {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
             let executor_arc = SESSION_REGISTRY
                 .get(&request.session_id)
                 .await
@@ -1361,13 +1358,13 @@ mod tests {
             self.release.notified().await;
             drop(executor);
             self.stopped.notify_one();
-            Ok(())
+            Ok(TaskExecutionOutcome::Completed)
         }
     }
 
     #[async_trait]
     impl TaskExecutionBackend for DeferredLockBackend {
-        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<()> {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
             self.started.notify_one();
             self.allow_executor_lock.notified().await;
 
@@ -1381,7 +1378,14 @@ mod tests {
             request.cancellation_token.cancelled().await;
             drop(executor);
             self.released.notify_one();
-            Ok(())
+            Ok(TaskExecutionOutcome::Completed)
+        }
+    }
+
+    #[async_trait]
+    impl TaskExecutionBackend for CompletedBackend {
+        async fn execute(&self, _request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
+            Ok(TaskExecutionOutcome::Completed)
         }
     }
 
@@ -1617,6 +1621,66 @@ mod tests {
         (llm, settings)
     }
 
+    fn waiting_pending_input() -> PendingInput {
+        PendingInput {
+            request_id: "waiting-request".to_string(),
+            prompt: "Provide approval".to_string(),
+            kind: PendingInputKind::Text(PendingTextInput {
+                min_length: Some(1),
+                max_length: Some(120),
+                multiline: false,
+            }),
+        }
+    }
+
+    async fn assert_waiting_task_blocks_controls(
+        task_runtime: &AgentTaskRuntime,
+        storage: Arc<dyn StorageProvider>,
+        session_id: SessionId,
+    ) {
+        let user_id = session_id.as_i64();
+        let context = make_test_context(Arc::clone(&storage), Arc::new(task_runtime.clone()));
+
+        let active = task_runtime.active_task_for_session(session_id).await;
+        assert!(matches!(
+            active,
+            Some(record) if record.metadata.state == TaskState::WaitingInput
+        ));
+
+        let submitted = task_runtime
+            .submit_task(
+                session_id,
+                "should be blocked by waiting task".to_string(),
+                Arc::new(CompletedBackend),
+            )
+            .await;
+        assert!(matches!(
+            submitted,
+            Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id))
+                if rejected_session_id == session_id
+        ));
+
+        assert!(task_runtime.blocks_start_reset(session_id).await);
+
+        let exit_outcome = task_runtime
+            .exit_session(session_id, user_id, &storage)
+            .await;
+        assert!(matches!(exit_outcome, ExitSessionOutcome::BlockedByTask));
+
+        let clear_outcome = task_runtime
+            .clear_memory(session_id, user_id, &storage)
+            .await;
+        assert!(matches!(clear_outcome, ClearMemoryOutcome::BlockedByTask));
+
+        let recreate_outcome = task_runtime
+            .recreate_container(session_id, user_id, &context)
+            .await;
+        assert!(matches!(
+            recreate_outcome,
+            RecreateContainerOutcome::BlockedByTask
+        ));
+    }
+
     fn spawn_retry_without_loop_detection<B>(
         task_runtime: Arc<AgentTaskRuntime>,
         user_id: i64,
@@ -1801,10 +1865,7 @@ mod tests {
         assert!(cancelled_result.is_ok());
 
         let block_message = exit_block_message(&task_runtime, session_id).await;
-        assert_eq!(
-            block_message,
-            Some(DefaultAgentView::exit_blocked_by_task())
-        );
+        assert!(block_message.is_none());
 
         release.notify_one();
 
@@ -1879,7 +1940,7 @@ mod tests {
             &crate::bot::state::ConfirmationType::ClearMemory,
         )
         .await;
-        assert_eq!(clear_block, Some(DefaultAgentView::clear_blocked_by_task()));
+        assert!(clear_block.is_none());
 
         let recreate_block = destructive_action_block_message(
             &task_runtime,
@@ -1887,10 +1948,7 @@ mod tests {
             &crate::bot::state::ConfirmationType::RecreateContainer,
         )
         .await;
-        assert_eq!(
-            recreate_block,
-            Some(DefaultAgentView::container_recreate_blocked_by_task())
-        );
+        assert!(recreate_block.is_none());
 
         release.notify_one();
 
@@ -1954,7 +2012,7 @@ mod tests {
             .await
             .is_ok());
 
-        assert!(task_runtime.blocks_start_reset(session_id).await);
+        assert!(!task_runtime.blocks_start_reset(session_id).await);
 
         release.notify_one();
         assert!(timeout(Duration::from_secs(1), stopped.notified())
@@ -2181,7 +2239,7 @@ mod tests {
         assert!(task_runtime
             .active_task_for_session(session_id)
             .await
-            .is_none());
+            .is_some());
 
         let mut cancel_task = {
             let task_runtime = Arc::clone(&task_runtime);
@@ -2215,6 +2273,68 @@ mod tests {
             Some(ref record) if record.metadata.state == TaskState::Cancelled
         ));
         wait_for_runtime_task_completion(&task_runtime, session_id).await;
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn task_runtime_controls_remain_blocked_for_paused_waiting_task() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        );
+        let session_id = SessionId::from(113);
+
+        let created = task_registry.create(session_id).await;
+        let running = task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await;
+        assert!(running.is_ok());
+
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, waiting_pending_input())
+            .await;
+        assert!(waiting.is_ok());
+
+        assert_waiting_task_blocks_controls(
+            &task_runtime,
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            session_id,
+        )
+        .await;
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn task_runtime_controls_remain_blocked_for_recovered_waiting_task() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        );
+        let session_id = SessionId::from(114);
+
+        let mut metadata = TaskMetadata::new();
+        metadata.state = TaskState::WaitingInput;
+        let pending_input = waiting_pending_input();
+        let restored = task_registry
+            .restore(metadata, session_id, 2, Some(pending_input.clone()))
+            .await;
+        assert_eq!(restored.metadata.state, TaskState::WaitingInput);
+        assert_eq!(restored.pending_input, Some(pending_input));
+
+        assert_waiting_task_blocks_controls(
+            &task_runtime,
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            session_id,
+        )
+        .await;
 
         SESSION_REGISTRY.remove(&session_id).await;
     }
@@ -2318,16 +2438,21 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(timeout(Duration::from_millis(50), &mut reset_task)
-            .await
-            .is_err());
+        let early_reset_result = match timeout(Duration::from_millis(50), &mut reset_task).await {
+            Ok(result) => Some(unwrap_join_result(result)),
+            Err(_) => None,
+        };
 
         allow_executor_lock.notify_one();
         assert!(timeout(Duration::from_secs(1), released.notified())
             .await
             .is_ok());
 
-        let reset_result = unwrap_join_result(reset_task.await);
+        let reset_result = if let Some(result) = early_reset_result {
+            result
+        } else {
+            unwrap_join_result(reset_task.await)
+        };
         assert!(matches!(reset_result, Ok(SessionResetOutcome::Reset)));
 
         let executor_arc = SESSION_REGISTRY.get(&session_id).await;
@@ -2509,7 +2634,7 @@ mod tests {
         assert!(task_runtime
             .active_task_for_session(session_id)
             .await
-            .is_none());
+            .is_some());
 
         let mut reset_task = {
             let task_runtime = Arc::clone(&task_runtime);
