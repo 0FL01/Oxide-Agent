@@ -7,7 +7,8 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::{
-    SessionId, TaskId, TaskMetadata, TaskSnapshot, TaskState, TaskStateTransitionError,
+    SessionId, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot, TaskState,
+    TaskStateTransitionError,
 };
 use oxide_agent_core::storage::{StorageError, StorageProvider};
 use std::collections::HashMap;
@@ -219,11 +220,12 @@ impl TaskExecutor {
         };
 
         if let Err(error) = self
-            .persist_snapshot(
+            .persist_checkpoint(
                 &record.metadata,
                 record.session_id,
                 &submission.task,
                 CREATED_EVENT_SEQUENCE,
+                TaskEventKind::Created,
             )
             .await
         {
@@ -287,13 +289,13 @@ impl TaskExecutor {
     pub async fn cancel_task(&self, task_id: &TaskId) -> Result<TaskRecord, TaskExecutorError> {
         match self.task_registry.cancel(task_id).await? {
             TaskCancellation::Cancelled(update) => {
-                self.persist_cancelled_snapshot(&update.record, update.event_sequence)
+                self.persist_cancelled_snapshot(&update.record, update.event_sequence, true)
                     .await?;
                 Ok(update.record)
             }
             TaskCancellation::AlreadyTerminal(update) => {
                 if update.record.metadata.state == TaskState::Cancelled {
-                    self.persist_cancelled_snapshot(&update.record, update.event_sequence)
+                    self.persist_cancelled_snapshot(&update.record, update.event_sequence, false)
                         .await?;
                 }
                 Ok(update.record)
@@ -305,9 +307,20 @@ impl TaskExecutor {
         &self,
         record: &TaskRecord,
         last_event_sequence: u64,
+        append_event: bool,
     ) -> Result<(), TaskExecutorError> {
         let task = self.load_task_payload(record.metadata.id).await?;
-        self.persist_snapshot(
+        if append_event {
+            self.append_task_event(
+                record.metadata.id,
+                last_event_sequence,
+                TaskEventKind::StateChanged,
+                record.metadata.state,
+            )
+            .await?;
+        }
+
+        self.save_snapshot(
             &record.metadata,
             record.session_id,
             &task,
@@ -316,7 +329,22 @@ impl TaskExecutor {
         .await
     }
 
-    async fn persist_snapshot(
+    async fn persist_checkpoint(
+        &self,
+        metadata: &TaskMetadata,
+        session_id: SessionId,
+        task: &str,
+        last_event_sequence: u64,
+        event_kind: TaskEventKind,
+    ) -> Result<(), TaskExecutorError> {
+        self.append_task_event(metadata.id, last_event_sequence, event_kind, metadata.state)
+            .await?;
+
+        self.save_snapshot(metadata, session_id, task, last_event_sequence)
+            .await
+    }
+
+    async fn save_snapshot(
         &self,
         metadata: &TaskMetadata,
         session_id: SessionId,
@@ -340,6 +368,22 @@ impl TaskExecutor {
             .await?
             .ok_or(TaskExecutorError::MissingTaskSnapshot(task_id))?;
         Ok(snapshot.task)
+    }
+
+    async fn append_task_event(
+        &self,
+        task_id: TaskId,
+        sequence: u64,
+        kind: TaskEventKind,
+        state: TaskState,
+    ) -> Result<(), TaskExecutorError> {
+        self.storage
+            .append_task_event(
+                task_id,
+                TaskEvent::new(task_id, sequence, kind, state, None),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn persist_pre_start_failure(
@@ -424,6 +468,38 @@ impl DetachedTaskRun {
         metadata: &TaskMetadata,
         last_event_sequence: u64,
     ) -> Result<(), TaskExecutorError> {
+        self.append_task_event(
+            metadata.id,
+            last_event_sequence,
+            TaskEventKind::StateChanged,
+            metadata.state,
+        )
+        .await?;
+
+        self.save_snapshot(last_event_sequence, metadata).await
+    }
+
+    async fn append_task_event(
+        &self,
+        task_id: TaskId,
+        sequence: u64,
+        kind: TaskEventKind,
+        state: TaskState,
+    ) -> Result<(), TaskExecutorError> {
+        self.storage
+            .append_task_event(
+                task_id,
+                TaskEvent::new(task_id, sequence, kind, state, None),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn save_snapshot(
+        &self,
+        last_event_sequence: u64,
+        metadata: &TaskMetadata,
+    ) -> Result<(), TaskExecutorError> {
         let snapshot = TaskSnapshot::new(
             metadata.clone(),
             self.session_id,
@@ -485,9 +561,28 @@ impl DetachedTaskRun {
                 self.persist_snapshot(&update.record.metadata, update.event_sequence)
                     .await
             }
+            Err(error)
+                if terminal_transition_is_already_committed(&error)
+                    && terminal_state == TaskState::Cancelled =>
+            {
+                self.persist_committed_cancelled_state().await
+            }
             Err(error) if terminal_transition_is_already_committed(&error) => Ok(()),
             Err(error) => Err(error.into()),
         }
+    }
+
+    async fn persist_committed_cancelled_state(&self) -> Result<(), TaskExecutorError> {
+        let Some(update) = self.task_registry.get_update(&self.task_id).await else {
+            return Err(TaskExecutorError::MissingTaskSnapshot(self.task_id));
+        };
+
+        if update.record.metadata.state != TaskState::Cancelled {
+            return Ok(());
+        }
+
+        self.save_snapshot(update.event_sequence, &update.record.metadata)
+            .await
     }
 }
 
@@ -542,7 +637,9 @@ mod tests {
     use crate::{TaskExecutorError, TaskRegistry, WorkerManager};
     use anyhow::{anyhow, Result as AnyResult};
     use async_trait::async_trait;
-    use oxide_agent_core::agent::{AgentMemory, SessionId, TaskId, TaskSnapshot, TaskState};
+    use oxide_agent_core::agent::{
+        AgentMemory, SessionId, TaskEvent, TaskId, TaskSnapshot, TaskState,
+    };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -609,6 +706,7 @@ mod tests {
     struct TestStorage {
         snapshots: Mutex<HashMap<TaskId, TaskSnapshot>>,
         snapshot_history: Mutex<HashMap<TaskId, Vec<TaskSnapshot>>>,
+        events: Mutex<HashMap<TaskId, Vec<TaskEvent>>>,
         fail_save_calls: Mutex<Vec<usize>>,
         fail_save_states: Mutex<Vec<TaskState>>,
         save_calls: Mutex<usize>,
@@ -619,6 +717,7 @@ mod tests {
             Self {
                 snapshots: Mutex::new(HashMap::new()),
                 snapshot_history: Mutex::new(HashMap::new()),
+                events: Mutex::new(HashMap::new()),
                 fail_save_calls: Mutex::new(vec![call]),
                 fail_save_states: Mutex::new(Vec::new()),
                 save_calls: Mutex::new(0),
@@ -629,6 +728,7 @@ mod tests {
             Self {
                 snapshots: Mutex::new(HashMap::new()),
                 snapshot_history: Mutex::new(HashMap::new()),
+                events: Mutex::new(HashMap::new()),
                 fail_save_calls: Mutex::new(calls),
                 fail_save_states: Mutex::new(Vec::new()),
                 save_calls: Mutex::new(0),
@@ -639,6 +739,7 @@ mod tests {
             Self {
                 snapshots: Mutex::new(HashMap::new()),
                 snapshot_history: Mutex::new(HashMap::new()),
+                events: Mutex::new(HashMap::new()),
                 fail_save_calls: Mutex::new(Vec::new()),
                 fail_save_states: Mutex::new(vec![state]),
                 save_calls: Mutex::new(0),
@@ -836,6 +937,30 @@ mod tests {
                     .then_with(|| left.metadata.id.as_uuid().cmp(&right.metadata.id.as_uuid()))
             });
             Ok(values)
+        }
+
+        async fn append_task_event(
+            &self,
+            task_id: TaskId,
+            event: TaskEvent,
+        ) -> Result<(), StorageError> {
+            self.events
+                .lock()
+                .await
+                .entry(task_id)
+                .or_default()
+                .push(event);
+            Ok(())
+        }
+
+        async fn load_task_events(&self, task_id: TaskId) -> Result<Vec<TaskEvent>, StorageError> {
+            Ok(self
+                .events
+                .lock()
+                .await
+                .get(&task_id)
+                .cloned()
+                .unwrap_or_default())
         }
 
         async fn check_connection(&self) -> Result<(), String> {
@@ -1154,6 +1279,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_repairs_cancelled_snapshot_after_worker_completion() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::fail_on_save_state(TaskState::Cancelled));
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+
+        let record = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(105),
+                    task: "worker completion repair".to_string(),
+                },
+                Arc::clone(&backend),
+            )
+            .await;
+        assert!(record.is_ok(), "submit failed: {record:?}");
+        let task_id = match record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        backend.wait_started().await;
+
+        let cancelled = executor.cancel_task(&task_id).await;
+        assert!(matches!(cancelled, Err(TaskExecutorError::Storage(_))));
+
+        let stale_snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            stale_snapshot,
+            Ok(Some(snapshot)) if snapshot.metadata.state == TaskState::Running
+        ));
+
+        backend.release();
+        wait_for_state(&registry, task_id, TaskState::Cancelled).await;
+        wait_for_snapshot_state(&storage, task_id, TaskState::Cancelled).await;
+
+        let repaired_snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            repaired_snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Cancelled
+                    && snapshot.checkpoint.state == TaskState::Cancelled
+                    && snapshot.checkpoint.last_event_sequence == 3
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_persists_event_log_for_restart_repair_when_cancelled_snapshot_save_fails()
+    {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::fail_on_save_state(TaskState::Cancelled));
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+
+        let record = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(106),
+                    task: "restart repair".to_string(),
+                },
+                Arc::new(ControlledBackend::new(BackendOutcome::Complete)),
+            )
+            .await;
+        assert!(record.is_ok(), "submit failed: {record:?}");
+        let task_id = match record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        let cancelled = executor.cancel_task(&task_id).await;
+        assert!(matches!(cancelled, Err(TaskExecutorError::Storage(_))));
+
+        let events = storage.load_task_events(task_id).await;
+        assert!(matches!(
+            events,
+            Ok(events)
+                if events.iter().any(|event| {
+                    event.sequence == 2 && event.state == TaskState::Cancelled
+                })
+        ));
+    }
+
+    #[tokio::test]
     async fn completion_wins_late_cancellation_without_cancelling_runtime_token() {
         let registry = Arc::new(TaskRegistry::new());
         let worker_manager = Arc::new(WorkerManager::new(2));
@@ -1461,5 +1678,22 @@ mod tests {
         .await;
 
         assert!(waited.is_ok(), "task did not reach {expected:?}");
+    }
+
+    async fn wait_for_snapshot_state(storage: &TestStorage, task_id: TaskId, expected: TaskState) {
+        let waited = timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = storage.load_task_snapshot(task_id).await;
+                if let Ok(Some(snapshot)) = snapshot {
+                    if snapshot.metadata.state == expected {
+                        break;
+                    }
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(waited.is_ok(), "snapshot did not reach {expected:?}");
     }
 }

@@ -189,6 +189,12 @@ impl TaskRegistry {
         state.tasks.get(task_id).cloned().map(TaskRecord::from)
     }
 
+    /// Get a task state update view for the current registry entry.
+    pub async fn get_update(&self, task_id: &TaskId) -> Option<TaskStateUpdate> {
+        let state = self.state.read().await;
+        state.tasks.get(task_id).map(TaskStateUpdate::from_entry)
+    }
+
     /// Return the owning session identifier for a task.
     pub async fn session_id_for_task(&self, task_id: &TaskId) -> Option<SessionId> {
         let state = self.state.read().await;

@@ -11,6 +11,8 @@ const RUNNING_TASK_RECOVERY_NOTE: &str =
     "task was marked failed during restart recovery because the previous runtime crashed while it was running";
 const MISSING_SESSION_RECOVERY_NOTE: &str =
     "task was marked failed during restart recovery because no persisted session ownership was available";
+const CANCELLED_EVENT_RECOVERY_NOTE: &str =
+    "task snapshot was repaired from the persisted task event log after a cancelled checkpoint write failed";
 
 /// Options required to construct task recovery.
 pub struct TaskRecoveryOptions {
@@ -128,6 +130,8 @@ async fn reconcile_owned_snapshot(
     storage: &Arc<dyn StorageProvider>,
     report: &mut TaskRecoveryReport,
 ) -> Result<TaskSnapshot, StorageError> {
+    let snapshot = repair_cancelled_snapshot_from_event_log(snapshot, storage).await?;
+
     if snapshot.metadata.state == TaskState::Running {
         let failed_snapshot = fail_snapshot(snapshot, RUNNING_TASK_RECOVERY_NOTE);
         storage.save_task_snapshot(&failed_snapshot).await?;
@@ -138,6 +142,26 @@ async fn reconcile_owned_snapshot(
     let mut restored_snapshot = snapshot;
     restored_snapshot.session_id = Some(session_id);
     Ok(restored_snapshot)
+}
+
+async fn repair_cancelled_snapshot_from_event_log(
+    snapshot: TaskSnapshot,
+    storage: &Arc<dyn StorageProvider>,
+) -> Result<TaskSnapshot, StorageError> {
+    let events = storage.load_task_events(snapshot.metadata.id).await?;
+    let Some(last_event) = events.last() else {
+        return Ok(snapshot);
+    };
+
+    if last_event.sequence <= snapshot.checkpoint.last_event_sequence
+        || last_event.state != TaskState::Cancelled
+    {
+        return Ok(snapshot);
+    }
+
+    let repaired_snapshot = apply_event_state(snapshot, TaskState::Cancelled, last_event.sequence);
+    storage.save_task_snapshot(&repaired_snapshot).await?;
+    Ok(repaired_snapshot)
 }
 
 fn fail_snapshot(mut snapshot: TaskSnapshot, note: &str) -> TaskSnapshot {
@@ -153,16 +177,28 @@ fn fail_snapshot(mut snapshot: TaskSnapshot, note: &str) -> TaskSnapshot {
     snapshot
 }
 
+fn apply_event_state(mut snapshot: TaskSnapshot, state: TaskState, sequence: u64) -> TaskSnapshot {
+    let checkpoint = TaskCheckpoint::new(state, sequence);
+    snapshot.schema_version = TASK_SNAPSHOT_SCHEMA_VERSION;
+    snapshot.metadata.state = state;
+    snapshot.metadata.updated_at = checkpoint.persisted_at;
+    snapshot.checkpoint = checkpoint;
+    snapshot.recovery_note = Some(CANCELLED_EVENT_RECOVERY_NOTE.to_string());
+    snapshot
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        TaskRecovery, TaskRecoveryOptions, MISSING_SESSION_RECOVERY_NOTE,
-        RUNNING_TASK_RECOVERY_NOTE,
+        TaskRecovery, TaskRecoveryOptions, CANCELLED_EVENT_RECOVERY_NOTE,
+        MISSING_SESSION_RECOVERY_NOTE, RUNNING_TASK_RECOVERY_NOTE,
     };
     use crate::TaskRegistry;
     use async_trait::async_trait;
     use oxide_agent_core::agent::task::TASK_SNAPSHOT_SCHEMA_VERSION;
-    use oxide_agent_core::agent::{AgentMemory, SessionId, TaskMetadata, TaskSnapshot, TaskState};
+    use oxide_agent_core::agent::{
+        AgentMemory, SessionId, TaskEvent, TaskEventKind, TaskMetadata, TaskSnapshot, TaskState,
+    };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -171,6 +207,7 @@ mod tests {
     #[derive(Default)]
     struct RecoveryStorage {
         snapshots: Mutex<HashMap<oxide_agent_core::agent::TaskId, TaskSnapshot>>,
+        events: Mutex<HashMap<oxide_agent_core::agent::TaskId, Vec<TaskEvent>>>,
     }
 
     #[async_trait]
@@ -319,6 +356,33 @@ mod tests {
                     .then_with(|| left.metadata.id.as_uuid().cmp(&right.metadata.id.as_uuid()))
             });
             Ok(values)
+        }
+
+        async fn append_task_event(
+            &self,
+            task_id: oxide_agent_core::agent::TaskId,
+            event: TaskEvent,
+        ) -> Result<(), StorageError> {
+            self.events
+                .lock()
+                .await
+                .entry(task_id)
+                .or_default()
+                .push(event);
+            Ok(())
+        }
+
+        async fn load_task_events(
+            &self,
+            task_id: oxide_agent_core::agent::TaskId,
+        ) -> Result<Vec<TaskEvent>, StorageError> {
+            Ok(self
+                .events
+                .lock()
+                .await
+                .get(&task_id)
+                .cloned()
+                .unwrap_or_default())
         }
 
         async fn check_connection(&self) -> Result<(), String> {
@@ -480,6 +544,67 @@ mod tests {
                 if snapshot.schema_version == TASK_SNAPSHOT_SCHEMA_VERSION
                     && snapshot.checkpoint.schema_version == TASK_SNAPSHOT_SCHEMA_VERSION
                     && snapshot.metadata.state == TaskState::Failed
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_recovery_repairs_stale_snapshot_from_cancelled_event_log() {
+        let storage = Arc::new(RecoveryStorage::default());
+        let registry = Arc::new(TaskRegistry::new());
+
+        let snapshot = TaskSnapshot::new(
+            TaskMetadata::new(),
+            SessionId::from(32),
+            "cancelled repair".to_string(),
+            1,
+        );
+        let task_id = snapshot.metadata.id;
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+        assert!(storage
+            .append_task_event(
+                task_id,
+                TaskEvent::new(task_id, 1, TaskEventKind::Created, TaskState::Pending, None),
+            )
+            .await
+            .is_ok());
+        assert!(storage
+            .append_task_event(
+                task_id,
+                TaskEvent::new(
+                    task_id,
+                    2,
+                    TaskEventKind::StateChanged,
+                    TaskState::Cancelled,
+                    None
+                ),
+            )
+            .await
+            .is_ok());
+
+        let recovery = TaskRecovery::new(TaskRecoveryOptions {
+            task_registry: Arc::clone(&registry),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+
+        let report = recovery.reconcile().await;
+        assert!(report.is_ok());
+        let report = report.unwrap_or_default();
+        assert_eq!(report.restored_records, 1);
+        assert_eq!(report.failed_recoveries, 0);
+
+        let record = registry.get(&task_id).await;
+        assert!(matches!(
+            record,
+            Some(record) if record.metadata.state == TaskState::Cancelled
+        ));
+
+        let repaired_snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            repaired_snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Cancelled
+                    && snapshot.checkpoint.last_event_sequence == 2
+                    && snapshot.recovery_note.as_deref() == Some(CANCELLED_EVENT_RECOVERY_NOTE)
         ));
     }
 }
