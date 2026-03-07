@@ -605,6 +605,16 @@ struct AgentExecutionResult {
     memory: AgentMemory,
 }
 
+struct RunAgentTaskRequest {
+    bot: Bot,
+    chat_id: ChatId,
+    user_id: i64,
+    execution: AgentExecutionInput,
+    storage: Arc<dyn StorageProvider>,
+    task_runtime: Arc<AgentTaskRuntime>,
+    cancellation_token: Arc<CancellationToken>,
+}
+
 #[async_trait]
 impl TaskExecutionBackend for TelegramTaskExecutionBackend {
     async fn execute(&self, request: TaskExecutionRequest) -> Result<TaskExecutionOutcome> {
@@ -616,18 +626,18 @@ impl TaskExecutionBackend for TelegramTaskExecutionBackend {
             ..
         } = request;
 
-        run_agent_task_with_text(
-            self.bot.clone(),
-            self.chat_id,
-            session_id.as_i64(),
-            AgentExecutionInput {
+        run_agent_task_with_text(RunAgentTaskRequest {
+            bot: self.bot.clone(),
+            chat_id: self.chat_id,
+            user_id: session_id.as_i64(),
+            execution: AgentExecutionInput {
                 task_text: task,
                 resume_input,
             },
-            Arc::clone(&self.storage),
-            Arc::clone(&self.task_runtime),
+            storage: Arc::clone(&self.storage),
+            task_runtime: Arc::clone(&self.task_runtime),
             cancellation_token,
-        )
+        })
         .await
     }
 }
@@ -1203,15 +1213,17 @@ async fn mark_pending_poll_answered(
     Ok(())
 }
 
-async fn run_agent_task_with_text(
-    bot: Bot,
-    chat_id: ChatId,
-    user_id: i64,
-    execution: AgentExecutionInput,
-    storage: Arc<dyn StorageProvider>,
-    task_runtime: Arc<AgentTaskRuntime>,
-    cancellation_token: Arc<CancellationToken>,
-) -> Result<TaskExecutionOutcome> {
+async fn run_agent_task_with_text(request: RunAgentTaskRequest) -> Result<TaskExecutionOutcome> {
+    let RunAgentTaskRequest {
+        bot,
+        chat_id,
+        user_id,
+        execution,
+        storage,
+        task_runtime,
+        cancellation_token,
+    } = request;
+
     let progress_msg = super::resilient::send_message_resilient(
         &bot,
         chat_id,
