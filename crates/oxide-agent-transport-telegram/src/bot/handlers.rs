@@ -93,6 +93,22 @@ async fn restore_persisted_dialogue_state(
     if let Ok(Some(state_str)) = context.storage.get_user_state(user_id).await {
         match state_str.as_str() {
             "agent_mode" => {
+                let agent_allowed = context.settings.telegram.agent_allowed_users();
+                if !agent_allowed.contains(&user_id) || agent_allowed.is_empty() {
+                    info!(
+                        "Skipping persisted agent mode restore for user {user_id}: access revoked."
+                    );
+                    context
+                        .storage
+                        .update_user_state(user_id, "chat_mode".to_string())
+                        .await
+                        .map_err(anyhow::Error::from)?;
+                    dialogue
+                        .update(State::ChatMode)
+                        .await
+                        .map_err(|e| anyhow!(e.to_string()))?;
+                    return Ok(Some(State::ChatMode));
+                }
                 info!("Restoring agent mode for user {user_id} based on persisted state.");
                 dialogue
                     .update(State::AgentMode)
@@ -1299,6 +1315,14 @@ mod tests {
         storage: Arc<dyn StorageProvider>,
         task_runtime: Arc<AgentTaskRuntime>,
     ) -> TelegramHandlerContext {
+        test_context_with_telegram_settings(storage, task_runtime, TelegramSettings::default())
+    }
+
+    fn test_context_with_telegram_settings(
+        storage: Arc<dyn StorageProvider>,
+        task_runtime: Arc<AgentTaskRuntime>,
+        telegram_settings: TelegramSettings,
+    ) -> TelegramHandlerContext {
         let agent_settings = AgentSettings {
             openrouter_site_name: "Oxide Agent Bot".to_string(),
             ..AgentSettings::default()
@@ -1309,10 +1333,7 @@ mod tests {
         TelegramHandlerContext {
             storage,
             llm,
-            settings: Arc::new(BotSettings::new(
-                agent_settings,
-                TelegramSettings::default(),
-            )),
+            settings: Arc::new(BotSettings::new(agent_settings, telegram_settings)),
             task_runtime,
         }
     }
@@ -1414,9 +1435,13 @@ mod tests {
             Arc::new(TaskRegistry::new()),
             1,
         ));
-        let context = test_context(
+        let context = test_context_with_telegram_settings(
             Arc::clone(&storage) as Arc<dyn StorageProvider>,
             task_runtime,
+            TelegramSettings {
+                agent_allowed_users_str: Some("73".to_string()),
+                ..TelegramSettings::default()
+            },
         );
 
         let user_id = 73;
@@ -1444,9 +1469,13 @@ mod tests {
             Arc::new(TaskRegistry::new()),
             1,
         ));
-        let context = test_context(
+        let context = test_context_with_telegram_settings(
             Arc::clone(&storage) as Arc<dyn StorageProvider>,
             task_runtime,
+            TelegramSettings {
+                agent_allowed_users_str: Some("74".to_string()),
+                ..TelegramSettings::default()
+            },
         );
 
         let user_id = 74;
@@ -1465,5 +1494,78 @@ mod tests {
 
         let state = dialogue.get().await;
         assert!(matches!(state, Ok(Some(State::AgentMode))));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_restore_downgrades_revoked_agent_persisted_state_for_message_paths() {
+        let storage = Arc::new(StartTestStorage::default());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::new(TaskRegistry::new()),
+            1,
+        ));
+        let context = test_context_with_telegram_settings(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+            TelegramSettings {
+                agent_allowed_users_str: Some("999".to_string()),
+                ..TelegramSettings::default()
+            },
+        );
+
+        let user_id = 75;
+        let storage_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(storage_result.is_ok());
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let restored = super::restore_persisted_dialogue_state(user_id, &dialogue, &context).await;
+        assert!(matches!(restored, Ok(Some(State::ChatMode))));
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::ChatMode))));
+
+        let persisted_state = storage.get_user_state(user_id).await;
+        assert!(matches!(persisted_state, Ok(Some(ref state)) if state == "chat_mode"));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_document_route_denies_revoked_agent_persisted_state() {
+        let storage = Arc::new(StartTestStorage::default());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::new(TaskRegistry::new()),
+            1,
+        ));
+        let context = test_context_with_telegram_settings(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+            TelegramSettings {
+                agent_allowed_users_str: Some("999".to_string()),
+                ..TelegramSettings::default()
+            },
+        );
+
+        let user_id = 76;
+        let storage_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(storage_result.is_ok());
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let update_result = dialogue.update(State::AgentMode).await;
+        assert!(update_result.is_ok());
+
+        let should_route = should_route_document_to_agent(user_id, &dialogue, &context).await;
+        assert!(matches!(should_route, Ok(false)));
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::ChatMode))));
+
+        let persisted_state = storage.get_user_state(user_id).await;
+        assert!(matches!(persisted_state, Ok(Some(ref state)) if state == "chat_mode"));
     }
 }
