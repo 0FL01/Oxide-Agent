@@ -49,6 +49,8 @@ pub struct TaskExecutionRequest {
     pub session_id: SessionId,
     /// Task input to execute.
     pub task: String,
+    /// Optional resume payload provided after waiting for external input.
+    pub resume_input: Option<String>,
     /// Task-scoped cancellation token owned by the runtime.
     pub cancellation_token: Arc<CancellationToken>,
 }
@@ -86,6 +88,15 @@ pub enum TaskExecutorError {
     MissingTaskSnapshot(TaskId),
     /// Backend requested waiting-input state with an invalid payload.
     InvalidPendingInput(PendingInputValidationError),
+    /// Resume was requested for a task that is not waiting for input.
+    ResumeInvalidState {
+        /// Task identifier that rejected resume.
+        task_id: TaskId,
+        /// Current lifecycle state that cannot be resumed.
+        state: TaskState,
+    },
+    /// Resume was requested for a waiting task without a pending payload.
+    MissingPendingInput(TaskId),
 }
 
 impl fmt::Display for TaskExecutorError {
@@ -104,6 +115,12 @@ impl fmt::Display for TaskExecutorError {
                 write!(f, "missing task snapshot for task: {task_id}")
             }
             Self::InvalidPendingInput(error) => write!(f, "{error}"),
+            Self::ResumeInvalidState { task_id, state } => {
+                write!(f, "task {task_id} cannot resume from state {state:?}")
+            }
+            Self::MissingPendingInput(task_id) => {
+                write!(f, "missing pending input for waiting task: {task_id}")
+            }
         }
     }
 }
@@ -252,6 +269,8 @@ impl TaskExecutor {
             session_id: record.session_id,
             task: submission.task.clone(),
             cancellation_token,
+            resume_input: None,
+            skip_running_checkpoint: false,
         };
 
         if let Err(error) = self
@@ -308,6 +327,132 @@ impl TaskExecutor {
                 Ok(update.record)
             }
         }
+    }
+
+    /// Resume a waiting task by transitioning it back to running and restarting detached execution.
+    pub async fn resume_task<B>(
+        &self,
+        task_id: &TaskId,
+        input: String,
+        backend: Arc<B>,
+    ) -> Result<TaskRecord, TaskExecutorError>
+    where
+        B: TaskExecutionBackend,
+    {
+        let Some(record) = self.task_registry.get(task_id).await else {
+            return Err(TaskExecutorError::TaskRegistry(
+                TaskRegistryError::TaskNotFound(*task_id),
+            ));
+        };
+
+        self.with_session_gate(record.session_id, || async move {
+            self.resume_task_with_session_gate_held(task_id, input, backend)
+                .await
+        })
+        .await
+    }
+
+    /// Resume a waiting task while the caller already holds the session gate.
+    pub async fn resume_task_with_session_gate_held<B>(
+        &self,
+        task_id: &TaskId,
+        input: String,
+        backend: Arc<B>,
+    ) -> Result<TaskRecord, TaskExecutorError>
+    where
+        B: TaskExecutionBackend,
+    {
+        let task_id_value = *task_id;
+        let Some(record) = self.task_registry.get(task_id).await else {
+            return Err(TaskExecutorError::TaskRegistry(
+                TaskRegistryError::TaskNotFound(task_id_value),
+            ));
+        };
+
+        if record.metadata.state != TaskState::WaitingInput {
+            return Err(TaskExecutorError::ResumeInvalidState {
+                task_id: task_id_value,
+                state: record.metadata.state,
+            });
+        }
+
+        if record.pending_input.is_none() {
+            return Err(TaskExecutorError::MissingPendingInput(task_id_value));
+        }
+
+        let task = self.load_task_payload(task_id_value).await?;
+        let running_update = self
+            .task_registry
+            .update_state(task_id, TaskState::Running)
+            .await?;
+        self.save_snapshot(
+            &running_update.record.metadata,
+            running_update.record.session_id,
+            &task,
+            running_update.event_sequence,
+            None,
+        )
+        .await?;
+
+        let cancellation_token = self
+            .task_registry
+            .get_cancellation_token(task_id)
+            .await
+            .ok_or(TaskExecutorError::MissingCancellationToken(task_id_value))?;
+
+        let run = DetachedTaskRun {
+            task_registry: Arc::clone(&self.task_registry),
+            storage: Arc::clone(&self.storage),
+            task_id: task_id_value,
+            session_id: running_update.record.session_id,
+            task: task.clone(),
+            cancellation_token,
+            resume_input: Some(input),
+            skip_running_checkpoint: true,
+        };
+
+        if let Err(error) = self
+            .worker_manager
+            .spawn(task_id_value, async move {
+                let panic_run = run.clone();
+                let join_result = tokio::spawn(async move { run.execute(backend).await }).await;
+
+                match join_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        error!(task_id = %task_id_value, error = %error, "Detached task worker failed");
+                    }
+                    Err(join_error) => {
+                        panic_run.persist_panic_failure().await;
+                        error!(
+                            task_id = %task_id_value,
+                            error = %join_error,
+                            "Detached task worker panicked"
+                        );
+                    }
+                }
+            })
+            .await
+        {
+            if let Ok(failed_update) = self
+                .task_registry
+                .update_state(task_id, TaskState::Failed)
+                .await
+            {
+                let _ = self
+                    .save_snapshot(
+                        &failed_update.record.metadata,
+                        failed_update.record.session_id,
+                        &task,
+                        failed_update.event_sequence,
+                        None,
+                    )
+                    .await;
+            }
+            return Err(error.into());
+        }
+
+        Ok(running_update.record)
     }
 
     async fn persist_cancelled_snapshot(
@@ -424,6 +569,8 @@ struct DetachedTaskRun {
     session_id: SessionId,
     task: String,
     cancellation_token: Arc<CancellationToken>,
+    resume_input: Option<String>,
+    skip_running_checkpoint: bool,
 }
 
 impl DetachedTaskRun {
@@ -431,26 +578,28 @@ impl DetachedTaskRun {
     where
         B: TaskExecutionBackend,
     {
-        let running_update = match self
-            .task_registry
-            .update_state(&self.task_id, TaskState::Running)
-            .await
-        {
-            Ok(update) => update,
-            Err(error) if cancellation_already_won(&error) => return Ok(()),
-            Err(error) => return Err(error.into()),
-        };
+        if !self.skip_running_checkpoint {
+            let running_update = match self
+                .task_registry
+                .update_state(&self.task_id, TaskState::Running)
+                .await
+            {
+                Ok(update) => update,
+                Err(error) if cancellation_already_won(&error) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
 
-        if let Err(error) = self
-            .persist_snapshot(
-                &running_update.record.metadata,
-                running_update.event_sequence,
-                None,
-            )
-            .await
-        {
-            self.persist_failed_start().await;
-            return Err(error);
+            if let Err(error) = self
+                .persist_snapshot(
+                    &running_update.record.metadata,
+                    running_update.event_sequence,
+                    None,
+                )
+                .await
+            {
+                self.persist_failed_start().await;
+                return Err(error);
+            }
         }
 
         let execution_result = backend
@@ -458,6 +607,7 @@ impl DetachedTaskRun {
                 task_id: self.task_id,
                 session_id: self.session_id,
                 task: self.task.clone(),
+                resume_input: self.resume_input.clone(),
                 cancellation_token: Arc::clone(&self.cancellation_token),
             })
             .await;
@@ -707,6 +857,11 @@ mod tests {
         release: Arc<Notify>,
     }
 
+    #[derive(Clone)]
+    struct ResumeBackend {
+        expected_resume_input: String,
+    }
+
     impl ControlledBackend {
         fn new(outcome: BackendOutcome) -> Self {
             Self {
@@ -763,6 +918,19 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[async_trait]
+    impl TaskExecutionBackend for ResumeBackend {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<TaskExecutionOutcome> {
+            let Some(resume_input) = request.resume_input.as_deref() else {
+                return Err(anyhow!("missing resume input"));
+            };
+            if resume_input != self.expected_resume_input {
+                return Err(anyhow!("unexpected resume input payload"));
+            }
+            Ok(TaskExecutionOutcome::Completed)
         }
     }
 
@@ -1284,6 +1452,171 @@ mod tests {
             second,
             Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id))
                 if rejected_session_id == session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn hitl_resume_restarts_waiting_task_and_clears_pending_input() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(113),
+                    task: "hitl resume".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        waiting_backend.release();
+        wait_for_state(&registry, task_id, TaskState::WaitingInput).await;
+
+        let resumed = executor
+            .resume_task(
+                &task_id,
+                "1,2".to_string(),
+                Arc::new(ResumeBackend {
+                    expected_resume_input: "1,2".to_string(),
+                }),
+            )
+            .await;
+        assert!(matches!(
+            resumed,
+            Ok(record)
+                if record.metadata.state == TaskState::Running && record.pending_input.is_none()
+        ));
+
+        wait_for_state(&registry, task_id, TaskState::Completed).await;
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Completed
+                    && snapshot.pending_input.is_none()
+        ));
+        assert!(!worker_manager.contains(&task_id).await);
+    }
+
+    #[tokio::test]
+    async fn hitl_resume_rejects_duplicate_resume_requests() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(114),
+                    task: "duplicate resume".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        waiting_backend.release();
+        wait_for_state(&registry, task_id, TaskState::WaitingInput).await;
+
+        let running_backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+        let first_resume = executor
+            .resume_task(&task_id, "0".to_string(), Arc::clone(&running_backend))
+            .await;
+        assert!(matches!(
+            first_resume,
+            Ok(record)
+                if record.metadata.state == TaskState::Running && record.pending_input.is_none()
+        ));
+
+        running_backend.wait_started().await;
+
+        let duplicate_resume = executor
+            .resume_task(&task_id, "0".to_string(), Arc::clone(&running_backend))
+            .await;
+        assert!(matches!(
+            duplicate_resume,
+            Err(TaskExecutorError::ResumeInvalidState {
+                task_id: rejected_task_id,
+                state: TaskState::Running,
+            }) if rejected_task_id == task_id
+        ));
+
+        running_backend.release();
+        wait_for_state(&registry, task_id, TaskState::Completed).await;
+    }
+
+    #[tokio::test]
+    async fn hitl_resume_rejects_terminal_task_state() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(115),
+                    task: "terminal resume".to_string(),
+                },
+                Arc::clone(&backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        backend.wait_started().await;
+        backend.release();
+        wait_for_state(&registry, task_id, TaskState::Completed).await;
+
+        let resume = executor
+            .resume_task(
+                &task_id,
+                "ignored".to_string(),
+                Arc::new(ResumeBackend {
+                    expected_resume_input: "ignored".to_string(),
+                }),
+            )
+            .await;
+        assert!(matches!(
+            resume,
+            Err(TaskExecutorError::ResumeInvalidState {
+                task_id: rejected_task_id,
+                state: TaskState::Completed,
+            }) if rejected_task_id == task_id
         ));
     }
 

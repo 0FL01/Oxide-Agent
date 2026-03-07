@@ -20,11 +20,11 @@ use oxide_agent_core::agent::{
     executor::AgentExecutor,
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
-    AgentSession, PendingChoiceInput, PendingInputKind, SessionId, TaskState,
+    AgentSession, PendingChoiceInput, PendingInputKind, SessionId, TaskId, TaskState,
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
-use oxide_agent_core::storage::{PendingInputPoll, StorageProvider};
+use oxide_agent_core::storage::{PendingInputPoll, StorageError, StorageProvider};
 use oxide_agent_runtime::{
     spawn_progress_runtime, CancellationToken, DetachedTaskSubmission, ProgressRuntimeConfig,
     SessionRegistry, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
@@ -218,6 +218,29 @@ impl AgentTaskRuntime {
         self.task_executor
             .submit(DetachedTaskSubmission { session_id, task }, backend)
             .await
+    }
+
+    pub(crate) async fn resume_task<B>(
+        &self,
+        task_id: &TaskId,
+        input: String,
+        backend: Arc<B>,
+    ) -> Result<TaskRecord, TaskExecutorError>
+    where
+        B: TaskExecutionBackend,
+    {
+        let Some(record) = self.task_registry.get(task_id).await else {
+            return Err(TaskExecutorError::TaskRegistry(
+                oxide_agent_runtime::TaskRegistryError::TaskNotFound(*task_id),
+            ));
+        };
+
+        self.with_session_gate(record.session_id, || async move {
+            self.task_executor
+                .resume_task_with_session_gate_held(task_id, input, backend)
+                .await
+        })
+        .await
     }
 
     async fn ensure_session_exists_inner(
@@ -574,19 +597,31 @@ struct TelegramTaskExecutionBackend {
 #[async_trait]
 impl TaskExecutionBackend for TelegramTaskExecutionBackend {
     async fn execute(&self, request: TaskExecutionRequest) -> Result<TaskExecutionOutcome> {
+        let TaskExecutionRequest {
+            session_id,
+            task,
+            resume_input,
+            cancellation_token,
+            ..
+        } = request;
+
         run_agent_task_with_text(
             self.bot.clone(),
             self.chat_id,
-            request.session_id.as_i64(),
-            request.task,
+            session_id.as_i64(),
+            resolve_execution_input(task, resume_input),
             Arc::clone(&self.storage),
             Arc::clone(&self.task_runtime),
-            request.cancellation_token,
+            cancellation_token,
         )
         .await?;
 
         Ok(TaskExecutionOutcome::Completed)
     }
+}
+
+fn resolve_execution_input(task: String, resume_input: Option<String>) -> String {
+    resume_input.unwrap_or(task)
 }
 
 /// Global session registry for agent executors
@@ -648,6 +683,7 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
                     msg.chat.id,
                     user_id,
                     &context.storage,
+                    &context.task_runtime,
                     &record,
                 )
                 .await?;
@@ -711,6 +747,7 @@ pub async fn handle_agent_message(
             chat_id,
             user_id,
             &context.storage,
+            &context.task_runtime,
             &record,
         )
         .await?;
@@ -832,11 +869,70 @@ fn is_valid_poll_answer(option_ids: &[u8], choice: &PendingChoiceInput) -> bool 
     true
 }
 
+fn encode_poll_resume_input(option_ids: &[u8]) -> String {
+    option_ids
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+async fn resume_task_from_consumed_poll_answer(
+    bot: &Bot,
+    storage: &Arc<dyn StorageProvider>,
+    task_runtime: &Arc<AgentTaskRuntime>,
+    pending_poll: &PendingInputPoll,
+    option_ids: &[u8],
+) -> Result<ConsumedPollResumeOutcome> {
+    let backend = Arc::new(TelegramTaskExecutionBackend {
+        bot: bot.clone(),
+        chat_id: ChatId(pending_poll.chat_id),
+        storage: Arc::clone(storage),
+        task_runtime: Arc::clone(task_runtime),
+    });
+
+    let resume_result = task_runtime
+        .resume_task(
+            &pending_poll.task_id,
+            encode_poll_resume_input(option_ids),
+            backend,
+        )
+        .await;
+    match resume_result {
+        Ok(_) => {
+            match storage
+                .delete_pending_input_poll(pending_poll.task_id, &pending_poll.poll_id)
+                .await
+            {
+                Ok(()) => Ok(ConsumedPollResumeOutcome::Resumed),
+                Err(StorageError::Unsupported(_)) => Ok(ConsumedPollResumeOutcome::Resumed),
+                Err(error) => Err(error.into()),
+            }
+        }
+        Err(error) => {
+            warn!(
+                task_id = %pending_poll.task_id,
+                poll_id = %pending_poll.poll_id,
+                error = %error,
+                "Failed to resume task from consumed poll answer"
+            );
+            Ok(ConsumedPollResumeOutcome::Deferred)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsumedPollResumeOutcome {
+    Resumed,
+    Deferred,
+}
+
 async fn deliver_waiting_choice_poll_if_needed(
     bot: &Bot,
     chat_id: ChatId,
     user_id: i64,
     storage: &Arc<dyn StorageProvider>,
+    task_runtime: &Arc<AgentTaskRuntime>,
     record: &TaskRecord,
 ) -> Result<bool> {
     if record.metadata.state != TaskState::WaitingInput {
@@ -856,6 +952,21 @@ async fn deliver_waiting_choice_poll_if_needed(
         .await?
     {
         if existing_poll.request_id == pending_input.request_id {
+            if existing_poll.answered {
+                if existing_poll.selected_option_ids.is_empty() {
+                    return Ok(false);
+                }
+
+                resume_task_from_consumed_poll_answer(
+                    bot,
+                    storage,
+                    task_runtime,
+                    &existing_poll,
+                    &existing_poll.selected_option_ids,
+                )
+                .await?;
+            }
+
             return Ok(true);
         }
     }
@@ -1230,19 +1341,30 @@ pub async fn handle_pending_input_poll_answer(
         .save_pending_input_poll(&pending_poll)
         .await?;
 
-    if let Err(error) = bot
-        .stop_poll(
-            ChatId(pending_poll.chat_id),
-            MessageId(pending_poll.message_id),
-        )
-        .await
-    {
-        warn!(
-            task_id = %pending_poll.task_id,
-            poll_id = %pending_poll.poll_id,
-            error = %error,
-            "Failed to close consumed Telegram poll"
-        );
+    let resume_outcome = resume_task_from_consumed_poll_answer(
+        &bot,
+        &context.storage,
+        &context.task_runtime,
+        &pending_poll,
+        &answer.option_ids,
+    )
+    .await?;
+
+    if resume_outcome == ConsumedPollResumeOutcome::Resumed {
+        if let Err(error) = bot
+            .stop_poll(
+                ChatId(pending_poll.chat_id),
+                MessageId(pending_poll.message_id),
+            )
+            .await
+        {
+            warn!(
+                task_id = %pending_poll.task_id,
+                poll_id = %pending_poll.poll_id,
+                error = %error,
+                "Failed to close consumed Telegram poll"
+            );
+        }
     }
 
     Ok(())
@@ -1899,6 +2021,16 @@ mod tests {
                 .cloned())
         }
 
+        async fn delete_pending_input_poll(
+            &self,
+            task_id: TaskId,
+            poll_id: &str,
+        ) -> Result<(), StorageError> {
+            self.pending_polls_by_task.lock().await.remove(&task_id);
+            self.pending_poll_task_by_id.lock().await.remove(poll_id);
+            Ok(())
+        }
+
         async fn check_connection(&self) -> Result<(), String> {
             Ok(())
         }
@@ -2002,6 +2134,16 @@ mod tests {
             }),
             option_ids: option_ids.to_vec(),
         }
+    }
+
+    #[test]
+    fn resume_execution_uses_supplied_input_payload() {
+        let resumed =
+            super::resolve_execution_input("original task".to_string(), Some("1,2".to_string()));
+        assert_eq!(resumed, "1,2");
+
+        let initial = super::resolve_execution_input("original task".to_string(), None);
+        assert_eq!(initial, "original task");
     }
 
     async fn assert_waiting_task_blocks_controls(
@@ -2807,9 +2949,153 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn waiting_choice_poll_delivery_stays_suppressed_after_answer_capture() {
+    async fn poll_resume_valid_answer_resumes_task_and_cleans_poll_mapping() {
         let storage = Arc::new(TestStorage::default());
         let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 750;
+        let session_id = SessionId::from(owner_user_id);
+        insert_test_session(session_id).await;
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        let pending_input = waiting_choice_pending_input();
+        let waiting = task_registry
+            .enter_waiting_input(&created.metadata.id, pending_input.clone())
+            .await;
+        assert!(waiting.is_ok());
+        let waiting = waiting.unwrap_or_else(|_| unreachable!());
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "resume poll task".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        assert!(storage
+            .save_pending_input_poll(&oxide_agent_core::storage::PendingInputPoll {
+                task_id: created.metadata.id,
+                request_id: pending_input.request_id,
+                owner_user_id,
+                poll_id: "poll-resume".to_string(),
+                chat_id: owner_user_id,
+                message_id: 14,
+                answered: false,
+                selected_option_ids: Vec::new(),
+            })
+            .await
+            .is_ok());
+
+        let context = Arc::new(make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        ));
+        let answer = build_poll_answer("poll-resume", owner_user_id, &[0]);
+
+        let handled =
+            super::handle_pending_input_poll_answer(Bot::new("test-token"), answer, context).await;
+        assert!(handled.is_ok());
+
+        let waited = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(record) = task_registry.get(&created.metadata.id).await {
+                    if record.metadata.state != TaskState::WaitingInput {
+                        assert!(record.pending_input.is_none());
+                        break;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "task did not leave waiting state after poll resume"
+        );
+
+        let poll_by_id = storage.load_pending_input_poll_by_id("poll-resume").await;
+        let poll_by_task = storage
+            .load_pending_input_poll_by_task(created.metadata.id)
+            .await;
+        assert!(poll_by_id.is_ok());
+        assert!(poll_by_task.is_ok());
+        assert!(poll_by_id.ok().flatten().is_none());
+        assert!(poll_by_task.ok().flatten().is_none());
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn poll_resume_failure_keeps_captured_mapping_and_answer() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 760;
+        let orphaned_task_id = TaskMetadata::new().id;
+
+        let pending_poll = oxide_agent_core::storage::PendingInputPoll {
+            task_id: orphaned_task_id,
+            request_id: "choice-request".to_string(),
+            owner_user_id,
+            poll_id: "poll-resume-failure".to_string(),
+            chat_id: owner_user_id,
+            message_id: 15,
+            answered: true,
+            selected_option_ids: vec![1],
+        };
+        assert!(storage.save_pending_input_poll(&pending_poll).await.is_ok());
+
+        let context = Arc::new(make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+        ));
+
+        let resumed = super::resume_task_from_consumed_poll_answer(
+            &Bot::new("test-token"),
+            &context.storage,
+            &context.task_runtime,
+            &pending_poll,
+            &[1],
+        )
+        .await;
+        assert!(matches!(
+            resumed,
+            Ok(super::ConsumedPollResumeOutcome::Deferred)
+        ));
+
+        let stored = storage
+            .load_pending_input_poll_by_id("poll-resume-failure")
+            .await;
+        assert!(stored.is_ok());
+        assert!(matches!(
+            stored.ok().flatten(),
+            Some(poll) if poll.answered && poll.selected_option_ids == vec![1]
+        ));
+    }
+
+    #[tokio::test]
+    async fn waiting_choice_poll_delivery_retries_captured_answer_until_resume_succeeds() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
         let owner_user_id = 800;
         let session_id = SessionId::from(owner_user_id);
         let created = task_registry.create(session_id).await;
@@ -2843,11 +3129,69 @@ mod tests {
             ChatId(owner_user_id),
             owner_user_id,
             &(Arc::clone(&storage) as Arc<dyn StorageProvider>),
+            &task_runtime,
             &waiting.record,
         )
         .await;
 
         assert!(matches!(delivered, Ok(true)));
+
+        let still_waiting = task_registry.get(&created.metadata.id).await;
+        assert!(matches!(
+            still_waiting,
+            Some(record) if record.metadata.state == TaskState::WaitingInput
+        ));
+
+        let mut snapshot = TaskSnapshot::new(
+            waiting.record.metadata.clone(),
+            session_id,
+            "resume delivered answer".to_string(),
+            waiting.event_sequence,
+        );
+        snapshot.pending_input = waiting.record.pending_input.clone();
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        insert_test_session(session_id).await;
+
+        let delivered_retry = super::deliver_waiting_choice_poll_if_needed(
+            &Bot::new("test-token"),
+            ChatId(owner_user_id),
+            owner_user_id,
+            &(Arc::clone(&storage) as Arc<dyn StorageProvider>),
+            &task_runtime,
+            &waiting.record,
+        )
+        .await;
+
+        assert!(matches!(delivered_retry, Ok(true)));
+
+        let resumed = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(record) = task_registry.get(&created.metadata.id).await {
+                    if record.metadata.state != TaskState::WaitingInput {
+                        assert!(record.pending_input.is_none());
+                        break;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            resumed.is_ok(),
+            "task did not leave waiting state after replaying captured poll answer"
+        );
+
+        let poll_by_id = storage.load_pending_input_poll_by_id("poll-answered").await;
+        let poll_by_task = storage
+            .load_pending_input_poll_by_task(created.metadata.id)
+            .await;
+        assert!(poll_by_id.is_ok());
+        assert!(poll_by_task.is_ok());
+        assert!(poll_by_id.ok().flatten().is_none());
+        assert!(poll_by_task.ok().flatten().is_none());
+
+        SESSION_REGISTRY.remove(&session_id).await;
     }
 
     #[tokio::test]

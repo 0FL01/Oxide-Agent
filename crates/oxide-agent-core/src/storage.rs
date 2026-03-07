@@ -247,6 +247,18 @@ pub trait StorageProvider: Send + Sync {
             "pending input poll loading by id".to_string(),
         ))
     }
+    /// Delete Telegram poll delivery metadata after resume or invalidation.
+    async fn delete_pending_input_poll(
+        &self,
+        task_id: TaskId,
+        poll_id: &str,
+    ) -> Result<(), StorageError> {
+        let _ = task_id;
+        let _ = poll_id;
+        Err(StorageError::Unsupported(
+            "pending input poll deletion".to_string(),
+        ))
+    }
     /// Check connection to storage
     async fn check_connection(&self) -> Result<(), String>;
 }
@@ -728,6 +740,17 @@ impl StorageProvider for R2Storage {
         self.load_json(&pending_input_poll_index_key(poll_id)).await
     }
 
+    async fn delete_pending_input_poll(
+        &self,
+        task_id: TaskId,
+        poll_id: &str,
+    ) -> Result<(), StorageError> {
+        self.delete_object(&pending_input_poll_task_key(task_id))
+            .await?;
+        self.delete_object(&pending_input_poll_index_key(poll_id))
+            .await
+    }
+
     /// Check connection to R2 storage
     async fn check_connection(&self) -> Result<(), String> {
         match self.client.list_buckets().send().await {
@@ -1042,6 +1065,17 @@ mod tests {
             self.load_json(pending_input_poll_index_key(poll_id)).await
         }
 
+        async fn delete_pending_input_poll(
+            &self,
+            task_id: crate::agent::task::TaskId,
+            poll_id: &str,
+        ) -> Result<(), StorageError> {
+            let mut state = self.documents.lock().await;
+            state.remove(&pending_input_poll_task_key(task_id));
+            state.remove(&pending_input_poll_index_key(poll_id));
+            Ok(())
+        }
+
         async fn check_connection(&self) -> Result<(), String> {
             Ok(())
         }
@@ -1207,6 +1241,34 @@ mod tests {
 
         assert_eq!(old_lookup.ok().flatten(), Some(first_poll));
         assert_eq!(new_lookup.ok().flatten(), Some(second_poll));
+    }
+
+    #[tokio::test]
+    async fn pending_input_poll_delete_clears_task_and_poll_index_records() {
+        let storage = InMemoryStorage::default();
+        let task_id = TaskMetadata::new().id;
+        let poll = PendingInputPoll {
+            task_id,
+            request_id: "req-delete".to_string(),
+            owner_user_id: 24,
+            poll_id: "poll-delete".to_string(),
+            chat_id: 777,
+            message_id: 12,
+            answered: false,
+            selected_option_ids: Vec::new(),
+        };
+
+        assert!(storage.save_pending_input_poll(&poll).await.is_ok());
+        assert!(storage
+            .delete_pending_input_poll(task_id, &poll.poll_id)
+            .await
+            .is_ok());
+
+        let by_task = storage.load_pending_input_poll_by_task(task_id).await;
+        let by_poll = storage.load_pending_input_poll_by_id(&poll.poll_id).await;
+
+        assert_eq!(by_task.ok().flatten(), None);
+        assert_eq!(by_poll.ok().flatten(), None);
     }
 
     #[tokio::test]
