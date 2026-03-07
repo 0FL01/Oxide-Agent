@@ -1,4 +1,6 @@
 use crate::bot;
+use crate::bot::agent_handlers::AgentTaskRuntime;
+use crate::bot::context::TelegramHandlerContext;
 use crate::bot::handlers::{get_user_id_safe, Command};
 use crate::bot::state::State;
 use crate::bot::UnauthorizedCache;
@@ -22,8 +24,19 @@ pub async fn run_bot(settings: Arc<BotSettings>) -> anyhow::Result<()> {
     let storage = init_storage(&settings).await?;
     let task_registry = Arc::new(TaskRegistry::new());
     run_startup_recovery(Arc::clone(&storage), Arc::clone(&task_registry)).await?;
+    let task_runtime = Arc::new(AgentTaskRuntime::new(
+        Arc::clone(&storage),
+        Arc::clone(&task_registry),
+        settings.telegram.agent_allowed_users().len().max(1),
+    ));
 
     let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
+    let handler_context = Arc::new(TelegramHandlerContext {
+        storage: Arc::clone(&storage),
+        llm: Arc::clone(&llm_client),
+        settings: Arc::clone(&settings),
+        task_runtime: Arc::clone(&task_runtime),
+    });
     info!("LLM Client initialized.");
 
     let bot = Bot::new(settings.telegram.telegram_token.clone());
@@ -35,10 +48,7 @@ pub async fn run_bot(settings: Arc<BotSettings>) -> anyhow::Result<()> {
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![
-            storage,
-            task_registry,
-            llm_client,
-            settings,
+            handler_context,
             bot_state,
             unauthorized_cache
         ])
@@ -110,8 +120,9 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
     dptree::entry()
         .branch(
             Update::filter_callback_query()
-                .filter(|q: CallbackQuery, settings: Arc<BotSettings>| {
-                    settings
+                .filter(|q: CallbackQuery, context: Arc<TelegramHandlerContext>| {
+                    context
+                        .settings
                         .telegram
                         .allowed_users()
                         .contains(&q.from.id.0.cast_signed())
@@ -121,8 +132,9 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
         .branch(
             Update::filter_message().branch(
                 // Main branch for authorized users
-                dptree::filter(|msg: Message, settings: Arc<BotSettings>| {
-                    settings
+                dptree::filter(|msg: Message, context: Arc<TelegramHandlerContext>| {
+                    context
+                        .settings
                         .telegram
                         .allowed_users()
                         .contains(&get_user_id_safe(&msg))
@@ -226,14 +238,22 @@ async fn handle_command(
     bot: Bot,
     msg: Message,
     cmd: Command,
-    storage: Arc<dyn storage::StorageProvider>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     cache: Arc<UnauthorizedCache>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
     let res = match cmd {
-        Command::Start => bot::handlers::start(bot, msg, storage, settings, dialogue).await,
-        Command::Clear => bot::handlers::clear(bot, msg, storage).await,
+        Command::Start => {
+            bot::handlers::start(
+                bot,
+                msg,
+                Arc::clone(&context.storage),
+                Arc::clone(&context.settings),
+                dialogue,
+            )
+            .await
+        }
+        Command::Clear => bot::handlers::clear(bot, msg, Arc::clone(&context.storage)).await,
         Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
         Command::Stats => bot::handlers::stats(bot, msg, cache).await,
     };
@@ -246,16 +266,10 @@ async fn handle_command(
 async fn handle_start_text(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = Box::pin(bot::handlers::handle_text(
-        bot, msg, storage, llm, dialogue, settings,
-    ))
-    .await
-    {
+    if let Err(e) = Box::pin(bot::handlers::handle_text(bot, msg, dialogue, context)).await {
         error!("Text handler error: {}", e);
     }
     respond(())
@@ -264,16 +278,10 @@ async fn handle_start_text(
 async fn handle_start_voice(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = Box::pin(bot::handlers::handle_voice(
-        bot, msg, storage, llm, dialogue, settings,
-    ))
-    .await
-    {
+    if let Err(e) = Box::pin(bot::handlers::handle_voice(bot, msg, dialogue, context)).await {
         error!("Voice handler error: {}", e);
     }
     respond(())
@@ -282,12 +290,10 @@ async fn handle_start_voice(
 async fn handle_start_photo(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings).await {
+    if let Err(e) = bot::handlers::handle_photo(bot, msg, dialogue, context).await {
         error!("Photo handler error: {}", e);
     }
     respond(())
@@ -296,13 +302,10 @@ async fn handle_start_photo(
 async fn handle_start_document(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings).await
-    {
+    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, context).await {
         error!("Document handler error: {}", e);
     }
     respond(())
@@ -311,10 +314,12 @@ async fn handle_start_document(
 async fn handle_editing_prompt(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_editing_prompt(bot, msg, storage, dialogue).await {
+    if let Err(e) =
+        bot::handlers::handle_editing_prompt(bot, msg, Arc::clone(&context.storage), dialogue).await
+    {
         error!("Editing prompt handler error: {}", e);
     }
     respond(())
@@ -323,13 +328,11 @@ async fn handle_editing_prompt(
 async fn handle_agent_message(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::agent_handlers::handle_agent_message(
-        bot, msg, storage, llm, dialogue, settings,
+        bot, msg, dialogue, context,
     ))
     .await
     {
@@ -341,11 +344,9 @@ async fn handle_agent_message(
 async fn handle_callback(
     bot: Bot,
     q: CallbackQuery,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
-    match bot::handlers::handle_chat_flow_callback(&bot, &q, &storage).await {
+    match bot::handlers::handle_chat_flow_callback(&bot, &q, &context.storage).await {
         Ok(true) => {
             return respond(());
         }
@@ -356,7 +357,8 @@ async fn handle_callback(
         }
     }
 
-    if !settings
+    if !context
+        .settings
         .telegram
         .agent_allowed_users()
         .contains(&q.from.id.0.cast_signed())
@@ -364,8 +366,7 @@ async fn handle_callback(
         return respond(());
     }
 
-    if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, storage, llm, settings).await
-    {
+    if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, context).await {
         error!("Loop callback handler error: {}", e);
     }
     respond(())
@@ -376,14 +377,10 @@ async fn handle_agent_confirmation(
     msg: Message,
     dialogue: Dialogue<State, InMemStorage<State>>,
     action: bot::state::ConfirmationType,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::agent_handlers::handle_agent_confirmation(
-        bot, msg, dialogue, action, storage, llm, settings,
-    )
-    .await
+    if let Err(e) =
+        bot::agent_handlers::handle_agent_confirmation(bot, msg, dialogue, action, context).await
     {
         error!("Agent confirmation handler error: {}", e);
     }
@@ -393,17 +390,34 @@ async fn handle_agent_confirmation(
 #[cfg(test)]
 mod tests {
     use super::run_startup_recovery;
+    use crate::bot::agent_handlers::AgentTaskRuntime;
+    use anyhow::Result as AnyResult;
     use async_trait::async_trait;
     use oxide_agent_core::agent::{AgentMemory, SessionId, TaskMetadata, TaskSnapshot, TaskState};
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
-    use oxide_agent_runtime::TaskRegistry;
+    use oxide_agent_runtime::{TaskExecutionBackend, TaskExecutionRequest, TaskRegistry};
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, Notify};
+    use tokio::time::{timeout, Duration};
 
     #[derive(Default)]
     struct RecoveryStorage {
         snapshots: Mutex<HashMap<oxide_agent_core::agent::TaskId, TaskSnapshot>>,
+    }
+
+    struct BlockingBackend {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl TaskExecutionBackend for BlockingBackend {
+        async fn execute(&self, _request: TaskExecutionRequest) -> AnyResult<()> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -586,5 +600,65 @@ mod tests {
             recovered_record,
             Some(ref record) if record.metadata.state == TaskState::Failed
         ));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_uses_recovery_registry_for_live_submission() {
+        let storage = Arc::new(RecoveryStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+
+        let mut snapshot = TaskSnapshot::new(
+            TaskMetadata::new(),
+            SessionId::from(7),
+            "running".to_string(),
+            1,
+        );
+        snapshot.metadata.state = TaskState::Running;
+        let recovered_task_id = snapshot.metadata.id;
+        assert!(storage.save_task_snapshot(&snapshot).await.is_ok());
+
+        let recovery_result = run_startup_recovery(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+        )
+        .await;
+        assert!(recovery_result.is_ok());
+
+        let task_runtime = AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        );
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+
+        let submit_result = task_runtime
+            .submit_task(SessionId::from(8), "live".to_string(), backend)
+            .await;
+        assert!(submit_result.is_ok());
+
+        let wait_result = timeout(Duration::from_secs(1), started.notified()).await;
+        assert!(wait_result.is_ok());
+
+        let recovered_record = task_registry.get(&recovered_task_id).await;
+        assert!(matches!(
+            recovered_record,
+            Some(ref record) if record.metadata.state == TaskState::Failed
+        ));
+
+        let live_record = task_runtime
+            .active_task_for_session(SessionId::from(8))
+            .await;
+        assert!(matches!(
+            live_record,
+            Some(ref record)
+                if matches!(record.metadata.state, TaskState::Pending | TaskState::Running)
+        ));
+
+        release.notify_one();
     }
 }

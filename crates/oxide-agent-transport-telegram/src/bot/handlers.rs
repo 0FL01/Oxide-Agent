@@ -1,3 +1,4 @@
+use crate::bot::context::TelegramHandlerContext;
 use crate::bot::state::State;
 use crate::bot::UnauthorizedCache;
 use crate::config::BotSettings;
@@ -59,14 +60,12 @@ pub fn get_user_id_safe(msg: &Message) -> i64 {
 async fn check_state_and_redirect(
     bot: &Bot,
     msg: &Message,
-    storage: &Arc<dyn StorageProvider>,
-    llm: &Arc<LlmClient>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
-    settings: &Arc<BotSettings>,
+    context: &TelegramHandlerContext,
 ) -> Result<bool> {
     let user_id = get_user_id_safe(msg);
 
-    if let Ok(Some(state_str)) = storage.get_user_state(user_id).await {
+    if let Ok(Some(state_str)) = context.storage.get_user_state(user_id).await {
         if state_str == "agent_mode" {
             info!("Restoring agent mode for user {user_id} based on persisted state.");
             dialogue
@@ -77,10 +76,8 @@ async fn check_state_and_redirect(
             Box::pin(crate::bot::agent_handlers::handle_agent_message(
                 bot.clone(),
                 msg.clone(),
-                storage.clone(),
-                llm.clone(),
                 dialogue.clone(),
-                settings.clone(),
+                Arc::new(context.clone()),
             ))
             .await?;
 
@@ -458,10 +455,8 @@ pub async fn stats(bot: Bot, msg: Message, cache: Arc<UnauthorizedCache>) -> Res
 pub async fn handle_text(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn StorageProvider>,
-    llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<()> {
     let text = msg.text().unwrap_or("").to_string();
     let user_id = get_user_id_safe(&msg);
@@ -472,15 +467,11 @@ pub async fn handle_text(
         truncate_str(&text, 100)
     );
 
-    if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue, &settings,
-    ))
-    .await?
-    {
+    if Box::pin(check_state_and_redirect(&bot, &msg, &dialogue, &context)).await? {
         return Ok(());
     }
 
-    if handle_menu_commands(&bot, &msg, &storage, &llm, &dialogue, &settings, &text).await? {
+    if handle_menu_commands(&bot, &msg, &dialogue, &context, &text).await? {
         return Ok(());
     }
 
@@ -492,9 +483,17 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    if settings.agent.get_model_info_by_name(&text).is_some() {
+    if context
+        .settings
+        .agent
+        .get_model_info_by_name(&text)
+        .is_some()
+    {
         info!("User {user_id} selected model '{text}' via text input.");
-        storage.update_user_model(user_id, text.clone()).await?;
+        context
+            .storage
+            .update_user_model(user_id, text.clone())
+            .await?;
         bot.send_message(msg.chat.id, format!("Model changed to <b>{text}</b>"))
             .parse_mode(ParseMode::Html)
             .reply_markup(get_chat_keyboard())
@@ -502,32 +501,39 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    process_llm_request(bot, msg, storage, llm, settings, text).await
+    process_llm_request(
+        bot,
+        msg,
+        Arc::clone(&context.storage),
+        Arc::clone(&context.llm),
+        Arc::clone(&context.settings),
+        text,
+    )
+    .await
 }
 
 async fn handle_menu_commands(
     bot: &Bot,
     msg: &Message,
-    storage: &Arc<dyn StorageProvider>,
-    llm: &Arc<LlmClient>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
-    settings: &Arc<BotSettings>,
+    context: &TelegramHandlerContext,
     text: &str,
 ) -> Result<bool> {
     let user_id = get_user_id_safe(msg);
     match text {
         "💬 Chat Mode" => {
-            let _chat_uuid = ensure_current_chat_uuid(storage, user_id).await?;
+            let _chat_uuid = ensure_current_chat_uuid(&context.storage, user_id).await?;
             // Save state to DB
-            let _ = storage
+            let _ = context
+                .storage
                 .update_user_state(user_id, "chat_mode".to_string())
                 .await;
             dialogue
                 .update(State::ChatMode)
                 .await
                 .map_err(|e| anyhow!(e.to_string()))?;
-            let saved_model = storage.get_user_model(user_id).await?;
-            let model = resolve_chat_model(settings, saved_model);
+            let saved_model = context.storage.get_user_model(user_id).await?;
+            let model = resolve_chat_model(&context.settings, saved_model);
             bot.send_message(
                 msg.chat.id,
                 format!("<b>Chat mode activated.</b>\nCurrent model: <b>{model}</b>"),
@@ -538,12 +544,12 @@ async fn handle_menu_commands(
             Ok(true)
         }
         "Clear Flow" => {
-            clear(bot.clone(), msg.clone(), storage.clone()).await?;
+            clear(bot.clone(), msg.clone(), Arc::clone(&context.storage)).await?;
             Ok(true)
         }
         "Change Model" => {
             bot.send_message(msg.chat.id, "Select a model:")
-                .reply_markup(get_model_keyboard(settings))
+                .reply_markup(get_model_keyboard(&context.settings))
                 .await?;
             Ok(true)
         }
@@ -554,14 +560,14 @@ async fn handle_menu_commands(
             Ok(true)
         }
         "🤖 Agent Mode" => {
-            if check_agent_access(bot, msg, settings, user_id).await? {
+            if check_agent_access(bot, msg, &context.settings, user_id).await? {
                 crate::bot::agent_handlers::activate_agent_mode(
-                    bot.clone(),
-                    msg.clone(),
-                    dialogue.clone(),
-                    llm.clone(),
-                    storage.clone(),
-                    settings.clone(),
+                    crate::bot::agent_handlers::ActivateAgentModeParams {
+                        bot: bot.clone(),
+                        msg: msg.clone(),
+                        dialogue: dialogue.clone(),
+                        context: Arc::new(context.clone()),
+                    },
                 )
                 .await?;
             }
@@ -748,17 +754,11 @@ use super::messaging::send_long_message;
 pub async fn handle_voice(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn StorageProvider>,
-    llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
-    if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue, &settings,
-    ))
-    .await?
-    {
+    if Box::pin(check_state_and_redirect(&bot, &msg, &dialogue, &context)).await? {
         return Ok(());
     }
 
@@ -770,7 +770,7 @@ pub async fn handle_voice(
         return Ok(());
     }
 
-    if !llm.is_multimodal_available() {
+    if !context.llm.is_multimodal_available() {
         bot.send_message(
             msg.chat.id,
             "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
@@ -780,10 +780,10 @@ pub async fn handle_voice(
     }
 
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
-    let saved_model = storage.get_user_model(user_id).await?;
-    let model = resolve_chat_model(&settings, saved_model);
+    let saved_model = context.storage.get_user_model(user_id).await?;
+    let model = resolve_chat_model(&context.settings, saved_model);
 
-    let provider_info = settings.agent.get_model_info_by_name(&model);
+    let provider_info = context.settings.agent.get_model_info_by_name(&model);
     let provider_name = provider_info.as_ref().map_or("unknown", |p| &p.provider);
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
@@ -799,7 +799,8 @@ pub async fn handle_voice(
     .await?;
 
     let model_id = provider_info.as_ref().map_or("unknown", |p| &p.id);
-    match llm
+    match context
+        .llm
         .transcribe_audio_with_fallback(provider_name, buffer, "audio/wav", model_id)
         .await
     {
@@ -814,7 +815,15 @@ pub async fn handle_voice(
                     format!("Recognized: \"{text}\"\n\nProcessing request..."),
                 )
                 .await?;
-                process_llm_request(bot, msg, storage, llm, settings, text).await?;
+                process_llm_request(
+                    bot,
+                    msg,
+                    Arc::clone(&context.storage),
+                    Arc::clone(&context.llm),
+                    Arc::clone(&context.settings),
+                    text,
+                )
+                .await?;
             }
         }
         Err(e) => {
@@ -833,17 +842,11 @@ pub async fn handle_voice(
 pub async fn handle_photo(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn StorageProvider>,
-    llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
-    if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue, &settings,
-    ))
-    .await?
-    {
+    if Box::pin(check_state_and_redirect(&bot, &msg, &dialogue, &context)).await? {
         return Ok(());
     }
 
@@ -855,7 +858,7 @@ pub async fn handle_photo(
         return Ok(());
     }
 
-    if !llm.is_multimodal_available() {
+    if !context.llm.is_multimodal_available() {
         bot.send_message(
             msg.chat.id,
             "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
@@ -869,9 +872,10 @@ pub async fn handle_photo(
         .and_then(|p| p.last())
         .ok_or_else(|| anyhow!("No photo found"))?;
     let caption = msg.caption().unwrap_or("Describe this image.");
-    let saved_model = storage.get_user_model(user_id).await?;
-    let model = resolve_chat_model(&settings, saved_model);
-    let system_prompt = storage
+    let saved_model = context.storage.get_user_model(user_id).await?;
+    let model = resolve_chat_model(&context.settings, saved_model);
+    let system_prompt = context
+        .storage
         .get_user_prompt(user_id)
         .await?
         .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
@@ -890,13 +894,15 @@ pub async fn handle_photo(
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
-    match llm
+    match context
+        .llm
         .analyze_image(buffer, caption, &system_prompt, &model)
         .await
     {
         Ok(response) => {
-            let chat_uuid = get_current_chat_uuid(&storage, user_id).await?;
-            storage
+            let chat_uuid = get_current_chat_uuid(&context.storage, user_id).await?;
+            context
+                .storage
                 .save_message_for_chat(
                     user_id,
                     chat_uuid.clone(),
@@ -904,7 +910,8 @@ pub async fn handle_photo(
                     format!("[Image] {caption}"),
                 )
                 .await?;
-            storage
+            context
+                .storage
                 .save_message_for_chat(
                     user_id,
                     chat_uuid.clone(),
@@ -933,15 +940,13 @@ pub async fn handle_document(
     bot: Bot,
     msg: Message,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    storage: Arc<dyn StorageProvider>,
-    llm: Arc<LlmClient>,
-    settings: Arc<BotSettings>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<()> {
     let state = dialogue.get().await?.unwrap_or(State::Start);
 
     if matches!(state, State::AgentMode) {
         Box::pin(super::agent_handlers::handle_agent_message(
-            bot, msg, storage, llm, dialogue, settings,
+            bot, msg, dialogue, context,
         ))
         .await
     } else {

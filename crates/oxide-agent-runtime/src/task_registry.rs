@@ -223,6 +223,24 @@ impl TaskRegistry {
         records
     }
 
+    /// Return the latest non-terminal task owned by a session.
+    pub async fn latest_non_terminal_by_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<TaskRecord> {
+        let state = self.state.read().await;
+        state
+            .session_tasks
+            .get(session_id)
+            .into_iter()
+            .flatten()
+            .rev()
+            .filter_map(|task_id| state.tasks.get(task_id))
+            .find(|entry| !entry.metadata.state.is_terminal())
+            .cloned()
+            .map(TaskRecord::from)
+    }
+
     /// Transition a task to a new lifecycle state.
     pub async fn update_state(
         &self,
@@ -759,6 +777,30 @@ mod tests {
 
         let token = registry.get_cancellation_token(&task_id).await;
         assert!(matches!(token, Some(ref token) if !token.is_cancelled()));
+    }
+
+    #[tokio::test]
+    async fn task_registry_returns_latest_non_terminal_task_for_session() {
+        let registry = TaskRegistry::new();
+        let session_id = SessionId::from(20);
+        let first = registry.create(session_id).await;
+        let second = registry.create(session_id).await;
+        let third = registry.create(session_id).await;
+
+        let first_cancel = registry.cancel(&first.metadata.id).await;
+        assert!(matches!(first_cancel, Ok(TaskCancellation::Cancelled(_))));
+        let third_cancel = registry.cancel(&third.metadata.id).await;
+        assert!(matches!(third_cancel, Ok(TaskCancellation::Cancelled(_))));
+
+        let latest = registry.latest_non_terminal_by_session(&session_id).await;
+        assert!(matches!(latest, Some(record) if record.metadata.id == second.metadata.id));
+
+        let second_cancel = registry.cancel(&second.metadata.id).await;
+        assert!(matches!(second_cancel, Ok(TaskCancellation::Cancelled(_))));
+        assert!(registry
+            .latest_non_terminal_by_session(&session_id)
+            .await
+            .is_none());
     }
 
     #[tokio::test]

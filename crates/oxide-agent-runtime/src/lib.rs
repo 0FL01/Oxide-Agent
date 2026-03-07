@@ -31,4 +31,5 @@ pub use task_executor::{
 };
 pub use task_recovery::{TaskRecovery, TaskRecoveryError, TaskRecoveryOptions, TaskRecoveryReport};
 pub use task_registry::{TaskRecord, TaskRegistry, TaskRegistryError};
+pub use tokio_util::sync::CancellationToken;
 pub use worker_manager::{WorkerManager, WorkerManagerError};

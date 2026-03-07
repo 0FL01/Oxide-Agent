@@ -10,8 +10,11 @@ use oxide_agent_core::agent::{
     SessionId, TaskId, TaskMetadata, TaskSnapshot, TaskState, TaskStateTransitionError,
 };
 use oxide_agent_core::storage::{StorageError, StorageProvider};
+use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
@@ -59,6 +62,8 @@ pub trait TaskExecutionBackend: Send + Sync + 'static {
 /// Errors returned by detached task executor operations.
 #[derive(Debug)]
 pub enum TaskExecutorError {
+    /// Another live task already owns the same session.
+    SessionTaskAlreadyRunning(SessionId),
     /// Task registry mutation failed.
     TaskRegistry(TaskRegistryError),
     /// Worker admission or tracking failed.
@@ -74,6 +79,9 @@ pub enum TaskExecutorError {
 impl fmt::Display for TaskExecutorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SessionTaskAlreadyRunning(session_id) => {
+                write!(f, "task already running for session: {session_id}")
+            }
             Self::TaskRegistry(error) => write!(f, "{error}"),
             Self::WorkerManager(error) => write!(f, "{error}"),
             Self::Storage(error) => write!(f, "{error}"),
@@ -109,9 +117,35 @@ impl From<StorageError> for TaskExecutorError {
 
 /// Runtime-owned detached executor for long-running task execution.
 pub struct TaskExecutor {
+    session_gate: SessionActionGate,
     task_registry: Arc<TaskRegistry>,
     worker_manager: Arc<WorkerManager>,
     storage: Arc<dyn StorageProvider>,
+}
+
+struct SessionActionGate {
+    locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
+}
+
+impl SessionActionGate {
+    fn new() -> Self {
+        Self {
+            locks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn lock(&self, session_id: SessionId) -> OwnedMutexGuard<()> {
+        let session_lock = {
+            let mut locks = self.locks.lock().await;
+            Arc::clone(
+                locks
+                    .entry(session_id)
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+
+        session_lock.lock_owned().await
+    }
 }
 
 impl TaskExecutor {
@@ -119,10 +153,21 @@ impl TaskExecutor {
     #[must_use]
     pub fn new(options: TaskExecutorOptions) -> Self {
         Self {
+            session_gate: SessionActionGate::new(),
             task_registry: options.task_registry,
             worker_manager: options.worker_manager,
             storage: options.storage,
         }
+    }
+
+    /// Serialize all runtime admission and destructive session actions for a session.
+    pub async fn with_session_gate<F, Fut, T>(&self, session_id: SessionId, action: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let _session_guard = self.session_gate.lock(session_id).await;
+        action().await
     }
 
     /// Create a task record and start detached execution under the runtime worker manager.
@@ -134,7 +179,30 @@ impl TaskExecutor {
     where
         B: TaskExecutionBackend,
     {
-        let record = self.task_registry.create(submission.session_id).await;
+        let session_id = submission.session_id;
+        self.with_session_gate(session_id, || async move {
+            self.submit_with_session_gate_held(submission, backend)
+                .await
+        })
+        .await
+    }
+
+    /// Submit a task while the caller already holds the session gate.
+    pub async fn submit_with_session_gate_held<B>(
+        &self,
+        submission: DetachedTaskSubmission,
+        backend: Arc<B>,
+    ) -> Result<TaskRecord, TaskExecutorError>
+    where
+        B: TaskExecutionBackend,
+    {
+        let session_id = submission.session_id;
+
+        if self.has_active_task_for_session(session_id).await {
+            return Err(TaskExecutorError::SessionTaskAlreadyRunning(session_id));
+        }
+
+        let record = self.task_registry.create(session_id).await;
         let task_id = record.metadata.id;
         let cancellation_token = self
             .task_registry
@@ -201,6 +269,18 @@ impl TaskExecutor {
         }
 
         Ok(record)
+    }
+
+    async fn has_active_task_for_session(&self, session_id: SessionId) -> bool {
+        let records = self.task_registry.list_by_session(&session_id).await;
+
+        for record in records.into_iter().rev() {
+            if self.worker_manager.contains(&record.metadata.id).await {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Cancel a runtime-owned task by task identifier.
@@ -466,7 +546,7 @@ mod tests {
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::{Mutex, Notify};
+    use tokio::sync::{Barrier, Mutex, Notify};
     use tokio::time::{sleep, timeout, Duration};
 
     #[derive(Clone, Copy)]
@@ -1264,6 +1344,106 @@ mod tests {
         assert!(
             matches!(snapshot, Some(snapshot) if snapshot.metadata.state == TaskState::Pending)
         );
+    }
+
+    #[tokio::test]
+    async fn detached_executor_rejects_concurrent_submit_for_same_session() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = Arc::new(TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager: Arc::clone(&worker_manager),
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        }));
+        let backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+        let session_id = SessionId::from(12);
+        let start_barrier = Arc::new(Barrier::new(3));
+
+        let first_submission = DetachedTaskSubmission {
+            session_id,
+            task: "first".to_string(),
+        };
+        let second_submission = DetachedTaskSubmission {
+            session_id,
+            task: "second".to_string(),
+        };
+
+        let first_task = {
+            let executor = Arc::clone(&executor);
+            let backend = Arc::clone(&backend);
+            let start_barrier = Arc::clone(&start_barrier);
+            tokio::spawn(async move {
+                start_barrier.wait().await;
+                executor.submit(first_submission, backend).await
+            })
+        };
+        let second_task = {
+            let executor = Arc::clone(&executor);
+            let backend = Arc::clone(&backend);
+            let start_barrier = Arc::clone(&start_barrier);
+            tokio::spawn(async move {
+                start_barrier.wait().await;
+                executor.submit(second_submission, backend).await
+            })
+        };
+
+        start_barrier.wait().await;
+
+        let first_result = first_task.await;
+        assert!(first_result.is_ok(), "first submit task failed to join");
+        let second_result = second_task.await;
+        assert!(second_result.is_ok(), "second submit task failed to join");
+
+        let first_result = match first_result {
+            Ok(result) => result,
+            Err(error) => panic!("unexpected join error: {error}"),
+        };
+        let second_result = match second_result {
+            Ok(result) => result,
+            Err(error) => panic!("unexpected join error: {error}"),
+        };
+
+        let successful_record = match (first_result, second_result) {
+            (
+                Ok(record),
+                Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id)),
+            ) => {
+                assert_eq!(rejected_session_id, session_id);
+                record
+            }
+            (
+                Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id)),
+                Ok(record),
+            ) => {
+                assert_eq!(rejected_session_id, session_id);
+                record
+            }
+            (left, right) => panic!("unexpected concurrent submit results: {left:?} {right:?}"),
+        };
+
+        wait_for_state(&registry, successful_record.metadata.id, TaskState::Running).await;
+
+        let session_records = registry.list_by_session(&session_id).await;
+        assert_eq!(session_records.len(), 1);
+        assert_eq!(
+            session_records[0].metadata.id,
+            successful_record.metadata.id
+        );
+        assert!(
+            worker_manager
+                .contains(&successful_record.metadata.id)
+                .await
+        );
+        assert_eq!(worker_manager.active_count().await, 1);
+
+        backend.release();
+        wait_for_state(
+            &registry,
+            successful_record.metadata.id,
+            TaskState::Completed,
+        )
+        .await;
     }
 
     async fn wait_for_state(registry: &TaskRegistry, task_id: TaskId, expected: TaskState) {

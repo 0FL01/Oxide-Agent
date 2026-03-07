@@ -39,6 +39,9 @@ pub trait AgentView {
     /// Message when exiting agent mode
     fn exiting_agent() -> &'static str;
 
+    /// Message when exit is blocked by an active task
+    fn exit_blocked_by_task() -> &'static str;
+
     /// Message when no active task to cancel
     fn no_active_task() -> &'static str;
 
@@ -133,6 +136,10 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
 
     fn exiting_agent() -> &'static str {
         "👋 Exited agent mode"
+    }
+
+    fn exit_blocked_by_task() -> &'static str {
+        "⚠️ Cannot exit agent mode while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
     }
 
     fn no_active_task() -> &'static str {

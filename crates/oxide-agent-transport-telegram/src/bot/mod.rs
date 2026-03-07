@@ -4,6 +4,8 @@ pub mod agent;
 pub mod agent_handlers;
 /// Telegram transport adapter for the agent runtime
 pub mod agent_transport;
+/// Shared dependency bundle for Telegram handlers.
+pub mod context;
 /// General command and message handlers
 pub mod handlers;
 /// Common messaging utilities (split long messages, formatting)
