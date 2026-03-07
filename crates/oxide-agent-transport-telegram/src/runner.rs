@@ -243,16 +243,7 @@ async fn handle_command(
     context: Arc<TelegramHandlerContext>,
 ) -> Result<(), teloxide::RequestError> {
     let res = match cmd {
-        Command::Start => {
-            bot::handlers::start(
-                bot,
-                msg,
-                Arc::clone(&context.storage),
-                Arc::clone(&context.settings),
-                dialogue,
-            )
-            .await
-        }
+        Command::Start => bot::handlers::start(bot, msg, dialogue, Arc::clone(&context)).await,
         Command::Clear => bot::handlers::clear(bot, msg, Arc::clone(&context.storage)).await,
         Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
         Command::Stats => bot::handlers::stats(bot, msg, cache).await,
