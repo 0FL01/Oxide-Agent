@@ -61,6 +61,11 @@ enum SessionResetOutcome {
     Busy,
 }
 
+pub(crate) enum StartResetOutcome<T> {
+    Reset(T),
+    BlockedByTask,
+}
+
 enum ExitSessionOutcome {
     Exited,
     BlockedByTask,
@@ -80,6 +85,11 @@ enum RetryTaskOutcome {
     Submitted,
     NoSavedTask,
     SessionNotFound,
+}
+
+enum AgentModeActivationOutcome {
+    Activated,
+    LiveTaskStillRunning,
 }
 
 enum RecreateContainerOutcome {
@@ -187,11 +197,59 @@ impl AgentTaskRuntime {
         SESSION_REGISTRY.insert(session_id, executor).await;
     }
 
-    async fn insert_session(&self, session_id: SessionId, executor: AgentExecutor) {
+    #[cfg(test)]
+    pub(crate) async fn blocks_start_reset(&self, session_id: SessionId) -> bool {
         self.with_session_gate(session_id, || async move {
-            SESSION_REGISTRY.insert(session_id, executor).await;
+            self.has_active_task_for_session(session_id).await
         })
-        .await;
+        .await
+    }
+
+    pub(crate) async fn reset_start_if_idle<F, Fut, T, E>(
+        &self,
+        session_id: SessionId,
+        reset: F,
+    ) -> Result<StartResetOutcome<T>, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        self.with_session_gate(session_id, || async move {
+            if self.has_active_task_for_session(session_id).await {
+                Ok(StartResetOutcome::BlockedByTask)
+            } else {
+                reset().await.map(StartResetOutcome::Reset)
+            }
+        })
+        .await
+    }
+
+    async fn activate_agent_mode_session(
+        &self,
+        session_id: SessionId,
+        user_id: i64,
+        llm: &Arc<LlmClient>,
+        storage: &Arc<dyn StorageProvider>,
+        settings: &Arc<BotSettings>,
+    ) -> AgentModeActivationOutcome {
+        self.with_session_gate(session_id, || async move {
+            if self.has_active_task_for_session(session_id).await {
+                return AgentModeActivationOutcome::LiveTaskStillRunning;
+            }
+
+            let mut session = AgentSession::new(session_id);
+
+            if let Ok(Some(saved_memory)) = storage.load_agent_memory(user_id).await {
+                session.memory = saved_memory;
+                info!("Loaded agent memory for user {user_id}");
+            }
+
+            let executor = AgentExecutor::new(Arc::clone(llm), session, settings.agent.clone());
+            SESSION_REGISTRY.insert(session_id, executor).await;
+
+            AgentModeActivationOutcome::Activated
+        })
+        .await
     }
 
     async fn ensure_session_exists(
@@ -493,24 +551,15 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
 
     info!("Activating agent mode for user {user_id}");
 
-    // Create new session
-    let mut session = AgentSession::new(session_id);
-
-    // Load saved agent memory if exists
-    if let Ok(Some(saved_memory)) = context.storage.load_agent_memory(user_id).await {
-        session.memory = saved_memory;
-        info!("Loaded agent memory for user {user_id}");
-    }
-
-    let executor = AgentExecutor::new(
-        Arc::clone(&context.llm),
-        session,
-        context.settings.agent.clone(),
-    );
-
-    context
+    let activation_outcome = context
         .task_runtime
-        .insert_session(session_id, executor)
+        .activate_agent_mode_session(
+            session_id,
+            user_id,
+            &context.llm,
+            &context.storage,
+            &context.settings,
+        )
         .await;
 
     // Save state to DB
@@ -522,12 +571,20 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
     // Update dialogue state
     dialogue.update(State::AgentMode).await?;
 
-    // Send welcome message
-    let (model_id, _, _) = context.settings.agent.get_configured_agent_model();
-    bot.send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
-        .parse_mode(ParseMode::Html)
-        .reply_markup(get_agent_keyboard())
-        .await?;
+    match activation_outcome {
+        AgentModeActivationOutcome::Activated => {
+            let (model_id, _, _) = context.settings.agent.get_configured_agent_model();
+            bot.send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
+                .parse_mode(ParseMode::Html)
+                .reply_markup(get_agent_keyboard())
+                .await?;
+        }
+        AgentModeActivationOutcome::LiveTaskStillRunning => {
+            bot.send_message(msg.chat.id, DefaultAgentView::task_already_running())
+                .reply_markup(get_agent_keyboard())
+                .await?;
+        }
+    }
 
     Ok(())
 }
@@ -1192,9 +1249,9 @@ pub async fn handle_agent_confirmation(
 #[cfg(test)]
 mod tests {
     use super::{
-        destructive_action_block_message, exit_block_message, AgentTaskRuntime, ClearMemoryOutcome,
-        ExitSessionOutcome, RecreateContainerOutcome, RetryTaskOutcome, SessionResetOutcome,
-        SESSION_REGISTRY,
+        destructive_action_block_message, exit_block_message, AgentModeActivationOutcome,
+        AgentTaskRuntime, ClearMemoryOutcome, ExitSessionOutcome, RecreateContainerOutcome,
+        RetryTaskOutcome, SessionResetOutcome, SESSION_REGISTRY,
     };
     use crate::bot::context::TelegramHandlerContext;
     use crate::bot::views::{AgentView, DefaultAgentView};
@@ -1854,6 +1911,128 @@ mod tests {
         )
         .await
         .is_none());
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn task_runtime_start_reset_guard_blocks_when_runtime_task_is_active() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        );
+        let session_id = SessionId::from(56);
+        insert_test_session(session_id).await;
+
+        let started = Arc::new(Notify::new());
+        let cancelled_notify = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let stopped = Arc::new(Notify::new());
+        let backend = Arc::new(CancelledButLiveBackend {
+            started: Arc::clone(&started),
+            cancelled: Arc::clone(&cancelled_notify),
+            release: Arc::clone(&release),
+            stopped: Arc::clone(&stopped),
+        });
+
+        let submit_result = task_runtime
+            .submit_task(session_id, "start guard".to_string(), backend)
+            .await;
+        assert!(submit_result.is_ok());
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        assert!(task_runtime.blocks_start_reset(session_id).await);
+
+        let cancelled = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), cancelled_notify.notified())
+            .await
+            .is_ok());
+
+        assert!(task_runtime.blocks_start_reset(session_id).await);
+
+        release.notify_one();
+        assert!(timeout(Duration::from_secs(1), stopped.notified())
+            .await
+            .is_ok());
+
+        assert!(!task_runtime.blocks_start_reset(session_id).await);
+
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn task_runtime_agent_mode_reentry_keeps_live_session_executor() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        );
+        let session_id = SessionId::from(57);
+        let user_id = session_id.as_i64();
+        insert_test_session(session_id).await;
+        let original_executor = SESSION_REGISTRY
+            .get(&session_id)
+            .await
+            .unwrap_or_else(|| unreachable!());
+
+        let started = Arc::new(Notify::new());
+        let cancelled_notify = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let stopped = Arc::new(Notify::new());
+        let backend = Arc::new(CancelledButLiveBackend {
+            started: Arc::clone(&started),
+            cancelled: Arc::clone(&cancelled_notify),
+            release: Arc::clone(&release),
+            stopped: Arc::clone(&stopped),
+        });
+        let (llm, settings) = retry_runtime_client();
+
+        let submit_result = task_runtime
+            .submit_task(session_id, "agent reentry guard".to_string(), backend)
+            .await;
+        assert!(submit_result.is_ok());
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let activation_outcome = task_runtime
+            .activate_agent_mode_session(
+                session_id,
+                user_id,
+                &llm,
+                &(Arc::clone(&storage) as Arc<dyn StorageProvider>),
+                &settings,
+            )
+            .await;
+        assert!(matches!(
+            activation_outcome,
+            AgentModeActivationOutcome::LiveTaskStillRunning
+        ));
+
+        let current_executor = SESSION_REGISTRY
+            .get(&session_id)
+            .await
+            .unwrap_or_else(|| unreachable!());
+        assert!(Arc::ptr_eq(&original_executor, &current_executor));
+
+        let cancelled = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), cancelled_notify.notified())
+            .await
+            .is_ok());
+
+        release.notify_one();
+        assert!(timeout(Duration::from_secs(1), stopped.notified())
+            .await
+            .is_ok());
 
         SESSION_REGISTRY.remove(&session_id).await;
     }

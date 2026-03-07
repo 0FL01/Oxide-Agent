@@ -1,8 +1,10 @@
 use crate::bot::context::TelegramHandlerContext;
 use crate::bot::state::State;
+use crate::bot::views::AgentView;
 use crate::bot::UnauthorizedCache;
 use crate::config::BotSettings;
 use anyhow::{anyhow, Result};
+use oxide_agent_core::agent::SessionId;
 use oxide_agent_core::llm::{LlmClient, Message as LlmMessage};
 use oxide_agent_core::storage::{generate_chat_uuid, StorageProvider};
 use oxide_agent_core::utils::truncate_str;
@@ -18,6 +20,8 @@ use teloxide::{
     utils::command::BotCommands,
 };
 use tracing::info;
+
+use super::agent_handlers::StartResetOutcome;
 
 const CHAT_ATTACH_PREFIX: &str = "chat_attach:";
 const CHAT_DETACH_CALLBACK: &str = "chat_detach";
@@ -183,6 +187,32 @@ pub fn get_model_keyboard(settings: &BotSettings) -> KeyboardMarkup {
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
+/// Prepare `/start` state transitions under the runtime session gate.
+async fn prepare_start_state(
+    user_id: i64,
+    session_id: SessionId,
+    dialogue: &Dialogue<State, InMemStorage<State>>,
+    context: &TelegramHandlerContext,
+) -> Result<StartResetOutcome<()>> {
+    let dialogue = dialogue.clone();
+    let storage = Arc::clone(&context.storage);
+
+    context
+        .task_runtime
+        .reset_start_if_idle(session_id, move || async move {
+            storage
+                .update_user_state(user_id, "chat_mode".to_string())
+                .await
+                .map_err(anyhow::Error::from)?;
+            dialogue
+                .update(State::Start)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+            Ok(())
+        })
+        .await
+}
+
 /// Start handler
 ///
 /// # Errors
@@ -191,28 +221,44 @@ pub fn get_model_keyboard(settings: &BotSettings) -> KeyboardMarkup {
 pub async fn start(
     bot: Bot,
     msg: Message,
-    storage: Arc<dyn StorageProvider>,
-    settings: Arc<BotSettings>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    context: Arc<TelegramHandlerContext>,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
+    let session_id = SessionId::from(user_id);
 
     info!("User {user_id} ({user_name}) initiated /start command.");
 
-    // Reset dialogue state to Start (exit agent mode if active)
-    dialogue
-        .update(State::Start)
+    match prepare_start_state(user_id, session_id, &dialogue, &context).await? {
+        StartResetOutcome::BlockedByTask => {
+            let _ = context
+                .storage
+                .update_user_state(user_id, "agent_mode".to_string())
+                .await;
+            dialogue
+                .update(State::AgentMode)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+
+            bot.send_message(
+                msg.chat.id,
+                crate::bot::views::DefaultAgentView::task_already_running(),
+            )
+            .reply_markup(crate::bot::views::get_agent_keyboard())
+            .await?;
+
+            return Ok(());
+        }
+        StartResetOutcome::Reset(()) => {}
+    }
+
+    let saved_model = context
+        .storage
+        .get_user_model(user_id)
         .await
-        .map_err(|e| anyhow!(e.to_string()))?;
-
-    // Reset persisted state in storage to chat_mode
-    let _ = storage
-        .update_user_state(user_id, "chat_mode".to_string())
-        .await;
-
-    let saved_model = storage.get_user_model(user_id).await.unwrap_or(None);
-    let model = resolve_chat_model(&settings, saved_model);
+        .unwrap_or(None);
+    let model = resolve_chat_model(&context.settings, saved_model);
     info!("User {user_id} ({user_name}) is allowed. Set model to {model}");
 
     let text = "👋 <b>I am Oxide Agent.</b>\n\n\
@@ -963,9 +1009,26 @@ pub async fn handle_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_valid_chat_uuid, parse_chat_flow_callback_data, ChatFlowCallbackData,
-        CHAT_ATTACH_PREFIX, CHAT_DETACH_CALLBACK,
+        is_valid_chat_uuid, parse_chat_flow_callback_data, prepare_start_state,
+        ChatFlowCallbackData, CHAT_ATTACH_PREFIX, CHAT_DETACH_CALLBACK,
     };
+    use crate::bot::agent_handlers::{AgentTaskRuntime, StartResetOutcome};
+    use crate::bot::context::TelegramHandlerContext;
+    use crate::bot::state::State;
+    use crate::config::{BotSettings, TelegramSettings};
+    use anyhow::Result as AnyResult;
+    use async_trait::async_trait;
+    use oxide_agent_core::agent::{AgentMemory, SessionId, TaskEvent, TaskId, TaskSnapshot};
+    use oxide_agent_core::config::AgentSettings;
+    use oxide_agent_core::llm::LlmClient;
+    use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
+    use oxide_agent_runtime::{TaskExecutionBackend, TaskExecutionRequest, TaskRegistry};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use teloxide::dispatching::dialogue::{Dialogue, InMemStorage};
+    use teloxide::types::ChatId;
+    use tokio::sync::{Mutex, Notify};
+    use tokio::time::{timeout, Duration};
 
     #[test]
     fn is_valid_chat_uuid_accepts_canonical_uuid() {
@@ -1017,5 +1080,295 @@ mod tests {
     #[test]
     fn parse_chat_flow_callback_data_rejects_unknown_callback() {
         assert_eq!(parse_chat_flow_callback_data("unknown"), None);
+    }
+
+    #[derive(Default)]
+    struct StartTestStorage {
+        user_states: Mutex<HashMap<i64, String>>,
+        snapshots: Mutex<HashMap<TaskId, TaskSnapshot>>,
+        fail_state_update: Mutex<bool>,
+    }
+
+    struct BlockingBackend {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl TaskExecutionBackend for BlockingBackend {
+        async fn execute(&self, request: TaskExecutionRequest) -> AnyResult<()> {
+            self.started.notify_one();
+            request.cancellation_token.cancelled().await;
+            self.release.notify_one();
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl StorageProvider for StartTestStorage {
+        async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
+            Ok(UserConfig::default())
+        }
+
+        async fn update_user_config(
+            &self,
+            _user_id: i64,
+            _config: UserConfig,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn update_user_prompt(
+            &self,
+            _user_id: i64,
+            _system_prompt: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_user_model(
+            &self,
+            _user_id: i64,
+            _model_name: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
+            if *self.fail_state_update.lock().await {
+                return Err(StorageError::Config("state update failed".to_string()));
+            }
+            self.user_states.lock().await.insert(user_id, state);
+            Ok(())
+        }
+
+        async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(self.user_states.lock().await.get(&user_id).cloned())
+        }
+
+        async fn save_message(
+            &self,
+            _user_id: i64,
+            _role: String,
+            _content: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_chat_history(
+            &self,
+            _user_id: i64,
+            _limit: usize,
+        ) -> Result<Vec<Message>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_message_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+            _role: String,
+            _content: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_chat_history_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+            _limit: usize,
+        ) -> Result<Vec<Message>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn clear_chat_history_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_agent_memory(
+            &self,
+            _user_id: i64,
+            _memory: &AgentMemory,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn load_agent_memory(
+            &self,
+            _user_id: i64,
+        ) -> Result<Option<AgentMemory>, StorageError> {
+            Ok(None)
+        }
+
+        async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn clear_all_context(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_task_snapshot(&self, snapshot: &TaskSnapshot) -> Result<(), StorageError> {
+            self.snapshots
+                .lock()
+                .await
+                .insert(snapshot.metadata.id, snapshot.clone());
+            Ok(())
+        }
+
+        async fn load_task_snapshot(
+            &self,
+            task_id: TaskId,
+        ) -> Result<Option<TaskSnapshot>, StorageError> {
+            Ok(self.snapshots.lock().await.get(&task_id).cloned())
+        }
+
+        async fn list_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StorageError> {
+            Ok(self.snapshots.lock().await.values().cloned().collect())
+        }
+
+        async fn append_task_event(
+            &self,
+            _task_id: TaskId,
+            _event: TaskEvent,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn load_task_events(&self, _task_id: TaskId) -> Result<Vec<TaskEvent>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn check_connection(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn test_context(
+        storage: Arc<dyn StorageProvider>,
+        task_runtime: Arc<AgentTaskRuntime>,
+    ) -> TelegramHandlerContext {
+        let agent_settings = AgentSettings {
+            openrouter_site_name: "Oxide Agent Bot".to_string(),
+            ..AgentSettings::default()
+        };
+        let llm_settings = Arc::new(agent_settings.clone());
+        let llm = Arc::new(LlmClient::new(&llm_settings));
+
+        TelegramHandlerContext {
+            storage,
+            llm,
+            settings: Arc::new(BotSettings::new(
+                agent_settings,
+                TelegramSettings::default(),
+            )),
+            task_runtime,
+        }
+    }
+
+    #[tokio::test]
+    async fn task_runtime_start_prepare_blocks_stale_reset_after_submit_admission() {
+        let storage = Arc::new(StartTestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let context = test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+        let user_id = 71;
+        let session_id = SessionId::from(user_id);
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let update_result = dialogue.update(State::AgentMode).await;
+        assert!(update_result.is_ok());
+        let storage_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(storage_result.is_ok());
+
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+
+        let submit_result = task_runtime
+            .submit_task(session_id, "live task".to_string(), backend)
+            .await;
+        assert!(submit_result.is_ok());
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let outcome = prepare_start_state(user_id, session_id, &dialogue, &context).await;
+        assert!(matches!(outcome, Ok(StartResetOutcome::BlockedByTask)));
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::AgentMode))));
+        let persisted_state = storage.get_user_state(user_id).await;
+        assert!(matches!(persisted_state, Ok(Some(ref state)) if state == "agent_mode"));
+
+        let cancelled = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), release.notified())
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn task_runtime_start_prepare_keeps_agent_mode_when_chat_state_persist_fails() {
+        let storage = Arc::new(StartTestStorage::default());
+        *storage.fail_state_update.lock().await = true;
+
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_registry,
+            1,
+        ));
+        let context = test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+
+        let user_id = 72;
+        let session_id = SessionId::from(user_id);
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+
+        let update_result = dialogue.update(State::AgentMode).await;
+        assert!(update_result.is_ok());
+
+        let outcome = prepare_start_state(user_id, session_id, &dialogue, &context).await;
+        assert!(outcome.is_err());
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::AgentMode))));
+
+        let persisted_state = storage.get_user_state(user_id).await;
+        assert!(matches!(persisted_state, Ok(None)));
     }
 }
