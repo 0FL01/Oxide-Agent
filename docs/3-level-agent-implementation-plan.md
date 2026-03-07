@@ -1,12 +1,12 @@
 ### Agent Mode v2: Implementation Plan
 
-Status: In Progress
+Status: In Progress (Stage 1 completed, Stage 2 completed, Stage 3 not started)
 
 Progress update:
 
 - Stage 1 completed on `arch-agent-mode`.
 - Handover note: `docs/3-level-agent-stage-1-handover.txt`.
-- Stage 2 implementation is partially landed on `arch-agent-mode`.
+- Stage 2 implementation completed and approved on `arch-agent-mode`.
 - Completed Stage 2 commits:
   - `c254516` `feat(stage-2/slice-1): add background worker manager`
   - `5c19b3a` `feat(stage-2/slice-2): add detached task executor`
@@ -17,8 +17,8 @@ Progress update:
   - `5bc7058` `fix(stage-2/slice-5): guard start flow during runtime task`
   - `3d31d76` `fix(stage-2/slice-5): align start handler call`
   - `5baf644` `fix(stage-2/slice-5): restore document agent-mode routing`
+  - `8029e0f` `fix(stage-2/slice-5): recheck persisted agent access`
 - Stage 2 handover note: `docs/3-level-agent-stage-2-handover.txt`.
-- Stage 2 is still not marked complete: final review found one remaining transport security gap around `agent_allowed_users` re-check on persisted-state re-entry.
 
 Этот документ дополняет `docs/3-level-agent.md` и раскладывает внедрение Agent Mode v2 на конкретные стадии и небольшие auditable slices.
 
@@ -195,9 +195,9 @@ Stage 1 review status: APPROVED
 
 Цель stage: отделить long-running execution от user-facing request flow.
 
-Status: In Progress
+Status: Completed
 
-Implemented on branch `arch-agent-mode` so far:
+Implemented on branch `arch-agent-mode`:
 
 - Slice 2.1 - `c254516` `feat(stage-2/slice-1): add background worker manager`
 - Slice 2.2 - `5c19b3a` `feat(stage-2/slice-2): add detached task executor`
@@ -209,7 +209,11 @@ Implemented on branch `arch-agent-mode` so far:
   - `5bc7058` `fix(stage-2/slice-5): guard start flow during runtime task`
   - `3d31d76` `fix(stage-2/slice-5): align start handler call`
   - `5baf644` `fix(stage-2/slice-5): restore document agent-mode routing`
-- Current blocker before Stage 2 approval: persisted-state re-entry must re-check `agent_allowed_users` before restoring Agent Mode after access revoke.
+  - `8029e0f` `fix(stage-2/slice-5): recheck persisted agent access`
+
+Stage 2 final review status: APPROVED
+
+Note: Two transport runner test failures were classified as non-blocking test-harness issues in RecoveryStorage rather than Stage 2 safety blockers.
 
 #### Slice 2.1 - Background Worker Manager
 
@@ -372,6 +376,8 @@ Exit criteria for Stage 2:
 - background worker живет как runtime entity;
 - persisted tasks проходят boot-time reconciliation после рестарта;
 - базовые create/run/cancel flows работают без Telegram-specific HITL.
+
+Stage 2 review status: APPROVED
 
 ---
 
