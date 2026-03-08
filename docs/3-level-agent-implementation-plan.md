@@ -1,6 +1,6 @@
 ### Agent Mode v2: Implementation Plan
 
-Status: In Progress (Stage 1 completed, Stage 2 completed, Stage 3 completed, Stage 4 completed, Stage 5 completed)
+Status: Completed (Stage 1 completed, Stage 2 completed, Stage 3 completed, Stage 4 completed, Stage 5 completed, Stage 6 completed)
 
 Progress update:
 
@@ -49,6 +49,15 @@ Progress update:
   - `b5704e8` `feat(stage-5/slice-5.4): add telegram watch-link UX`
   - `6be62ee` `docs(stage-5/slice-5.5): sync agents context for web monitoring`
 - Stage 5 handover note: `docs/3-level-agent-stage-5-handover.txt`.
+- Stage 6 implementation completed and approved on `arch-agent-mode`.
+- Completed Stage 6 commits:
+  - `610eda5` `feat(stage-6/slice-1): improve telegram background task feedback`
+  - `7ce20ea` `feat(stage-6/slice-2): enforce delegation depth limits`
+  - `4c00c75` `feat(stage-6/slice-3): add llm concurrency guardrails`
+  - `3f69ca3` `feat(stage-6/slice-4): add agent mode rollout guards`
+  - `ba28afa` `fix(stage-6/slice-4a): harden agent access revocation`
+  - `dc3583f` `refactor(stage-6/slice-3a): use llm provider request structs`
+- Stage 6 handover note: `docs/3-level-agent-stage-6-handover.txt`.
 
 Этот документ дополняет `docs/3-level-agent.md` и раскладывает внедрение Agent Mode v2 на конкретные стадии и небольшие auditable slices.
 
@@ -826,6 +835,19 @@ Current Stage 5 status:
 
 Цель stage: довести систему до production-shaped состояния и аккуратно включить для пользователей.
 
+Status: Completed
+
+Implemented on branch `arch-agent-mode`:
+
+- Slice 6.1 - `610eda5` `feat(stage-6/slice-1): improve telegram background task feedback`
+- Slice 6.2 - `7ce20ea` `feat(stage-6/slice-2): enforce delegation depth limits`
+- Slice 6.3 - `4c00c75` `feat(stage-6/slice-3): add llm concurrency guardrails`
+- Slice 6.4 - `3f69ca3` `feat(stage-6/slice-4): add agent mode rollout guards`
+- Slice 6.4 follow-up - `ba28afa` `fix(stage-6/slice-4a): harden agent access revocation`
+- Slice 6.3 follow-up - `dc3583f` `refactor(stage-6/slice-3a): use llm provider request structs`
+
+Stage 6 final review status: APPROVED
+
 #### Slice 6.1 - Architect Integration in Telegram
 
 Crates:
@@ -947,6 +969,12 @@ cargo fmt --check
 Exit criteria for Stage 6:
 
 - система готова к staged rollout и supportable в эксплуатации.
+
+Current Stage 6 status:
+
+- slices 6.1-6.4 implemented, verified, review-approved and committed;
+- follow-up hardening slices 6.4a and 6.3a implemented, verified, review-approved and committed;
+- Stage 6 final review status: APPROVED.
 
 ---
 
