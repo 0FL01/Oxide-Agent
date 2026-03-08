@@ -186,6 +186,7 @@ fn fail_snapshot(mut snapshot: TaskSnapshot, note: &str) -> TaskSnapshot {
     snapshot.recovery_note = Some(note.to_string());
     snapshot.pending_input = None;
     snapshot.agent_memory = None;
+    snapshot.stop_report = None;
     snapshot
 }
 
@@ -198,6 +199,7 @@ fn apply_event_state(mut snapshot: TaskSnapshot, state: TaskState, sequence: u64
     snapshot.recovery_note = Some(CANCELLED_EVENT_RECOVERY_NOTE.to_string());
     snapshot.pending_input = None;
     snapshot.agent_memory = None;
+    snapshot.stop_report = None;
     snapshot
 }
 

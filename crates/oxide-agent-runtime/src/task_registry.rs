@@ -2,8 +2,8 @@
 
 use crate::task_events::{NoopTaskEventPublisher, SharedTaskEventPublisher};
 use oxide_agent_core::agent::{
-    PendingInput, SessionId, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskState,
-    TaskStateTransitionError,
+    PendingInput, SessionId, StopSafePoint, StopSignal, StopSignalMode, TaskEvent, TaskEventKind,
+    TaskId, TaskMetadata, TaskState, TaskStateTransitionError,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -17,6 +17,7 @@ struct TaskEntry {
     last_event_sequence: u64,
     session_id: SessionId,
     pending_input: Option<PendingInput>,
+    stop_signal: Option<StopSignal>,
     cancellation_token: Arc<CancellationToken>,
 }
 
@@ -52,6 +53,17 @@ pub enum TaskCancellation {
     /// Cancellation transitioned the task into a terminal cancelled state.
     Cancelled(TaskStateUpdate),
     /// Cancellation was requested after the task already reached a terminal state.
+    AlreadyTerminal(TaskStateUpdate),
+}
+
+/// Outcome of a runtime graceful stop request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskStopRequest {
+    /// Stop signal has been accepted and persisted for safe-point handling.
+    Requested(TaskStateUpdate),
+    /// Stop signal already exists and remains pending safe-point handling.
+    AlreadyRequested(TaskStateUpdate),
+    /// Request was issued after the task reached a terminal state.
     AlreadyTerminal(TaskStateUpdate),
 }
 
@@ -138,6 +150,7 @@ impl TaskRegistry {
             last_event_sequence: event.sequence,
             session_id,
             pending_input: None,
+            stop_signal: None,
             cancellation_token: Arc::new(CancellationToken::new()),
         };
         let record = {
@@ -171,6 +184,7 @@ impl TaskRegistry {
             last_event_sequence,
             session_id,
             pending_input,
+            stop_signal: None,
             cancellation_token: Arc::new(CancellationToken::new()),
         };
         let record = TaskRecord::from(entry.clone());
@@ -271,6 +285,9 @@ impl TaskRegistry {
             if next_state != TaskState::WaitingInput {
                 entry.pending_input = None;
             }
+            if next_state.is_terminal() {
+                entry.stop_signal = None;
+            }
             entry.last_event_sequence += 1;
 
             let event = TaskEvent::new(
@@ -303,6 +320,9 @@ impl TaskRegistry {
                 .ok_or(TaskRegistryError::TaskNotFound(*task_id))?;
             entry.metadata.transition_to(TaskState::WaitingInput)?;
             entry.pending_input = Some(pending_input);
+            if let Some(signal) = entry.stop_signal.as_mut() {
+                signal.safe_point = StopSafePoint::WaitingInput;
+            }
             entry.last_event_sequence += 1;
 
             let event = TaskEvent::new(
@@ -339,6 +359,7 @@ impl TaskRegistry {
                 entry.cancellation_token.cancel();
                 entry.metadata.transition_to(TaskState::Cancelled)?;
                 entry.pending_input = None;
+                entry.stop_signal = None;
                 entry.last_event_sequence += 1;
 
                 let event = TaskEvent::new(
@@ -361,6 +382,81 @@ impl TaskRegistry {
         }
 
         Ok(outcome)
+    }
+
+    /// Request graceful stop with partial report at the next safe point.
+    pub async fn request_stop_and_report(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<TaskStopRequest, TaskRegistryError> {
+        let (outcome, event) = {
+            let mut state = self.state.write().await;
+            let entry = state
+                .tasks
+                .get_mut(task_id)
+                .ok_or(TaskRegistryError::TaskNotFound(*task_id))?;
+
+            if entry.metadata.state.is_terminal() {
+                (
+                    TaskStopRequest::AlreadyTerminal(TaskStateUpdate::from_entry(entry)),
+                    None,
+                )
+            } else if entry.stop_signal.is_some() {
+                (
+                    TaskStopRequest::AlreadyRequested(TaskStateUpdate::from_entry(entry)),
+                    None,
+                )
+            } else {
+                let safe_point = if entry.metadata.state == TaskState::WaitingInput {
+                    StopSafePoint::WaitingInput
+                } else {
+                    StopSafePoint::LoopBoundary
+                };
+                entry.stop_signal = Some(StopSignal {
+                    mode: StopSignalMode::StopAndReport,
+                    safe_point,
+                });
+                entry.last_event_sequence += 1;
+
+                let event = TaskEvent::new(
+                    entry.metadata.id,
+                    entry.last_event_sequence,
+                    TaskEventKind::StopSignalReceived,
+                    entry.metadata.state,
+                    None,
+                );
+
+                (
+                    TaskStopRequest::Requested(TaskStateUpdate::from_entry(entry)),
+                    Some(event),
+                )
+            }
+        };
+
+        if let Some(event) = event {
+            self.publisher.publish(event).await;
+        }
+
+        Ok(outcome)
+    }
+
+    /// Consume a pending stop signal only when the state matches the safe point.
+    pub async fn take_stop_signal_at_safe_point(
+        &self,
+        task_id: &TaskId,
+        observed_state: TaskState,
+    ) -> Option<StopSignal> {
+        let mut state = self.state.write().await;
+        let entry = state.tasks.get_mut(task_id)?;
+        if entry
+            .stop_signal
+            .as_ref()
+            .is_some_and(|signal| signal.safe_point.supports_state(observed_state))
+        {
+            entry.stop_signal.take()
+        } else {
+            None
+        }
     }
 
     /// Renew the cancellation token for a task.
@@ -430,12 +526,12 @@ fn sort_task_ids(task_ids: &mut [TaskId], tasks: &HashMap<TaskId, TaskEntry>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{TaskCancellation, TaskRegistry, TaskRegistryError};
+    use super::{TaskCancellation, TaskRegistry, TaskRegistryError, TaskStopRequest};
     use crate::task_events::{ChannelTaskEventPublisher, TaskEventPublisher};
     use async_trait::async_trait;
     use oxide_agent_core::agent::{
-        PendingInput, PendingInputKind, PendingTextInput, SessionId, TaskEventKind, TaskState,
-        TaskStateTransitionError,
+        PendingInput, PendingInputKind, PendingTextInput, SessionId, StopSafePoint, TaskEventKind,
+        TaskState, TaskStateTransitionError,
     };
     use std::sync::Arc;
     use tokio::sync::{mpsc::unbounded_channel, Notify};
@@ -830,6 +926,109 @@ mod tests {
 
         let token = registry.get_cancellation_token(&task_id).await;
         assert!(matches!(token, Some(ref token) if !token.is_cancelled()));
+    }
+
+    #[tokio::test]
+    async fn task_registry_accepts_graceful_stop_signal_once_and_keeps_it_idempotent() {
+        let registry = TaskRegistry::new();
+        let created = registry.create(SessionId::from(91)).await;
+        let task_id = created.metadata.id;
+
+        let running = registry.update_state(&task_id, TaskState::Running).await;
+        assert!(running.is_ok());
+
+        let first = registry.request_stop_and_report(&task_id).await;
+        assert!(matches!(
+            first,
+            Ok(TaskStopRequest::Requested(update))
+                if update.record.metadata.state == TaskState::Running && update.event_sequence == 3
+        ));
+
+        let duplicate = registry.request_stop_and_report(&task_id).await;
+        assert!(matches!(
+            duplicate,
+            Ok(TaskStopRequest::AlreadyRequested(update))
+                if update.record.metadata.state == TaskState::Running && update.event_sequence == 3
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_registry_consumes_stop_signal_only_at_matching_safe_point() {
+        let registry = TaskRegistry::new();
+        let created = registry.create(SessionId::from(92)).await;
+        let task_id = created.metadata.id;
+
+        let running = registry.update_state(&task_id, TaskState::Running).await;
+        assert!(running.is_ok());
+
+        let waiting = registry
+            .enter_waiting_input(
+                &task_id,
+                PendingInput {
+                    request_id: "wait-req".to_string(),
+                    prompt: "Continue?".to_string(),
+                    kind: PendingInputKind::Text(PendingTextInput {
+                        min_length: Some(1),
+                        max_length: Some(10),
+                        multiline: false,
+                    }),
+                },
+            )
+            .await;
+        assert!(waiting.is_ok());
+
+        let requested = registry.request_stop_and_report(&task_id).await;
+        assert!(matches!(requested, Ok(TaskStopRequest::Requested(_))));
+
+        let wrong_point = registry
+            .take_stop_signal_at_safe_point(&task_id, TaskState::Running)
+            .await;
+        assert!(wrong_point.is_none());
+
+        let matched = registry
+            .take_stop_signal_at_safe_point(&task_id, TaskState::WaitingInput)
+            .await;
+        assert!(matches!(
+            matched,
+            Some(signal) if signal.safe_point == StopSafePoint::WaitingInput
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_registry_updates_pending_running_stop_signal_after_waiting_transition() {
+        let registry = TaskRegistry::new();
+        let created = registry.create(SessionId::from(93)).await;
+        let task_id = created.metadata.id;
+
+        let running = registry.update_state(&task_id, TaskState::Running).await;
+        assert!(running.is_ok());
+
+        let requested = registry.request_stop_and_report(&task_id).await;
+        assert!(matches!(requested, Ok(TaskStopRequest::Requested(_))));
+
+        let waiting = registry
+            .enter_waiting_input(
+                &task_id,
+                PendingInput {
+                    request_id: "wait-req-2".to_string(),
+                    prompt: "Continue?".to_string(),
+                    kind: PendingInputKind::Text(PendingTextInput {
+                        min_length: Some(1),
+                        max_length: Some(10),
+                        multiline: false,
+                    }),
+                },
+            )
+            .await;
+        assert!(waiting.is_ok());
+
+        let matched = registry
+            .take_stop_signal_at_safe_point(&task_id, TaskState::WaitingInput)
+            .await;
+        assert!(matches!(
+            matched,
+            Some(signal) if signal.safe_point == StopSafePoint::WaitingInput
+        ));
     }
 
     #[tokio::test]

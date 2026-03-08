@@ -1,14 +1,16 @@
 //! Detached runtime executor for long-running agent tasks.
 
 use crate::{
-    task_registry::{TaskCancellation, TaskRecord, TaskRegistry, TaskRegistryError},
+    task_registry::{
+        TaskCancellation, TaskRecord, TaskRegistry, TaskRegistryError, TaskStopRequest,
+    },
     worker_manager::{WorkerManager, WorkerManagerError},
 };
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::{
-    PendingInput, PendingInputValidationError, SessionId, TaskEvent, TaskEventKind, TaskId,
-    TaskMetadata, TaskSnapshot, TaskState, TaskStateTransitionError,
+    PendingInput, PendingInputValidationError, SessionId, StopReport, StopSafePoint, TaskEvent,
+    TaskEventKind, TaskId, TaskMetadata, TaskSnapshot, TaskState, TaskStateTransitionError,
 };
 use oxide_agent_core::storage::{StorageError, StorageProvider};
 use std::collections::HashMap;
@@ -156,6 +158,13 @@ pub struct TaskExecutor {
     task_registry: Arc<TaskRegistry>,
     worker_manager: Arc<WorkerManager>,
     storage: Arc<dyn StorageProvider>,
+}
+
+#[derive(Default)]
+struct SnapshotData {
+    pending_input: Option<PendingInput>,
+    agent_memory: Option<String>,
+    stop_report: Option<StopReport>,
 }
 
 struct SessionActionGate {
@@ -334,6 +343,45 @@ impl TaskExecutor {
         }
     }
 
+    /// Request graceful stop and persist a partial report at a safe point.
+    pub async fn stop_and_report(&self, task_id: &TaskId) -> Result<TaskRecord, TaskExecutorError> {
+        match self.task_registry.request_stop_and_report(task_id).await? {
+            TaskStopRequest::Requested(update) => {
+                self.append_task_event(
+                    update.record.metadata.id,
+                    update.event_sequence,
+                    TaskEventKind::StopSignalReceived,
+                    update.record.metadata.state,
+                )
+                .await?;
+
+                if update.record.metadata.state == TaskState::WaitingInput {
+                    self.persist_stopped_snapshot(
+                        update.record.metadata.id,
+                        StopSafePoint::WaitingInput,
+                        TaskState::WaitingInput,
+                    )
+                    .await
+                } else {
+                    Ok(update.record)
+                }
+            }
+            TaskStopRequest::AlreadyRequested(update) => {
+                if update.record.metadata.state == TaskState::WaitingInput {
+                    self.persist_stopped_snapshot(
+                        update.record.metadata.id,
+                        StopSafePoint::WaitingInput,
+                        TaskState::WaitingInput,
+                    )
+                    .await
+                } else {
+                    Ok(update.record)
+                }
+            }
+            TaskStopRequest::AlreadyTerminal(update) => Ok(update.record),
+        }
+    }
+
     /// Resume a waiting task by transitioning it back to running and restarting detached execution.
     pub async fn resume_task<B>(
         &self,
@@ -458,8 +506,7 @@ impl TaskExecutor {
                         failed_update.record.session_id,
                         &task,
                         failed_update.event_sequence,
-                        None,
-                        None,
+                        SnapshotData::default(),
                     )
                     .await;
             }
@@ -491,8 +538,7 @@ impl TaskExecutor {
             record.session_id,
             &task,
             last_event_sequence,
-            None,
-            None,
+            SnapshotData::default(),
         )
         .await
     }
@@ -508,8 +554,78 @@ impl TaskExecutor {
         self.append_task_event(metadata.id, last_event_sequence, event_kind, metadata.state)
             .await?;
 
-        self.save_snapshot(metadata, session_id, task, last_event_sequence, None, None)
+        self.save_snapshot(
+            metadata,
+            session_id,
+            task,
+            last_event_sequence,
+            SnapshotData::default(),
+        )
+        .await
+    }
+
+    async fn persist_stopped_snapshot(
+        &self,
+        task_id: TaskId,
+        safe_point: StopSafePoint,
+        observed_state: TaskState,
+    ) -> Result<TaskRecord, TaskExecutorError> {
+        let Some(_) = self
+            .task_registry
+            .take_stop_signal_at_safe_point(&task_id, observed_state)
             .await
+        else {
+            let record =
+                self.task_registry
+                    .get(&task_id)
+                    .await
+                    .ok_or(TaskExecutorError::TaskRegistry(
+                        TaskRegistryError::TaskNotFound(task_id),
+                    ))?;
+            return Ok(record);
+        };
+
+        let stopped_update = match self
+            .task_registry
+            .update_state(&task_id, TaskState::Stopped)
+            .await
+        {
+            Ok(update) => update,
+            Err(error) if terminal_transition_is_already_committed(&error) => {
+                let record = self.task_registry.get(&task_id).await.ok_or(
+                    TaskExecutorError::TaskRegistry(TaskRegistryError::TaskNotFound(task_id)),
+                )?;
+                return Ok(record);
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        let task = self.load_task_payload(task_id).await?;
+        let report = StopReport {
+            summary: build_stop_summary(&task),
+            safe_point,
+            observed_state,
+        };
+        self.append_task_event(
+            task_id,
+            stopped_update.event_sequence,
+            TaskEventKind::StateChanged,
+            TaskState::Stopped,
+        )
+        .await?;
+        self.save_snapshot(
+            &stopped_update.record.metadata,
+            stopped_update.record.session_id,
+            &task,
+            stopped_update.event_sequence,
+            SnapshotData {
+                stop_report: Some(report),
+                ..SnapshotData::default()
+            },
+        )
+        .await?;
+
+        Ok(stopped_update.record)
     }
 
     async fn save_snapshot(
@@ -518,8 +634,7 @@ impl TaskExecutor {
         session_id: SessionId,
         task: &str,
         last_event_sequence: u64,
-        pending_input: Option<PendingInput>,
-        agent_memory: Option<String>,
+        data: SnapshotData,
     ) -> Result<(), TaskExecutorError> {
         let mut snapshot = TaskSnapshot::new(
             metadata.clone(),
@@ -527,8 +642,9 @@ impl TaskExecutor {
             task.to_string(),
             last_event_sequence,
         );
-        snapshot.pending_input = pending_input;
-        snapshot.agent_memory = agent_memory;
+        snapshot.pending_input = data.pending_input;
+        snapshot.agent_memory = data.agent_memory;
+        snapshot.stop_report = data.stop_report;
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
     }
@@ -612,12 +728,20 @@ impl DetachedTaskRun {
                     running_update.event_sequence,
                     None,
                     None,
+                    None,
                 )
                 .await
             {
                 self.persist_failed_start().await;
                 return Err(error);
             }
+        }
+
+        if self
+            .try_persist_stop_at_safe_point(TaskState::Running)
+            .await?
+        {
+            return Ok(());
         }
 
         let execution_result = backend
@@ -632,6 +756,13 @@ impl DetachedTaskRun {
 
         if self.cancellation_token.is_cancelled() {
             return self.persist_terminal_state(TaskState::Cancelled).await;
+        }
+
+        if self
+            .try_persist_stop_at_safe_point(TaskState::Running)
+            .await?
+        {
+            return Ok(());
         }
 
         match execution_result {
@@ -650,6 +781,13 @@ impl DetachedTaskRun {
                     return Err(error);
                 }
 
+                if self
+                    .try_persist_stop_at_safe_point(TaskState::WaitingInput)
+                    .await?
+                {
+                    return Ok(());
+                }
+
                 Ok(())
             }
             Err(_) => self.persist_terminal_state(TaskState::Failed).await,
@@ -662,6 +800,7 @@ impl DetachedTaskRun {
         last_event_sequence: u64,
         pending_input: Option<PendingInput>,
         agent_memory: Option<String>,
+        stop_report: Option<StopReport>,
     ) -> Result<(), TaskExecutorError> {
         self.append_task_event(
             metadata.id,
@@ -671,8 +810,14 @@ impl DetachedTaskRun {
         )
         .await?;
 
-        self.save_snapshot(last_event_sequence, metadata, pending_input, agent_memory)
-            .await
+        self.save_snapshot(
+            last_event_sequence,
+            metadata,
+            pending_input,
+            agent_memory,
+            stop_report,
+        )
+        .await
     }
 
     async fn append_task_event(
@@ -697,6 +842,7 @@ impl DetachedTaskRun {
         metadata: &TaskMetadata,
         pending_input: Option<PendingInput>,
         agent_memory: Option<String>,
+        stop_report: Option<StopReport>,
     ) -> Result<(), TaskExecutorError> {
         let mut snapshot = TaskSnapshot::new(
             metadata.clone(),
@@ -706,6 +852,7 @@ impl DetachedTaskRun {
         );
         snapshot.pending_input = pending_input;
         snapshot.agent_memory = agent_memory;
+        snapshot.stop_report = stop_report;
         self.storage.save_task_snapshot(&snapshot).await?;
         Ok(())
     }
@@ -728,8 +875,47 @@ impl DetachedTaskRun {
             waiting_update.event_sequence,
             waiting_update.record.pending_input,
             Some(agent_memory),
+            None,
         )
         .await
+    }
+
+    async fn try_persist_stop_at_safe_point(
+        &self,
+        observed_state: TaskState,
+    ) -> Result<bool, TaskExecutorError> {
+        let Some(signal) = self
+            .task_registry
+            .take_stop_signal_at_safe_point(&self.task_id, observed_state)
+            .await
+        else {
+            return Ok(false);
+        };
+
+        let stopped_update = match self
+            .task_registry
+            .update_state(&self.task_id, TaskState::Stopped)
+            .await
+        {
+            Ok(update) => update,
+            Err(error) if terminal_transition_is_already_committed(&error) => return Ok(true),
+            Err(error) => return Err(error.into()),
+        };
+
+        let report = StopReport {
+            summary: build_stop_summary(&self.task),
+            safe_point: signal.safe_point,
+            observed_state,
+        };
+        self.persist_snapshot(
+            &stopped_update.record.metadata,
+            stopped_update.event_sequence,
+            None,
+            None,
+            Some(report),
+        )
+        .await?;
+        Ok(true)
     }
 
     async fn persist_failed_start(&self) {
@@ -740,7 +926,13 @@ impl DetachedTaskRun {
         {
             Ok(update) => {
                 if let Err(error) = self
-                    .persist_snapshot(&update.record.metadata, update.event_sequence, None, None)
+                    .persist_snapshot(
+                        &update.record.metadata,
+                        update.event_sequence,
+                        None,
+                        None,
+                        None,
+                    )
                     .await
                 {
                     error!(
@@ -780,8 +972,14 @@ impl DetachedTaskRun {
             .await
         {
             Ok(update) => {
-                self.persist_snapshot(&update.record.metadata, update.event_sequence, None, None)
-                    .await
+                self.persist_snapshot(
+                    &update.record.metadata,
+                    update.event_sequence,
+                    None,
+                    None,
+                    None,
+                )
+                .await
             }
             Err(error)
                 if terminal_transition_is_already_committed(&error)
@@ -803,8 +1001,14 @@ impl DetachedTaskRun {
             return Ok(());
         }
 
-        self.save_snapshot(update.event_sequence, &update.record.metadata, None, None)
-            .await
+        self.save_snapshot(
+            update.event_sequence,
+            &update.record.metadata,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 }
 
@@ -850,6 +1054,22 @@ fn pre_start_failure_snapshot(
     snapshot
 }
 
+fn build_stop_summary(task: &str) -> String {
+    const PREVIEW_LIMIT: usize = 96;
+    let mut preview = task.trim().replace('\n', " ");
+    if preview.len() > PREVIEW_LIMIT {
+        preview.truncate(PREVIEW_LIMIT);
+        preview.push_str("...");
+    }
+    if preview.is_empty() {
+        "Task stopped gracefully before completion. Partial progress was persisted.".to_string()
+    } else {
+        format!(
+            "Task stopped gracefully before completion. Partial progress was persisted for: {preview}"
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -860,8 +1080,8 @@ mod tests {
     use anyhow::{anyhow, Result as AnyResult};
     use async_trait::async_trait;
     use oxide_agent_core::agent::{
-        AgentMemory, PendingInput, PendingInputKind, PendingTextInput, SessionId, TaskEvent,
-        TaskId, TaskMetadata, TaskSnapshot, TaskState,
+        AgentMemory, PendingInput, PendingInputKind, PendingTextInput, SessionId, StopSafePoint,
+        TaskEvent, TaskId, TaskMetadata, TaskSnapshot, TaskState,
     };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use std::collections::HashMap;
@@ -1911,6 +2131,329 @@ mod tests {
             Ok(Some(snapshot))
                 if snapshot.metadata.state == TaskState::Failed
                     && snapshot.pending_input.is_none()
+        ));
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_waiting_input_transitions_to_stopped_with_partial_report() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::strict_sequence_validation());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(130),
+                    task: "graceful stop waiting".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        waiting_backend.release();
+        wait_for_state(&registry, task_id, TaskState::WaitingInput).await;
+
+        let stopped = executor.stop_and_report(&task_id).await;
+        assert!(matches!(
+            stopped,
+            Ok(record) if record.metadata.state == TaskState::Stopped
+        ));
+
+        wait_for_state(&registry, task_id, TaskState::Stopped).await;
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(snapshot.is_ok(), "failed to load stopped snapshot");
+        let snapshot = match snapshot {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => panic!("stopped snapshot missing"),
+            Err(error) => panic!("failed to load stopped snapshot: {error}"),
+        };
+        assert_eq!(snapshot.metadata.state, TaskState::Stopped);
+        assert_eq!(snapshot.checkpoint.state, TaskState::Stopped);
+        assert!(snapshot.pending_input.is_none());
+        assert!(snapshot.agent_memory.is_none());
+        assert!(matches!(
+            snapshot.stop_report,
+            Some(ref report)
+                if report.safe_point == StopSafePoint::WaitingInput
+                    && report.observed_state == TaskState::WaitingInput
+                    && !report.summary.trim().is_empty()
+        ));
+        assert!(snapshot.validate().is_ok());
+
+        let events = storage.load_task_events(task_id).await;
+        assert!(matches!(
+            events,
+            Ok(events)
+                if events.iter().map(|event| event.sequence).collect::<Vec<_>>()
+                    == vec![1, 2, 3, 4, 5]
+        ));
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_duplicate_request_is_idempotent_after_terminal_stop() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::strict_sequence_validation());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(131),
+                    task: "graceful stop duplicate".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        waiting_backend.release();
+        wait_for_state(&registry, task_id, TaskState::WaitingInput).await;
+
+        let first = executor.stop_and_report(&task_id).await;
+        assert!(matches!(
+            first,
+            Ok(record) if record.metadata.state == TaskState::Stopped
+        ));
+        let second = executor.stop_and_report(&task_id).await;
+        assert!(matches!(
+            second,
+            Ok(record) if record.metadata.state == TaskState::Stopped
+        ));
+
+        let events = storage.load_task_events(task_id).await;
+        assert!(matches!(
+            events,
+            Ok(events)
+                if events.iter().map(|event| event.sequence).collect::<Vec<_>>()
+                    == vec![1, 2, 3, 4, 5]
+        ));
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_returns_completed_when_completion_wins_late_request() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(132),
+                    task: "graceful stop race".to_string(),
+                },
+                Arc::clone(&backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        backend.wait_started().await;
+        backend.release();
+        wait_for_state(&registry, task_id, TaskState::Completed).await;
+
+        let stopped = executor.stop_and_report(&task_id).await;
+        assert!(matches!(
+            stopped,
+            Ok(record) if record.metadata.state == TaskState::Completed
+        ));
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Completed && snapshot.stop_report.is_none()
+        ));
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_requested_after_backend_started_stops_at_next_loop_boundary() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::strict_sequence_validation());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(134),
+                    task: "graceful stop running task".to_string(),
+                },
+                Arc::clone(&backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        backend.wait_started().await;
+        let stop_requested = executor.stop_and_report(&task_id).await;
+        assert!(matches!(
+            stop_requested,
+            Ok(record) if record.metadata.state == TaskState::Running
+        ));
+
+        backend.release();
+        wait_for_state(&registry, task_id, TaskState::Stopped).await;
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Stopped
+                    && snapshot.stop_report.as_ref().is_some_and(|report|
+                        report.safe_point == StopSafePoint::LoopBoundary
+                            && report.observed_state == TaskState::Running
+                    )
+        ));
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_running_request_then_waiting_outcome_stops_without_resume_window() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::strict_sequence_validation());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(135),
+                    task: "graceful stop before waiting".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        let first = executor.stop_and_report(&task_id).await;
+        assert!(matches!(
+            first,
+            Ok(record) if record.metadata.state == TaskState::Running
+        ));
+        let repeated = executor.stop_and_report(&task_id).await;
+        assert!(matches!(
+            repeated,
+            Ok(record) if record.metadata.state == TaskState::Running
+        ));
+
+        waiting_backend.release();
+        wait_for_state(&registry, task_id, TaskState::Stopped).await;
+
+        let snapshot = storage.load_task_snapshot(task_id).await;
+        assert!(matches!(
+            snapshot,
+            Ok(Some(snapshot))
+                if snapshot.metadata.state == TaskState::Stopped
+                    && snapshot.pending_input.is_none()
+                    && snapshot.agent_memory.is_none()
+                    && snapshot.stop_report.as_ref().is_some_and(|report|
+                        report.safe_point == StopSafePoint::LoopBoundary
+                            && report.observed_state == TaskState::Running
+                    )
+        ));
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_prevents_resume_after_waiting_input_stop() {
+        let registry = Arc::new(TaskRegistry::new());
+        let worker_manager = Arc::new(WorkerManager::new(2));
+        let storage = Arc::new(TestStorage::default());
+        let executor = TaskExecutor::new(TaskExecutorOptions {
+            task_registry: Arc::clone(&registry),
+            worker_manager,
+            storage: Arc::clone(&storage) as Arc<dyn StorageProvider>,
+        });
+        let waiting_backend = Arc::new(ControlledBackend::waiting_input(sample_pending_input()));
+
+        let submitted = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id: SessionId::from(133),
+                    task: "graceful stop blocks resume".to_string(),
+                },
+                Arc::clone(&waiting_backend),
+            )
+            .await;
+        assert!(submitted.is_ok(), "submit failed: {submitted:?}");
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected submit error: {error}"),
+        };
+
+        waiting_backend.wait_started().await;
+        waiting_backend.release();
+        wait_for_state(&registry, task_id, TaskState::WaitingInput).await;
+
+        let stopped = executor.stop_and_report(&task_id).await;
+        assert!(matches!(
+            stopped,
+            Ok(record) if record.metadata.state == TaskState::Stopped
+        ));
+
+        let resume = executor
+            .resume_task(
+                &task_id,
+                "ignored".to_string(),
+                Arc::new(ResumeBackend {
+                    expected_resume_input: "ignored".to_string(),
+                }),
+            )
+            .await;
+        assert!(matches!(
+            resume,
+            Err(TaskExecutorError::ResumeInvalidState {
+                task_id: rejected_task_id,
+                state: TaskState::Stopped,
+            }) if rejected_task_id == task_id
         ));
     }
 
