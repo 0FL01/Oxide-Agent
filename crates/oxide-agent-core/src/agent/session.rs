@@ -60,6 +60,8 @@ pub struct AgentSession {
     loaded_skills: HashSet<String>,
     /// Token count for loaded skills.
     skill_token_count: usize,
+    /// Delegation depth for this session.
+    delegation_depth: usize,
 }
 
 impl AgentSession {
@@ -77,6 +79,7 @@ impl AgentSession {
             last_task: None,
             loaded_skills: HashSet::new(),
             skill_token_count: 0,
+            delegation_depth: 1,
         }
     }
 
@@ -181,6 +184,12 @@ impl AgentSession {
     #[must_use]
     pub const fn skill_token_count(&self) -> usize {
         self.skill_token_count
+    }
+
+    /// Get current delegation depth.
+    #[must_use]
+    pub const fn delegation_depth(&self) -> usize {
+        self.delegation_depth
     }
 
     /// Clear only the todos list (keeps memory intact)

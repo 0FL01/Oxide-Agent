@@ -74,6 +74,7 @@ impl AgentRunner {
                 }
             }
             let cancellation_token = ctx.agent.cancellation_token().clone();
+            let delegation_depth = ctx.agent.delegation_depth();
             let memory = ctx.agent.memory_mut();
             let mut tool_ctx = ToolExecutionContext {
                 registry: ctx.registry,
@@ -82,6 +83,7 @@ impl AgentRunner {
                 messages: ctx.messages,
                 memory,
                 cancellation_token,
+                delegation_depth,
             };
             let tool_result = execute_single_tool_call(tool_call.clone(), &mut tool_ctx).await?;
             self.apply_after_tool_hooks(ctx, state, &tool_result);

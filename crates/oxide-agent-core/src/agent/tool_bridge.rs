@@ -30,6 +30,8 @@ pub struct ToolExecutionContext<'a> {
     pub memory: &'a mut AgentMemory,
     /// Cancellation token for the current task
     pub cancellation_token: tokio_util::sync::CancellationToken,
+    /// Current delegation depth propagated from runner context.
+    pub delegation_depth: usize,
 }
 
 /// Result of executing a tool call.
@@ -64,7 +66,7 @@ pub async fn execute_single_tool_call(
 
     let ToolCall { id, function, .. } = tool_call;
     let name = function.name;
-    let args = function.arguments;
+    let args = inject_delegation_depth_argument(&name, &function.arguments, ctx.delegation_depth);
 
     info!(
         tool_name = %name,
@@ -170,4 +172,51 @@ fn extract_command_preview(args: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(args)
         .ok()
         .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+}
+
+fn inject_delegation_depth_argument(tool_name: &str, arguments: &str, depth: usize) -> String {
+    if tool_name != "delegate_to_sub_agent" {
+        return arguments.to_string();
+    }
+
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return arguments.to_string();
+    };
+
+    let Some(object) = value.as_object_mut() else {
+        return arguments.to_string();
+    };
+
+    object.insert(
+        "_delegation_depth".to_string(),
+        serde_json::Value::from(depth),
+    );
+
+    serde_json::to_string(&value).unwrap_or_else(|_| arguments.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inject_delegation_depth_argument;
+
+    #[test]
+    fn delegate_tool_arguments_receive_internal_depth() {
+        let args = r#"{"task":"Collect data","tools":["write_todos"]}"#;
+        let patched = inject_delegation_depth_argument("delegate_to_sub_agent", args, 2);
+        let value = serde_json::from_str::<serde_json::Value>(&patched)
+            .unwrap_or_else(|err| panic!("failed to parse patched args: {err}"));
+
+        assert_eq!(
+            value.get("_delegation_depth"),
+            Some(&serde_json::Value::from(2))
+        );
+    }
+
+    #[test]
+    fn non_delegate_tool_arguments_remain_unchanged() {
+        let args = r#"{"command":"ls"}"#;
+        let patched = inject_delegation_depth_argument("execute_command", args, 7);
+
+        assert_eq!(patched, args);
+    }
 }

@@ -37,6 +37,8 @@ use crate::agent::providers::Crawl4aiProvider;
 use crate::agent::providers::TavilyProvider;
 
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &["delegate_to_sub_agent", "send_file_to_user"];
+const MAX_DELEGATION_DEPTH: usize = 2;
+const DEFAULT_DELEGATION_DEPTH: usize = 1;
 const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
 const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
 
@@ -214,6 +216,23 @@ impl DelegationProvider {
             timeout_secs,
         })
     }
+
+    fn next_delegation_depth(&self, parent_depth: usize, task_id: &str) -> Result<usize> {
+        let next_depth = parent_depth.saturating_add(1);
+        if next_depth > MAX_DELEGATION_DEPTH {
+            warn!(
+                task_id = %task_id,
+                parent_depth,
+                max_depth = MAX_DELEGATION_DEPTH,
+                "Delegation denied: max delegation depth exceeded"
+            );
+            return Err(anyhow!(
+                "Delegation depth limit exceeded: parent depth {parent_depth}, max depth {MAX_DELEGATION_DEPTH}. Nested sub-agent delegation is denied."
+            ));
+        }
+
+        Ok(next_depth)
+    }
 }
 
 #[async_trait]
@@ -279,17 +298,22 @@ If the sub-agent doesn't finish, a partial report will be returned."
             task,
             tools: requested_tools,
             context,
+            delegation_depth,
         } = args;
 
         let task_id = format!("sub-{}", Uuid::new_v4());
+        let parent_depth = delegation_depth.unwrap_or(DEFAULT_DELEGATION_DEPTH);
+        let child_depth = self.next_delegation_depth(parent_depth, &task_id)?;
 
         // Create sub-session linked to parent's cancellation token.
         // When parent is cancelled (including on loop detection), sub-agent stops too.
         let mut sub_session = match cancellation_token {
-            Some(parent_token) => {
-                EphemeralSession::with_parent_token(SUB_AGENT_MAX_TOKENS, parent_token)
-            }
-            None => EphemeralSession::new(SUB_AGENT_MAX_TOKENS),
+            Some(parent_token) => EphemeralSession::with_parent_token_and_depth(
+                SUB_AGENT_MAX_TOKENS,
+                parent_token,
+                child_depth,
+            ),
+            None => EphemeralSession::with_depth(SUB_AGENT_MAX_TOKENS, child_depth),
         };
         sub_session
             .memory_mut()
@@ -371,6 +395,8 @@ struct DelegateToSubAgentArgs {
     tools: Vec<String>,
     #[serde(default)]
     context: Option<String>,
+    #[serde(default, rename = "_delegation_depth")]
+    delegation_depth: Option<usize>,
 }
 
 struct RestrictedToolProvider {
@@ -497,5 +523,50 @@ fn role_label(role: &MessageRole) -> &'static str {
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
         MessageRole::Tool => "tool",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DelegationProvider, MAX_DELEGATION_DEPTH};
+    use crate::agent::provider::ToolProvider;
+    use crate::config::AgentSettings;
+    use crate::llm::LlmClient;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn build_provider() -> DelegationProvider {
+        let settings = Arc::new(AgentSettings::default());
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        DelegationProvider::new(llm_client, 1, settings)
+    }
+
+    #[test]
+    fn next_delegation_depth_allows_up_to_limit() {
+        let provider = build_provider();
+        let next_depth = provider
+            .next_delegation_depth(MAX_DELEGATION_DEPTH - 1, "task-1")
+            .unwrap_or_else(|err| panic!("expected allowed depth: {err}"));
+
+        assert_eq!(next_depth, MAX_DELEGATION_DEPTH);
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_when_depth_limit_exceeded() {
+        let provider = build_provider();
+        let args = json!({
+            "task": "Collect filenames",
+            "tools": ["write_todos"],
+            "_delegation_depth": MAX_DELEGATION_DEPTH,
+        });
+
+        let err = provider
+            .execute("delegate_to_sub_agent", &args.to_string(), None, None)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("expected depth enforcement error"));
+
+        let err_text = err.to_string();
+        assert!(err_text.contains("Delegation depth limit exceeded"));
     }
 }

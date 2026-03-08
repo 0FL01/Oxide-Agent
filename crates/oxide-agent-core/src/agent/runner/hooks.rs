@@ -27,6 +27,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
+        .with_delegation_depth(ctx.agent.delegation_depth())
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -56,6 +57,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
+        .with_delegation_depth(ctx.agent.delegation_depth())
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -86,6 +88,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
+        .with_delegation_depth(ctx.agent.delegation_depth())
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -131,6 +134,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
+        .with_delegation_depth(ctx.agent.delegation_depth())
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -162,6 +166,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
+        .with_delegation_depth(ctx.agent.delegation_depth())
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -189,6 +194,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
+        .with_delegation_depth(ctx.agent.delegation_depth())
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
