@@ -4,19 +4,17 @@ Branch
 arch-agent-mode
 
 Scope completed
-Stage 4 Graceful stop and task observability is in progress. The following review-gated slices are completed and committed:
+Stage 4 Graceful stop and task observability is completed and stage-approved with review-gated slices for:
 - graceful stop core contract with distinct Stopped lifecycle state and stop/report payloads
 - runtime stop_and_report flow with safe-point handling and persisted partial stop reports
 - runtime task event fan-out with TaskId-scoped multi-subscriber subscriptions, replay support, explicit backpressure policy and terminal cleanup
-
-Pending scope
-- Telegram task controls and transport-level lifecycle notifications remain open in Slice 4.4
-- Stage 4 final review is not complete yet
+- Telegram task controls with owner-only stop/cancel callbacks, live task lifecycle updates and terminal notifications
 
 Relevant commits
 c972555 feat(stage-4/slice-1): add graceful stop contract
 bebe7af feat(stage-4/slice-2): add graceful stop runtime flow
 25ff522 feat(stage-4/slice-3): add task event fan-out
+e729df9 feat(stage-4/slice-4): add telegram task controls
 
 Current repo status at handoff
 Working tree was clean after the latest Stage 4 docs update.
@@ -34,26 +32,34 @@ Runtime:
 - task event delivery is no longer single-consumer only; broadcaster subscriptions support replay and bounded live fan-out
 - late subscribers can rebuild state from persisted snapshot and event history, while terminal tasks stay replay-only after in-memory cleanup
 
-Transport status
-- Telegram transport still has the pre-Stage-4 cancel path only
-- owner-only stop controls, live task status updates and terminal notifications are the remaining transport work in Slice 4.4
+Telegram transport:
+- Agent Mode keyboard now exposes both cancel and stop-with-report controls
+- task control callbacks are task-bound, compact enough for Telegram callback limits and validated against runtime session ownership
+- transport subscribes to runtime task events for live lifecycle updates and terminal notifications for Completed, Failed, Cancelled and Stopped states
+- stale, terminal or foreign-owner callbacks are rejected without mutating runtime task state
 
 Stage 4 approval status
-IN PROGRESS
+APPROVED ✅
 
 Verification commands used recently
 cargo test -p oxide-agent-core stop_signal
+cargo test -p oxide-agent-core
 cargo test -p oxide-agent-runtime graceful_stop
 cargo test -p oxide-agent-runtime cancellation
 cargo test -p oxide-agent-runtime task_recovery
 cargo test -p oxide-agent-runtime event_broadcaster
 cargo test -p oxide-agent-runtime task_events
+cargo test -p oxide-agent-runtime
+cargo test -p oxide-agent-transport-telegram task_controls
+cargo test -p oxide-agent-transport-telegram poll
+cargo test -p oxide-agent-transport-telegram
 cargo clippy -p oxide-agent-core --all-targets -- -D warnings
 cargo clippy -p oxide-agent-runtime --all-targets -- -D warnings
+cargo clippy -p oxide-agent-core -p oxide-agent-runtime -p oxide-agent-transport-telegram -p oxide-agent-telegram-bot --all-targets -- -D warnings
 cargo fmt --check
 
 Next step
-Implement Stage 4 Slice 4.4 in Telegram transport, then run Stage 4 final review for cancel/stop/event-fan-out semantics.
+Proceed with Stage 5 (Web monitoring) or Stage 6 rollout work, depending on roadmap priority.
 
 Notes
-Stage 4 slices 4.2 and 4.3 both required one review-fix loop before approval. The remaining known gap before stage approval is transport wiring on top of the completed runtime contracts.
+Stage 4 slices 4.2, 4.3 and 4.4 each required review-fix loops before approval. Final stage review approved the integrated cancel/stop/event-fan-out semantics after full core/runtime/transport verification.

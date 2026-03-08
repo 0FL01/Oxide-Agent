@@ -80,14 +80,15 @@ Dockerfile                           # Сборка основного Rust-пр
 - Stage 1 completed: task identity, persistence contract, task registry, task events.
 - Stage 2 completed: detached background execution, recovery and cancellation.
 - Stage 3 completed: HITL pause/resume with Telegram poll/text resume flow.
-- Stage 4 in progress: graceful stop core/runtime path and runtime event fan-out are implemented; Telegram task controls are still pending.
+- Stage 4 completed: graceful stop core/runtime path, runtime event fan-out, and Telegram task controls are implemented and approved.
 
 ### Stage 4 code landmarks
 - `crates/oxide-agent-core/src/agent/task.rs`: `TaskState::Stopped`, `StopSignal`, `StopSafePoint`, `StopReport`, stop-related snapshot/event invariants.
 - `crates/oxide-agent-runtime/src/task_registry.rs`: runtime task state transitions, cancellation, pending graceful-stop tracking.
 - `crates/oxide-agent-runtime/src/task_executor.rs`: detached worker lifecycle, stop-and-report handling, terminal snapshot persistence.
 - `crates/oxide-agent-runtime/src/task_events.rs`: `TaskEventBroadcaster`, TaskId subscriptions, replay/live handoff, backpressure policy, terminal stream cleanup.
-- `crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs`: current Agent Mode transport entry points; next Stage 4 slice adds stop controls and live task notifications here.
+- `crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs`: task-bound cancel/stop controls, owner validation, live task notifications, callback security checks.
+- `crates/oxide-agent-transport-telegram/src/bot/views/agent.rs`: Agent Mode keyboard/task control buttons and task lifecycle status text.
 
 ## 🦀 Rust Architecture & Workflow
 
