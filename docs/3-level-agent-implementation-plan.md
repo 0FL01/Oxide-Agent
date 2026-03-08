@@ -667,8 +667,6 @@ cargo test -p oxide-agent-runtime event_broadcaster
 
 Status: Done (`e729df9`)
 
-Status: Pending
-
 Crates:
 
 - `oxide-agent-transport-telegram`
