@@ -5,6 +5,8 @@
 
 /// Agent runtime modules.
 pub mod agent;
+/// Task-scoped observer access token contracts.
+pub mod observer_access;
 /// Session registry and lifecycle utilities.
 pub mod session_registry;
 /// Task event publishing abstractions.
@@ -20,6 +22,10 @@ pub mod worker_manager;
 
 pub use agent::runtime::{
     spawn_progress_runtime, AgentTransport, DeliveryMode, ProgressRuntimeConfig,
+};
+pub use observer_access::{
+    ObserverAccessGrant, ObserverAccessIssueError, ObserverAccessRegistry,
+    ObserverAccessRegistryOptions, ObserverAccessResolveError, ObserverAccessToken,
 };
 pub use session_registry::SessionRegistry;
 pub use task_events::{

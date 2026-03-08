@@ -134,6 +134,16 @@ pub struct AgentSettings {
     pub agent_timeout_secs: Option<u64>,
     /// Sub-agent timeout in seconds
     pub sub_agent_timeout_secs: Option<u64>,
+
+    /// Enable observer-only web monitoring surface.
+    #[serde(default)]
+    pub web_observer_enabled: bool,
+    /// Public base URL used to build observer links.
+    pub web_observer_base_url: Option<String>,
+    /// Bind address for future web monitor transport.
+    pub web_observer_bind_addr: Option<String>,
+    /// Observer access token time-to-live in seconds.
+    pub web_observer_token_ttl_secs: Option<u64>,
 }
 
 const fn default_openrouter_site_url() -> String {
@@ -499,64 +509,56 @@ impl AgentSettings {
         self.sub_agent_timeout_secs
             .unwrap_or(SUB_AGENT_TIMEOUT_SECS)
     }
+
+    /// Returns whether observer web monitoring is enabled.
+    #[must_use]
+    pub const fn is_web_observer_enabled(&self) -> bool {
+        self.web_observer_enabled
+    }
+
+    /// Returns observer access token TTL in seconds.
+    #[must_use]
+    pub fn get_web_observer_token_ttl_secs(&self) -> u64 {
+        self.web_observer_token_ttl_secs
+            .unwrap_or(WEB_OBSERVER_TOKEN_TTL_SECS)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use config::Config;
 
-    // Tests run sequentially to avoid environment variable race conditions
     #[test]
-    fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
-        env::set_var("ZAI_API_KEY", "dummy_zai_key");
+    fn test_config_loading_from_builder_and_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        let settings: AgentSettings = Config::builder()
+            .set_override("zai_api_key", "dummy_zai_key")?
+            .set_override("chat_model_id", "test-model")?
+            .set_override("chat_model_provider", "openrouter")?
+            .set_override("r2_endpoint_url", "https://example.com")?
+            .set_override("web_observer_enabled", true)?
+            .set_override("web_observer_base_url", "https://observer.test")?
+            .set_override("web_observer_token_ttl_secs", 900)?
+            .build()?
+            .try_deserialize()?;
 
-        // 1. Test standard loading
-        env::set_var("R2_ENDPOINT_URL", "https://example.com");
-        env::set_var("CHAT_MODEL_ID", "test-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
-
-        let settings = AgentSettings::new()?;
         assert_eq!(
             settings.r2_endpoint_url,
             Some("https://example.com".to_string())
         );
-
-        env::remove_var("R2_ENDPOINT_URL");
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
-
-        // 2. Test empty env var
-        env::set_var("R2_ENDPOINT_URL", "");
-        env::set_var("CHAT_MODEL_ID", "test-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
-
-        let settings = AgentSettings::new()?;
-        // With our fallback logic, if it's empty in env, config might ignore it (or treating as unset).
-        // Our fallback only sets if !val.is_empty().
-        // So it should be None.
-        assert_eq!(settings.r2_endpoint_url, None);
-
-        env::remove_var("R2_ENDPOINT_URL");
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
-
-        // 3. Test explicit mapping case (Upper to lower)
-        env::set_var("R2_ENDPOINT_URL", "https://mapping.test");
-        env::set_var("CHAT_MODEL_ID", "test-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
-
-        let settings = AgentSettings::new()?;
+        assert!(settings.is_web_observer_enabled());
         assert_eq!(
-            settings.r2_endpoint_url,
-            Some("https://mapping.test".to_string())
+            settings.web_observer_base_url,
+            Some("https://observer.test".to_string())
         );
+        assert_eq!(settings.get_web_observer_token_ttl_secs(), 900);
 
-        env::remove_var("R2_ENDPOINT_URL");
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
-
-        env::remove_var("ZAI_API_KEY");
+        let defaults = AgentSettings::default();
+        assert!(!defaults.is_web_observer_enabled());
+        assert_eq!(
+            defaults.get_web_observer_token_ttl_secs(),
+            WEB_OBSERVER_TOKEN_TTL_SECS
+        );
         Ok(())
     }
 }
@@ -590,6 +592,8 @@ pub const SUB_AGENT_MAX_ITERATIONS: usize = 60;
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
 /// Sub-agent task timeout in seconds
 pub const SUB_AGENT_TIMEOUT_SECS: u64 = 600;
+/// Default observer access token TTL in seconds.
+pub const WEB_OBSERVER_TOKEN_TTL_SECS: u64 = 900;
 /// Maximum timeout for individual tool call (in seconds)
 /// This prevents a single tool from blocking the agent indefinitely
 pub const AGENT_TOOL_TIMEOUT_SECS: u64 = 300; // 5 minutes

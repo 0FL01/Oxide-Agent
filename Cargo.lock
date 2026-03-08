@@ -2954,6 +2954,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "getrandom 0.3.4",
  "oxide-agent-core",
  "tokio",
  "tokio-util",
