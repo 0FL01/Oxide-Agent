@@ -1221,7 +1221,17 @@ async fn mark_pending_poll_answered(
     pending_poll: &mut PendingInputPoll,
 ) -> Result<()> {
     pending_poll.answered = true;
-    storage.save_pending_input_poll(pending_poll).await?;
+    let current_task_poll = storage
+        .load_pending_input_poll_by_task(pending_poll.task_id)
+        .await?;
+    if current_task_poll
+        .as_ref()
+        .is_some_and(|active_poll| active_poll.poll_id == pending_poll.poll_id)
+    {
+        storage.save_pending_input_poll(pending_poll).await?;
+    } else {
+        storage.save_pending_input_poll_by_id(pending_poll).await?;
+    }
     Ok(())
 }
 
@@ -1942,7 +1952,7 @@ mod tests {
     struct TestStorage {
         snapshots: Mutex<HashMap<TaskId, TaskSnapshot>>,
         pending_polls_by_task: Mutex<HashMap<TaskId, oxide_agent_core::storage::PendingInputPoll>>,
-        pending_poll_task_by_id: Mutex<HashMap<String, TaskId>>,
+        pending_polls_by_id: Mutex<HashMap<String, oxide_agent_core::storage::PendingInputPoll>>,
         saved_memory_users: Mutex<Vec<i64>>,
         cleared_memory_users: Mutex<Vec<i64>>,
         block_first_task_snapshot_save: Mutex<bool>,
@@ -1955,7 +1965,7 @@ mod tests {
             Self {
                 snapshots: Mutex::new(HashMap::new()),
                 pending_polls_by_task: Mutex::new(HashMap::new()),
-                pending_poll_task_by_id: Mutex::new(HashMap::new()),
+                pending_polls_by_id: Mutex::new(HashMap::new()),
                 saved_memory_users: Mutex::new(Vec::new()),
                 cleared_memory_users: Mutex::new(Vec::new()),
                 block_first_task_snapshot_save: Mutex::new(false),
@@ -2343,14 +2353,25 @@ mod tests {
             &self,
             poll: &oxide_agent_core::storage::PendingInputPoll,
         ) -> Result<(), StorageError> {
-            self.pending_poll_task_by_id
+            self.pending_polls_by_id
                 .lock()
                 .await
-                .insert(poll.poll_id.clone(), poll.task_id);
+                .insert(poll.poll_id.clone(), poll.clone());
             self.pending_polls_by_task
                 .lock()
                 .await
                 .insert(poll.task_id, poll.clone());
+            Ok(())
+        }
+
+        async fn save_pending_input_poll_by_id(
+            &self,
+            poll: &oxide_agent_core::storage::PendingInputPoll,
+        ) -> Result<(), StorageError> {
+            self.pending_polls_by_id
+                .lock()
+                .await
+                .insert(poll.poll_id.clone(), poll.clone());
             Ok(())
         }
 
@@ -2370,21 +2391,7 @@ mod tests {
             &self,
             poll_id: &str,
         ) -> Result<Option<oxide_agent_core::storage::PendingInputPoll>, StorageError> {
-            let task_id = self
-                .pending_poll_task_by_id
-                .lock()
-                .await
-                .get(poll_id)
-                .copied();
-            let Some(task_id) = task_id else {
-                return Ok(None);
-            };
-            Ok(self
-                .pending_polls_by_task
-                .lock()
-                .await
-                .get(&task_id)
-                .cloned())
+            Ok(self.pending_polls_by_id.lock().await.get(poll_id).cloned())
         }
 
         async fn delete_pending_input_poll(
@@ -2393,7 +2400,7 @@ mod tests {
             poll_id: &str,
         ) -> Result<(), StorageError> {
             self.pending_polls_by_task.lock().await.remove(&task_id);
-            self.pending_poll_task_by_id.lock().await.remove(poll_id);
+            self.pending_polls_by_id.lock().await.remove(poll_id);
             Ok(())
         }
 
@@ -3400,6 +3407,101 @@ mod tests {
         let poll = storage.load_pending_input_poll_by_id("poll-late").await;
         assert!(poll.is_ok());
         assert!(matches!(poll.ok().flatten(), Some(poll) if poll.answered));
+    }
+
+    #[tokio::test]
+    async fn poll_answer_handler_stale_answer_does_not_overwrite_active_task_poll_mapping() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_user_id = 701;
+        let session_id = SessionId::from(owner_user_id);
+
+        let created = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+
+        let first_pending_input = waiting_choice_pending_input();
+        assert!(task_registry
+            .enter_waiting_input(&created.metadata.id, first_pending_input.clone())
+            .await
+            .is_ok());
+        assert!(storage
+            .save_pending_input_poll(&oxide_agent_core::storage::PendingInputPoll {
+                task_id: created.metadata.id,
+                request_id: first_pending_input.request_id,
+                owner_user_id,
+                poll_id: "poll-old".to_string(),
+                chat_id: owner_user_id,
+                message_id: 11,
+                answered: false,
+                selected_option_ids: Vec::new(),
+            })
+            .await
+            .is_ok());
+
+        assert!(task_registry
+            .update_state(&created.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+
+        let mut second_pending_input = waiting_choice_pending_input();
+        second_pending_input.request_id = "choice-request-2".to_string();
+        assert!(task_registry
+            .enter_waiting_input(&created.metadata.id, second_pending_input.clone())
+            .await
+            .is_ok());
+        assert!(storage
+            .save_pending_input_poll(&oxide_agent_core::storage::PendingInputPoll {
+                task_id: created.metadata.id,
+                request_id: second_pending_input.request_id,
+                owner_user_id,
+                poll_id: "poll-new".to_string(),
+                chat_id: owner_user_id,
+                message_id: 12,
+                answered: false,
+                selected_option_ids: Vec::new(),
+            })
+            .await
+            .is_ok());
+
+        let context = Arc::new(make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        ));
+        let stale_answer = build_poll_answer("poll-old", owner_user_id, &[0]);
+
+        let handled =
+            super::handle_pending_input_poll_answer(Bot::new("test-token"), stale_answer, context)
+                .await;
+        assert!(handled.is_ok());
+
+        let by_task = storage
+            .load_pending_input_poll_by_task(created.metadata.id)
+            .await;
+        let old_by_id = storage.load_pending_input_poll_by_id("poll-old").await;
+        let new_by_id = storage.load_pending_input_poll_by_id("poll-new").await;
+        assert!(by_task.is_ok());
+        assert!(old_by_id.is_ok());
+        assert!(new_by_id.is_ok());
+        assert!(matches!(
+            by_task.ok().flatten(),
+            Some(poll) if poll.poll_id == "poll-new" && poll.request_id == "choice-request-2" && !poll.answered
+        ));
+        assert!(matches!(
+            old_by_id.ok().flatten(),
+            Some(poll) if poll.poll_id == "poll-old" && poll.request_id == "choice-request" && poll.answered
+        ));
+        assert!(matches!(
+            new_by_id.ok().flatten(),
+            Some(poll) if poll.poll_id == "poll-new" && poll.request_id == "choice-request-2" && !poll.answered
+        ));
     }
 
     #[tokio::test]

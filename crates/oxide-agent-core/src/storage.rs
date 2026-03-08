@@ -227,6 +227,16 @@ pub trait StorageProvider: Send + Sync {
             "pending input poll persistence".to_string(),
         ))
     }
+    /// Persist Telegram poll metadata by poll id without mutating task-level mapping.
+    async fn save_pending_input_poll_by_id(
+        &self,
+        poll: &PendingInputPoll,
+    ) -> Result<(), StorageError> {
+        let _ = poll;
+        Err(StorageError::Unsupported(
+            "pending input poll persistence by id".to_string(),
+        ))
+    }
     /// Load Telegram poll delivery metadata by runtime task id.
     async fn load_pending_input_poll_by_task(
         &self,
@@ -726,6 +736,14 @@ impl StorageProvider for R2Storage {
             .await
     }
 
+    async fn save_pending_input_poll_by_id(
+        &self,
+        poll: &PendingInputPoll,
+    ) -> Result<(), StorageError> {
+        self.save_json(&pending_input_poll_index_key(&poll.poll_id), poll)
+            .await
+    }
+
     async fn load_pending_input_poll_by_task(
         &self,
         task_id: TaskId,
@@ -1051,6 +1069,14 @@ mod tests {
                 .await
         }
 
+        async fn save_pending_input_poll_by_id(
+            &self,
+            poll: &PendingInputPoll,
+        ) -> Result<(), StorageError> {
+            self.save_json(pending_input_poll_index_key(&poll.poll_id), poll)
+                .await
+        }
+
         async fn load_pending_input_poll_by_task(
             &self,
             task_id: crate::agent::task::TaskId,
@@ -1269,6 +1295,50 @@ mod tests {
 
         assert_eq!(by_task.ok().flatten(), None);
         assert_eq!(by_poll.ok().flatten(), None);
+    }
+
+    #[tokio::test]
+    async fn pending_input_poll_save_by_id_does_not_overwrite_task_mapping() {
+        let storage = InMemoryStorage::default();
+        let task_id = TaskMetadata::new().id;
+        let old_poll = PendingInputPoll {
+            task_id,
+            request_id: "req-1".to_string(),
+            owner_user_id: 24,
+            poll_id: "poll-old".to_string(),
+            chat_id: 700,
+            message_id: 11,
+            answered: false,
+            selected_option_ids: Vec::new(),
+        };
+        let active_poll = PendingInputPoll {
+            task_id,
+            request_id: "req-2".to_string(),
+            owner_user_id: 24,
+            poll_id: "poll-new".to_string(),
+            chat_id: 701,
+            message_id: 12,
+            answered: false,
+            selected_option_ids: Vec::new(),
+        };
+
+        assert!(storage.save_pending_input_poll(&old_poll).await.is_ok());
+        assert!(storage.save_pending_input_poll(&active_poll).await.is_ok());
+
+        let mut old_poll_answered = old_poll.clone();
+        old_poll_answered.answered = true;
+        assert!(storage
+            .save_pending_input_poll_by_id(&old_poll_answered)
+            .await
+            .is_ok());
+
+        let by_task = storage.load_pending_input_poll_by_task(task_id).await;
+        let old_by_id = storage.load_pending_input_poll_by_id("poll-old").await;
+        let active_by_id = storage.load_pending_input_poll_by_id("poll-new").await;
+
+        assert_eq!(by_task.ok().flatten(), Some(active_poll.clone()));
+        assert_eq!(old_by_id.ok().flatten(), Some(old_poll_answered));
+        assert_eq!(active_by_id.ok().flatten(), Some(active_poll));
     }
 
     #[tokio::test]
