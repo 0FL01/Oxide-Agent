@@ -721,6 +721,7 @@ struct AgentExecutionResult {
 }
 
 struct RunAgentTaskRequest {
+    task_id: TaskId,
     bot: Bot,
     chat_id: ChatId,
     user_id: i64,
@@ -744,6 +745,7 @@ struct SubmitAgentTaskRequest {
 impl TaskExecutionBackend for TelegramTaskExecutionBackend {
     async fn execute(&self, request: TaskExecutionRequest) -> Result<TaskExecutionOutcome> {
         let TaskExecutionRequest {
+            task_id,
             session_id,
             task,
             resume_input,
@@ -752,6 +754,7 @@ impl TaskExecutionBackend for TelegramTaskExecutionBackend {
         } = request;
 
         run_agent_task_with_text(RunAgentTaskRequest {
+            task_id,
             bot: self.bot.clone(),
             chat_id: self.chat_id,
             user_id: session_id.as_i64(),
@@ -1392,6 +1395,7 @@ async fn mark_pending_poll_answered(
 
 async fn run_agent_task_with_text(request: RunAgentTaskRequest) -> Result<TaskExecutionOutcome> {
     let RunAgentTaskRequest {
+        task_id,
         bot,
         chat_id,
         user_id,
@@ -1482,9 +1486,7 @@ async fn run_agent_task_with_text(request: RunAgentTaskRequest) -> Result<TaskEx
             })
         }
         Err(e) => {
-            // Sanitize error text to prevent Telegram HTML parse errors
-            let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
-            let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
+            let error_text = format_async_task_execution_error(task_id, &progress_text, &e);
             super::resilient::edit_message_safe_resilient(
                 &bot,
                 chat_id,
@@ -1577,21 +1579,60 @@ async fn submit_agent_task(request: SubmitAgentTaskRequest) -> Result<()> {
         .submit_task(session_id, task_text, backend)
         .await;
 
-    if let Err(error) = submitted {
-        warn!(session_id = %session_id, error = %error, "Failed to submit agent task");
-        bot.send_message(chat_id, DefaultAgentView::error_message(&error.to_string()))
-            .await?;
-    } else if let Ok(record) = submitted {
-        let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
-            bot,
-            chat_id,
-            task_id: record.metadata.id,
-            context,
-        })
-        .await;
+    match submitted {
+        Ok(record) => {
+            let task_id = record.metadata.id;
+            let watch_url = issue_task_watch_url(context.as_ref(), task_id).await;
+
+            let created_request = bot
+                .send_message(chat_id, format_task_created_message(task_id))
+                .parse_mode(ParseMode::Html)
+                .reply_markup(task_control_keyboard(task_id, watch_url.as_deref()));
+
+            if let Err(error) = created_request.await {
+                warn!(task_id = %task_id, error = %error, "Failed to send task creation feedback");
+            }
+
+            let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
+                bot,
+                chat_id,
+                task_id,
+                context,
+            })
+            .await;
+        }
+        Err(error) => {
+            warn!(session_id = %session_id, error = %error, "Failed to submit agent task");
+            bot.send_message(chat_id, format_task_submission_error(&error))
+                .await?;
+        }
     }
 
     Ok(())
+}
+
+fn format_task_created_message(task_id: TaskId) -> String {
+    format!(
+        "🚀 Started task <code>{task_id}</code> in background mode. I'll send progress updates and the final result here."
+    )
+}
+
+fn format_task_submission_error(error: &TaskExecutorError) -> String {
+    match error {
+        TaskExecutorError::SessionTaskAlreadyRunning(_) => {
+            DefaultAgentView::task_already_running().to_string()
+        }
+        _ => DefaultAgentView::error_message(&error.to_string()),
+    }
+}
+
+fn format_async_task_execution_error(
+    task_id: TaskId,
+    progress_text: &str,
+    error: &Error,
+) -> String {
+    let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&error.to_string());
+    format!("{progress_text}\n\n❌ <b>Task <code>{task_id}</code> failed:</b>\n\n{sanitized_error}")
 }
 
 async fn ensure_task_event_sync(params: TaskEventSyncParams) -> Option<JoinHandle<()>> {
@@ -2556,7 +2597,8 @@ pub async fn handle_agent_confirmation(
 #[cfg(test)]
 mod tests {
     use super::{
-        destructive_action_block_message, exit_block_message, format_task_state_message,
+        destructive_action_block_message, exit_block_message, format_async_task_execution_error,
+        format_task_created_message, format_task_state_message, format_task_submission_error,
         handle_task_control_callback, issue_task_watch_url, observer_base_url,
         parse_agent_control_command, parse_task_control_callback, revoke_task_watch_links,
         AgentModeActivationOutcome, AgentTaskRuntime, ClearMemoryOutcome, ExitSessionOutcome,
@@ -3524,6 +3566,39 @@ mod tests {
         assert!(failed.contains("failed"));
         assert!(cancelled.contains("cancelled"));
         assert!(stopped.contains("stopped with report"));
+    }
+
+    #[test]
+    fn task_background_flow_created_message_mentions_background_and_task_id() {
+        let task_id = TaskMetadata::new().id;
+        let text = format_task_created_message(task_id);
+
+        assert!(text.contains(&task_id.to_string()));
+        assert!(text.contains("background mode"));
+    }
+
+    #[test]
+    fn task_background_flow_submission_error_distinguishes_sync_rejection() {
+        let busy = format_task_submission_error(&TaskExecutorError::SessionTaskAlreadyRunning(
+            SessionId::from(123),
+        ));
+        assert_eq!(busy, DefaultAgentView::task_already_running());
+
+        let generic = format_task_submission_error(&TaskExecutorError::MissingTaskSnapshot(
+            TaskMetadata::new().id,
+        ));
+        assert!(generic.starts_with("❌ Error:"));
+    }
+
+    #[test]
+    fn task_background_flow_async_error_keeps_task_identity_and_sanitizes_html() {
+        let task_id = TaskMetadata::new().id;
+        let error = anyhow!("boom <b>tag</b>");
+        let text = format_async_task_execution_error(task_id, "progress", &error);
+
+        assert!(text.contains(&task_id.to_string()));
+        assert!(text.contains("&lt;b&gt;tag&lt;/b&gt;"));
+        assert!(!text.contains("<b>tag</b>"));
     }
 
     #[tokio::test]
