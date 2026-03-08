@@ -26,6 +26,30 @@ use super::agent_handlers::StartResetOutcome;
 const CHAT_ATTACH_PREFIX: &str = "chat_attach:";
 const CHAT_DETACH_CALLBACK: &str = "chat_detach";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AgentAccessStatus {
+    Allowed,
+    RolloutDisabled,
+    AccessNotConfigured,
+    Revoked,
+}
+
+pub(super) fn agent_access_status(settings: &BotSettings, user_id: i64) -> AgentAccessStatus {
+    if !settings.agent.is_agent_mode_enabled() {
+        return AgentAccessStatus::RolloutDisabled;
+    }
+
+    let agent_allowed = settings.telegram.agent_allowed_users();
+    if agent_allowed.is_empty() {
+        return AgentAccessStatus::AccessNotConfigured;
+    }
+    if !agent_allowed.contains(&user_id) {
+        return AgentAccessStatus::Revoked;
+    }
+
+    AgentAccessStatus::Allowed
+}
+
 // Helper function to get user name from Message
 fn get_user_name(msg: &Message) -> String {
     if let Some(ref user) = msg.from {
@@ -93,37 +117,38 @@ async fn restore_persisted_dialogue_state(
     if let Ok(Some(state_str)) = context.storage.get_user_state(user_id).await {
         match state_str.as_str() {
             "agent_mode" => {
-                if !context.settings.agent.is_agent_mode_enabled() {
-                    info!(
-                        "Skipping persisted agent mode restore for user {user_id}: feature flag disabled."
-                    );
-                    context
-                        .storage
-                        .update_user_state(user_id, "chat_mode".to_string())
-                        .await
-                        .map_err(anyhow::Error::from)?;
-                    dialogue
-                        .update(State::ChatMode)
-                        .await
-                        .map_err(|e| anyhow!(e.to_string()))?;
-                    return Ok(Some(State::ChatMode));
-                }
-
-                let agent_allowed = context.settings.telegram.agent_allowed_users();
-                if !agent_allowed.contains(&user_id) || agent_allowed.is_empty() {
-                    info!(
-                        "Skipping persisted agent mode restore for user {user_id}: access revoked."
-                    );
-                    context
-                        .storage
-                        .update_user_state(user_id, "chat_mode".to_string())
-                        .await
-                        .map_err(anyhow::Error::from)?;
-                    dialogue
-                        .update(State::ChatMode)
-                        .await
-                        .map_err(|e| anyhow!(e.to_string()))?;
-                    return Ok(Some(State::ChatMode));
+                match agent_access_status(context.settings.as_ref(), user_id) {
+                    AgentAccessStatus::Allowed => {}
+                    AgentAccessStatus::RolloutDisabled => {
+                        info!(
+                            "Skipping persisted agent mode restore for user {user_id}: feature flag disabled."
+                        );
+                        context
+                            .storage
+                            .update_user_state(user_id, "chat_mode".to_string())
+                            .await
+                            .map_err(anyhow::Error::from)?;
+                        dialogue
+                            .update(State::ChatMode)
+                            .await
+                            .map_err(|e| anyhow!(e.to_string()))?;
+                        return Ok(Some(State::ChatMode));
+                    }
+                    AgentAccessStatus::AccessNotConfigured | AgentAccessStatus::Revoked => {
+                        info!(
+                            "Skipping persisted agent mode restore for user {user_id}: access revoked."
+                        );
+                        context
+                            .storage
+                            .update_user_state(user_id, "chat_mode".to_string())
+                            .await
+                            .map_err(anyhow::Error::from)?;
+                        dialogue
+                            .update(State::ChatMode)
+                            .await
+                            .map_err(|e| anyhow!(e.to_string()))?;
+                        return Ok(Some(State::ChatMode));
+                    }
                 }
                 info!("Restoring agent mode for user {user_id} based on persisted state.");
                 dialogue
@@ -271,7 +296,10 @@ async fn reconcile_start_state_when_blocked_by_task(
     dialogue: &Dialogue<State, InMemStorage<State>>,
     context: &TelegramHandlerContext,
 ) -> Result<State> {
-    if context.settings.agent.is_agent_mode_enabled() {
+    if matches!(
+        agent_access_status(context.settings.as_ref(), user_id),
+        AgentAccessStatus::Allowed
+    ) {
         let _ = context
             .storage
             .update_user_state(user_id, "agent_mode".to_string())
@@ -779,32 +807,33 @@ async fn check_agent_access(
     settings: &Arc<BotSettings>,
     user_id: i64,
 ) -> Result<bool> {
-    if !settings.agent.is_agent_mode_enabled() {
-        bot.send_message(
-            msg.chat.id,
-            "🚧 Agent Mode is currently disabled by operator rollout. Please use Chat Mode.",
-        )
-        .await?;
-        return Ok(false);
+    match agent_access_status(settings.as_ref(), user_id) {
+        AgentAccessStatus::Allowed => Ok(true),
+        AgentAccessStatus::RolloutDisabled => {
+            bot.send_message(
+                msg.chat.id,
+                "🚧 Agent Mode is currently disabled by operator rollout. Please use Chat Mode.",
+            )
+            .await?;
+            Ok(false)
+        }
+        AgentAccessStatus::AccessNotConfigured => {
+            bot.send_message(
+                msg.chat.id,
+                "⛔️ Agent mode is temporarily unavailable (access not configured).",
+            )
+            .await?;
+            Ok(false)
+        }
+        AgentAccessStatus::Revoked => {
+            bot.send_message(
+                msg.chat.id,
+                "⛔️ You do not have permission to access agent mode.",
+            )
+            .await?;
+            Ok(false)
+        }
     }
-
-    let agent_allowed = settings.telegram.agent_allowed_users();
-    if !agent_allowed.contains(&user_id) && !agent_allowed.is_empty() {
-        bot.send_message(
-            msg.chat.id,
-            "⛔️ You do not have permission to access agent mode.",
-        )
-        .await?;
-        return Ok(false);
-    } else if agent_allowed.is_empty() {
-        bot.send_message(
-            msg.chat.id,
-            "⛔️ Agent mode is temporarily unavailable (access not configured).",
-        )
-        .await?;
-        return Ok(false);
-    }
-    Ok(true)
 }
 
 /// Prompt editing handler
@@ -1548,6 +1577,69 @@ mod tests {
             false,
         );
         let user_id = 78;
+        let session_id = SessionId::from(user_id);
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let update_result = dialogue.update(State::AgentMode).await;
+        assert!(update_result.is_ok());
+        let storage_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(storage_result.is_ok());
+
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+
+        let submit_result = task_runtime
+            .submit_task(session_id, "live task".to_string(), backend)
+            .await;
+        assert!(submit_result.is_ok());
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let outcome = prepare_start_state(user_id, session_id, &dialogue, &context).await;
+        assert!(matches!(outcome, Ok(StartResetOutcome::BlockedByTask)));
+
+        let reconcile_result =
+            super::reconcile_start_state_when_blocked_by_task(user_id, &dialogue, &context).await;
+        assert!(matches!(reconcile_result, Ok(State::Start)));
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::Start))));
+        let persisted_state = storage.get_user_state(user_id).await;
+        assert!(matches!(persisted_state, Ok(Some(ref state)) if state == "chat_mode"));
+
+        let cancelled = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), release.notified())
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn task_runtime_start_blocked_does_not_restore_agent_mode_when_access_revoked() {
+        let storage = Arc::new(StartTestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let context = test_context_with_telegram_settings(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+            TelegramSettings {
+                agent_allowed_users_str: Some("999".to_string()),
+                ..TelegramSettings::default()
+            },
+        );
+        let user_id = 79;
         let session_id = SessionId::from(user_id);
 
         let dialogue_storage = InMemStorage::<State>::new();

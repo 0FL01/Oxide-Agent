@@ -878,6 +878,33 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
     Ok(())
 }
 
+async fn check_agent_message_access(
+    user_id: i64,
+    dialogue: &AgentDialogue,
+    context: &TelegramHandlerContext,
+) -> Result<Option<&'static str>> {
+    let denial_message = match super::handlers::agent_access_status(context.settings.as_ref(), user_id)
+    {
+        super::handlers::AgentAccessStatus::Allowed => return Ok(None),
+        super::handlers::AgentAccessStatus::RolloutDisabled => {
+            "🚧 Agent Mode has been disabled during rollout. You are switched back to Chat Mode."
+        }
+        super::handlers::AgentAccessStatus::AccessNotConfigured => {
+            "⛔️ Agent mode is temporarily unavailable (access not configured). You are switched back to Chat Mode."
+        }
+        super::handlers::AgentAccessStatus::Revoked => {
+            "⛔️ Your Agent Mode access has been revoked. You are switched back to Chat Mode."
+        }
+    };
+
+    context
+        .storage
+        .update_user_state(user_id, "chat_mode".to_string())
+        .await?;
+    dialogue.update(State::ChatMode).await?;
+    Ok(Some(denial_message))
+}
+
 /// Handle a message in agent mode
 ///
 /// # Errors
@@ -893,18 +920,12 @@ pub async fn handle_agent_message(
     let chat_id = msg.chat.id;
     let session_id = SessionId::from(user_id);
 
-    if !context.settings.agent.is_agent_mode_enabled() {
-        context
-            .storage
-            .update_user_state(user_id, "chat_mode".to_string())
+    if let Some(denial_message) =
+        check_agent_message_access(user_id, &dialogue, context.as_ref()).await?
+    {
+        bot.send_message(chat_id, denial_message)
+            .reply_markup(crate::bot::handlers::get_main_keyboard(false))
             .await?;
-        dialogue.update(State::ChatMode).await?;
-        bot.send_message(
-            chat_id,
-            "🚧 Agent Mode has been disabled during rollout. You are switched back to Chat Mode.",
-        )
-        .reply_markup(crate::bot::handlers::get_main_keyboard(false))
-        .await?;
         return Ok(());
     }
 
@@ -2639,6 +2660,7 @@ mod tests {
         SESSION_REGISTRY,
     };
     use crate::bot::context::TelegramHandlerContext;
+    use crate::bot::state::State;
     use crate::bot::views::{AgentView, DefaultAgentView};
     use crate::config::{BotSettings, TelegramSettings};
     use anyhow::{anyhow, Result as AnyResult};
@@ -2661,6 +2683,7 @@ mod tests {
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
+    use teloxide::dispatching::dialogue::{Dialogue, InMemStorage};
     use teloxide::types::{ChatId, MaybeAnonymousUser, PollAnswer, PollId, User, UserId};
     use teloxide::Bot;
     use tokio::sync::{Barrier, Mutex, Notify};
@@ -2668,6 +2691,7 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     struct TestStorage {
+        user_states: Mutex<HashMap<i64, String>>,
         snapshots: Mutex<HashMap<TaskId, TaskSnapshot>>,
         pending_polls_by_task: Mutex<HashMap<TaskId, oxide_agent_core::storage::PendingInputPoll>>,
         pending_polls_by_id: Mutex<HashMap<String, oxide_agent_core::storage::PendingInputPoll>>,
@@ -2681,6 +2705,7 @@ mod tests {
     impl Default for TestStorage {
         fn default() -> Self {
             Self {
+                user_states: Mutex::new(HashMap::new()),
                 snapshots: Mutex::new(HashMap::new()),
                 pending_polls_by_task: Mutex::new(HashMap::new()),
                 pending_polls_by_id: Mutex::new(HashMap::new()),
@@ -2936,16 +2961,13 @@ mod tests {
             Ok(None)
         }
 
-        async fn update_user_state(
-            &self,
-            _user_id: i64,
-            _state: String,
-        ) -> Result<(), StorageError> {
+        async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
+            self.user_states.lock().await.insert(user_id, state);
             Ok(())
         }
 
-        async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-            Ok(None)
+        async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(self.user_states.lock().await.get(&user_id).cloned())
         }
 
         async fn save_message(
@@ -3179,16 +3201,31 @@ mod tests {
         observer_access: Option<Arc<ObserverAccessRegistry>>,
         web_observer_ready: bool,
     ) -> TelegramHandlerContext {
+        make_test_context_with_settings_and_telegram(
+            storage,
+            task_runtime,
+            agent_settings,
+            TelegramSettings::default(),
+            observer_access,
+            web_observer_ready,
+        )
+    }
+
+    fn make_test_context_with_settings_and_telegram(
+        storage: Arc<dyn StorageProvider>,
+        task_runtime: Arc<AgentTaskRuntime>,
+        agent_settings: AgentSettings,
+        telegram_settings: TelegramSettings,
+        observer_access: Option<Arc<ObserverAccessRegistry>>,
+        web_observer_ready: bool,
+    ) -> TelegramHandlerContext {
         let llm_settings = Arc::new(agent_settings.clone());
         let llm = Arc::new(LlmClient::new(&llm_settings));
 
         TelegramHandlerContext {
             storage: Arc::clone(&storage),
             llm,
-            settings: Arc::new(BotSettings::new(
-                agent_settings,
-                TelegramSettings::default(),
-            )),
+            settings: Arc::new(BotSettings::new(agent_settings, telegram_settings)),
             task_runtime,
             task_events: Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
                 storage,
@@ -3197,6 +3234,46 @@ mod tests {
             web_observer_ready: Arc::new(std::sync::atomic::AtomicBool::new(web_observer_ready)),
             task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
         }
+    }
+
+    #[tokio::test]
+    async fn task_runtime_agent_message_access_check_downgrades_revoked_user() {
+        let storage = Arc::new(TestStorage::default());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::new(TaskRegistry::new()),
+            1,
+        ));
+        let context = make_test_context_with_settings_and_telegram(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+            settings_without_llm_providers(),
+            TelegramSettings {
+                agent_allowed_users_str: Some("999".to_string()),
+                ..TelegramSettings::default()
+            },
+            None,
+            false,
+        );
+        let user_id = 78;
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let update_result = dialogue.update(State::AgentMode).await;
+        assert!(update_result.is_ok());
+        let persist_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(persist_result.is_ok());
+
+        let denial = super::check_agent_message_access(user_id, &dialogue, &context).await;
+        assert!(matches!(denial, Ok(Some(message)) if message.contains("access has been revoked")));
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::ChatMode))));
+
+        let persisted_state = storage.get_user_state(user_id).await;
+        assert!(matches!(persisted_state, Ok(Some(ref state)) if state == "chat_mode"));
     }
 
     fn unwrap_join_result<T>(result: Result<T, JoinError>) -> T {
