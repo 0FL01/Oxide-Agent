@@ -11,9 +11,11 @@ pub mod providers;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, instrument, trace, warn};
 
 /// Errors that can occur during LLM operations
@@ -241,7 +243,7 @@ pub struct LlmClient {
     zai: Option<providers::ZaiProvider>,
     gemini: Option<providers::GeminiProvider>,
     openrouter: Option<providers::OpenRouterProvider>,
-    embedding: Option<(embeddings::EmbeddingProvider, String)>,
+    embedding: Option<(embeddings::EmbeddingProvider, String, String)>,
     custom_providers: HashMap<String, Arc<dyn LlmProvider>>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
@@ -257,12 +259,35 @@ pub struct LlmClient {
     pub media_model_id: Option<String>,
     /// Optional media model provider for audio/image fallbacks
     pub media_model_provider: Option<String>,
+    global_limit_semaphore: Arc<Semaphore>,
+    background_limit_semaphore: Arc<Semaphore>,
+    wait_warn_threshold: Duration,
+}
+
+#[derive(Clone, Copy)]
+enum RequestClass {
+    UserFacing,
+    Background,
+}
+
+impl RequestClass {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserFacing => "user",
+            Self::Background => "background",
+        }
+    }
+}
+
+struct RequestPermits {
+    _global: OwnedSemaphorePermit,
+    _background: Option<OwnedSemaphorePermit>,
 }
 
 impl LlmClient {
     fn create_embedding_provider(
         settings: &crate::config::AgentSettings,
-    ) -> Option<(embeddings::EmbeddingProvider, String)> {
+    ) -> Option<(embeddings::EmbeddingProvider, String, String)> {
         let provider_name = settings.embedding_provider.as_ref()?;
         let model_id = settings.embedding_model_id.clone()?;
 
@@ -277,6 +302,7 @@ impl LlmClient {
         Some((
             embeddings::EmbeddingProvider::new(api_key, api_base.to_string()),
             model_id,
+            provider_name.to_string(),
         ))
     }
 
@@ -289,6 +315,19 @@ impl LlmClient {
             _ => (None, None),
         };
         let media_model_name = media_model_id.clone();
+        let global_limit = settings.get_llm_concurrency_total_limit();
+        let background_limit = settings.get_llm_background_concurrency_limit();
+        let user_reserved = settings.get_llm_concurrency_user_reserved_slots();
+        let wait_warn_threshold =
+            Duration::from_millis(settings.get_llm_concurrency_wait_warn_ms());
+
+        info!(
+            llm_global_limit = global_limit,
+            llm_background_limit = background_limit,
+            llm_user_reserved_slots = user_reserved,
+            llm_wait_warn_ms = wait_warn_threshold.as_millis(),
+            "LLM concurrency limiter configured"
+        );
 
         Self {
             groq: settings
@@ -323,7 +362,65 @@ impl LlmClient {
             media_model_id,
             media_model_provider,
             custom_providers: HashMap::new(),
+            global_limit_semaphore: Arc::new(Semaphore::new(global_limit)),
+            background_limit_semaphore: Arc::new(Semaphore::new(background_limit)),
+            wait_warn_threshold,
         }
+    }
+
+    async fn acquire_permits(
+        &self,
+        class: RequestClass,
+        model_name: &str,
+        provider_name: &str,
+    ) -> Result<RequestPermits, LlmError> {
+        let started = Instant::now();
+
+        let background = if matches!(class, RequestClass::Background) {
+            Some(
+                self.background_limit_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| {
+                        LlmError::Unknown(format!("LLM background limiter is unavailable: {e}"))
+                    })?,
+            )
+        } else {
+            None
+        };
+
+        let global = self
+            .global_limit_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| LlmError::Unknown(format!("LLM global limiter is unavailable: {e}")))?;
+
+        let waited = started.elapsed();
+        if waited >= self.wait_warn_threshold {
+            warn!(
+                request_class = class.as_str(),
+                model = model_name,
+                provider = provider_name,
+                waited_ms = waited.as_millis(),
+                wait_warn_ms = self.wait_warn_threshold.as_millis(),
+                "LLM request waited on concurrency limiter"
+            );
+        } else if waited > Duration::ZERO {
+            debug!(
+                request_class = class.as_str(),
+                model = model_name,
+                provider = provider_name,
+                waited_ms = waited.as_millis(),
+                "LLM request acquired concurrency permits"
+            );
+        }
+
+        Ok(RequestPermits {
+            _global: global,
+            _background: background,
+        })
     }
 
     /// Register a custom/mock LLM provider
@@ -397,6 +494,46 @@ impl LlmClient {
         user_message: &str,
         model_name: &str,
     ) -> Result<String, LlmError> {
+        self.chat_completion_with_class(
+            RequestClass::UserFacing,
+            system_prompt,
+            history,
+            user_message,
+            model_name,
+        )
+        .await
+    }
+
+    /// Perform a background chat completion request.
+    ///
+    /// Intended for internal/background subsystems that should not consume
+    /// user-reserved LLM capacity.
+    #[instrument(skip(self, system_prompt, history))]
+    pub async fn chat_completion_background(
+        &self,
+        system_prompt: &str,
+        history: &[Message],
+        user_message: &str,
+        model_name: &str,
+    ) -> Result<String, LlmError> {
+        self.chat_completion_with_class(
+            RequestClass::Background,
+            system_prompt,
+            history,
+            user_message,
+            model_name,
+        )
+        .await
+    }
+
+    async fn chat_completion_with_class(
+        &self,
+        class: RequestClass,
+        system_prompt: &str,
+        history: &[Message],
+        user_message: &str,
+        model_name: &str,
+    ) -> Result<String, LlmError> {
         let model_info = self.get_model_info(model_name)?;
 
         let provider = self.get_provider(&model_info.provider)?;
@@ -413,7 +550,11 @@ impl LlmClient {
             "Full LLM Request"
         );
 
-        let start = std::time::Instant::now();
+        let _permits = self
+            .acquire_permits(class, model_name, &model_info.provider)
+            .await?;
+
+        let start = Instant::now();
         let result = provider
             .chat_completion(
                 system_prompt,
@@ -481,7 +622,11 @@ impl LlmClient {
         );
 
         for attempt in 1..=MAX_RETRIES {
-            let start = std::time::Instant::now();
+            let permits = self
+                .acquire_permits(RequestClass::Background, model_name, &model_info.provider)
+                .await?;
+
+            let start = Instant::now();
             let result = provider
                 .chat_with_tools(
                     system_prompt,
@@ -493,6 +638,7 @@ impl LlmClient {
                 )
                 .await;
             let duration = start.elapsed();
+            drop(permits);
 
             match result {
                 Ok(resp) => {
@@ -553,26 +699,26 @@ impl LlmClient {
 
     /// Calculates the delay before the next retry attempt based on the error type.
     /// Returns `None` if the error is not retryable.
-    fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<std::time::Duration> {
+    fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<Duration> {
         const INITIAL_BACKOFF_MS: u64 = 1000;
 
         match error {
             LlmError::RateLimit { wait_secs, .. } => {
                 // If the server provided a wait time, use it (plus a small buffer)
                 if let Some(secs) = wait_secs {
-                    return Some(std::time::Duration::from_secs(*secs + 1));
+                    return Some(Duration::from_secs(*secs + 1));
                 }
                 // Otherwise use a more aggressive backoff for rate limits: 10s, 20s, 40s...
                 // attempt starts at 1
                 let backoff_secs = 10u64 * 2u64.pow((attempt - 1) as u32);
-                Some(std::time::Duration::from_secs(backoff_secs))
+                Some(Duration::from_secs(backoff_secs))
             }
             LlmError::ApiError(msg) => {
                 let msg_lower = msg.to_lowercase();
                 if msg_lower.contains("429") {
                     // Treat as rate limit without explicit wait time
                     let backoff_secs = 10u64 * 2u64.pow((attempt - 1) as u32);
-                    return Some(std::time::Duration::from_secs(backoff_secs));
+                    return Some(Duration::from_secs(backoff_secs));
                 }
 
                 if msg_lower.contains("500")
@@ -583,13 +729,13 @@ impl LlmClient {
                     || msg_lower.contains("overloaded")
                 {
                     let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
-                    return Some(std::time::Duration::from_millis(backoff_ms));
+                    return Some(Duration::from_millis(backoff_ms));
                 }
                 None
             }
             LlmError::NetworkError(_) => {
                 let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
-                Some(std::time::Duration::from_millis(backoff_ms))
+                Some(Duration::from_millis(backoff_ms))
             }
             _ => None,
         }
@@ -601,9 +747,13 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` if embedding provider is not configured, or any provider error.
     pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-        let (provider, model) = self.embedding.as_ref().ok_or_else(|| {
+        let (provider, model, provider_name) = self.embedding.as_ref().ok_or_else(|| {
             LlmError::MissingConfig("embedding provider not configured".to_string())
         })?;
+
+        let _permits = self
+            .acquire_permits(RequestClass::Background, model, provider_name)
+            .await?;
 
         provider.generate(text, model).await
     }
@@ -612,7 +762,13 @@ impl LlmClient {
     ///
     /// Returns `None` if embedding provider is not configured or the probe fails.
     pub async fn probe_embedding_dimension(&self) -> Option<usize> {
-        let (provider, model) = self.embedding.as_ref()?;
+        let (provider, model, provider_name) = self.embedding.as_ref()?;
+        let permits = self
+            .acquire_permits(RequestClass::Background, model, provider_name)
+            .await;
+        if permits.is_err() {
+            return None;
+        }
         provider.probe_dimension(model).await
     }
 
@@ -629,6 +785,9 @@ impl LlmClient {
     ) -> Result<String, LlmError> {
         let model_info = self.get_model_info(model_name)?;
         let provider = self.get_provider(&model_info.provider)?;
+        let _permits = self
+            .acquire_permits(RequestClass::UserFacing, model_name, &model_info.provider)
+            .await?;
         provider
             .transcribe_audio(audio_bytes, mime_type, &model_info.id)
             .await
@@ -648,6 +807,9 @@ impl LlmClient {
         model_id: &str,
     ) -> Result<String, LlmError> {
         let provider = self.get_provider(provider_name)?;
+        let _permits = self
+            .acquire_permits(RequestClass::UserFacing, model_id, provider_name)
+            .await?;
         match provider
             .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
             .await
@@ -687,6 +849,9 @@ impl LlmClient {
     ) -> Result<String, LlmError> {
         let model_info = self.get_model_info(model_name)?;
         let provider = self.get_provider(&model_info.provider)?;
+        let _permits = self
+            .acquire_permits(RequestClass::UserFacing, model_name, &model_info.provider)
+            .await?;
         provider
             .analyze_image(image_bytes, text_prompt, system_prompt, &model_info.id)
             .await
@@ -703,5 +868,312 @@ impl LlmClient {
             .find(|(name, _)| name == model_name)
             .map(|(_, info)| info.clone())
             .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentSettings;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    struct CountingProvider {
+        completion_active: AtomicUsize,
+        completion_peak: AtomicUsize,
+        tools_active: AtomicUsize,
+        tools_peak: AtomicUsize,
+        release_background: Notify,
+        block_background: bool,
+        completion_delay: Duration,
+        tool_delay: Duration,
+    }
+
+    impl CountingProvider {
+        fn new(block_background: bool, completion_delay: Duration) -> Self {
+            Self::new_with_tool_delay(
+                block_background,
+                completion_delay,
+                Duration::from_millis(80),
+            )
+        }
+
+        fn new_with_tool_delay(
+            block_background: bool,
+            completion_delay: Duration,
+            tool_delay: Duration,
+        ) -> Self {
+            Self {
+                completion_active: AtomicUsize::new(0),
+                completion_peak: AtomicUsize::new(0),
+                tools_active: AtomicUsize::new(0),
+                tools_peak: AtomicUsize::new(0),
+                release_background: Notify::new(),
+                block_background,
+                completion_delay,
+                tool_delay,
+            }
+        }
+
+        fn observe_peak(active: &AtomicUsize, peak: &AtomicUsize) {
+            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut known_peak = peak.load(Ordering::SeqCst);
+            while current > known_peak {
+                match peak.compare_exchange(known_peak, current, Ordering::SeqCst, Ordering::SeqCst)
+                {
+                    Ok(_) => break,
+                    Err(updated) => known_peak = updated,
+                }
+            }
+        }
+
+        fn settings(total_limit: usize, user_reserved_slots: usize) -> AgentSettings {
+            AgentSettings {
+                chat_model_id: Some("test-model".to_string()),
+                chat_model_provider: Some("mock-provider".to_string()),
+                agent_model_id: Some("test-model".to_string()),
+                agent_model_provider: Some("mock-provider".to_string()),
+                llm_concurrency_total_limit: Some(total_limit),
+                llm_concurrency_user_reserved_slots: Some(user_reserved_slots),
+                llm_concurrency_wait_warn_ms: Some(1),
+                ..AgentSettings::default()
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for CountingProvider {
+        async fn chat_completion(
+            &self,
+            _system_prompt: &str,
+            _history: &[Message],
+            _user_message: &str,
+            _model_id: &str,
+            _max_tokens: u32,
+        ) -> Result<String, LlmError> {
+            Self::observe_peak(&self.completion_active, &self.completion_peak);
+            tokio::time::sleep(self.completion_delay).await;
+            self.completion_active.fetch_sub(1, Ordering::SeqCst);
+            Ok("ok".to_string())
+        }
+
+        async fn transcribe_audio(
+            &self,
+            _audio_bytes: Vec<u8>,
+            _mime_type: &str,
+            _model_id: &str,
+        ) -> Result<String, LlmError> {
+            Err(LlmError::Unknown("unused in tests".to_string()))
+        }
+
+        async fn analyze_image(
+            &self,
+            _image_bytes: Vec<u8>,
+            _text_prompt: &str,
+            _system_prompt: &str,
+            _model_id: &str,
+        ) -> Result<String, LlmError> {
+            Err(LlmError::Unknown("unused in tests".to_string()))
+        }
+
+        async fn chat_with_tools(
+            &self,
+            _system_prompt: &str,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _model_id: &str,
+            _max_tokens: u32,
+            _json_mode: bool,
+        ) -> Result<ChatResponse, LlmError> {
+            Self::observe_peak(&self.tools_active, &self.tools_peak);
+
+            if self.block_background {
+                self.release_background.notified().await;
+            } else {
+                tokio::time::sleep(self.tool_delay).await;
+            }
+
+            self.tools_active.fetch_sub(1, Ordering::SeqCst);
+            Ok(ChatResponse {
+                content: Some("ok".to_string()),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_total_concurrency_never_exceeds_global_limit() {
+        let settings = CountingProvider::settings(2, 1);
+        let provider = Arc::new(CountingProvider::new(false, Duration::from_millis(100)));
+        let mut client = LlmClient::new(&settings);
+        client.register_provider("mock-provider".to_string(), provider.clone());
+        let client = Arc::new(client);
+
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let client = Arc::clone(&client);
+            handles.push(tokio::spawn(async move {
+                client
+                    .chat_completion("sys", &[], "user", "test-model")
+                    .await
+            }));
+        }
+
+        for handle in handles {
+            let join = handle.await;
+            assert!(join.is_ok());
+            if let Ok(result) = join {
+                assert!(result.is_ok());
+            }
+        }
+
+        assert!(provider.completion_peak.load(Ordering::SeqCst) <= 2);
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_background_requests_cannot_use_reserved_user_slots() {
+        let settings = CountingProvider::settings(3, 1);
+        let provider = Arc::new(CountingProvider::new(false, Duration::from_millis(10)));
+        let mut client = LlmClient::new(&settings);
+        client.register_provider("mock-provider".to_string(), provider.clone());
+        let client = Arc::new(client);
+
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let client = Arc::clone(&client);
+            handles.push(tokio::spawn(async move {
+                client
+                    .chat_with_tools("sys", &[], &[], "test-model", false)
+                    .await
+            }));
+        }
+
+        for handle in handles {
+            let join = handle.await;
+            assert!(join.is_ok());
+            if let Ok(result) = join {
+                assert!(result.is_ok());
+            }
+        }
+
+        assert!(provider.tools_peak.load(Ordering::SeqCst) <= 2);
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_user_request_progresses_while_background_is_saturated() {
+        let settings = CountingProvider::settings(3, 1);
+        let provider = Arc::new(CountingProvider::new(true, Duration::from_millis(5)));
+        let mut client = LlmClient::new(&settings);
+        client.register_provider("mock-provider".to_string(), provider.clone());
+        let client = Arc::new(client);
+
+        let mut background_handles = Vec::new();
+        for _ in 0..2 {
+            let client = Arc::clone(&client);
+            background_handles.push(tokio::spawn(async move {
+                client
+                    .chat_with_tools("sys", &[], &[], "test-model", false)
+                    .await
+            }));
+        }
+
+        let saturation_wait = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if provider.tools_active.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(saturation_wait.is_ok());
+
+        let user_result = tokio::time::timeout(
+            Duration::from_millis(200),
+            client.chat_completion("sys", &[], "hello", "test-model"),
+        )
+        .await;
+        assert!(user_result.is_ok());
+        if let Ok(inner) = user_result {
+            assert!(inner.is_ok());
+        }
+
+        provider.release_background.notify_waiters();
+        for handle in background_handles {
+            let join = handle.await;
+            assert!(join.is_ok());
+            if let Ok(result) = join {
+                assert!(result.is_ok());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_queued_background_request_does_not_consume_global_user_slot() {
+        let settings = CountingProvider::settings(2, 1);
+        let provider = Arc::new(CountingProvider::new_with_tool_delay(
+            false,
+            Duration::from_millis(5),
+            Duration::from_millis(400),
+        ));
+        let mut client = LlmClient::new(&settings);
+        client.register_provider("mock-provider".to_string(), provider.clone());
+        let client = Arc::new(client);
+
+        let first_background = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .chat_with_tools("sys", &[], &[], "test-model", false)
+                    .await
+            })
+        };
+
+        let first_started = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if provider.tools_active.load(Ordering::SeqCst) >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(first_started.is_ok());
+
+        let second_background = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .chat_with_tools("sys", &[], &[], "test-model", false)
+                    .await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let user_result = tokio::time::timeout(
+            Duration::from_millis(200),
+            client.chat_completion("sys", &[], "hello", "test-model"),
+        )
+        .await;
+        assert!(user_result.is_ok());
+        if let Ok(inner) = user_result {
+            assert!(inner.is_ok());
+        }
+
+        let first_join = first_background.await;
+        assert!(first_join.is_ok());
+        if let Ok(result) = first_join {
+            assert!(result.is_ok());
+        }
+
+        let second_join = second_background.await;
+        assert!(second_join.is_ok());
+        if let Ok(result) = second_join {
+            assert!(result.is_ok());
+        }
     }
 }

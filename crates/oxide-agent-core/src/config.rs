@@ -144,6 +144,13 @@ pub struct AgentSettings {
     pub web_observer_bind_addr: Option<String>,
     /// Observer access token time-to-live in seconds.
     pub web_observer_token_ttl_secs: Option<u64>,
+
+    /// Global concurrency cap for in-flight LLM requests.
+    pub llm_concurrency_total_limit: Option<usize>,
+    /// Number of global slots reserved for user-facing traffic.
+    pub llm_concurrency_user_reserved_slots: Option<usize>,
+    /// Warning threshold for LLM permit wait duration in milliseconds.
+    pub llm_concurrency_wait_warn_ms: Option<u64>,
 }
 
 const fn default_openrouter_site_url() -> String {
@@ -522,6 +529,44 @@ impl AgentSettings {
         self.web_observer_token_ttl_secs
             .unwrap_or(WEB_OBSERVER_TOKEN_TTL_SECS)
     }
+
+    /// Returns global in-flight LLM concurrency cap.
+    #[must_use]
+    pub fn get_llm_concurrency_total_limit(&self) -> usize {
+        self.llm_concurrency_total_limit
+            .unwrap_or(LLM_CONCURRENCY_TOTAL_LIMIT)
+            .max(1)
+    }
+
+    /// Returns slots reserved for user-facing requests.
+    #[must_use]
+    pub fn get_llm_concurrency_user_reserved_slots(&self) -> usize {
+        let total = self.get_llm_concurrency_total_limit();
+        let configured = self
+            .llm_concurrency_user_reserved_slots
+            .unwrap_or(LLM_CONCURRENCY_USER_RESERVED_SLOTS);
+
+        if total == 1 {
+            return 0;
+        }
+
+        configured.min(total - 1)
+    }
+
+    /// Returns wait threshold for saturation diagnostics.
+    #[must_use]
+    pub fn get_llm_concurrency_wait_warn_ms(&self) -> u64 {
+        self.llm_concurrency_wait_warn_ms
+            .unwrap_or(LLM_CONCURRENCY_WAIT_WARN_MS)
+    }
+
+    /// Returns max in-flight tool/background LLM requests.
+    #[must_use]
+    pub fn get_llm_background_concurrency_limit(&self) -> usize {
+        let total = self.get_llm_concurrency_total_limit();
+        let reserved = self.get_llm_concurrency_user_reserved_slots();
+        total.saturating_sub(reserved)
+    }
 }
 
 #[cfg(test)]
@@ -539,6 +584,9 @@ mod tests {
             .set_override("web_observer_enabled", true)?
             .set_override("web_observer_base_url", "https://observer.test")?
             .set_override("web_observer_token_ttl_secs", 900)?
+            .set_override("llm_concurrency_total_limit", 12)?
+            .set_override("llm_concurrency_user_reserved_slots", 5)?
+            .set_override("llm_concurrency_wait_warn_ms", 450)?
             .build()?
             .try_deserialize()?;
 
@@ -552,6 +600,10 @@ mod tests {
             Some("https://observer.test".to_string())
         );
         assert_eq!(settings.get_web_observer_token_ttl_secs(), 900);
+        assert_eq!(settings.get_llm_concurrency_total_limit(), 12);
+        assert_eq!(settings.get_llm_concurrency_user_reserved_slots(), 5);
+        assert_eq!(settings.get_llm_background_concurrency_limit(), 7);
+        assert_eq!(settings.get_llm_concurrency_wait_warn_ms(), 450);
 
         let defaults = AgentSettings::default();
         assert!(!defaults.is_web_observer_enabled());
@@ -559,7 +611,36 @@ mod tests {
             defaults.get_web_observer_token_ttl_secs(),
             WEB_OBSERVER_TOKEN_TTL_SECS
         );
+        assert_eq!(
+            defaults.get_llm_concurrency_total_limit(),
+            LLM_CONCURRENCY_TOTAL_LIMIT
+        );
+        assert_eq!(
+            defaults.get_llm_concurrency_user_reserved_slots(),
+            LLM_CONCURRENCY_USER_RESERVED_SLOTS
+        );
+        assert_eq!(
+            defaults.get_llm_background_concurrency_limit(),
+            LLM_CONCURRENCY_TOTAL_LIMIT - LLM_CONCURRENCY_USER_RESERVED_SLOTS
+        );
+        assert_eq!(
+            defaults.get_llm_concurrency_wait_warn_ms(),
+            LLM_CONCURRENCY_WAIT_WARN_MS
+        );
         Ok(())
+    }
+
+    #[test]
+    fn test_llm_concurrency_limits_are_sanitized() {
+        let settings = AgentSettings {
+            llm_concurrency_total_limit: Some(0),
+            llm_concurrency_user_reserved_slots: Some(42),
+            ..AgentSettings::default()
+        };
+
+        assert_eq!(settings.get_llm_concurrency_total_limit(), 1);
+        assert_eq!(settings.get_llm_concurrency_user_reserved_slots(), 0);
+        assert_eq!(settings.get_llm_background_concurrency_limit(), 1);
     }
 }
 
@@ -594,6 +675,12 @@ pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
 pub const SUB_AGENT_TIMEOUT_SECS: u64 = 600;
 /// Default observer access token TTL in seconds.
 pub const WEB_OBSERVER_TOKEN_TTL_SECS: u64 = 900;
+/// Total concurrent in-flight requests allowed through LLM client.
+pub const LLM_CONCURRENCY_TOTAL_LIMIT: usize = 16;
+/// Slots reserved for user-facing traffic to avoid starvation.
+pub const LLM_CONCURRENCY_USER_RESERVED_SLOTS: usize = 4;
+/// Wait-time threshold for saturation diagnostics.
+pub const LLM_CONCURRENCY_WAIT_WARN_MS: u64 = 250;
 /// Maximum timeout for individual tool call (in seconds)
 /// This prevents a single tool from blocking the agent indefinitely
 pub const AGENT_TOOL_TIMEOUT_SECS: u64 = 300; // 5 minutes

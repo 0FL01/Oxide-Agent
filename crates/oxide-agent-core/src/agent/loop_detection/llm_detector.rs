@@ -70,7 +70,7 @@ impl LoopScoutClient for LlmClient {
         user_message: &str,
         model_name: &str,
     ) -> Result<String, LlmError> {
-        self.chat_completion(system_prompt, history, user_message, model_name)
+        self.chat_completion_background(system_prompt, history, user_message, model_name)
             .await
     }
 }

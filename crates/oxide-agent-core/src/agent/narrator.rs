@@ -99,7 +99,7 @@ impl Narrator {
 
         // Use chat_completion which has retry logic built-in
         self.llm_client
-            .chat_completion(&system_prompt, &messages, "", model)
+            .chat_completion_background(&system_prompt, &messages, "", model)
             .await
     }
 
