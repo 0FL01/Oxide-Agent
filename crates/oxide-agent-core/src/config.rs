@@ -138,6 +138,9 @@ pub struct AgentSettings {
     /// Enable observer-only web monitoring surface.
     #[serde(default)]
     pub web_observer_enabled: bool,
+    /// Enable Agent Mode user-facing entrypoints in transports.
+    #[serde(default)]
+    pub agent_mode_enabled: bool,
     /// Public base URL used to build observer links.
     pub web_observer_base_url: Option<String>,
     /// Bind address for future web monitor transport.
@@ -523,6 +526,12 @@ impl AgentSettings {
         self.web_observer_enabled
     }
 
+    /// Returns whether Agent Mode user-facing entrypoints are enabled.
+    #[must_use]
+    pub const fn is_agent_mode_enabled(&self) -> bool {
+        self.agent_mode_enabled
+    }
+
     /// Returns observer access token TTL in seconds.
     #[must_use]
     pub fn get_web_observer_token_ttl_secs(&self) -> u64 {
@@ -582,6 +591,7 @@ mod tests {
             .set_override("chat_model_provider", "openrouter")?
             .set_override("r2_endpoint_url", "https://example.com")?
             .set_override("web_observer_enabled", true)?
+            .set_override("agent_mode_enabled", true)?
             .set_override("web_observer_base_url", "https://observer.test")?
             .set_override("web_observer_token_ttl_secs", 900)?
             .set_override("llm_concurrency_total_limit", 12)?
@@ -595,6 +605,7 @@ mod tests {
             Some("https://example.com".to_string())
         );
         assert!(settings.is_web_observer_enabled());
+        assert!(settings.is_agent_mode_enabled());
         assert_eq!(
             settings.web_observer_base_url,
             Some("https://observer.test".to_string())
@@ -607,6 +618,7 @@ mod tests {
 
         let defaults = AgentSettings::default();
         assert!(!defaults.is_web_observer_enabled());
+        assert!(!defaults.is_agent_mode_enabled());
         assert_eq!(
             defaults.get_web_observer_token_ttl_secs(),
             WEB_OBSERVER_TOKEN_TTL_SECS

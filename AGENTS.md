@@ -89,6 +89,7 @@ Dockerfile                           # Сборка основного Rust-пр
 - Stage 3 completed: HITL pause/resume with Telegram poll/text resume flow.
 - Stage 4 completed: graceful stop core/runtime path, runtime event fan-out, and Telegram task controls are implemented and approved.
 - Stage 5 completed: observer access tokens, web monitoring transport (Axum + SSE), Telegram watch-link UX integration.
+- Stage 6 Slice 6.4 completed: `AGENT_MODE_ENABLED` rollout flag added with Telegram entrypoint/UI guards and rollback-safe degradation (runtime/task recovery left operational).
 
 ### Stage 4 code landmarks
 - `crates/oxide-agent-core/src/agent/task.rs`: `TaskState::Stopped`, `StopSignal`, `StopSafePoint`, `StopReport`, stop-related snapshot/event invariants.
@@ -103,6 +104,12 @@ Dockerfile                           # Сборка основного Rust-пр
 - `crates/oxide-agent-transport-web/src/lib.rs`: `spawn_web_monitor`, Axum router with `/health`, `/watch/{token}`, `/api/observer/{token}/snapshot`, `/api/observer/{token}/events` (SSE), `with_no_store` cache headers, observer auth via token resolution, replay + live fan-out with terminal state short-circuit, unit tests for auth/state handling.
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs`: watch-link URL generation from observer tokens, owner-only token issue guardrails, task-bound cancel/stop callback handlers with watch-button attachment.
 - `crates/oxide-agent-transport-telegram/src/bot/views/agent.rs`: `task_control_keyboard` with optional `watch_url` button, `can_render_watch_url` validator, watch-button URL parsing.
+
+### Stage 6 Slice 6.4 code landmarks
+- `crates/oxide-agent-core/src/config.rs`: `agent_mode_enabled` env-backed flag (`AGENT_MODE_ENABLED`, default `false`) and accessor `is_agent_mode_enabled`.
+- `crates/oxide-agent-transport-telegram/src/bot/handlers.rs`: main keyboard hides Agent Mode when disabled, persisted `agent_mode` state downgrade to `chat_mode` on flag-off, document routing guard for graceful rollback behavior.
+- `crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs`: activation/message guards for flag-off mode with user-facing degradation to Chat Mode while preserving runtime support for existing tasks.
+- `docs/stage-6-slice-6-4-rollout.md`: staged rollout checklist, rollback procedure, observability signals, and support playbook.
 
 ## 🦀 Rust Architecture & Workflow
 

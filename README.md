@@ -128,6 +128,7 @@ The bot supports 3 main providers for both standard chat and advanced Agent mode
 TELEGRAM_TOKEN=YOUR_TOKEN
 ALLOWED_USERS=ID1,ID2 # List of allowed Telegram IDs (basic access)
 AGENT_ACCESS_IDS=ID1 # Access to Agent Mode (consumes many tokens)
+AGENT_MODE_ENABLED=false # Stage 6 rollout flag: enable Agent Mode entrypoints gradually
 
 # Agent Configuration
 AGENT_TIMEOUT_SECS=300          # Agent execution timeout
@@ -181,6 +182,13 @@ MEDIA_MODEL_PROVIDER="openrouter"
 NARRATOR_MODEL_ID="labs-mistral-small-creative"
 NARRATOR_MODEL_PROVIDER="mistral"
 ```
+
+## Agent Mode v2 rollout safety
+
+- Keep `AGENT_MODE_ENABLED=false` by default in production until rollout checks pass.
+- Enable it gradually for supported operators/users by combining it with `AGENT_ACCESS_IDS`.
+- Rollback is safe: setting `AGENT_MODE_ENABLED=false` blocks new activations but keeps runtime recovery/observation of existing tasks.
+- Follow the operator checklist and support playbook in `docs/stage-6-slice-6-4-rollout.md`.
 
 ### Alternate provider example
 ```

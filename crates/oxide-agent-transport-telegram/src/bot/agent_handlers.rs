@@ -218,6 +218,7 @@ async fn handle_agent_control_command(
                 dialogue,
                 Arc::clone(&context.storage),
                 Arc::clone(&context.task_runtime),
+                context.settings.agent.is_agent_mode_enabled(),
             )
             .await
         }
@@ -788,6 +789,22 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let session_id = SessionId::from(user_id);
 
+    if !context.settings.agent.is_agent_mode_enabled() {
+        context
+            .storage
+            .update_user_state(user_id, "chat_mode".to_string())
+            .await?;
+        dialogue.update(State::ChatMode).await?;
+
+        bot.send_message(
+            msg.chat.id,
+            "🚧 Agent Mode is currently disabled by operator rollout. Please use Chat Mode.",
+        )
+        .reply_markup(crate::bot::handlers::get_main_keyboard(false))
+        .await?;
+        return Ok(());
+    }
+
     info!("Activating agent mode for user {user_id}");
 
     let activation_outcome = context
@@ -875,6 +892,21 @@ pub async fn handle_agent_message(
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = msg.chat.id;
     let session_id = SessionId::from(user_id);
+
+    if !context.settings.agent.is_agent_mode_enabled() {
+        context
+            .storage
+            .update_user_state(user_id, "chat_mode".to_string())
+            .await?;
+        dialogue.update(State::ChatMode).await?;
+        bot.send_message(
+            chat_id,
+            "🚧 Agent Mode has been disabled during rollout. You are switched back to Chat Mode.",
+        )
+        .reply_markup(crate::bot::handlers::get_main_keyboard(false))
+        .await?;
+        return Ok(());
+    }
 
     if let Some(command) = msg.text().and_then(parse_agent_control_command) {
         return handle_agent_control_command(command, bot, msg, dialogue, context).await;
@@ -2395,6 +2427,7 @@ pub async fn exit_agent_mode(
     dialogue: AgentDialogue,
     storage: Arc<dyn StorageProvider>,
     task_runtime: Arc<AgentTaskRuntime>,
+    agent_mode_enabled: bool,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let session_id = SessionId::from(user_id);
@@ -2417,7 +2450,7 @@ pub async fn exit_agent_mode(
         .await;
     dialogue.update(State::Start).await?;
 
-    let keyboard = crate::bot::handlers::get_main_keyboard();
+    let keyboard = crate::bot::handlers::get_main_keyboard(agent_mode_enabled);
     bot.send_message(msg.chat.id, "👋 Exited agent mode. Select a working mode:")
         .reply_markup(keyboard)
         .await?;
@@ -3097,6 +3130,7 @@ mod tests {
     fn settings_without_llm_providers() -> AgentSettings {
         AgentSettings {
             openrouter_site_name: "Oxide Agent Bot".to_string(),
+            agent_mode_enabled: true,
             ..AgentSettings::default()
         }
     }
@@ -3104,6 +3138,7 @@ mod tests {
     fn settings_with_waiting_input_model() -> AgentSettings {
         AgentSettings {
             openrouter_site_name: "Oxide Agent Bot".to_string(),
+            agent_mode_enabled: true,
             agent_model_id: Some("test-model".to_string()),
             agent_model_provider: Some("openrouter".to_string()),
             agent_model_max_tokens: Some(8_192),

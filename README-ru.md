@@ -130,6 +130,7 @@
 TELEGRAM_TOKEN=ВАШ_ТОКЕН
 ALLOWED_USERS=ID1,ID2 # Список разрешенных Telegram ID (базовый доступ)
 AGENT_ACCESS_IDS=ID1 # Доступ к Режиму Агента (тратит много токенов)
+AGENT_MODE_ENABLED=false # Флаг Stage 6: поэтапное включение точек входа Agent Mode
 
 # Конфигурация Агента
 AGENT_TIMEOUT_SECS=300          # Тайм-аут выполнения агента
@@ -184,6 +185,13 @@ MEDIA_MODEL_PROVIDER="openrouter"
 NARRATOR_MODEL_ID="labs-mistral-small-creative"
 NARRATOR_MODEL_PROVIDER="mistral"
 ```
+
+## Безопасный rollout Agent Mode v2
+
+- Держите `AGENT_MODE_ENABLED=false` по умолчанию в production до прохождения чек-листа rollout.
+- Включайте поэтапно вместе с `AGENT_ACCESS_IDS`.
+- Rollback безопасен: при `AGENT_MODE_ENABLED=false` блокируются новые активации Agent Mode, но восстановление/наблюдение уже созданных задач остается доступным.
+- Используйте операторский чек-лист и support playbook: `docs/stage-6-slice-6-4-rollout.md`.
 
 ### Альтернативный пример
 ```

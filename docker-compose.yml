@@ -19,6 +19,7 @@ services:
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
+      - AGENT_MODE_ENABLED=${AGENT_MODE_ENABLED:-false}
       - WEB_OBSERVER_ENABLED=${WEB_OBSERVER_ENABLED:-false}
       - WEB_OBSERVER_BASE_URL=${WEB_OBSERVER_BASE_URL:-}
       - WEB_OBSERVER_BIND_ADDR=${WEB_OBSERVER_BIND_ADDR:-0.0.0.0:8080}

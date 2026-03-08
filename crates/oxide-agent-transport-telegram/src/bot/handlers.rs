@@ -93,6 +93,22 @@ async fn restore_persisted_dialogue_state(
     if let Ok(Some(state_str)) = context.storage.get_user_state(user_id).await {
         match state_str.as_str() {
             "agent_mode" => {
+                if !context.settings.agent.is_agent_mode_enabled() {
+                    info!(
+                        "Skipping persisted agent mode restore for user {user_id}: feature flag disabled."
+                    );
+                    context
+                        .storage
+                        .update_user_state(user_id, "chat_mode".to_string())
+                        .await
+                        .map_err(anyhow::Error::from)?;
+                    dialogue
+                        .update(State::ChatMode)
+                        .await
+                        .map_err(|e| anyhow!(e.to_string()))?;
+                    return Ok(Some(State::ChatMode));
+                }
+
                 let agent_allowed = context.settings.telegram.agent_allowed_users();
                 if !agent_allowed.contains(&user_id) || agent_allowed.is_empty() {
                     info!(
@@ -155,15 +171,19 @@ pub enum Command {
 ///
 /// ```
 /// use oxide_agent_transport_telegram::bot::handlers::get_main_keyboard;
-/// let keyboard = get_main_keyboard();
+/// let keyboard = get_main_keyboard(true);
 /// assert!(!keyboard.keyboard.is_empty());
 /// ```
 #[must_use]
-pub fn get_main_keyboard() -> KeyboardMarkup {
-    let keyboard = vec![vec![
-        KeyboardButton::new("🤖 Agent Mode"),
-        KeyboardButton::new("💬 Chat Mode"),
-    ]];
+pub fn get_main_keyboard(agent_mode_enabled: bool) -> KeyboardMarkup {
+    let keyboard = if agent_mode_enabled {
+        vec![vec![
+            KeyboardButton::new("🤖 Agent Mode"),
+            KeyboardButton::new("💬 Chat Mode"),
+        ]]
+    } else {
+        vec![vec![KeyboardButton::new("💬 Chat Mode")]]
+    };
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
@@ -246,6 +266,35 @@ async fn prepare_start_state(
         .await
 }
 
+async fn reconcile_start_state_when_blocked_by_task(
+    user_id: i64,
+    dialogue: &Dialogue<State, InMemStorage<State>>,
+    context: &TelegramHandlerContext,
+) -> Result<State> {
+    if context.settings.agent.is_agent_mode_enabled() {
+        let _ = context
+            .storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        dialogue
+            .update(State::AgentMode)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+        Ok(State::AgentMode)
+    } else {
+        context
+            .storage
+            .update_user_state(user_id, "chat_mode".to_string())
+            .await
+            .map_err(anyhow::Error::from)?;
+        dialogue
+            .update(State::Start)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+        Ok(State::Start)
+    }
+}
+
 /// Start handler
 ///
 /// # Errors
@@ -265,21 +314,27 @@ pub async fn start(
 
     match prepare_start_state(user_id, session_id, &dialogue, &context).await? {
         StartResetOutcome::BlockedByTask => {
-            let _ = context
-                .storage
-                .update_user_state(user_id, "agent_mode".to_string())
-                .await;
-            dialogue
-                .update(State::AgentMode)
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
+            let blocked_state =
+                reconcile_start_state_when_blocked_by_task(user_id, &dialogue, &context).await?;
 
-            bot.send_message(
-                msg.chat.id,
-                crate::bot::views::DefaultAgentView::task_already_running(),
-            )
-            .reply_markup(crate::bot::views::get_agent_keyboard())
-            .await?;
+            if matches!(blocked_state, State::AgentMode) {
+                bot.send_message(
+                    msg.chat.id,
+                    crate::bot::views::DefaultAgentView::task_already_running(),
+                )
+                .reply_markup(crate::bot::views::get_agent_keyboard())
+                .await?;
+            } else {
+                bot.send_message(
+                    msg.chat.id,
+                    "👋 <b>I am Oxide Agent.</b>\n\n\
+                     Agent Mode is temporarily disabled by operator rollout settings.\n\
+                     You can continue in <b>Chat Mode</b>; existing background tasks remain recoverable and support can re-enable Agent Mode later.",
+                )
+                .parse_mode(ParseMode::Html)
+                .reply_markup(get_main_keyboard(false))
+                .await?;
+            }
 
             return Ok(());
         }
@@ -294,7 +349,9 @@ pub async fn start(
     let model = resolve_chat_model(&context.settings, saved_model);
     info!("User {user_id} ({user_name}) is allowed. Set model to {model}");
 
-    let text = "👋 <b>I am Oxide Agent.</b>\n\n\
+    let agent_mode_enabled = context.settings.agent.is_agent_mode_enabled();
+    let text = if agent_mode_enabled {
+        "👋 <b>I am Oxide Agent.</b>\n\n\
          I am here to automate your routine. Switch me to <b>Agent Mode</b>, and I can:\n\n\
          • Write and run code\n\
          • Download and process video/files\n\
@@ -302,12 +359,20 @@ pub async fn start(
          I don't just answer questions — I solve tasks.\n\n\
          <i>Also available: <b>Chat Mode</b> for simple questions.</i>\n\n\
          👇 <b>Enable full power:</b>"
-        .to_string();
+            .to_string()
+    } else {
+        "👋 <b>I am Oxide Agent.</b>\n\n\
+         Agent Mode is temporarily disabled by operator rollout settings.\n\
+         You can continue in <b>Chat Mode</b>; existing background tasks remain recoverable and support can re-enable Agent Mode later."
+            .to_string()
+    };
 
     info!("Sending welcome message to user {user_id}.");
     bot.send_message(msg.chat.id, text)
         .parse_mode(ParseMode::Html)
-        .reply_markup(get_main_keyboard())
+        .reply_markup(get_main_keyboard(
+            context.settings.agent.is_agent_mode_enabled(),
+        ))
         .await?;
 
     Ok(())
@@ -557,7 +622,9 @@ pub async fn handle_text(
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
         bot.send_message(msg.chat.id, "Please select a mode:")
-            .reply_markup(get_main_keyboard())
+            .reply_markup(get_main_keyboard(
+                context.settings.agent.is_agent_mode_enabled(),
+            ))
             .await?;
         return Ok(());
     }
@@ -672,14 +739,8 @@ async fn handle_menu_commands(
                     .update(State::Start)
                     .await
                     .map_err(|e| anyhow!(e.to_string()))?;
-                bot.send_message(msg.chat.id, "Please select a mode:")
-                    .reply_markup(get_main_keyboard())
-                    .await?;
-            } else {
-                bot.send_message(msg.chat.id, "Please select a mode:")
-                    .reply_markup(get_main_keyboard())
-                    .await?;
             }
+            send_main_mode_prompt(bot, msg, context).await?;
             Ok(true)
         }
         "⬅️ Exit Agent Mode" | "❌ Cancel Task" | "🗑 Clear Memory" => {
@@ -689,12 +750,27 @@ async fn handle_menu_commands(
                 _ => "Agent memory is not active.",
             };
             bot.send_message(msg.chat.id, response)
-                .reply_markup(get_main_keyboard())
+                .reply_markup(get_main_keyboard(
+                    context.settings.agent.is_agent_mode_enabled(),
+                ))
                 .await?;
             Ok(true)
         }
         _ => Ok(false),
     }
+}
+
+async fn send_main_mode_prompt(
+    bot: &Bot,
+    msg: &Message,
+    context: &TelegramHandlerContext,
+) -> Result<()> {
+    bot.send_message(msg.chat.id, "Please select a mode:")
+        .reply_markup(get_main_keyboard(
+            context.settings.agent.is_agent_mode_enabled(),
+        ))
+        .await?;
+    Ok(())
 }
 
 async fn check_agent_access(
@@ -703,6 +779,15 @@ async fn check_agent_access(
     settings: &Arc<BotSettings>,
     user_id: i64,
 ) -> Result<bool> {
+    if !settings.agent.is_agent_mode_enabled() {
+        bot.send_message(
+            msg.chat.id,
+            "🚧 Agent Mode is currently disabled by operator rollout. Please use Chat Mode.",
+        )
+        .await?;
+        return Ok(false);
+    }
+
     let agent_allowed = settings.telegram.agent_allowed_users();
     if !agent_allowed.contains(&user_id) && !agent_allowed.is_empty() {
         bot.send_message(
@@ -844,7 +929,9 @@ pub async fn handle_voice(
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
         bot.send_message(msg.chat.id, "Please select a mode:")
-            .reply_markup(get_main_keyboard())
+            .reply_markup(get_main_keyboard(
+                context.settings.agent.is_agent_mode_enabled(),
+            ))
             .await?;
         return Ok(());
     }
@@ -932,7 +1019,9 @@ pub async fn handle_photo(
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
         bot.send_message(msg.chat.id, "Please select a mode:")
-            .reply_markup(get_main_keyboard())
+            .reply_markup(get_main_keyboard(
+                context.settings.agent.is_agent_mode_enabled(),
+            ))
             .await?;
         return Ok(());
     }
@@ -1027,12 +1116,12 @@ pub async fn handle_document(
         ))
         .await
     } else {
-        bot.send_message(
-            msg.chat.id,
-            "📁 File upload is available only in Agent Mode.\n\n\
-             Use /agent to activate.",
-        )
-        .await?;
+        let text = if context.settings.agent.is_agent_mode_enabled() {
+            "📁 File upload is available only in Agent Mode.\n\nUse \"🤖 Agent Mode\" to activate."
+        } else {
+            "📁 File upload to Agent Mode is temporarily unavailable because Agent Mode rollout is disabled."
+        };
+        bot.send_message(msg.chat.id, text).await?;
         Ok(())
     }
 }
@@ -1042,6 +1131,24 @@ async fn should_route_document_to_agent(
     dialogue: &Dialogue<State, InMemStorage<State>>,
     context: &TelegramHandlerContext,
 ) -> Result<bool> {
+    if !context.settings.agent.is_agent_mode_enabled() {
+        if matches!(
+            dialogue.get().await?.unwrap_or(State::Start),
+            State::AgentMode
+        ) {
+            context
+                .storage
+                .update_user_state(user_id, "chat_mode".to_string())
+                .await
+                .map_err(anyhow::Error::from)?;
+            dialogue
+                .update(State::ChatMode)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+        }
+        return Ok(false);
+    }
+
     if matches!(
         restore_persisted_dialogue_state(user_id, dialogue, context).await?,
         Some(State::AgentMode)
@@ -1133,6 +1240,14 @@ mod tests {
     #[test]
     fn parse_chat_flow_callback_data_rejects_unknown_callback() {
         assert_eq!(parse_chat_flow_callback_data("unknown"), None);
+    }
+
+    #[test]
+    fn main_keyboard_hides_agent_mode_button_when_flag_disabled() {
+        let keyboard = super::get_main_keyboard(false);
+        assert_eq!(keyboard.keyboard.len(), 1);
+        assert_eq!(keyboard.keyboard[0].len(), 1);
+        assert_eq!(keyboard.keyboard[0][0].text, "💬 Chat Mode");
     }
 
     #[derive(Default)]
@@ -1326,8 +1441,23 @@ mod tests {
         task_runtime: Arc<AgentTaskRuntime>,
         telegram_settings: TelegramSettings,
     ) -> TelegramHandlerContext {
+        test_context_with_telegram_settings_and_agent_flag(
+            storage,
+            task_runtime,
+            telegram_settings,
+            true,
+        )
+    }
+
+    fn test_context_with_telegram_settings_and_agent_flag(
+        storage: Arc<dyn StorageProvider>,
+        task_runtime: Arc<AgentTaskRuntime>,
+        telegram_settings: TelegramSettings,
+        agent_mode_enabled: bool,
+    ) -> TelegramHandlerContext {
         let agent_settings = AgentSettings {
             openrouter_site_name: "Oxide Agent Bot".to_string(),
+            agent_mode_enabled,
             ..AgentSettings::default()
         };
         let llm_settings = Arc::new(agent_settings.clone());
@@ -1394,6 +1524,67 @@ mod tests {
         assert!(matches!(state, Ok(Some(State::AgentMode))));
         let persisted_state = storage.get_user_state(user_id).await;
         assert!(matches!(persisted_state, Ok(Some(ref state)) if state == "agent_mode"));
+
+        let cancelled = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), release.notified())
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn task_runtime_start_blocked_does_not_restore_agent_mode_when_flag_disabled() {
+        let storage = Arc::new(StartTestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let context = test_context_with_telegram_settings_and_agent_flag(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+            TelegramSettings::default(),
+            false,
+        );
+        let user_id = 78;
+        let session_id = SessionId::from(user_id);
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let update_result = dialogue.update(State::AgentMode).await;
+        assert!(update_result.is_ok());
+        let storage_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(storage_result.is_ok());
+
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+
+        let submit_result = task_runtime
+            .submit_task(session_id, "live task".to_string(), backend)
+            .await;
+        assert!(submit_result.is_ok());
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let outcome = prepare_start_state(user_id, session_id, &dialogue, &context).await;
+        assert!(matches!(outcome, Ok(StartResetOutcome::BlockedByTask)));
+
+        let reconcile_result =
+            super::reconcile_start_state_when_blocked_by_task(user_id, &dialogue, &context).await;
+        assert!(matches!(reconcile_result, Ok(State::Start)));
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::Start))));
+        let persisted_state = storage.get_user_state(user_id).await;
+        assert!(matches!(persisted_state, Ok(Some(ref state)) if state == "chat_mode"));
 
         let cancelled = task_runtime.cancel_task_for_session(session_id).await;
         assert!(cancelled.is_ok());
@@ -1523,6 +1714,42 @@ mod tests {
         );
 
         let user_id = 75;
+        let storage_result = storage
+            .update_user_state(user_id, "agent_mode".to_string())
+            .await;
+        assert!(storage_result.is_ok());
+
+        let dialogue_storage = InMemStorage::<State>::new();
+        let dialogue = Dialogue::new(Arc::clone(&dialogue_storage), ChatId(user_id));
+        let restored = super::restore_persisted_dialogue_state(user_id, &dialogue, &context).await;
+        assert!(matches!(restored, Ok(Some(State::ChatMode))));
+
+        let state = dialogue.get().await;
+        assert!(matches!(state, Ok(Some(State::ChatMode))));
+
+        let persisted_state = storage.get_user_state(user_id).await;
+        assert!(matches!(persisted_state, Ok(Some(ref state)) if state == "chat_mode"));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_restore_downgrades_agent_persisted_state_when_flag_disabled() {
+        let storage = Arc::new(StartTestStorage::default());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::new(TaskRegistry::new()),
+            1,
+        ));
+        let context = test_context_with_telegram_settings_and_agent_flag(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+            TelegramSettings {
+                agent_allowed_users_str: Some("77".to_string()),
+                ..TelegramSettings::default()
+            },
+            false,
+        );
+
+        let user_id = 77;
         let storage_result = storage
             .update_user_state(user_id, "agent_mode".to_string())
             .await;
