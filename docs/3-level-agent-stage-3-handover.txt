@@ -1,0 +1,66 @@
+Stage 3 handover note
+
+Branch
+arch-agent-mode
+
+Scope completed
+Stage 3 Human-in-the-Loop implementation is completed and stage-approved with review-gated slices for:
+- pending input domain model and waiting state snapshot contract
+- runtime waiting-input pause flow
+- Telegram poll integration with owner checks and duplicate protections
+- runtime resume flow
+- resume hardening for cold-restart and text input
+- production wiring from real executor path to WaitingInput outcome
+- pause-time context persistence and fail-closed recovery
+- Telegram choice-input contract alignment with transport limits
+- fail-closed pause-memory restore in resume path
+- resume transition event persistence under strict sequence rules
+- run-task argument bundling refactor for review-policy compliance
+- semantic choice resume payload (selected values, not only option ids)
+- stale poll mapping isolation for sequential waiting cycles on one task
+
+Relevant commits
+65da432 feat(stage-3/slice-1): add pending input model
+0a6d1b1 feat(stage-3/slice-2): add runtime hitl pause flow
+6ada1cc feat(stage-3/slice-3): add telegram poll integration
+2a8fdf3 feat(stage-3/slice-4): add hitl resume flow
+5d23354 fix(stage-3/slice-5): harden telegram hitl resume
+3af8130 feat(stage-3/slice-6): wire production hitl trigger
+441d237 feat(stage-3/slice-7): persist pause context for resume
+eb5877d fix(stage-3/slice-8): align choice input with telegram
+98c80a8 fix(stage-3/slice-9): fail closed on pause memory restore
+29fd34c fix(stage-3/slice-10): persist resume transition event
+bda37a1 refactor(stage-3/slice-11): bundle run task args
+aac4084 fix(stage-3/slice-12): encode semantic choice resume payload
+ae7bd0d fix(stage-3/slice-13): isolate stale poll mapping updates
+
+Current repo status at handoff
+Working tree is clean after the latest Stage 3 docs update.
+
+What changed in code
+Core/runtime:
+- waiting input snapshots now include pause-time context required for restart-safe continuation
+- resume path writes transition events with production-like contiguous sequence behavior
+- invalid legacy/corrupt waiting snapshots are handled fail-closed
+
+Telegram transport:
+- production execution path can emit WaitingInput from real agent execution flow
+- poll and text resume paths are both wired
+- semantic choice resume payload carries selected values instead of raw poll indices
+- stale old-poll answers can no longer overwrite active task->poll mapping
+
+Stage 3 approval status
+APPROVED ✅
+
+Verification commands used recently
+cargo test -p oxide-agent-core
+cargo test -p oxide-agent-runtime
+cargo test -p oxide-agent-transport-telegram
+cargo clippy -p oxide-agent-core -p oxide-agent-runtime -p oxide-agent-transport-telegram -p oxide-agent-telegram-bot --all-targets -- -D warnings
+cargo fmt --check
+
+Next step
+Proceed with Stage 4 (Graceful stop and task observability).
+
+Notes
+Stage 3 is complete and approved after resolving production-path and persistence edge cases discovered during final review reruns.

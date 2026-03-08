@@ -1,6 +1,6 @@
 ### Agent Mode v2: Implementation Plan
 
-Status: In Progress (Stage 1 completed, Stage 2 completed, Stage 3 not started)
+Status: In Progress (Stage 1 completed, Stage 2 completed, Stage 3 completed)
 
 Progress update:
 
@@ -19,6 +19,22 @@ Progress update:
   - `5baf644` `fix(stage-2/slice-5): restore document agent-mode routing`
   - `8029e0f` `fix(stage-2/slice-5): recheck persisted agent access`
 - Stage 2 handover note: `docs/3-level-agent-stage-2-handover.txt`.
+- Stage 3 implementation completed and approved on `arch-agent-mode`.
+- Completed Stage 3 commits:
+  - `65da432` `feat(stage-3/slice-1): add pending input model`
+  - `0a6d1b1` `feat(stage-3/slice-2): add runtime hitl pause flow`
+  - `6ada1cc` `feat(stage-3/slice-3): add telegram poll integration`
+  - `2a8fdf3` `feat(stage-3/slice-4): add hitl resume flow`
+  - `5d23354` `fix(stage-3/slice-5): harden telegram hitl resume`
+  - `3af8130` `feat(stage-3/slice-6): wire production hitl trigger`
+  - `441d237` `feat(stage-3/slice-7): persist pause context for resume`
+  - `eb5877d` `fix(stage-3/slice-8): align choice input with telegram`
+  - `98c80a8` `fix(stage-3/slice-9): fail closed on pause memory restore`
+  - `29fd34c` `fix(stage-3/slice-10): persist resume transition event`
+  - `bda37a1` `refactor(stage-3/slice-11): bundle run task args`
+  - `aac4084` `fix(stage-3/slice-12): encode semantic choice resume payload`
+  - `ae7bd0d` `fix(stage-3/slice-13): isolate stale poll mapping updates`
+- Stage 3 handover note: `docs/3-level-agent-stage-3-handover.txt`.
 
 Этот документ дополняет `docs/3-level-agent.md` и раскладывает внедрение Agent Mode v2 на конкретные стадии и небольшие auditable slices.
 
@@ -385,6 +401,24 @@ Stage 2 review status: APPROVED
 
 Цель stage: дать задаче возможность безопасно приостанавливаться и ждать ответ пользователя.
 
+Status: Completed
+
+Implemented on branch `arch-agent-mode`:
+
+- Slice 3.1 - `65da432` `feat(stage-3/slice-1): add pending input model`
+- Slice 3.2 - `0a6d1b1` `feat(stage-3/slice-2): add runtime hitl pause flow`
+- Slice 3.3 - `6ada1cc` `feat(stage-3/slice-3): add telegram poll integration`
+- Slice 3.4 - `2a8fdf3` `feat(stage-3/slice-4): add hitl resume flow`
+- Slice 3.5 - `5d23354` `fix(stage-3/slice-5): harden telegram hitl resume`
+- Slice 3.6 - `3af8130` `feat(stage-3/slice-6): wire production hitl trigger`
+- Slice 3.7 - `441d237` `feat(stage-3/slice-7): persist pause context for resume`
+- Slice 3.8 - `eb5877d` `fix(stage-3/slice-8): align choice input with telegram`
+- Slice 3.9 - `98c80a8` `fix(stage-3/slice-9): fail closed on pause memory restore`
+- Slice 3.10 - `29fd34c` `fix(stage-3/slice-10): persist resume transition event`
+- Slice 3.11 - `bda37a1` `refactor(stage-3/slice-11): bundle run task args`
+- Slice 3.12 - `aac4084` `fix(stage-3/slice-12): encode semantic choice resume payload`
+- Slice 3.13 - `ae7bd0d` `fix(stage-3/slice-13): isolate stale poll mapping updates`
+
 #### Slice 3.1 - Pending Input Model
 
 Crates:
@@ -510,6 +544,8 @@ cargo test -p oxide-agent-transport-telegram poll_resume
 Exit criteria for Stage 3:
 
 - задача может приостановиться, дождаться ответа пользователя и продолжить исполнение.
+
+Stage 3 review status: APPROVED
 
 ---
 
