@@ -23,7 +23,9 @@ pub use agent::runtime::{
 };
 pub use session_registry::SessionRegistry;
 pub use task_events::{
-    ChannelTaskEventPublisher, NoopTaskEventPublisher, SharedTaskEventPublisher, TaskEventPublisher,
+    ChannelTaskEventPublisher, NoopTaskEventPublisher, SharedTaskEventPublisher,
+    TaskEventBackpressurePolicy, TaskEventBroadcaster, TaskEventBroadcasterOptions,
+    TaskEventPublisher, TaskEventSubscription,
 };
 pub use task_executor::{
     DetachedTaskSubmission, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
