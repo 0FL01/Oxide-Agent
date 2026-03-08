@@ -48,8 +48,12 @@ crates/
 │   │   ├── task_events.rs           # Transport-agnostic task event publishing + TaskId-scoped fan-out/replay
 │   │   ├── task_recovery.rs         # Boot-time reconciliation and stale snapshot repair
 │   │   ├── worker_manager.rs        # TaskId -> JoinHandle tracking and worker limits
-│   │   ├── agent/
-│   │   │   └── runtime/             # Реализация AgentRuntime
+│   │   ├── observer_access.rs       # Observer access tokens for read-only task monitoring
+│   │   └── agent/
+│   │       └── runtime/             # Реализация AgentRuntime
+├── oxide-agent-transport-web/       # Транспорт: Web monitoring API
+│   ├── src/
+│   │   └── lib.rs                   # Axum server, SSE streaming, observer auth
 ├── oxide-agent-transport-telegram/  # Транспорт: Telegram Bot API
 │   ├── src/
 │   │   ├── runner.rs                # Инициализация бота и DI
@@ -58,6 +62,8 @@ crates/
 │   │   │   ├── handlers.rs          # Обработчики команд
 │   │   │   ├── agent_handlers.rs    # Обработчики сообщений агенту
 │   │   │   ├── agent_transport.rs   # Реализация AgentTransport
+│   │   │   ├── views/
+│   │   │   │   └── agent.rs         # Agent mode UI, watch-link integration
 │   │   │   └── ...
 └── oxide-agent-telegram-bot/        # Application Entry Point
     └── src/
@@ -72,8 +78,9 @@ Dockerfile                           # Сборка основного Rust-пр
 
 ### Workspace crates
 - `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, task domain, stop/report contract и persistence contract.
-- `oxide-agent-runtime`: оркестрация сессий, worker manager, detached task executor, graceful stop flow, task recovery, task registry, task event fan-out/publishing и runtime-компоненты.
-- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, runtime-aware Agent Mode routing, телеметрия доставки.
+- `oxide-agent-runtime`: оркестрация сессий, worker manager, detached task executor, graceful stop flow, task recovery, task registry, task event fan-out/publishing, observer access tokens и runtime-компоненты.
+- `oxide-agent-transport-web`: web monitor transport for read-only task snapshots and live event streaming via SSE, observer token authorization.
+- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, runtime-aware Agent Mode routing, watch-link UX integration, телеметрия доставки.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
 ### Agent Mode v2 status
@@ -81,6 +88,7 @@ Dockerfile                           # Сборка основного Rust-пр
 - Stage 2 completed: detached background execution, recovery and cancellation.
 - Stage 3 completed: HITL pause/resume with Telegram poll/text resume flow.
 - Stage 4 completed: graceful stop core/runtime path, runtime event fan-out, and Telegram task controls are implemented and approved.
+- Stage 5 completed: observer access tokens, web monitoring transport (Axum + SSE), Telegram watch-link UX integration.
 
 ### Stage 4 code landmarks
 - `crates/oxide-agent-core/src/agent/task.rs`: `TaskState::Stopped`, `StopSignal`, `StopSafePoint`, `StopReport`, stop-related snapshot/event invariants.
@@ -89,6 +97,12 @@ Dockerfile                           # Сборка основного Rust-пр
 - `crates/oxide-agent-runtime/src/task_events.rs`: `TaskEventBroadcaster`, TaskId subscriptions, replay/live handoff, backpressure policy, terminal stream cleanup.
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs`: task-bound cancel/stop controls, owner validation, live task notifications, callback security checks.
 - `crates/oxide-agent-transport-telegram/src/bot/views/agent.rs`: Agent Mode keyboard/task control buttons and task lifecycle status text.
+
+### Stage 5 code landmarks
+- `crates/oxide-agent-runtime/src/observer_access.rs`: `ObserverAccessToken`, `ObserverAccessRegistry`, token issue/resolve/revoke, expiry/revocation tracking with tombstones, security-focused `Debug`/`Display` impls.
+- `crates/oxide-agent-transport-web/src/lib.rs`: `spawn_web_monitor`, Axum router with `/health`, `/watch/{token}`, `/api/observer/{token}/snapshot`, `/api/observer/{token}/events` (SSE), `with_no_store` cache headers, observer auth via token resolution, replay + live fan-out with terminal state short-circuit, unit tests for auth/state handling.
+- `crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs`: watch-link URL generation from observer tokens, owner-only token issue guardrails, task-bound cancel/stop callback handlers with watch-button attachment.
+- `crates/oxide-agent-transport-telegram/src/bot/views/agent.rs`: `task_control_keyboard` with optional `watch_url` button, `can_render_watch_url` validator, watch-button URL parsing.
 
 ## 🦀 Rust Architecture & Workflow
 
