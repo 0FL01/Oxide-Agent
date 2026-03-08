@@ -3,6 +3,7 @@
 //! Contains keyboards, text messages, and formatters for agent mode.
 
 use oxide_agent_core::agent::loop_detection::LoopType;
+use oxide_agent_core::agent::TaskId;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -15,6 +16,12 @@ pub const LOOP_CALLBACK_RETRY: &str = "retry_no_loop";
 pub const LOOP_CALLBACK_RESET: &str = "reset_task";
 /// Callback data for cancelling the current task
 pub const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
+/// Prefix for task control callbacks.
+pub const TASK_CONTROL_CALLBACK_PREFIX: &str = "task_control";
+/// Callback action for runtime cancellation.
+pub const TASK_CONTROL_ACTION_CANCEL: &str = "cancel";
+/// Callback action for graceful stop with report.
+pub const TASK_CONTROL_ACTION_STOP: &str = "stop";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Trait definition
@@ -33,6 +40,9 @@ pub trait AgentView {
     /// Message when task is cancelled
     fn task_cancelled(cleared_todos: bool) -> &'static str;
 
+    /// Message when graceful stop is requested
+    fn task_stop_requested() -> &'static str;
+
     /// Message when memory is cleared
     fn memory_cleared() -> &'static str;
 
@@ -44,6 +54,9 @@ pub trait AgentView {
 
     /// Message when no active task to cancel
     fn no_active_task() -> &'static str;
+
+    /// Message when no active task to stop
+    fn no_active_task_to_stop() -> &'static str;
 
     /// Message when task is already running
     fn task_already_running() -> &'static str;
@@ -130,6 +143,10 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
         }
     }
 
+    fn task_stop_requested() -> &'static str {
+        "🛑 Stop requested. The task will stop at the next safe point and send a report."
+    }
+
     fn memory_cleared() -> &'static str {
         "🗑 Agent memory cleared"
     }
@@ -144,6 +161,10 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
 
     fn no_active_task() -> &'static str {
         "⚠️ No active task to cancel"
+    }
+
+    fn no_active_task_to_stop() -> &'static str {
+        "⚠️ No active task to stop"
     }
 
     fn task_already_running() -> &'static str {
@@ -249,12 +270,27 @@ pub fn loop_type_label(loop_type: LoopType) -> &'static str {
 #[must_use]
 pub fn get_agent_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![
-        vec![KeyboardButton::new("❌ Cancel Task")],
+        vec![
+            KeyboardButton::new("❌ Cancel Task"),
+            KeyboardButton::new("🛑 Stop with Report"),
+        ],
         vec![KeyboardButton::new("🗑 Clear Memory")],
         vec![KeyboardButton::new("🔄 Recreate Container")],
         vec![KeyboardButton::new("⬅️ Exit Agent Mode")],
     ])
     .resize_keyboard()
+}
+
+/// Get inline task control keyboard bound to a task.
+#[must_use]
+pub fn task_control_keyboard(task_id: TaskId) -> InlineKeyboardMarkup {
+    let cancel = format!("{TASK_CONTROL_CALLBACK_PREFIX}:{TASK_CONTROL_ACTION_CANCEL}:{task_id}");
+    let stop = format!("{TASK_CONTROL_CALLBACK_PREFIX}:{TASK_CONTROL_ACTION_STOP}:{task_id}");
+
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("❌ Cancel", cancel),
+        InlineKeyboardButton::callback("🛑 Stop", stop),
+    ]])
 }
 
 /// Get the loop action inline keyboard

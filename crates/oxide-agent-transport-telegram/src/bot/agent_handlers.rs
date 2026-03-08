@@ -10,8 +10,9 @@ use crate::bot::messaging::send_long_message;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
-    confirmation_keyboard, get_agent_keyboard, AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL,
-    LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
+    confirmation_keyboard, get_agent_keyboard, task_control_keyboard, AgentView, DefaultAgentView,
+    LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY, TASK_CONTROL_ACTION_CANCEL,
+    TASK_CONTROL_ACTION_STOP, TASK_CONTROL_CALLBACK_PREFIX,
 };
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
@@ -28,9 +29,11 @@ use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::{PendingInputPoll, StorageError, StorageProvider};
 use oxide_agent_runtime::{
     spawn_progress_runtime, CancellationToken, DetachedTaskSubmission, ProgressRuntimeConfig,
-    SessionRegistry, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
-    TaskExecutor, TaskExecutorError, TaskExecutorOptions, TaskRecord, TaskRegistry, WorkerManager,
+    SessionRegistry, TaskEventSubscription, TaskExecutionBackend, TaskExecutionOutcome,
+    TaskExecutionRequest, TaskExecutor, TaskExecutorError, TaskExecutorOptions, TaskRecord,
+    TaskRegistry, WorkerManager,
 };
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -38,7 +41,9 @@ use std::time::{Duration, Instant};
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::prelude::*;
 use teloxide::types::{CallbackQuery, InputPollOption, MessageId, ParseMode, PollAnswer};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::task::yield_now;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 const TELEGRAM_POLL_MIN_OPTIONS: usize = 2;
@@ -104,9 +109,48 @@ enum RecreateContainerOutcome {
 
 enum AgentControlCommand {
     CancelTask,
+    StopWithReport,
     ClearMemory,
     RecreateContainer,
     ExitAgentMode,
+}
+
+enum TaskControlAction {
+    Cancel,
+    Stop,
+}
+
+struct TaskControlCallbackPayload<'a> {
+    action: TaskControlAction,
+    task_id_raw: &'a str,
+}
+
+struct CallbackAck {
+    text: Option<String>,
+    show_alert: bool,
+}
+
+impl CallbackAck {
+    fn success() -> Self {
+        Self {
+            text: None,
+            show_alert: false,
+        }
+    }
+
+    fn alert(text: &str) -> Self {
+        Self {
+            text: Some(text.to_string()),
+            show_alert: true,
+        }
+    }
+}
+
+struct TaskEventSyncParams {
+    bot: Bot,
+    chat_id: ChatId,
+    task_id: TaskId,
+    context: Arc<TelegramHandlerContext>,
 }
 
 /// Inputs required to switch a Telegram user into agent mode.
@@ -124,6 +168,7 @@ pub(crate) struct ActivateAgentModeParams {
 fn parse_agent_control_command(text: &str) -> Option<AgentControlCommand> {
     match text {
         "❌ Cancel Task" => Some(AgentControlCommand::CancelTask),
+        "🛑 Stop with Report" => Some(AgentControlCommand::StopWithReport),
         "🗑 Clear Memory" => Some(AgentControlCommand::ClearMemory),
         "🔄 Recreate Container" => Some(AgentControlCommand::RecreateContainer),
         "⬅️ Exit Agent Mode" => Some(AgentControlCommand::ExitAgentMode),
@@ -141,6 +186,9 @@ async fn handle_agent_control_command(
     match command {
         AgentControlCommand::CancelTask => {
             cancel_agent_task(bot, msg, dialogue, Arc::clone(&context.task_runtime)).await
+        }
+        AgentControlCommand::StopWithReport => {
+            stop_agent_task_with_report(bot, msg, dialogue, Arc::clone(&context.task_runtime)).await
         }
         AgentControlCommand::ClearMemory => {
             confirm_destructive_action(
@@ -447,6 +495,54 @@ impl AgentTaskRuntime {
         .await
     }
 
+    pub(crate) async fn stop_task_for_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Option<TaskRecord>, TaskExecutorError> {
+        self.with_session_gate(session_id, || async move {
+            self.stop_task_for_session_inner(session_id).await
+        })
+        .await
+    }
+
+    pub(crate) async fn cancel_task_for_owner_and_id(
+        &self,
+        owner_session_id: SessionId,
+        task_id: TaskId,
+    ) -> Result<Option<TaskRecord>, TaskExecutorError> {
+        self.with_session_gate(owner_session_id, || async move {
+            let Some(record) = self.task_registry.get(&task_id).await else {
+                return Ok(None);
+            };
+
+            if record.session_id != owner_session_id || record.metadata.state.is_terminal() {
+                return Ok(None);
+            }
+
+            self.task_executor.cancel_task(&task_id).await.map(Some)
+        })
+        .await
+    }
+
+    pub(crate) async fn stop_task_for_owner_and_id(
+        &self,
+        owner_session_id: SessionId,
+        task_id: TaskId,
+    ) -> Result<Option<TaskRecord>, TaskExecutorError> {
+        self.with_session_gate(owner_session_id, || async move {
+            let Some(record) = self.task_registry.get(&task_id).await else {
+                return Ok(None);
+            };
+
+            if record.session_id != owner_session_id || record.metadata.state.is_terminal() {
+                return Ok(None);
+            }
+
+            self.task_executor.stop_and_report(&task_id).await.map(Some)
+        })
+        .await
+    }
+
     async fn cancel_task_for_session_inner(
         &self,
         session_id: SessionId,
@@ -461,6 +557,24 @@ impl AgentTaskRuntime {
 
         self.task_executor
             .cancel_task(&record.metadata.id)
+            .await
+            .map(Some)
+    }
+
+    async fn stop_task_for_session_inner(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Option<TaskRecord>, TaskExecutorError> {
+        let Some(record) = self
+            .task_registry
+            .latest_non_terminal_by_session(&session_id)
+            .await
+        else {
+            return Ok(None);
+        };
+
+        self.task_executor
+            .stop_and_report(&record.metadata.id)
             .await
             .map(Some)
     }
@@ -615,6 +729,16 @@ struct RunAgentTaskRequest {
     cancellation_token: Arc<CancellationToken>,
 }
 
+struct SubmitAgentTaskRequest {
+    bot: Bot,
+    chat_id: ChatId,
+    context: Arc<TelegramHandlerContext>,
+    storage: Arc<dyn StorageProvider>,
+    task_runtime: Arc<AgentTaskRuntime>,
+    session_id: SessionId,
+    task_text: String,
+}
+
 #[async_trait]
 impl TaskExecutionBackend for TelegramTaskExecutionBackend {
     async fn execute(&self, request: TaskExecutionRequest) -> Result<TaskExecutionOutcome> {
@@ -696,6 +820,14 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
                 .active_task_for_session(session_id)
                 .await
             {
+                let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
+                    bot: bot.clone(),
+                    chat_id: msg.chat.id,
+                    task_id: record.metadata.id,
+                    context: Arc::clone(&context),
+                })
+                .await;
+
                 let delivered_poll = deliver_waiting_choice_poll_if_needed(
                     &bot,
                     msg.chat.id,
@@ -759,6 +891,13 @@ pub async fn handle_agent_message(
         .active_task_for_session(session_id)
         .await
     {
+        let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
+            bot: bot.clone(),
+            chat_id,
+            task_id: record.metadata.id,
+            context: Arc::clone(&context),
+        })
+        .await;
         handle_active_task_message(&bot, &msg, context.as_ref(), user_id, chat_id, &record).await?;
         return Ok(());
     }
@@ -782,14 +921,15 @@ pub async fn handle_agent_message(
         }
     };
 
-    submit_agent_task(
-        &bot,
+    submit_agent_task(SubmitAgentTaskRequest {
+        bot,
         chat_id,
-        Arc::clone(&context.storage),
-        Arc::clone(&context.task_runtime),
+        context: Arc::clone(&context),
+        storage: Arc::clone(&context.storage),
+        task_runtime: Arc::clone(&context.task_runtime),
         session_id,
         task_text,
-    )
+    })
     .await
 }
 
@@ -998,14 +1138,28 @@ async fn resume_waiting_task_input(
     context: &TelegramHandlerContext,
     resume: ResumeTaskInput<'_>,
 ) -> Result<bool> {
+    let chat_id = resume.chat_id;
+    let task_id = *resume.task_id;
+
     let backend = Arc::new(TelegramTaskExecutionBackend {
         bot: bot.clone(),
-        chat_id: resume.chat_id,
+        chat_id,
         storage: Arc::clone(&context.storage),
         task_runtime: Arc::clone(&context.task_runtime),
     });
 
-    resume_waiting_task_input_with_backend(context, resume, backend).await
+    let resumed = resume_waiting_task_input_with_backend(context, resume, backend).await?;
+    if resumed {
+        let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
+            bot: bot.clone(),
+            chat_id,
+            task_id,
+            context: Arc::new(context.clone()),
+        })
+        .await;
+    }
+
+    Ok(resumed)
 }
 
 async fn resume_waiting_task_input_with_backend<B>(
@@ -1035,7 +1189,7 @@ where
         .resume_task(resume.task_id, resume.input, backend)
         .await
     {
-        Ok(_) => Ok(true),
+        Ok(_record) => Ok(true),
         Err(error) => {
             warn!(task_id = %resume.task_id, error = %error, "Failed to resume waiting task input");
             Ok(false)
@@ -1394,14 +1548,17 @@ async fn execute_agent_task(
     Ok(AgentExecutionResult { outcome, memory })
 }
 
-async fn submit_agent_task(
-    bot: &Bot,
-    chat_id: ChatId,
-    storage: Arc<dyn StorageProvider>,
-    task_runtime: Arc<AgentTaskRuntime>,
-    session_id: SessionId,
-    task_text: String,
-) -> Result<()> {
+async fn submit_agent_task(request: SubmitAgentTaskRequest) -> Result<()> {
+    let SubmitAgentTaskRequest {
+        bot,
+        chat_id,
+        context,
+        storage,
+        task_runtime,
+        session_id,
+        task_text,
+    } = request;
+
     info!(
         session_id = %session_id,
         chat_id = chat_id.0,
@@ -1415,16 +1572,192 @@ async fn submit_agent_task(
         task_runtime: Arc::clone(&task_runtime),
     });
 
-    if let Err(error) = task_runtime
+    let submitted = task_runtime
         .submit_task(session_id, task_text, backend)
-        .await
-    {
+        .await;
+
+    if let Err(error) = submitted {
         warn!(session_id = %session_id, error = %error, "Failed to submit agent task");
         bot.send_message(chat_id, DefaultAgentView::error_message(&error.to_string()))
             .await?;
+    } else if let Ok(record) = submitted {
+        let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
+            bot,
+            chat_id,
+            task_id: record.metadata.id,
+            context,
+        })
+        .await;
     }
 
     Ok(())
+}
+
+async fn ensure_task_event_sync(params: TaskEventSyncParams) -> Option<JoinHandle<()>> {
+    if !register_task_watcher(&params.context.task_watchers, params.task_id).await {
+        return None;
+    }
+
+    let TaskEventSyncParams {
+        bot,
+        chat_id,
+        task_id,
+        context,
+    } = params;
+
+    Some(tokio::spawn(async move {
+        sync_task_events(bot, chat_id, task_id, Arc::clone(&context)).await;
+        unregister_task_watcher(&context.task_watchers, task_id).await;
+    }))
+}
+
+async fn register_task_watcher(
+    watchers: &Arc<tokio::sync::Mutex<HashSet<TaskId>>>,
+    task_id: TaskId,
+) -> bool {
+    watchers.lock().await.insert(task_id)
+}
+
+async fn unregister_task_watcher(
+    watchers: &Arc<tokio::sync::Mutex<HashSet<TaskId>>>,
+    task_id: TaskId,
+) {
+    watchers.lock().await.remove(&task_id);
+}
+
+async fn sync_task_events(
+    bot: Bot,
+    chat_id: ChatId,
+    task_id: TaskId,
+    context: Arc<TelegramHandlerContext>,
+) {
+    let mut last_seen_sequence = None;
+    let mut last_state = None;
+    let mut terminal_sent = false;
+
+    loop {
+        let subscription = context
+            .task_events
+            .subscribe(task_id, last_seen_sequence)
+            .await;
+        let TaskEventSubscription {
+            snapshot,
+            replay_events,
+            mut live_receiver,
+        } = match subscription {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                warn!(task_id = %task_id, error = %error, "Failed to subscribe to task events");
+                break;
+            }
+        };
+
+        for event in replay_events {
+            if event.sequence <= last_seen_sequence.unwrap_or_default() {
+                continue;
+            }
+            last_seen_sequence = Some(event.sequence);
+            last_state =
+                notify_task_state_if_changed(&bot, chat_id, task_id, event.state, last_state).await;
+            if event.state.is_terminal() {
+                terminal_sent = true;
+                break;
+            }
+        }
+
+        if terminal_sent {
+            break;
+        }
+
+        if let Some(ref snapshot) = snapshot {
+            if let Some(sequence) = last_seen_sequence {
+                if snapshot.checkpoint.last_event_sequence > sequence
+                    && snapshot.metadata.state.is_terminal()
+                {
+                    let _last = notify_task_state_if_changed(
+                        &bot,
+                        chat_id,
+                        task_id,
+                        snapshot.metadata.state,
+                        last_state,
+                    )
+                    .await;
+                    break;
+                }
+            }
+        }
+
+        let Some(receiver) = live_receiver.as_mut() else {
+            if let Some(ref snapshot) = snapshot {
+                if snapshot.metadata.state.is_terminal() {
+                    let _last = notify_task_state_if_changed(
+                        &bot,
+                        chat_id,
+                        task_id,
+                        snapshot.metadata.state,
+                        last_state,
+                    )
+                    .await;
+                }
+            }
+            break;
+        };
+
+        match receiver.recv().await {
+            Ok(event) => {
+                if event.sequence <= last_seen_sequence.unwrap_or_default() {
+                    continue;
+                }
+                last_seen_sequence = Some(event.sequence);
+                last_state =
+                    notify_task_state_if_changed(&bot, chat_id, task_id, event.state, last_state)
+                        .await;
+                if event.state.is_terminal() {
+                    break;
+                }
+            }
+            Err(RecvError::Closed) => break,
+            Err(RecvError::Lagged(_)) => continue,
+        }
+    }
+}
+
+async fn notify_task_state_if_changed(
+    bot: &Bot,
+    chat_id: ChatId,
+    task_id: TaskId,
+    next_state: TaskState,
+    last_state: Option<TaskState>,
+) -> Option<TaskState> {
+    if last_state == Some(next_state) {
+        return last_state;
+    }
+
+    let text = format_task_state_message(task_id, next_state);
+    let mut request = bot.send_message(chat_id, text).parse_mode(ParseMode::Html);
+    if !next_state.is_terminal() {
+        request = request.reply_markup(task_control_keyboard(task_id));
+    }
+
+    if let Err(error) = request.await {
+        warn!(task_id = %task_id, state = ?next_state, error = %error, "Failed to publish task state update");
+        return last_state;
+    }
+
+    Some(next_state)
+}
+
+fn format_task_state_message(task_id: TaskId, state: TaskState) -> String {
+    let state_text = match state {
+        TaskState::Pending => "queued",
+        TaskState::Running => "running",
+        TaskState::WaitingInput => "waiting for input",
+        TaskState::Completed => "completed",
+        TaskState::Failed => "failed",
+        TaskState::Cancelled => "cancelled",
+        TaskState::Stopped => "stopped with report",
+    };
+    format!("📡 Task <code>{task_id}</code>: <b>{state_text}</b>")
 }
 
 /// Handle loop-detection inline keyboard callbacks.
@@ -1441,8 +1774,6 @@ pub async fn handle_loop_callback(
         return Ok(());
     };
 
-    let _ = bot.answer_callback_query(q.id.clone()).await;
-
     let user_id = q.from.id.0.cast_signed();
     let chat_id = q
         .message
@@ -1450,6 +1781,107 @@ pub async fn handle_loop_callback(
         .map(|msg| msg.chat().id)
         .ok_or_else(|| anyhow::anyhow!("Callback message missing chat id"))?;
 
+    let ack = match handle_task_control_callback(&bot, data, user_id, chat_id, &context).await? {
+        Some(ack) => ack,
+        None => {
+            handle_loop_control_callback(&bot, data, user_id, chat_id, &context).await?;
+            CallbackAck::success()
+        }
+    };
+
+    let mut answer = bot.answer_callback_query(q.id);
+    if let Some(text) = ack.text {
+        answer = answer.text(text).show_alert(ack.show_alert);
+    }
+    let _ = answer.await;
+
+    Ok(())
+}
+
+async fn handle_task_control_callback(
+    bot: &Bot,
+    data: &str,
+    user_id: i64,
+    chat_id: ChatId,
+    context: &TelegramHandlerContext,
+) -> Result<Option<CallbackAck>> {
+    let Some(payload) = parse_task_control_callback(data) else {
+        return Ok(None);
+    };
+
+    let TaskControlCallbackPayload {
+        action,
+        task_id_raw,
+    } = payload;
+
+    let caller_session_id = SessionId::from(user_id);
+    let Some(task_id) = resolve_task_id_from_callback_raw(context, task_id_raw).await else {
+        return Ok(Some(CallbackAck::alert(
+            "This task control is stale and no longer active.",
+        )));
+    };
+
+    let Some(record) = context.task_runtime.task_registry.get(&task_id).await else {
+        return Ok(Some(CallbackAck::alert(
+            "This task control is stale and no longer active.",
+        )));
+    };
+
+    if record.metadata.state.is_terminal() {
+        return Ok(Some(CallbackAck::alert(
+            "This task control is stale and no longer active.",
+        )));
+    }
+
+    if record.session_id != caller_session_id {
+        return Ok(Some(CallbackAck::alert(
+            "Only the task owner can use these controls.",
+        )));
+    }
+
+    match action {
+        TaskControlAction::Cancel => {
+            let applied = cancel_agent_task_by_task_id(
+                bot.clone(),
+                user_id,
+                chat_id,
+                task_id,
+                Arc::clone(&context.task_runtime),
+            )
+            .await?;
+            if !applied {
+                return Ok(Some(CallbackAck::alert(
+                    "This task control is stale and no longer active.",
+                )));
+            }
+        }
+        TaskControlAction::Stop => {
+            let applied = stop_agent_task_with_report_by_task_id(
+                bot.clone(),
+                user_id,
+                chat_id,
+                task_id,
+                Arc::clone(&context.task_runtime),
+            )
+            .await?;
+            if !applied {
+                return Ok(Some(CallbackAck::alert(
+                    "This task control is stale and no longer active.",
+                )));
+            }
+        }
+    }
+
+    Ok(Some(CallbackAck::success()))
+}
+
+async fn handle_loop_control_callback(
+    bot: &Bot,
+    data: &str,
+    user_id: i64,
+    chat_id: ChatId,
+    context: &TelegramHandlerContext,
+) -> Result<()> {
     match data {
         LOOP_CALLBACK_RETRY => {
             let backend = Arc::new(TelegramTaskExecutionBackend {
@@ -1515,6 +1947,40 @@ pub async fn handle_loop_callback(
     }
 
     Ok(())
+}
+
+fn parse_task_control_callback(data: &str) -> Option<TaskControlCallbackPayload<'_>> {
+    let mut parts = data.split(':');
+    let prefix = parts.next()?;
+    if prefix != TASK_CONTROL_CALLBACK_PREFIX {
+        return None;
+    }
+
+    let action = match parts.next()? {
+        TASK_CONTROL_ACTION_CANCEL => TaskControlAction::Cancel,
+        TASK_CONTROL_ACTION_STOP => TaskControlAction::Stop,
+        _ => return None,
+    };
+    let task_id_raw = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some(TaskControlCallbackPayload {
+        action,
+        task_id_raw,
+    })
+}
+
+async fn resolve_task_id_from_callback_raw(
+    context: &TelegramHandlerContext,
+    task_id_raw: &str,
+) -> Option<TaskId> {
+    let task_records = context.task_runtime.task_registry.list().await;
+    task_records
+        .into_iter()
+        .find(|record| record.metadata.id.to_string() == task_id_raw)
+        .map(|record| record.metadata.id)
 }
 
 /// Handle Telegram poll answers for waiting choice input routing.
@@ -1674,6 +2140,21 @@ pub async fn cancel_agent_task(
     Ok(())
 }
 
+/// Request graceful stop and stop report for the current task.
+///
+/// # Errors
+///
+/// Returns an error if the control message cannot be sent.
+pub async fn stop_agent_task_with_report(
+    bot: Bot,
+    msg: Message,
+    _dialogue: AgentDialogue,
+    task_runtime: Arc<AgentTaskRuntime>,
+) -> Result<()> {
+    let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    stop_agent_task_with_report_by_id(bot, user_id, msg.chat.id, task_runtime).await
+}
+
 async fn cancel_agent_task_by_id(
     bot: Bot,
     user_id: i64,
@@ -1702,6 +2183,80 @@ async fn cancel_agent_task_by_id(
     }
 
     Ok(())
+}
+
+async fn cancel_agent_task_by_task_id(
+    bot: Bot,
+    user_id: i64,
+    chat_id: ChatId,
+    task_id: TaskId,
+    task_runtime: Arc<AgentTaskRuntime>,
+) -> Result<bool> {
+    let session_id = SessionId::from(user_id);
+    let cancelled = task_runtime
+        .cancel_task_for_owner_and_id(session_id, task_id)
+        .await?
+        .is_some();
+
+    if cancelled {
+        let cleared_todos = matches!(
+            task_runtime.clear_todos(session_id).await,
+            ClearTodosOutcome::Cleared
+        );
+        let text = DefaultAgentView::task_cancelled(cleared_todos);
+        bot.send_message(chat_id, text)
+            .reply_markup(get_agent_keyboard())
+            .await?;
+    }
+
+    Ok(cancelled)
+}
+
+async fn stop_agent_task_with_report_by_id(
+    bot: Bot,
+    user_id: i64,
+    chat_id: ChatId,
+    task_runtime: Arc<AgentTaskRuntime>,
+) -> Result<()> {
+    let session_id = SessionId::from(user_id);
+    let stopped = task_runtime
+        .stop_task_for_session(session_id)
+        .await?
+        .is_some();
+
+    if stopped {
+        bot.send_message(chat_id, DefaultAgentView::task_stop_requested())
+            .reply_markup(get_agent_keyboard())
+            .await?;
+    } else {
+        bot.send_message(chat_id, DefaultAgentView::no_active_task_to_stop())
+            .reply_markup(get_agent_keyboard())
+            .await?;
+    }
+
+    Ok(())
+}
+
+async fn stop_agent_task_with_report_by_task_id(
+    bot: Bot,
+    user_id: i64,
+    chat_id: ChatId,
+    task_id: TaskId,
+    task_runtime: Arc<AgentTaskRuntime>,
+) -> Result<bool> {
+    let session_id = SessionId::from(user_id);
+    let stopped = task_runtime
+        .stop_task_for_owner_and_id(session_id, task_id)
+        .await?
+        .is_some();
+
+    if stopped {
+        bot.send_message(chat_id, DefaultAgentView::task_stop_requested())
+            .reply_markup(get_agent_keyboard())
+            .await?;
+    }
+
+    Ok(stopped)
 }
 
 /// Exit agent mode
@@ -1917,9 +2472,11 @@ pub async fn handle_agent_confirmation(
 #[cfg(test)]
 mod tests {
     use super::{
-        destructive_action_block_message, exit_block_message, AgentModeActivationOutcome,
-        AgentTaskRuntime, ClearMemoryOutcome, ExitSessionOutcome, RecreateContainerOutcome,
-        RetryTaskOutcome, SessionResetOutcome, SESSION_REGISTRY,
+        destructive_action_block_message, exit_block_message, format_task_state_message,
+        handle_task_control_callback, parse_agent_control_command, parse_task_control_callback,
+        AgentModeActivationOutcome, AgentTaskRuntime, ClearMemoryOutcome, ExitSessionOutcome,
+        RecreateContainerOutcome, RetryTaskOutcome, SessionResetOutcome, TaskControlAction,
+        SESSION_REGISTRY,
     };
     use crate::bot::context::TelegramHandlerContext;
     use crate::bot::views::{AgentView, DefaultAgentView};
@@ -1938,10 +2495,10 @@ mod tests {
     };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use oxide_agent_runtime::{
-        CancellationToken, TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest,
-        TaskExecutorError, TaskRegistry,
+        CancellationToken, TaskEventBroadcaster, TaskEventBroadcasterOptions, TaskExecutionBackend,
+        TaskExecutionOutcome, TaskExecutionRequest, TaskExecutorError, TaskRegistry,
     };
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
     use teloxide::types::{ChatId, MaybeAnonymousUser, PollAnswer, PollId, User, UserId};
     use teloxide::Bot;
@@ -2448,13 +3005,17 @@ mod tests {
         let llm = Arc::new(LlmClient::new(&llm_settings));
 
         TelegramHandlerContext {
-            storage,
+            storage: Arc::clone(&storage),
             llm,
             settings: Arc::new(BotSettings::new(
                 agent_settings,
                 TelegramSettings::default(),
             )),
             task_runtime,
+            task_events: Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
+                storage,
+            ))),
+            task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
         }
     }
 
@@ -2664,6 +3225,204 @@ mod tests {
         assert!(!text.contains("<b>approval</b>"));
     }
 
+    #[test]
+    fn task_controls_parse_agent_control_command_recognizes_stop_with_report() {
+        let command = parse_agent_control_command("🛑 Stop with Report");
+        assert!(matches!(
+            command,
+            Some(super::AgentControlCommand::StopWithReport)
+        ));
+    }
+
+    #[test]
+    fn task_controls_parse_task_control_callback_parses_task_scoped_payload() {
+        let task_id = TaskMetadata::new().id;
+        let callback = format!("task_control:stop:{task_id}");
+        assert!(callback.len() <= 64);
+        let parsed = parse_task_control_callback(&callback);
+
+        assert!(matches!(
+            parsed,
+            Some(super::TaskControlCallbackPayload {
+                action: TaskControlAction::Stop,
+                task_id_raw,
+            }) if task_id_raw == task_id.to_string()
+        ));
+    }
+
+    #[test]
+    fn task_controls_parse_task_control_callback_rejects_malformed_payload() {
+        assert!(parse_task_control_callback("task_control:cancel").is_none());
+        assert!(parse_task_control_callback("task_control:cancel:task:extra").is_none());
+        assert!(parse_task_control_callback("task_control:unknown:task").is_none());
+        assert!(parse_task_control_callback("unknown:stop:task").is_none());
+    }
+
+    #[tokio::test]
+    async fn task_controls_stale_callback_does_not_cancel_newer_task() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let session_id = SessionId::from(4_811);
+        let user_id = session_id.as_i64();
+        insert_test_session(session_id).await;
+
+        let old_record = task_runtime
+            .submit_task(
+                session_id,
+                "old task".to_string(),
+                Arc::new(CompletedBackend),
+            )
+            .await;
+        assert!(old_record.is_ok());
+        let old_task_id = match old_record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected old task submit error: {error}"),
+        };
+        wait_for_runtime_task_completion(task_runtime.as_ref(), session_id).await;
+
+        let started = Arc::new(Notify::new());
+        let released = Arc::new(Notify::new());
+        let backend = Arc::new(LockingBackend {
+            started: Arc::clone(&started),
+            released: Arc::clone(&released),
+        });
+        let new_record = task_runtime
+            .submit_task(session_id, "new task".to_string(), backend)
+            .await;
+        assert!(new_record.is_ok());
+        let new_task_id = match new_record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected new task submit error: {error}"),
+        };
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+        let callback = format!("task_control:cancel:{old_task_id}");
+        let ack = handle_task_control_callback(
+            &Bot::new("test"),
+            &callback,
+            user_id,
+            ChatId(user_id),
+            &context,
+        )
+        .await;
+
+        assert!(matches!(
+            ack,
+            Ok(Some(ref ack))
+                if ack.show_alert
+                    && ack.text.as_deref() == Some("This task control is stale and no longer active.")
+        ));
+
+        let active = task_runtime.active_task_for_session(session_id).await;
+        assert!(matches!(
+            active,
+            Some(ref record)
+                if record.metadata.id == new_task_id
+                    && record.metadata.state.is_non_terminal()
+        ));
+
+        let cancelled = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), released.notified())
+            .await
+            .is_ok());
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn task_controls_foreign_owner_callback_returns_alert_without_side_effects() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_session_id = SessionId::from(4_912);
+        let owner_user_id = owner_session_id.as_i64();
+        let foreign_user_id = owner_user_id + 100;
+        insert_test_session(owner_session_id).await;
+
+        let started = Arc::new(Notify::new());
+        let released = Arc::new(Notify::new());
+        let backend = Arc::new(LockingBackend {
+            started: Arc::clone(&started),
+            released: Arc::clone(&released),
+        });
+        let submitted = task_runtime
+            .submit_task(owner_session_id, "protected task".to_string(), backend)
+            .await;
+        assert!(submitted.is_ok());
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected protected task submit error: {error}"),
+        };
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+        let callback = format!("task_control:stop:{task_id}");
+        let ack = handle_task_control_callback(
+            &Bot::new("test"),
+            &callback,
+            foreign_user_id,
+            ChatId(owner_user_id),
+            &context,
+        )
+        .await;
+
+        assert!(matches!(
+            ack,
+            Ok(Some(ref ack))
+                if ack.show_alert
+                    && ack.text.as_deref() == Some("Only the task owner can use these controls.")
+        ));
+
+        let active = task_runtime.active_task_for_session(owner_session_id).await;
+        assert!(matches!(
+            active,
+            Some(ref record)
+                if record.metadata.id == task_id && record.metadata.state.is_non_terminal()
+        ));
+
+        let cancelled = task_runtime.cancel_task_for_session(owner_session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), released.notified())
+            .await
+            .is_ok());
+        SESSION_REGISTRY.remove(&owner_session_id).await;
+    }
+
+    #[test]
+    fn terminal_notifications_format_task_state_message_covers_terminal_states() {
+        let task_id = TaskMetadata::new().id;
+
+        let completed = format_task_state_message(task_id, TaskState::Completed);
+        let failed = format_task_state_message(task_id, TaskState::Failed);
+        let cancelled = format_task_state_message(task_id, TaskState::Cancelled);
+        let stopped = format_task_state_message(task_id, TaskState::Stopped);
+
+        assert!(completed.contains("completed"));
+        assert!(failed.contains("failed"));
+        assert!(cancelled.contains("cancelled"));
+        assert!(stopped.contains("stopped with report"));
+    }
+
     #[tokio::test]
     async fn execute_agent_task_returns_waiting_input_for_real_executor_path() {
         let session_id = SessionId::from(4_001);
@@ -2750,6 +3509,47 @@ mod tests {
             .await
             .is_none());
 
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn task_controls_runtime_stop_for_session_requests_graceful_stop() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        );
+        let session_id = SessionId::from(4_410);
+        insert_test_session(session_id).await;
+
+        let started = Arc::new(Notify::new());
+        let released = Arc::new(Notify::new());
+        let backend = Arc::new(LockingBackend {
+            started: Arc::clone(&started),
+            released: Arc::clone(&released),
+        });
+
+        let submit_result = task_runtime
+            .submit_task(session_id, "stop me".to_string(), backend)
+            .await;
+        assert!(submit_result.is_ok());
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let stop_result = task_runtime.stop_task_for_session(session_id).await;
+        assert!(matches!(
+            stop_result,
+            Ok(Some(ref record)) if record.metadata.state == TaskState::Running
+        ));
+
+        let cancelled = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), released.notified())
+            .await
+            .is_ok());
         SESSION_REGISTRY.remove(&session_id).await;
     }
 

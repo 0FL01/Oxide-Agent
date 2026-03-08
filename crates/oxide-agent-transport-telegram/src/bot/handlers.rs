@@ -1073,9 +1073,10 @@ mod tests {
     use oxide_agent_core::llm::LlmClient;
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use oxide_agent_runtime::{
-        TaskExecutionBackend, TaskExecutionOutcome, TaskExecutionRequest, TaskRegistry,
+        TaskEventBroadcaster, TaskEventBroadcasterOptions, TaskExecutionBackend,
+        TaskExecutionOutcome, TaskExecutionRequest, TaskRegistry,
     };
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
     use teloxide::dispatching::dialogue::{Dialogue, InMemStorage};
     use teloxide::types::ChatId;
@@ -1333,10 +1334,14 @@ mod tests {
         let llm = Arc::new(LlmClient::new(&llm_settings));
 
         TelegramHandlerContext {
-            storage,
+            storage: Arc::clone(&storage),
             llm,
             settings: Arc::new(BotSettings::new(agent_settings, telegram_settings)),
             task_runtime,
+            task_events: Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
+                storage,
+            ))),
+            task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
         }
     }
 

@@ -11,7 +11,11 @@ use crate::config::{
 use anyhow::Context;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::{llm, storage};
-use oxide_agent_runtime::{TaskRecovery, TaskRecoveryOptions, TaskRegistry};
+use oxide_agent_runtime::{
+    SharedTaskEventPublisher, TaskEventBroadcaster, TaskEventBroadcasterOptions, TaskRecovery,
+    TaskRecoveryOptions, TaskRegistry,
+};
+use std::collections::HashSet;
 use std::sync::Arc;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::UpdateHandler;
@@ -22,7 +26,11 @@ use tracing::{error, info};
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) -> anyhow::Result<()> {
     let storage = init_storage(&settings).await?;
-    let task_registry = Arc::new(TaskRegistry::new());
+    let task_events = Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
+        Arc::clone(&storage),
+    )));
+    let task_event_publisher: SharedTaskEventPublisher = task_events.clone();
+    let task_registry = Arc::new(TaskRegistry::with_event_publisher(task_event_publisher));
     run_startup_recovery(Arc::clone(&storage), Arc::clone(&task_registry)).await?;
     let task_runtime = Arc::new(AgentTaskRuntime::new(
         Arc::clone(&storage),
@@ -36,6 +44,8 @@ pub async fn run_bot(settings: Arc<BotSettings>) -> anyhow::Result<()> {
         llm: Arc::clone(&llm_client),
         settings: Arc::clone(&settings),
         task_runtime: Arc::clone(&task_runtime),
+        task_events,
+        task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
     });
     info!("LLM Client initialized.");
 
