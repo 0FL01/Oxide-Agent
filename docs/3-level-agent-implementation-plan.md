@@ -1,6 +1,6 @@
 ### Agent Mode v2: Implementation Plan
 
-Status: In Progress (Stage 1 completed, Stage 2 completed, Stage 3 completed)
+Status: In Progress (Stage 1 completed, Stage 2 completed, Stage 3 completed, Stage 4 slices 4.1-4.3 completed)
 
 Progress update:
 
@@ -35,6 +35,12 @@ Progress update:
   - `aac4084` `fix(stage-3/slice-12): encode semantic choice resume payload`
   - `ae7bd0d` `fix(stage-3/slice-13): isolate stale poll mapping updates`
 - Stage 3 handover note: `docs/3-level-agent-stage-3-handover.txt`.
+- Stage 4 implementation is in progress on `arch-agent-mode`.
+- Completed Stage 4 commits:
+  - `c972555` `feat(stage-4/slice-1): add graceful stop contract`
+  - `bebe7af` `feat(stage-4/slice-2): add graceful stop runtime flow`
+  - `25ff522` `feat(stage-4/slice-3): add task event fan-out`
+- Stage 4 handover note: `docs/3-level-agent-stage-4-handover.txt`.
 
 Этот документ дополняет `docs/3-level-agent.md` и раскладывает внедрение Agent Mode v2 на конкретные стадии и небольшие auditable slices.
 
@@ -553,7 +559,17 @@ Stage 3 review status: APPROVED
 
 Цель stage: добавить управляемую остановку и отделить event delivery от одного transport consumer.
 
+Status: In Progress
+
+Implemented on branch `arch-agent-mode`:
+
+- Slice 4.1 - `c972555` `feat(stage-4/slice-1): add graceful stop contract`
+- Slice 4.2 - `bebe7af` `feat(stage-4/slice-2): add graceful stop runtime flow`
+- Slice 4.3 - `25ff522` `feat(stage-4/slice-3): add task event fan-out`
+
 #### Slice 4.1 - Stop Signal Contract
+
+Status: Done (`c972555`)
 
 Crates:
 
@@ -582,6 +598,8 @@ cargo test -p oxide-agent-core stop_signal
 ```
 
 #### Slice 4.2 - Graceful Stop Runtime Flow
+
+Status: Done (`bebe7af`)
 
 Crates:
 
@@ -613,6 +631,8 @@ cargo test -p oxide-agent-runtime graceful_stop
 
 #### Slice 4.3 - Event Fan-Out Layer
 
+Status: Done (`25ff522`)
+
 Crates:
 
 - `oxide-agent-runtime`
@@ -642,6 +662,8 @@ cargo test -p oxide-agent-runtime event_broadcaster
 ```
 
 #### Slice 4.4 - Telegram Task Controls
+
+Status: Pending
 
 Crates:
 
@@ -674,6 +696,12 @@ Exit criteria for Stage 4:
 
 - задача управляется пользователем через runtime-backed controls;
 - progress/event model пригоден для дополнительных consumers.
+
+Current Stage 4 status:
+
+- slices 4.1-4.3 implemented, verified, review-approved and committed;
+- slice 4.4 remains open;
+- Stage 4 final review status: PENDING.
 
 ---
 

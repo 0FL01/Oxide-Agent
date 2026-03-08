@@ -43,9 +43,9 @@ crates/
 │   ├── src/
 │   │   ├── lib.rs
 │   │   ├── session_registry.rs      # Управление сессиями пользователей
-│   │   ├── task_registry.rs         # Runtime registry для TaskId и cancellation tokens
-│   │   ├── task_executor.rs         # Detached task execution + checkpoint persistence
-│   │   ├── task_events.rs           # Transport-agnostic task event publishing
+│   │   ├── task_registry.rs         # Runtime registry: TaskId/session binding, cancel + graceful stop signals
+│   │   ├── task_executor.rs         # Detached task execution, checkpoint persistence, stop_and_report flow
+│   │   ├── task_events.rs           # Transport-agnostic task event publishing + TaskId-scoped fan-out/replay
 │   │   ├── task_recovery.rs         # Boot-time reconciliation and stale snapshot repair
 │   │   ├── worker_manager.rs        # TaskId -> JoinHandle tracking and worker limits
 │   │   ├── agent/
@@ -71,10 +71,23 @@ Dockerfile                           # Сборка основного Rust-пр
 ```
 
 ### Workspace crates
-- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, task domain и persistence contract.
-- `oxide-agent-runtime`: оркестрация сессий, worker manager, detached task executor, task recovery, task registry, task event publishing и runtime-компоненты.
+- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, task domain, stop/report contract и persistence contract.
+- `oxide-agent-runtime`: оркестрация сессий, worker manager, detached task executor, graceful stop flow, task recovery, task registry, task event fan-out/publishing и runtime-компоненты.
 - `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, runtime-aware Agent Mode routing, телеметрия доставки.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
+
+### Agent Mode v2 status
+- Stage 1 completed: task identity, persistence contract, task registry, task events.
+- Stage 2 completed: detached background execution, recovery and cancellation.
+- Stage 3 completed: HITL pause/resume with Telegram poll/text resume flow.
+- Stage 4 in progress: graceful stop core/runtime path and runtime event fan-out are implemented; Telegram task controls are still pending.
+
+### Stage 4 code landmarks
+- `crates/oxide-agent-core/src/agent/task.rs`: `TaskState::Stopped`, `StopSignal`, `StopSafePoint`, `StopReport`, stop-related snapshot/event invariants.
+- `crates/oxide-agent-runtime/src/task_registry.rs`: runtime task state transitions, cancellation, pending graceful-stop tracking.
+- `crates/oxide-agent-runtime/src/task_executor.rs`: detached worker lifecycle, stop-and-report handling, terminal snapshot persistence.
+- `crates/oxide-agent-runtime/src/task_events.rs`: `TaskEventBroadcaster`, TaskId subscriptions, replay/live handoff, backpressure policy, terminal stream cleanup.
+- `crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs`: current Agent Mode transport entry points; next Stage 4 slice adds stop controls and live task notifications here.
 
 ## 🦀 Rust Architecture & Workflow
 
