@@ -69,6 +69,7 @@ pub use session::{AgentSession, AgentStatus};
 pub use skills::SkillRegistry;
 pub use task::{
     PendingChoiceInput, PendingInput, PendingInputKind, PendingInputValidationError,
-    PendingTextInput, TaskCheckpoint, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot,
+    PendingTextInput, StopReport, StopReportValidationError, StopSafePoint, StopSignal,
+    StopSignalMode, TaskCheckpoint, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot,
     TaskSnapshotValidationError, TaskState, TaskStateTransitionError,
 };

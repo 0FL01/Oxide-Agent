@@ -65,13 +65,18 @@ pub enum TaskState {
     Failed,
     /// Task was cancelled before successful completion.
     Cancelled,
+    /// Task stopped gracefully with a partial report at a safe point.
+    Stopped,
 }
 
 impl TaskState {
     /// Return true when the state is terminal.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Stopped
+        )
     }
 
     /// Return true when the state has not reached a terminal outcome yet.
@@ -90,8 +95,8 @@ impl TaskState {
     ///
     /// Transition graph:
     /// Pending -> Running | Cancelled
-    /// Running -> WaitingInput | Completed | Failed | Cancelled
-    /// WaitingInput -> Running | Cancelled
+    /// Running -> WaitingInput | Completed | Failed | Cancelled | Stopped
+    /// WaitingInput -> Running | Cancelled | Stopped
     #[must_use]
     pub const fn can_transition_to(self, next: Self) -> bool {
         matches!(
@@ -99,9 +104,16 @@ impl TaskState {
             (Self::Pending, Self::Running | Self::Cancelled)
                 | (
                     Self::Running,
-                    Self::WaitingInput | Self::Completed | Self::Failed | Self::Cancelled
+                    Self::WaitingInput
+                        | Self::Completed
+                        | Self::Failed
+                        | Self::Cancelled
+                        | Self::Stopped
                 )
-                | (Self::WaitingInput, Self::Running | Self::Cancelled)
+                | (
+                    Self::WaitingInput,
+                    Self::Running | Self::Cancelled | Self::Stopped
+                )
         )
     }
 
@@ -408,6 +420,102 @@ pub enum PendingInputValidationError {
     },
 }
 
+/// Contract for graceful stop requests separated from hard cancellation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopSignal {
+    /// Desired stop behavior.
+    pub mode: StopSignalMode,
+    /// Safe point where the worker should stop and produce report.
+    pub safe_point: StopSafePoint,
+}
+
+/// Supported graceful stop mode(s).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopSignalMode {
+    /// Soft-stop execution and emit a partial report.
+    StopAndReport,
+}
+
+/// Safe points where a graceful stop can be observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopSafePoint {
+    /// Stop at loop boundary while task is actively running.
+    LoopBoundary,
+    /// Stop while task is paused waiting for user input.
+    WaitingInput,
+}
+
+impl StopSafePoint {
+    /// Return true when this safe point is valid for the observed task state.
+    #[must_use]
+    pub const fn supports_state(self, state: TaskState) -> bool {
+        matches!(
+            (self, state),
+            (Self::LoopBoundary, TaskState::Running)
+                | (Self::WaitingInput, TaskState::WaitingInput)
+        )
+    }
+}
+
+/// Transport-agnostic partial report produced by graceful stop flow.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopReport {
+    /// Human-readable summary generated from current task progress.
+    pub summary: String,
+    /// Safe point where stop was observed.
+    pub safe_point: StopSafePoint,
+    /// Task state observed when stop signal was handled.
+    pub observed_state: TaskState,
+}
+
+impl StopReport {
+    /// Validate report invariants required by graceful stop contract.
+    pub fn validate(&self) -> Result<(), StopReportValidationError> {
+        if self.summary.trim().is_empty() {
+            return Err(StopReportValidationError::EmptySummary);
+        }
+
+        if self.observed_state.is_terminal() {
+            return Err(StopReportValidationError::TerminalObservedState {
+                state: self.observed_state,
+            });
+        }
+
+        if !self.safe_point.supports_state(self.observed_state) {
+            return Err(StopReportValidationError::InvalidSafePointForState {
+                safe_point: self.safe_point,
+                state: self.observed_state,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// Errors returned by graceful stop report validation.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum StopReportValidationError {
+    /// Graceful stop report summary cannot be empty.
+    #[error("stop report summary cannot be empty")]
+    EmptySummary,
+    /// Safe point is inconsistent with observed state.
+    #[error("safe point {safe_point:?} is invalid for state {state:?}")]
+    InvalidSafePointForState {
+        /// Safe point captured in the report.
+        safe_point: StopSafePoint,
+        /// State observed at stop handling boundary.
+        state: TaskState,
+    },
+    /// Report cannot be produced from a terminal state.
+    #[error("graceful stop report cannot observe terminal state {state:?}")]
+    TerminalObservedState {
+        /// Invalid observed terminal state.
+        state: TaskState,
+    },
+}
+
 /// Schema version for persisted task snapshots.
 pub const TASK_SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 
@@ -463,6 +571,9 @@ pub struct TaskSnapshot {
     /// Optional serialized agent memory captured at the pause boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_memory: Option<String>,
+    /// Optional partial report emitted by graceful stop flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_report: Option<StopReport>,
 }
 
 impl TaskSnapshot {
@@ -485,6 +596,7 @@ impl TaskSnapshot {
             recovery_note: None,
             pending_input: None,
             agent_memory: None,
+            stop_report: None,
         }
     }
 
@@ -519,13 +631,46 @@ impl TaskSnapshot {
                     .ok_or(TaskSnapshotValidationError::MissingAgentMemoryForWaitingState)?;
                 self.parse_agent_memory().map(|_| ()).map_err(|error| {
                     TaskSnapshotValidationError::InvalidAgentMemory(error.to_string())
-                })
+                })?;
+
+                if self.stop_report.is_some() {
+                    Err(TaskSnapshotValidationError::UnexpectedStopReportForState {
+                        state: TaskState::WaitingInput,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            TaskState::Stopped => {
+                let stop_report = self
+                    .stop_report
+                    .as_ref()
+                    .ok_or(TaskSnapshotValidationError::MissingStopReportForStoppedState)?;
+                stop_report
+                    .validate()
+                    .map_err(TaskSnapshotValidationError::InvalidStopReport)?;
+
+                if self.pending_input.is_some() {
+                    Err(
+                        TaskSnapshotValidationError::UnexpectedPendingInputForState {
+                            state: TaskState::Stopped,
+                        },
+                    )
+                } else if self.agent_memory.is_some() {
+                    Err(TaskSnapshotValidationError::UnexpectedAgentMemoryForState {
+                        state: TaskState::Stopped,
+                    })
+                } else {
+                    Ok(())
+                }
             }
             state => {
                 if self.pending_input.is_some() {
                     Err(TaskSnapshotValidationError::UnexpectedPendingInputForState { state })
                 } else if self.agent_memory.is_some() {
                     Err(TaskSnapshotValidationError::UnexpectedAgentMemoryForState { state })
+                } else if self.stop_report.is_some() {
+                    Err(TaskSnapshotValidationError::UnexpectedStopReportForState { state })
                 } else {
                     Ok(())
                 }
@@ -561,6 +706,18 @@ pub enum TaskSnapshotValidationError {
     /// Agent memory payload cannot be deserialized.
     #[error("invalid agent memory payload: {0}")]
     InvalidAgentMemory(String),
+    /// Stopped state must always persist a graceful stop report payload.
+    #[error("stopped state requires stop_report payload")]
+    MissingStopReportForStoppedState,
+    /// Stop report payload is only valid for stopped state.
+    #[error("state {state:?} cannot carry stop_report payload")]
+    UnexpectedStopReportForState {
+        /// State that carried an unexpected stop report payload.
+        state: TaskState,
+    },
+    /// Stop report payload does not pass validation constraints.
+    #[error("invalid stop report payload: {0}")]
+    InvalidStopReport(StopReportValidationError),
 }
 
 /// Baseline persisted task event entry.
@@ -614,6 +771,8 @@ pub enum TaskEventKind {
     StateChanged,
     /// Recovery checkpoint was persisted.
     CheckpointSaved,
+    /// Graceful stop signal was accepted for safe-point handling.
+    StopSignalReceived,
 }
 
 /// Errors returned by task state validation.
@@ -633,7 +792,8 @@ pub enum TaskStateTransitionError {
 mod tests {
     use super::{
         PendingChoiceInput, PendingInput, PendingInputKind, PendingInputValidationError,
-        PendingTextInput, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot,
+        PendingTextInput, StopReport, StopReportValidationError, StopSafePoint, StopSignal,
+        StopSignalMode, TaskEvent, TaskEventKind, TaskId, TaskMetadata, TaskSnapshot,
         TaskSnapshotValidationError, TaskState, TaskStateTransitionError,
         TASK_EVENT_LOG_SCHEMA_VERSION, TASK_SNAPSHOT_SCHEMA_VERSION,
     };
@@ -645,6 +805,7 @@ mod tests {
         assert!(TaskState::Completed.is_terminal());
         assert!(TaskState::Failed.is_terminal());
         assert!(TaskState::Cancelled.is_terminal());
+        assert!(TaskState::Stopped.is_terminal());
         assert!(TaskState::Pending.is_non_terminal());
         assert!(TaskState::Running.is_non_terminal());
         assert!(TaskState::WaitingInput.is_non_terminal());
@@ -669,6 +830,7 @@ mod tests {
             TaskState::Completed,
             TaskState::Failed,
             TaskState::Cancelled,
+            TaskState::Stopped,
         ] {
             assert_eq!(TaskState::Running.validate_transition(next), Ok(()));
         }
@@ -676,7 +838,7 @@ mod tests {
 
     #[test]
     fn task_state_allows_valid_transitions_from_waiting_input() {
-        for next in [TaskState::Running, TaskState::Cancelled] {
+        for next in [TaskState::Running, TaskState::Cancelled, TaskState::Stopped] {
             assert_eq!(TaskState::WaitingInput.validate_transition(next), Ok(()));
         }
     }
@@ -693,6 +855,17 @@ mod tests {
             (TaskState::WaitingInput, TaskState::WaitingInput),
             (TaskState::WaitingInput, TaskState::Completed),
             (TaskState::WaitingInput, TaskState::Failed),
+            (TaskState::Pending, TaskState::Stopped),
+            (TaskState::Completed, TaskState::Stopped),
+            (TaskState::Failed, TaskState::Stopped),
+            (TaskState::Cancelled, TaskState::Stopped),
+            (TaskState::Stopped, TaskState::Pending),
+            (TaskState::Stopped, TaskState::Running),
+            (TaskState::Stopped, TaskState::WaitingInput),
+            (TaskState::Stopped, TaskState::Completed),
+            (TaskState::Stopped, TaskState::Failed),
+            (TaskState::Stopped, TaskState::Cancelled),
+            (TaskState::Stopped, TaskState::Stopped),
             (TaskState::Completed, TaskState::Pending),
             (TaskState::Completed, TaskState::Running),
             (TaskState::Completed, TaskState::WaitingInput),
@@ -770,6 +943,7 @@ mod tests {
         assert_eq!(parsed.checkpoint.last_event_sequence, 3);
         assert_eq!(parsed.recovery_note, None);
         assert_eq!(parsed.pending_input, None);
+        assert_eq!(parsed.stop_report, None);
     }
 
     #[test]
@@ -813,7 +987,122 @@ mod tests {
         assert_eq!(parsed.checkpoint.state, TaskState::WaitingInput);
         assert_eq!(parsed.pending_input, snapshot.pending_input);
         assert_eq!(parsed.agent_memory, snapshot.agent_memory);
+        assert_eq!(parsed.stop_report, None);
         assert_eq!(parsed.validate(), Ok(()));
+    }
+
+    #[test]
+    fn stop_signal_contract_is_transport_agnostic() {
+        let signal = StopSignal {
+            mode: StopSignalMode::StopAndReport,
+            safe_point: StopSafePoint::LoopBoundary,
+        };
+
+        let json = serde_json::to_string(&signal);
+        assert!(json.is_ok());
+
+        let parsed: Result<StopSignal, serde_json::Error> =
+            serde_json::from_str(&json.unwrap_or_default());
+        assert!(parsed.is_ok());
+        assert_eq!(parsed.unwrap_or(signal.clone()), signal);
+    }
+
+    #[test]
+    fn stop_signal_safe_point_contract_is_explicit() {
+        assert!(StopSafePoint::LoopBoundary.supports_state(TaskState::Running));
+        assert!(!StopSafePoint::LoopBoundary.supports_state(TaskState::WaitingInput));
+        assert!(StopSafePoint::WaitingInput.supports_state(TaskState::WaitingInput));
+        assert!(!StopSafePoint::WaitingInput.supports_state(TaskState::Running));
+        assert!(!StopSafePoint::WaitingInput.supports_state(TaskState::Cancelled));
+    }
+
+    #[test]
+    fn stop_signal_report_validation_enforces_safe_point_rules() {
+        let valid = StopReport {
+            summary: "Collected logs and generated partial diagnostics".to_string(),
+            safe_point: StopSafePoint::LoopBoundary,
+            observed_state: TaskState::Running,
+        };
+        assert_eq!(valid.validate(), Ok(()));
+
+        let invalid = StopReport {
+            summary: "Partial report".to_string(),
+            safe_point: StopSafePoint::LoopBoundary,
+            observed_state: TaskState::WaitingInput,
+        };
+        assert_eq!(
+            invalid.validate(),
+            Err(StopReportValidationError::InvalidSafePointForState {
+                safe_point: StopSafePoint::LoopBoundary,
+                state: TaskState::WaitingInput,
+            })
+        );
+    }
+
+    #[test]
+    fn stop_signal_report_validation_rejects_terminal_observed_state() {
+        let report = StopReport {
+            summary: "Should fail".to_string(),
+            safe_point: StopSafePoint::LoopBoundary,
+            observed_state: TaskState::Cancelled,
+        };
+
+        assert_eq!(
+            report.validate(),
+            Err(StopReportValidationError::TerminalObservedState {
+                state: TaskState::Cancelled,
+            })
+        );
+    }
+
+    #[test]
+    fn task_snapshot_validation_requires_stop_report_for_stopped_state() {
+        let mut metadata = TaskMetadata::new();
+        assert_eq!(metadata.transition_to(TaskState::Running), Ok(()));
+        assert_eq!(metadata.transition_to(TaskState::Stopped), Ok(()));
+
+        let snapshot = TaskSnapshot::new(metadata, SessionId::from(15), "collect".to_string(), 1);
+
+        assert_eq!(
+            snapshot.validate(),
+            Err(TaskSnapshotValidationError::MissingStopReportForStoppedState)
+        );
+    }
+
+    #[test]
+    fn task_snapshot_validation_accepts_stop_report_for_stopped_state() {
+        let mut metadata = TaskMetadata::new();
+        assert_eq!(metadata.transition_to(TaskState::Running), Ok(()));
+        assert_eq!(metadata.transition_to(TaskState::Stopped), Ok(()));
+
+        let mut snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(16), "collect".to_string(), 2);
+        snapshot.stop_report = Some(StopReport {
+            summary: "Collected partial data before graceful stop".to_string(),
+            safe_point: StopSafePoint::LoopBoundary,
+            observed_state: TaskState::Running,
+        });
+
+        assert_eq!(snapshot.validate(), Ok(()));
+    }
+
+    #[test]
+    fn task_snapshot_validation_rejects_stop_report_outside_stopped_state() {
+        let metadata = TaskMetadata::new();
+        let mut snapshot =
+            TaskSnapshot::new(metadata, SessionId::from(17), "collect".to_string(), 3);
+        snapshot.stop_report = Some(StopReport {
+            summary: "Partial".to_string(),
+            safe_point: StopSafePoint::LoopBoundary,
+            observed_state: TaskState::Running,
+        });
+
+        assert_eq!(
+            snapshot.validate(),
+            Err(TaskSnapshotValidationError::UnexpectedStopReportForState {
+                state: TaskState::Pending,
+            })
+        );
     }
 
     #[test]
