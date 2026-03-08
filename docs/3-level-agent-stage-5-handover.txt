@@ -39,6 +39,31 @@ Telegram transport and app wiring:
 - terminal task transitions revoke active observer links for the task
 - web monitor startup failure degrades gracefully without taking down Telegram runtime
 
+Operational configuration
+Web observer is disabled by default and must be explicitly enabled:
+
+Environment variables (.env):
+- WEB_OBSERVER_ENABLED=true|false (default: false)
+- WEB_OBSERVER_BASE_URL=https://your-domain.com (required for Telegram links)
+- WEB_OBSERVER_BIND_ADDR=0.0.0.0:8080 (internal container bind)
+- WEB_OBSERVER_TOKEN_TTL_SECS=900 (token lifetime, default 15 min)
+
+Docker Compose:
+- Port 8080 exposed for web observer
+- All WEB_OBSERVER_* variables passed through from .env
+
+Endpoints (when enabled):
+- GET /health - health check
+- GET /api/observer/{token}/snapshot - task snapshot JSON
+- GET /api/observer/{token}/events - SSE live events
+- GET /watch/{token} - HTML watch page (main user-facing route)
+
+Security notes:
+- Tokens are short-lived (configurable TTL, default 15 minutes)
+- Watch links are read-only; no mutation operations exposed via web
+- Token format is opaque (oa_ prefix + 32-byte hex) generated via OS CSPRNG
+- Invalid/expired/revoked tokens return distinct 401/403 responses
+
 Stage 5 approval status
 APPROVED ✅
 

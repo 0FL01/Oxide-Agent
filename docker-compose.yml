@@ -19,6 +19,10 @@ services:
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
+      - WEB_OBSERVER_ENABLED=${WEB_OBSERVER_ENABLED:-false}
+      - WEB_OBSERVER_BASE_URL=${WEB_OBSERVER_BASE_URL:-}
+      - WEB_OBSERVER_BIND_ADDR=${WEB_OBSERVER_BIND_ADDR:-0.0.0.0:8080}
+      - WEB_OBSERVER_TOKEN_TTL_SECS=${WEB_OBSERVER_TOKEN_TTL_SECS:-900}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
@@ -31,6 +35,11 @@ services:
       options:
         max-size: "1m"
         max-file: "3"
+    ports:
+      - "8080:8080"
+    # Web Task Observer (Stage 5) - Optional read-only task monitoring
+    # When WEB_OBSERVER_ENABLED=true, users get "Watch Live" links in Telegram
+    # Endpoints: /health, /api/observer/{token}/snapshot, /api/observer/{token}/events, /watch/{token}
 
   crawl4ai:
     image: unclecode/crawl4ai:0.8

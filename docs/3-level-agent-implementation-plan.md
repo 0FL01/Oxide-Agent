@@ -789,6 +789,28 @@ cargo test -p oxide-agent-runtime
 # cargo test -p oxide-agent-web-monitor
 ```
 
+#### Slice 5.x - Operational Configuration (follow-up)
+
+Status: Done (ops readiness update)
+
+Deliverables:
+- Environment variable documentation in `.env.example`:
+  - `WEB_OBSERVER_ENABLED` - feature toggle (default: false)
+  - `WEB_OBSERVER_BASE_URL` - external URL for watch links
+  - `WEB_OBSERVER_BIND_ADDR` - internal bind address (default: 0.0.0.0:8080)
+  - `WEB_OBSERVER_TOKEN_TTL_SECS` - token expiry in seconds (default: 900)
+- Docker Compose port mapping (8080:8080)
+- Endpoint documentation:
+  - `GET /health` - health check
+  - `GET /api/observer/{token}/snapshot` - task state JSON
+  - `GET /api/observer/{token}/events` - SSE live event stream
+  - `GET /watch/{token}` - browser watch page
+
+Acceptance criteria:
+- Web observer can be enabled via environment configuration
+- Port is exposed in container orchestration
+- Endpoints are documented for operators
+
 Exit criteria for Stage 5:
 
 - есть безопасный optional web observer path поверх runtime events.
