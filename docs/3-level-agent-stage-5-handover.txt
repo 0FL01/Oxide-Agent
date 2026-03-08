@@ -1,0 +1,58 @@
+Stage 5 handover note
+
+Branch
+arch-agent-mode
+
+Scope completed
+Stage 5 Web monitoring (optional) is completed and stage-approved with review-gated slices for:
+- runtime observer access contracts with short-lived task-scoped opaque tokens and explicit invalid/expired/revoked resolution states
+- dedicated read-only web transport with token-scoped snapshot API, SSE live events stream, watch page route and no-store cache policy
+- optional and non-fatal web monitor startup wiring in application bootstrap
+- Telegram watch-link UX integration with readiness gating, URL renderability validation, read-only/Telegram-controls guardrail copy and terminal link revocation
+- AGENTS context synchronization for the new web transport and Stage 5 landmarks
+
+Relevant commits
+c4d5500 feat(stage-5/slice-5.2): add observer access contracts
+43f9cee feat(stage-5/slice-5.3): add web monitor transport
+b5704e8 feat(stage-5/slice-5.4): add telegram watch-link UX
+6be62ee docs(stage-5/slice-5.5): sync agents context for web monitoring
+
+Current repo status at handoff
+Working tree was clean after the latest Stage 5 docs update and stage final review approval.
+
+What changed in code
+Core and runtime:
+- Agent settings include web observer toggles and runtime-facing web observer configuration fields
+- runtime includes ObserverAccessRegistry for token issue/resolve/revoke with bounded tombstone retention semantics for expired/revoked states
+- observer token formatting is opaque and generated via OS-backed randomness, with redacted Debug/Display behavior
+
+Web transport:
+- new crate oxide-agent-transport-web added as optional read-only monitoring transport
+- web monitor exposes health endpoint, token-scoped snapshot endpoint and token-scoped SSE events endpoint
+- watch page is token-scoped, read-only and consumes snapshot plus live SSE events
+- auth paths map observer token resolution errors into explicit access outcomes and avoid cache persistence for protected responses
+
+Telegram transport and app wiring:
+- Telegram runtime/context receives shared observer access registry via DI from bootstrap
+- task status updates can include watch URL button only when web observer is configured, URL is renderable by Telegram and web monitor is actually ready
+- guardrail copy explicitly states watch view is read-only, controls remain in Telegram, and link is expiring/shareable
+- terminal task transitions revoke active observer links for the task
+- web monitor startup failure degrades gracefully without taking down Telegram runtime
+
+Stage 5 approval status
+APPROVED ✅
+
+Verification commands used recently
+cargo fmt --check
+cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test -p oxide-agent-runtime observer_access
+cargo test -p oxide-agent-transport-web
+cargo test -p oxide-agent-transport-telegram task_controls
+
+Next step
+Proceed with Stage 6 integration, guards and rollout slices.
+
+Notes
+Stage 5 slices 5.2, 5.3 and 5.4 each required review-fix loops before approval. Final stage review approved integrated observer-token security semantics, optional web sidecar startup behavior, read-only web boundaries and Telegram watch-link guardrails.

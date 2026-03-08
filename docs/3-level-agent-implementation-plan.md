@@ -1,6 +1,6 @@
 ### Agent Mode v2: Implementation Plan
 
-Status: In Progress (Stage 1 completed, Stage 2 completed, Stage 3 completed, Stage 4 completed)
+Status: In Progress (Stage 1 completed, Stage 2 completed, Stage 3 completed, Stage 4 completed, Stage 5 completed)
 
 Progress update:
 
@@ -42,6 +42,13 @@ Progress update:
   - `25ff522` `feat(stage-4/slice-3): add task event fan-out`
   - `e729df9` `feat(stage-4/slice-4): add telegram task controls`
 - Stage 4 handover note: `docs/3-level-agent-stage-4-handover.txt`.
+- Stage 5 implementation completed and approved on `arch-agent-mode`.
+- Completed Stage 5 commits:
+  - `c4d5500` `feat(stage-5/slice-5.2): add observer access contracts`
+  - `43f9cee` `feat(stage-5/slice-5.3): add web monitor transport`
+  - `b5704e8` `feat(stage-5/slice-5.4): add telegram watch-link UX`
+  - `6be62ee` `docs(stage-5/slice-5.5): sync agents context for web monitoring`
+- Stage 5 handover note: `docs/3-level-agent-stage-5-handover.txt`.
 
 Этот документ дополняет `docs/3-level-agent.md` и раскладывает внедрение Agent Mode v2 на конкретные стадии и небольшие auditable slices.
 
@@ -712,6 +719,17 @@ Stage 4 review status: APPROVED
 
 Цель stage: добавить read-only web access без влияния на core execution path.
 
+Status: Completed
+
+Implemented on branch `arch-agent-mode`:
+
+- Slice 5.2 - `c4d5500` `feat(stage-5/slice-5.2): add observer access contracts`
+- Slice 5.3 - `43f9cee` `feat(stage-5/slice-5.3): add web monitor transport`
+- Slice 5.4 - `b5704e8` `feat(stage-5/slice-5.4): add telegram watch-link UX`
+- Slice 5.5 - `6be62ee` `docs(stage-5/slice-5.5): sync agents context for web monitoring`
+
+Stage 5 final review status: APPROVED
+
 #### Slice 5.1 - Web Access Contracts
 
 Crates:
@@ -774,6 +792,11 @@ cargo test -p oxide-agent-runtime
 Exit criteria for Stage 5:
 
 - есть безопасный optional web observer path поверх runtime events.
+
+Current Stage 5 status:
+
+- slices 5.2-5.5 implemented, verified, review-approved and committed;
+- Stage 5 final review status: APPROVED.
 
 ---
 
