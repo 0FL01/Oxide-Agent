@@ -12,6 +12,12 @@ use tokio::sync::RwLock;
 pub struct ObserverAccessToken(String);
 
 impl ObserverAccessToken {
+    /// Construct token wrapper from a raw bearer secret.
+    #[must_use]
+    pub fn from_secret(secret: String) -> Self {
+        Self(secret)
+    }
+
     /// Return the raw bearer secret.
     #[must_use]
     pub fn secret(&self) -> &str {

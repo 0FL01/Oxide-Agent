@@ -7,3 +7,5 @@ pub mod bot;
 pub mod config;
 /// Telegram runtime entrypoint.
 pub mod runner;
+
+pub use runner::{run_bot, TelegramRuntime, TelegramRuntimeServices};

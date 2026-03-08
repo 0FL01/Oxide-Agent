@@ -1,10 +1,18 @@
 use dotenvy::dotenv;
 use oxide_agent_core::config::AgentSettings;
+use oxide_agent_runtime::{ObserverAccessRegistry, ObserverAccessRegistryOptions};
 use oxide_agent_transport_telegram::config::{BotSettings, TelegramSettings};
-use oxide_agent_transport_telegram::runner::run_bot;
+use oxide_agent_transport_telegram::runner::TelegramRuntime;
+use oxide_agent_transport_web::{
+    spawn_web_monitor, WebMonitorServerHandle, WebMonitorServerOptions,
+};
 use regex::Regex;
+use std::fmt::Display;
+use std::future::Future;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
@@ -142,7 +150,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load settings
     let settings = init_settings();
 
-    run_bot(settings).await?;
+    let runtime = TelegramRuntime::build(Arc::clone(&settings)).await?;
+    let _web_monitor = maybe_spawn_web_monitor(Arc::clone(&settings), &runtime).await;
+    runtime.run().await?;
 
     Ok(())
 }
@@ -191,4 +201,115 @@ fn init_settings() -> Arc<BotSettings> {
 
     info!("Configuration loaded successfully.");
     Arc::new(BotSettings::new(agent_settings, telegram_settings))
+}
+
+async fn maybe_spawn_web_monitor(
+    settings: Arc<BotSettings>,
+    runtime: &TelegramRuntime,
+) -> Option<WebMonitorServerHandle> {
+    if !settings.agent.is_web_observer_enabled() {
+        return None;
+    }
+
+    let bind_addr = match parse_web_bind_addr(settings.agent.web_observer_bind_addr.as_deref()) {
+        Ok(value) => value,
+        Err(error) => {
+            error!(error = %error, "Web observer monitor disabled: invalid bind address");
+            return None;
+        }
+    };
+    let observer_access = Arc::new(ObserverAccessRegistry::new(ObserverAccessRegistryOptions {
+        token_ttl: Duration::from_secs(settings.agent.get_web_observer_token_ttl_secs()),
+    }));
+
+    let server = run_optional_web_monitor_startup(bind_addr, || async {
+        spawn_web_monitor(WebMonitorServerOptions {
+            bind_addr,
+            storage: Arc::clone(&runtime.services().storage),
+            task_events: Arc::clone(&runtime.services().task_events),
+            observer_access,
+        })
+        .await
+    })
+    .await;
+
+    let server = server?;
+
+    info!(
+        addr = %server.local_addr(),
+        "Web observer monitor transport enabled"
+    );
+
+    Some(server)
+}
+
+async fn run_optional_web_monitor_startup<T, E, F, Fut>(
+    bind_addr: SocketAddr,
+    start: F,
+) -> Option<T>
+where
+    E: Display,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    match start().await {
+        Ok(server) => Some(server),
+        Err(error) => {
+            error!(
+                addr = %bind_addr,
+                error = %error,
+                "Web observer monitor failed to start; continuing without web monitor"
+            );
+            None
+        }
+    }
+}
+
+fn parse_web_bind_addr(raw: Option<&str>) -> Result<SocketAddr, Box<dyn std::error::Error>> {
+    let default_addr = "127.0.0.1:8090";
+    let value = raw.unwrap_or(default_addr);
+    let parsed = value.parse::<SocketAddr>()?;
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_web_bind_addr, run_optional_web_monitor_startup};
+    use std::io;
+    use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn optional_web_monitor_startup_returns_none_on_start_error() {
+        let bind_addr: SocketAddr = match "127.0.0.1:8090".parse() {
+            Ok(value) => value,
+            Err(error) => panic!("failed to parse test address: {error}"),
+        };
+
+        let result = run_optional_web_monitor_startup::<(), io::Error, _, _>(bind_addr, || async {
+            Err(io::Error::other("bind failed"))
+        })
+        .await;
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn optional_web_monitor_startup_returns_server_on_success() {
+        let bind_addr: SocketAddr = match "127.0.0.1:8091".parse() {
+            Ok(value) => value,
+            Err(error) => panic!("failed to parse test address: {error}"),
+        };
+
+        let result =
+            run_optional_web_monitor_startup::<u8, io::Error, _, _>(bind_addr, || async { Ok(1) })
+                .await;
+
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn parse_web_bind_addr_rejects_invalid_value() {
+        let parsed = parse_web_bind_addr(Some("not-an-address"));
+        assert!(parsed.is_err());
+    }
 }

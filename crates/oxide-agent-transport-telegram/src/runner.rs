@@ -23,51 +23,97 @@ use teloxide::prelude::*;
 use teloxide::types::{CallbackQuery, PollAnswer};
 use tracing::{error, info};
 
+/// Runtime services shared with optional sidecar transports.
+pub struct TelegramRuntimeServices {
+    /// Shared storage backend.
+    pub storage: Arc<dyn StorageProvider>,
+    /// Shared task event broadcaster.
+    pub task_events: Arc<TaskEventBroadcaster>,
+}
+
+/// Prepared Telegram runtime instance.
+pub struct TelegramRuntime {
+    handler_context: Arc<TelegramHandlerContext>,
+    bot_state: Arc<InMemStorage<State>>,
+    unauthorized_cache: Arc<UnauthorizedCache>,
+    services: TelegramRuntimeServices,
+}
+
+impl TelegramRuntime {
+    /// Build runtime dependencies and prepare dispatcher inputs.
+    pub async fn build(settings: Arc<BotSettings>) -> anyhow::Result<Self> {
+        let storage = init_storage(&settings).await?;
+        let task_events = Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
+            Arc::clone(&storage),
+        )));
+        let task_event_publisher: SharedTaskEventPublisher = task_events.clone();
+        let task_registry = Arc::new(TaskRegistry::with_event_publisher(task_event_publisher));
+        run_startup_recovery(Arc::clone(&storage), Arc::clone(&task_registry)).await?;
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage),
+            Arc::clone(&task_registry),
+            settings.telegram.agent_allowed_users().len().max(1),
+        ));
+
+        let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
+        let handler_context = Arc::new(TelegramHandlerContext {
+            storage: Arc::clone(&storage),
+            llm: Arc::clone(&llm_client),
+            settings,
+            task_runtime,
+            task_events: Arc::clone(&task_events),
+            task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+        });
+        info!("LLM Client initialized.");
+
+        Ok(Self {
+            handler_context,
+            bot_state: init_bot_state(),
+            unauthorized_cache: init_unauthorized_cache(),
+            services: TelegramRuntimeServices {
+                storage,
+                task_events,
+            },
+        })
+    }
+
+    /// Return shared runtime services for sidecar integrations.
+    #[must_use]
+    pub const fn services(&self) -> &TelegramRuntimeServices {
+        &self.services
+    }
+
+    /// Run Telegram dispatcher loop until shutdown.
+    pub async fn run(self) -> anyhow::Result<()> {
+        let bot = Bot::new(
+            self.handler_context
+                .settings
+                .telegram
+                .telegram_token
+                .clone(),
+        );
+        let handler = setup_handler();
+
+        info!("Bot is running...");
+
+        Dispatcher::builder(bot, handler)
+            .dependencies(dptree::deps![
+                self.handler_context,
+                self.bot_state,
+                self.unauthorized_cache
+            ])
+            .enable_ctrlc_handler()
+            .build()
+            .dispatch()
+            .await;
+
+        Ok(())
+    }
+}
+
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) -> anyhow::Result<()> {
-    let storage = init_storage(&settings).await?;
-    let task_events = Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
-        Arc::clone(&storage),
-    )));
-    let task_event_publisher: SharedTaskEventPublisher = task_events.clone();
-    let task_registry = Arc::new(TaskRegistry::with_event_publisher(task_event_publisher));
-    run_startup_recovery(Arc::clone(&storage), Arc::clone(&task_registry)).await?;
-    let task_runtime = Arc::new(AgentTaskRuntime::new(
-        Arc::clone(&storage),
-        Arc::clone(&task_registry),
-        settings.telegram.agent_allowed_users().len().max(1),
-    ));
-
-    let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
-    let handler_context = Arc::new(TelegramHandlerContext {
-        storage: Arc::clone(&storage),
-        llm: Arc::clone(&llm_client),
-        settings: Arc::clone(&settings),
-        task_runtime: Arc::clone(&task_runtime),
-        task_events,
-        task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
-    });
-    info!("LLM Client initialized.");
-
-    let bot = Bot::new(settings.telegram.telegram_token.clone());
-    let bot_state = init_bot_state();
-    let unauthorized_cache = init_unauthorized_cache();
-    let handler = setup_handler();
-
-    info!("Bot is running...");
-
-    Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![
-            handler_context,
-            bot_state,
-            unauthorized_cache
-        ])
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
-
-    Ok(())
+    TelegramRuntime::build(settings).await?.run().await
 }
 
 async fn init_storage(settings: &BotSettings) -> anyhow::Result<Arc<dyn storage::StorageProvider>> {
