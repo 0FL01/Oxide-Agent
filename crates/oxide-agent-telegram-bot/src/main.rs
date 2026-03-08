@@ -11,6 +11,7 @@ use std::fmt::Display;
 use std::future::Future;
 use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
@@ -149,9 +150,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load settings
     let settings = init_settings();
+    let observer_access = build_observer_access_registry(&settings);
+    let web_observer_ready = Arc::new(AtomicBool::new(false));
 
-    let runtime = TelegramRuntime::build(Arc::clone(&settings)).await?;
-    let _web_monitor = maybe_spawn_web_monitor(Arc::clone(&settings), &runtime).await;
+    let runtime = TelegramRuntime::build_with_observer_access(
+        Arc::clone(&settings),
+        observer_access.clone(),
+        Arc::clone(&web_observer_ready),
+    )
+    .await?;
+    let _web_monitor = maybe_spawn_web_monitor(
+        Arc::clone(&settings),
+        &runtime,
+        observer_access,
+        &web_observer_ready,
+    )
+    .await;
     runtime.run().await?;
 
     Ok(())
@@ -206,6 +220,8 @@ fn init_settings() -> Arc<BotSettings> {
 async fn maybe_spawn_web_monitor(
     settings: Arc<BotSettings>,
     runtime: &TelegramRuntime,
+    observer_access: Option<Arc<ObserverAccessRegistry>>,
+    web_observer_ready: &AtomicBool,
 ) -> Option<WebMonitorServerHandle> {
     if !settings.agent.is_web_observer_enabled() {
         return None;
@@ -218,11 +234,9 @@ async fn maybe_spawn_web_monitor(
             return None;
         }
     };
-    let observer_access = Arc::new(ObserverAccessRegistry::new(ObserverAccessRegistryOptions {
-        token_ttl: Duration::from_secs(settings.agent.get_web_observer_token_ttl_secs()),
-    }));
+    let observer_access = observer_access?;
 
-    let server = run_optional_web_monitor_startup(bind_addr, || async {
+    let server = run_optional_web_monitor_startup(bind_addr, web_observer_ready, || async {
         spawn_web_monitor(WebMonitorServerOptions {
             bind_addr,
             storage: Arc::clone(&runtime.services().storage),
@@ -243,8 +257,21 @@ async fn maybe_spawn_web_monitor(
     Some(server)
 }
 
+fn build_observer_access_registry(settings: &BotSettings) -> Option<Arc<ObserverAccessRegistry>> {
+    if !settings.agent.is_web_observer_enabled() {
+        return None;
+    }
+
+    Some(Arc::new(ObserverAccessRegistry::new(
+        ObserverAccessRegistryOptions {
+            token_ttl: Duration::from_secs(settings.agent.get_web_observer_token_ttl_secs()),
+        },
+    )))
+}
+
 async fn run_optional_web_monitor_startup<T, E, F, Fut>(
     bind_addr: SocketAddr,
+    web_observer_ready: &AtomicBool,
     start: F,
 ) -> Option<T>
 where
@@ -253,8 +280,12 @@ where
     Fut: Future<Output = Result<T, E>>,
 {
     match start().await {
-        Ok(server) => Some(server),
+        Ok(server) => {
+            web_observer_ready.store(true, Ordering::Relaxed);
+            Some(server)
+        }
         Err(error) => {
+            web_observer_ready.store(false, Ordering::Relaxed);
             error!(
                 addr = %bind_addr,
                 error = %error,
@@ -277,6 +308,7 @@ mod tests {
     use super::{parse_web_bind_addr, run_optional_web_monitor_startup};
     use std::io;
     use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
     async fn optional_web_monitor_startup_returns_none_on_start_error() {
@@ -284,13 +316,17 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("failed to parse test address: {error}"),
         };
+        let web_observer_ready = AtomicBool::new(true);
 
-        let result = run_optional_web_monitor_startup::<(), io::Error, _, _>(bind_addr, || async {
-            Err(io::Error::other("bind failed"))
-        })
+        let result = run_optional_web_monitor_startup::<(), io::Error, _, _>(
+            bind_addr,
+            &web_observer_ready,
+            || async { Err(io::Error::other("bind failed")) },
+        )
         .await;
 
         assert!(result.is_none());
+        assert!(!web_observer_ready.load(Ordering::Relaxed));
     }
 
     #[tokio::test]
@@ -299,12 +335,17 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("failed to parse test address: {error}"),
         };
+        let web_observer_ready = AtomicBool::new(false);
 
-        let result =
-            run_optional_web_monitor_startup::<u8, io::Error, _, _>(bind_addr, || async { Ok(1) })
-                .await;
+        let result = run_optional_web_monitor_startup::<u8, io::Error, _, _>(
+            bind_addr,
+            &web_observer_ready,
+            || async { Ok(1) },
+        )
+        .await;
 
         assert_eq!(result, Some(1));
+        assert!(web_observer_ready.load(Ordering::Relaxed));
     }
 
     #[test]

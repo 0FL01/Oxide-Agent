@@ -1341,6 +1341,8 @@ mod tests {
             task_events: Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
                 storage,
             ))),
+            observer_access: None,
+            web_observer_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
         }
     }

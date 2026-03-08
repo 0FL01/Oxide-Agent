@@ -10,9 +10,9 @@ use crate::bot::messaging::send_long_message;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
-    confirmation_keyboard, get_agent_keyboard, task_control_keyboard, AgentView, DefaultAgentView,
-    LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY, TASK_CONTROL_ACTION_CANCEL,
-    TASK_CONTROL_ACTION_STOP, TASK_CONTROL_CALLBACK_PREFIX,
+    can_render_watch_url, confirmation_keyboard, get_agent_keyboard, task_control_keyboard,
+    AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
+    TASK_CONTROL_ACTION_CANCEL, TASK_CONTROL_ACTION_STOP, TASK_CONTROL_CALLBACK_PREFIX,
 };
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
@@ -35,6 +35,7 @@ use oxide_agent_runtime::{
 };
 use std::collections::HashSet;
 use std::future::Future;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -1657,8 +1658,15 @@ async fn sync_task_events(
                 continue;
             }
             last_seen_sequence = Some(event.sequence);
-            last_state =
-                notify_task_state_if_changed(&bot, chat_id, task_id, event.state, last_state).await;
+            last_state = notify_task_state_if_changed(
+                &bot,
+                chat_id,
+                task_id,
+                event.state,
+                last_state,
+                &context,
+            )
+            .await;
             if event.state.is_terminal() {
                 terminal_sent = true;
                 break;
@@ -1680,6 +1688,7 @@ async fn sync_task_events(
                         task_id,
                         snapshot.metadata.state,
                         last_state,
+                        &context,
                     )
                     .await;
                     break;
@@ -1696,6 +1705,7 @@ async fn sync_task_events(
                         task_id,
                         snapshot.metadata.state,
                         last_state,
+                        &context,
                     )
                     .await;
                 }
@@ -1709,9 +1719,15 @@ async fn sync_task_events(
                     continue;
                 }
                 last_seen_sequence = Some(event.sequence);
-                last_state =
-                    notify_task_state_if_changed(&bot, chat_id, task_id, event.state, last_state)
-                        .await;
+                last_state = notify_task_state_if_changed(
+                    &bot,
+                    chat_id,
+                    task_id,
+                    event.state,
+                    last_state,
+                    &context,
+                )
+                .await;
                 if event.state.is_terminal() {
                     break;
                 }
@@ -1728,15 +1744,30 @@ async fn notify_task_state_if_changed(
     task_id: TaskId,
     next_state: TaskState,
     last_state: Option<TaskState>,
+    context: &TelegramHandlerContext,
 ) -> Option<TaskState> {
     if last_state == Some(next_state) {
         return last_state;
     }
 
-    let text = format_task_state_message(task_id, next_state);
+    if next_state.is_terminal() {
+        revoke_task_watch_links(context, task_id).await;
+    }
+
+    let watch_url = if next_state.is_terminal() {
+        None
+    } else {
+        issue_task_watch_url(context, task_id).await
+    };
+
+    let mut text = format_task_state_message(task_id, next_state);
+    if watch_url.is_some() {
+        text.push_str("\n\n👀 Web watch is read-only. Controls stay in Telegram. This link can be shared and expires automatically.");
+    }
+
     let mut request = bot.send_message(chat_id, text).parse_mode(ParseMode::Html);
     if !next_state.is_terminal() {
-        request = request.reply_markup(task_control_keyboard(task_id));
+        request = request.reply_markup(task_control_keyboard(task_id, watch_url.as_deref()));
     }
 
     if let Err(error) = request.await {
@@ -1745,6 +1776,59 @@ async fn notify_task_state_if_changed(
     }
 
     Some(next_state)
+}
+
+fn observer_base_url(settings: &BotSettings) -> Option<&str> {
+    if !settings.agent.is_web_observer_enabled() {
+        return None;
+    }
+
+    let value = settings.agent.web_observer_base_url.as_deref()?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if !value.starts_with("http://") && !value.starts_with("https://") {
+        return None;
+    }
+
+    if !can_render_watch_url(value) {
+        return None;
+    }
+
+    Some(value)
+}
+
+async fn issue_task_watch_url(context: &TelegramHandlerContext, task_id: TaskId) -> Option<String> {
+    if !context.web_observer_ready.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let observer_access = context.observer_access.as_ref()?;
+    let base_url = observer_base_url(&context.settings)?;
+    let base_url = base_url.trim_end_matches('/');
+    if !can_render_watch_url(&format!("{base_url}/watch/probe")) {
+        return None;
+    }
+    let (token, _) = match observer_access.issue(task_id).await {
+        Ok(issue) => issue,
+        Err(error) => {
+            warn!(task_id = %task_id, error = %error, "Failed to issue task watch token");
+            return None;
+        }
+    };
+
+    Some(format!("{base_url}/watch/{}", token.secret()))
+}
+
+async fn revoke_task_watch_links(context: &TelegramHandlerContext, task_id: TaskId) {
+    let Some(observer_access) = context.observer_access.as_ref() else {
+        return;
+    };
+    let revoked = observer_access.revoke_for_task(task_id).await;
+    if revoked > 0 {
+        debug!(task_id = %task_id, revoked, "Revoked observer links for terminal task state");
+    }
 }
 
 fn format_task_state_message(task_id: TaskId, state: TaskState) -> String {
@@ -2473,7 +2557,8 @@ pub async fn handle_agent_confirmation(
 mod tests {
     use super::{
         destructive_action_block_message, exit_block_message, format_task_state_message,
-        handle_task_control_callback, parse_agent_control_command, parse_task_control_callback,
+        handle_task_control_callback, issue_task_watch_url, observer_base_url,
+        parse_agent_control_command, parse_task_control_callback, revoke_task_watch_links,
         AgentModeActivationOutcome, AgentTaskRuntime, ClearMemoryOutcome, ExitSessionOutcome,
         RecreateContainerOutcome, RetryTaskOutcome, SessionResetOutcome, TaskControlAction,
         SESSION_REGISTRY,
@@ -2495,7 +2580,8 @@ mod tests {
     };
     use oxide_agent_core::storage::{Message, StorageError, StorageProvider, UserConfig};
     use oxide_agent_runtime::{
-        CancellationToken, TaskEventBroadcaster, TaskEventBroadcasterOptions, TaskExecutionBackend,
+        CancellationToken, ObserverAccessRegistry, ObserverAccessRegistryOptions,
+        TaskEventBroadcaster, TaskEventBroadcasterOptions, TaskExecutionBackend,
         TaskExecutionOutcome, TaskExecutionRequest, TaskExecutorError, TaskRegistry,
     };
     use std::collections::{HashMap, HashSet};
@@ -3000,7 +3086,22 @@ mod tests {
         storage: Arc<dyn StorageProvider>,
         task_runtime: Arc<AgentTaskRuntime>,
     ) -> TelegramHandlerContext {
-        let agent_settings = settings_without_llm_providers();
+        make_test_context_with_settings(
+            storage,
+            task_runtime,
+            settings_without_llm_providers(),
+            None,
+            false,
+        )
+    }
+
+    fn make_test_context_with_settings(
+        storage: Arc<dyn StorageProvider>,
+        task_runtime: Arc<AgentTaskRuntime>,
+        agent_settings: AgentSettings,
+        observer_access: Option<Arc<ObserverAccessRegistry>>,
+        web_observer_ready: bool,
+    ) -> TelegramHandlerContext {
         let llm_settings = Arc::new(agent_settings.clone());
         let llm = Arc::new(LlmClient::new(&llm_settings));
 
@@ -3015,6 +3116,8 @@ mod tests {
             task_events: Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
                 storage,
             ))),
+            observer_access,
+            web_observer_ready: Arc::new(std::sync::atomic::AtomicBool::new(web_observer_ready)),
             task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
         }
     }
@@ -5667,6 +5770,119 @@ mod tests {
         wait_for_runtime_task_completion(&task_runtime, session_id).await;
 
         SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn observer_watch_url_issues_token_for_configured_context() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let observer_access = Arc::new(ObserverAccessRegistry::new(
+            ObserverAccessRegistryOptions::new(),
+        ));
+        let mut agent_settings = settings_without_llm_providers();
+        agent_settings.web_observer_enabled = true;
+        agent_settings.web_observer_base_url = Some("https://observer.test/".to_string());
+        let context = make_test_context_with_settings(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+            agent_settings,
+            Some(Arc::clone(&observer_access)),
+            true,
+        );
+        let task_id = TaskId::new();
+
+        let issued = issue_task_watch_url(&context, task_id).await;
+        assert!(
+            matches!(issued, Some(ref url) if url.starts_with("https://observer.test/watch/oa_"))
+        );
+        assert_eq!(observer_access.active_tokens_for_task(task_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn observer_watch_url_is_not_issued_when_web_monitor_not_ready() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let observer_access = Arc::new(ObserverAccessRegistry::new(
+            ObserverAccessRegistryOptions::new(),
+        ));
+        let mut agent_settings = settings_without_llm_providers();
+        agent_settings.web_observer_enabled = true;
+        agent_settings.web_observer_base_url = Some("https://observer.test".to_string());
+        let context = make_test_context_with_settings(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+            agent_settings,
+            Some(Arc::clone(&observer_access)),
+            false,
+        );
+        let task_id = TaskId::new();
+
+        let issued = issue_task_watch_url(&context, task_id).await;
+        assert!(issued.is_none());
+        assert_eq!(observer_access.active_tokens_for_task(task_id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn observer_watch_links_revoke_for_terminal_state() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let observer_access = Arc::new(ObserverAccessRegistry::new(
+            ObserverAccessRegistryOptions::new(),
+        ));
+        let mut agent_settings = settings_without_llm_providers();
+        agent_settings.web_observer_enabled = true;
+        agent_settings.web_observer_base_url = Some("https://observer.test".to_string());
+        let context = make_test_context_with_settings(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            task_runtime,
+            agent_settings,
+            Some(Arc::clone(&observer_access)),
+            true,
+        );
+        let task_id = TaskId::new();
+
+        let _first = issue_task_watch_url(&context, task_id).await;
+        let _second = issue_task_watch_url(&context, task_id).await;
+        assert_eq!(observer_access.active_tokens_for_task(task_id).await, 2);
+
+        revoke_task_watch_links(&context, task_id).await;
+        assert_eq!(observer_access.active_tokens_for_task(task_id).await, 0);
+    }
+
+    #[test]
+    fn observer_base_url_requires_enabled_flag_and_valid_scheme() {
+        let mut agent_settings = settings_without_llm_providers();
+        agent_settings.web_observer_enabled = true;
+        agent_settings.web_observer_base_url = Some("https://observer.test".to_string());
+        let settings = BotSettings::new(agent_settings.clone(), TelegramSettings::default());
+        assert_eq!(observer_base_url(&settings), Some("https://observer.test"));
+
+        agent_settings.web_observer_base_url = Some("observer.test".to_string());
+        let invalid = BotSettings::new(agent_settings.clone(), TelegramSettings::default());
+        assert!(observer_base_url(&invalid).is_none());
+
+        agent_settings.web_observer_base_url = Some("https:// observer.test".to_string());
+        let malformed = BotSettings::new(agent_settings.clone(), TelegramSettings::default());
+        assert!(observer_base_url(&malformed).is_none());
+
+        agent_settings.web_observer_enabled = false;
+        let disabled = BotSettings::new(agent_settings, TelegramSettings::default());
+        assert!(observer_base_url(&disabled).is_none());
     }
 
     #[tokio::test]

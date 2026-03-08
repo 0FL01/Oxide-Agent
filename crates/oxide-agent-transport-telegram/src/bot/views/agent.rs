@@ -283,14 +283,33 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
 
 /// Get inline task control keyboard bound to a task.
 #[must_use]
-pub fn task_control_keyboard(task_id: TaskId) -> InlineKeyboardMarkup {
+pub fn task_control_keyboard(task_id: TaskId, watch_url: Option<&str>) -> InlineKeyboardMarkup {
     let cancel = format!("{TASK_CONTROL_CALLBACK_PREFIX}:{TASK_CONTROL_ACTION_CANCEL}:{task_id}");
     let stop = format!("{TASK_CONTROL_CALLBACK_PREFIX}:{TASK_CONTROL_ACTION_STOP}:{task_id}");
 
-    InlineKeyboardMarkup::new(vec![vec![
+    let mut rows = vec![vec![
         InlineKeyboardButton::callback("❌ Cancel", cancel),
         InlineKeyboardButton::callback("🛑 Stop", stop),
-    ]])
+    ]];
+
+    if let Some(button) = watch_url.and_then(watch_button_from_url) {
+        rows.push(vec![button]);
+    }
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// Check whether Telegram can render the watch URL as an inline button.
+#[must_use]
+pub fn can_render_watch_url(value: &str) -> bool {
+    watch_button_from_url(value).is_some()
+}
+
+fn watch_button_from_url(value: &str) -> Option<InlineKeyboardButton> {
+    value
+        .parse()
+        .ok()
+        .map(|url| InlineKeyboardButton::url("👀 Watch", url))
 }
 
 /// Get the loop action inline keyboard
@@ -316,4 +335,42 @@ pub fn confirmation_keyboard() -> KeyboardMarkup {
         KeyboardButton::new("❌ Cancel"),
     ]])
     .resize_keyboard()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{can_render_watch_url, task_control_keyboard};
+    use oxide_agent_core::agent::TaskId;
+    use teloxide::types::InlineKeyboardButtonKind;
+
+    #[test]
+    fn task_control_keyboard_hides_watch_button_without_url() {
+        let keyboard = task_control_keyboard(TaskId::new(), None);
+        assert_eq!(keyboard.inline_keyboard.len(), 1);
+    }
+
+    #[test]
+    fn task_control_keyboard_adds_watch_button_for_valid_url() {
+        let keyboard =
+            task_control_keyboard(TaskId::new(), Some("https://observer.test/watch/oa_token"));
+        assert_eq!(keyboard.inline_keyboard.len(), 2);
+        assert_eq!(keyboard.inline_keyboard[1].len(), 1);
+        assert!(matches!(
+            keyboard.inline_keyboard[1][0].kind,
+            InlineKeyboardButtonKind::Url(_)
+        ));
+    }
+
+    #[test]
+    fn task_control_keyboard_ignores_invalid_watch_url() {
+        let keyboard = task_control_keyboard(TaskId::new(), Some("invalid url"));
+        assert_eq!(keyboard.inline_keyboard.len(), 1);
+    }
+
+    #[test]
+    fn can_render_watch_url_rejects_malformed_http_url() {
+        assert!(!can_render_watch_url(
+            "https:// observer.test/watch/oa_token"
+        ));
+    }
 }

@@ -12,10 +12,11 @@ use anyhow::Context;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::{llm, storage};
 use oxide_agent_runtime::{
-    SharedTaskEventPublisher, TaskEventBroadcaster, TaskEventBroadcasterOptions, TaskRecovery,
-    TaskRecoveryOptions, TaskRegistry,
+    ObserverAccessRegistry, SharedTaskEventPublisher, TaskEventBroadcaster,
+    TaskEventBroadcasterOptions, TaskRecovery, TaskRecoveryOptions, TaskRegistry,
 };
 use std::collections::HashSet;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::UpdateHandler;
@@ -42,6 +43,15 @@ pub struct TelegramRuntime {
 impl TelegramRuntime {
     /// Build runtime dependencies and prepare dispatcher inputs.
     pub async fn build(settings: Arc<BotSettings>) -> anyhow::Result<Self> {
+        Self::build_with_observer_access(settings, None, Arc::new(AtomicBool::new(false))).await
+    }
+
+    /// Build runtime dependencies and prepare dispatcher inputs with optional observer access.
+    pub async fn build_with_observer_access(
+        settings: Arc<BotSettings>,
+        observer_access: Option<Arc<ObserverAccessRegistry>>,
+        web_observer_ready: Arc<AtomicBool>,
+    ) -> anyhow::Result<Self> {
         let storage = init_storage(&settings).await?;
         let task_events = Arc::new(TaskEventBroadcaster::new(TaskEventBroadcasterOptions::new(
             Arc::clone(&storage),
@@ -62,6 +72,8 @@ impl TelegramRuntime {
             settings,
             task_runtime,
             task_events: Arc::clone(&task_events),
+            observer_access,
+            web_observer_ready,
             task_watchers: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
         });
         info!("LLM Client initialized.");
