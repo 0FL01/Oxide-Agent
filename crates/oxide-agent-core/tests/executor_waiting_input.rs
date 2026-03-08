@@ -5,8 +5,8 @@ use oxide_agent_core::agent::{
 };
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::{
-    ChatResponse, LlmClient, LlmError, LlmProvider, Message, ToolCall, ToolCallFunction,
-    ToolDefinition,
+    ChatCompletionRequest, ChatResponse, ChatWithToolsRequest, LlmClient, LlmError, LlmProvider,
+    ToolCall, ToolCallFunction,
 };
 use std::sync::Arc;
 
@@ -14,14 +14,7 @@ struct WaitingInputProvider;
 
 #[async_trait]
 impl LlmProvider for WaitingInputProvider {
-    async fn chat_completion(
-        &self,
-        _system_prompt: &str,
-        _history: &[Message],
-        _user_message: &str,
-        _model_id: &str,
-        _max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, _request: ChatCompletionRequest) -> Result<String, LlmError> {
         Err(LlmError::Unknown(
             "chat_completion is not used in this test".to_string(),
         ))
@@ -52,12 +45,7 @@ impl LlmProvider for WaitingInputProvider {
 
     async fn chat_with_tools(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest,
     ) -> Result<ChatResponse, LlmError> {
         Ok(ChatResponse {
             content: Some("tool_call".to_string()),

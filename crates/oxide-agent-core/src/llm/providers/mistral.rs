@@ -1,7 +1,7 @@
 use crate::config::{MISTRAL_CHAT_TEMPERATURE, MISTRAL_TOOL_TEMPERATURE};
 use crate::llm::{
-    http_utils, openai_compat, ChatResponse, LlmError, LlmProvider, Message, TokenUsage,
-    ToolDefinition,
+    http_utils, openai_compat, ChatCompletionRequest, ChatResponse, ChatWithToolsRequest, LlmError,
+    LlmProvider, Message, TokenUsage,
 };
 use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;
@@ -113,21 +113,14 @@ impl MistralProvider {
 
 #[async_trait]
 impl LlmProvider for MistralProvider {
-    async fn chat_completion(
-        &self,
-        system_prompt: &str,
-        history: &[Message],
-        user_message: &str,
-        model_id: &str,
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, request: ChatCompletionRequest) -> Result<String, LlmError> {
         openai_compat::chat_completion(
             &self.client,
-            system_prompt,
-            history,
-            user_message,
-            model_id,
-            max_tokens,
+            &request.system_prompt,
+            &request.history,
+            &request.user_message,
+            &request.model_id,
+            request.max_tokens,
             MISTRAL_CHAT_TEMPERATURE,
         )
         .await
@@ -160,22 +153,17 @@ impl LlmProvider for MistralProvider {
     /// or `LlmError::JsonError` if parsing fails.
     async fn chat_with_tools(
         &self,
-        system_prompt: &str,
-        history: &[Message],
-        _tools: &[ToolDefinition],
-        model_id: &str,
-        max_tokens: u32,
-        _json_mode: bool,
+        request: ChatWithToolsRequest,
     ) -> Result<ChatResponse, LlmError> {
         let url = "https://api.mistral.ai/v1/chat/completions";
 
-        let messages = Self::prepare_structured_messages(system_prompt, history);
+        let messages = Self::prepare_structured_messages(&request.system_prompt, &request.messages);
 
         let body = json!({
-            "model": model_id,
+            "model": &request.model_id,
             "messages": messages,
             "response_format": { "type": "json_object" },
-            "max_tokens": max_tokens,
+            "max_tokens": request.max_tokens,
             "temperature": MISTRAL_TOOL_TEMPERATURE
         });
 

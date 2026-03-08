@@ -1,6 +1,6 @@
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::{
-    ChatResponse, LlmClient, LlmError, LlmProvider, Message, ToolDefinition,
+    ChatCompletionRequest, ChatResponse, ChatWithToolsRequest, LlmClient, LlmError, LlmProvider,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -9,14 +9,7 @@ struct SuccessMock;
 
 #[async_trait::async_trait]
 impl LlmProvider for SuccessMock {
-    async fn chat_completion(
-        &self,
-        _system_prompt: &str,
-        _history: &[Message],
-        _user_message: &str,
-        _model_id: &str,
-        _max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, _request: ChatCompletionRequest) -> Result<String, LlmError> {
         Ok("Mock Response".to_string())
     }
 
@@ -41,12 +34,7 @@ impl LlmProvider for SuccessMock {
 
     async fn chat_with_tools(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest,
     ) -> Result<ChatResponse, LlmError> {
         Ok(ChatResponse {
             content: Some("Success".to_string()),
@@ -82,14 +70,7 @@ struct RetrySuccessMock {
 
 #[async_trait::async_trait]
 impl LlmProvider for RetrySuccessMock {
-    async fn chat_completion(
-        &self,
-        _system_prompt: &str,
-        _history: &[Message],
-        _user_message: &str,
-        _model_id: &str,
-        _max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, _request: ChatCompletionRequest) -> Result<String, LlmError> {
         unimplemented!()
     }
 
@@ -114,12 +95,7 @@ impl LlmProvider for RetrySuccessMock {
 
     async fn chat_with_tools(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest,
     ) -> Result<ChatResponse, LlmError> {
         let count = self.call_count.fetch_add(1, Ordering::SeqCst);
         if count == 0 {
@@ -167,14 +143,7 @@ struct AlwaysFailMock {
 
 #[async_trait::async_trait]
 impl LlmProvider for AlwaysFailMock {
-    async fn chat_completion(
-        &self,
-        _system_prompt: &str,
-        _history: &[Message],
-        _user_message: &str,
-        _model_id: &str,
-        _max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, _request: ChatCompletionRequest) -> Result<String, LlmError> {
         unimplemented!()
     }
 
@@ -199,12 +168,7 @@ impl LlmProvider for AlwaysFailMock {
 
     async fn chat_with_tools(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest,
     ) -> Result<ChatResponse, LlmError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         Err(LlmError::ApiError("500 Internal Server Error".to_string()))

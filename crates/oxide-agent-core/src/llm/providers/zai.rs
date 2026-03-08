@@ -1,6 +1,8 @@
 mod sdk;
 
-use crate::llm::{ChatResponse, LlmError, LlmProvider, Message, ToolDefinition};
+use crate::llm::{
+    ChatCompletionRequest, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider,
+};
 use async_trait::async_trait;
 use tracing::debug;
 
@@ -20,21 +22,22 @@ impl ZaiProvider {
 
 #[async_trait]
 impl LlmProvider for ZaiProvider {
-    async fn chat_completion(
-        &self,
-        system_prompt: &str,
-        history: &[Message],
-        user_message: &str,
-        model_id: &str,
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, request: ChatCompletionRequest) -> Result<String, LlmError> {
         debug!(
-            "ZAI: Starting chat completion request (model: {model_id}, max_tokens: {max_tokens}, history_size: {})",
-            history.len()
+            "ZAI: Starting chat completion request (model: {}, max_tokens: {}, history_size: {})",
+            request.model_id,
+            request.max_tokens,
+            request.history.len()
         );
 
-        self.chat_completion_sdk(system_prompt, history, user_message, model_id, max_tokens)
-            .await
+        self.chat_completion_sdk(
+            &request.system_prompt,
+            &request.history,
+            &request.user_message,
+            &request.model_id,
+            request.max_tokens,
+        )
+        .await
     }
 
     async fn transcribe_audio(
@@ -66,27 +69,30 @@ impl LlmProvider for ZaiProvider {
     /// or `LlmError::JsonError` if parsing fails.
     async fn chat_with_tools(
         &self,
-        system_prompt: &str,
-        history: &[Message],
-        tools: &[ToolDefinition],
-        model_id: &str,
-        max_tokens: u32,
-        json_mode: bool,
+        request: ChatWithToolsRequest,
     ) -> Result<ChatResponse, LlmError> {
         debug!(
-            "ZAI: *** CHAT_WITH_TOOLS ENTRY *** model={model_id} tools_count={} history_size={} json_mode={}",
-            tools.len(),
-            history.len(),
-            json_mode
+            "ZAI: *** CHAT_WITH_TOOLS ENTRY *** model={} tools_count={} history_size={} json_mode={}",
+            request.model_id,
+            request.tools.len(),
+            request.messages.len(),
+            request.json_mode
         );
 
         debug!(
-            "ZAI: Starting tool-enabled chat completion (model: {model_id}, tools: {}, history: {})",
-            tools.len(),
-            history.len()
+            "ZAI: Starting tool-enabled chat completion (model: {}, tools: {}, history: {})",
+            request.model_id,
+            request.tools.len(),
+            request.messages.len()
         );
 
-        self.chat_with_tools_sdk(system_prompt, history, tools, model_id, max_tokens)
-            .await
+        self.chat_with_tools_sdk(
+            &request.system_prompt,
+            &request.messages,
+            &request.tools,
+            &request.model_id,
+            request.max_tokens,
+        )
+        .await
     }
 }

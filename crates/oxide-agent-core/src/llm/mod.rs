@@ -185,20 +185,44 @@ pub struct ChatResponse {
     pub usage: Option<TokenUsage>,
 }
 
+/// Request payload for `LlmProvider::chat_completion`.
+#[derive(Debug, Clone)]
+pub struct ChatCompletionRequest {
+    /// System prompt that sets assistant behavior.
+    pub system_prompt: String,
+    /// Prior conversation messages.
+    pub history: Vec<Message>,
+    /// Current user message.
+    pub user_message: String,
+    /// Provider-specific model identifier.
+    pub model_id: String,
+    /// Maximum output token budget.
+    pub max_tokens: u32,
+}
+
+/// Request payload for `LlmProvider::chat_with_tools`.
+#[derive(Debug, Clone)]
+pub struct ChatWithToolsRequest {
+    /// System prompt that sets assistant behavior.
+    pub system_prompt: String,
+    /// Conversation messages including tool exchanges.
+    pub messages: Vec<Message>,
+    /// Tool definitions available to the model.
+    pub tools: Vec<ToolDefinition>,
+    /// Provider-specific model identifier.
+    pub model_id: String,
+    /// Maximum output token budget.
+    pub max_tokens: u32,
+    /// Whether to enforce JSON-only output mode.
+    pub json_mode: bool,
+}
+
 /// Interface for all LLM providers
 #[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
-#[allow(clippy::too_many_arguments)]
 pub trait LlmProvider: Send + Sync {
     /// Generate a chat completion
-    async fn chat_completion(
-        &self,
-        system_prompt: &str,
-        history: &[Message],
-        user_message: &str,
-        model_id: &str,
-        max_tokens: u32,
-    ) -> Result<String, LlmError>;
+    async fn chat_completion(&self, request: ChatCompletionRequest) -> Result<String, LlmError>;
 
     /// Transcribe audio content
     async fn transcribe_audio(
@@ -223,12 +247,7 @@ pub trait LlmProvider: Send + Sync {
     /// Providers that support tool calling (e.g., Mistral, ZAI) should override this method.
     async fn chat_with_tools(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest,
     ) -> Result<ChatResponse, LlmError> {
         Err(LlmError::Unknown(
             "Tool calling not supported by this provider".to_string(),
@@ -556,13 +575,13 @@ impl LlmClient {
 
         let start = Instant::now();
         let result = provider
-            .chat_completion(
-                system_prompt,
-                history,
-                user_message,
-                &model_info.id,
-                model_info.max_tokens,
-            )
+            .chat_completion(ChatCompletionRequest {
+                system_prompt: system_prompt.to_string(),
+                history: history.to_vec(),
+                user_message: user_message.to_string(),
+                model_id: model_info.id.clone(),
+                max_tokens: model_info.max_tokens,
+            })
             .await;
         let duration = start.elapsed();
 
@@ -628,14 +647,14 @@ impl LlmClient {
 
             let start = Instant::now();
             let result = provider
-                .chat_with_tools(
-                    system_prompt,
-                    messages,
-                    tools,
-                    &model_info.id,
-                    model_info.max_tokens,
+                .chat_with_tools(ChatWithToolsRequest {
+                    system_prompt: system_prompt.to_string(),
+                    messages: messages.to_vec(),
+                    tools: tools.to_vec(),
+                    model_id: model_info.id.clone(),
+                    max_tokens: model_info.max_tokens,
                     json_mode,
-                )
+                })
                 .await;
             let duration = start.elapsed();
             drop(permits);
@@ -945,11 +964,7 @@ mod tests {
     impl LlmProvider for CountingProvider {
         async fn chat_completion(
             &self,
-            _system_prompt: &str,
-            _history: &[Message],
-            _user_message: &str,
-            _model_id: &str,
-            _max_tokens: u32,
+            _request: ChatCompletionRequest,
         ) -> Result<String, LlmError> {
             Self::observe_peak(&self.completion_active, &self.completion_peak);
             tokio::time::sleep(self.completion_delay).await;
@@ -978,12 +993,7 @@ mod tests {
 
         async fn chat_with_tools(
             &self,
-            _system_prompt: &str,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _model_id: &str,
-            _max_tokens: u32,
-            _json_mode: bool,
+            _request: ChatWithToolsRequest,
         ) -> Result<ChatResponse, LlmError> {
             Self::observe_peak(&self.tools_active, &self.tools_peak);
 

@@ -1,5 +1,5 @@
 use crate::config::GROQ_CHAT_TEMPERATURE;
-use crate::llm::{openai_compat, LlmError, LlmProvider, Message};
+use crate::llm::{openai_compat, ChatCompletionRequest, LlmError, LlmProvider};
 use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;
 
@@ -23,21 +23,14 @@ impl GroqProvider {
 
 #[async_trait]
 impl LlmProvider for GroqProvider {
-    async fn chat_completion(
-        &self,
-        system_prompt: &str,
-        history: &[Message],
-        user_message: &str,
-        model_id: &str,
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, request: ChatCompletionRequest) -> Result<String, LlmError> {
         openai_compat::chat_completion(
             &self.client,
-            system_prompt,
-            history,
-            user_message,
-            model_id,
-            max_tokens,
+            &request.system_prompt,
+            &request.history,
+            &request.user_message,
+            &request.model_id,
+            request.max_tokens,
             GROQ_CHAT_TEMPERATURE,
         )
         .await

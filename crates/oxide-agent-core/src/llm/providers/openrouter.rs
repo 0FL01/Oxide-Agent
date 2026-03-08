@@ -5,7 +5,9 @@ use crate::config::{
     OPENROUTER_CHAT_TEMPERATURE, OPENROUTER_IMAGE_TEMPERATURE,
 };
 use crate::llm::http_utils::{extract_text_content, send_json_request};
-use crate::llm::{ChatResponse, LlmError, LlmProvider, Message, TokenUsage, ToolDefinition};
+use crate::llm::{
+    ChatCompletionRequest, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, TokenUsage,
+};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client as HttpClient;
@@ -36,26 +38,19 @@ impl OpenRouterProvider {
 
 #[async_trait]
 impl LlmProvider for OpenRouterProvider {
-    async fn chat_completion(
-        &self,
-        system_prompt: &str,
-        history: &[Message],
-        user_message: &str,
-        model_id: &str,
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, request: ChatCompletionRequest) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
 
-        let mut messages = vec![json!({"role": "system", "content": system_prompt})];
-        for msg in history {
+        let mut messages = vec![json!({"role": "system", "content": &request.system_prompt})];
+        for msg in &request.history {
             messages.push(json!({"role": msg.role, "content": msg.content}));
         }
-        messages.push(json!({"role": "user", "content": user_message}));
+        messages.push(json!({"role": "user", "content": &request.user_message}));
 
         let body = json!({
-            "model": model_id,
+            "model": &request.model_id,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": request.max_tokens,
             "temperature": OPENROUTER_CHAT_TEMPERATURE
         });
 
@@ -169,22 +164,17 @@ impl LlmProvider for OpenRouterProvider {
 
     async fn chat_with_tools(
         &self,
-        system_prompt: &str,
-        history: &[Message],
-        tools: &[ToolDefinition],
-        model_id: &str,
-        max_tokens: u32,
-        _json_mode: bool,
+        request: ChatWithToolsRequest,
     ) -> Result<ChatResponse, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
 
-        let messages = prepare_structured_messages(system_prompt, history);
-        let openai_tools = prepare_tools_json(tools);
+        let messages = prepare_structured_messages(&request.system_prompt, &request.messages);
+        let openai_tools = prepare_tools_json(&request.tools);
 
         let mut body = json!({
-            "model": model_id,
+            "model": &request.model_id,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": request.max_tokens,
             "temperature": OPENROUTER_CHAT_TEMPERATURE
         });
 

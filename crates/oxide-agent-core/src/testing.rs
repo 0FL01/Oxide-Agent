@@ -25,8 +25,8 @@ use mockall::predicate::*;
 pub fn mock_llm_simple(response_text: &'static str) -> crate::llm::MockLlmProvider {
     let mut mock = crate::llm::MockLlmProvider::new();
     mock.expect_chat_completion()
-        .with(always(), always(), always(), always(), always())
-        .returning(move |_, _, _, _, _| Ok(response_text.to_string()));
+        .with(always())
+        .returning(move |_| Ok(response_text.to_string()));
 
     mock.expect_transcribe_audio()
         .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));

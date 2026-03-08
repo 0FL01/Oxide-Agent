@@ -3,7 +3,7 @@ use crate::config::{
     GEMINI_IMAGE_TEMPERATURE,
 };
 use crate::llm::http_utils::{extract_text_content, send_json_request};
-use crate::llm::{LlmError, LlmProvider, Message};
+use crate::llm::{ChatCompletionRequest, LlmError, LlmProvider};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client as HttpClient;
@@ -28,21 +28,14 @@ impl GeminiProvider {
 
 #[async_trait]
 impl LlmProvider for GeminiProvider {
-    async fn chat_completion(
-        &self,
-        system_prompt: &str,
-        history: &[Message],
-        user_message: &str,
-        model_id: &str,
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
+    async fn chat_completion(&self, request: ChatCompletionRequest) -> Result<String, LlmError> {
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={}",
-            self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            request.model_id, self.api_key
         );
 
         let mut contents = Vec::new();
-        for msg in history {
+        for msg in &request.history {
             if msg.role != "system" {
                 let role = if msg.role == "user" { "user" } else { "model" };
                 contents.push(json!({
@@ -53,17 +46,17 @@ impl LlmProvider for GeminiProvider {
         }
         contents.push(json!({
             "role": "user",
-            "parts": [{"text": user_message}]
+            "parts": [{"text": &request.user_message}]
         }));
 
         let body = json!({
             "contents": contents,
             "system_instruction": {
-                "parts": [{"text": system_prompt}]
+                "parts": [{"text": &request.system_prompt}]
             },
             "generationConfig": {
                 "temperature": GEMINI_CHAT_TEMPERATURE,
-                "maxOutputTokens": max_tokens
+                "maxOutputTokens": request.max_tokens
             },
             "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -141,6 +134,7 @@ impl LlmProvider for GeminiProvider {
             }],
             "system_instruction": {
                 "parts": [{"text": system_prompt}]
+
             },
             "generationConfig": {
                 "temperature": GEMINI_IMAGE_TEMPERATURE,
