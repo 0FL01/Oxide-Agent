@@ -1,7 +1,7 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 use oxide_agent_core::llm::providers::ZaiProvider;
-use oxide_agent_core::llm::{LlmProvider, Message, ToolDefinition};
+use oxide_agent_core::llm::{ChatWithToolsRequest, LlmProvider, Message, ToolDefinition};
 use serde_json::json;
 use std::env;
 use tracing::{info, warn};
@@ -79,7 +79,14 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
 
     info!("Sending request to ZAI (model: {})...", model_id);
     let result = provider
-        .chat_with_tools(system_prompt, &messages, &tools, model_id, 1024, false)
+        .chat_with_tools(ChatWithToolsRequest {
+            system_prompt,
+            messages: &messages,
+            tools: &tools,
+            model_id,
+            max_tokens: 1024,
+            json_mode: false,
+        })
         .await;
 
     match result {

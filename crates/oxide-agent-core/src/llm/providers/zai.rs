@@ -1,8 +1,7 @@
 mod sdk;
 
-use crate::llm::{ChatResponse, LlmError, LlmProvider, Message, ToolDefinition};
+use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
 use async_trait::async_trait;
-use tracing::debug;
 
 /// LLM provider implementation for Zai (Zhipu AI)
 pub struct ZaiProvider {
@@ -28,11 +27,6 @@ impl LlmProvider for ZaiProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        debug!(
-            "ZAI: Starting chat completion request (model: {model_id}, max_tokens: {max_tokens}, history_size: {})",
-            history.len()
-        );
-
         self.chat_completion_sdk(system_prompt, history, user_message, model_id, max_tokens)
             .await
     }
@@ -64,28 +58,18 @@ impl LlmProvider for ZaiProvider {
     ///
     /// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` on non-success status codes,
     /// or `LlmError::JsonError` if parsing fails.
-    async fn chat_with_tools(
+    async fn chat_with_tools<'a>(
         &self,
-        system_prompt: &str,
-        history: &[Message],
-        tools: &[ToolDefinition],
-        model_id: &str,
-        max_tokens: u32,
-        json_mode: bool,
+        request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
-        debug!(
-            "ZAI: *** CHAT_WITH_TOOLS ENTRY *** model={model_id} tools_count={} history_size={} json_mode={}",
-            tools.len(),
-            history.len(),
-            json_mode
-        );
-
-        debug!(
-            "ZAI: Starting tool-enabled chat completion (model: {model_id}, tools: {}, history: {})",
-            tools.len(),
-            history.len()
-        );
-
+        let ChatWithToolsRequest {
+            system_prompt,
+            messages: history,
+            tools,
+            model_id,
+            max_tokens,
+            json_mode: _json_mode,
+        } = request;
         self.chat_with_tools_sdk(system_prompt, history, tools, model_id, max_tokens)
             .await
     }

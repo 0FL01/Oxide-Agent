@@ -5,7 +5,7 @@ use crate::config::{
     OPENROUTER_CHAT_TEMPERATURE, OPENROUTER_IMAGE_TEMPERATURE,
 };
 use crate::llm::http_utils::{extract_text_content, send_json_request};
-use crate::llm::{ChatResponse, LlmError, LlmProvider, Message, TokenUsage, ToolDefinition};
+use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client as HttpClient;
@@ -167,15 +167,18 @@ impl LlmProvider for OpenRouterProvider {
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
-    async fn chat_with_tools(
+    async fn chat_with_tools<'a>(
         &self,
-        system_prompt: &str,
-        history: &[Message],
-        tools: &[ToolDefinition],
-        model_id: &str,
-        max_tokens: u32,
-        _json_mode: bool,
+        request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
+        let ChatWithToolsRequest {
+            system_prompt,
+            messages: history,
+            tools,
+            model_id,
+            max_tokens,
+            json_mode: _,
+        } = request;
         let url = "https://openrouter.ai/api/v1/chat/completions";
 
         let messages = prepare_structured_messages(system_prompt, history);

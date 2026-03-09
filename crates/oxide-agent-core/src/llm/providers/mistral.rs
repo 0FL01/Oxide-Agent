@@ -1,7 +1,7 @@
 use crate::config::{MISTRAL_CHAT_TEMPERATURE, MISTRAL_TOOL_TEMPERATURE};
 use crate::llm::{
-    http_utils, openai_compat, ChatResponse, LlmError, LlmProvider, Message, TokenUsage,
-    ToolDefinition,
+    http_utils, openai_compat, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
+    TokenUsage,
 };
 use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;
@@ -158,15 +158,18 @@ impl LlmProvider for MistralProvider {
     ///
     /// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` on non-success status codes,
     /// or `LlmError::JsonError` if parsing fails.
-    async fn chat_with_tools(
+    async fn chat_with_tools<'a>(
         &self,
-        system_prompt: &str,
-        history: &[Message],
-        _tools: &[ToolDefinition],
-        model_id: &str,
-        max_tokens: u32,
-        _json_mode: bool,
+        request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
+        let ChatWithToolsRequest {
+            system_prompt,
+            messages: history,
+            tools: _,
+            model_id,
+            max_tokens,
+            json_mode: _,
+        } = request;
         let url = "https://api.mistral.ai/v1/chat/completions";
 
         let messages = Self::prepare_structured_messages(system_prompt, history);
