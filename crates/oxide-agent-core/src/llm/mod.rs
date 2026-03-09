@@ -183,10 +183,26 @@ pub struct ChatResponse {
     pub usage: Option<TokenUsage>,
 }
 
+/// Parameters for a tool-enabled chat completion.
+#[derive(Debug, Clone, Copy)]
+pub struct ChatWithToolsRequest<'a> {
+    /// System prompt for the request.
+    pub system_prompt: &'a str,
+    /// Conversation history.
+    pub messages: &'a [Message],
+    /// Available tool definitions.
+    pub tools: &'a [ToolDefinition],
+    /// Provider-specific model identifier.
+    pub model_id: &'a str,
+    /// Maximum number of output tokens.
+    pub max_tokens: u32,
+    /// Whether structured JSON mode is required.
+    pub json_mode: bool,
+}
+
 /// Interface for all LLM providers
 #[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
-#[allow(clippy::too_many_arguments)]
 pub trait LlmProvider: Send + Sync {
     /// Generate a chat completion
     async fn chat_completion(
@@ -219,14 +235,9 @@ pub trait LlmProvider: Send + Sync {
     ///
     /// Default implementation returns an error indicating tool calling is not supported.
     /// Providers that support tool calling (e.g., Mistral, ZAI) should override this method.
-    async fn chat_with_tools(
+    async fn chat_with_tools<'a>(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
         Err(LlmError::Unknown(
             "Tool calling not supported by this provider".to_string(),
@@ -482,16 +493,15 @@ impl LlmClient {
 
         for attempt in 1..=MAX_RETRIES {
             let start = std::time::Instant::now();
-            let result = provider
-                .chat_with_tools(
-                    system_prompt,
-                    messages,
-                    tools,
-                    &model_info.id,
-                    model_info.max_tokens,
-                    json_mode,
-                )
-                .await;
+            let request = ChatWithToolsRequest {
+                system_prompt,
+                messages,
+                tools,
+                model_id: &model_info.id,
+                max_tokens: model_info.max_tokens,
+                json_mode,
+            };
+            let result = provider.chat_with_tools(request).await;
             let duration = start.elapsed();
 
             match result {

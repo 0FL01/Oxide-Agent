@@ -3,7 +3,10 @@
 //! Provides convenient constructors for mocked LLM and storage providers.
 
 use crate::llm::LlmError;
-use crate::storage::UserConfig;
+use crate::storage::{
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, TopicBindingRecord,
+    UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+};
 use mockall::predicate::*;
 
 /// Create a mock LLM provider that returns a simple text response.
@@ -55,6 +58,8 @@ pub fn mock_llm_simple(response_text: &'static str) -> crate::llm::MockLlmProvid
 /// - `save_agent_memory` returns `Ok(())`
 /// - `load_agent_memory` returns `Ok(None)`
 /// - `check_connection` returns `Ok(())`
+/// - control-plane methods return `Ok(None)` / `Ok(())` / empty lists with
+///   minimal records for append/upsert calls
 ///
 /// # Example
 ///
@@ -110,6 +115,58 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
     mock.expect_clear_all_context().returning(|_| Ok(()));
 
     mock.expect_check_connection().returning(|| Ok(()));
+
+    mock.expect_get_agent_profile().returning(|_, _| Ok(None));
+
+    mock.expect_upsert_agent_profile()
+        .returning(|options: UpsertAgentProfileOptions| {
+            Ok(AgentProfileRecord {
+                schema_version: 1,
+                version: 1,
+                user_id: options.user_id,
+                agent_id: options.agent_id,
+                profile: options.profile,
+                created_at: 0,
+                updated_at: 0,
+            })
+        });
+
+    mock.expect_delete_agent_profile().returning(|_, _| Ok(()));
+
+    mock.expect_get_topic_binding().returning(|_, _| Ok(None));
+
+    mock.expect_upsert_topic_binding()
+        .returning(|options: UpsertTopicBindingOptions| {
+            Ok(TopicBindingRecord {
+                schema_version: 1,
+                version: 1,
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agent_id: options.agent_id,
+                created_at: 0,
+                updated_at: 0,
+            })
+        });
+
+    mock.expect_delete_topic_binding().returning(|_, _| Ok(()));
+
+    mock.expect_append_audit_event()
+        .returning(|options: AppendAuditEventOptions| {
+            Ok(AuditEventRecord {
+                schema_version: 1,
+                version: 1,
+                event_id: "mock-audit-event".to_string(),
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agent_id: options.agent_id,
+                action: options.action,
+                payload: options.payload,
+                created_at: 0,
+            })
+        });
+
+    mock.expect_list_audit_events()
+        .returning(|_, _| Ok(Vec::new()));
 
     mock
 }

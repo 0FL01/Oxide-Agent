@@ -1,6 +1,6 @@
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::{
-    ChatResponse, LlmClient, LlmError, LlmProvider, Message, ToolDefinition,
+    ChatResponse, ChatWithToolsRequest, LlmClient, LlmError, LlmProvider, Message,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -39,14 +39,9 @@ impl LlmProvider for SuccessMock {
         Err(LlmError::Unknown("Not implemented".to_string()))
     }
 
-    async fn chat_with_tools(
+    async fn chat_with_tools<'a>(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
         Ok(ChatResponse {
             content: Some("Success".to_string()),
@@ -112,14 +107,9 @@ impl LlmProvider for RetrySuccessMock {
         unimplemented!()
     }
 
-    async fn chat_with_tools(
+    async fn chat_with_tools<'a>(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
         let count = self.call_count.fetch_add(1, Ordering::SeqCst);
         if count == 0 {
@@ -197,14 +187,9 @@ impl LlmProvider for AlwaysFailMock {
         unimplemented!()
     }
 
-    async fn chat_with_tools(
+    async fn chat_with_tools<'a>(
         &self,
-        _system_prompt: &str,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _model_id: &str,
-        _max_tokens: u32,
-        _json_mode: bool,
+        _request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         Err(LlmError::ApiError("500 Internal Server Error".to_string()))
