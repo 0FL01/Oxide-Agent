@@ -47,6 +47,22 @@ struct AgentTaskContext {
     session_id: SessionId,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AgentModeSessionKeys {
+    primary: SessionId,
+    legacy: SessionId,
+}
+
+impl AgentModeSessionKeys {
+    fn distinct_legacy(self) -> Option<SessionId> {
+        if self.primary == self.legacy {
+            None
+        } else {
+            Some(self.legacy)
+        }
+    }
+}
+
 enum AgentWipeError {
     Recreate(Error),
 }
@@ -101,6 +117,97 @@ fn derive_agent_mode_session_id(
     let folded = hash & (i64::MAX as u64);
     let derived = if folded == 0 { -1 } else { -(folded as i64) };
     SessionId::from(derived)
+}
+
+fn agent_mode_session_keys(
+    user_id: i64,
+    chat_id: ChatId,
+    thread_id: Option<ThreadId>,
+) -> AgentModeSessionKeys {
+    AgentModeSessionKeys {
+        primary: derive_agent_mode_session_id(user_id, chat_id, thread_id),
+        legacy: SessionId::from(user_id),
+    }
+}
+
+fn select_existing_session_id(
+    keys: AgentModeSessionKeys,
+    primary_exists: bool,
+    legacy_exists: bool,
+) -> Option<SessionId> {
+    if primary_exists {
+        Some(keys.primary)
+    } else if legacy_exists {
+        Some(keys.legacy)
+    } else {
+        None
+    }
+}
+
+async fn resolve_existing_session_id(keys: AgentModeSessionKeys) -> Option<SessionId> {
+    let primary_exists = SESSION_REGISTRY.contains(&keys.primary).await;
+    let legacy_exists = if let Some(legacy) = keys.distinct_legacy() {
+        SESSION_REGISTRY.contains(&legacy).await
+    } else {
+        primary_exists
+    };
+
+    select_existing_session_id(keys, primary_exists, legacy_exists)
+}
+
+enum ResetSessionOutcome {
+    Reset,
+    Busy,
+    NotFound,
+}
+
+async fn reset_sessions_with_compat(keys: AgentModeSessionKeys) -> ResetSessionOutcome {
+    let primary_result = SESSION_REGISTRY.reset(&keys.primary).await;
+    let legacy_result = if let Some(legacy) = keys.distinct_legacy() {
+        Some(SESSION_REGISTRY.reset(&legacy).await)
+    } else {
+        None
+    };
+
+    let primary_reset = matches!(primary_result, Ok(()));
+    let legacy_reset = matches!(legacy_result, Some(Ok(())));
+    if primary_reset || legacy_reset {
+        return ResetSessionOutcome::Reset;
+    }
+
+    let primary_busy = matches!(primary_result, Err("Cannot reset while task is running"));
+    let legacy_busy = matches!(
+        legacy_result,
+        Some(Err("Cannot reset while task is running"))
+    );
+    if primary_busy || legacy_busy {
+        return ResetSessionOutcome::Busy;
+    }
+
+    ResetSessionOutcome::NotFound
+}
+
+async fn cancel_and_clear_with_compat(keys: AgentModeSessionKeys) -> (bool, bool) {
+    let cancelled_primary = SESSION_REGISTRY.cancel(&keys.primary).await;
+    let cleared_primary = SESSION_REGISTRY.clear_todos(&keys.primary).await;
+
+    if let Some(legacy) = keys.distinct_legacy() {
+        let cancelled_legacy = SESSION_REGISTRY.cancel(&legacy).await;
+        let cleared_legacy = SESSION_REGISTRY.clear_todos(&legacy).await;
+        (
+            cancelled_primary || cancelled_legacy,
+            cleared_primary || cleared_legacy,
+        )
+    } else {
+        (cancelled_primary, cleared_primary)
+    }
+}
+
+async fn remove_sessions_with_compat(keys: AgentModeSessionKeys) {
+    SESSION_REGISTRY.remove(&keys.primary).await;
+    if let Some(legacy) = keys.distinct_legacy() {
+        SESSION_REGISTRY.remove(&legacy).await;
+    }
 }
 
 fn outbound_thread_from_message(msg: &Message) -> OutboundThreadParams {
@@ -159,13 +266,13 @@ struct ConfirmationSendCtx<'a> {
 
 async fn handle_clear_memory_confirmation(
     user_id: i64,
-    session_id: SessionId,
+    session_keys: AgentModeSessionKeys,
     storage: &Arc<dyn StorageProvider>,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
     info!(user_id = user_id, "User confirmed memory clear");
-    match SESSION_REGISTRY.reset(&session_id).await {
-        Ok(()) => {
+    match reset_sessions_with_compat(session_keys).await {
+        ResetSessionOutcome::Reset => {
             let _ = storage.clear_agent_memory(user_id).await;
             send_agent_message_with_keyboard(
                 send_ctx.bot,
@@ -176,7 +283,7 @@ async fn handle_clear_memory_confirmation(
             )
             .await?;
         }
-        Err("Cannot reset while task is running") => {
+        ResetSessionOutcome::Busy => {
             send_agent_message_with_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
@@ -186,7 +293,7 @@ async fn handle_clear_memory_confirmation(
             )
             .await?;
         }
-        Err(_) => {
+        ResetSessionOutcome::NotFound => {
             let _ = storage.clear_agent_memory(user_id).await;
             send_agent_message_with_keyboard(
                 send_ctx.bot,
@@ -204,14 +311,14 @@ async fn handle_clear_memory_confirmation(
 
 async fn handle_recreate_container_confirmation(
     user_id: i64,
-    session_id: SessionId,
+    session_keys: AgentModeSessionKeys,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
     settings: &Arc<BotSettings>,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
     info!(user_id = user_id, "User confirmed container recreation");
-    ensure_session_exists(session_id, user_id, llm, storage, settings).await;
+    let session_id = ensure_session_exists(session_keys, user_id, llm, storage, settings).await;
 
     match SESSION_REGISTRY
         .with_executor_mut(&session_id, |executor| {
@@ -288,23 +395,11 @@ pub async fn activate_agent_mode(
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    let session_id = derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id);
+    let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
 
     info!("Activating agent mode for user {user_id}");
 
-    // Create new session
-    let mut session = AgentSession::new(session_id);
-
-    // Load saved agent memory if exists
-    if let Ok(Some(saved_memory)) = storage.load_agent_memory(user_id).await {
-        session.memory = saved_memory;
-        info!("Loaded agent memory for user {user_id}");
-    }
-
-    let executor = AgentExecutor::new(llm.clone(), session, settings.agent.clone());
-
-    // Store session in registry
-    SESSION_REGISTRY.insert(session_id, executor).await;
+    ensure_session_exists(session_keys, user_id, &llm, &storage, &settings).await;
 
     // Save state to DB
     storage
@@ -345,7 +440,7 @@ pub async fn handle_agent_message(
     let chat_id = msg.chat.id;
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
-    let session_id = derive_agent_mode_session_id(user_id, chat_id, thread_spec.thread_id);
+    let session_keys = agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id);
 
     if let Some(command) = parse_agent_control_command(msg.text()) {
         return match command {
@@ -374,7 +469,7 @@ pub async fn handle_agent_message(
     }
 
     // Get or create session
-    ensure_session_exists(session_id, user_id, &llm, &storage, &settings).await;
+    let session_id = ensure_session_exists(session_keys, user_id, &llm, &storage, &settings).await;
 
     if is_agent_task_running(session_id).await {
         let mut req = bot.send_message(
@@ -422,7 +517,10 @@ pub async fn handle_agent_message(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_agent_mode_session_id, parse_agent_control_command, AgentControlCommand};
+    use super::{
+        agent_mode_session_keys, derive_agent_mode_session_id, parse_agent_control_command,
+        select_existing_session_id, AgentControlCommand,
+    };
     use teloxide::types::{ChatId, MessageId, ThreadId};
 
     #[test]
@@ -480,18 +578,40 @@ mod tests {
 
         assert_ne!(first, second);
     }
+
+    #[test]
+    fn existing_session_selection_prefers_primary_key() {
+        let keys = agent_mode_session_keys(12345, ChatId(-1001), Some(ThreadId(MessageId(42))));
+        let selected = select_existing_session_id(keys, true, true);
+
+        assert_eq!(selected, Some(keys.primary));
+    }
+
+    #[test]
+    fn existing_session_selection_falls_back_to_legacy_key() {
+        let keys = agent_mode_session_keys(12345, ChatId(-1001), Some(ThreadId(MessageId(42))));
+        let selected = select_existing_session_id(keys, false, true);
+
+        assert_eq!(selected, Some(keys.legacy));
+    }
 }
 
 async fn ensure_session_exists(
-    session_id: SessionId,
+    session_keys: AgentModeSessionKeys,
     user_id: i64,
     llm: &Arc<LlmClient>,
     storage: &Arc<dyn StorageProvider>,
     settings: &Arc<BotSettings>,
-) {
+) -> SessionId {
+    if let Some(existing_session_id) = resolve_existing_session_id(session_keys).await {
+        debug!(session_id = %existing_session_id, "Session already exists in cache");
+        return existing_session_id;
+    }
+
+    let session_id = session_keys.primary;
     if SESSION_REGISTRY.contains(&session_id).await {
         debug!(session_id = %session_id, "Session already exists in cache");
-        return;
+        return session_id;
     }
 
     let mut session = AgentSession::new(session_id);
@@ -513,6 +633,7 @@ async fn ensure_session_exists(
 
     let executor = AgentExecutor::new(llm.clone(), session, settings.agent.clone());
     SESSION_REGISTRY.insert(session_id, executor).await;
+    session_id
 }
 
 async fn is_agent_task_running(session_id: SessionId) -> bool {
@@ -745,7 +866,7 @@ struct LoopCallbackContext {
     bot: Bot,
     chat_id: ChatId,
     user_id: i64,
-    session_id: SessionId,
+    session_keys: AgentModeSessionKeys,
     outbound_thread: OutboundThreadParams,
 }
 
@@ -755,7 +876,9 @@ async fn handle_loop_retry(
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
-    if is_agent_task_running(ctx.session_id).await {
+    let session_id =
+        ensure_session_exists(ctx.session_keys, ctx.user_id, &llm, &storage, &settings).await;
+    if is_agent_task_running(session_id).await {
         send_agent_message(
             &ctx.bot,
             ctx.chat_id,
@@ -766,10 +889,9 @@ async fn handle_loop_retry(
         return Ok(());
     }
 
-    ensure_session_exists(ctx.session_id, ctx.user_id, &llm, &storage, &settings).await;
-    renew_cancellation_token(ctx.session_id).await;
+    renew_cancellation_token(session_id).await;
 
-    let executor_arc = SESSION_REGISTRY.get(&ctx.session_id).await;
+    let executor_arc = SESSION_REGISTRY.get(&session_id).await;
     let Some(executor_arc) = executor_arc else {
         send_agent_message(
             &ctx.bot,
@@ -808,7 +930,7 @@ async fn handle_loop_retry(
         if let Err(e) = run_agent_task_with_text(
             retry_ctx.bot,
             retry_ctx.chat_id,
-            retry_ctx.session_id,
+            session_id,
             retry_ctx.user_id,
             task_text,
             storage,
@@ -831,13 +953,13 @@ async fn handle_loop_retry(
 
 async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
     // Cancel any running task first to release the executor lock.
-    SESSION_REGISTRY.cancel(&ctx.session_id).await;
+    let _ = cancel_and_clear_with_compat(ctx.session_keys).await;
 
     // Brief yield to allow the run loop to observe cancellation and release locks.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    match SESSION_REGISTRY.reset(&ctx.session_id).await {
-        Ok(()) => {
+    match reset_sessions_with_compat(ctx.session_keys).await {
+        ResetSessionOutcome::Reset => {
             send_agent_message_with_keyboard(
                 &ctx.bot,
                 ctx.chat_id,
@@ -847,7 +969,7 @@ async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
             )
             .await?;
         }
-        Err("Session not found") => {
+        ResetSessionOutcome::NotFound => {
             send_agent_message(
                 &ctx.bot,
                 ctx.chat_id,
@@ -856,7 +978,7 @@ async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
             )
             .await?;
         }
-        Err(_) => {
+        ResetSessionOutcome::Busy => {
             send_agent_message(
                 &ctx.bot,
                 ctx.chat_id,
@@ -900,12 +1022,12 @@ pub async fn handle_loop_callback(
         .and_then(|message| message.regular_message())
         .map(resolve_thread_spec)
         .and_then(|spec| spec.thread_id);
-    let session_id = derive_agent_mode_session_id(user_id, chat_id, thread_id);
+    let session_keys = agent_mode_session_keys(user_id, chat_id, thread_id);
     let ctx = LoopCallbackContext {
         bot,
         chat_id,
         user_id,
-        session_id,
+        session_keys,
         outbound_thread: outbound_thread_from_callback(&q),
     };
 
@@ -915,7 +1037,7 @@ pub async fn handle_loop_callback(
         LOOP_CALLBACK_CANCEL => {
             cancel_agent_task_by_id(
                 ctx.bot.clone(),
-                ctx.session_id,
+                ctx.session_keys,
                 ctx.chat_id,
                 ctx.outbound_thread.message_thread_id,
             )
@@ -936,13 +1058,9 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    let session_id = derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id);
+    let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
 
-    // Access the cancellation token from registry (lock-free)
-    let cancelled = SESSION_REGISTRY.cancel(&session_id).await;
-
-    // Best-effort: clear todos without waiting for executor locks.
-    let cleared_todos = SESSION_REGISTRY.clear_todos(&session_id).await;
+    let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
 
     let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {
@@ -965,12 +1083,11 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
 
 async fn cancel_agent_task_by_id(
     bot: Bot,
-    session_id: SessionId,
+    session_keys: AgentModeSessionKeys,
     chat_id: ChatId,
     message_thread_id: Option<ThreadId>,
 ) -> Result<()> {
-    let cancelled = SESSION_REGISTRY.cancel(&session_id).await;
-    let cleared_todos = SESSION_REGISTRY.clear_todos(&session_id).await;
+    let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
     let outbound_thread = OutboundThreadParams { message_thread_id };
 
     let text = DefaultAgentView::task_cancelled(cleared_todos);
@@ -1011,10 +1128,13 @@ pub async fn exit_agent_mode(
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    let session_id = derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id);
+    let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
 
+    let session_id = resolve_existing_session_id(session_keys)
+        .await
+        .unwrap_or(session_keys.primary);
     save_memory_after_task(session_id, user_id, &storage).await;
-    SESSION_REGISTRY.remove(&session_id).await;
+    remove_sessions_with_compat(session_keys).await;
 
     let _ = storage
         .update_user_state(user_id, "chat_mode".to_string())
@@ -1079,7 +1199,7 @@ pub async fn handle_agent_confirmation(
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let thread_spec = resolve_thread_spec(&msg);
-    let session_id = derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id);
+    let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
     let text = msg.text().unwrap_or("");
     let chat_id = msg.chat.id;
     let outbound_thread = build_outbound_thread_params(thread_spec);
@@ -1107,11 +1227,17 @@ pub async fn handle_agent_confirmation(
     match text {
         "✅ Yes" => match action {
             ConfirmationType::ClearMemory => {
-                handle_clear_memory_confirmation(user_id, session_id, &storage, &send_ctx).await?;
+                handle_clear_memory_confirmation(user_id, session_keys, &storage, &send_ctx)
+                    .await?;
             }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(
-                    user_id, session_id, &storage, &llm, &settings, &send_ctx,
+                    user_id,
+                    session_keys,
+                    &storage,
+                    &llm,
+                    &settings,
+                    &send_ctx,
                 )
                 .await?;
             }
