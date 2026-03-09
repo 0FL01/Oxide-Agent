@@ -6,7 +6,7 @@
 
 ## Branch
 
-The default branch in this repo is `testing`.
+The default branch in this repo is `agent-topics`.
 
 ## 🏗 Структура проекта
 
