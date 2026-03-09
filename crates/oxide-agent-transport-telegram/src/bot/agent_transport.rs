@@ -14,15 +14,22 @@ pub struct TelegramAgentTransport {
     bot: Bot,
     chat_id: ChatId,
     progress_msg_id: MessageId,
+    message_thread_id: Option<teloxide::types::ThreadId>,
 }
 
 impl TelegramAgentTransport {
     /// Create a Telegram transport bound to a progress message.
-    pub const fn new(bot: Bot, chat_id: ChatId, progress_msg_id: MessageId) -> Self {
+    pub const fn new(
+        bot: Bot,
+        chat_id: ChatId,
+        progress_msg_id: MessageId,
+        message_thread_id: Option<teloxide::types::ThreadId>,
+    ) -> Self {
         Self {
             bot,
             chat_id,
             progress_msg_id,
+            message_thread_id,
         }
     }
 }
@@ -50,7 +57,15 @@ impl AgentTransport for TelegramAgentTransport {
     ) -> Result<()> {
         match mode {
             DeliveryMode::BestEffort => {
-                if let Err(e) = send_file_smart(&self.bot, self.chat_id, file_name, content).await {
+                if let Err(e) = send_file_smart(
+                    &self.bot,
+                    self.chat_id,
+                    file_name,
+                    content,
+                    self.message_thread_id,
+                )
+                .await
+                {
                     warn!(file_name = %file_name, error = %e, "Failed to send file");
                     return Err(e);
                 }
@@ -58,10 +73,16 @@ impl AgentTransport for TelegramAgentTransport {
             }
             DeliveryMode::Confirmed => {
                 oxide_agent_core::utils::retry_transport_operation(|| async {
-                    send_file_smart(&self.bot, self.chat_id, file_name, content)
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
+                    send_file_smart(
+                        &self.bot,
+                        self.chat_id,
+                        file_name,
+                        content,
+                        self.message_thread_id,
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
                 })
                 .await
             }
@@ -75,11 +96,15 @@ impl AgentTransport for TelegramAgentTransport {
             iteration
         );
 
-        self.bot
+        let mut req = self
+            .bot
             .send_message(self.chat_id, text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(loop_action_keyboard())
-            .await?;
+            .parse_mode(ParseMode::Html);
+        if let Some(thread_id) = self.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(loop_action_keyboard()).await?;
 
         Ok(())
     }
@@ -96,6 +121,7 @@ async fn send_file_smart(
     chat_id: ChatId,
     file_name: &str,
     content: &[u8],
+    message_thread_id: Option<teloxide::types::ThreadId>,
 ) -> Result<teloxide::types::Message> {
     let extension = std::path::Path::new(file_name)
         .extension()
@@ -107,7 +133,12 @@ async fn send_file_smart(
 
     if let Some(ext) = extension.as_deref() {
         if VIDEO_EXTENSIONS.contains(&ext) {
-            return match bot.send_video(chat_id, make_file()).await {
+            let mut req = bot.send_video(chat_id, make_file());
+            if let Some(thread_id) = message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            return match req.await {
                 Ok(msg) => Ok(msg),
                 Err(e) => {
                     warn!(
@@ -115,15 +146,23 @@ async fn send_file_smart(
                         error = %e,
                         "Failed to send video as native media; falling back to document"
                     );
-                    bot.send_document(chat_id, make_file())
-                        .await
-                        .map_err(Into::into)
+                    let mut doc_req = bot.send_document(chat_id, make_file());
+                    if let Some(thread_id) = message_thread_id {
+                        doc_req = doc_req.message_thread_id(thread_id);
+                    }
+
+                    doc_req.await.map_err(Into::into)
                 }
             };
         }
 
         if AUDIO_EXTENSIONS.contains(&ext) {
-            return match bot.send_audio(chat_id, make_file()).await {
+            let mut req = bot.send_audio(chat_id, make_file());
+            if let Some(thread_id) = message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            return match req.await {
                 Ok(msg) => Ok(msg),
                 Err(e) => {
                     warn!(
@@ -131,15 +170,21 @@ async fn send_file_smart(
                         error = %e,
                         "Failed to send audio as native media; falling back to document"
                     );
-                    bot.send_document(chat_id, make_file())
-                        .await
-                        .map_err(Into::into)
+                    let mut doc_req = bot.send_document(chat_id, make_file());
+                    if let Some(thread_id) = message_thread_id {
+                        doc_req = doc_req.message_thread_id(thread_id);
+                    }
+
+                    doc_req.await.map_err(Into::into)
                 }
             };
         }
     }
 
-    bot.send_document(chat_id, make_file())
-        .await
-        .map_err(Into::into)
+    let mut req = bot.send_document(chat_id, make_file());
+    if let Some(thread_id) = message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.await.map_err(Into::into)
 }

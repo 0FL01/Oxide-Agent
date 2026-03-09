@@ -1,5 +1,6 @@
 use crate::bot::state::State;
 use crate::bot::UnauthorizedCache;
+use crate::bot::{build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams};
 use crate::config::BotSettings;
 use anyhow::{anyhow, Result};
 use oxide_agent_core::llm::{LlmClient, Message as LlmMessage};
@@ -198,6 +199,7 @@ pub async fn start(
     settings: Arc<BotSettings>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
@@ -229,10 +231,14 @@ pub async fn start(
         .to_string();
 
     info!("Sending welcome message to user {user_id}.");
-    bot.send_message(msg.chat.id, text)
-        .parse_mode(ParseMode::Html)
-        .reply_markup(get_main_keyboard())
-        .await?;
+    let mut req = bot
+        .send_message(msg.chat.id, text)
+        .parse_mode(ParseMode::Html);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(get_main_keyboard()).await?;
 
     Ok(())
 }
@@ -260,6 +266,7 @@ async fn ensure_current_chat_uuid(
 ///
 /// Returns an error if user config cannot be updated or message cannot be sent.
 pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
@@ -271,10 +278,14 @@ pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) ->
     storage.update_user_config(user_id, config).await?;
 
     info!("Started new chat flow for user {user_id}: {new_chat_uuid}");
-    bot.send_message(msg.chat.id, "<b>Flow cleared.</b>")
-        .parse_mode(ParseMode::Html)
-        .reply_markup(get_chat_keyboard())
-        .await?;
+    let mut req = bot
+        .send_message(msg.chat.id, "<b>Flow cleared.</b>")
+        .parse_mode(ParseMode::Html);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(get_chat_keyboard()).await?;
 
     Ok(())
 }
@@ -295,11 +306,24 @@ fn chat_flow_controls_keyboard(chat_uuid: &str) -> InlineKeyboardMarkup {
     ]])
 }
 
-async fn send_chat_flow_controls(bot: &Bot, chat_id: ChatId, chat_uuid: &str) -> Result<()> {
-    bot.send_message(chat_id, "Flow controls:")
-        .reply_markup(chat_flow_controls_keyboard(chat_uuid))
+async fn send_chat_flow_controls_in_thread(
+    bot: &Bot,
+    chat_id: ChatId,
+    chat_uuid: &str,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    let mut req = bot.send_message(chat_id, "Flow controls:");
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(chat_flow_controls_keyboard(chat_uuid))
         .await?;
     Ok(())
+}
+
+fn outbound_thread_from_message(msg: &Message) -> OutboundThreadParams {
+    build_outbound_thread_params(resolve_thread_spec(msg))
 }
 
 fn is_valid_chat_uuid(uuid: &str) -> bool {
@@ -410,9 +434,15 @@ pub async fn handle_chat_flow_callback(
 ///
 /// Returns an error if the healthcheck response cannot be sent.
 pub async fn healthcheck(bot: Bot, msg: Message) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     info!("Healthcheck command received from user {user_id}.");
-    bot.send_message(msg.chat.id, "OK").await?;
+    let mut req = bot.send_message(msg.chat.id, "OK");
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.await?;
     info!("Responded 'OK' to healthcheck from user {user_id}.");
     Ok(())
 }
@@ -423,6 +453,7 @@ pub async fn healthcheck(bot: Bot, msg: Message) -> Result<()> {
 ///
 /// Returns an error if the stats response cannot be sent.
 pub async fn stats(bot: Bot, msg: Message, cache: Arc<UnauthorizedCache>) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     info!("Stats command received from user {user_id}.");
 
@@ -442,9 +473,14 @@ pub async fn stats(bot: Bot, msg: Message, cache: Arc<UnauthorizedCache>) -> Res
         cooldown_mins
     );
 
-    bot.send_message(msg.chat.id, stats_text)
-        .parse_mode(ParseMode::Html)
-        .await?;
+    let mut req = bot
+        .send_message(msg.chat.id, stats_text)
+        .parse_mode(ParseMode::Html);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.await?;
 
     info!("Responded to stats from user {user_id}.");
     Ok(())
@@ -464,6 +500,7 @@ pub async fn handle_text(
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let text = msg.text().unwrap_or("").to_string();
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
@@ -486,23 +523,30 @@ pub async fn handle_text(
 
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
-        bot.send_message(msg.chat.id, "Please select a mode:")
-            .reply_markup(get_main_keyboard())
-            .await?;
+        let mut req = bot.send_message(msg.chat.id, "Please select a mode:");
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_main_keyboard()).await?;
         return Ok(());
     }
 
     if settings.agent.get_model_info_by_name(&text).is_some() {
         info!("User {user_id} selected model '{text}' via text input.");
         storage.update_user_model(user_id, text.clone()).await?;
-        bot.send_message(msg.chat.id, format!("Model changed to <b>{text}</b>"))
-            .parse_mode(ParseMode::Html)
-            .reply_markup(get_chat_keyboard())
-            .await?;
+        let mut req = bot
+            .send_message(msg.chat.id, format!("Model changed to <b>{text}</b>"))
+            .parse_mode(ParseMode::Html);
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_chat_keyboard()).await?;
         return Ok(());
     }
 
-    process_llm_request(bot, msg, storage, llm, settings, text).await
+    process_llm_request(bot, msg, storage, llm, settings, text, outbound_thread).await
 }
 
 async fn handle_menu_commands(
@@ -514,43 +558,37 @@ async fn handle_menu_commands(
     settings: &Arc<BotSettings>,
     text: &str,
 ) -> Result<bool> {
+    let outbound_thread = outbound_thread_from_message(msg);
     let user_id = get_user_id_safe(msg);
+
     match text {
         "💬 Chat Mode" => {
-            let _chat_uuid = ensure_current_chat_uuid(storage, user_id).await?;
-            // Save state to DB
-            let _ = storage
-                .update_user_state(user_id, "chat_mode".to_string())
-                .await;
-            dialogue
-                .update(State::ChatMode)
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
-            let saved_model = storage.get_user_model(user_id).await?;
-            let model = resolve_chat_model(settings, saved_model);
-            bot.send_message(
-                msg.chat.id,
-                format!("<b>Chat mode activated.</b>\nCurrent model: <b>{model}</b>"),
-            )
-            .parse_mode(ParseMode::Html)
-            .reply_markup(get_chat_keyboard())
-            .await?;
-            Ok(true)
+            activate_chat_mode(bot, msg, storage, dialogue, settings, user_id).await
         }
         "Clear Flow" => {
             clear(bot.clone(), msg.clone(), storage.clone()).await?;
             Ok(true)
         }
         "Change Model" => {
-            bot.send_message(msg.chat.id, "Select a model:")
-                .reply_markup(get_model_keyboard(settings))
-                .await?;
+            send_menu_keyboard(
+                bot,
+                msg.chat.id,
+                "Select a model:",
+                get_model_keyboard(settings),
+                outbound_thread,
+            )
+            .await?;
             Ok(true)
         }
         "Extra Functions" => {
-            bot.send_message(msg.chat.id, "Select an action:")
-                .reply_markup(get_extra_functions_keyboard())
-                .await?;
+            send_menu_keyboard(
+                bot,
+                msg.chat.id,
+                "Select an action:",
+                get_extra_functions_keyboard(),
+                outbound_thread,
+            )
+            .await?;
             Ok(true)
         }
         "🤖 Agent Mode" => {
@@ -567,49 +605,124 @@ async fn handle_menu_commands(
             }
             Ok(true)
         }
-        "Edit Prompt" => {
-            dialogue
-                .update(State::EditingPrompt)
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
-            bot.send_message(
-                msg.chat.id,
-                "Enter a new system prompt. To cancel, type 'Back':",
-            )
-            .reply_markup(get_extra_functions_keyboard())
-            .await?;
-            Ok(true)
-        }
-        "Back" => {
-            let state = dialogue.get().await?.unwrap_or(State::Start);
-            if matches!(state, State::ChatMode) || matches!(state, State::EditingPrompt) {
-                dialogue
-                    .update(State::Start)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-                bot.send_message(msg.chat.id, "Please select a mode:")
-                    .reply_markup(get_main_keyboard())
-                    .await?;
-            } else {
-                bot.send_message(msg.chat.id, "Please select a mode:")
-                    .reply_markup(get_main_keyboard())
-                    .await?;
-            }
-            Ok(true)
-        }
+        "Edit Prompt" => begin_prompt_editing(bot, msg.chat.id, dialogue, outbound_thread).await,
+        "Back" => handle_back_command(bot, msg.chat.id, dialogue, outbound_thread).await,
         "⬅️ Exit Agent Mode" | "❌ Cancel Task" | "🗑 Clear Memory" => {
-            let response = match text {
-                "⬅️ Exit Agent Mode" => "👋 Exited agent mode",
-                "❌ Cancel Task" => "No active task to cancel.",
-                _ => "Agent memory is not active.",
+            let response = if text == "⬅️ Exit Agent Mode" {
+                "👋 Exited agent mode"
+            } else if text == "❌ Cancel Task" {
+                "No active task to cancel."
+            } else {
+                "Agent memory is not active."
             };
-            bot.send_message(msg.chat.id, response)
-                .reply_markup(get_main_keyboard())
-                .await?;
+            send_menu_keyboard(
+                bot,
+                msg.chat.id,
+                response,
+                get_main_keyboard(),
+                outbound_thread,
+            )
+            .await?;
             Ok(true)
         }
         _ => Ok(false),
     }
+}
+
+async fn activate_chat_mode(
+    bot: &Bot,
+    msg: &Message,
+    storage: &Arc<dyn StorageProvider>,
+    dialogue: &Dialogue<State, InMemStorage<State>>,
+    settings: &Arc<BotSettings>,
+    user_id: i64,
+) -> Result<bool> {
+    let outbound_thread = outbound_thread_from_message(msg);
+    let _chat_uuid = ensure_current_chat_uuid(storage, user_id).await?;
+    let _ = storage
+        .update_user_state(user_id, "chat_mode".to_string())
+        .await;
+    dialogue
+        .update(State::ChatMode)
+        .await
+        .map_err(|e| anyhow!(e.to_string()))?;
+    let saved_model = storage.get_user_model(user_id).await?;
+    let model = resolve_chat_model(settings, saved_model);
+
+    let mut req = bot
+        .send_message(
+            msg.chat.id,
+            format!("<b>Chat mode activated.</b>\nCurrent model: <b>{model}</b>"),
+        )
+        .parse_mode(ParseMode::Html);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(get_chat_keyboard()).await?;
+    Ok(true)
+}
+
+async fn send_menu_keyboard(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: impl Into<String>,
+    keyboard: KeyboardMarkup,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    let mut req = bot.send_message(chat_id, text);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(keyboard).await?;
+    Ok(())
+}
+
+async fn begin_prompt_editing(
+    bot: &Bot,
+    chat_id: ChatId,
+    dialogue: &Dialogue<State, InMemStorage<State>>,
+    outbound_thread: OutboundThreadParams,
+) -> Result<bool> {
+    dialogue
+        .update(State::EditingPrompt)
+        .await
+        .map_err(|e| anyhow!(e.to_string()))?;
+    send_menu_keyboard(
+        bot,
+        chat_id,
+        "Enter a new system prompt. To cancel, type 'Back':",
+        get_extra_functions_keyboard(),
+        outbound_thread,
+    )
+    .await?;
+    Ok(true)
+}
+
+async fn handle_back_command(
+    bot: &Bot,
+    chat_id: ChatId,
+    dialogue: &Dialogue<State, InMemStorage<State>>,
+    outbound_thread: OutboundThreadParams,
+) -> Result<bool> {
+    let state = dialogue.get().await?.unwrap_or(State::Start);
+    if matches!(state, State::ChatMode) || matches!(state, State::EditingPrompt) {
+        dialogue
+            .update(State::Start)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+    }
+
+    send_menu_keyboard(
+        bot,
+        chat_id,
+        "Please select a mode:",
+        get_main_keyboard(),
+        outbound_thread,
+    )
+    .await?;
+    Ok(true)
 }
 
 async fn check_agent_access(
@@ -618,20 +731,29 @@ async fn check_agent_access(
     settings: &Arc<BotSettings>,
     user_id: i64,
 ) -> Result<bool> {
+    let outbound_thread = outbound_thread_from_message(msg);
     let agent_allowed = settings.telegram.agent_allowed_users();
     if !agent_allowed.contains(&user_id) && !agent_allowed.is_empty() {
-        bot.send_message(
+        let mut req = bot.send_message(
             msg.chat.id,
             "⛔️ You do not have permission to access agent mode.",
-        )
-        .await?;
+        );
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.await?;
         return Ok(false);
     } else if agent_allowed.is_empty() {
-        bot.send_message(
+        let mut req = bot.send_message(
             msg.chat.id,
             "⛔️ Agent mode is temporarily unavailable (access not configured).",
-        )
-        .await?;
+        );
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.await?;
         return Ok(false);
     }
     Ok(true)
@@ -648,6 +770,7 @@ pub async fn handle_editing_prompt(
     storage: Arc<dyn StorageProvider>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let text = msg.text().unwrap_or("");
     let user_id = get_user_id_safe(&msg);
 
@@ -656,9 +779,12 @@ pub async fn handle_editing_prompt(
             .update(State::ChatMode)
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
-        bot.send_message(msg.chat.id, "System prompt update canceled.")
-            .reply_markup(get_chat_keyboard())
-            .await?;
+        let mut req = bot.send_message(msg.chat.id, "System prompt update canceled.");
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_chat_keyboard()).await?;
     } else {
         storage
             .update_user_prompt(user_id, text.to_string())
@@ -667,9 +793,12 @@ pub async fn handle_editing_prompt(
             .update(State::ChatMode)
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
-        bot.send_message(msg.chat.id, "System prompt updated.")
-            .reply_markup(get_chat_keyboard())
-            .await?;
+        let mut req = bot.send_message(msg.chat.id, "System prompt updated.");
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_chat_keyboard()).await?;
     }
     Ok(())
 }
@@ -681,6 +810,7 @@ async fn process_llm_request(
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
     text: String,
+    outbound_thread: OutboundThreadParams,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
     let system_prompt = storage
@@ -724,21 +854,32 @@ async fn process_llm_request(
                     response.clone(),
                 )
                 .await?;
-            send_long_message(&bot, msg.chat.id, &response).await?;
-            send_chat_flow_controls(&bot, msg.chat.id, &chat_uuid).await?;
+            send_long_message_in_thread(
+                &bot,
+                msg.chat.id,
+                &response,
+                outbound_thread.message_thread_id,
+            )
+            .await?;
+            send_chat_flow_controls_in_thread(&bot, msg.chat.id, &chat_uuid, outbound_thread)
+                .await?;
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("<b>Error:</b> {e}"))
-                .parse_mode(ParseMode::Html)
-                .await?;
+            let mut req = bot
+                .send_message(msg.chat.id, format!("<b>Error:</b> {e}"))
+                .parse_mode(ParseMode::Html);
+            if let Some(thread_id) = outbound_thread.message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            req.await?;
         }
     }
     Ok(())
 }
 
-/// Re-export the shared send_long_message function for convenience.
-/// This function formats text and splits it into multiple messages if needed.
-use super::messaging::send_long_message;
+/// Re-export the shared long message sender for convenience.
+use super::messaging::send_long_message_in_thread;
 
 /// Voice message handler
 ///
@@ -753,6 +894,7 @@ pub async fn handle_voice(
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     if Box::pin(check_state_and_redirect(
         &bot, &msg, &storage, &llm, &dialogue, &settings,
@@ -764,18 +906,25 @@ pub async fn handle_voice(
 
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
-        bot.send_message(msg.chat.id, "Please select a mode:")
-            .reply_markup(get_main_keyboard())
-            .await?;
+        let mut req = bot.send_message(msg.chat.id, "Please select a mode:");
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_main_keyboard()).await?;
         return Ok(());
     }
 
     if !llm.is_multimodal_available() {
-        bot.send_message(
+        let mut req = bot.send_message(
             msg.chat.id,
             "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
-        )
-        .await?;
+        );
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.await?;
         return Ok(());
     }
 
@@ -806,20 +955,33 @@ pub async fn handle_voice(
         Ok(text) => {
             if text.starts_with("(Gemini):") || text.starts_with("(OpenRouter):") || text.is_empty()
             {
-                bot.send_message(msg.chat.id, "Failed to recognize speech.")
-                    .await?;
+                let mut req = bot.send_message(msg.chat.id, "Failed to recognize speech.");
+                if let Some(thread_id) = outbound_thread.message_thread_id {
+                    req = req.message_thread_id(thread_id);
+                }
+
+                req.await?;
             } else {
-                bot.send_message(
+                let mut req = bot.send_message(
                     msg.chat.id,
                     format!("Recognized: \"{text}\"\n\nProcessing request..."),
-                )
-                .await?;
-                process_llm_request(bot, msg, storage, llm, settings, text).await?;
+                );
+                if let Some(thread_id) = outbound_thread.message_thread_id {
+                    req = req.message_thread_id(thread_id);
+                }
+
+                req.await?;
+                process_llm_request(bot, msg, storage, llm, settings, text, outbound_thread)
+                    .await?;
             }
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Recognition error: {e}"))
-                .await?;
+            let mut req = bot.send_message(msg.chat.id, format!("Recognition error: {e}"));
+            if let Some(thread_id) = outbound_thread.message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            req.await?;
         }
     }
     Ok(())
@@ -838,6 +1000,7 @@ pub async fn handle_photo(
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     if Box::pin(check_state_and_redirect(
         &bot, &msg, &storage, &llm, &dialogue, &settings,
@@ -849,18 +1012,25 @@ pub async fn handle_photo(
 
     let state = dialogue.get().await?.unwrap_or(State::Start);
     if matches!(state, State::Start) {
-        bot.send_message(msg.chat.id, "Please select a mode:")
-            .reply_markup(get_main_keyboard())
-            .await?;
+        let mut req = bot.send_message(msg.chat.id, "Please select a mode:");
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_main_keyboard()).await?;
         return Ok(());
     }
 
     if !llm.is_multimodal_available() {
-        bot.send_message(
+        let mut req = bot.send_message(
             msg.chat.id,
             "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
-        )
-        .await?;
+        );
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.await?;
         return Ok(());
     }
 
@@ -912,12 +1082,23 @@ pub async fn handle_photo(
                     response.clone(),
                 )
                 .await?;
-            send_long_message(&bot, msg.chat.id, &response).await?;
-            send_chat_flow_controls(&bot, msg.chat.id, &chat_uuid).await?;
+            send_long_message_in_thread(
+                &bot,
+                msg.chat.id,
+                &response,
+                outbound_thread.message_thread_id,
+            )
+            .await?;
+            send_chat_flow_controls_in_thread(&bot, msg.chat.id, &chat_uuid, outbound_thread)
+                .await?;
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Image analysis error: {e}"))
-                .await?;
+            let mut req = bot.send_message(msg.chat.id, format!("Image analysis error: {e}"));
+            if let Some(thread_id) = outbound_thread.message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            req.await?;
         }
     }
     Ok(())
@@ -937,6 +1118,7 @@ pub async fn handle_document(
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let state = dialogue.get().await?.unwrap_or(State::Start);
 
     if matches!(state, State::AgentMode) {
@@ -945,12 +1127,16 @@ pub async fn handle_document(
         ))
         .await
     } else {
-        bot.send_message(
+        let mut req = bot.send_message(
             msg.chat.id,
             "📁 File upload is available only in Agent Mode.\n\n\
              Use /agent to activate.",
-        )
-        .await?;
+        );
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.await?;
         Ok(())
     }
 }
