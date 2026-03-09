@@ -8,6 +8,7 @@ use crate::bot::agent_transport::TelegramAgentTransport;
 use crate::bot::messaging::send_long_message_in_thread;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
+use crate::bot::topic_route::resolve_topic_route;
 use crate::bot::views::{
     confirmation_keyboard, get_agent_keyboard, AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL,
     LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
@@ -290,6 +291,15 @@ pub async fn handle_agent_message(
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = msg.chat.id;
     let outbound_thread = outbound_thread_from_message(&msg);
+    let route = resolve_topic_route(&settings, &msg);
+
+    if !route.allows_processing() {
+        info!(
+            "Skipping agent message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
+            route.enabled, route.require_mention, route.mention_satisfied
+        );
+        return Ok(());
+    }
 
     // Check for control commands
     if let Some(text) = msg.text() {
