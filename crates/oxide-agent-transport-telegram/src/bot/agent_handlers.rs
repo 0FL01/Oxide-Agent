@@ -50,6 +50,24 @@ enum AgentWipeError {
     Recreate(Error),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentControlCommand {
+    CancelTask,
+    ClearMemory,
+    RecreateContainer,
+    ExitAgentMode,
+}
+
+fn parse_agent_control_command(text: Option<&str>) -> Option<AgentControlCommand> {
+    match text {
+        Some("❌ Cancel Task") => Some(AgentControlCommand::CancelTask),
+        Some("🗑 Clear Memory") => Some(AgentControlCommand::ClearMemory),
+        Some("🔄 Recreate Container") => Some(AgentControlCommand::RecreateContainer),
+        Some("⬅️ Exit Agent Mode") => Some(AgentControlCommand::ExitAgentMode),
+        _ => None,
+    }
+}
+
 /// Global session registry for agent executors
 static SESSION_REGISTRY: LazyLock<SessionRegistry> = LazyLock::new(SessionRegistry::new);
 
@@ -291,7 +309,24 @@ pub async fn handle_agent_message(
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = msg.chat.id;
     let outbound_thread = outbound_thread_from_message(&msg);
-    let route = resolve_topic_route(&settings, &msg);
+
+    if let Some(command) = parse_agent_control_command(msg.text()) {
+        return match command {
+            AgentControlCommand::CancelTask => cancel_agent_task(bot, msg, dialogue).await,
+            AgentControlCommand::ClearMemory => {
+                confirm_destructive_action(ConfirmationType::ClearMemory, bot, msg, dialogue).await
+            }
+            AgentControlCommand::RecreateContainer => {
+                confirm_destructive_action(ConfirmationType::RecreateContainer, bot, msg, dialogue)
+                    .await
+            }
+            AgentControlCommand::ExitAgentMode => {
+                exit_agent_mode(bot, msg, dialogue, storage).await
+            }
+        };
+    }
+
+    let route = resolve_topic_route(&bot, &settings, &msg).await;
 
     if !route.allows_processing() {
         info!(
@@ -299,37 +334,6 @@ pub async fn handle_agent_message(
             route.enabled, route.require_mention, route.mention_satisfied
         );
         return Ok(());
-    }
-
-    // Check for control commands
-    if let Some(text) = msg.text() {
-        match text {
-            "❌ Cancel Task" => {
-                return cancel_agent_task(bot, msg, dialogue).await;
-            }
-            "🗑 Clear Memory" => {
-                return confirm_destructive_action(
-                    ConfirmationType::ClearMemory,
-                    bot,
-                    msg,
-                    dialogue,
-                )
-                .await;
-            }
-            "🔄 Recreate Container" => {
-                return confirm_destructive_action(
-                    ConfirmationType::RecreateContainer,
-                    bot,
-                    msg,
-                    dialogue,
-                )
-                .await;
-            }
-            "⬅️ Exit Agent Mode" => {
-                return exit_agent_mode(bot, msg, dialogue, storage).await;
-            }
-            _ => {}
-        }
     }
 
     // Get or create session
@@ -376,6 +380,38 @@ pub async fn handle_agent_message(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_agent_control_command, AgentControlCommand};
+
+    #[test]
+    fn control_commands_are_recognized_for_topic_gate_bypass() {
+        assert_eq!(
+            parse_agent_control_command(Some("❌ Cancel Task")),
+            Some(AgentControlCommand::CancelTask)
+        );
+        assert_eq!(
+            parse_agent_control_command(Some("🗑 Clear Memory")),
+            Some(AgentControlCommand::ClearMemory)
+        );
+        assert_eq!(
+            parse_agent_control_command(Some("🔄 Recreate Container")),
+            Some(AgentControlCommand::RecreateContainer)
+        );
+        assert_eq!(
+            parse_agent_control_command(Some("⬅️ Exit Agent Mode")),
+            Some(AgentControlCommand::ExitAgentMode)
+        );
+    }
+
+    #[test]
+    fn non_control_messages_do_not_bypass_topic_gate() {
+        assert_eq!(parse_agent_control_command(Some("please help")), None);
+        assert_eq!(parse_agent_control_command(Some("user@example.com")), None);
+        assert_eq!(parse_agent_control_command(None), None);
+    }
 }
 
 async fn ensure_session_exists(

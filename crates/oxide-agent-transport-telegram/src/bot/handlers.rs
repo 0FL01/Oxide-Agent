@@ -510,15 +510,6 @@ pub async fn handle_text(
     let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
-    let route = resolve_topic_route(&settings, &msg);
-
-    if !route.allows_processing() {
-        info!(
-            "Skipping text message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
-            route.enabled, route.require_mention, route.mention_satisfied
-        );
-        return Ok(());
-    }
 
     info!(
         "Handling message from user {user_id} ({user_name}). Text: '{}'",
@@ -530,6 +521,16 @@ pub async fn handle_text(
     ))
     .await?
     {
+        return Ok(());
+    }
+
+    let route = resolve_topic_route(&bot, &settings, &msg).await;
+
+    if !route.allows_processing() {
+        info!(
+            "Skipping text message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
+            route.enabled, route.require_mention, route.mention_satisfied
+        );
         return Ok(());
     }
 
@@ -935,7 +936,7 @@ pub async fn handle_voice(
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
-    let route = resolve_topic_route(&settings, &msg);
+    let route = resolve_topic_route(&bot, &settings, &msg).await;
 
     if !route.allows_processing() {
         info!(
@@ -1062,7 +1063,7 @@ pub async fn handle_photo(
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
-    let route = resolve_topic_route(&settings, &msg);
+    let route = resolve_topic_route(&bot, &settings, &msg).await;
 
     if !route.allows_processing() {
         info!(
@@ -1187,7 +1188,7 @@ pub async fn handle_document(
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
-    let route = resolve_topic_route(&settings, &msg);
+    let route = resolve_topic_route(&bot, &settings, &msg).await;
 
     if !route.allows_processing() {
         return Ok(());
