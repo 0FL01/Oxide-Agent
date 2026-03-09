@@ -16,6 +16,8 @@ pub mod resilient;
 pub mod state;
 /// Telegram thread/topic helper layer.
 pub mod thread;
+/// Topic-based routing decisions for inbound messages.
+pub mod topic_route;
 /// Unauthorized access flood protection
 pub mod unauthorized_cache;
 /// View layer for UI components (keyboards, messages)

@@ -1,4 +1,5 @@
 use crate::bot::state::State;
+use crate::bot::topic_route::resolve_topic_route;
 use crate::bot::UnauthorizedCache;
 use crate::bot::{build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams};
 use crate::config::BotSettings;
@@ -326,6 +327,12 @@ fn outbound_thread_from_message(msg: &Message) -> OutboundThreadParams {
     build_outbound_thread_params(resolve_thread_spec(msg))
 }
 
+struct ChatRequestOptions {
+    text: String,
+    outbound_thread: OutboundThreadParams,
+    topic_system_prompt_override: Option<String>,
+}
+
 fn is_valid_chat_uuid(uuid: &str) -> bool {
     if uuid.len() != 36 {
         return false;
@@ -503,6 +510,15 @@ pub async fn handle_text(
     let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
+    let route = resolve_topic_route(&settings, &msg);
+
+    if !route.allows_processing() {
+        info!(
+            "Skipping text message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
+            route.enabled, route.require_mention, route.mention_satisfied
+        );
+        return Ok(());
+    }
 
     info!(
         "Handling message from user {user_id} ({user_name}). Text: '{}'",
@@ -546,7 +562,19 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    process_llm_request(bot, msg, storage, llm, settings, text, outbound_thread).await
+    process_llm_request(
+        bot,
+        msg,
+        storage,
+        llm,
+        settings,
+        ChatRequestOptions {
+            text,
+            outbound_thread,
+            topic_system_prompt_override: route.system_prompt_override,
+        },
+    )
+    .await
 }
 
 async fn handle_menu_commands(
@@ -809,14 +837,15 @@ async fn process_llm_request(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
-    text: String,
-    outbound_thread: OutboundThreadParams,
+    options: ChatRequestOptions,
 ) -> Result<()> {
     let user_id = get_user_id_safe(&msg);
-    let system_prompt = storage
-        .get_user_prompt(user_id)
-        .await?
-        .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
+    let system_prompt = resolve_system_prompt(
+        &storage,
+        user_id,
+        options.topic_system_prompt_override.as_deref(),
+    )
+    .await?;
     let chat_uuid = get_current_chat_uuid(&storage, user_id).await?;
     let history = storage
         .get_chat_history_for_chat(user_id, chat_uuid.clone(), 10)
@@ -825,7 +854,12 @@ async fn process_llm_request(
     let model = resolve_chat_model(&settings, saved_model);
 
     storage
-        .save_message_for_chat(user_id, chat_uuid.clone(), "user".to_string(), text.clone())
+        .save_message_for_chat(
+            user_id,
+            chat_uuid.clone(),
+            "user".to_string(),
+            options.text.clone(),
+        )
         .await?;
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
@@ -842,7 +876,7 @@ async fn process_llm_request(
         .collect();
 
     match llm
-        .chat_completion(&system_prompt, &llm_history, &text, &model)
+        .chat_completion(&system_prompt, &llm_history, &options.text, &model)
         .await
     {
         Ok(response) => {
@@ -858,17 +892,22 @@ async fn process_llm_request(
                 &bot,
                 msg.chat.id,
                 &response,
-                outbound_thread.message_thread_id,
+                options.outbound_thread.message_thread_id,
             )
             .await?;
-            send_chat_flow_controls_in_thread(&bot, msg.chat.id, &chat_uuid, outbound_thread)
-                .await?;
+            send_chat_flow_controls_in_thread(
+                &bot,
+                msg.chat.id,
+                &chat_uuid,
+                options.outbound_thread,
+            )
+            .await?;
         }
         Err(e) => {
             let mut req = bot
                 .send_message(msg.chat.id, format!("<b>Error:</b> {e}"))
                 .parse_mode(ParseMode::Html);
-            if let Some(thread_id) = outbound_thread.message_thread_id {
+            if let Some(thread_id) = options.outbound_thread.message_thread_id {
                 req = req.message_thread_id(thread_id);
             }
 
@@ -896,6 +935,16 @@ pub async fn handle_voice(
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
+    let route = resolve_topic_route(&settings, &msg);
+
+    if !route.allows_processing() {
+        info!(
+            "Skipping voice message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
+            route.enabled, route.require_mention, route.mention_satisfied
+        );
+        return Ok(());
+    }
+
     if Box::pin(check_state_and_redirect(
         &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
@@ -971,8 +1020,19 @@ pub async fn handle_voice(
                 }
 
                 req.await?;
-                process_llm_request(bot, msg, storage, llm, settings, text, outbound_thread)
-                    .await?;
+                process_llm_request(
+                    bot,
+                    msg,
+                    storage,
+                    llm,
+                    settings,
+                    ChatRequestOptions {
+                        text,
+                        outbound_thread,
+                        topic_system_prompt_override: route.system_prompt_override,
+                    },
+                )
+                .await?;
             }
         }
         Err(e) => {
@@ -1002,6 +1062,16 @@ pub async fn handle_photo(
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
+    let route = resolve_topic_route(&settings, &msg);
+
+    if !route.allows_processing() {
+        info!(
+            "Skipping photo message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
+            route.enabled, route.require_mention, route.mention_satisfied
+        );
+        return Ok(());
+    }
+
     if Box::pin(check_state_and_redirect(
         &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
@@ -1041,10 +1111,8 @@ pub async fn handle_photo(
     let caption = msg.caption().unwrap_or("Describe this image.");
     let saved_model = storage.get_user_model(user_id).await?;
     let model = resolve_chat_model(&settings, saved_model);
-    let system_prompt = storage
-        .get_user_prompt(user_id)
-        .await?
-        .unwrap_or_else(|| std::env::var("SYSTEM_MESSAGE").unwrap_or_default());
+    let system_prompt =
+        resolve_system_prompt(&storage, user_id, route.system_prompt_override.as_deref()).await?;
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadPhoto)
         .await?;
@@ -1119,6 +1187,12 @@ pub async fn handle_document(
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
+    let route = resolve_topic_route(&settings, &msg);
+
+    if !route.allows_processing() {
+        return Ok(());
+    }
+
     let state = dialogue.get().await?.unwrap_or(State::Start);
 
     if matches!(state, State::AgentMode) {
@@ -1141,11 +1215,37 @@ pub async fn handle_document(
     }
 }
 
+async fn resolve_system_prompt(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_override: Option<&str>,
+) -> Result<String> {
+    let user_prompt = storage.get_user_prompt(user_id).await?;
+    let env_prompt = std::env::var("SYSTEM_MESSAGE").ok();
+    Ok(pick_system_prompt(topic_override, user_prompt, env_prompt))
+}
+
+fn pick_system_prompt(
+    topic_override: Option<&str>,
+    user_prompt: Option<String>,
+    env_prompt: Option<String>,
+) -> String {
+    if let Some(topic_prompt) = topic_override {
+        return topic_prompt.to_string();
+    }
+
+    if let Some(prompt) = user_prompt {
+        return prompt;
+    }
+
+    env_prompt.unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        is_valid_chat_uuid, parse_chat_flow_callback_data, ChatFlowCallbackData,
-        CHAT_ATTACH_PREFIX, CHAT_DETACH_CALLBACK,
+        is_valid_chat_uuid, parse_chat_flow_callback_data, pick_system_prompt,
+        ChatFlowCallbackData, CHAT_ATTACH_PREFIX, CHAT_DETACH_CALLBACK,
     };
 
     #[test]
@@ -1198,5 +1298,29 @@ mod tests {
     #[test]
     fn parse_chat_flow_callback_data_rejects_unknown_callback() {
         assert_eq!(parse_chat_flow_callback_data("unknown"), None);
+    }
+
+    #[test]
+    fn pick_system_prompt_prefers_topic_override() {
+        let selected = pick_system_prompt(
+            Some("topic prompt"),
+            Some("user prompt".to_string()),
+            Some("env prompt".to_string()),
+        );
+
+        assert_eq!(selected, "topic prompt");
+    }
+
+    #[test]
+    fn pick_system_prompt_falls_back_to_user_then_env() {
+        let user_selected = pick_system_prompt(
+            None,
+            Some("user prompt".to_string()),
+            Some("env prompt".to_string()),
+        );
+        let env_selected = pick_system_prompt(None, None, Some("env prompt".to_string()));
+
+        assert_eq!(user_selected, "user prompt");
+        assert_eq!(env_selected, "env prompt");
     }
 }
