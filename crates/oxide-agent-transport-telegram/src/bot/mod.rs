@@ -14,9 +14,16 @@ pub mod progress_render;
 pub mod resilient;
 /// User state and dialogue management
 pub mod state;
+/// Telegram thread/topic helper layer.
+pub mod thread;
 /// Unauthorized access flood protection
 pub mod unauthorized_cache;
 /// View layer for UI components (keyboards, messages)
 pub mod views;
 
+pub use thread::{
+    build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec,
+    resolve_thread_spec_from_context, thread_peer_key, thread_peer_key_from_spec,
+    OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec,
+};
 pub use unauthorized_cache::UnauthorizedCache;
