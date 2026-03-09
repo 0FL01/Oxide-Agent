@@ -44,6 +44,7 @@ struct AgentTaskContext {
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     message_thread_id: Option<ThreadId>,
+    session_id: SessionId,
 }
 
 enum AgentWipeError {
@@ -70,6 +71,37 @@ fn parse_agent_control_command(text: Option<&str>) -> Option<AgentControlCommand
 
 /// Global session registry for agent executors
 static SESSION_REGISTRY: LazyLock<SessionRegistry> = LazyLock::new(SessionRegistry::new);
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+fn fnv1a_mix_i64(mut hash: u64, value: i64) -> u64 {
+    for byte in value.to_le_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    hash
+}
+
+fn derive_agent_mode_session_id(
+    user_id: i64,
+    chat_id: ChatId,
+    thread_id: Option<ThreadId>,
+) -> SessionId {
+    let Some(thread_id) = thread_id else {
+        return SessionId::from(user_id);
+    };
+
+    let mut hash = FNV_OFFSET_BASIS;
+    hash = fnv1a_mix_i64(hash, user_id);
+    hash = fnv1a_mix_i64(hash, chat_id.0);
+    hash = fnv1a_mix_i64(hash, i64::from(thread_id.0 .0));
+
+    let folded = hash & (i64::MAX as u64);
+    let derived = if folded == 0 { -1 } else { -(folded as i64) };
+    SessionId::from(derived)
+}
 
 fn outbound_thread_from_message(msg: &Message) -> OutboundThreadParams {
     build_outbound_thread_params(resolve_thread_spec(msg))
@@ -127,11 +159,12 @@ struct ConfirmationSendCtx<'a> {
 
 async fn handle_clear_memory_confirmation(
     user_id: i64,
+    session_id: SessionId,
     storage: &Arc<dyn StorageProvider>,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
     info!(user_id = user_id, "User confirmed memory clear");
-    match SESSION_REGISTRY.reset(&SessionId::from(user_id)).await {
+    match SESSION_REGISTRY.reset(&session_id).await {
         Ok(()) => {
             let _ = storage.clear_agent_memory(user_id).await;
             send_agent_message_with_keyboard(
@@ -171,16 +204,17 @@ async fn handle_clear_memory_confirmation(
 
 async fn handle_recreate_container_confirmation(
     user_id: i64,
+    session_id: SessionId,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
     settings: &Arc<BotSettings>,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
     info!(user_id = user_id, "User confirmed container recreation");
-    ensure_session_exists(user_id, llm, storage, settings).await;
+    ensure_session_exists(session_id, user_id, llm, storage, settings).await;
 
     match SESSION_REGISTRY
-        .with_executor_mut(&SessionId::from(user_id), |executor| {
+        .with_executor_mut(&session_id, |executor| {
             Box::pin(async move {
                 executor
                     .session_mut()
@@ -251,9 +285,10 @@ pub async fn activate_agent_mode(
     storage: Arc<dyn StorageProvider>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    let session_id = SessionId::from(user_id);
+    let session_id = derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id);
 
     info!("Activating agent mode for user {user_id}");
 
@@ -308,7 +343,9 @@ pub async fn handle_agent_message(
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = msg.chat.id;
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
+    let session_id = derive_agent_mode_session_id(user_id, chat_id, thread_spec.thread_id);
 
     if let Some(command) = parse_agent_control_command(msg.text()) {
         return match command {
@@ -337,9 +374,9 @@ pub async fn handle_agent_message(
     }
 
     // Get or create session
-    ensure_session_exists(user_id, &llm, &storage, &settings).await;
+    ensure_session_exists(session_id, user_id, &llm, &storage, &settings).await;
 
-    if is_agent_task_running(user_id).await {
+    if is_agent_task_running(session_id).await {
         let mut req = bot.send_message(
             chat_id,
             "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
@@ -352,7 +389,7 @@ pub async fn handle_agent_message(
         return Ok(());
     }
 
-    renew_cancellation_token(user_id).await;
+    renew_cancellation_token(session_id).await;
 
     let task_bot = bot.clone();
     let task_msg = msg.clone();
@@ -367,6 +404,7 @@ pub async fn handle_agent_message(
             storage: task_storage,
             llm: task_llm,
             message_thread_id,
+            session_id,
         };
 
         if let Err(e) = run_agent_task(ctx).await {
@@ -384,7 +422,8 @@ pub async fn handle_agent_message(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_agent_control_command, AgentControlCommand};
+    use super::{derive_agent_mode_session_id, parse_agent_control_command, AgentControlCommand};
+    use teloxide::types::{ChatId, MessageId, ThreadId};
 
     #[test]
     fn control_commands_are_recognized_for_topic_gate_bypass() {
@@ -412,15 +451,44 @@ mod tests {
         assert_eq!(parse_agent_control_command(Some("user@example.com")), None);
         assert_eq!(parse_agent_control_command(None), None);
     }
+
+    #[test]
+    fn session_id_derivation_uses_legacy_without_thread() {
+        let user_id = 12345;
+        let session_id = derive_agent_mode_session_id(user_id, ChatId(-1001), None);
+
+        assert_eq!(session_id, user_id.into());
+    }
+
+    #[test]
+    fn session_id_derivation_is_stable_for_same_thread() {
+        let user_id = 12345;
+        let thread_id = Some(ThreadId(MessageId(42)));
+        let first = derive_agent_mode_session_id(user_id, ChatId(-1001), thread_id);
+        let second = derive_agent_mode_session_id(user_id, ChatId(-1001), thread_id);
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn session_id_derivation_differs_for_different_threads() {
+        let user_id = 12345;
+        let first =
+            derive_agent_mode_session_id(user_id, ChatId(-1001), Some(ThreadId(MessageId(42))));
+        let second =
+            derive_agent_mode_session_id(user_id, ChatId(-1001), Some(ThreadId(MessageId(43))));
+
+        assert_ne!(first, second);
+    }
 }
 
 async fn ensure_session_exists(
+    session_id: SessionId,
     user_id: i64,
     llm: &Arc<LlmClient>,
     storage: &Arc<dyn StorageProvider>,
     settings: &Arc<BotSettings>,
 ) {
-    let session_id = SessionId::from(user_id);
     if SESSION_REGISTRY.contains(&session_id).await {
         debug!(session_id = %session_id, "Session already exists in cache");
         return;
@@ -447,18 +515,19 @@ async fn ensure_session_exists(
     SESSION_REGISTRY.insert(session_id, executor).await;
 }
 
-async fn is_agent_task_running(user_id: i64) -> bool {
-    let session_id = SessionId::from(user_id);
+async fn is_agent_task_running(session_id: SessionId) -> bool {
     SESSION_REGISTRY.is_running(&session_id).await
 }
 
-async fn renew_cancellation_token(user_id: i64) {
-    let session_id = SessionId::from(user_id);
+async fn renew_cancellation_token(session_id: SessionId) {
     SESSION_REGISTRY.renew_cancellation_token(&session_id).await;
 }
 
-async fn save_memory_after_task(user_id: i64, storage: &Arc<dyn StorageProvider>) {
-    let session_id = SessionId::from(user_id);
+async fn save_memory_after_task(
+    session_id: SessionId,
+    user_id: i64,
+    storage: &Arc<dyn StorageProvider>,
+) {
     if let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await {
         let executor = executor_arc.read().await;
         let _ = storage
@@ -519,7 +588,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
     // Execute the task
-    let result = execute_agent_task(user_id, &task_text, Some(tx)).await;
+    let result = execute_agent_task(ctx.session_id, &task_text, Some(tx)).await;
     let state = match progress_handle.await {
         Ok(state) => state,
         Err(err) => {
@@ -530,7 +599,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let progress_text = render_progress_html(&state);
 
     // Save agent memory after task execution
-    save_memory_after_task(user_id, &ctx.storage).await;
+    save_memory_after_task(ctx.session_id, user_id, &ctx.storage).await;
 
     // Update the message with the result
     match result {
@@ -567,6 +636,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
 async fn run_agent_task_with_text(
     bot: Bot,
     chat_id: ChatId,
+    session_id: SessionId,
     user_id: i64,
     task_text: String,
     storage: Arc<dyn StorageProvider>,
@@ -587,7 +657,7 @@ async fn run_agent_task_with_text(
     let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
-    let result = execute_agent_task(user_id, &task_text, Some(tx)).await;
+    let result = execute_agent_task(session_id, &task_text, Some(tx)).await;
     let state = match progress_handle.await {
         Ok(state) => state,
         Err(err) => {
@@ -597,7 +667,7 @@ async fn run_agent_task_with_text(
     };
     let progress_text = render_progress_html(&state);
 
-    save_memory_after_task(user_id, &storage).await;
+    save_memory_after_task(session_id, user_id, &storage).await;
 
     match result {
         Ok(response) => {
@@ -630,11 +700,10 @@ async fn run_agent_task_with_text(
 
 /// Execute an agent task and return the result
 async fn execute_agent_task(
-    user_id: i64,
+    session_id: SessionId,
     task: &str,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<String> {
-    let session_id = SessionId::from(user_id);
     // Get executor from registry
     let executor_arc = SESSION_REGISTRY
         .get(&session_id)
@@ -676,6 +745,7 @@ struct LoopCallbackContext {
     bot: Bot,
     chat_id: ChatId,
     user_id: i64,
+    session_id: SessionId,
     outbound_thread: OutboundThreadParams,
 }
 
@@ -685,7 +755,7 @@ async fn handle_loop_retry(
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
-    if is_agent_task_running(ctx.user_id).await {
+    if is_agent_task_running(ctx.session_id).await {
         send_agent_message(
             &ctx.bot,
             ctx.chat_id,
@@ -696,10 +766,10 @@ async fn handle_loop_retry(
         return Ok(());
     }
 
-    ensure_session_exists(ctx.user_id, &llm, &storage, &settings).await;
-    renew_cancellation_token(ctx.user_id).await;
+    ensure_session_exists(ctx.session_id, ctx.user_id, &llm, &storage, &settings).await;
+    renew_cancellation_token(ctx.session_id).await;
 
-    let executor_arc = SESSION_REGISTRY.get(&SessionId::from(ctx.user_id)).await;
+    let executor_arc = SESSION_REGISTRY.get(&ctx.session_id).await;
     let Some(executor_arc) = executor_arc else {
         send_agent_message(
             &ctx.bot,
@@ -738,6 +808,7 @@ async fn handle_loop_retry(
         if let Err(e) = run_agent_task_with_text(
             retry_ctx.bot,
             retry_ctx.chat_id,
+            retry_ctx.session_id,
             retry_ctx.user_id,
             task_text,
             storage,
@@ -760,12 +831,12 @@ async fn handle_loop_retry(
 
 async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
     // Cancel any running task first to release the executor lock.
-    SESSION_REGISTRY.cancel(&SessionId::from(ctx.user_id)).await;
+    SESSION_REGISTRY.cancel(&ctx.session_id).await;
 
     // Brief yield to allow the run loop to observe cancellation and release locks.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    match SESSION_REGISTRY.reset(&SessionId::from(ctx.user_id)).await {
+    match SESSION_REGISTRY.reset(&ctx.session_id).await {
         Ok(()) => {
             send_agent_message_with_keyboard(
                 &ctx.bot,
@@ -823,10 +894,18 @@ pub async fn handle_loop_callback(
         .as_ref()
         .map(|msg| msg.chat().id)
         .ok_or_else(|| anyhow::anyhow!("Callback message missing chat id"))?;
+    let thread_id = q
+        .message
+        .as_ref()
+        .and_then(|message| message.regular_message())
+        .map(resolve_thread_spec)
+        .and_then(|spec| spec.thread_id);
+    let session_id = derive_agent_mode_session_id(user_id, chat_id, thread_id);
     let ctx = LoopCallbackContext {
         bot,
         chat_id,
         user_id,
+        session_id,
         outbound_thread: outbound_thread_from_callback(&q),
     };
 
@@ -836,7 +915,7 @@ pub async fn handle_loop_callback(
         LOOP_CALLBACK_CANCEL => {
             cancel_agent_task_by_id(
                 ctx.bot.clone(),
-                ctx.user_id,
+                ctx.session_id,
                 ctx.chat_id,
                 ctx.outbound_thread.message_thread_id,
             )
@@ -854,16 +933,16 @@ pub async fn handle_loop_callback(
 ///
 /// Returns an error if the cancellation message cannot be sent.
 pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    let session_id = derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id);
 
     // Access the cancellation token from registry (lock-free)
-    let cancelled = SESSION_REGISTRY.cancel(&SessionId::from(user_id)).await;
+    let cancelled = SESSION_REGISTRY.cancel(&session_id).await;
 
     // Best-effort: clear todos without waiting for executor locks.
-    let cleared_todos = SESSION_REGISTRY
-        .clear_todos(&SessionId::from(user_id))
-        .await;
+    let cleared_todos = SESSION_REGISTRY.clear_todos(&session_id).await;
 
     let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {
@@ -886,11 +965,10 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
 
 async fn cancel_agent_task_by_id(
     bot: Bot,
-    user_id: i64,
+    session_id: SessionId,
     chat_id: ChatId,
     message_thread_id: Option<ThreadId>,
 ) -> Result<()> {
-    let session_id = SessionId::from(user_id);
     let cancelled = SESSION_REGISTRY.cancel(&session_id).await;
     let cleared_todos = SESSION_REGISTRY.clear_todos(&session_id).await;
     let outbound_thread = OutboundThreadParams { message_thread_id };
@@ -930,11 +1008,13 @@ pub async fn exit_agent_mode(
     dialogue: AgentDialogue,
     storage: Arc<dyn StorageProvider>,
 ) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    let session_id = derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id);
 
-    save_memory_after_task(user_id, &storage).await;
-    SESSION_REGISTRY.remove(&SessionId::from(user_id)).await;
+    save_memory_after_task(session_id, user_id, &storage).await;
+    SESSION_REGISTRY.remove(&session_id).await;
 
     let _ = storage
         .update_user_state(user_id, "chat_mode".to_string())
@@ -998,9 +1078,11 @@ pub async fn handle_agent_confirmation(
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    let thread_spec = resolve_thread_spec(&msg);
+    let session_id = derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id);
     let text = msg.text().unwrap_or("");
     let chat_id = msg.chat.id;
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
 
     if text != "✅ Yes" && text != "❌ Cancel" {
         send_agent_message(
@@ -1025,11 +1107,11 @@ pub async fn handle_agent_confirmation(
     match text {
         "✅ Yes" => match action {
             ConfirmationType::ClearMemory => {
-                handle_clear_memory_confirmation(user_id, &storage, &send_ctx).await?;
+                handle_clear_memory_confirmation(user_id, session_id, &storage, &send_ctx).await?;
             }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(
-                    user_id, &storage, &llm, &settings, &send_ctx,
+                    user_id, session_id, &storage, &llm, &settings, &send_ctx,
                 )
                 .await?;
             }
