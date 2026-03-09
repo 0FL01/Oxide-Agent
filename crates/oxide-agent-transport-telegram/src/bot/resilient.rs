@@ -17,7 +17,7 @@
 
 use anyhow::Result;
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, Message, MessageId, ParseMode};
+use teloxide::types::{ChatId, Message, MessageId, ParseMode, ThreadId};
 use tracing::{debug, warn};
 
 /// Send a message with automatic retry on network failures.
@@ -47,11 +47,25 @@ pub async fn send_message_resilient(
     text: impl Into<String>,
     parse_mode: Option<ParseMode>,
 ) -> Result<Message> {
+    send_message_resilient_with_thread(bot, chat_id, text, parse_mode, None).await
+}
+
+/// Send a message with automatic retry and optional thread targeting.
+pub async fn send_message_resilient_with_thread(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: impl Into<String>,
+    parse_mode: Option<ParseMode>,
+    message_thread_id: Option<ThreadId>,
+) -> Result<Message> {
     let text = text.into();
     oxide_agent_core::utils::retry_transport_operation(|| async {
         let mut req = bot.send_message(chat_id, text.clone());
         if let Some(pm) = parse_mode {
             req = req.parse_mode(pm);
+        }
+        if let Some(thread_id) = message_thread_id {
+            req = req.message_thread_id(thread_id);
         }
         req.await
             .map_err(|e| anyhow::anyhow!("Telegram send error: {e}"))

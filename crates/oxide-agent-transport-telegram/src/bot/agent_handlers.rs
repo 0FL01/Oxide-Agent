@@ -5,13 +5,14 @@
 
 use crate::bot::agent::extract_agent_input;
 use crate::bot::agent_transport::TelegramAgentTransport;
-use crate::bot::messaging::send_long_message;
+use crate::bot::messaging::send_long_message_in_thread;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
     confirmation_keyboard, get_agent_keyboard, AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL,
     LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
+use crate::bot::{build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams};
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
 use oxide_agent_core::agent::{
@@ -29,7 +30,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQuery, ParseMode};
+use teloxide::types::{CallbackQuery, ParseMode, ThreadId};
 use tracing::{debug, info, warn};
 
 /// Type alias for dialogue
@@ -41,6 +42,7 @@ struct AgentTaskContext {
     msg: Message,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    message_thread_id: Option<ThreadId>,
 }
 
 enum AgentWipeError {
@@ -49,6 +51,173 @@ enum AgentWipeError {
 
 /// Global session registry for agent executors
 static SESSION_REGISTRY: LazyLock<SessionRegistry> = LazyLock::new(SessionRegistry::new);
+
+fn outbound_thread_from_message(msg: &Message) -> OutboundThreadParams {
+    build_outbound_thread_params(resolve_thread_spec(msg))
+}
+
+fn outbound_thread_from_callback(q: &CallbackQuery) -> OutboundThreadParams {
+    q.message
+        .as_ref()
+        .and_then(|message| message.regular_message())
+        .map_or(
+            OutboundThreadParams {
+                message_thread_id: None,
+            },
+            outbound_thread_from_message,
+        )
+}
+
+async fn send_agent_message(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: impl Into<String>,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    let mut req = bot.send_message(chat_id, text);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.await?;
+    Ok(())
+}
+
+async fn send_agent_message_with_keyboard(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: impl Into<String>,
+    keyboard: &teloxide::types::KeyboardMarkup,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    let mut req = bot.send_message(chat_id, text);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(keyboard.clone()).await?;
+    Ok(())
+}
+
+struct ConfirmationSendCtx<'a> {
+    bot: &'a Bot,
+    chat_id: ChatId,
+    keyboard: &'a teloxide::types::KeyboardMarkup,
+    outbound_thread: OutboundThreadParams,
+}
+
+async fn handle_clear_memory_confirmation(
+    user_id: i64,
+    storage: &Arc<dyn StorageProvider>,
+    send_ctx: &ConfirmationSendCtx<'_>,
+) -> Result<()> {
+    info!(user_id = user_id, "User confirmed memory clear");
+    match SESSION_REGISTRY.reset(&SessionId::from(user_id)).await {
+        Ok(()) => {
+            let _ = storage.clear_agent_memory(user_id).await;
+            send_agent_message_with_keyboard(
+                send_ctx.bot,
+                send_ctx.chat_id,
+                DefaultAgentView::memory_cleared(),
+                send_ctx.keyboard,
+                send_ctx.outbound_thread,
+            )
+            .await?;
+        }
+        Err("Cannot reset while task is running") => {
+            send_agent_message_with_keyboard(
+                send_ctx.bot,
+                send_ctx.chat_id,
+                DefaultAgentView::clear_blocked_by_task(),
+                send_ctx.keyboard,
+                send_ctx.outbound_thread,
+            )
+            .await?;
+        }
+        Err(_) => {
+            let _ = storage.clear_agent_memory(user_id).await;
+            send_agent_message_with_keyboard(
+                send_ctx.bot,
+                send_ctx.chat_id,
+                DefaultAgentView::memory_cleared(),
+                send_ctx.keyboard,
+                send_ctx.outbound_thread,
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_recreate_container_confirmation(
+    user_id: i64,
+    storage: &Arc<dyn StorageProvider>,
+    llm: &Arc<LlmClient>,
+    settings: &Arc<BotSettings>,
+    send_ctx: &ConfirmationSendCtx<'_>,
+) -> Result<()> {
+    info!(user_id = user_id, "User confirmed container recreation");
+    ensure_session_exists(user_id, llm, storage, settings).await;
+
+    match SESSION_REGISTRY
+        .with_executor_mut(&SessionId::from(user_id), |executor| {
+            Box::pin(async move {
+                executor
+                    .session_mut()
+                    .force_recreate_sandbox()
+                    .await
+                    .map_err(AgentWipeError::Recreate)?;
+                Ok(())
+            })
+        })
+        .await
+    {
+        Ok(Ok(())) => {
+            send_agent_message_with_keyboard(
+                send_ctx.bot,
+                send_ctx.chat_id,
+                DefaultAgentView::container_recreated(),
+                send_ctx.keyboard,
+                send_ctx.outbound_thread,
+            )
+            .await?;
+        }
+        Ok(Err(AgentWipeError::Recreate(e))) => {
+            warn!(error = %e, "Container recreation failed");
+            send_agent_message_with_keyboard(
+                send_ctx.bot,
+                send_ctx.chat_id,
+                DefaultAgentView::container_error(&format!("{e:#}")),
+                send_ctx.keyboard,
+                send_ctx.outbound_thread,
+            )
+            .await?;
+        }
+        Err("Cannot reset while task is running") => {
+            send_agent_message_with_keyboard(
+                send_ctx.bot,
+                send_ctx.chat_id,
+                DefaultAgentView::container_recreate_blocked_by_task(),
+                send_ctx.keyboard,
+                send_ctx.outbound_thread,
+            )
+            .await?;
+        }
+        Err(_) => {
+            send_agent_message_with_keyboard(
+                send_ctx.bot,
+                send_ctx.chat_id,
+                DefaultAgentView::sandbox_access_error(),
+                send_ctx.keyboard,
+                send_ctx.outbound_thread,
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
 
 /// Activate agent mode for a user
 ///
@@ -63,6 +232,7 @@ pub async fn activate_agent_mode(
     storage: Arc<dyn StorageProvider>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let session_id = SessionId::from(user_id);
 
@@ -92,10 +262,14 @@ pub async fn activate_agent_mode(
 
     // Send welcome message
     let (model_id, _, _) = settings.agent.get_configured_agent_model();
-    bot.send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
-        .parse_mode(ParseMode::Html)
-        .reply_markup(get_agent_keyboard())
-        .await?;
+    let mut req = bot
+        .send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
+        .parse_mode(ParseMode::Html);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(get_agent_keyboard()).await?;
 
     Ok(())
 }
@@ -115,6 +289,7 @@ pub async fn handle_agent_message(
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = msg.chat.id;
+    let outbound_thread = outbound_thread_from_message(&msg);
 
     // Check for control commands
     if let Some(text) = msg.text() {
@@ -151,12 +326,15 @@ pub async fn handle_agent_message(
     ensure_session_exists(user_id, &llm, &storage, &settings).await;
 
     if is_agent_task_running(user_id).await {
-        bot.send_message(
+        let mut req = bot.send_message(
             chat_id,
             "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
-        )
-        .reply_markup(get_agent_keyboard())
-        .await?;
+        );
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_agent_keyboard()).await?;
         return Ok(());
     }
 
@@ -168,17 +346,22 @@ pub async fn handle_agent_message(
     let task_llm = llm.clone();
 
     tokio::spawn(async move {
+        let message_thread_id = outbound_thread.message_thread_id;
         let ctx = AgentTaskContext {
             bot: task_bot.clone(),
             msg: task_msg.clone(),
             storage: task_storage,
             llm: task_llm,
+            message_thread_id,
         };
 
         if let Err(e) = run_agent_task(ctx).await {
-            let _ = task_bot
-                .send_message(task_msg.chat.id, format!("❌ Error: {e}"))
-                .await;
+            let mut req = task_bot.send_message(task_msg.chat.id, format!("❌ Error: {e}"));
+            if let Some(thread_id) = message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            let _ = req.await;
         }
     });
 
@@ -249,11 +432,12 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         Ok(text) => text,
         Err(err) => {
             if err.to_string() == "MULTIMODAL_DISABLED" {
-                super::resilient::send_message_resilient(
+                super::resilient::send_message_resilient_with_thread(
                     &ctx.bot,
                     chat_id,
                     "🚫 Agent cannot process this file.\nGemini/OpenRouter connection required for vision and audio capabilities.",
                     None,
+                    ctx.message_thread_id,
                 )
                 .await?;
                 return Ok(());
@@ -268,17 +452,23 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     );
 
     // Send initial progress message with retry on network failures
-    let progress_msg = super::resilient::send_message_resilient(
+    let progress_msg = super::resilient::send_message_resilient_with_thread(
         &ctx.bot,
         chat_id,
         "⏳ Processing task...",
         Some(ParseMode::Html),
+        ctx.message_thread_id,
     )
     .await?;
 
     // Create progress tracking channel
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-    let transport = TelegramAgentTransport::new(ctx.bot.clone(), chat_id, progress_msg.id);
+    let transport = TelegramAgentTransport::new(
+        ctx.bot.clone(),
+        chat_id,
+        progress_msg.id,
+        ctx.message_thread_id,
+    );
     let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
@@ -307,7 +497,8 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
             )
             .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
-            send_long_message(&ctx.bot, chat_id, &response).await?;
+            send_long_message_in_thread(&ctx.bot, chat_id, &response, ctx.message_thread_id)
+                .await?;
         }
         Err(e) => {
             // Sanitize error text to prevent Telegram HTML parse errors
@@ -333,17 +524,20 @@ async fn run_agent_task_with_text(
     user_id: i64,
     task_text: String,
     storage: Arc<dyn StorageProvider>,
+    message_thread_id: Option<ThreadId>,
 ) -> Result<()> {
-    let progress_msg = super::resilient::send_message_resilient(
+    let progress_msg = super::resilient::send_message_resilient_with_thread(
         &bot,
         chat_id,
         "⏳ Processing task...",
         Some(ParseMode::Html),
+        message_thread_id,
     )
     .await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-    let transport = TelegramAgentTransport::new(bot.clone(), chat_id, progress_msg.id);
+    let transport =
+        TelegramAgentTransport::new(bot.clone(), chat_id, progress_msg.id, message_thread_id);
     let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
@@ -369,7 +563,7 @@ async fn run_agent_task_with_text(
             )
             .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
-            send_long_message(&bot, chat_id, &response).await?;
+            send_long_message_in_thread(&bot, chat_id, &response, message_thread_id).await?;
         }
         Err(e) => {
             // Sanitize error text to prevent Telegram HTML parse errors
@@ -431,6 +625,134 @@ async fn execute_agent_task(
     executor.execute(task, progress_tx).await
 }
 
+#[derive(Clone)]
+struct LoopCallbackContext {
+    bot: Bot,
+    chat_id: ChatId,
+    user_id: i64,
+    outbound_thread: OutboundThreadParams,
+}
+
+async fn handle_loop_retry(
+    ctx: &LoopCallbackContext,
+    storage: Arc<dyn StorageProvider>,
+    llm: Arc<LlmClient>,
+    settings: Arc<BotSettings>,
+) -> Result<()> {
+    if is_agent_task_running(ctx.user_id).await {
+        send_agent_message(
+            &ctx.bot,
+            ctx.chat_id,
+            DefaultAgentView::task_already_running(),
+            ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    ensure_session_exists(ctx.user_id, &llm, &storage, &settings).await;
+    renew_cancellation_token(ctx.user_id).await;
+
+    let executor_arc = SESSION_REGISTRY.get(&SessionId::from(ctx.user_id)).await;
+    let Some(executor_arc) = executor_arc else {
+        send_agent_message(
+            &ctx.bot,
+            ctx.chat_id,
+            DefaultAgentView::session_not_found(),
+            ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let task_text = {
+        let executor = executor_arc.read().await;
+        executor.last_task().map(str::to_string)
+    };
+
+    let Some(task_text) = task_text else {
+        send_agent_message(
+            &ctx.bot,
+            ctx.chat_id,
+            DefaultAgentView::no_saved_task(),
+            ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    {
+        let mut executor = executor_arc.write().await;
+        executor.disable_loop_detection_next_run();
+    }
+
+    let retry_ctx = ctx.clone();
+    tokio::spawn(async move {
+        let error_bot = retry_ctx.bot.clone();
+        if let Err(e) = run_agent_task_with_text(
+            retry_ctx.bot,
+            retry_ctx.chat_id,
+            retry_ctx.user_id,
+            task_text,
+            storage,
+            retry_ctx.outbound_thread.message_thread_id,
+        )
+        .await
+        {
+            let _ = send_agent_message(
+                &error_bot,
+                retry_ctx.chat_id,
+                DefaultAgentView::error_message(&e.to_string()),
+                retry_ctx.outbound_thread,
+            )
+            .await;
+        }
+    });
+
+    Ok(())
+}
+
+async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
+    // Cancel any running task first to release the executor lock.
+    SESSION_REGISTRY.cancel(&SessionId::from(ctx.user_id)).await;
+
+    // Brief yield to allow the run loop to observe cancellation and release locks.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    match SESSION_REGISTRY.reset(&SessionId::from(ctx.user_id)).await {
+        Ok(()) => {
+            send_agent_message_with_keyboard(
+                &ctx.bot,
+                ctx.chat_id,
+                DefaultAgentView::task_reset(),
+                &get_agent_keyboard(),
+                ctx.outbound_thread,
+            )
+            .await?;
+        }
+        Err("Session not found") => {
+            send_agent_message(
+                &ctx.bot,
+                ctx.chat_id,
+                DefaultAgentView::session_not_found(),
+                ctx.outbound_thread,
+            )
+            .await?;
+        }
+        Err(_) => {
+            send_agent_message(
+                &ctx.bot,
+                ctx.chat_id,
+                DefaultAgentView::reset_blocked_by_task(),
+                ctx.outbound_thread,
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Handle loop-detection inline keyboard callbacks.
 ///
 /// # Errors
@@ -455,81 +777,24 @@ pub async fn handle_loop_callback(
         .as_ref()
         .map(|msg| msg.chat().id)
         .ok_or_else(|| anyhow::anyhow!("Callback message missing chat id"))?;
+    let ctx = LoopCallbackContext {
+        bot,
+        chat_id,
+        user_id,
+        outbound_thread: outbound_thread_from_callback(&q),
+    };
 
     match data {
-        LOOP_CALLBACK_RETRY => {
-            if is_agent_task_running(user_id).await {
-                bot.send_message(chat_id, DefaultAgentView::task_already_running())
-                    .await?;
-                return Ok(());
-            }
-
-            ensure_session_exists(user_id, &llm, &storage, &settings).await;
-            renew_cancellation_token(user_id).await;
-
-            let executor_arc = SESSION_REGISTRY.get(&SessionId::from(user_id)).await;
-
-            let Some(executor_arc) = executor_arc else {
-                bot.send_message(chat_id, DefaultAgentView::session_not_found())
-                    .await?;
-                return Ok(());
-            };
-
-            let task_text = {
-                let executor = executor_arc.read().await;
-                executor.last_task().map(str::to_string)
-            };
-
-            let Some(task_text) = task_text else {
-                bot.send_message(chat_id, DefaultAgentView::no_saved_task())
-                    .await?;
-                return Ok(());
-            };
-
-            {
-                let mut executor = executor_arc.write().await;
-                executor.disable_loop_detection_next_run();
-            }
-
-            let task_bot = bot.clone();
-            let task_storage = storage.clone();
-            tokio::spawn(async move {
-                let error_bot = task_bot.clone();
-                if let Err(e) =
-                    run_agent_task_with_text(task_bot, chat_id, user_id, task_text, task_storage)
-                        .await
-                {
-                    let _ = error_bot
-                        .send_message(chat_id, DefaultAgentView::error_message(&e.to_string()))
-                        .await;
-                }
-            });
-        }
-        LOOP_CALLBACK_RESET => {
-            // Cancel any running task first to release the executor lock.
-            SESSION_REGISTRY.cancel(&SessionId::from(user_id)).await;
-
-            // Brief yield to allow the run loop to observe cancellation and release locks.
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-            match SESSION_REGISTRY.reset(&SessionId::from(user_id)).await {
-                Ok(()) => {
-                    bot.send_message(chat_id, DefaultAgentView::task_reset())
-                        .reply_markup(get_agent_keyboard())
-                        .await?;
-                }
-                Err("Session not found") => {
-                    bot.send_message(chat_id, DefaultAgentView::session_not_found())
-                        .await?;
-                }
-                Err(_) => {
-                    bot.send_message(chat_id, DefaultAgentView::reset_blocked_by_task())
-                        .await?;
-                }
-            }
-        }
+        LOOP_CALLBACK_RETRY => handle_loop_retry(&ctx, storage, llm, settings).await?,
+        LOOP_CALLBACK_RESET => handle_loop_reset(&ctx).await?,
         LOOP_CALLBACK_CANCEL => {
-            cancel_agent_task_by_id(bot.clone(), user_id, chat_id).await?;
+            cancel_agent_task_by_id(
+                ctx.bot.clone(),
+                ctx.user_id,
+                ctx.chat_id,
+                ctx.outbound_thread.message_thread_id,
+            )
+            .await?;
         }
         _ => {}
     }
@@ -543,6 +808,7 @@ pub async fn handle_loop_callback(
 ///
 /// Returns an error if the cancellation message cannot be sent.
 pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
     // Access the cancellation token from registry (lock-free)
@@ -555,31 +821,53 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
 
     let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {
-        bot.send_message(msg.chat.id, DefaultAgentView::no_active_task())
-            .reply_markup(get_agent_keyboard())
-            .await?;
+        let mut req = bot.send_message(msg.chat.id, DefaultAgentView::no_active_task());
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_agent_keyboard()).await?;
     } else {
-        bot.send_message(msg.chat.id, text)
-            .reply_markup(get_agent_keyboard())
-            .await?;
+        let mut req = bot.send_message(msg.chat.id, text);
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(get_agent_keyboard()).await?;
     }
     Ok(())
 }
 
-async fn cancel_agent_task_by_id(bot: Bot, user_id: i64, chat_id: ChatId) -> Result<()> {
+async fn cancel_agent_task_by_id(
+    bot: Bot,
+    user_id: i64,
+    chat_id: ChatId,
+    message_thread_id: Option<ThreadId>,
+) -> Result<()> {
     let session_id = SessionId::from(user_id);
     let cancelled = SESSION_REGISTRY.cancel(&session_id).await;
     let cleared_todos = SESSION_REGISTRY.clear_todos(&session_id).await;
+    let outbound_thread = OutboundThreadParams { message_thread_id };
 
     let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {
-        bot.send_message(chat_id, DefaultAgentView::no_active_task())
-            .reply_markup(get_agent_keyboard())
-            .await?;
+        send_agent_message_with_keyboard(
+            &bot,
+            chat_id,
+            DefaultAgentView::no_active_task(),
+            &get_agent_keyboard(),
+            outbound_thread,
+        )
+        .await?;
     } else {
-        bot.send_message(chat_id, text)
-            .reply_markup(get_agent_keyboard())
-            .await?;
+        send_agent_message_with_keyboard(
+            &bot,
+            chat_id,
+            text,
+            &get_agent_keyboard(),
+            outbound_thread,
+        )
+        .await?;
     }
 
     Ok(())
@@ -596,6 +884,7 @@ pub async fn exit_agent_mode(
     dialogue: AgentDialogue,
     storage: Arc<dyn StorageProvider>,
 ) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
 
     save_memory_after_task(user_id, &storage).await;
@@ -607,9 +896,12 @@ pub async fn exit_agent_mode(
     dialogue.update(State::Start).await?;
 
     let keyboard = crate::bot::handlers::get_main_keyboard();
-    bot.send_message(msg.chat.id, "👋 Exited agent mode. Select a working mode:")
-        .reply_markup(keyboard)
-        .await?;
+    let mut req = bot.send_message(msg.chat.id, "👋 Exited agent mode. Select a working mode:");
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(keyboard).await?;
     Ok(())
 }
 
@@ -624,6 +916,7 @@ pub async fn confirm_destructive_action(
     msg: Message,
     dialogue: AgentDialogue,
 ) -> Result<()> {
+    let outbound_thread = outbound_thread_from_message(&msg);
     dialogue
         .update(State::AgentConfirmation(action.clone()))
         .await?;
@@ -633,10 +926,14 @@ pub async fn confirm_destructive_action(
         ConfirmationType::RecreateContainer => DefaultAgentView::container_wipe_confirmation(),
     };
 
-    bot.send_message(msg.chat.id, message_text)
-        .parse_mode(ParseMode::Html)
-        .reply_markup(confirmation_keyboard())
-        .await?;
+    let mut req = bot
+        .send_message(msg.chat.id, message_text)
+        .parse_mode(ParseMode::Html);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.reply_markup(confirmation_keyboard()).await?;
     Ok(())
 }
 
@@ -657,93 +954,50 @@ pub async fn handle_agent_confirmation(
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let text = msg.text().unwrap_or("");
     let chat_id = msg.chat.id;
+    let outbound_thread = outbound_thread_from_message(&msg);
 
     if text != "✅ Yes" && text != "❌ Cancel" {
-        bot.send_message(chat_id, DefaultAgentView::select_keyboard_option())
-            .await?;
+        send_agent_message(
+            &bot,
+            chat_id,
+            DefaultAgentView::select_keyboard_option(),
+            outbound_thread,
+        )
+        .await?;
         return Ok(());
     }
 
     dialogue.update(State::AgentMode).await?;
     let keyboard = get_agent_keyboard();
+    let send_ctx = ConfirmationSendCtx {
+        bot: &bot,
+        chat_id,
+        keyboard: &keyboard,
+        outbound_thread,
+    };
 
     match text {
         "✅ Yes" => match action {
             ConfirmationType::ClearMemory => {
-                info!(user_id = user_id, "User confirmed memory clear");
-                match SESSION_REGISTRY.reset(&SessionId::from(user_id)).await {
-                    Ok(()) => {
-                        let _ = storage.clear_agent_memory(user_id).await;
-                        bot.send_message(chat_id, DefaultAgentView::memory_cleared())
-                            .reply_markup(keyboard)
-                            .await?;
-                    }
-                    Err("Cannot reset while task is running") => {
-                        bot.send_message(chat_id, DefaultAgentView::clear_blocked_by_task())
-                            .reply_markup(keyboard)
-                            .await?;
-                    }
-                    Err(_) => {
-                        // No session — just clear storage
-                        let _ = storage.clear_agent_memory(user_id).await;
-                        bot.send_message(chat_id, DefaultAgentView::memory_cleared())
-                            .reply_markup(keyboard)
-                            .await?;
-                    }
-                }
+                handle_clear_memory_confirmation(user_id, &storage, &send_ctx).await?;
             }
             ConfirmationType::RecreateContainer => {
-                info!(user_id = user_id, "User confirmed container recreation");
-                // Ensure session exists (restores from DB if needs be, or creates new)
-                ensure_session_exists(user_id, &llm, &storage, &settings).await;
-                match SESSION_REGISTRY
-                    .with_executor_mut(&SessionId::from(user_id), |executor| {
-                        Box::pin(async move {
-                            executor
-                                .session_mut()
-                                .force_recreate_sandbox()
-                                .await
-                                .map_err(AgentWipeError::Recreate)?;
-                            Ok(())
-                        })
-                    })
-                    .await
-                {
-                    Ok(Ok(())) => {
-                        bot.send_message(chat_id, DefaultAgentView::container_recreated())
-                            .reply_markup(keyboard)
-                            .await?;
-                    }
-                    Ok(Err(AgentWipeError::Recreate(e))) => {
-                        warn!(error = %e, "Container recreation failed");
-                        bot.send_message(
-                            chat_id,
-                            DefaultAgentView::container_error(&format!("{e:#}")),
-                        )
-                        .reply_markup(keyboard)
-                        .await?;
-                    }
-                    Err("Cannot reset while task is running") => {
-                        bot.send_message(
-                            chat_id,
-                            DefaultAgentView::container_recreate_blocked_by_task(),
-                        )
-                        .reply_markup(keyboard)
-                        .await?;
-                    }
-                    Err(_) => {
-                        bot.send_message(chat_id, DefaultAgentView::sandbox_access_error())
-                            .reply_markup(keyboard)
-                            .await?;
-                    }
-                }
+                handle_recreate_container_confirmation(
+                    user_id, &storage, &llm, &settings, &send_ctx,
+                )
+                .await?;
             }
         },
         "❌ Cancel" => {
             info!(user_id = user_id, action = ?action, "User cancelled destructive action");
-            bot.send_message(chat_id, DefaultAgentView::operation_cancelled())
-                .reply_markup(keyboard)
-                .await?;
+            send_agent_message_with_keyboard(
+                &bot,
+                chat_id,
+                DefaultAgentView::operation_cancelled(),
+                &keyboard,
+                outbound_thread,
+            )
+            .await?;
         }
         _ => unreachable!(),
     }

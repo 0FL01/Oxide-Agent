@@ -6,7 +6,7 @@
 use anyhow::Result;
 use oxide_agent_core::utils;
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, ParseMode};
+use teloxide::types::{ChatId, ParseMode, ThreadId};
 
 /// Maximum message length for Telegram with safety margin.
 /// Telegram's official limit is 4096, but we use 4000 to account for
@@ -39,6 +39,16 @@ pub const TELEGRAM_MESSAGE_LIMIT: usize = 4000;
 /// send_long_message(&bot, chat_id, &very_long_response).await?;
 /// ```
 pub async fn send_long_message(bot: &Bot, chat_id: ChatId, text: &str) -> Result<()> {
+    send_long_message_in_thread(bot, chat_id, text, None).await
+}
+
+/// Sends a long message by splitting it into multiple parts in specific thread.
+pub async fn send_long_message_in_thread(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: &str,
+    message_thread_id: Option<ThreadId>,
+) -> Result<()> {
     // Split raw Markdown first - split_long_message correctly handles ``` fences
     let parts = utils::split_long_message(text, TELEGRAM_MESSAGE_LIMIT);
 
@@ -46,8 +56,14 @@ pub async fn send_long_message(bot: &Bot, chat_id: ChatId, text: &str) -> Result
         // Format each part to HTML after splitting to ensure proper tag closure
         let formatted = utils::format_text(&part);
         // Use resilient send with automatic retry on network failures
-        super::resilient::send_message_resilient(bot, chat_id, formatted, Some(ParseMode::Html))
-            .await?;
+        super::resilient::send_message_resilient_with_thread(
+            bot,
+            chat_id,
+            formatted,
+            Some(ParseMode::Html),
+            message_thread_id,
+        )
+        .await?;
     }
 
     Ok(())
