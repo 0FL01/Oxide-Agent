@@ -44,7 +44,8 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
         reply_to_bot: false,
     };
     let disabled_topic = settings.resolve_topic_config(-100_123, Some(42));
-    let disabled_decision = resolve_topic_route_decision(disabled_topic, &blocked_context);
+    let disabled_decision =
+        resolve_topic_route_decision(disabled_topic, &blocked_context, Some("bot"));
     assert!(!disabled_decision.allows_processing());
     assert!(disabled_decision.require_mention);
     assert_eq!(
@@ -58,7 +59,8 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
         reply_to_bot: false,
     };
     let mention_topic = settings.resolve_topic_config(-100_123, Some(7));
-    let mention_decision = resolve_topic_route_decision(mention_topic, &no_mention_context);
+    let mention_decision =
+        resolve_topic_route_decision(mention_topic, &no_mention_context, Some("bot"));
     assert!(!mention_decision.allows_processing());
     assert!(mention_decision.require_mention);
     assert!(!mention_decision.mention_satisfied);
@@ -68,13 +70,15 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
     );
 
     let chat_default = settings.resolve_topic_config(-100_123, None);
-    let chat_default_decision = resolve_topic_route_decision(chat_default, &no_mention_context);
+    let chat_default_decision =
+        resolve_topic_route_decision(chat_default, &no_mention_context, Some("bot"));
     assert!(chat_default_decision.allows_processing());
     assert!(!chat_default_decision.require_mention);
     assert_eq!(chat_default_decision.system_prompt_override, None);
 
     let unknown_chat = settings.resolve_topic_config(-200_999, Some(42));
-    let fallback_decision = resolve_topic_route_decision(unknown_chat, &no_mention_context);
+    let fallback_decision =
+        resolve_topic_route_decision(unknown_chat, &no_mention_context, Some("bot"));
     assert!(fallback_decision.allows_processing());
     assert!(!fallback_decision.require_mention);
     assert!(fallback_decision.mention_satisfied);
@@ -98,6 +102,7 @@ fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies
     let reply_route = resolve_topic_route_decision(
         settings.resolve_topic_config(-100_123, Some(42)),
         &reply_context,
+        Some("oxide_agent"),
     );
     assert!(reply_route.allows_processing());
     assert!(reply_route.require_mention);
@@ -123,6 +128,7 @@ fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies
     let mention_route = resolve_topic_route_decision(
         settings.resolve_topic_config(-100_123, Some(42)),
         &mention_context,
+        Some("oxide_agent"),
     );
     assert!(mention_route.allows_processing());
     assert!(mention_route.mention_satisfied);
