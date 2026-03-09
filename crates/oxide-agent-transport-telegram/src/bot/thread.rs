@@ -62,7 +62,7 @@ pub fn resolve_thread_spec_from_context(
     }
 
     if !is_group {
-        return TelegramThreadSpec::new(TelegramThreadKind::Dm, None);
+        return TelegramThreadSpec::new(TelegramThreadKind::Dm, thread_id);
     }
 
     TelegramThreadSpec::new(TelegramThreadKind::None, None)
@@ -81,7 +81,8 @@ pub fn build_outbound_thread_params(spec: TelegramThreadSpec) -> OutboundThreadP
                 Some(thread_id)
             }
         }),
-        TelegramThreadKind::Dm | TelegramThreadKind::None => None,
+        TelegramThreadKind::Dm => spec.thread_id,
+        TelegramThreadKind::None => None,
     };
 
     OutboundThreadParams { message_thread_id }
@@ -124,9 +125,25 @@ pub const fn general_forum_topic_id() -> ThreadId {
 mod tests {
     use super::{
         build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec_from_context,
-        TelegramThreadKind,
+        thread_peer_key, thread_peer_key_from_spec, TelegramThreadKind, TelegramThreadSpec,
     };
     use teloxide::types::{ChatId, MessageId, ThreadId};
+
+    #[test]
+    fn resolves_regular_group_non_forum_to_none() {
+        let spec = resolve_thread_spec_from_context(true, false, Some(ThreadId(MessageId(9))));
+
+        assert_eq!(spec.kind, TelegramThreadKind::None);
+        assert_eq!(spec.thread_id, None);
+    }
+
+    #[test]
+    fn resolves_dm_with_thread() {
+        let spec = resolve_thread_spec_from_context(false, false, Some(ThreadId(MessageId(7))));
+
+        assert_eq!(spec.kind, TelegramThreadKind::Dm);
+        assert_eq!(spec.thread_id, Some(ThreadId(MessageId(7))));
+    }
 
     #[test]
     fn resolves_forum_with_default_general_topic() {
@@ -137,11 +154,11 @@ mod tests {
     }
 
     #[test]
-    fn resolves_dm_without_thread() {
-        let spec = resolve_thread_spec_from_context(false, false, Some(ThreadId(MessageId(7))));
+    fn resolves_forum_with_explicit_non_general_topic() {
+        let spec = resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
 
-        assert_eq!(spec.kind, TelegramThreadKind::Dm);
-        assert_eq!(spec.thread_id, None);
+        assert_eq!(spec.kind, TelegramThreadKind::Forum);
+        assert_eq!(spec.thread_id, Some(ThreadId(MessageId(42))));
     }
 
     #[test]
@@ -161,8 +178,55 @@ mod tests {
     }
 
     #[test]
-    fn builds_peer_key() {
-        let key = super::thread_peer_key(ChatId(-1001), Some(ThreadId(MessageId(11))));
+    fn keeps_dm_topic_for_outbound_params() {
+        let spec = TelegramThreadSpec::new(TelegramThreadKind::Dm, Some(ThreadId(MessageId(31))));
+        let params = build_outbound_thread_params(spec);
+
+        assert_eq!(params.message_thread_id, Some(ThreadId(MessageId(31))));
+    }
+
+    #[test]
+    fn keeps_dm_general_topic_id_for_outbound_params() {
+        let spec = TelegramThreadSpec::new(TelegramThreadKind::Dm, Some(ThreadId(MessageId(1))));
+        let params = build_outbound_thread_params(spec);
+
+        assert_eq!(params.message_thread_id, Some(ThreadId(MessageId(1))));
+    }
+
+    #[test]
+    fn omits_none_kind_from_outbound_params() {
+        let spec = TelegramThreadSpec::new(TelegramThreadKind::None, Some(ThreadId(MessageId(31))));
+        let params = build_outbound_thread_params(spec);
+
+        assert_eq!(params.message_thread_id, None);
+    }
+
+    #[test]
+    fn builds_peer_key_with_thread_id() {
+        let key = thread_peer_key(ChatId(-1001), Some(ThreadId(MessageId(11))));
         assert_eq!(key, "-1001:11");
+    }
+
+    #[test]
+    fn builds_peer_key_without_thread_id() {
+        let key = thread_peer_key(ChatId(-1001), None);
+        assert_eq!(key, "-1001:0");
+    }
+
+    #[test]
+    fn builds_peer_key_from_spec_with_thread_id() {
+        let spec =
+            TelegramThreadSpec::new(TelegramThreadKind::Forum, Some(ThreadId(MessageId(77))));
+        let key = thread_peer_key_from_spec(ChatId(-1001), spec);
+
+        assert_eq!(key, "-1001:77");
+    }
+
+    #[test]
+    fn builds_peer_key_from_spec_without_thread_id() {
+        let spec = TelegramThreadSpec::new(TelegramThreadKind::None, None);
+        let key = thread_peer_key_from_spec(ChatId(-1001), spec);
+
+        assert_eq!(key, "-1001:0");
     }
 }
