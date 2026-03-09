@@ -1,6 +1,6 @@
 ### Agent Mode v2: Implementation Plan
 
-Status: Completed (Stage 1 completed, Stage 2 completed, Stage 3 completed, Stage 4 completed, Stage 5 completed, Stage 6 completed)
+Status: In progress (Stage 1 completed, Stage 2 completed, Stage 3 completed, Stage 4 completed, Stage 5 completed, Stage 6 completed, Stage 7 started and frozen in WIP state)
 
 Progress update:
 
@@ -58,6 +58,9 @@ Progress update:
   - `ba28afa` `fix(stage-6/slice-4a): harden agent access revocation`
   - `dc3583f` `refactor(stage-6/slice-3a): use llm provider request structs`
 - Stage 6 handover note: `docs/3-level-agent-stage-6-handover.txt`.
+- Stage 7 (multi-task architect orchestration) is added as the next execution stage.
+- Stage 7 implementation started on `arch-agent-mode` and paused in a frozen WIP state.
+- Stage 7 handover note: `docs/3-level-agent-stage-7-handover.txt`.
 
 Этот документ дополняет `docs/3-level-agent.md` и раскладывает внедрение Agent Mode v2 на конкретные стадии и небольшие auditable slices.
 
@@ -978,7 +981,223 @@ Current Stage 6 status:
 
 ---
 
-### 8. Dependency summary
+### 8. Stage 7 - Multi-task architect orchestration
+
+Цель stage: разрешить несколько одновременных top-level задач в рамках одной session, сохранив task-scoped контроль, recovery safety и UX «архитектор уточняет контекст, пока исполнители работают в фоне».
+
+Status: In progress (paused/frozen)
+
+#### Slice 7.1 - Runtime Multi-Task Contract
+
+Status: In progress (runtime contract implemented, transport hardening in progress)
+
+Crates:
+
+- `oxide-agent-runtime`
+- `oxide-agent-transport-telegram` (compile-safe API adaptation only)
+
+Depends on:
+
+- Stage 2 (detached execution foundation)
+- Stage 6 (integration/guardrails)
+
+Deliverables:
+
+- снятие single-active-task invariant в runtime submit path;
+- `TaskRegistry` API для чтения всех non-terminal задач скоупа session;
+- runtime-facing adapter API `active_tasks_for_session` вместо single-task helper;
+- session admission control в виде лимита, а не бинарного «занято/свободно» guard.
+
+Acceptance criteria:
+
+- в одной session можно создать несколько non-terminal задач без нарушения task ownership;
+- runtime больше не отклоняет submit только из-за факта существования одной активной задачи;
+- call-sites компилируются с новым multi-task API и сохраняют безопасный fallback.
+
+Verification:
+
+```bash
+cargo test -p oxide-agent-runtime task_executor
+cargo test -p oxide-agent-runtime task_registry
+```
+
+#### Slice 7.2 - Task-Scoped Memory Isolation
+
+Status: Not started
+
+Crates:
+
+- `oxide-agent-core`
+- `oxide-agent-runtime`
+
+Depends on:
+
+- Slice 7.1
+
+Deliverables:
+
+- task-scoped memory payload в snapshot/checkpoint contract;
+- восстановление контекста по `TaskId` при resume/recovery;
+- разделение session chat memory и execution memory (task-local).
+
+Acceptance criteria:
+
+- параллельные задачи в одной session не загрязняют память друг друга;
+- restart/recovery сохраняет task-local context независимо для каждой задачи;
+- legacy snapshot path остается совместимым (additive migration).
+
+Verification:
+
+```bash
+cargo test -p oxide-agent-core storage
+cargo test -p oxide-agent-runtime task_recovery
+```
+
+#### Slice 7.3 - Telegram Routing: Task Focus and Addressing
+
+Status: In progress (fail-closed safeguards added, full addressing UX not implemented)
+
+Crates:
+
+- `oxide-agent-transport-telegram`
+
+Depends on:
+
+- Slice 7.1
+- Slice 7.2
+
+Deliverables:
+
+- входящий message routing для режимов: side-chat, create-task, reply-to-task, task-control;
+- explicit task focus model (task selector/short id routing);
+- безопасная обработка неоднозначного ввода при нескольких `WaitingInput` задачах.
+
+Acceptance criteria:
+
+- transport не использует implicit single-active-task assumptions;
+- пользователь может адресно ответить конкретной задаче;
+- ambiguous reply fail-closed с user-facing guidance.
+
+Verification:
+
+```bash
+cargo test -p oxide-agent-transport-telegram agent_handlers
+```
+
+#### Slice 7.4 - Concurrent HITL UX
+
+Status: In progress (loop callback safety hardening started, full concurrent HITL UX not implemented)
+
+Crates:
+
+- `oxide-agent-transport-telegram`
+- `oxide-agent-runtime`
+
+Depends on:
+
+- Slice 7.3
+
+Deliverables:
+
+- task-addressed pending input prompts/polls;
+- корректный resume по `TaskId` при наличии нескольких waiting tasks;
+- защита от duplicate/late resume для каждой задачи независимо.
+
+Acceptance criteria:
+
+- несколько задач могут одновременно ждать input и корректно резюмиться по отдельности;
+- poll/text input не пересекаются между задачами;
+- security checks owner/task binding сохранены.
+
+Verification:
+
+```bash
+cargo test -p oxide-agent-runtime hitl_resume
+cargo test -p oxide-agent-transport-telegram poll_resume
+```
+
+#### Slice 7.5 - Multi-Task Controls and Observability UX
+
+Status: Not started
+
+Crates:
+
+- `oxide-agent-transport-telegram`
+- `oxide-agent-transport-web` (optional view-level refinements)
+
+Depends on:
+
+- Slice 7.3
+- Slice 7.4
+
+Deliverables:
+
+- task list / selection UX для активных задач в session;
+- task-targeted cancel/stop/watch actions;
+- user-visible status «чем занят исполнитель» per task.
+
+Acceptance criteria:
+
+- пользователь может управлять конкретной задачей без влияния на другие активные задачи;
+- watch/control flows остаются task-scoped;
+- observability UX читаем для 2+ одновременных задач.
+
+Verification:
+
+```bash
+cargo test -p oxide-agent-transport-telegram task_controls
+cargo test -p oxide-agent-transport-web
+```
+
+#### Slice 7.6 - Limits, Rollout, and Safety Gates
+
+Status: Not started
+
+Crates:
+
+- все затронутые crates
+
+Depends on:
+
+- Slice 7.1-7.5
+
+Deliverables:
+
+- `MULTI_TASK_PER_SESSION_ENABLED` feature flag;
+- configurable `MAX_CONCURRENT_TASKS_PER_SESSION` лимит;
+- rollout checklist + rollback instructions + support playbook update;
+- AGENTS.md sync for multi-task architecture and operator guidance.
+
+Acceptance criteria:
+
+- multi-task можно включать staged rollout без миграционного даунтайма;
+- rollback не требует ручного repair snapshots;
+- saturation/limit cases дают явный user-facing сигнал.
+
+Verification:
+
+```bash
+cargo test --all-features
+cargo clippy --all-targets --all-features
+cargo fmt --check
+```
+
+Exit criteria for Stage 7:
+
+- в рамках одной session допускается несколько одновременных top-level задач;
+- architect UX поддерживает параллельный background execution и context clarification;
+- task memory/task controls/recovery остаются строго task-scoped и безопасными.
+
+Current Stage 7 status:
+
+- runtime admission changed from single-active guard to per-session non-terminal limit;
+- telegram transport now includes multi-active fail-closed guardrails in generic session controls;
+- loop-detected progress notifications now carry `TaskId` to transport boundary;
+- work remains for task-scoped memory, explicit task focus/addressing UX, and rollout flags.
+
+---
+
+### 9. Dependency summary
 
 Критический путь:
 
@@ -988,6 +1207,7 @@ Current Stage 6 status:
 4. `1.4 -> 4.3 -> 4.4`
 5. `4.3 -> 5.1 -> 5.2`
 6. Stage 6 начинается только после рабочих foundation/runtime flows.
+7. Stage 7 начинается после Stage 6 и опирается на detached execution + HITL + task controls/event fan-out.
 
 Наиболее чувствительные blockers:
 
@@ -996,10 +1216,12 @@ Current Stage 6 status:
 - race conditions в cancel/resume/stop flows;
 - backpressure и cleanup в event fan-out;
 - priority control для user-facing и background LLM traffic.
+- memory isolation между параллельными задачами в рамках одной session.
+- ambiguous routing для concurrent waiting inputs в transport UX.
 
 ---
 
-### 9. Recommended review gates
+### 10. Recommended review gates
 
 Каждый slice должен пройти отдельный review gate:
 
@@ -1016,10 +1238,11 @@ Current Stage 6 status:
 - после Stage 3 нужен E2E review HITL cycle;
 - после Stage 4 нужен review cancel/stop/event fan-out semantics;
 - перед rollout нужен production-readiness review.
+- после Stage 7 нужен dedicated review multi-task memory/routing safety.
 
 ---
 
-### 10. Minimal definition of done
+### 11. Minimal definition of done
 
 Agent Mode v2 можно считать внедренным только если выполнены следующие условия:
 
@@ -1029,4 +1252,5 @@ Agent Mode v2 можно считать внедренным только есл
 - HITL pause/resume переживает рестарт процесса;
 - delegation depth ограничен кодом;
 - progress/task events доступны более чем одному consumer или через явный relay;
-- rollout управляется через feature flags или staged enablement.
+- rollout управляется через feature flags или staged enablement;
+- в одной session поддерживаются несколько одновременных задач с task-scoped памятью и адресным управлением.

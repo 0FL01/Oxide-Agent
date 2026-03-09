@@ -12,7 +12,8 @@ use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
     can_render_watch_url, confirmation_keyboard, get_agent_keyboard, task_control_keyboard,
     AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
-    TASK_CONTROL_ACTION_CANCEL, TASK_CONTROL_ACTION_STOP, TASK_CONTROL_CALLBACK_PREFIX,
+    LOOP_CONTROL_CALLBACK_PREFIX, TASK_CONTROL_ACTION_CANCEL, TASK_CONTROL_ACTION_STOP,
+    TASK_CONTROL_CALLBACK_PREFIX,
 };
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
@@ -68,6 +69,7 @@ enum SessionResetOutcome {
     Reset,
     SessionNotFound,
     Busy,
+    MultipleActiveTasks,
 }
 
 pub(crate) enum StartResetOutcome<T> {
@@ -96,9 +98,22 @@ enum RetryTaskOutcome {
     SessionNotFound,
 }
 
+enum SessionTaskSelection {
+    None,
+    Single(TaskRecord),
+    Multiple,
+}
+
+pub(crate) enum SessionTaskControlOutcome {
+    None,
+    Single(TaskRecord),
+    MultipleActive,
+}
+
 enum AgentModeActivationOutcome {
     Activated,
-    LiveTaskStillRunning,
+    LiveSingleTask(TaskRecord),
+    LiveMultipleTasks,
 }
 
 enum RecreateContainerOutcome {
@@ -121,8 +136,19 @@ enum TaskControlAction {
     Stop,
 }
 
+enum LoopControlAction {
+    Retry,
+    Reset,
+    Cancel,
+}
+
 struct TaskControlCallbackPayload<'a> {
     action: TaskControlAction,
+    task_id_raw: &'a str,
+}
+
+struct LoopControlCallbackPayload<'a> {
+    action: LoopControlAction,
     task_id_raw: &'a str,
 }
 
@@ -246,15 +272,51 @@ impl AgentTaskRuntime {
         }
     }
 
-    /// Return the latest live runtime task for a session, if present.
-    pub async fn active_task_for_session(&self, session_id: SessionId) -> Option<TaskRecord> {
+    /// Return all live runtime tasks for a session.
+    pub async fn active_tasks_for_session(&self, session_id: SessionId) -> Vec<TaskRecord> {
         self.task_registry
-            .latest_non_terminal_by_session(&session_id)
+            .non_terminal_by_session(&session_id)
+            .await
+    }
+
+    /// Return the latest live runtime task for a session, if present.
+    #[cfg(test)]
+    pub async fn active_task_for_session(&self, session_id: SessionId) -> Option<TaskRecord> {
+        self.active_tasks_for_session(session_id)
+            .await
+            .into_iter()
+            .last()
+    }
+
+    pub(crate) async fn active_task_count_for_session(&self, session_id: SessionId) -> usize {
+        self.task_registry
+            .non_terminal_count_by_session(&session_id)
             .await
     }
 
     pub(crate) async fn has_active_task_for_session(&self, session_id: SessionId) -> bool {
-        self.active_task_for_session(session_id).await.is_some()
+        self.active_task_count_for_session(session_id).await > 0
+    }
+
+    async fn select_single_active_task_for_session(
+        &self,
+        session_id: SessionId,
+    ) -> SessionTaskSelection {
+        let mut active_tasks = self
+            .task_registry
+            .non_terminal_by_session(&session_id)
+            .await;
+        if active_tasks.is_empty() {
+            return SessionTaskSelection::None;
+        }
+        if active_tasks.len() > 1 {
+            return SessionTaskSelection::Multiple;
+        }
+
+        match active_tasks.pop() {
+            Some(record) => SessionTaskSelection::Single(record),
+            None => SessionTaskSelection::None,
+        }
     }
 
     pub(crate) async fn submit_task<B>(
@@ -363,8 +425,14 @@ impl AgentTaskRuntime {
         settings: &Arc<BotSettings>,
     ) -> AgentModeActivationOutcome {
         self.with_session_gate(session_id, || async move {
-            if self.has_active_task_for_session(session_id).await {
-                return AgentModeActivationOutcome::LiveTaskStillRunning;
+            match self.select_single_active_task_for_session(session_id).await {
+                SessionTaskSelection::Single(record) => {
+                    return AgentModeActivationOutcome::LiveSingleTask(record);
+                }
+                SessionTaskSelection::Multiple => {
+                    return AgentModeActivationOutcome::LiveMultipleTasks;
+                }
+                SessionTaskSelection::None => {}
             }
 
             let mut session = AgentSession::new(session_id);
@@ -490,7 +558,7 @@ impl AgentTaskRuntime {
     pub(crate) async fn cancel_task_for_session(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<TaskRecord>, TaskExecutorError> {
+    ) -> Result<SessionTaskControlOutcome, TaskExecutorError> {
         self.with_session_gate(session_id, || async move {
             self.cancel_task_for_session_inner(session_id).await
         })
@@ -500,7 +568,7 @@ impl AgentTaskRuntime {
     pub(crate) async fn stop_task_for_session(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<TaskRecord>, TaskExecutorError> {
+    ) -> Result<SessionTaskControlOutcome, TaskExecutorError> {
         self.with_session_gate(session_id, || async move {
             self.stop_task_for_session_inner(session_id).await
         })
@@ -548,37 +616,31 @@ impl AgentTaskRuntime {
     async fn cancel_task_for_session_inner(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<TaskRecord>, TaskExecutorError> {
-        let Some(record) = self
-            .task_registry
-            .latest_non_terminal_by_session(&session_id)
-            .await
-        else {
-            return Ok(None);
-        };
-
-        self.task_executor
-            .cancel_task(&record.metadata.id)
-            .await
-            .map(Some)
+    ) -> Result<SessionTaskControlOutcome, TaskExecutorError> {
+        match self.select_single_active_task_for_session(session_id).await {
+            SessionTaskSelection::Single(record) => self
+                .task_executor
+                .cancel_task(&record.metadata.id)
+                .await
+                .map(SessionTaskControlOutcome::Single),
+            SessionTaskSelection::None => Ok(SessionTaskControlOutcome::None),
+            SessionTaskSelection::Multiple => Ok(SessionTaskControlOutcome::MultipleActive),
+        }
     }
 
     async fn stop_task_for_session_inner(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<TaskRecord>, TaskExecutorError> {
-        let Some(record) = self
-            .task_registry
-            .latest_non_terminal_by_session(&session_id)
-            .await
-        else {
-            return Ok(None);
-        };
-
-        self.task_executor
-            .stop_and_report(&record.metadata.id)
-            .await
-            .map(Some)
+    ) -> Result<SessionTaskControlOutcome, TaskExecutorError> {
+        match self.select_single_active_task_for_session(session_id).await {
+            SessionTaskSelection::Single(record) => self
+                .task_executor
+                .stop_and_report(&record.metadata.id)
+                .await
+                .map(SessionTaskControlOutcome::Single),
+            SessionTaskSelection::None => Ok(SessionTaskControlOutcome::None),
+            SessionTaskSelection::Multiple => Ok(SessionTaskControlOutcome::MultipleActive),
+        }
     }
 
     async fn cancel_and_reset_session(
@@ -586,7 +648,15 @@ impl AgentTaskRuntime {
         session_id: SessionId,
     ) -> Result<SessionResetOutcome, TaskExecutorError> {
         self.with_session_gate(session_id, || async {
-            let _ = self.cancel_task_for_session_inner(session_id).await?;
+            match self.select_single_active_task_for_session(session_id).await {
+                SessionTaskSelection::Single(record) => {
+                    let _ = self.task_executor.cancel_task(&record.metadata.id).await?;
+                }
+                SessionTaskSelection::None => {}
+                SessionTaskSelection::Multiple => {
+                    return Ok(SessionResetOutcome::MultipleActiveTasks);
+                }
+            }
             let deadline = Instant::now() + Duration::from_secs(1);
 
             loop {
@@ -835,43 +905,45 @@ pub(crate) async fn activate_agent_mode(params: ActivateAgentModeParams) -> Resu
                 .reply_markup(get_agent_keyboard())
                 .await?;
         }
-        AgentModeActivationOutcome::LiveTaskStillRunning => {
-            if let Some(record) = context
-                .task_runtime
-                .active_task_for_session(session_id)
-                .await
-            {
-                let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
-                    bot: bot.clone(),
-                    chat_id: msg.chat.id,
-                    task_id: record.metadata.id,
-                    context: Arc::clone(&context),
-                })
-                .await;
+        AgentModeActivationOutcome::LiveSingleTask(record) => {
+            let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
+                bot: bot.clone(),
+                chat_id: msg.chat.id,
+                task_id: record.metadata.id,
+                context: Arc::clone(&context),
+            })
+            .await;
 
-                let delivered_poll = deliver_waiting_choice_poll_if_needed(
-                    &bot,
+            let delivered_poll = deliver_waiting_choice_poll_if_needed(
+                &bot,
+                msg.chat.id,
+                user_id,
+                context.as_ref(),
+                &record,
+            )
+            .await?;
+
+            if delivered_poll {
+                bot.send_message(
                     msg.chat.id,
-                    user_id,
-                    context.as_ref(),
-                    &record,
+                    "⏳ Task is waiting for your response. Answer the active poll to continue.",
                 )
+                .reply_markup(get_agent_keyboard())
                 .await?;
-
-                if delivered_poll {
-                    bot.send_message(
-                        msg.chat.id,
-                        "⏳ Task is waiting for your response. Answer the active poll to continue.",
-                    )
-                    .reply_markup(get_agent_keyboard())
-                    .await?;
-                    return Ok(());
-                }
+                return Ok(());
             }
 
             bot.send_message(msg.chat.id, DefaultAgentView::task_already_running())
                 .reply_markup(get_agent_keyboard())
                 .await?;
+        }
+        AgentModeActivationOutcome::LiveMultipleTasks => {
+            bot.send_message(
+                msg.chat.id,
+                DefaultAgentView::multiple_active_tasks_require_explicit_control(),
+            )
+            .reply_markup(get_agent_keyboard())
+            .await?;
         }
     }
 
@@ -943,20 +1015,33 @@ pub async fn handle_agent_message(
     )
     .await;
 
-    if let Some(record) = context
+    let active_tasks = context
         .task_runtime
-        .active_task_for_session(session_id)
-        .await
-    {
-        let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
-            bot: bot.clone(),
-            chat_id,
-            task_id: record.metadata.id,
-            context: Arc::clone(&context),
-        })
+        .active_tasks_for_session(session_id)
         .await;
-        handle_active_task_message(&bot, &msg, context.as_ref(), user_id, chat_id, &record).await?;
-        return Ok(());
+    match select_implicit_message_task(active_tasks) {
+        SessionTaskSelection::Multiple => {
+            bot.send_message(
+                chat_id,
+                DefaultAgentView::multiple_active_tasks_require_explicit_control(),
+            )
+            .reply_markup(get_agent_keyboard())
+            .await?;
+            return Ok(());
+        }
+        SessionTaskSelection::Single(record) => {
+            let _task_watcher = ensure_task_event_sync(TaskEventSyncParams {
+                bot: bot.clone(),
+                chat_id,
+                task_id: record.metadata.id,
+                context: Arc::clone(&context),
+            })
+            .await;
+            handle_active_task_message(&bot, &msg, context.as_ref(), user_id, chat_id, &record)
+                .await?;
+            return Ok(());
+        }
+        SessionTaskSelection::None => {}
     }
 
     let preprocessor = Preprocessor::new(Arc::clone(&context.llm), user_id);
@@ -988,6 +1073,20 @@ pub async fn handle_agent_message(
         task_text,
     })
     .await
+}
+
+fn select_implicit_message_task(mut active_tasks: Vec<TaskRecord>) -> SessionTaskSelection {
+    if active_tasks.is_empty() {
+        return SessionTaskSelection::None;
+    }
+    if active_tasks.len() > 1 {
+        return SessionTaskSelection::Multiple;
+    }
+
+    match active_tasks.pop() {
+        Some(record) => SessionTaskSelection::Single(record),
+        None => SessionTaskSelection::None,
+    }
 }
 
 async fn handle_active_task_message(
@@ -1469,7 +1568,7 @@ async fn run_agent_task_with_text(request: RunAgentTaskRequest) -> Result<TaskEx
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
     let transport = TelegramAgentTransport::new(bot.clone(), chat_id, progress_msg.id);
     let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
-    let progress_handle = spawn_progress_runtime(transport, rx, cfg);
+    let progress_handle = spawn_progress_runtime(task_id, transport, rx, cfg);
 
     let result = execute_agent_task(
         user_id,
@@ -1672,8 +1771,8 @@ fn format_task_created_message(task_id: TaskId) -> String {
 
 fn format_task_submission_error(error: &TaskExecutorError) -> String {
     match error {
-        TaskExecutorError::SessionTaskAlreadyRunning(_) => {
-            DefaultAgentView::task_already_running().to_string()
+        TaskExecutorError::SessionTaskLimitReached { .. } => {
+            DefaultAgentView::session_task_limit_reached().to_string()
         }
         _ => DefaultAgentView::error_message(&error.to_string()),
     }
@@ -1961,10 +2060,7 @@ pub async fn handle_loop_callback(
 
     let ack = match handle_task_control_callback(&bot, data, user_id, chat_id, &context).await? {
         Some(ack) => ack,
-        None => {
-            handle_loop_control_callback(&bot, data, user_id, chat_id, &context).await?;
-            CallbackAck::success()
-        }
+        None => handle_loop_control_callback(&bot, data, user_id, chat_id, &context).await?,
     };
 
     let mut answer = bot.answer_callback_query(q.id);
@@ -2059,9 +2155,46 @@ async fn handle_loop_control_callback(
     user_id: i64,
     chat_id: ChatId,
     context: &TelegramHandlerContext,
-) -> Result<()> {
-    match data {
-        LOOP_CALLBACK_RETRY => {
+) -> Result<CallbackAck> {
+    let Some(payload) = parse_loop_control_callback(data) else {
+        return Ok(CallbackAck::success());
+    };
+
+    let caller_session_id = SessionId::from(user_id);
+    let Some(task_id) = resolve_task_id_from_callback_raw(context, payload.task_id_raw).await
+    else {
+        return Ok(CallbackAck::alert(
+            "This loop control is stale and no longer active.",
+        ));
+    };
+
+    let Some(record) = context.task_runtime.task_registry.get(&task_id).await else {
+        return Ok(CallbackAck::alert(
+            "This loop control is stale and no longer active.",
+        ));
+    };
+
+    if record.session_id != caller_session_id {
+        return Ok(CallbackAck::alert(
+            "Only the task owner can use these controls.",
+        ));
+    }
+
+    let latest_task = context
+        .task_runtime
+        .task_registry
+        .list_by_session(&caller_session_id)
+        .await
+        .into_iter()
+        .last();
+    if !matches!(latest_task, Some(ref latest) if latest.metadata.id == task_id) {
+        return Ok(CallbackAck::alert(
+            "This loop control is stale and no longer active.",
+        ));
+    }
+
+    match payload.action {
+        LoopControlAction::Retry => {
             let backend = Arc::new(TelegramTaskExecutionBackend {
                 bot: bot.clone(),
                 chat_id,
@@ -2091,7 +2224,7 @@ async fn handle_loop_control_callback(
                 }
             }
         }
-        LOOP_CALLBACK_RESET => {
+        LoopControlAction::Reset => {
             match context
                 .task_runtime
                 .cancel_and_reset_session(SessionId::from(user_id))
@@ -2110,21 +2243,34 @@ async fn handle_loop_control_callback(
                     bot.send_message(chat_id, DefaultAgentView::reset_blocked_by_task())
                         .await?;
                 }
+                SessionResetOutcome::MultipleActiveTasks => {
+                    bot.send_message(
+                        chat_id,
+                        DefaultAgentView::multiple_active_tasks_require_explicit_control(),
+                    )
+                    .reply_markup(get_agent_keyboard())
+                    .await?;
+                }
             }
         }
-        LOOP_CALLBACK_CANCEL => {
-            cancel_agent_task_by_id(
+        LoopControlAction::Cancel => {
+            let applied = cancel_agent_task_by_task_id(
                 bot.clone(),
                 user_id,
                 chat_id,
+                task_id,
                 Arc::clone(&context.task_runtime),
             )
             .await?;
+            if !applied {
+                return Ok(CallbackAck::alert(
+                    "This loop control is stale and no longer active.",
+                ));
+            }
         }
-        _ => {}
     }
 
-    Ok(())
+    Ok(CallbackAck::success())
 }
 
 fn parse_task_control_callback(data: &str) -> Option<TaskControlCallbackPayload<'_>> {
@@ -2145,6 +2291,30 @@ fn parse_task_control_callback(data: &str) -> Option<TaskControlCallbackPayload<
     }
 
     Some(TaskControlCallbackPayload {
+        action,
+        task_id_raw,
+    })
+}
+
+fn parse_loop_control_callback(data: &str) -> Option<LoopControlCallbackPayload<'_>> {
+    let mut parts = data.split(':');
+    let prefix = parts.next()?;
+    if prefix != LOOP_CONTROL_CALLBACK_PREFIX {
+        return None;
+    }
+
+    let action = match parts.next()? {
+        LOOP_CALLBACK_RETRY => LoopControlAction::Retry,
+        LOOP_CALLBACK_RESET => LoopControlAction::Reset,
+        LOOP_CALLBACK_CANCEL => LoopControlAction::Cancel,
+        _ => return None,
+    };
+    let task_id_raw = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some(LoopControlCallbackPayload {
         action,
         task_id_raw,
     })
@@ -2294,27 +2464,25 @@ pub async fn cancel_agent_task(
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let session_id = SessionId::from(user_id);
 
-    let cancelled = task_runtime
-        .cancel_task_for_session(session_id)
-        .await?
-        .is_some();
+    let cancel_outcome = task_runtime.cancel_task_for_session(session_id).await?;
+    let response = match cancel_outcome {
+        SessionTaskControlOutcome::Single(record) => {
+            let _task_id = record.metadata.id;
+            let cleared_todos = matches!(
+                task_runtime.clear_todos(session_id).await,
+                ClearTodosOutcome::Cleared
+            );
+            DefaultAgentView::task_cancelled(cleared_todos)
+        }
+        SessionTaskControlOutcome::MultipleActive => {
+            DefaultAgentView::multiple_active_tasks_require_explicit_control()
+        }
+        SessionTaskControlOutcome::None => DefaultAgentView::no_active_task(),
+    };
 
-    // Best-effort: clear todos without waiting for executor locks.
-    let cleared_todos = matches!(
-        task_runtime.clear_todos(session_id).await,
-        ClearTodosOutcome::Cleared
-    );
-
-    let text = DefaultAgentView::task_cancelled(cleared_todos);
-    if !cancelled && !cleared_todos {
-        bot.send_message(msg.chat.id, DefaultAgentView::no_active_task())
-            .reply_markup(get_agent_keyboard())
-            .await?;
-    } else {
-        bot.send_message(msg.chat.id, text)
-            .reply_markup(get_agent_keyboard())
-            .await?;
-    }
+    bot.send_message(msg.chat.id, response)
+        .reply_markup(get_agent_keyboard())
+        .await?;
     Ok(())
 }
 
@@ -2340,25 +2508,25 @@ async fn cancel_agent_task_by_id(
     task_runtime: Arc<AgentTaskRuntime>,
 ) -> Result<()> {
     let session_id = SessionId::from(user_id);
-    let cancelled = task_runtime
-        .cancel_task_for_session(session_id)
-        .await?
-        .is_some();
-    let cleared_todos = matches!(
-        task_runtime.clear_todos(session_id).await,
-        ClearTodosOutcome::Cleared
-    );
+    let cancel_outcome = task_runtime.cancel_task_for_session(session_id).await?;
+    let response = match cancel_outcome {
+        SessionTaskControlOutcome::Single(record) => {
+            let _task_id = record.metadata.id;
+            let cleared_todos = matches!(
+                task_runtime.clear_todos(session_id).await,
+                ClearTodosOutcome::Cleared
+            );
+            DefaultAgentView::task_cancelled(cleared_todos)
+        }
+        SessionTaskControlOutcome::MultipleActive => {
+            DefaultAgentView::multiple_active_tasks_require_explicit_control()
+        }
+        SessionTaskControlOutcome::None => DefaultAgentView::no_active_task(),
+    };
 
-    let text = DefaultAgentView::task_cancelled(cleared_todos);
-    if !cancelled && !cleared_todos {
-        bot.send_message(chat_id, DefaultAgentView::no_active_task())
-            .reply_markup(get_agent_keyboard())
-            .await?;
-    } else {
-        bot.send_message(chat_id, text)
-            .reply_markup(get_agent_keyboard())
-            .await?;
-    }
+    bot.send_message(chat_id, response)
+        .reply_markup(get_agent_keyboard())
+        .await?;
 
     Ok(())
 }
@@ -2397,20 +2565,21 @@ async fn stop_agent_task_with_report_by_id(
     task_runtime: Arc<AgentTaskRuntime>,
 ) -> Result<()> {
     let session_id = SessionId::from(user_id);
-    let stopped = task_runtime
-        .stop_task_for_session(session_id)
-        .await?
-        .is_some();
+    let stop_outcome = task_runtime.stop_task_for_session(session_id).await?;
+    let response = match stop_outcome {
+        SessionTaskControlOutcome::Single(record) => {
+            let _task_id = record.metadata.id;
+            DefaultAgentView::task_stop_requested()
+        }
+        SessionTaskControlOutcome::MultipleActive => {
+            DefaultAgentView::multiple_active_tasks_require_explicit_control()
+        }
+        SessionTaskControlOutcome::None => DefaultAgentView::no_active_task_to_stop(),
+    };
 
-    if stopped {
-        bot.send_message(chat_id, DefaultAgentView::task_stop_requested())
-            .reply_markup(get_agent_keyboard())
-            .await?;
-    } else {
-        bot.send_message(chat_id, DefaultAgentView::no_active_task_to_stop())
-            .reply_markup(get_agent_keyboard())
-            .await?;
-    }
+    bot.send_message(chat_id, response)
+        .reply_markup(get_agent_keyboard())
+        .await?;
 
     Ok(())
 }
@@ -2653,15 +2822,18 @@ mod tests {
     use super::{
         destructive_action_block_message, exit_block_message, format_async_task_execution_error,
         format_task_created_message, format_task_state_message, format_task_submission_error,
-        handle_task_control_callback, issue_task_watch_url, observer_base_url,
-        parse_agent_control_command, parse_task_control_callback, revoke_task_watch_links,
-        AgentModeActivationOutcome, AgentTaskRuntime, ClearMemoryOutcome, ExitSessionOutcome,
+        handle_loop_control_callback, handle_task_control_callback, issue_task_watch_url,
+        observer_base_url, parse_agent_control_command, parse_loop_control_callback,
+        parse_task_control_callback, revoke_task_watch_links, AgentModeActivationOutcome,
+        AgentTaskRuntime, ClearMemoryOutcome, ExitSessionOutcome, LoopControlAction,
         RecreateContainerOutcome, RetryTaskOutcome, SessionResetOutcome, TaskControlAction,
         SESSION_REGISTRY,
     };
     use crate::bot::context::TelegramHandlerContext;
     use crate::bot::state::State;
-    use crate::bot::views::{AgentView, DefaultAgentView};
+    use crate::bot::views::{
+        AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL, LOOP_CONTROL_CALLBACK_PREFIX,
+    };
     use crate::config::{BotSettings, TelegramSettings};
     use anyhow::{anyhow, Result as AnyResult};
     use async_trait::async_trait;
@@ -3372,19 +3544,6 @@ mod tests {
             Some(record) if record.metadata.state == TaskState::WaitingInput
         ));
 
-        let submitted = task_runtime
-            .submit_task(
-                session_id,
-                "should be blocked by waiting task".to_string(),
-                Arc::new(CompletedBackend),
-            )
-            .await;
-        assert!(matches!(
-            submitted,
-            Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id))
-                if rejected_session_id == session_id
-        ));
-
         assert!(task_runtime.blocks_start_reset(session_id).await);
 
         let exit_outcome = task_runtime
@@ -3504,6 +3663,30 @@ mod tests {
         assert!(parse_task_control_callback("task_control:cancel:task:extra").is_none());
         assert!(parse_task_control_callback("task_control:unknown:task").is_none());
         assert!(parse_task_control_callback("unknown:stop:task").is_none());
+    }
+
+    #[test]
+    fn loop_controls_parse_loop_control_callback_parses_task_scoped_payload() {
+        let task_id = TaskMetadata::new().id;
+        let callback = format!("{LOOP_CONTROL_CALLBACK_PREFIX}:retry_no_loop:{task_id}");
+        assert!(callback.len() <= 64);
+        let parsed = parse_loop_control_callback(&callback);
+
+        assert!(matches!(
+            parsed,
+            Some(super::LoopControlCallbackPayload {
+                action: LoopControlAction::Retry,
+                task_id_raw,
+            }) if task_id_raw == task_id.to_string()
+        ));
+    }
+
+    #[test]
+    fn loop_controls_parse_loop_control_callback_rejects_malformed_payload() {
+        assert!(parse_loop_control_callback("loop_control:retry_no_loop").is_none());
+        assert!(parse_loop_control_callback("loop_control:retry_no_loop:task:extra").is_none());
+        assert!(parse_loop_control_callback("loop_control:unknown:task").is_none());
+        assert!(parse_loop_control_callback("unknown:cancel_task:task").is_none());
     }
 
     #[tokio::test]
@@ -3656,6 +3839,156 @@ mod tests {
         SESSION_REGISTRY.remove(&owner_session_id).await;
     }
 
+    #[tokio::test]
+    async fn loop_controls_stale_callback_does_not_cancel_newer_task() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let session_id = SessionId::from(7_111);
+        let user_id = session_id.as_i64();
+        insert_test_session(session_id).await;
+
+        let old_record = task_runtime
+            .submit_task(
+                session_id,
+                "old loop task".to_string(),
+                Arc::new(CompletedBackend),
+            )
+            .await;
+        assert!(old_record.is_ok());
+        let old_task_id = match old_record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected old loop task submit error: {error}"),
+        };
+        wait_for_runtime_task_completion(task_runtime.as_ref(), session_id).await;
+
+        let started = Arc::new(Notify::new());
+        let released = Arc::new(Notify::new());
+        let backend = Arc::new(LockingBackend {
+            started: Arc::clone(&started),
+            released: Arc::clone(&released),
+        });
+        let new_record = task_runtime
+            .submit_task(session_id, "new running task".to_string(), backend)
+            .await;
+        assert!(new_record.is_ok());
+        let new_task_id = match new_record {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected new running task submit error: {error}"),
+        };
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+        let callback =
+            format!("{LOOP_CONTROL_CALLBACK_PREFIX}:{LOOP_CALLBACK_CANCEL}:{old_task_id}");
+        let ack = handle_loop_control_callback(
+            &Bot::new("test"),
+            &callback,
+            user_id,
+            ChatId(user_id),
+            &context,
+        )
+        .await;
+
+        assert!(matches!(
+            ack,
+            Ok(ref ack)
+                if ack.show_alert
+                    && ack.text.as_deref() == Some("This loop control is stale and no longer active.")
+        ));
+
+        let active = task_runtime.active_task_for_session(session_id).await;
+        assert!(matches!(
+            active,
+            Some(ref record)
+                if record.metadata.id == new_task_id && record.metadata.state.is_non_terminal()
+        ));
+
+        let cancelled = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), released.notified())
+            .await
+            .is_ok());
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn loop_controls_foreign_owner_callback_returns_alert_without_side_effects() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = Arc::new(AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        ));
+        let owner_session_id = SessionId::from(7_122);
+        let owner_user_id = owner_session_id.as_i64();
+        let foreign_user_id = owner_user_id + 1;
+        insert_test_session(owner_session_id).await;
+
+        let started = Arc::new(Notify::new());
+        let released = Arc::new(Notify::new());
+        let backend = Arc::new(LockingBackend {
+            started: Arc::clone(&started),
+            released: Arc::clone(&released),
+        });
+        let submitted = task_runtime
+            .submit_task(owner_session_id, "owner task".to_string(), backend)
+            .await;
+        assert!(submitted.is_ok());
+        let task_id = match submitted {
+            Ok(record) => record.metadata.id,
+            Err(error) => panic!("unexpected owner task submit error: {error}"),
+        };
+        assert!(timeout(Duration::from_secs(1), started.notified())
+            .await
+            .is_ok());
+
+        let context = make_test_context(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_runtime),
+        );
+        let callback = format!("{LOOP_CONTROL_CALLBACK_PREFIX}:{LOOP_CALLBACK_CANCEL}:{task_id}");
+        let ack = handle_loop_control_callback(
+            &Bot::new("test"),
+            &callback,
+            foreign_user_id,
+            ChatId(owner_user_id),
+            &context,
+        )
+        .await;
+
+        assert!(matches!(
+            ack,
+            Ok(ref ack)
+                if ack.show_alert
+                    && ack.text.as_deref() == Some("Only the task owner can use these controls.")
+        ));
+
+        let active = task_runtime.active_task_for_session(owner_session_id).await;
+        assert!(matches!(
+            active,
+            Some(ref record)
+                if record.metadata.id == task_id && record.metadata.state.is_non_terminal()
+        ));
+
+        let cancelled = task_runtime.cancel_task_for_session(owner_session_id).await;
+        assert!(cancelled.is_ok());
+        assert!(timeout(Duration::from_secs(1), released.notified())
+            .await
+            .is_ok());
+        SESSION_REGISTRY.remove(&owner_session_id).await;
+    }
+
     #[test]
     fn terminal_notifications_format_task_state_message_covers_terminal_states() {
         let task_id = TaskMetadata::new().id;
@@ -3680,12 +4013,34 @@ mod tests {
         assert!(text.contains("background mode"));
     }
 
+    #[tokio::test]
+    async fn implicit_message_task_selection_fails_closed_with_multiple_active_tasks() {
+        let task_registry = TaskRegistry::new();
+        let session_id = SessionId::from(7_101);
+
+        let first = task_registry.create(session_id).await;
+        let second = task_registry.create(session_id).await;
+        let first_running = task_registry
+            .update_state(&first.metadata.id, TaskState::Running)
+            .await;
+        assert!(first_running.is_ok());
+        let second_running = task_registry
+            .update_state(&second.metadata.id, TaskState::Running)
+            .await;
+        assert!(second_running.is_ok());
+
+        let active_tasks = task_registry.non_terminal_by_session(&session_id).await;
+        let selected = super::select_implicit_message_task(active_tasks);
+        assert!(matches!(selected, super::SessionTaskSelection::Multiple));
+    }
+
     #[test]
     fn task_background_flow_submission_error_distinguishes_sync_rejection() {
-        let busy = format_task_submission_error(&TaskExecutorError::SessionTaskAlreadyRunning(
-            SessionId::from(123),
-        ));
-        assert_eq!(busy, DefaultAgentView::task_already_running());
+        let busy = format_task_submission_error(&TaskExecutorError::SessionTaskLimitReached {
+            session_id: SessionId::from(123),
+            limit: 2,
+        });
+        assert_eq!(busy, DefaultAgentView::session_task_limit_reached());
 
         let generic = format_task_submission_error(&TaskExecutorError::MissingTaskSnapshot(
             TaskMetadata::new().id,
@@ -3780,7 +4135,8 @@ mod tests {
         let cancelled = task_runtime.cancel_task_for_session(session_id).await;
         assert!(matches!(
             cancelled,
-            Ok(Some(ref record)) if record.metadata.state.is_terminal()
+            Ok(super::SessionTaskControlOutcome::Single(ref record))
+                if record.metadata.state.is_terminal()
         ));
 
         let released_result = timeout(Duration::from_secs(1), released.notified()).await;
@@ -3823,7 +4179,8 @@ mod tests {
         let stop_result = task_runtime.stop_task_for_session(session_id).await;
         assert!(matches!(
             stop_result,
-            Ok(Some(ref record)) if record.metadata.state == TaskState::Running
+            Ok(super::SessionTaskControlOutcome::Single(ref record))
+                if record.metadata.state == TaskState::Running
         ));
 
         let cancelled = task_runtime.cancel_task_for_session(session_id).await;
@@ -4127,7 +4484,7 @@ mod tests {
             .await;
         assert!(matches!(
             activation_outcome,
-            AgentModeActivationOutcome::LiveTaskStillRunning
+            AgentModeActivationOutcome::LiveSingleTask(_)
         ));
 
         let current_executor = SESSION_REGISTRY
@@ -4151,7 +4508,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_runtime_rejects_concurrent_submit_for_same_session() {
+    async fn task_runtime_agent_mode_reentry_reports_multiple_active_tasks() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        );
+        let session_id = SessionId::from(58);
+        let user_id = session_id.as_i64();
+        insert_test_session(session_id).await;
+        let original_executor = SESSION_REGISTRY
+            .get(&session_id)
+            .await
+            .unwrap_or_else(|| unreachable!());
+        let (llm, settings) = retry_runtime_client();
+
+        let first = task_registry.create(session_id).await;
+        let second = task_registry.create(session_id).await;
+        assert!(task_registry
+            .update_state(&first.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+        assert!(task_registry
+            .update_state(&second.metadata.id, TaskState::Running)
+            .await
+            .is_ok());
+
+        let activation_outcome = task_runtime
+            .activate_agent_mode_session(
+                session_id,
+                user_id,
+                &llm,
+                &(Arc::clone(&storage) as Arc<dyn StorageProvider>),
+                &settings,
+            )
+            .await;
+        assert!(matches!(
+            activation_outcome,
+            AgentModeActivationOutcome::LiveMultipleTasks
+        ));
+
+        let current_executor = SESSION_REGISTRY
+            .get(&session_id)
+            .await
+            .unwrap_or_else(|| unreachable!());
+        assert!(Arc::ptr_eq(&original_executor, &current_executor));
+
+        assert!(task_registry
+            .update_state(&first.metadata.id, TaskState::Cancelled)
+            .await
+            .is_ok());
+        assert!(task_registry
+            .update_state(&second.metadata.id, TaskState::Cancelled)
+            .await
+            .is_ok());
+        SESSION_REGISTRY.remove(&session_id).await;
+    }
+
+    #[tokio::test]
+    async fn task_runtime_generic_session_controls_report_none_without_active_tasks() {
+        let storage = Arc::new(TestStorage::default());
+        let task_registry = Arc::new(TaskRegistry::new());
+        let task_runtime = AgentTaskRuntime::new(
+            Arc::clone(&storage) as Arc<dyn StorageProvider>,
+            Arc::clone(&task_registry),
+            1,
+        );
+        let session_id = SessionId::from(46);
+
+        let cancel = task_runtime.cancel_task_for_session(session_id).await;
+        assert!(matches!(cancel, Ok(super::SessionTaskControlOutcome::None)));
+
+        let stop = task_runtime.stop_task_for_session(session_id).await;
+        assert!(matches!(stop, Ok(super::SessionTaskControlOutcome::None)));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_generic_session_controls_fail_closed_when_multiple_active_tasks_exist() {
         let storage = Arc::new(TestStorage::default());
         let task_registry = Arc::new(TaskRegistry::new());
         let task_runtime = Arc::new(AgentTaskRuntime::new(
@@ -4203,31 +4638,31 @@ mod tests {
         let first_result = unwrap_join_result(first_result);
         let second_result = unwrap_join_result(second_result);
 
-        let successful_record = match (first_result, second_result) {
-            (
-                Ok(record),
-                Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id)),
-            ) => {
-                assert_eq!(rejected_session_id, session_id);
-                record
-            }
-            (
-                Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id)),
-                Ok(record),
-            ) => {
-                assert_eq!(rejected_session_id, session_id);
-                record
-            }
-            (left, right) => panic!("unexpected concurrent submit results: {left:?} {right:?}"),
+        let first_record = match first_result {
+            Ok(record) => record,
+            Err(error) => panic!("unexpected first submit error: {error}"),
+        };
+        let second_record = match second_result {
+            Ok(record) => record,
+            Err(error) => panic!("unexpected second submit error: {error}"),
         };
 
         wait_for_active_runtime_task(&task_runtime, session_id).await;
 
         let session_records = task_registry.list_by_session(&session_id).await;
-        assert_eq!(session_records.len(), 1);
+        assert_eq!(session_records.len(), 2);
+        assert!(session_records
+            .iter()
+            .any(|record| record.metadata.id == first_record.metadata.id));
+        assert!(session_records
+            .iter()
+            .any(|record| record.metadata.id == second_record.metadata.id));
         assert_eq!(
-            session_records[0].metadata.id,
-            successful_record.metadata.id
+            task_runtime
+                .active_tasks_for_session(session_id)
+                .await
+                .len(),
+            2
         );
         assert!(task_runtime
             .active_task_for_session(session_id)
@@ -4237,15 +4672,34 @@ mod tests {
         let cancelled = task_runtime.cancel_task_for_session(session_id).await;
         assert!(matches!(
             cancelled,
-            Ok(Some(ref record)) if record.metadata.id == successful_record.metadata.id
+            Ok(super::SessionTaskControlOutcome::MultipleActive)
         ));
 
-        let released_result = timeout(Duration::from_secs(1), released.notified()).await;
-        assert!(released_result.is_ok());
-        assert!(task_runtime
-            .active_task_for_session(session_id)
-            .await
-            .is_none());
+        let stopped = task_runtime.stop_task_for_session(session_id).await;
+        assert!(matches!(
+            stopped,
+            Ok(super::SessionTaskControlOutcome::MultipleActive)
+        ));
+
+        let reset_result = task_runtime.cancel_and_reset_session(session_id).await;
+        assert!(matches!(
+            reset_result,
+            Ok(SessionResetOutcome::MultipleActiveTasks)
+        ));
+
+        let active_after_controls = task_runtime.active_tasks_for_session(session_id).await;
+        assert_eq!(active_after_controls.len(), 2);
+
+        let cancel_first = task_runtime
+            .cancel_task_for_owner_and_id(session_id, first_record.metadata.id)
+            .await;
+        assert!(matches!(cancel_first, Ok(Some(_))));
+        let cancel_second = task_runtime
+            .cancel_task_for_owner_and_id(session_id, second_record.metadata.id)
+            .await;
+        assert!(matches!(cancel_second, Ok(Some(_))));
+
+        wait_for_runtime_task_completion(&task_runtime, session_id).await;
 
         SESSION_REGISTRY.remove(&session_id).await;
     }
@@ -4317,7 +4771,7 @@ mod tests {
         let cancel_result = unwrap_join_result(cancel_task.await);
         assert!(matches!(
             cancel_result,
-            Ok(Some(ref record))
+            Ok(super::SessionTaskControlOutcome::Single(ref record))
                 if record.metadata.id == submitted_record.metadata.id
                     && record.metadata.state == TaskState::Cancelled
         ));

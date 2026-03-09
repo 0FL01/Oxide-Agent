@@ -1,0 +1,59 @@
+Stage 7 handover note
+
+Branch
+arch-agent-mode
+
+Context
+Stage 7 was started to deliver multi-task architect orchestration (multiple top-level tasks per session with safe task-scoped controls). Work was intentionally frozen in WIP state for long-term branch parking.
+
+Scope started
+Stage 7 Multi-task architect orchestration is partially implemented and not stage-approved yet.
+
+What is implemented in code
+- Runtime submit admission no longer enforces a strict single-active-task-per-session invariant.
+- Runtime now enforces a per-session non-terminal task limit and returns explicit limit errors.
+- Task registry has session-scoped non-terminal listing/count helpers for multi-task checks.
+- Telegram transport received compile-safe multi-task adaptations and fail-closed guards for ambiguous session-level actions.
+- Loop-detected progress transport contract now carries TaskId through runtime to Telegram transport boundary.
+- Implementation plan document updated with Stage 7 section and current paused status.
+
+Main touched files
+- crates/oxide-agent-runtime/src/task_executor.rs
+- crates/oxide-agent-runtime/src/task_registry.rs
+- crates/oxide-agent-runtime/src/agent/runtime/progress.rs
+- crates/oxide-agent-transport-telegram/src/bot/agent_handlers.rs
+- crates/oxide-agent-transport-telegram/src/bot/agent_transport.rs
+- crates/oxide-agent-transport-telegram/src/bot/views/agent.rs
+- docs/3-level-agent-implementation-plan.md
+
+What is not implemented yet
+- Task-scoped memory isolation (Stage 7.2) is not started.
+- Full explicit task focus/addressing UX for Telegram (Stage 7.3) is not finished.
+- Full concurrent HITL UX for multiple waiting tasks (Stage 7.4) is not finished.
+- Multi-task list/selection observability UX (Stage 7.5) is not started.
+- Rollout controls for multi-task mode (`MULTI_TASK_PER_SESSION_ENABLED`, configurable per-session limits) are not implemented (Stage 7.6).
+
+Review and gate history
+- Stage 7.1 received multiple review iterations and was decomposed into micro-slices due to transport safety concerns.
+- Micro-slice 7.1a (TaskId propagation in loop-detected progress contract) was approved.
+- Follow-up hardening around loop callback task-scoping and stale callback safety is partially implemented in working tree and must be re-reviewed after branch thaw.
+
+Known safety posture at freeze time
+- Runtime admission path is safer for multi-task than baseline single-active guard behavior.
+- Transport includes fail-closed behavior for several ambiguous multi-active paths.
+- Multi-task UX remains incomplete; system behavior is intentionally conservative and may reject ambiguous user actions.
+
+Verification snapshot before freeze
+- Targeted runtime and telegram test suites were executed during development attempts.
+- Final frozen state must be re-validated with fresh full CI before any production rollout decision.
+
+Resume checklist (when branch is thawed)
+1. Re-run stage recon on runtime + telegram transport paths.
+2. Re-run full tests and clippy for all touched crates.
+3. Re-open Stage 7 Slice 7.1 review gate on exact frozen diff.
+4. Finish Stage 7.1b/7.1c loop callback hardening and stale-callback regressions if still pending.
+5. Continue Stage 7.2 (task memory isolation) before any UX expansion.
+6. Add rollout flags and operator playbook updates before enabling multi-task mode.
+
+Operational note
+This stage is intentionally parked. Treat the branch as frozen WIP baseline, not production-ready multi-task completion.

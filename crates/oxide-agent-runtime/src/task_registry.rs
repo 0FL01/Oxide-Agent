@@ -251,6 +251,36 @@ impl TaskRegistry {
         records
     }
 
+    /// List non-terminal tasks owned by a session.
+    pub async fn non_terminal_by_session(&self, session_id: &SessionId) -> Vec<TaskRecord> {
+        let state = self.state.read().await;
+        let mut records = state
+            .session_tasks
+            .get(session_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|task_id| state.tasks.get(task_id))
+            .filter(|entry| !entry.metadata.state.is_terminal())
+            .cloned()
+            .map(TaskRecord::from)
+            .collect::<Vec<_>>();
+        sort_task_records(&mut records);
+        records
+    }
+
+    /// Return the number of non-terminal tasks owned by a session.
+    pub async fn non_terminal_count_by_session(&self, session_id: &SessionId) -> usize {
+        let state = self.state.read().await;
+        state
+            .session_tasks
+            .get(session_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|task_id| state.tasks.get(task_id))
+            .filter(|entry| !entry.metadata.state.is_terminal())
+            .count()
+    }
+
     /// Return the latest non-terminal task owned by a session.
     pub async fn latest_non_terminal_by_session(
         &self,
@@ -1047,12 +1077,25 @@ mod tests {
         let latest = registry.latest_non_terminal_by_session(&session_id).await;
         assert!(matches!(latest, Some(record) if record.metadata.id == second.metadata.id));
 
+        let non_terminal = registry.non_terminal_by_session(&session_id).await;
+        assert_eq!(non_terminal.len(), 1);
+        assert_eq!(non_terminal[0].metadata.id, second.metadata.id);
+        assert_eq!(
+            registry.non_terminal_count_by_session(&session_id).await,
+            non_terminal.len()
+        );
+
         let second_cancel = registry.cancel(&second.metadata.id).await;
         assert!(matches!(second_cancel, Ok(TaskCancellation::Cancelled(_))));
         assert!(registry
             .latest_non_terminal_by_session(&session_id)
             .await
             .is_none());
+        assert!(registry
+            .non_terminal_by_session(&session_id)
+            .await
+            .is_empty());
+        assert_eq!(registry.non_terminal_count_by_session(&session_id).await, 0);
     }
 
     #[tokio::test]

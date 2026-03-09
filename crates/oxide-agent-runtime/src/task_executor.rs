@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 const CREATED_EVENT_SEQUENCE: u64 = 1;
+const DEFAULT_MAX_NON_TERMINAL_TASKS_PER_SESSION: usize = 2;
 
 /// Options required to construct a detached task executor.
 pub struct TaskExecutorOptions {
@@ -81,8 +82,13 @@ pub enum TaskExecutionOutcome {
 /// Errors returned by detached task executor operations.
 #[derive(Debug)]
 pub enum TaskExecutorError {
-    /// Another live task already owns the same session.
-    SessionTaskAlreadyRunning(SessionId),
+    /// Session reached the configured non-terminal task limit.
+    SessionTaskLimitReached {
+        /// Session for which the limit was evaluated.
+        session_id: SessionId,
+        /// Maximum allowed non-terminal tasks for the session.
+        limit: usize,
+    },
     /// Task registry mutation failed.
     TaskRegistry(TaskRegistryError),
     /// Worker admission or tracking failed.
@@ -109,8 +115,11 @@ pub enum TaskExecutorError {
 impl fmt::Display for TaskExecutorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SessionTaskAlreadyRunning(session_id) => {
-                write!(f, "task already running for session: {session_id}")
+            Self::SessionTaskLimitReached { session_id, limit } => {
+                write!(
+                    f,
+                    "session reached non-terminal task limit: {session_id} (limit: {limit})"
+                )
             }
             Self::TaskRegistry(error) => write!(f, "{error}"),
             Self::WorkerManager(error) => write!(f, "{error}"),
@@ -155,6 +164,7 @@ impl From<StorageError> for TaskExecutorError {
 /// Runtime-owned detached executor for long-running task execution.
 pub struct TaskExecutor {
     session_gate: SessionActionGate,
+    max_non_terminal_tasks_per_session: usize,
     task_registry: Arc<TaskRegistry>,
     worker_manager: Arc<WorkerManager>,
     storage: Arc<dyn StorageProvider>,
@@ -198,6 +208,7 @@ impl TaskExecutor {
     pub fn new(options: TaskExecutorOptions) -> Self {
         Self {
             session_gate: SessionActionGate::new(),
+            max_non_terminal_tasks_per_session: DEFAULT_MAX_NON_TERMINAL_TASKS_PER_SESSION,
             task_registry: options.task_registry,
             worker_manager: options.worker_manager,
             storage: options.storage,
@@ -242,8 +253,13 @@ impl TaskExecutor {
     {
         let session_id = submission.session_id;
 
-        if self.has_active_task_for_session(session_id).await {
-            return Err(TaskExecutorError::SessionTaskAlreadyRunning(session_id));
+        if self.active_task_count_for_session(session_id).await
+            >= self.max_non_terminal_tasks_per_session
+        {
+            return Err(TaskExecutorError::SessionTaskLimitReached {
+                session_id,
+                limit: self.max_non_terminal_tasks_per_session,
+            });
         }
 
         let record = self.task_registry.create(session_id).await;
@@ -318,11 +334,10 @@ impl TaskExecutor {
         Ok(record)
     }
 
-    async fn has_active_task_for_session(&self, session_id: SessionId) -> bool {
+    async fn active_task_count_for_session(&self, session_id: SessionId) -> usize {
         self.task_registry
-            .latest_non_terminal_by_session(&session_id)
+            .non_terminal_count_by_session(&session_id)
             .await
-            .is_some()
     }
 
     /// Cancel a runtime-owned task by task identifier.
@@ -1713,7 +1728,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detached_executor_rejects_new_submit_when_previous_task_waits_for_input() {
+    async fn detached_executor_enforces_session_non_terminal_task_limit() {
         let registry = Arc::new(TaskRegistry::new());
         let worker_manager = Arc::new(WorkerManager::new(2));
         let storage = Arc::new(TestStorage::default());
@@ -1744,7 +1759,19 @@ mod tests {
         waiting_backend.release();
         wait_for_state(&registry, first_task_id, TaskState::WaitingInput).await;
 
+        let second_backend = Arc::new(ControlledBackend::new(BackendOutcome::Complete));
         let second = executor
+            .submit(
+                DetachedTaskSubmission {
+                    session_id,
+                    task: "still allowed".to_string(),
+                },
+                Arc::clone(&second_backend),
+            )
+            .await;
+        assert!(second.is_ok(), "second submit failed: {second:?}");
+
+        let third = executor
             .submit(
                 DetachedTaskSubmission {
                     session_id,
@@ -1755,10 +1782,14 @@ mod tests {
             .await;
 
         assert!(matches!(
-            second,
-            Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id))
-                if rejected_session_id == session_id
+            third,
+            Err(TaskExecutorError::SessionTaskLimitReached {
+                session_id: rejected_session_id,
+                limit
+            }) if rejected_session_id == session_id && limit == super::DEFAULT_MAX_NON_TERMINAL_TASKS_PER_SESSION
         ));
+
+        second_backend.release();
     }
 
     #[tokio::test]
@@ -2900,7 +2931,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detached_executor_rejects_concurrent_submit_for_same_session() {
+    async fn detached_executor_allows_concurrent_submit_for_same_session_within_limit() {
         let registry = Arc::new(TaskRegistry::new());
         let worker_manager = Arc::new(WorkerManager::new(2));
         let storage = Arc::new(TestStorage::default());
@@ -2957,46 +2988,27 @@ mod tests {
             Err(error) => panic!("unexpected join error: {error}"),
         };
 
-        let successful_record = match (first_result, second_result) {
-            (
-                Ok(record),
-                Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id)),
-            ) => {
-                assert_eq!(rejected_session_id, session_id);
-                record
-            }
-            (
-                Err(TaskExecutorError::SessionTaskAlreadyRunning(rejected_session_id)),
-                Ok(record),
-            ) => {
-                assert_eq!(rejected_session_id, session_id);
-                record
-            }
-            (left, right) => panic!("unexpected concurrent submit results: {left:?} {right:?}"),
+        let first_record = match first_result {
+            Ok(record) => record,
+            Err(error) => panic!("unexpected first submit error: {error}"),
+        };
+        let second_record = match second_result {
+            Ok(record) => record,
+            Err(error) => panic!("unexpected second submit error: {error}"),
         };
 
-        wait_for_state(&registry, successful_record.metadata.id, TaskState::Running).await;
+        wait_for_state(&registry, first_record.metadata.id, TaskState::Running).await;
+        wait_for_state(&registry, second_record.metadata.id, TaskState::Running).await;
 
         let session_records = registry.list_by_session(&session_id).await;
-        assert_eq!(session_records.len(), 1);
-        assert_eq!(
-            session_records[0].metadata.id,
-            successful_record.metadata.id
-        );
-        assert!(
-            worker_manager
-                .contains(&successful_record.metadata.id)
-                .await
-        );
-        assert_eq!(worker_manager.active_count().await, 1);
+        assert_eq!(session_records.len(), 2);
+        assert!(worker_manager.contains(&first_record.metadata.id).await);
+        assert!(worker_manager.contains(&second_record.metadata.id).await);
+        assert_eq!(worker_manager.active_count().await, 2);
 
         backend.release();
-        wait_for_state(
-            &registry,
-            successful_record.metadata.id,
-            TaskState::Completed,
-        )
-        .await;
+        wait_for_state(&registry, first_record.metadata.id, TaskState::Completed).await;
+        wait_for_state(&registry, second_record.metadata.id, TaskState::Completed).await;
     }
 
     fn sample_pending_input() -> PendingInput {

@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
 use oxide_agent_core::agent::progress::ProgressState;
+use oxide_agent_core::agent::TaskId;
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, InputFile, MessageId, ParseMode};
@@ -68,7 +69,12 @@ impl AgentTransport for TelegramAgentTransport {
         }
     }
 
-    async fn notify_loop_detected(&self, loop_type: LoopType, iteration: usize) -> Result<()> {
+    async fn notify_loop_detected(
+        &self,
+        task_id: TaskId,
+        loop_type: LoopType,
+        iteration: usize,
+    ) -> Result<()> {
         let text = format!(
             "🔁 <b>Loop Detected in Task Execution</b>\nType: {}\nIteration: {}\n\nSelect an action:",
             loop_type_label(loop_type),
@@ -78,7 +84,7 @@ impl AgentTransport for TelegramAgentTransport {
         self.bot
             .send_message(self.chat_id, text)
             .parse_mode(ParseMode::Html)
-            .reply_markup(loop_action_keyboard())
+            .reply_markup(loop_action_keyboard(task_id))
             .await?;
 
         Ok(())

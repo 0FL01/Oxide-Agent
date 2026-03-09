@@ -16,6 +16,8 @@ pub const LOOP_CALLBACK_RETRY: &str = "retry_no_loop";
 pub const LOOP_CALLBACK_RESET: &str = "reset_task";
 /// Callback data for cancelling the current task
 pub const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
+/// Prefix for loop-detection callbacks.
+pub const LOOP_CONTROL_CALLBACK_PREFIX: &str = "loop_control";
 /// Prefix for task control callbacks.
 pub const TASK_CONTROL_CALLBACK_PREFIX: &str = "task_control";
 /// Callback action for runtime cancellation.
@@ -60,6 +62,12 @@ pub trait AgentView {
 
     /// Message when task is already running
     fn task_already_running() -> &'static str;
+
+    /// Message when multiple active tasks require explicit task controls
+    fn multiple_active_tasks_require_explicit_control() -> &'static str;
+
+    /// Message when session task admission limit is reached
+    fn session_task_limit_reached() -> &'static str;
 
     /// Message when session not found
     fn session_not_found() -> &'static str;
@@ -169,6 +177,14 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
 
     fn task_already_running() -> &'static str {
         "⏳ Task is already running. Press ❌ Cancel Task to stop it."
+    }
+
+    fn multiple_active_tasks_require_explicit_control() -> &'static str {
+        "⚠️ Multiple active tasks detected. Use task-specific controls from task updates to stop or cancel a specific task."
+    }
+
+    fn session_task_limit_reached() -> &'static str {
+        "⚠️ Active task limit reached for this session. Wait for a task to finish or use task-specific controls to stop one."
     }
 
     fn session_not_found() -> &'static str {
@@ -313,17 +329,17 @@ fn watch_button_from_url(value: &str) -> Option<InlineKeyboardButton> {
 }
 
 /// Get the loop action inline keyboard
-#[must_use]
-pub fn loop_action_keyboard() -> InlineKeyboardMarkup {
+pub fn loop_action_keyboard(task_id: TaskId) -> InlineKeyboardMarkup {
+    let retry = format!("{LOOP_CONTROL_CALLBACK_PREFIX}:{LOOP_CALLBACK_RETRY}:{task_id}");
+    let reset = format!("{LOOP_CONTROL_CALLBACK_PREFIX}:{LOOP_CALLBACK_RESET}:{task_id}");
+    let cancel = format!("{LOOP_CONTROL_CALLBACK_PREFIX}:{LOOP_CALLBACK_CANCEL}:{task_id}");
+
     InlineKeyboardMarkup::new(vec![
         vec![
-            InlineKeyboardButton::callback("Retry w/o detection", LOOP_CALLBACK_RETRY),
-            InlineKeyboardButton::callback("Reset task", LOOP_CALLBACK_RESET),
+            InlineKeyboardButton::callback("Retry w/o detection", retry),
+            InlineKeyboardButton::callback("Reset task", reset),
         ],
-        vec![InlineKeyboardButton::callback(
-            "Cancel",
-            LOOP_CALLBACK_CANCEL,
-        )],
+        vec![InlineKeyboardButton::callback("Cancel", cancel)],
     ])
 }
 
@@ -339,7 +355,7 @@ pub fn confirmation_keyboard() -> KeyboardMarkup {
 
 #[cfg(test)]
 mod tests {
-    use super::{can_render_watch_url, task_control_keyboard};
+    use super::{can_render_watch_url, loop_action_keyboard, task_control_keyboard};
     use oxide_agent_core::agent::TaskId;
     use teloxide::types::InlineKeyboardButtonKind;
 
@@ -372,5 +388,23 @@ mod tests {
         assert!(!can_render_watch_url(
             "https:// observer.test/watch/oa_token"
         ));
+    }
+
+    #[test]
+    fn loop_action_keyboard_binds_all_callbacks_to_task_id() {
+        let task_id = TaskId::new();
+        let keyboard = loop_action_keyboard(task_id);
+
+        for row in keyboard.inline_keyboard {
+            for button in row {
+                match button.kind {
+                    InlineKeyboardButtonKind::CallbackData(data) => {
+                        assert!(data.contains(&task_id.to_string()));
+                        assert!(data.len() <= 64);
+                    }
+                    _ => panic!("expected callback button"),
+                }
+            }
+        }
     }
 }

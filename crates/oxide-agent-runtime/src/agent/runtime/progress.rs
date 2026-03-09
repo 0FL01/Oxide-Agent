@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
 use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
+use oxide_agent_core::agent::TaskId;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
@@ -27,7 +28,12 @@ pub trait AgentTransport: Send + Sync + 'static {
         -> Result<()>;
 
     /// Notify the user about loop detection and prompt for an action.
-    async fn notify_loop_detected(&self, _loop_type: LoopType, _iteration: usize) -> Result<()> {
+    async fn notify_loop_detected(
+        &self,
+        _task_id: TaskId,
+        _loop_type: LoopType,
+        _iteration: usize,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -60,15 +66,17 @@ impl ProgressRuntimeConfig {
 
 /// Spawn the progress runtime loop on the Tokio runtime.
 pub fn spawn_progress_runtime<T: AgentTransport>(
+    task_id: TaskId,
     transport: T,
     rx: Receiver<AgentEvent>,
     config: ProgressRuntimeConfig,
 ) -> JoinHandle<ProgressState> {
-    tokio::spawn(run_progress_loop(transport, rx, config))
+    tokio::spawn(run_progress_loop(task_id, transport, rx, config))
 }
 
 /// Run the progress update loop until the channel is closed.
 pub async fn run_progress_loop<T: AgentTransport>(
+    task_id: TaskId,
     transport: T,
     mut rx: Receiver<AgentEvent>,
     config: ProgressRuntimeConfig,
@@ -125,7 +133,10 @@ pub async fn run_progress_loop<T: AgentTransport>(
                 loop_type,
                 iteration,
             } => {
-                if let Err(e) = transport.notify_loop_detected(*loop_type, *iteration).await {
+                if let Err(e) = transport
+                    .notify_loop_detected(task_id, *loop_type, *iteration)
+                    .await
+                {
                     warn!(error = %e, "Loop detection notification failed");
                 }
             }
@@ -196,7 +207,7 @@ mod tests {
         let transport = DummyTransport::default();
 
         let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(0));
-        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+        let handle = spawn_progress_runtime(TaskId::new(), transport.clone(), rx, cfg);
 
         let send_result = tx.send(AgentEvent::Thinking { tokens: 1 }).await;
         assert!(
@@ -220,7 +231,7 @@ mod tests {
         let transport = DummyTransport::default();
 
         let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(0));
-        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+        let handle = spawn_progress_runtime(TaskId::new(), transport.clone(), rx, cfg);
 
         let (ack_tx, ack_rx) = oneshot::channel();
         let send_result = tx
@@ -260,7 +271,7 @@ mod tests {
         };
 
         let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(0));
-        let handle = spawn_progress_runtime(transport, rx, cfg);
+        let handle = spawn_progress_runtime(TaskId::new(), transport, rx, cfg);
 
         let (ack_tx, ack_rx) = oneshot::channel();
         let send_result = tx
