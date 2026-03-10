@@ -46,6 +46,9 @@ pub struct TelegramSettings {
     /// Comma-separated list of allowed user IDs for agent mode.
     #[serde(rename = "agent_access_ids")]
     pub agent_allowed_users_str: Option<String>,
+    /// Comma-separated list of allowed user IDs for manager control-plane tools.
+    #[serde(rename = "manager_allowed_users")]
+    pub manager_allowed_users_str: Option<String>,
     /// Per-topic overrides loaded from structured config.
     #[serde(default, rename = "topicConfigs", alias = "topic_configs")]
     pub topic_configs: Vec<TelegramTopicSettings>,
@@ -99,6 +102,20 @@ impl TelegramSettings {
     #[must_use]
     pub fn agent_allowed_users(&self) -> HashSet<i64> {
         self.agent_allowed_users_str
+            .as_ref()
+            .map(|s| {
+                s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+                    .filter(|token| !token.is_empty())
+                    .filter_map(|id| id.parse::<i64>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns a set of allowed user IDs for manager control-plane actions.
+    #[must_use]
+    pub fn manager_allowed_users(&self) -> HashSet<i64> {
+        self.manager_allowed_users_str
             .as_ref()
             .map(|s| {
                 s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
@@ -175,6 +192,7 @@ mod tests {
             telegram_token: "dummy".to_string(),
             allowed_users_str: None,
             agent_allowed_users_str: None,
+            manager_allowed_users_str: None,
             topic_configs: Vec::new(),
         };
 
@@ -205,6 +223,13 @@ mod tests {
         let allowed = settings.allowed_users();
         assert!(allowed.contains(&777));
         assert_eq!(allowed.len(), 1);
+
+        settings.manager_allowed_users_str = Some("11; 22, nope 33".to_string());
+        let manager_allowed = settings.manager_allowed_users();
+        assert!(manager_allowed.contains(&11));
+        assert!(manager_allowed.contains(&22));
+        assert!(manager_allowed.contains(&33));
+        assert_eq!(manager_allowed.len(), 3);
     }
 
     #[test]

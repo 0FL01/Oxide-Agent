@@ -5,26 +5,32 @@
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::storage::{
-    AppendAuditEventOptions, StorageProvider, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
+    AgentProfileRecord, AppendAuditEventOptions, StorageProvider, TopicBindingRecord,
+    UpsertAgentProfileOptions, UpsertTopicBindingOptions,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::json;
 use std::sync::Arc;
 
 const TOOL_TOPIC_BINDING_SET: &str = "topic_binding_set";
 const TOOL_TOPIC_BINDING_GET: &str = "topic_binding_get";
 const TOOL_TOPIC_BINDING_DELETE: &str = "topic_binding_delete";
+const TOOL_TOPIC_BINDING_ROLLBACK: &str = "topic_binding_rollback";
 const TOOL_AGENT_PROFILE_UPSERT: &str = "agent_profile_upsert";
 const TOOL_AGENT_PROFILE_GET: &str = "agent_profile_get";
 const TOOL_AGENT_PROFILE_DELETE: &str = "agent_profile_delete";
+const TOOL_AGENT_PROFILE_ROLLBACK: &str = "agent_profile_rollback";
+const ROLLBACK_AUDIT_SCAN_LIMIT: usize = 200;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TopicBindingSetArgs {
     topic_id: String,
     agent_id: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +43,16 @@ struct TopicBindingGetArgs {
 #[serde(deny_unknown_fields)]
 struct TopicBindingDeleteArgs {
     topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicBindingRollbackArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +60,8 @@ struct TopicBindingDeleteArgs {
 struct AgentProfileUpsertArgs {
     agent_id: String,
     profile: serde_json::Value,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +74,16 @@ struct AgentProfileGetArgs {
 #[serde(deny_unknown_fields)]
 struct AgentProfileDeleteArgs {
     agent_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentProfileRollbackArgs {
+    agent_id: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 /// Tool provider that manages user-scoped control-plane records.
@@ -80,7 +108,8 @@ impl ManagerControlPlaneProvider {
                     "type": "object",
                     "properties": {
                         "topic_id": { "type": "string", "description": "Stable topic identifier" },
-                        "agent_id": { "type": "string", "description": "Target agent identifier" }
+                        "agent_id": { "type": "string", "description": "Target agent identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
                     "required": ["topic_id", "agent_id"]
                 }),
@@ -97,12 +126,25 @@ impl ManagerControlPlaneProvider {
                 }),
             },
             ToolDefinition {
+                name: TOOL_TOPIC_BINDING_ROLLBACK.to_string(),
+                description: "Rollback last topic binding mutation for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "dry_run": { "type": "boolean", "description": "Preview rollback without persisting" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
                 name: TOOL_TOPIC_BINDING_DELETE.to_string(),
                 description: "Delete topic-to-agent binding for current user".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "topic_id": { "type": "string", "description": "Stable topic identifier" }
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
                     "required": ["topic_id"]
                 }),
@@ -114,7 +156,8 @@ impl ManagerControlPlaneProvider {
                     "type": "object",
                     "properties": {
                         "agent_id": { "type": "string", "description": "Stable agent identifier" },
-                        "profile": { "type": "object", "description": "Arbitrary JSON profile payload" }
+                        "profile": { "type": "object", "description": "Arbitrary JSON profile payload" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
                     "required": ["agent_id", "profile"]
                 }),
@@ -136,7 +179,20 @@ impl ManagerControlPlaneProvider {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "agent_id": { "type": "string", "description": "Stable agent identifier" }
+                        "agent_id": { "type": "string", "description": "Stable agent identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["agent_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_AGENT_PROFILE_ROLLBACK.to_string(),
+                description: "Rollback last agent profile mutation for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "agent_id": { "type": "string", "description": "Stable agent identifier" },
+                        "dry_run": { "type": "boolean", "description": "Preview rollback without persisting" }
                     },
                     "required": ["agent_id"]
                 }),
@@ -168,10 +224,125 @@ impl ManagerControlPlaneProvider {
         serde_json::from_str(arguments).map_err(|err| anyhow!("invalid {tool_name} args: {err}"))
     }
 
+    fn dry_run_outcome(dry_run: bool) -> &'static str {
+        if dry_run {
+            "dry_run"
+        } else {
+            "applied"
+        }
+    }
+
+    fn previous_from_payload<T: DeserializeOwned>(
+        payload: &serde_json::Value,
+    ) -> Result<Option<T>> {
+        let Some(previous) = payload.get("previous") else {
+            return Ok(None);
+        };
+
+        if previous.is_null() {
+            return Ok(None);
+        }
+
+        serde_json::from_value(previous.clone())
+            .map(Some)
+            .map_err(|err| anyhow!("invalid previous snapshot in audit payload: {err}"))
+    }
+
+    fn is_applied_mutation_event(event: &crate::storage::AuditEventRecord) -> bool {
+        event.payload.get("outcome") != Some(&json!("dry_run"))
+    }
+
+    fn action_matches(action: &str, candidates: &[&str]) -> bool {
+        candidates.contains(&action)
+    }
+
+    async fn last_topic_binding_mutation(
+        &self,
+        topic_id: &str,
+    ) -> Result<Option<crate::storage::AuditEventRecord>> {
+        let events = self
+            .storage
+            .list_audit_events(self.user_id, ROLLBACK_AUDIT_SCAN_LIMIT)
+            .await
+            .map_err(|err| anyhow!("failed to list audit events: {err}"))?;
+
+        Ok(events.into_iter().rev().find(|event| {
+            event.topic_id.as_deref() == Some(topic_id)
+                && Self::action_matches(
+                    event.action.as_str(),
+                    &[
+                        TOOL_TOPIC_BINDING_SET,
+                        TOOL_TOPIC_BINDING_DELETE,
+                        TOOL_TOPIC_BINDING_ROLLBACK,
+                    ],
+                )
+                && Self::is_applied_mutation_event(event)
+        }))
+    }
+
+    async fn last_agent_profile_mutation(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<crate::storage::AuditEventRecord>> {
+        let events = self
+            .storage
+            .list_audit_events(self.user_id, ROLLBACK_AUDIT_SCAN_LIMIT)
+            .await
+            .map_err(|err| anyhow!("failed to list audit events: {err}"))?;
+
+        Ok(events.into_iter().rev().find(|event| {
+            event.agent_id.as_deref() == Some(agent_id)
+                && Self::action_matches(
+                    event.action.as_str(),
+                    &[
+                        TOOL_AGENT_PROFILE_UPSERT,
+                        TOOL_AGENT_PROFILE_DELETE,
+                        TOOL_AGENT_PROFILE_ROLLBACK,
+                    ],
+                )
+                && Self::is_applied_mutation_event(event)
+        }))
+    }
+
     async fn execute_topic_binding_set(&self, arguments: &str) -> Result<String> {
         let args: TopicBindingSetArgs = Self::parse_args(arguments, TOOL_TOPIC_BINDING_SET)?;
         let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
         let agent_id = Self::validate_non_empty(args.agent_id, "agent_id")?;
+        let previous = self
+            .storage
+            .get_topic_binding(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic binding: {err}"))?;
+
+        if args.dry_run {
+            let _audit = self
+                .storage
+                .append_audit_event(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: Some(agent_id.clone()),
+                    action: TOOL_TOPIC_BINDING_SET.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "agent_id": agent_id,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await
+                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+
+            return Self::to_json_string(json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": "upsert",
+                    "topic_id": topic_id,
+                    "agent_id": agent_id
+                },
+                "previous": previous
+            }));
+        }
 
         let record = self
             .storage
@@ -193,7 +364,9 @@ impl ManagerControlPlaneProvider {
                 payload: json!({
                     "topic_id": record.topic_id,
                     "agent_id": record.agent_id,
-                    "version": record.version
+                    "version": record.version,
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
                 }),
             })
             .await
@@ -222,6 +395,39 @@ impl ManagerControlPlaneProvider {
     async fn execute_topic_binding_delete(&self, arguments: &str) -> Result<String> {
         let args: TopicBindingDeleteArgs = Self::parse_args(arguments, TOOL_TOPIC_BINDING_DELETE)?;
         let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let previous = self
+            .storage
+            .get_topic_binding(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic binding: {err}"))?;
+
+        if args.dry_run {
+            let _audit = self
+                .storage
+                .append_audit_event(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_BINDING_DELETE.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await
+                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+
+            return Self::to_json_string(json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": "delete",
+                    "topic_id": topic_id
+                },
+                "previous": previous
+            }));
+        }
 
         self.storage
             .delete_topic_binding(self.user_id, topic_id.clone())
@@ -235,7 +441,11 @@ impl ManagerControlPlaneProvider {
                 topic_id: Some(topic_id.clone()),
                 agent_id: None,
                 action: TOOL_TOPIC_BINDING_DELETE.to_string(),
-                payload: json!({ "topic_id": topic_id }),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
             })
             .await
             .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
@@ -247,6 +457,41 @@ impl ManagerControlPlaneProvider {
         let args: AgentProfileUpsertArgs = Self::parse_args(arguments, TOOL_AGENT_PROFILE_UPSERT)?;
         let agent_id = Self::validate_non_empty(args.agent_id, "agent_id")?;
         let profile = Self::validate_profile_object(args.profile)?;
+        let previous = self
+            .storage
+            .get_agent_profile(self.user_id, agent_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current agent profile: {err}"))?;
+
+        if args.dry_run {
+            let _audit = self
+                .storage
+                .append_audit_event(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: None,
+                    agent_id: Some(agent_id.clone()),
+                    action: TOOL_AGENT_PROFILE_UPSERT.to_string(),
+                    payload: json!({
+                        "agent_id": agent_id,
+                        "profile": profile,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await
+                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+
+            return Self::to_json_string(json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": "upsert",
+                    "agent_id": agent_id,
+                    "profile": profile
+                },
+                "previous": previous
+            }));
+        }
 
         let record = self
             .storage
@@ -267,7 +512,9 @@ impl ManagerControlPlaneProvider {
                 action: TOOL_AGENT_PROFILE_UPSERT.to_string(),
                 payload: json!({
                     "agent_id": record.agent_id,
-                    "version": record.version
+                    "version": record.version,
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
                 }),
             })
             .await
@@ -296,6 +543,39 @@ impl ManagerControlPlaneProvider {
     async fn execute_agent_profile_delete(&self, arguments: &str) -> Result<String> {
         let args: AgentProfileDeleteArgs = Self::parse_args(arguments, TOOL_AGENT_PROFILE_DELETE)?;
         let agent_id = Self::validate_non_empty(args.agent_id, "agent_id")?;
+        let previous = self
+            .storage
+            .get_agent_profile(self.user_id, agent_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current agent profile: {err}"))?;
+
+        if args.dry_run {
+            let _audit = self
+                .storage
+                .append_audit_event(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: None,
+                    agent_id: Some(agent_id.clone()),
+                    action: TOOL_AGENT_PROFILE_DELETE.to_string(),
+                    payload: json!({
+                        "agent_id": agent_id,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await
+                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+
+            return Self::to_json_string(json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": "delete",
+                    "agent_id": agent_id
+                },
+                "previous": previous
+            }));
+        }
 
         self.storage
             .delete_agent_profile(self.user_id, agent_id.clone())
@@ -309,12 +589,210 @@ impl ManagerControlPlaneProvider {
                 topic_id: None,
                 agent_id: Some(agent_id.clone()),
                 action: TOOL_AGENT_PROFILE_DELETE.to_string(),
-                payload: json!({ "agent_id": agent_id }),
+                payload: json!({
+                    "agent_id": agent_id,
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
             })
             .await
             .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
 
         Self::to_json_string(json!({ "ok": true }))
+    }
+
+    async fn execute_topic_binding_rollback(&self, arguments: &str) -> Result<String> {
+        let args: TopicBindingRollbackArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_BINDING_ROLLBACK)?;
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let current = self
+            .storage
+            .get_topic_binding(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic binding: {err}"))?;
+        let previous = match self.last_topic_binding_mutation(&topic_id).await? {
+            Some(event) => Self::previous_from_payload::<TopicBindingRecord>(&event.payload)?,
+            None => None,
+        };
+
+        let rollback_operation = if previous.is_some() {
+            "restore"
+        } else {
+            "delete"
+        };
+
+        if args.dry_run {
+            let _audit = self
+                .storage
+                .append_audit_event(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: previous.as_ref().map(|record| record.agent_id.clone()),
+                    action: TOOL_TOPIC_BINDING_ROLLBACK.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "operation": rollback_operation,
+                        "previous": current,
+                        "restore_to": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await
+                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+
+            return Self::to_json_string(json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": rollback_operation,
+                    "topic_id": topic_id
+                },
+                "current": current,
+                "restore_to": previous
+            }));
+        }
+
+        let rolled_back_binding = if let Some(previous_binding) = previous.clone() {
+            Some(
+                self.storage
+                    .upsert_topic_binding(UpsertTopicBindingOptions {
+                        user_id: self.user_id,
+                        topic_id: topic_id.clone(),
+                        agent_id: previous_binding.agent_id,
+                    })
+                    .await
+                    .map_err(|err| anyhow!("failed to restore topic binding: {err}"))?,
+            )
+        } else {
+            self.storage
+                .delete_topic_binding(self.user_id, topic_id.clone())
+                .await
+                .map_err(|err| anyhow!("failed to delete topic binding during rollback: {err}"))?;
+            None
+        };
+
+        let _audit = self
+            .storage
+            .append_audit_event(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id.clone()),
+                agent_id: rolled_back_binding
+                    .as_ref()
+                    .map(|record| record.agent_id.clone()),
+                action: TOOL_TOPIC_BINDING_ROLLBACK.to_string(),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "operation": rollback_operation,
+                    "previous": current,
+                    "restore_to": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await
+            .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "rolled_back": true,
+            "operation": rollback_operation,
+            "binding": rolled_back_binding
+        }))
+    }
+
+    async fn execute_agent_profile_rollback(&self, arguments: &str) -> Result<String> {
+        let args: AgentProfileRollbackArgs =
+            Self::parse_args(arguments, TOOL_AGENT_PROFILE_ROLLBACK)?;
+        let agent_id = Self::validate_non_empty(args.agent_id, "agent_id")?;
+        let current = self
+            .storage
+            .get_agent_profile(self.user_id, agent_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current agent profile: {err}"))?;
+        let previous = match self.last_agent_profile_mutation(&agent_id).await? {
+            Some(event) => Self::previous_from_payload::<AgentProfileRecord>(&event.payload)?,
+            None => None,
+        };
+
+        let rollback_operation = if previous.is_some() {
+            "restore"
+        } else {
+            "delete"
+        };
+
+        if args.dry_run {
+            let _audit = self
+                .storage
+                .append_audit_event(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: None,
+                    agent_id: Some(agent_id.clone()),
+                    action: TOOL_AGENT_PROFILE_ROLLBACK.to_string(),
+                    payload: json!({
+                        "agent_id": agent_id,
+                        "operation": rollback_operation,
+                        "previous": current,
+                        "restore_to": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await
+                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+
+            return Self::to_json_string(json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": rollback_operation,
+                    "agent_id": agent_id
+                },
+                "current": current,
+                "restore_to": previous
+            }));
+        }
+
+        let rolled_back_profile = if let Some(previous_profile) = previous.clone() {
+            Some(
+                self.storage
+                    .upsert_agent_profile(UpsertAgentProfileOptions {
+                        user_id: self.user_id,
+                        agent_id: agent_id.clone(),
+                        profile: previous_profile.profile,
+                    })
+                    .await
+                    .map_err(|err| anyhow!("failed to restore agent profile: {err}"))?,
+            )
+        } else {
+            self.storage
+                .delete_agent_profile(self.user_id, agent_id.clone())
+                .await
+                .map_err(|err| anyhow!("failed to delete agent profile during rollback: {err}"))?;
+            None
+        };
+
+        let _audit = self
+            .storage
+            .append_audit_event(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: None,
+                agent_id: Some(agent_id.clone()),
+                action: TOOL_AGENT_PROFILE_ROLLBACK.to_string(),
+                payload: json!({
+                    "agent_id": agent_id,
+                    "operation": rollback_operation,
+                    "previous": current,
+                    "restore_to": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await
+            .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "rolled_back": true,
+            "operation": rollback_operation,
+            "profile": rolled_back_profile
+        }))
     }
 }
 
@@ -334,9 +812,11 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_BINDING_SET
                 | TOOL_TOPIC_BINDING_GET
                 | TOOL_TOPIC_BINDING_DELETE
+                | TOOL_TOPIC_BINDING_ROLLBACK
                 | TOOL_AGENT_PROFILE_UPSERT
                 | TOOL_AGENT_PROFILE_GET
                 | TOOL_AGENT_PROFILE_DELETE
+                | TOOL_AGENT_PROFILE_ROLLBACK
         )
     }
 
@@ -351,9 +831,11 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_BINDING_SET => self.execute_topic_binding_set(arguments).await,
             TOOL_TOPIC_BINDING_GET => self.execute_topic_binding_get(arguments).await,
             TOOL_TOPIC_BINDING_DELETE => self.execute_topic_binding_delete(arguments).await,
+            TOOL_TOPIC_BINDING_ROLLBACK => self.execute_topic_binding_rollback(arguments).await,
             TOOL_AGENT_PROFILE_UPSERT => self.execute_agent_profile_upsert(arguments).await,
             TOOL_AGENT_PROFILE_GET => self.execute_agent_profile_get(arguments).await,
             TOOL_AGENT_PROFILE_DELETE => self.execute_agent_profile_delete(arguments).await,
+            TOOL_AGENT_PROFILE_ROLLBACK => self.execute_agent_profile_rollback(arguments).await,
             _ => Err(anyhow!("Unknown manager control-plane tool: {tool_name}")),
         }
     }
@@ -420,6 +902,10 @@ mod tests {
     #[tokio::test]
     async fn topic_binding_set_persists_and_audits() {
         let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+
         mock.expect_upsert_topic_binding()
             .withf(|options| {
                 options.user_id == 77
@@ -477,6 +963,218 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn topic_binding_set_dry_run_does_not_persist() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.action == TOOL_TOPIC_BINDING_SET
+                    && options.payload.get("outcome") == Some(&json!("dry_run"))
+            })
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 1,
+                    event_id: "evt-dry-run".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 300,
+                })
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_BINDING_SET,
+                r#"{"topic_id":"topic-a","agent_id":"agent-a","dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("dry-run set should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["dry_run"], true);
+        assert_eq!(parsed["preview"]["operation"], "upsert");
+    }
+
+    #[tokio::test]
+    async fn topic_binding_rollback_restores_previous_snapshot() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, topic_id| {
+                Ok(Some(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 4,
+                    user_id: 77,
+                    topic_id,
+                    agent_id: "agent-new".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        mock.expect_list_audit_events()
+            .with(eq(77_i64), eq(ROLLBACK_AUDIT_SCAN_LIMIT))
+            .returning(|_, _| {
+                Ok(vec![crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 9,
+                    event_id: "evt-9".to_string(),
+                    user_id: 77,
+                    topic_id: Some("topic-a".to_string()),
+                    agent_id: Some("agent-new".to_string()),
+                    action: TOOL_TOPIC_BINDING_SET.to_string(),
+                    payload: json!({
+                        "topic_id": "topic-a",
+                        "agent_id": "agent-new",
+                        "previous": {
+                            "schema_version": 1,
+                            "version": 3,
+                            "user_id": 77,
+                            "topic_id": "topic-a",
+                            "agent_id": "agent-old",
+                            "created_at": 1,
+                            "updated_at": 2
+                        },
+                        "outcome": "applied"
+                    }),
+                    created_at: 100,
+                }])
+            });
+        mock.expect_upsert_topic_binding()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.agent_id == "agent-old"
+            })
+            .returning(|options| {
+                Ok(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 5,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    created_at: 10,
+                    updated_at: 30,
+                })
+            });
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.action == TOOL_TOPIC_BINDING_ROLLBACK
+                    && options.payload.get("operation") == Some(&json!("restore"))
+            })
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 10,
+                    event_id: "evt-10".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 110,
+                })
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_BINDING_ROLLBACK,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic rollback should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["operation"], "restore");
+        assert_eq!(parsed["binding"]["agent_id"], "agent-old");
+    }
+
+    #[tokio::test]
+    async fn agent_profile_rollback_deletes_when_previous_snapshot_absent() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, agent_id| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 2,
+                    user_id: 77,
+                    agent_id,
+                    profile: json!({"mode":"current"}),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        mock.expect_list_audit_events()
+            .with(eq(77_i64), eq(ROLLBACK_AUDIT_SCAN_LIMIT))
+            .returning(|_, _| {
+                Ok(vec![crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 3,
+                    event_id: "evt-3".to_string(),
+                    user_id: 77,
+                    topic_id: None,
+                    agent_id: Some("agent-a".to_string()),
+                    action: TOOL_AGENT_PROFILE_DELETE.to_string(),
+                    payload: json!({"agent_id":"agent-a","previous":null,"outcome":"applied"}),
+                    created_at: 30,
+                }])
+            });
+        mock.expect_delete_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| Ok(()));
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.action == TOOL_AGENT_PROFILE_ROLLBACK
+                    && options.payload.get("operation") == Some(&json!("delete"))
+            })
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 4,
+                    event_id: "evt-4".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 40,
+                })
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_AGENT_PROFILE_ROLLBACK,
+                r#"{"agent_id":"agent-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("agent rollback should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["operation"], "delete");
+        assert!(parsed["profile"].is_null());
+    }
+
+    #[tokio::test]
     async fn tool_registry_routes_to_manager_provider() {
         let mut mock = crate::storage::MockStorageProvider::new();
         mock.expect_get_agent_profile()
@@ -513,5 +1211,21 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["found"], true);
         assert_eq!(parsed["profile"]["agent_id"], "agent-x");
+    }
+
+    #[tokio::test]
+    async fn tool_registry_without_manager_provider_rejects_manager_tools() {
+        let registry = ToolRegistry::new();
+        let err = registry
+            .execute(
+                TOOL_TOPIC_BINDING_GET,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect_err("manager tools must be unavailable without provider");
+
+        assert!(err.to_string().contains("Unknown tool"));
     }
 }

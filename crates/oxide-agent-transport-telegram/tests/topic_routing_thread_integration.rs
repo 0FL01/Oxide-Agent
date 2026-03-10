@@ -31,6 +31,7 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
         telegram_token: "dummy".to_string(),
         allowed_users_str: None,
         agent_allowed_users_str: None,
+        manager_allowed_users_str: None,
         topic_configs: vec![
             topic(-100_123, Some(42), false, true, Some("support-only")),
             topic(-100_123, Some(7), true, true, Some("mention-required")),
@@ -91,6 +92,7 @@ fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies
         telegram_token: "dummy".to_string(),
         allowed_users_str: None,
         agent_allowed_users_str: None,
+        manager_allowed_users_str: None,
         topic_configs: vec![topic(-100_123, Some(42), true, true, Some("topic-prompt"))],
     };
 
