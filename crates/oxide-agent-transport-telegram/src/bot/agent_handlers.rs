@@ -631,7 +631,8 @@ async fn ensure_session_exists(
         );
     }
 
-    let executor = AgentExecutor::new(llm.clone(), session, settings.agent.clone());
+    let executor = AgentExecutor::new(llm.clone(), session, settings.agent.clone())
+        .with_manager_control_plane(storage.clone(), user_id);
     SESSION_REGISTRY.insert(session_id, executor).await;
     session_id
 }
