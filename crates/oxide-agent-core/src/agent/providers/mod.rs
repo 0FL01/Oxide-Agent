@@ -4,6 +4,7 @@
 
 pub mod delegation;
 pub mod filehoster;
+pub mod manager_control_plane;
 pub mod sandbox;
 pub mod todos;
 pub mod ytdlp;
@@ -18,6 +19,7 @@ pub mod crawl4ai;
 
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
+pub use manager_control_plane::ManagerControlPlaneProvider;
 pub use sandbox::SandboxProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use ytdlp::YtdlpProvider;

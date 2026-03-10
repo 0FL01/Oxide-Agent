@@ -10,7 +10,8 @@ use super::hooks::{
 use super::memory::AgentMessage;
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
-    DelegationProvider, FileHosterProvider, SandboxProvider, TodosProvider, YtdlpProvider,
+    DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, SandboxProvider,
+    TodosProvider, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -19,6 +20,7 @@ use super::skills::SkillRegistry;
 use crate::agent::progress::AgentEvent;
 use crate::config::{get_agent_search_limit, AGENT_TIMEOUT_SECS};
 use crate::llm::LlmClient;
+use crate::storage::StorageProvider;
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -39,6 +41,13 @@ pub struct AgentExecutor {
     session: AgentSession,
     skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
+    manager_control_plane: Option<ManagerControlPlaneContext>,
+}
+
+#[derive(Clone)]
+struct ManagerControlPlaneContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
 }
 
 impl AgentExecutor {
@@ -79,7 +88,19 @@ impl AgentExecutor {
             session,
             skill_registry,
             settings,
+            manager_control_plane: None,
         }
+    }
+
+    /// Attach user-scoped storage for manager control-plane tools.
+    #[must_use]
+    pub fn with_manager_control_plane(
+        mut self,
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+    ) -> Self {
+        self.manager_control_plane = Some(ManagerControlPlaneContext { storage, user_id });
+        self
     }
 
     /// Get a reference to the session
@@ -133,6 +154,13 @@ impl AgentExecutor {
             session_id,
             self.settings.clone(),
         )));
+
+        if let Some(control_plane) = &self.manager_control_plane {
+            registry.register(Box::new(ManagerControlPlaneProvider::new(
+                Arc::clone(&control_plane.storage),
+                control_plane.user_id,
+            )));
+        }
 
         // Register web search provider based on configuration
         let search_provider = crate::config::get_search_provider();
