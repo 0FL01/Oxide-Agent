@@ -226,6 +226,10 @@ fn outbound_thread_from_callback(q: &CallbackQuery) -> OutboundThreadParams {
         )
 }
 
+fn manager_control_plane_enabled(settings: &BotSettings, user_id: i64) -> bool {
+    settings.telegram.manager_allowed_users().contains(&user_id)
+}
+
 async fn send_agent_message(
     bot: &Bot,
     chat_id: ChatId,
@@ -518,9 +522,11 @@ pub async fn handle_agent_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_mode_session_keys, derive_agent_mode_session_id, parse_agent_control_command,
-        select_existing_session_id, AgentControlCommand,
+        agent_mode_session_keys, derive_agent_mode_session_id, manager_control_plane_enabled,
+        parse_agent_control_command, select_existing_session_id, AgentControlCommand,
     };
+    use crate::config::{BotSettings, TelegramSettings};
+    use oxide_agent_core::config::AgentSettings;
     use teloxide::types::{ChatId, MessageId, ThreadId};
 
     #[test]
@@ -594,6 +600,39 @@ mod tests {
 
         assert_eq!(selected, Some(keys.legacy));
     }
+
+    #[test]
+    fn manager_control_plane_access_requires_dedicated_allowlist_entry() {
+        let settings = BotSettings::new(
+            AgentSettings::default(),
+            TelegramSettings {
+                telegram_token: "dummy".to_string(),
+                allowed_users_str: None,
+                agent_allowed_users_str: Some("77 88".to_string()),
+                manager_allowed_users_str: Some("88".to_string()),
+                topic_configs: Vec::new(),
+            },
+        );
+
+        assert!(!manager_control_plane_enabled(&settings, 77));
+        assert!(manager_control_plane_enabled(&settings, 88));
+    }
+
+    #[test]
+    fn manager_control_plane_access_disabled_when_allowlist_is_empty() {
+        let settings = BotSettings::new(
+            AgentSettings::default(),
+            TelegramSettings {
+                telegram_token: "dummy".to_string(),
+                allowed_users_str: None,
+                agent_allowed_users_str: Some("77".to_string()),
+                manager_allowed_users_str: None,
+                topic_configs: Vec::new(),
+            },
+        );
+
+        assert!(!manager_control_plane_enabled(&settings, 77));
+    }
 }
 
 async fn ensure_session_exists(
@@ -631,8 +670,10 @@ async fn ensure_session_exists(
         );
     }
 
-    let executor = AgentExecutor::new(llm.clone(), session, settings.agent.clone())
-        .with_manager_control_plane(storage.clone(), user_id);
+    let mut executor = AgentExecutor::new(llm.clone(), session, settings.agent.clone());
+    if manager_control_plane_enabled(settings, user_id) {
+        executor = executor.with_manager_control_plane(storage.clone(), user_id);
+    }
     SESSION_REGISTRY.insert(session_id, executor).await;
     session_id
 }
