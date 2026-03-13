@@ -119,6 +119,12 @@ impl AgentExecutor {
         self.runner.disable_loop_detection_next_run();
     }
 
+    /// Whether manager control-plane tools are enabled for this executor.
+    #[must_use]
+    pub fn manager_control_plane_enabled(&self) -> bool {
+        self.manager_control_plane.is_some()
+    }
+
     /// Get the last task text, if available.
     #[must_use]
     pub fn last_task(&self) -> Option<&str> {
@@ -299,4 +305,268 @@ impl AgentExecutor {
     }
 }
 
-// All tests have been moved to recovery.rs and other specific modules
+#[cfg(test)]
+mod tests {
+    use super::AgentExecutor;
+    use crate::agent::providers::TodoList;
+    use crate::agent::session::AgentSession;
+    use crate::llm::LlmClient;
+    use crate::storage::{
+        AppendAuditEventOptions, AuditEventRecord, MockStorageProvider, TopicBindingRecord,
+    };
+    use mockall::predicate::eq;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn build_executor() -> AgentExecutor {
+        let settings = Arc::new(crate::config::AgentSettings::default());
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let session = AgentSession::new(9_i64.into());
+        AgentExecutor::new(llm, session, settings)
+    }
+
+    fn build_audit_record(options: AppendAuditEventOptions) -> AuditEventRecord {
+        AuditEventRecord {
+            schema_version: 1,
+            version: 1,
+            event_id: "evt-1".to_string(),
+            user_id: options.user_id,
+            topic_id: options.topic_id,
+            agent_id: options.agent_id,
+            action: options.action,
+            payload: options.payload,
+            created_at: 100,
+        }
+    }
+
+    #[tokio::test]
+    async fn manager_enabled_registry_executes_manager_tool() {
+        let mut mock = MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|user_id, topic_id| {
+                Ok(Some(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 3,
+                    user_id,
+                    topic_id,
+                    agent_id: "agent-a".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+
+        let executor = build_executor().with_manager_control_plane(Arc::new(mock), 77);
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let response = registry
+            .execute("topic_binding_get", r#"{"topic_id":"topic-a"}"#, None, None)
+            .await
+            .expect("manager-enabled registry must route manager tool");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("manager tool response must be valid json");
+        assert_eq!(parsed["found"], true);
+        assert_eq!(parsed["binding"]["agent_id"], "agent-a");
+    }
+
+    #[tokio::test]
+    async fn manager_disabled_registry_rejects_manager_tool() {
+        let executor = build_executor();
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let err = registry
+            .execute("topic_binding_get", r#"{"topic_id":"topic-a"}"#, None, None)
+            .await
+            .expect_err("manager-disabled registry must reject manager tools");
+
+        assert!(err.to_string().contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn manager_dry_run_mutation_does_not_persist_via_executor_registry() {
+        let mut mock = MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_binding().times(0);
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.action == "topic_binding_set"
+                    && options.payload.get("outcome") == Some(&json!("dry_run"))
+            })
+            .returning(|options| Ok(build_audit_record(options)));
+
+        let executor = build_executor().with_manager_control_plane(Arc::new(mock), 77);
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let response = registry
+            .execute(
+                "topic_binding_set",
+                r#"{"topic_id":"topic-a","agent_id":"agent-a","dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("dry-run manager mutation must succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("dry-run response must be valid json");
+        assert_eq!(parsed["dry_run"], true);
+        assert_eq!(parsed["preview"]["topic_id"], "topic-a");
+    }
+
+    #[tokio::test]
+    async fn manager_rollback_restores_snapshot_via_executor_registry() {
+        let mut mock = MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|user_id, topic_id| {
+                Ok(Some(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 5,
+                    user_id,
+                    topic_id,
+                    agent_id: "agent-current".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        mock.expect_list_audit_events()
+            .with(eq(77_i64), eq(200_usize))
+            .returning(|_, _| {
+                Ok(vec![AuditEventRecord {
+                    schema_version: 1,
+                    version: 4,
+                    event_id: "evt-4".to_string(),
+                    user_id: 77,
+                    topic_id: Some("topic-a".to_string()),
+                    agent_id: Some("agent-previous".to_string()),
+                    action: "topic_binding_set".to_string(),
+                    payload: json!({
+                        "topic_id": "topic-a",
+                        "previous": {
+                            "schema_version": 1,
+                            "version": 2,
+                            "user_id": 77,
+                            "topic_id": "topic-a",
+                            "agent_id": "agent-previous",
+                            "created_at": 1,
+                            "updated_at": 2
+                        },
+                        "outcome": "applied"
+                    }),
+                    created_at: 30,
+                }])
+            });
+        mock.expect_upsert_topic_binding()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.agent_id == "agent-previous"
+            })
+            .returning(|options| {
+                Ok(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 6,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    created_at: 40,
+                    updated_at: 50,
+                })
+            });
+        mock.expect_delete_topic_binding().times(0);
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.action == "topic_binding_rollback"
+                    && options.payload.get("operation") == Some(&json!("restore"))
+            })
+            .returning(|options| Ok(build_audit_record(options)));
+
+        let executor = build_executor().with_manager_control_plane(Arc::new(mock), 77);
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let response = registry
+            .execute(
+                "topic_binding_rollback",
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("rollback restore path must succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("rollback response must be valid json");
+        assert_eq!(parsed["operation"], "restore");
+        assert_eq!(parsed["binding"]["agent_id"], "agent-previous");
+    }
+
+    #[tokio::test]
+    async fn manager_rollback_deletes_when_snapshot_is_empty_via_executor_registry() {
+        let mut mock = MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|user_id, topic_id| {
+                Ok(Some(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 5,
+                    user_id,
+                    topic_id,
+                    agent_id: "agent-current".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        mock.expect_list_audit_events()
+            .with(eq(77_i64), eq(200_usize))
+            .returning(|_, _| {
+                Ok(vec![AuditEventRecord {
+                    schema_version: 1,
+                    version: 4,
+                    event_id: "evt-4".to_string(),
+                    user_id: 77,
+                    topic_id: Some("topic-a".to_string()),
+                    agent_id: Some("agent-current".to_string()),
+                    action: "topic_binding_delete".to_string(),
+                    payload: json!({
+                        "topic_id": "topic-a",
+                        "previous": null,
+                        "outcome": "applied"
+                    }),
+                    created_at: 30,
+                }])
+            });
+        mock.expect_upsert_topic_binding().times(0);
+        mock.expect_delete_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(()));
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.action == "topic_binding_rollback"
+                    && options.payload.get("operation") == Some(&json!("delete"))
+            })
+            .returning(|options| Ok(build_audit_record(options)));
+
+        let executor = build_executor().with_manager_control_plane(Arc::new(mock), 77);
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let response = registry
+            .execute(
+                "topic_binding_rollback",
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("rollback delete path must succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("rollback response must be valid json");
+        assert_eq!(parsed["operation"], "delete");
+        assert!(parsed["binding"].is_null());
+    }
+}

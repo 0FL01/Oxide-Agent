@@ -155,6 +155,12 @@ async fn resolve_existing_session_id(keys: AgentModeSessionKeys) -> Option<Sessi
     select_existing_session_id(keys, primary_exists, legacy_exists)
 }
 
+async fn session_manager_control_plane_enabled(session_id: SessionId) -> Option<bool> {
+    let executor_arc = SESSION_REGISTRY.get(&session_id).await?;
+    let executor = executor_arc.read().await;
+    Some(executor.manager_control_plane_enabled())
+}
+
 enum ResetSessionOutcome {
     Reset,
     Busy,
@@ -522,12 +528,229 @@ pub async fn handle_agent_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_mode_session_keys, derive_agent_mode_session_id, manager_control_plane_enabled,
-        parse_agent_control_command, select_existing_session_id, AgentControlCommand,
+        agent_mode_session_keys, derive_agent_mode_session_id, ensure_session_exists,
+        manager_control_plane_enabled, parse_agent_control_command, remove_sessions_with_compat,
+        select_existing_session_id, session_manager_control_plane_enabled, AgentControlCommand,
+        SESSION_REGISTRY,
     };
     use crate::config::{BotSettings, TelegramSettings};
+    use async_trait::async_trait;
+    use oxide_agent_core::agent::AgentSession;
     use oxide_agent_core::config::AgentSettings;
+    use oxide_agent_core::llm::LlmClient;
+    use oxide_agent_core::storage::{
+        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message, StorageError,
+        StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
+        UserConfig,
+    };
+    use std::sync::Arc;
     use teloxide::types::{ChatId, MessageId, ThreadId};
+
+    struct NoopStorage;
+
+    #[async_trait]
+    impl StorageProvider for NoopStorage {
+        async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
+            Ok(UserConfig::default())
+        }
+
+        async fn update_user_config(
+            &self,
+            _user_id: i64,
+            _config: UserConfig,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn update_user_prompt(
+            &self,
+            _user_id: i64,
+            _system_prompt: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_user_model(
+            &self,
+            _user_id: i64,
+            _model_name: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_user_state(
+            &self,
+            _user_id: i64,
+            _state: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn save_message(
+            &self,
+            _user_id: i64,
+            _role: String,
+            _content: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_chat_history(
+            &self,
+            _user_id: i64,
+            _limit: usize,
+        ) -> Result<Vec<Message>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_message_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+            _role: String,
+            _content: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_chat_history_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+            _limit: usize,
+        ) -> Result<Vec<Message>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn clear_chat_history_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_agent_memory(
+            &self,
+            _user_id: i64,
+            _memory: &oxide_agent_core::agent::AgentMemory,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn load_agent_memory(
+            &self,
+            _user_id: i64,
+        ) -> Result<Option<oxide_agent_core::agent::AgentMemory>, StorageError> {
+            Ok(None)
+        }
+
+        async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn clear_all_context(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn check_connection(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn get_agent_profile(
+            &self,
+            _user_id: i64,
+            _agent_id: String,
+        ) -> Result<Option<AgentProfileRecord>, StorageError> {
+            Ok(None)
+        }
+
+        async fn upsert_agent_profile(
+            &self,
+            _options: UpsertAgentProfileOptions,
+        ) -> Result<AgentProfileRecord, StorageError> {
+            Err(StorageError::Config("not needed in tests".to_string()))
+        }
+
+        async fn delete_agent_profile(
+            &self,
+            _user_id: i64,
+            _agent_id: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_topic_binding(
+            &self,
+            _user_id: i64,
+            _topic_id: String,
+        ) -> Result<Option<TopicBindingRecord>, StorageError> {
+            Ok(None)
+        }
+
+        async fn upsert_topic_binding(
+            &self,
+            _options: UpsertTopicBindingOptions,
+        ) -> Result<TopicBindingRecord, StorageError> {
+            Err(StorageError::Config("not needed in tests".to_string()))
+        }
+
+        async fn delete_topic_binding(
+            &self,
+            _user_id: i64,
+            _topic_id: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn append_audit_event(
+            &self,
+            _options: AppendAuditEventOptions,
+        ) -> Result<AuditEventRecord, StorageError> {
+            Err(StorageError::Config("not needed in tests".to_string()))
+        }
+
+        async fn list_audit_events(
+            &self,
+            _user_id: i64,
+            _limit: usize,
+        ) -> Result<Vec<AuditEventRecord>, StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn test_settings(manager_users: Option<&str>) -> Arc<BotSettings> {
+        Arc::new(BotSettings::new(
+            AgentSettings::default(),
+            TelegramSettings {
+                telegram_token: "dummy".to_string(),
+                allowed_users_str: None,
+                agent_allowed_users_str: Some("77 88".to_string()),
+                manager_allowed_users_str: manager_users.map(str::to_string),
+                topic_configs: Vec::new(),
+            },
+        ))
+    }
+
+    fn test_llm(settings: &Arc<BotSettings>) -> Arc<LlmClient> {
+        Arc::new(LlmClient::new(settings.agent.as_ref()))
+    }
 
     #[test]
     fn control_commands_are_recognized_for_topic_gate_bypass() {
@@ -633,6 +856,91 @@ mod tests {
 
         assert!(!manager_control_plane_enabled(&settings, 77));
     }
+
+    #[test]
+    fn manager_control_plane_gating_respects_forum_thread_agent_sessions() {
+        let settings = BotSettings::new(
+            AgentSettings::default(),
+            TelegramSettings {
+                telegram_token: "dummy".to_string(),
+                allowed_users_str: None,
+                agent_allowed_users_str: Some("77 88".to_string()),
+                manager_allowed_users_str: Some("88".to_string()),
+                topic_configs: Vec::new(),
+            },
+        );
+
+        let thread_keys =
+            agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(42))));
+
+        assert_ne!(thread_keys.primary, thread_keys.legacy);
+        assert!(!manager_control_plane_enabled(&settings, 77));
+        assert!(manager_control_plane_enabled(&settings, 88));
+    }
+
+    #[tokio::test]
+    async fn threaded_transport_session_enables_manager_tools_only_for_allowlisted_users() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let manager_settings = test_settings(Some("88"));
+        let llm = test_llm(&manager_settings);
+
+        let allowed_keys =
+            agent_mode_session_keys(88, ChatId(-100_123), Some(ThreadId(MessageId(42))));
+        let blocked_keys =
+            agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(43))));
+
+        remove_sessions_with_compat(allowed_keys).await;
+        remove_sessions_with_compat(blocked_keys).await;
+
+        let allowed_session =
+            ensure_session_exists(allowed_keys, 88, &llm, &storage, &manager_settings).await;
+        let blocked_session =
+            ensure_session_exists(blocked_keys, 77, &llm, &storage, &manager_settings).await;
+
+        assert_eq!(allowed_session, allowed_keys.primary);
+        assert_eq!(blocked_session, blocked_keys.primary);
+        assert_eq!(
+            session_manager_control_plane_enabled(allowed_session).await,
+            Some(true)
+        );
+        assert_eq!(
+            session_manager_control_plane_enabled(blocked_session).await,
+            Some(false)
+        );
+
+        remove_sessions_with_compat(allowed_keys).await;
+        remove_sessions_with_compat(blocked_keys).await;
+    }
+
+    #[tokio::test]
+    async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let legacy_manager_settings = test_settings(Some("77"));
+        let llm = test_llm(&legacy_manager_settings);
+        let keys = agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(52))));
+
+        remove_sessions_with_compat(keys).await;
+
+        let legacy_executor = oxide_agent_core::agent::AgentExecutor::new(
+            llm.clone(),
+            AgentSession::new(keys.legacy),
+            legacy_manager_settings.agent.clone(),
+        )
+        .with_manager_control_plane(storage.clone(), 77);
+        SESSION_REGISTRY.insert(keys.legacy, legacy_executor).await;
+
+        let restricted_settings = test_settings(None);
+        let resolved_session =
+            ensure_session_exists(keys, 77, &llm, &storage, &restricted_settings).await;
+
+        assert_eq!(resolved_session, keys.primary);
+        assert_eq!(
+            session_manager_control_plane_enabled(resolved_session).await,
+            Some(false)
+        );
+
+        remove_sessions_with_compat(keys).await;
+    }
 }
 
 async fn ensure_session_exists(
@@ -643,8 +951,25 @@ async fn ensure_session_exists(
     settings: &Arc<BotSettings>,
 ) -> SessionId {
     if let Some(existing_session_id) = resolve_existing_session_id(session_keys).await {
-        debug!(session_id = %existing_session_id, "Session already exists in cache");
-        return existing_session_id;
+        if existing_session_id == session_keys.legacy && session_keys.distinct_legacy().is_some() {
+            let manager_enabled = manager_control_plane_enabled(settings, user_id);
+            if let Some(existing_manager_enabled) =
+                session_manager_control_plane_enabled(existing_session_id).await
+            {
+                if existing_manager_enabled == manager_enabled {
+                    debug!(session_id = %existing_session_id, "Session already exists in cache");
+                    return existing_session_id;
+                }
+            }
+        } else {
+            debug!(session_id = %existing_session_id, "Session already exists in cache");
+            return existing_session_id;
+        }
+
+        debug!(
+            session_id = %existing_session_id,
+            "Legacy compatibility session is not reusable for current manager RBAC"
+        );
     }
 
     let session_id = session_keys.primary;
