@@ -323,7 +323,13 @@ async fn handle_callback(
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     settings: Arc<BotSettings>,
+    bot_state: Arc<InMemStorage<State>>,
 ) -> Result<(), teloxide::RequestError> {
+    let dialogue = q
+        .message
+        .as_ref()
+        .map(|message| Dialogue::new(bot_state.clone(), message.chat().id));
+
     match bot::handlers::handle_chat_flow_callback(&bot, &q, &storage).await {
         Ok(true) => {
             return respond(());
@@ -335,6 +341,21 @@ async fn handle_callback(
         }
     }
 
+    if let Some(dialogue) = &dialogue {
+        match bot::handlers::handle_menu_callback(&bot, &q, &storage, &llm, &settings, dialogue)
+            .await
+        {
+            Ok(true) => {
+                return respond(());
+            }
+            Ok(false) => {}
+            Err(e) => {
+                error!("Menu callback handler error: {}", e);
+                return respond(());
+            }
+        }
+    }
+
     if !settings
         .telegram
         .agent_allowed_users()
@@ -343,9 +364,14 @@ async fn handle_callback(
         return respond(());
     }
 
-    if let Err(e) = bot::agent_handlers::handle_loop_callback(bot, q, storage, llm, settings).await
+    let Some(dialogue) = dialogue else {
+        return respond(());
+    };
+
+    if let Err(e) =
+        bot::agent_handlers::handle_agent_callback(bot, q, storage, llm, settings, dialogue).await
     {
-        error!("Loop callback handler error: {}", e);
+        error!("Agent callback handler error: {}", e);
     }
     respond(())
 }

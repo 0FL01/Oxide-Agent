@@ -3,7 +3,11 @@
 //! Contains keyboards, text messages, and formatters for agent mode.
 
 use oxide_agent_core::agent::loop_detection::LoopType;
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup};
+use teloxide::types::{
+    InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup, ReplyMarkup,
+};
+
+use crate::bot::state::ConfirmationType;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Callback constants
@@ -15,6 +19,22 @@ pub const LOOP_CALLBACK_RETRY: &str = "retry_no_loop";
 pub const LOOP_CALLBACK_RESET: &str = "reset_task";
 /// Callback data for cancelling the current task
 pub const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
+/// Callback data for cancelling the current task from topic controls
+pub const AGENT_CALLBACK_CANCEL_TASK: &str = "agent:cancel";
+/// Callback data for clearing memory from topic controls
+pub const AGENT_CALLBACK_CLEAR_MEMORY: &str = "agent:clear";
+/// Callback data for recreating the container from topic controls
+pub const AGENT_CALLBACK_RECREATE_CONTAINER: &str = "agent:recreate";
+/// Callback data for exiting agent mode from topic controls
+pub const AGENT_CALLBACK_EXIT: &str = "agent:exit";
+/// Callback data for confirming memory clear from topic controls
+pub const AGENT_CALLBACK_CONFIRM_CLEAR_YES: &str = "agent:confirm:clear:yes";
+/// Callback data for cancelling memory clear from topic controls
+pub const AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL: &str = "agent:confirm:clear:cancel";
+/// Callback data for confirming container recreation from topic controls
+pub const AGENT_CALLBACK_CONFIRM_RECREATE_YES: &str = "agent:confirm:recreate:yes";
+/// Callback data for cancelling container recreation from topic controls
+pub const AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL: &str = "agent:confirm:recreate:cancel";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Trait definition
@@ -250,6 +270,39 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
     .resize_keyboard()
 }
 
+/// Get topic-friendly inline controls for agent mode.
+#[must_use]
+pub fn get_agent_inline_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![InlineKeyboardButton::callback(
+            "Cancel Task",
+            AGENT_CALLBACK_CANCEL_TASK,
+        )],
+        vec![InlineKeyboardButton::callback(
+            "Clear Memory",
+            AGENT_CALLBACK_CLEAR_MEMORY,
+        )],
+        vec![InlineKeyboardButton::callback(
+            "Recreate Container",
+            AGENT_CALLBACK_RECREATE_CONTAINER,
+        )],
+        vec![InlineKeyboardButton::callback(
+            "Exit Agent Mode",
+            AGENT_CALLBACK_EXIT,
+        )],
+    ])
+}
+
+/// Get agent controls markup for the current chat context.
+#[must_use]
+pub fn agent_control_markup(use_inline: bool) -> ReplyMarkup {
+    if use_inline {
+        get_agent_inline_keyboard().into()
+    } else {
+        get_agent_keyboard().into()
+    }
+}
+
 /// Get the loop action inline keyboard
 #[must_use]
 pub fn loop_action_keyboard() -> InlineKeyboardMarkup {
@@ -273,4 +326,34 @@ pub fn confirmation_keyboard() -> KeyboardMarkup {
         KeyboardButton::new("❌ Cancel"),
     ]])
     .resize_keyboard()
+}
+
+/// Get topic-friendly confirmation controls.
+#[must_use]
+pub fn confirmation_inline_keyboard(action: ConfirmationType) -> InlineKeyboardMarkup {
+    let (yes_callback, cancel_callback) = match action {
+        ConfirmationType::ClearMemory => (
+            AGENT_CALLBACK_CONFIRM_CLEAR_YES,
+            AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
+        ),
+        ConfirmationType::RecreateContainer => (
+            AGENT_CALLBACK_CONFIRM_RECREATE_YES,
+            AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
+        ),
+    };
+
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("Yes", yes_callback),
+        InlineKeyboardButton::callback("Cancel", cancel_callback),
+    ]])
+}
+
+/// Get confirmation markup for the current chat context.
+#[must_use]
+pub fn confirmation_markup(use_inline: bool, action: ConfirmationType) -> ReplyMarkup {
+    if use_inline {
+        confirmation_inline_keyboard(action).into()
+    } else {
+        confirmation_keyboard().into()
+    }
 }

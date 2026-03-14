@@ -1,7 +1,10 @@
 use crate::bot::state::State;
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::UnauthorizedCache;
-use crate::bot::{build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams};
+use crate::bot::{
+    build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams, TelegramThreadKind,
+    TelegramThreadSpec,
+};
 use crate::config::BotSettings;
 use anyhow::{anyhow, Result};
 use oxide_agent_core::llm::{LlmClient, Message as LlmMessage};
@@ -14,7 +17,7 @@ use teloxide::{
     prelude::*,
     types::{
         CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup,
-        ParseMode,
+        ParseMode, ReplyMarkup,
     },
     utils::command::BotCommands,
 };
@@ -22,6 +25,14 @@ use tracing::{info, warn};
 
 const CHAT_ATTACH_PREFIX: &str = "chat_attach:";
 const CHAT_DETACH_CALLBACK: &str = "chat_detach";
+const MENU_CALLBACK_CHAT_MODE: &str = "menu:chat";
+const MENU_CALLBACK_AGENT_MODE: &str = "menu:agent";
+const MENU_CALLBACK_CLEAR_FLOW: &str = "menu:clear";
+const MENU_CALLBACK_CHANGE_MODEL: &str = "menu:model";
+const MENU_CALLBACK_EXTRA_FUNCTIONS: &str = "menu:extra";
+const MENU_CALLBACK_EDIT_PROMPT: &str = "menu:prompt";
+const MENU_CALLBACK_BACK: &str = "menu:back";
+const MENU_CALLBACK_MODEL_PREFIX: &str = "menu:model:";
 
 // Helper function to get user name from Message
 fn get_user_name(msg: &Message) -> String {
@@ -135,6 +146,14 @@ pub fn get_main_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
+#[must_use]
+fn get_main_inline_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("Agent Mode", MENU_CALLBACK_AGENT_MODE),
+        InlineKeyboardButton::callback("Chat Mode", MENU_CALLBACK_CHAT_MODE),
+    ]])
+}
+
 /// Create the chat menu keyboard
 #[must_use]
 pub fn get_chat_keyboard() -> KeyboardMarkup {
@@ -149,6 +168,20 @@ pub fn get_chat_keyboard() -> KeyboardMarkup {
         ],
     ];
     KeyboardMarkup::new(keyboard).resize_keyboard()
+}
+
+#[must_use]
+fn get_chat_inline_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback("Clear Flow", MENU_CALLBACK_CLEAR_FLOW),
+            InlineKeyboardButton::callback("Change Model", MENU_CALLBACK_CHANGE_MODEL),
+        ],
+        vec![
+            InlineKeyboardButton::callback("Extra Functions", MENU_CALLBACK_EXTRA_FUNCTIONS),
+            InlineKeyboardButton::callback("Back", MENU_CALLBACK_BACK),
+        ],
+    ])
 }
 
 /// Create the extra functions keyboard
@@ -167,6 +200,14 @@ pub fn get_extra_functions_keyboard() -> KeyboardMarkup {
         KeyboardButton::new("Back"),
     ]];
     KeyboardMarkup::new(keyboard).resize_keyboard()
+}
+
+#[must_use]
+fn get_extra_functions_inline_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("Edit Prompt", MENU_CALLBACK_EDIT_PROMPT),
+        InlineKeyboardButton::callback("Back", MENU_CALLBACK_BACK),
+    ]])
 }
 
 /// Create the model selection keyboard
@@ -188,6 +229,70 @@ pub fn get_model_keyboard(settings: &BotSettings) -> KeyboardMarkup {
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
+#[must_use]
+fn get_model_inline_keyboard(settings: &BotSettings) -> InlineKeyboardMarkup {
+    let mut keyboard = Vec::new();
+    for (index, (model_name, _)) in settings.agent.get_chat_models().iter().enumerate() {
+        keyboard.push(vec![InlineKeyboardButton::callback(
+            model_name.to_string(),
+            format!("{MENU_CALLBACK_MODEL_PREFIX}{index}"),
+        )]);
+    }
+    keyboard.push(vec![InlineKeyboardButton::callback(
+        "Back",
+        MENU_CALLBACK_BACK,
+    )]);
+    InlineKeyboardMarkup::new(keyboard)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuCallbackData {
+    ChatMode,
+    AgentMode,
+    ClearFlow,
+    ChangeModel,
+    ExtraFunctions,
+    EditPrompt,
+    Back,
+    Model(usize),
+}
+
+fn use_inline_topic_controls(thread_spec: TelegramThreadSpec) -> bool {
+    matches!(thread_spec.kind, TelegramThreadKind::Forum)
+}
+
+pub(crate) fn main_menu_markup(thread_spec: TelegramThreadSpec) -> ReplyMarkup {
+    if use_inline_topic_controls(thread_spec) {
+        get_main_inline_keyboard().into()
+    } else {
+        get_main_keyboard().into()
+    }
+}
+
+fn chat_menu_markup(thread_spec: TelegramThreadSpec) -> ReplyMarkup {
+    if use_inline_topic_controls(thread_spec) {
+        get_chat_inline_keyboard().into()
+    } else {
+        get_chat_keyboard().into()
+    }
+}
+
+fn extra_functions_markup(thread_spec: TelegramThreadSpec) -> ReplyMarkup {
+    if use_inline_topic_controls(thread_spec) {
+        get_extra_functions_inline_keyboard().into()
+    } else {
+        get_extra_functions_keyboard().into()
+    }
+}
+
+fn model_menu_markup(settings: &BotSettings, thread_spec: TelegramThreadSpec) -> ReplyMarkup {
+    if use_inline_topic_controls(thread_spec) {
+        get_model_inline_keyboard(settings).into()
+    } else {
+        get_model_keyboard(settings).into()
+    }
+}
+
 /// Start handler
 ///
 /// # Errors
@@ -200,7 +305,8 @@ pub async fn start(
     settings: Arc<BotSettings>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
@@ -249,7 +355,7 @@ pub async fn start(
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(get_main_keyboard()).await?;
+    req.reply_markup(main_menu_markup(thread_spec)).await?;
 
     Ok(())
 }
@@ -277,7 +383,8 @@ async fn ensure_current_chat_uuid(
 ///
 /// Returns an error if user config cannot be updated or message cannot be sent.
 pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
@@ -296,7 +403,7 @@ pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) ->
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(get_chat_keyboard()).await?;
+    req.reply_markup(chat_menu_markup(thread_spec)).await?;
 
     Ok(())
 }
@@ -369,6 +476,22 @@ fn is_valid_chat_uuid(uuid: &str) -> bool {
 enum ChatFlowCallbackData<'a> {
     Attach(&'a str),
     Detach,
+}
+
+fn parse_menu_callback_data(data: &str) -> Option<MenuCallbackData> {
+    match data {
+        MENU_CALLBACK_CHAT_MODE => Some(MenuCallbackData::ChatMode),
+        MENU_CALLBACK_AGENT_MODE => Some(MenuCallbackData::AgentMode),
+        MENU_CALLBACK_CLEAR_FLOW => Some(MenuCallbackData::ClearFlow),
+        MENU_CALLBACK_CHANGE_MODEL => Some(MenuCallbackData::ChangeModel),
+        MENU_CALLBACK_EXTRA_FUNCTIONS => Some(MenuCallbackData::ExtraFunctions),
+        MENU_CALLBACK_EDIT_PROMPT => Some(MenuCallbackData::EditPrompt),
+        MENU_CALLBACK_BACK => Some(MenuCallbackData::Back),
+        _ => data
+            .strip_prefix(MENU_CALLBACK_MODEL_PREFIX)
+            .and_then(|value| value.parse::<usize>().ok())
+            .map(MenuCallbackData::Model),
+    }
 }
 
 fn parse_chat_flow_callback_data(data: &str) -> Option<ChatFlowCallbackData<'_>> {
@@ -445,6 +568,113 @@ pub async fn handle_chat_flow_callback(
     Ok(true)
 }
 
+/// Handle topic-friendly menu callbacks.
+///
+/// Returns true when callback belongs to topic menu controls.
+pub async fn handle_menu_callback(
+    bot: &Bot,
+    q: &CallbackQuery,
+    storage: &Arc<dyn StorageProvider>,
+    llm: &Arc<LlmClient>,
+    settings: &Arc<BotSettings>,
+    dialogue: &Dialogue<State, InMemStorage<State>>,
+) -> Result<bool> {
+    let Some(data) = q.data.as_deref() else {
+        return Ok(false);
+    };
+
+    let Some(callback_data) = parse_menu_callback_data(data) else {
+        return Ok(false);
+    };
+
+    let Some(msg) = q
+        .message
+        .as_ref()
+        .and_then(|message| message.regular_message())
+    else {
+        bot.answer_callback_query(q.id.clone())
+            .text("Message context unavailable")
+            .await?;
+        return Ok(true);
+    };
+
+    let thread_spec = resolve_thread_spec(msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
+    let user_id = q.from.id.0.cast_signed();
+
+    match callback_data {
+        MenuCallbackData::ChatMode => {
+            activate_chat_mode(bot, msg, storage, dialogue, settings, user_id).await?;
+        }
+        MenuCallbackData::AgentMode => {
+            if check_agent_access(bot, msg, settings, user_id).await? {
+                crate::bot::agent_handlers::activate_agent_mode(
+                    bot.clone(),
+                    msg.clone(),
+                    dialogue.clone(),
+                    llm.clone(),
+                    storage.clone(),
+                    settings.clone(),
+                )
+                .await?;
+            }
+        }
+        MenuCallbackData::ClearFlow => {
+            clear(bot.clone(), msg.clone(), storage.clone()).await?;
+        }
+        MenuCallbackData::ChangeModel => {
+            send_menu_markup(
+                bot,
+                msg.chat.id,
+                "Select a model:",
+                model_menu_markup(settings, thread_spec),
+                outbound_thread,
+            )
+            .await?;
+        }
+        MenuCallbackData::ExtraFunctions => {
+            send_menu_markup(
+                bot,
+                msg.chat.id,
+                "Select an action:",
+                extra_functions_markup(thread_spec),
+                outbound_thread,
+            )
+            .await?;
+        }
+        MenuCallbackData::EditPrompt => {
+            begin_prompt_editing(bot, msg.chat.id, dialogue, thread_spec, outbound_thread).await?;
+        }
+        MenuCallbackData::Back => {
+            handle_back_command(bot, msg.chat.id, dialogue, thread_spec, outbound_thread).await?;
+        }
+        MenuCallbackData::Model(index) => {
+            let models = settings.agent.get_chat_models();
+            let Some((model_name, _)) = models.get(index) else {
+                bot.answer_callback_query(q.id.clone())
+                    .text("Model no longer available")
+                    .await?;
+                return Ok(true);
+            };
+
+            storage
+                .update_user_model(user_id, model_name.to_string())
+                .await?;
+            let mut req = bot
+                .send_message(msg.chat.id, format!("Model changed to <b>{model_name}</b>"))
+                .parse_mode(ParseMode::Html);
+            if let Some(thread_id) = outbound_thread.message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            req.reply_markup(chat_menu_markup(thread_spec)).await?;
+        }
+    }
+
+    bot.answer_callback_query(q.id.clone()).await?;
+    Ok(true)
+}
+
 /// Healthcheck handler
 ///
 /// # Errors
@@ -517,7 +747,8 @@ pub async fn handle_text(
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let text = msg.text().unwrap_or("").to_string();
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = get_user_id_safe(&msg);
     let user_name = get_user_name(&msg);
 
@@ -556,7 +787,7 @@ pub async fn handle_text(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_main_keyboard()).await?;
+        req.reply_markup(main_menu_markup(thread_spec)).await?;
         touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
@@ -571,7 +802,7 @@ pub async fn handle_text(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_chat_keyboard()).await?;
+        req.reply_markup(chat_menu_markup(thread_spec)).await?;
         touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
@@ -604,7 +835,8 @@ async fn handle_menu_commands(
     settings: &Arc<BotSettings>,
     text: &str,
 ) -> Result<bool> {
-    let outbound_thread = outbound_thread_from_message(msg);
+    let thread_spec = resolve_thread_spec(msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = get_user_id_safe(msg);
 
     match text {
@@ -616,22 +848,22 @@ async fn handle_menu_commands(
             Ok(true)
         }
         "Change Model" => {
-            send_menu_keyboard(
+            send_menu_markup(
                 bot,
                 msg.chat.id,
                 "Select a model:",
-                get_model_keyboard(settings),
+                model_menu_markup(settings, thread_spec),
                 outbound_thread,
             )
             .await?;
             Ok(true)
         }
         "Extra Functions" => {
-            send_menu_keyboard(
+            send_menu_markup(
                 bot,
                 msg.chat.id,
                 "Select an action:",
-                get_extra_functions_keyboard(),
+                extra_functions_markup(thread_spec),
                 outbound_thread,
             )
             .await?;
@@ -651,8 +883,12 @@ async fn handle_menu_commands(
             }
             Ok(true)
         }
-        "Edit Prompt" => begin_prompt_editing(bot, msg.chat.id, dialogue, outbound_thread).await,
-        "Back" => handle_back_command(bot, msg.chat.id, dialogue, outbound_thread).await,
+        "Edit Prompt" => {
+            begin_prompt_editing(bot, msg.chat.id, dialogue, thread_spec, outbound_thread).await
+        }
+        "Back" => {
+            handle_back_command(bot, msg.chat.id, dialogue, thread_spec, outbound_thread).await
+        }
         "⬅️ Exit Agent Mode" | "❌ Cancel Task" | "🗑 Clear Memory" => {
             let response = if text == "⬅️ Exit Agent Mode" {
                 "👋 Exited agent mode"
@@ -661,11 +897,11 @@ async fn handle_menu_commands(
             } else {
                 "Agent memory is not active."
             };
-            send_menu_keyboard(
+            send_menu_markup(
                 bot,
                 msg.chat.id,
                 response,
-                get_main_keyboard(),
+                main_menu_markup(thread_spec),
                 outbound_thread,
             )
             .await?;
@@ -684,6 +920,7 @@ async fn activate_chat_mode(
     user_id: i64,
 ) -> Result<bool> {
     let outbound_thread = outbound_thread_from_message(msg);
+    let thread_spec = resolve_thread_spec(msg);
     let _chat_uuid = ensure_current_chat_uuid(storage, user_id).await?;
     let _ = storage
         .update_user_state(user_id, "chat_mode".to_string())
@@ -705,15 +942,15 @@ async fn activate_chat_mode(
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(get_chat_keyboard()).await?;
+    req.reply_markup(chat_menu_markup(thread_spec)).await?;
     Ok(true)
 }
 
-async fn send_menu_keyboard(
+async fn send_menu_markup(
     bot: &Bot,
     chat_id: ChatId,
     text: impl Into<String>,
-    keyboard: KeyboardMarkup,
+    reply_markup: ReplyMarkup,
     outbound_thread: OutboundThreadParams,
 ) -> Result<()> {
     let mut req = bot.send_message(chat_id, text);
@@ -721,7 +958,7 @@ async fn send_menu_keyboard(
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(keyboard).await?;
+    req.reply_markup(reply_markup).await?;
     Ok(())
 }
 
@@ -746,17 +983,18 @@ async fn begin_prompt_editing(
     bot: &Bot,
     chat_id: ChatId,
     dialogue: &Dialogue<State, InMemStorage<State>>,
+    thread_spec: TelegramThreadSpec,
     outbound_thread: OutboundThreadParams,
 ) -> Result<bool> {
     dialogue
         .update(State::EditingPrompt)
         .await
         .map_err(|e| anyhow!(e.to_string()))?;
-    send_menu_keyboard(
+    send_menu_markup(
         bot,
         chat_id,
         "Enter a new system prompt. To cancel, type 'Back':",
-        get_extra_functions_keyboard(),
+        extra_functions_markup(thread_spec),
         outbound_thread,
     )
     .await?;
@@ -767,6 +1005,7 @@ async fn handle_back_command(
     bot: &Bot,
     chat_id: ChatId,
     dialogue: &Dialogue<State, InMemStorage<State>>,
+    thread_spec: TelegramThreadSpec,
     outbound_thread: OutboundThreadParams,
 ) -> Result<bool> {
     let state = dialogue.get().await?.unwrap_or(State::Start);
@@ -777,11 +1016,11 @@ async fn handle_back_command(
             .map_err(|e| anyhow!(e.to_string()))?;
     }
 
-    send_menu_keyboard(
+    send_menu_markup(
         bot,
         chat_id,
         "Please select a mode:",
-        get_main_keyboard(),
+        main_menu_markup(thread_spec),
         outbound_thread,
     )
     .await?;
@@ -833,7 +1072,8 @@ pub async fn handle_editing_prompt(
     storage: Arc<dyn StorageProvider>,
     dialogue: Dialogue<State, InMemStorage<State>>,
 ) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let text = msg.text().unwrap_or("");
     let user_id = get_user_id_safe(&msg);
 
@@ -847,7 +1087,7 @@ pub async fn handle_editing_prompt(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_chat_keyboard()).await?;
+        req.reply_markup(chat_menu_markup(thread_spec)).await?;
     } else {
         storage
             .update_user_prompt(user_id, text.to_string())
@@ -861,7 +1101,7 @@ pub async fn handle_editing_prompt(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_chat_keyboard()).await?;
+        req.reply_markup(chat_menu_markup(thread_spec)).await?;
     }
     Ok(())
 }
@@ -968,7 +1208,8 @@ pub async fn handle_voice(
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = get_user_id_safe(&msg);
     let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
     if !route.allows_processing() {
@@ -994,7 +1235,7 @@ pub async fn handle_voice(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_main_keyboard()).await?;
+        req.reply_markup(main_menu_markup(thread_spec)).await?;
         return Ok(());
     }
 
@@ -1087,7 +1328,8 @@ pub async fn handle_photo(
     dialogue: Dialogue<State, InMemStorage<State>>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = get_user_id_safe(&msg);
     let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
 
@@ -1114,7 +1356,7 @@ pub async fn handle_photo(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_main_keyboard()).await?;
+        req.reply_markup(main_menu_markup(thread_spec)).await?;
         return Ok(());
     }
 
@@ -1273,8 +1515,10 @@ fn pick_system_prompt(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_valid_chat_uuid, parse_chat_flow_callback_data, pick_system_prompt,
-        ChatFlowCallbackData, CHAT_ATTACH_PREFIX, CHAT_DETACH_CALLBACK,
+        is_valid_chat_uuid, parse_chat_flow_callback_data, parse_menu_callback_data,
+        pick_system_prompt, ChatFlowCallbackData, MenuCallbackData, CHAT_ATTACH_PREFIX,
+        CHAT_DETACH_CALLBACK, MENU_CALLBACK_AGENT_MODE, MENU_CALLBACK_BACK,
+        MENU_CALLBACK_MODEL_PREFIX,
     };
 
     #[test]
@@ -1327,6 +1571,34 @@ mod tests {
     #[test]
     fn parse_chat_flow_callback_data_rejects_unknown_callback() {
         assert_eq!(parse_chat_flow_callback_data("unknown"), None);
+    }
+
+    #[test]
+    fn parse_menu_callback_data_parses_simple_actions() {
+        assert_eq!(
+            parse_menu_callback_data(MENU_CALLBACK_AGENT_MODE),
+            Some(MenuCallbackData::AgentMode)
+        );
+        assert_eq!(
+            parse_menu_callback_data(MENU_CALLBACK_BACK),
+            Some(MenuCallbackData::Back)
+        );
+    }
+
+    #[test]
+    fn parse_menu_callback_data_parses_model_selection() {
+        assert_eq!(
+            parse_menu_callback_data(&format!("{MENU_CALLBACK_MODEL_PREFIX}3")),
+            Some(MenuCallbackData::Model(3))
+        );
+    }
+
+    #[test]
+    fn parse_menu_callback_data_rejects_invalid_model_selection() {
+        assert_eq!(
+            parse_menu_callback_data(&format!("{MENU_CALLBACK_MODEL_PREFIX}x")),
+            None
+        );
     }
 
     #[test]
