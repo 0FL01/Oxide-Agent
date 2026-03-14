@@ -11,8 +11,11 @@ use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::views::{
-    confirmation_keyboard, get_agent_keyboard, AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL,
-    LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
+    agent_control_markup, confirmation_markup, AgentView, DefaultAgentView,
+    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
+    AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
+    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_EXIT, AGENT_CALLBACK_RECREATE_CONTAINER,
+    LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
 use crate::bot::{
     build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams, TelegramThreadKind,
@@ -35,7 +38,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQuery, ParseMode, ThreadId};
+use teloxide::types::{CallbackQuery, ParseMode, ReplyMarkup, ThreadId};
 use tracing::{debug, info, warn};
 
 /// Type alias for dialogue
@@ -278,7 +281,7 @@ async fn send_agent_message_with_keyboard(
     bot: &Bot,
     chat_id: ChatId,
     text: impl Into<String>,
-    keyboard: &teloxide::types::KeyboardMarkup,
+    reply_markup: &ReplyMarkup,
     outbound_thread: OutboundThreadParams,
 ) -> Result<()> {
     let mut req = bot.send_message(chat_id, text);
@@ -286,16 +289,20 @@ async fn send_agent_message_with_keyboard(
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(keyboard.clone()).await?;
+    req.reply_markup(reply_markup.clone()).await?;
     Ok(())
 }
 
 struct ConfirmationSendCtx<'a> {
     bot: &'a Bot,
     chat_id: ChatId,
-    keyboard: &'a teloxide::types::KeyboardMarkup,
+    reply_markup: &'a ReplyMarkup,
     manager_default_chat_id: Option<ChatId>,
     outbound_thread: OutboundThreadParams,
+}
+
+fn use_inline_topic_controls(thread_spec: TelegramThreadSpec) -> bool {
+    matches!(thread_spec.kind, TelegramThreadKind::Forum)
 }
 
 async fn handle_clear_memory_confirmation(
@@ -312,7 +319,7 @@ async fn handle_clear_memory_confirmation(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::memory_cleared(),
-                send_ctx.keyboard,
+                send_ctx.reply_markup,
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -322,7 +329,7 @@ async fn handle_clear_memory_confirmation(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::clear_blocked_by_task(),
-                send_ctx.keyboard,
+                send_ctx.reply_markup,
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -333,7 +340,7 @@ async fn handle_clear_memory_confirmation(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::memory_cleared(),
-                send_ctx.keyboard,
+                send_ctx.reply_markup,
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -383,7 +390,7 @@ async fn handle_recreate_container_confirmation(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::container_recreated(),
-                send_ctx.keyboard,
+                send_ctx.reply_markup,
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -394,7 +401,7 @@ async fn handle_recreate_container_confirmation(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::container_error(&format!("{e:#}")),
-                send_ctx.keyboard,
+                send_ctx.reply_markup,
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -404,7 +411,7 @@ async fn handle_recreate_container_confirmation(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::container_recreate_blocked_by_task(),
-                send_ctx.keyboard,
+                send_ctx.reply_markup,
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -414,7 +421,7 @@ async fn handle_recreate_container_confirmation(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::sandbox_access_error(),
-                send_ctx.keyboard,
+                send_ctx.reply_markup,
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -474,7 +481,8 @@ pub async fn activate_agent_mode(
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(get_agent_keyboard()).await?;
+    req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
+        .await?;
 
     Ok(())
 }
@@ -547,7 +555,8 @@ pub async fn handle_agent_message(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_agent_keyboard()).await?;
+        req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
+            .await?;
         touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
@@ -1527,7 +1536,61 @@ struct LoopCallbackContext {
     user_id: i64,
     session_keys: AgentModeSessionKeys,
     manager_default_chat_id: Option<ChatId>,
+    thread_spec: TelegramThreadSpec,
     outbound_thread: OutboundThreadParams,
+}
+
+#[derive(Clone)]
+enum AgentCallbackAction {
+    LoopRetry,
+    LoopReset,
+    LoopCancel,
+    CancelTask,
+    StartConfirmation(ConfirmationType),
+    Exit,
+    ResolveConfirmation(ConfirmationType, bool),
+}
+
+struct AgentCallbackContext {
+    loop_ctx: LoopCallbackContext,
+    msg: Message,
+    dialogue: AgentDialogue,
+    storage: Arc<dyn StorageProvider>,
+    llm: Arc<LlmClient>,
+    settings: Arc<BotSettings>,
+}
+
+fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAction> {
+    match data {
+        LOOP_CALLBACK_RETRY => Some(AgentCallbackAction::LoopRetry),
+        LOOP_CALLBACK_RESET => Some(AgentCallbackAction::LoopReset),
+        LOOP_CALLBACK_CANCEL => Some(AgentCallbackAction::LoopCancel),
+        AGENT_CALLBACK_CANCEL_TASK => Some(AgentCallbackAction::CancelTask),
+        AGENT_CALLBACK_CLEAR_MEMORY => Some(AgentCallbackAction::StartConfirmation(
+            ConfirmationType::ClearMemory,
+        )),
+        AGENT_CALLBACK_RECREATE_CONTAINER => Some(AgentCallbackAction::StartConfirmation(
+            ConfirmationType::RecreateContainer,
+        )),
+        AGENT_CALLBACK_EXIT => Some(AgentCallbackAction::Exit),
+        AGENT_CALLBACK_CONFIRM_CLEAR_YES => Some(AgentCallbackAction::ResolveConfirmation(
+            ConfirmationType::ClearMemory,
+            true,
+        )),
+        AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL => Some(AgentCallbackAction::ResolveConfirmation(
+            ConfirmationType::ClearMemory,
+            false,
+        )),
+        AGENT_CALLBACK_CONFIRM_RECREATE_YES => Some(AgentCallbackAction::ResolveConfirmation(
+            ConfirmationType::RecreateContainer,
+            true,
+        )),
+        AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL => Some(AgentCallbackAction::ResolveConfirmation(
+            ConfirmationType::RecreateContainer,
+            false,
+        )),
+        _ => None,
+    }
 }
 
 async fn handle_loop_retry(
@@ -1634,7 +1697,7 @@ async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
                 &ctx.bot,
                 ctx.chat_id,
                 DefaultAgentView::task_reset(),
-                &get_agent_keyboard(),
+                &agent_control_markup(use_inline_topic_controls(ctx.thread_spec)),
                 ctx.outbound_thread,
             )
             .await?;
@@ -1662,63 +1725,152 @@ async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
     Ok(())
 }
 
-/// Handle loop-detection inline keyboard callbacks.
+async fn handle_agent_confirmation_callback(
+    ctx: &AgentCallbackContext,
+    action: ConfirmationType,
+    confirmed: bool,
+) -> Result<()> {
+    let loop_ctx = &ctx.loop_ctx;
+    let outbound_thread = build_outbound_thread_params(loop_ctx.thread_spec);
+    let reply_markup = agent_control_markup(use_inline_topic_controls(loop_ctx.thread_spec));
+
+    ctx.dialogue.update(State::AgentMode).await?;
+
+    let send_ctx = ConfirmationSendCtx {
+        bot: &loop_ctx.bot,
+        chat_id: loop_ctx.chat_id,
+        reply_markup: &reply_markup,
+        manager_default_chat_id: loop_ctx.manager_default_chat_id,
+        outbound_thread,
+    };
+
+    if confirmed {
+        match action {
+            ConfirmationType::ClearMemory => {
+                handle_clear_memory_confirmation(
+                    loop_ctx.user_id,
+                    loop_ctx.session_keys,
+                    &ctx.storage,
+                    &send_ctx,
+                )
+                .await?;
+            }
+            ConfirmationType::RecreateContainer => {
+                handle_recreate_container_confirmation(
+                    loop_ctx.user_id,
+                    loop_ctx.session_keys,
+                    &ctx.storage,
+                    &ctx.llm,
+                    &ctx.settings,
+                    &send_ctx,
+                )
+                .await?;
+            }
+        }
+    } else {
+        info!(user_id = loop_ctx.user_id, action = ?action, "User cancelled destructive action");
+        send_agent_message_with_keyboard(
+            &loop_ctx.bot,
+            loop_ctx.chat_id,
+            DefaultAgentView::operation_cancelled(),
+            &reply_markup,
+            outbound_thread,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn dispatch_agent_callback(
+    action: AgentCallbackAction,
+    ctx: AgentCallbackContext,
+) -> Result<()> {
+    match action {
+        AgentCallbackAction::LoopRetry => {
+            handle_loop_retry(
+                &ctx.loop_ctx,
+                ctx.storage.clone(),
+                ctx.llm.clone(),
+                ctx.settings,
+            )
+            .await
+        }
+        AgentCallbackAction::LoopReset => handle_loop_reset(&ctx.loop_ctx).await,
+        AgentCallbackAction::LoopCancel | AgentCallbackAction::CancelTask => {
+            cancel_agent_task_by_id(
+                ctx.loop_ctx.bot.clone(),
+                ctx.loop_ctx.session_keys,
+                ctx.loop_ctx.chat_id,
+                ctx.loop_ctx.thread_spec,
+                ctx.loop_ctx.outbound_thread.message_thread_id,
+            )
+            .await
+        }
+        AgentCallbackAction::StartConfirmation(action) => {
+            confirm_destructive_action(action, ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue)
+                .await
+        }
+        AgentCallbackAction::Exit => {
+            exit_agent_mode(ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue, ctx.storage).await
+        }
+        AgentCallbackAction::ResolveConfirmation(action, confirmed) => {
+            handle_agent_confirmation_callback(&ctx, action, confirmed).await
+        }
+    }
+}
+
+/// Handle agent inline keyboard callbacks.
 ///
 /// # Errors
 ///
 /// Returns an error if Telegram API calls fail.
-pub async fn handle_loop_callback(
+pub async fn handle_agent_callback(
     bot: Bot,
     q: CallbackQuery,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
+    dialogue: AgentDialogue,
 ) -> Result<()> {
     let Some(data) = q.data.as_deref() else {
         return Ok(());
     };
 
+    let Some(action) = parse_agent_callback_action(data) else {
+        return Ok(());
+    };
+
     let _ = bot.answer_callback_query(q.id.clone()).await;
 
-    let user_id = q.from.id.0.cast_signed();
-    let chat_id = q
-        .message
-        .as_ref()
-        .map(|msg| msg.chat().id)
-        .ok_or_else(|| anyhow::anyhow!("Callback message missing chat id"))?;
-    let thread_spec = q
+    let msg = q
         .message
         .as_ref()
         .and_then(|message| message.regular_message())
-        .map(resolve_thread_spec);
-    let thread_id = thread_spec.and_then(|spec| spec.thread_id);
-    let session_keys = agent_mode_session_keys(user_id, chat_id, thread_id);
-    let ctx = LoopCallbackContext {
-        bot,
-        chat_id,
-        user_id,
-        session_keys,
-        manager_default_chat_id: thread_spec
-            .and_then(|spec| manager_default_chat_id(chat_id, spec)),
-        outbound_thread: outbound_thread_from_callback(&q),
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Callback message missing regular message context"))?;
+    let user_id = q.from.id.0.cast_signed();
+    let chat_id = msg.chat.id;
+    let thread_spec = resolve_thread_spec(&msg);
+    let session_keys = agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id);
+    let ctx = AgentCallbackContext {
+        loop_ctx: LoopCallbackContext {
+            bot,
+            chat_id,
+            user_id,
+            session_keys,
+            manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
+            thread_spec,
+            outbound_thread: outbound_thread_from_callback(&q),
+        },
+        msg,
+        dialogue,
+        storage,
+        llm,
+        settings,
     };
 
-    match data {
-        LOOP_CALLBACK_RETRY => handle_loop_retry(&ctx, storage, llm, settings).await?,
-        LOOP_CALLBACK_RESET => handle_loop_reset(&ctx).await?,
-        LOOP_CALLBACK_CANCEL => {
-            cancel_agent_task_by_id(
-                ctx.bot.clone(),
-                ctx.session_keys,
-                ctx.chat_id,
-                ctx.outbound_thread.message_thread_id,
-            )
-            .await?;
-        }
-        _ => {}
-    }
-
-    Ok(())
+    dispatch_agent_callback(action, ctx).await
 }
 
 /// Cancel the current agent task
@@ -1741,14 +1893,16 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_agent_keyboard()).await?;
+        req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
+            .await?;
     } else {
         let mut req = bot.send_message(msg.chat.id, text);
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(get_agent_keyboard()).await?;
+        req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
+            .await?;
     }
     Ok(())
 }
@@ -1757,6 +1911,7 @@ async fn cancel_agent_task_by_id(
     bot: Bot,
     session_keys: AgentModeSessionKeys,
     chat_id: ChatId,
+    thread_spec: TelegramThreadSpec,
     message_thread_id: Option<ThreadId>,
 ) -> Result<()> {
     let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
@@ -1768,7 +1923,7 @@ async fn cancel_agent_task_by_id(
             &bot,
             chat_id,
             DefaultAgentView::no_active_task(),
-            &get_agent_keyboard(),
+            &agent_control_markup(use_inline_topic_controls(thread_spec)),
             outbound_thread,
         )
         .await?;
@@ -1777,7 +1932,7 @@ async fn cancel_agent_task_by_id(
             &bot,
             chat_id,
             text,
-            &get_agent_keyboard(),
+            &agent_control_markup(use_inline_topic_controls(thread_spec)),
             outbound_thread,
         )
         .await?;
@@ -1813,13 +1968,13 @@ pub async fn exit_agent_mode(
         .await;
     dialogue.update(State::Start).await?;
 
-    let keyboard = crate::bot::handlers::get_main_keyboard();
     let mut req = bot.send_message(msg.chat.id, "👋 Exited agent mode. Select a working mode:");
     if let Some(thread_id) = outbound_thread.message_thread_id {
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(keyboard).await?;
+    req.reply_markup(crate::bot::handlers::main_menu_markup(thread_spec))
+        .await?;
     Ok(())
 }
 
@@ -1834,7 +1989,8 @@ pub async fn confirm_destructive_action(
     msg: Message,
     dialogue: AgentDialogue,
 ) -> Result<()> {
-    let outbound_thread = outbound_thread_from_message(&msg);
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
     dialogue
         .update(State::AgentConfirmation(action.clone()))
         .await?;
@@ -1851,7 +2007,11 @@ pub async fn confirm_destructive_action(
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(confirmation_keyboard()).await?;
+    req.reply_markup(confirmation_markup(
+        use_inline_topic_controls(thread_spec),
+        action,
+    ))
+    .await?;
     Ok(())
 }
 
@@ -1888,11 +2048,11 @@ pub async fn handle_agent_confirmation(
     }
 
     dialogue.update(State::AgentMode).await?;
-    let keyboard = get_agent_keyboard();
+    let reply_markup = agent_control_markup(use_inline_topic_controls(thread_spec));
     let send_ctx = ConfirmationSendCtx {
         bot: &bot,
         chat_id,
-        keyboard: &keyboard,
+        reply_markup: &reply_markup,
         manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
         outbound_thread,
     };
@@ -1921,7 +2081,7 @@ pub async fn handle_agent_confirmation(
                 &bot,
                 chat_id,
                 DefaultAgentView::operation_cancelled(),
-                &keyboard,
+                &reply_markup,
                 outbound_thread,
             )
             .await?;
