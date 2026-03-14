@@ -7,7 +7,7 @@ use super::identity::SessionId;
 use super::memory::AgentMemory;
 // use super::providers::TodoList;
 use crate::config::{AGENT_MAX_TOKENS, AGENT_TIMEOUT_SECS};
-use crate::sandbox::SandboxManager;
+use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -44,6 +44,8 @@ pub struct AgentSession {
     pub memory: AgentMemory,
     /// Docker sandbox for code execution (lazily initialized)
     sandbox: Option<SandboxManager>,
+    /// Stable scope used to resolve this session's persistent sandbox container.
+    sandbox_scope: SandboxScope,
     /// When the current task started
     started_at: Option<Instant>,
     /// Unique ID for the current task execution (for log correlation)
@@ -66,10 +68,17 @@ impl AgentSession {
     /// Create a new agent session for a transport session
     #[must_use]
     pub fn new(session_id: SessionId) -> Self {
+        Self::new_with_sandbox_scope(session_id, SandboxScope::from(session_id.as_i64()))
+    }
+
+    /// Create a new agent session with an explicit sandbox scope.
+    #[must_use]
+    pub fn new_with_sandbox_scope(session_id: SessionId, sandbox_scope: SandboxScope) -> Self {
         Self {
             session_id,
             memory: AgentMemory::new(AGENT_MAX_TOKENS),
             sandbox: None,
+            sandbox_scope,
             started_at: None,
             current_task_id: None,
             status: AgentStatus::Idle,
@@ -78,6 +87,12 @@ impl AgentSession {
             loaded_skills: HashSet::new(),
             skill_token_count: 0,
         }
+    }
+
+    /// Stable sandbox scope for this session.
+    #[must_use]
+    pub fn sandbox_scope(&self) -> &SandboxScope {
+        &self.sandbox_scope
     }
 
     /// Renew the cancellation token before a new task
@@ -212,7 +227,7 @@ impl AgentSession {
 
         if needs_new {
             debug!(session_id = %self.session_id, "Creating new sandbox");
-            let mut sandbox = SandboxManager::new(self.session_id.as_i64()).await?;
+            let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
             sandbox.create_sandbox().await?;
             self.sandbox = Some(sandbox);
             info!(session_id = %self.session_id, "Sandbox created for session");
@@ -230,7 +245,7 @@ impl AgentSession {
     /// Returns an error if sandbox manager initialization or recreation fails.
     pub async fn force_recreate_sandbox(&mut self) -> Result<()> {
         if self.sandbox.is_none() {
-            self.sandbox = Some(SandboxManager::new(self.session_id.as_i64()).await?);
+            self.sandbox = Some(SandboxManager::new(self.sandbox_scope.clone()).await?);
         }
 
         if let Some(sandbox) = self.sandbox.as_mut() {

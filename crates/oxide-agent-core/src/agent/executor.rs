@@ -156,25 +156,25 @@ impl AgentExecutor {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
 
-        let session_id = self.session.session_id.as_i64();
+        let sandbox_scope = self.session.sandbox_scope().clone();
         let sandbox_provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(session_id).with_progress_tx(tx.clone())
+            SandboxProvider::new(sandbox_scope.clone()).with_progress_tx(tx.clone())
         } else {
-            SandboxProvider::new(session_id)
+            SandboxProvider::new(sandbox_scope.clone())
         };
         registry.register(Box::new(sandbox_provider));
-        registry.register(Box::new(FileHosterProvider::new(session_id)));
+        registry.register(Box::new(FileHosterProvider::new(sandbox_scope.clone())));
 
         let ytdlp_provider = if let Some(tx) = progress_tx {
-            YtdlpProvider::new(session_id).with_progress_tx(tx.clone())
+            YtdlpProvider::new(sandbox_scope.clone()).with_progress_tx(tx.clone())
         } else {
-            YtdlpProvider::new(session_id)
+            YtdlpProvider::new(sandbox_scope.clone())
         };
         registry.register(Box::new(ytdlp_provider));
 
         registry.register(Box::new(DelegationProvider::new(
             self.runner.llm_client(),
-            session_id,
+            sandbox_scope,
             self.settings.clone(),
         )));
 

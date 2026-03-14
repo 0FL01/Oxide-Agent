@@ -8,7 +8,7 @@
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
-use crate::sandbox::SandboxManager;
+use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -86,17 +86,17 @@ const DOWNLOADS_DIR: &str = "/workspace/downloads";
 /// Provider for yt-dlp video tools (executed in sandbox)
 pub struct YtdlpProvider {
     sandbox: Arc<Mutex<Option<SandboxManager>>>,
-    user_id: i64,
+    sandbox_scope: SandboxScope,
     progress_tx: Option<Sender<AgentEvent>>,
 }
 
 impl YtdlpProvider {
     /// Create a new YtdlpProvider (sandbox is lazily initialized)
     #[must_use]
-    pub fn new(user_id: i64) -> Self {
+    pub fn new(sandbox_scope: impl Into<SandboxScope>) -> Self {
         Self {
             sandbox: Arc::new(Mutex::new(None)),
-            user_id,
+            sandbox_scope: sandbox_scope.into(),
             progress_tx: None,
         }
     }
@@ -120,8 +120,8 @@ impl YtdlpProvider {
             return Ok(());
         }
 
-        debug!(user_id = self.user_id, "Creating sandbox for YtdlpProvider");
-        let mut sandbox = SandboxManager::new(self.user_id).await?;
+        debug!(scope = %self.sandbox_scope.namespace(), "Creating sandbox for YtdlpProvider");
+        let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
         sandbox.create_sandbox().await?;
 
         // Create downloads directory

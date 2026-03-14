@@ -4,7 +4,7 @@
 //! multimodal model before passing to the agent for execution.
 
 use crate::llm::LlmClient;
-use crate::sandbox::SandboxManager;
+use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;
@@ -15,7 +15,7 @@ const UPLOAD_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
 /// Preprocessor for converting multimodal inputs to text
 pub struct Preprocessor {
     llm_client: Arc<LlmClient>,
-    user_id: i64,
+    sandbox_scope: SandboxScope,
 }
 
 impl Preprocessor {
@@ -34,10 +34,10 @@ impl Preprocessor {
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// ```
     #[must_use]
-    pub const fn new(llm_client: Arc<LlmClient>, user_id: i64) -> Self {
+    pub fn new(llm_client: Arc<LlmClient>, sandbox_scope: impl Into<SandboxScope>) -> Self {
         Self {
             llm_client,
-            user_id,
+            sandbox_scope: sandbox_scope.into(),
         }
     }
 
@@ -177,7 +177,7 @@ impl Preprocessor {
         let upload_path = format!("/workspace/uploads/{}", Self::sanitize_filename(&file_name));
 
         // Lazy-create sandbox
-        let mut manager = SandboxManager::new(self.user_id).await?;
+        let mut manager = SandboxManager::new(self.sandbox_scope.clone()).await?;
         if !manager.is_running() {
             manager.create_sandbox().await?;
         }

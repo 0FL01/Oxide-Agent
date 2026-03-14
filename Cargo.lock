@@ -2991,6 +2991,7 @@ dependencies = [
  "oxide-agent-core",
  "oxide-agent-runtime",
  "serde",
+ "serde_json",
  "teloxide",
  "tokio",
  "tracing",

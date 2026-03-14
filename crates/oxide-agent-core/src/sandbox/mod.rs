@@ -3,5 +3,7 @@
 //! Provides isolated execution environments for agents using Docker containers.
 
 pub mod manager;
+pub mod scope;
 
 pub use manager::{ExecResult, SandboxManager};
+pub use scope::SandboxScope;
