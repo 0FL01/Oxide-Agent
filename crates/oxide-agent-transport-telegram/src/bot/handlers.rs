@@ -5,6 +5,7 @@ use crate::bot::context::{
 };
 use crate::bot::state::State;
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
+use crate::bot::views::{agent_control_markup, AgentView, DefaultAgentView};
 use crate::bot::UnauthorizedCache;
 use crate::bot::{
     build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams, TelegramThreadKind,
@@ -68,6 +69,45 @@ pub fn get_user_id_safe(msg: &Message) -> i64 {
     msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed())
 }
 
+fn can_use_agent_mode(settings: &BotSettings, user_id: i64) -> bool {
+    let agent_allowed = settings.telegram.agent_allowed_users();
+    !agent_allowed.is_empty() && agent_allowed.contains(&user_id)
+}
+
+fn should_default_to_agent_mode(is_supergroup: bool, settings: &BotSettings, user_id: i64) -> bool {
+    is_supergroup && can_use_agent_mode(settings, user_id)
+}
+
+async fn current_or_default_context_state(
+    storage: &Arc<dyn StorageProvider>,
+    settings: &Arc<BotSettings>,
+    user_id: i64,
+    msg: &Message,
+    thread_spec: TelegramThreadSpec,
+) -> Result<Option<String>> {
+    let state = current_context_state(storage, user_id, msg.chat.id, thread_spec).await?;
+    if state.is_some()
+        || !should_default_to_agent_mode(msg.chat.is_supergroup(), settings.as_ref(), user_id)
+    {
+        return Ok(state);
+    }
+
+    info!(
+        "Defaulting to agent mode for user {user_id} in supergroup {}",
+        msg.chat.id.0
+    );
+    set_current_context_state(
+        storage,
+        user_id,
+        msg.chat.id,
+        thread_spec,
+        Some("agent_mode"),
+    )
+    .await?;
+
+    Ok(Some("agent_mode".to_string()))
+}
+
 /// Checks if the user has a persisted state and redirects if necessary.
 /// Returns true if redirected (handled), false otherwise.
 ///
@@ -85,8 +125,8 @@ async fn check_state_and_redirect(
     let user_id = get_user_id_safe(msg);
     let thread_spec = resolve_thread_spec(msg);
 
-    if let Ok(Some(state_str)) =
-        current_context_state(storage, user_id, msg.chat.id, thread_spec).await
+    if let Some(state_str) =
+        current_or_default_context_state(storage, settings, user_id, msg, thread_spec).await?
     {
         if state_str == "agent_mode" {
             info!("Restoring agent mode for user {user_id} based on persisted state.");
@@ -319,6 +359,33 @@ pub async fn start(
     let user_name = get_user_name(&msg);
 
     info!("User {user_id} ({user_name}) initiated /start command.");
+
+    if should_default_to_agent_mode(msg.chat.is_supergroup(), settings.as_ref(), user_id) {
+        set_current_context_state(
+            &storage,
+            user_id,
+            msg.chat.id,
+            thread_spec,
+            Some("agent_mode"),
+        )
+        .await?;
+        dialogue
+            .update(State::AgentMode)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+
+        let (model_id, _, _) = settings.agent.get_configured_agent_model();
+        let mut req = bot
+            .send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
+            .parse_mode(ParseMode::Html);
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
+            .await?;
+        return Ok(());
+    }
 
     // Reset dialogue state to Start (exit agent mode if active)
     dialogue
@@ -619,6 +686,7 @@ pub async fn handle_menu_callback(
                     llm.clone(),
                     storage.clone(),
                     settings.clone(),
+                    user_id,
                 )
                 .await?;
             }
@@ -882,6 +950,7 @@ async fn handle_menu_commands(
                     llm.clone(),
                     storage.clone(),
                     settings.clone(),
+                    user_id,
                 )
                 .await?;
             }
@@ -1044,7 +1113,7 @@ async fn check_agent_access(
 ) -> Result<bool> {
     let outbound_thread = outbound_thread_from_message(msg);
     let agent_allowed = settings.telegram.agent_allowed_users();
-    if !agent_allowed.contains(&user_id) && !agent_allowed.is_empty() {
+    if !agent_allowed.is_empty() && !can_use_agent_mode(settings.as_ref(), user_id) {
         let mut req = bot.send_message(
             msg.chat.id,
             "⛔️ You do not have permission to access agent mode.",
@@ -1471,7 +1540,8 @@ pub async fn handle_document(
     }
 
     let thread_spec = resolve_thread_spec(&msg);
-    let state = current_context_state(&storage, user_id, msg.chat.id, thread_spec).await?;
+    let state =
+        current_or_default_context_state(&storage, &settings, user_id, &msg, thread_spec).await?;
 
     if state.as_deref() == Some("agent_mode") {
         let result = Box::pin(super::agent_handlers::handle_agent_message(
@@ -1532,10 +1602,25 @@ fn pick_system_prompt(
 mod tests {
     use super::{
         is_valid_chat_uuid, parse_chat_flow_callback_data, parse_menu_callback_data,
-        pick_system_prompt, ChatFlowCallbackData, MenuCallbackData, CHAT_ATTACH_PREFIX,
-        CHAT_DETACH_CALLBACK, MENU_CALLBACK_AGENT_MODE, MENU_CALLBACK_BACK,
+        pick_system_prompt, should_default_to_agent_mode, ChatFlowCallbackData, MenuCallbackData,
+        CHAT_ATTACH_PREFIX, CHAT_DETACH_CALLBACK, MENU_CALLBACK_AGENT_MODE, MENU_CALLBACK_BACK,
         MENU_CALLBACK_MODEL_PREFIX,
     };
+    use crate::config::{BotSettings, TelegramSettings};
+    use oxide_agent_core::config::AgentSettings;
+
+    fn test_settings(agent_allowed_users: Option<&str>) -> BotSettings {
+        BotSettings::new(
+            AgentSettings::default(),
+            TelegramSettings {
+                telegram_token: "dummy".to_string(),
+                allowed_users_str: None,
+                agent_allowed_users_str: agent_allowed_users.map(str::to_string),
+                manager_allowed_users_str: None,
+                topic_configs: Vec::new(),
+            },
+        )
+    }
 
     #[test]
     fn is_valid_chat_uuid_accepts_canonical_uuid() {
@@ -1615,6 +1700,27 @@ mod tests {
             parse_menu_callback_data(&format!("{MENU_CALLBACK_MODEL_PREFIX}x")),
             None
         );
+    }
+
+    #[test]
+    fn defaults_to_agent_mode_for_allowed_supergroup_user() {
+        let settings = test_settings(Some("77 88"));
+        assert!(should_default_to_agent_mode(true, &settings, 77));
+    }
+
+    #[test]
+    fn does_not_default_to_agent_mode_outside_supergroup() {
+        let settings = test_settings(Some("77 88"));
+        assert!(!should_default_to_agent_mode(false, &settings, 77));
+    }
+
+    #[test]
+    fn does_not_default_to_agent_mode_without_agent_access() {
+        let settings = test_settings(Some("88"));
+        assert!(!should_default_to_agent_mode(true, &settings, 77));
+
+        let unconfigured = test_settings(None);
+        assert!(!should_default_to_agent_mode(true, &unconfigured, 77));
     }
 
     #[test]
