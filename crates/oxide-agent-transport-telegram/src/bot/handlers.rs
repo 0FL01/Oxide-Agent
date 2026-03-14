@@ -1,3 +1,8 @@
+use crate::bot::context::{
+    current_context_state, ensure_current_chat_uuid as ensure_scoped_chat_uuid,
+    reset_current_chat_uuid as reset_scoped_chat_uuid, scoped_chat_storage_id,
+    set_current_context_state, storage_context_key,
+};
 use crate::bot::state::State;
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::UnauthorizedCache;
@@ -8,7 +13,7 @@ use crate::bot::{
 use crate::config::BotSettings;
 use anyhow::{anyhow, Result};
 use oxide_agent_core::llm::{LlmClient, Message as LlmMessage};
-use oxide_agent_core::storage::{generate_chat_uuid, StorageProvider};
+use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::utils::truncate_str;
 use std::sync::Arc;
 use teloxide::{
@@ -78,8 +83,11 @@ async fn check_state_and_redirect(
     settings: &Arc<BotSettings>,
 ) -> Result<bool> {
     let user_id = get_user_id_safe(msg);
+    let thread_spec = resolve_thread_spec(msg);
 
-    if let Ok(Some(state_str)) = storage.get_user_state(user_id).await {
+    if let Ok(Some(state_str)) =
+        current_context_state(storage, user_id, msg.chat.id, thread_spec).await
+    {
         if state_str == "agent_mode" {
             info!("Restoring agent mode for user {user_id} based on persisted state.");
             dialogue
@@ -318,10 +326,14 @@ pub async fn start(
         .await
         .map_err(|e| anyhow!(e.to_string()))?;
 
-    // Reset persisted state in storage to chat_mode
-    let _ = storage
-        .update_user_state(user_id, "chat_mode".to_string())
-        .await;
+    let _ = set_current_context_state(
+        &storage,
+        user_id,
+        msg.chat.id,
+        thread_spec,
+        Some("chat_mode"),
+    )
+    .await;
 
     let saved_model = match storage.get_user_model(user_id).await {
         Ok(model) => model,
@@ -360,23 +372,6 @@ pub async fn start(
     Ok(())
 }
 
-async fn ensure_current_chat_uuid(
-    storage: &Arc<dyn StorageProvider>,
-    user_id: i64,
-) -> Result<String> {
-    let mut config = storage.get_user_config(user_id).await?;
-
-    if let Some(chat_uuid) = config.current_chat_uuid {
-        return Ok(chat_uuid);
-    }
-
-    let chat_uuid = generate_chat_uuid();
-    config.current_chat_uuid = Some(chat_uuid.clone());
-    storage.update_user_config(user_id, config).await?;
-
-    Ok(chat_uuid)
-}
-
 /// Clear flow handler
 ///
 /// # Errors
@@ -390,10 +385,7 @@ pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) ->
 
     info!("User {user_id} ({user_name}) initiated flow clear.");
 
-    let mut config = storage.get_user_config(user_id).await?;
-    let new_chat_uuid = generate_chat_uuid();
-    config.current_chat_uuid = Some(new_chat_uuid.clone());
-    storage.update_user_config(user_id, config).await?;
+    let new_chat_uuid = reset_scoped_chat_uuid(&storage, user_id, msg.chat.id, thread_spec).await?;
 
     info!("Started new chat flow for user {user_id}: {new_chat_uuid}");
     let mut req = bot
@@ -406,15 +398,6 @@ pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) ->
     req.reply_markup(chat_menu_markup(thread_spec)).await?;
 
     Ok(())
-}
-
-async fn get_current_chat_uuid(storage: &Arc<dyn StorageProvider>, user_id: i64) -> Result<String> {
-    let config = storage.get_user_config(user_id).await?;
-    if let Some(chat_uuid) = config.current_chat_uuid {
-        return Ok(chat_uuid);
-    }
-
-    ensure_current_chat_uuid(storage, user_id).await
 }
 
 fn chat_flow_controls_keyboard(chat_uuid: &str) -> InlineKeyboardMarkup {
@@ -527,8 +510,20 @@ pub async fn handle_chat_flow_callback(
         return Ok(false);
     };
 
+    let Some(msg) = q
+        .message
+        .as_ref()
+        .and_then(|message| message.regular_message())
+    else {
+        bot.answer_callback_query(q.id.clone())
+            .text("Message context unavailable")
+            .await?;
+        return Ok(true);
+    };
+
+    let thread_spec = resolve_thread_spec(msg);
     let user_id = q.from.id.0.cast_signed();
-    let user_state = storage.get_user_state(user_id).await?;
+    let user_state = current_context_state(storage, user_id, msg.chat.id, thread_spec).await?;
     if user_state.as_deref() != Some("chat_mode") {
         bot.answer_callback_query(q.id.clone())
             .text("Chat Mode only")
@@ -538,10 +533,8 @@ pub async fn handle_chat_flow_callback(
 
     match callback_data {
         ChatFlowCallbackData::Detach => {
-            let mut config = storage.get_user_config(user_id).await?;
-            let new_chat_uuid = generate_chat_uuid();
-            config.current_chat_uuid = Some(new_chat_uuid.clone());
-            storage.update_user_config(user_id, config).await?;
+            let new_chat_uuid =
+                reset_scoped_chat_uuid(storage, user_id, msg.chat.id, thread_spec).await?;
 
             bot.answer_callback_query(q.id.clone())
                 .text(format!("Detached: {}", short_uuid(&new_chat_uuid)))
@@ -556,7 +549,18 @@ pub async fn handle_chat_flow_callback(
             }
 
             let mut config = storage.get_user_config(user_id).await?;
-            config.current_chat_uuid = Some(selected_uuid.to_string());
+            let context = config
+                .contexts
+                .entry(storage_context_key(msg.chat.id, thread_spec))
+                .or_default();
+            context.current_chat_uuid = Some(selected_uuid.to_string());
+            context.chat_id = Some(msg.chat.id.0);
+            context.thread_id = thread_spec
+                .thread_id
+                .map(|thread_id| i64::from(thread_id.0 .0));
+            if matches!(thread_spec.kind, TelegramThreadKind::Dm) {
+                config.current_chat_uuid = Some(selected_uuid.to_string());
+            }
             storage.update_user_config(user_id, config).await?;
 
             bot.answer_callback_query(q.id.clone())
@@ -780,8 +784,8 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    let state = dialogue.get().await?.unwrap_or(State::Start);
-    if matches!(state, State::Start) {
+    let state = current_context_state(&storage, user_id, msg.chat.id, thread_spec).await?;
+    if state.as_deref() != Some("chat_mode") {
         let mut req = bot.send_message(msg.chat.id, "Please select a mode:");
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
@@ -921,10 +925,15 @@ async fn activate_chat_mode(
 ) -> Result<bool> {
     let outbound_thread = outbound_thread_from_message(msg);
     let thread_spec = resolve_thread_spec(msg);
-    let _chat_uuid = ensure_current_chat_uuid(storage, user_id).await?;
-    let _ = storage
-        .update_user_state(user_id, "chat_mode".to_string())
-        .await;
+    let _chat_uuid = ensure_scoped_chat_uuid(storage, user_id, msg.chat.id, thread_spec).await?;
+    let _ = set_current_context_state(
+        storage,
+        user_id,
+        msg.chat.id,
+        thread_spec,
+        Some("chat_mode"),
+    )
+    .await;
     dialogue
         .update(State::ChatMode)
         .await
@@ -1121,9 +1130,12 @@ async fn process_llm_request(
         options.topic_system_prompt_override.as_deref(),
     )
     .await?;
-    let chat_uuid = get_current_chat_uuid(&storage, user_id).await?;
+    let thread_spec = resolve_thread_spec(&msg);
+    let context_key = storage_context_key(msg.chat.id, thread_spec);
+    let chat_uuid = ensure_scoped_chat_uuid(&storage, user_id, msg.chat.id, thread_spec).await?;
+    let scoped_chat_id = scoped_chat_storage_id(&context_key, &chat_uuid);
     let history = storage
-        .get_chat_history_for_chat(user_id, chat_uuid.clone(), 10)
+        .get_chat_history_for_chat(user_id, scoped_chat_id.clone(), 10)
         .await?;
     let saved_model = storage.get_user_model(user_id).await?;
     let model = resolve_chat_model(&settings, saved_model);
@@ -1131,7 +1143,7 @@ async fn process_llm_request(
     storage
         .save_message_for_chat(
             user_id,
-            chat_uuid.clone(),
+            scoped_chat_id.clone(),
             "user".to_string(),
             options.text.clone(),
         )
@@ -1158,7 +1170,7 @@ async fn process_llm_request(
             storage
                 .save_message_for_chat(
                     user_id,
-                    chat_uuid.clone(),
+                    scoped_chat_id.clone(),
                     "assistant".to_string(),
                     response.clone(),
                 )
@@ -1228,8 +1240,8 @@ pub async fn handle_voice(
         return Ok(());
     }
 
-    let state = dialogue.get().await?.unwrap_or(State::Start);
-    if matches!(state, State::Start) {
+    let state = current_context_state(&storage, user_id, msg.chat.id, thread_spec).await?;
+    if state.as_deref() != Some("chat_mode") {
         let mut req = bot.send_message(msg.chat.id, "Please select a mode:");
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
@@ -1349,8 +1361,8 @@ pub async fn handle_photo(
         return Ok(());
     }
 
-    let state = dialogue.get().await?.unwrap_or(State::Start);
-    if matches!(state, State::Start) {
+    let state = current_context_state(&storage, user_id, msg.chat.id, thread_spec).await?;
+    if state.as_deref() != Some("chat_mode") {
         let mut req = bot.send_message(msg.chat.id, "Please select a mode:");
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
@@ -1393,11 +1405,14 @@ pub async fn handle_photo(
         .await
     {
         Ok(response) => {
-            let chat_uuid = get_current_chat_uuid(&storage, user_id).await?;
+            let context_key = storage_context_key(msg.chat.id, thread_spec);
+            let chat_uuid =
+                ensure_scoped_chat_uuid(&storage, user_id, msg.chat.id, thread_spec).await?;
+            let scoped_chat_id = scoped_chat_storage_id(&context_key, &chat_uuid);
             storage
                 .save_message_for_chat(
                     user_id,
-                    chat_uuid.clone(),
+                    scoped_chat_id.clone(),
                     "user".to_string(),
                     format!("[Image] {caption}"),
                 )
@@ -1405,7 +1420,7 @@ pub async fn handle_photo(
             storage
                 .save_message_for_chat(
                     user_id,
-                    chat_uuid.clone(),
+                    scoped_chat_id.clone(),
                     "assistant".to_string(),
                     response.clone(),
                 )
@@ -1455,9 +1470,10 @@ pub async fn handle_document(
         return Ok(());
     }
 
-    let state = dialogue.get().await?.unwrap_or(State::Start);
+    let thread_spec = resolve_thread_spec(&msg);
+    let state = current_context_state(&storage, user_id, msg.chat.id, thread_spec).await?;
 
-    if matches!(state, State::AgentMode) {
+    if state.as_deref() == Some("agent_mode") {
         let result = Box::pin(super::agent_handlers::handle_agent_message(
             bot,
             msg,

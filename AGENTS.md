@@ -49,10 +49,10 @@ crates/
 │   ├── src/
 │   │   ├── runner.rs                # Инициализация бота и DI
 │   │   ├── bot/
-│   │   │   ├── handlers.rs          # Обработчики команд
 │   │   │   ├── handlers.rs          # Обработчики команд (chat mode)
 │   │   │   ├── agent_handlers.rs    # Обработчики сообщений агенту (Agent Mode)
 │   │   │   ├── agent_transport.rs   # Реализация AgentTransport
+│   │   │   ├── context.rs           # Context-scoped state management (thread/chat isolation)
 │   │   │   ├── topic_route.rs       # Topic-based routing с dynamic bindings
 │   │   │   ├── thread.rs            # Thread context extraction и helpers
 │   │   │   ├── manager_topic_lifecycle.rs  # Telegram forum topic lifecycle
@@ -71,9 +71,9 @@ Dockerfile                           # Сборка основного Rust-пр
 ```
 
 ### Workspace crates
-- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools.
+- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов и context-scoped storage API (save/load/clear для контекстов).
 - `oxide-agent-runtime`: оркестрация сессий, цикл исполнения, провайдеры инструментов, sandbox, session registry с thread-aware session keys.
-- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, телеметрия доставки.
+- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, телеметрия доставки. Включает `context.rs` для context-scoped state management с legacy fallback для DM-чатов.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
 ## 🦀 Rust Architecture & Workflow
@@ -86,6 +86,7 @@ Dockerfile                           # Сборка основного Rust-пр
 - **Manager Control Plane**: manager CRUD идет через tool provider `manager_control_plane`, user-scoped storage records и audit trail; RBAC включается на уровне Telegram transport через `manager_allowed_users`.
 - **Session Safety**: Для threaded AgentMode reuse/refresh опираемся на `SessionRegistry` safe APIs (`remove_if_idle`) и не удаляем running session из реестра.
 - **Topic/Thread Routing**: Поддержка Telegram Forum Topics с per-topic конфигурацией, dynamic runtime bindings с expiry/activity tracking, и thread-aware session isolation.
+- **Context-Scoped Storage**: Per-transport контексты используют `UserContextConfig` в `UserConfig.contexts`, context-scoped storage API для памяти агента (`save_agent_memory_for_context`, `load_agent_memory_for_context`, `clear_agent_memory_for_context`), и chat history isolation через `scoped_chat_storage_id` (format: `"{context_key}/{chat_uuid}"`). Legacy fallback для DM-чатов сохраняет обратную совместимость.
 - **Configuration**: Поддержка layered конфигурации через YAML файлы в `config/` (default.yaml, {RUN_MODE}.yaml, local.yaml) + переменные окружения.
 
 Чтобы добавить новый transport (Discord/Slack), создайте `crates/oxide-agent-transport-<name>`, держите SDK и обработчики внутри transport crate, подключите адаптер к runtime, и при необходимости добавьте отдельный бинарь `oxide-agent-<name>-bot` для запуска.

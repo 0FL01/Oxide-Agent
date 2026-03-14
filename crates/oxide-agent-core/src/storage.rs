@@ -70,6 +70,24 @@ pub struct UserConfig {
     pub state: Option<String>,
     /// Active chat UUID for chat mode context isolation
     pub current_chat_uuid: Option<String>,
+    /// Context-scoped runtime metadata keyed by transport peer/thread identifier.
+    #[serde(default)]
+    pub contexts: HashMap<String, UserContextConfig>,
+}
+
+/// Context-scoped user configuration persisted alongside the global config.
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
+pub struct UserContextConfig {
+    /// Persisted dialogue state for this specific transport context.
+    pub state: Option<String>,
+    /// Active chat UUID for this specific transport context.
+    pub current_chat_uuid: Option<String>,
+    /// Optional transport chat identifier associated with the context.
+    #[serde(default)]
+    pub chat_id: Option<i64>,
+    /// Optional transport thread/topic identifier associated with the context.
+    #[serde(default)]
+    pub thread_id: Option<i64>,
 }
 
 /// Agent profile record persisted in control-plane storage.
@@ -326,10 +344,38 @@ pub trait StorageProvider: Send + Sync {
         user_id: i64,
         memory: &AgentMemory,
     ) -> Result<(), StorageError>;
+    /// Save agent memory scoped by transport context.
+    async fn save_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError> {
+        let _ = context_key;
+        self.save_agent_memory(user_id, memory).await
+    }
     /// Load agent memory from storage
     async fn load_agent_memory(&self, user_id: i64) -> Result<Option<AgentMemory>, StorageError>;
+    /// Load agent memory scoped by transport context.
+    async fn load_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<Option<AgentMemory>, StorageError> {
+        let _ = context_key;
+        self.load_agent_memory(user_id).await
+    }
     /// Clear agent memory for a user
     async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError>;
+    /// Clear agent memory scoped by transport context.
+    async fn clear_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<(), StorageError> {
+        let _ = context_key;
+        self.clear_agent_memory(user_id).await
+    }
     /// Clear all context (history and memory) for a user
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError>;
     /// Check connection to storage
@@ -828,14 +874,45 @@ impl StorageProvider for R2Storage {
             .await
     }
 
+    async fn save_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError> {
+        self.save_json(
+            &user_context_agent_memory_key(user_id, &context_key),
+            memory,
+        )
+        .await
+    }
+
     /// Load agent memory from storage
     async fn load_agent_memory(&self, user_id: i64) -> Result<Option<AgentMemory>, StorageError> {
         self.load_json(&user_agent_memory_key(user_id)).await
     }
 
+    async fn load_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<Option<AgentMemory>, StorageError> {
+        self.load_json(&user_context_agent_memory_key(user_id, &context_key))
+            .await
+    }
+
     /// Clear agent memory for a user
     async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError> {
         self.delete_object(&user_agent_memory_key(user_id)).await
+    }
+
+    async fn clear_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<(), StorageError> {
+        self.delete_object(&user_context_agent_memory_key(user_id, &context_key))
+            .await
     }
 
     /// Clear all context (history and memory) for a user
@@ -1069,6 +1146,12 @@ pub fn user_agent_memory_key(user_id: i64) -> String {
     format!("users/{user_id}/agent_memory.json")
 }
 
+/// Returns the R2 key for a user's agent memory file scoped by transport context.
+#[must_use]
+pub fn user_context_agent_memory_key(user_id: i64, context_key: &str) -> String {
+    format!("users/{user_id}/topics/{context_key}/agent_memory.json")
+}
+
 /// Returns the R2 key for an agent profile record.
 #[must_use]
 pub fn agent_profile_key(user_id: i64, agent_id: &str) -> String {
@@ -1255,11 +1338,13 @@ mod tests {
         build_audit_event_record, build_topic_binding_record, generate_chat_uuid,
         next_record_version, resolve_active_topic_binding, select_audit_events_page,
         should_retry_control_plane_rmw, topic_binding_key, user_chat_history_key, user_config_key,
-        user_history_key, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-        ControlPlaneLocks, OptionalMetadataPatch, TopicBindingKind, TopicBindingRecord,
-        UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+        user_context_agent_memory_key, user_history_key, AgentProfileRecord,
+        AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, OptionalMetadataPatch,
+        TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
+        UserConfig, UserContextConfig,
     };
     use serde_json::json;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::oneshot;
@@ -1287,6 +1372,12 @@ mod tests {
         assert_ne!(key_a, key_b);
         assert_ne!(key_a, key_c);
         assert_ne!(key_b, key_c);
+    }
+
+    #[test]
+    fn user_context_agent_memory_key_uses_topic_namespace() {
+        let key = user_context_agent_memory_key(42, "-1001:77");
+        assert_eq!(key, "users/42/topics/-1001:77/agent_memory.json");
     }
 
     #[test]
@@ -1320,6 +1411,7 @@ mod tests {
             model_name: Some("gpt".to_string()),
             state: Some("chat_mode".to_string()),
             current_chat_uuid: Some("123e4567-e89b-12d3-a456-426614174000".to_string()),
+            contexts: HashMap::new(),
         };
 
         let json = serde_json::to_string(&config);
@@ -1333,6 +1425,36 @@ mod tests {
         assert_eq!(
             parsed.current_chat_uuid,
             Some("123e4567-e89b-12d3-a456-426614174000".to_string())
+        );
+    }
+
+    #[test]
+    fn user_config_roundtrip_preserves_context_scoped_metadata() {
+        let mut contexts = HashMap::new();
+        contexts.insert(
+            "-1001:42".to_string(),
+            UserContextConfig {
+                state: Some("agent_mode".to_string()),
+                current_chat_uuid: Some("chat-42".to_string()),
+                chat_id: Some(-1001),
+                thread_id: Some(42),
+            },
+        );
+        let config = UserConfig {
+            contexts,
+            ..UserConfig::default()
+        };
+
+        let json = serde_json::to_string(&config).expect("config must encode");
+        let parsed: UserConfig = serde_json::from_str(&json).expect("config must decode");
+
+        assert_eq!(parsed.contexts.len(), 1);
+        assert_eq!(
+            parsed
+                .contexts
+                .get("-1001:42")
+                .and_then(|context| context.state.as_deref()),
+            Some("agent_mode")
         );
     }
 
