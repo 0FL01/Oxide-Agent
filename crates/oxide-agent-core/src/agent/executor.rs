@@ -331,16 +331,88 @@ impl AgentExecutor {
 mod tests {
     use super::AgentExecutor;
     use crate::agent::providers::TodoList;
+    use crate::agent::providers::{
+        ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult,
+        ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
+        ManagerTopicLifecycle,
+    };
     use crate::agent::session::AgentSession;
     use crate::llm::LlmClient;
     use crate::storage::{
         AppendAuditEventOptions, AuditEventRecord, MockStorageProvider, TopicBindingKind,
         TopicBindingRecord,
     };
+    use anyhow::{bail, Result};
     use mockall::predicate::eq;
     use serde_json::json;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
+
+    struct RecordingTopicLifecycle {
+        create_calls: StdMutex<Vec<ForumTopicCreateRequest>>,
+    }
+
+    impl RecordingTopicLifecycle {
+        fn new() -> Self {
+            Self {
+                create_calls: StdMutex::new(Vec::new()),
+            }
+        }
+
+        fn create_calls(&self) -> Vec<ForumTopicCreateRequest> {
+            match self.create_calls.lock() {
+                Ok(calls) => calls.clone(),
+                Err(_) => Vec::new(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ManagerTopicLifecycle for RecordingTopicLifecycle {
+        async fn forum_topic_create(
+            &self,
+            request: ForumTopicCreateRequest,
+        ) -> Result<ForumTopicCreateResult> {
+            if let Ok(mut calls) = self.create_calls.lock() {
+                calls.push(request.clone());
+            }
+            Ok(ForumTopicCreateResult {
+                chat_id: request.chat_id.unwrap_or(-100_555),
+                thread_id: 313,
+                name: request.name,
+                icon_color: request.icon_color.unwrap_or(9_367_192),
+                icon_custom_emoji_id: request.icon_custom_emoji_id,
+            })
+        }
+
+        async fn forum_topic_edit(
+            &self,
+            _request: ForumTopicEditRequest,
+        ) -> Result<ForumTopicEditResult> {
+            bail!("forum_topic_edit is not used by this test lifecycle")
+        }
+
+        async fn forum_topic_close(
+            &self,
+            _request: ForumTopicThreadRequest,
+        ) -> Result<ForumTopicActionResult> {
+            bail!("forum_topic_close is not used by this test lifecycle")
+        }
+
+        async fn forum_topic_reopen(
+            &self,
+            _request: ForumTopicThreadRequest,
+        ) -> Result<ForumTopicActionResult> {
+            bail!("forum_topic_reopen is not used by this test lifecycle")
+        }
+
+        async fn forum_topic_delete(
+            &self,
+            _request: ForumTopicThreadRequest,
+        ) -> Result<ForumTopicActionResult> {
+            bail!("forum_topic_delete is not used by this test lifecycle")
+        }
+    }
 
     fn build_executor() -> AgentExecutor {
         let settings = Arc::new(crate::config::AgentSettings::default());
@@ -444,6 +516,107 @@ mod tests {
             serde_json::from_str(&response).expect("dry-run response must be valid json");
         assert_eq!(parsed["dry_run"], true);
         assert_eq!(parsed["preview"]["topic_id"], "topic-a");
+    }
+
+    #[tokio::test]
+    async fn manager_dry_run_mutation_reports_audit_write_failure_non_fatally() {
+        let mut mock = MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_binding().times(0);
+        mock.expect_append_audit_event().returning(|_| {
+            Err(crate::storage::StorageError::Config(
+                "audit unavailable".to_string(),
+            ))
+        });
+
+        let executor = build_executor().with_manager_control_plane(Arc::new(mock), 77);
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let response = registry
+            .execute(
+                "topic_binding_set",
+                r#"{"topic_id":"topic-a","agent_id":"agent-a","dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("dry-run manager mutation must remain non-fatal when audit write fails");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("dry-run response must be valid json");
+        assert_eq!(parsed["dry_run"], true);
+        assert_eq!(parsed["audit_status"], "write_failed");
+        assert_eq!(parsed["preview"]["topic_id"], "topic-a");
+    }
+
+    #[tokio::test]
+    async fn manager_executor_forum_topic_create_uses_lifecycle_with_non_fatal_audit() {
+        let mut mock = MockStorageProvider::new();
+        mock.expect_append_audit_event().returning(|_| {
+            Err(crate::storage::StorageError::Config(
+                "audit unavailable".to_string(),
+            ))
+        });
+
+        let lifecycle = Arc::new(RecordingTopicLifecycle::new());
+        let executor = build_executor()
+            .with_manager_control_plane(Arc::new(mock), 77)
+            .with_manager_topic_lifecycle(lifecycle.clone());
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let response = registry
+            .execute(
+                "forum_topic_create",
+                r#"{"chat_id":-100777,"name":"runtime-topic"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("forum_topic_create must succeed when lifecycle succeeds");
+
+        let parsed: serde_json::Value = serde_json::from_str(&response)
+            .expect("forum topic create response must be valid json");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["topic"]["thread_id"], 313);
+        assert_eq!(parsed["topic"]["name"], "runtime-topic");
+        assert_eq!(parsed["audit_status"], "write_failed");
+
+        let calls = lifecycle.create_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].chat_id, Some(-100_777));
+        assert_eq!(calls[0].name, "runtime-topic");
+    }
+
+    #[tokio::test]
+    async fn manager_executor_forum_topic_create_dry_run_skips_lifecycle() {
+        let mut mock = MockStorageProvider::new();
+        mock.expect_append_audit_event()
+            .returning(|options| Ok(build_audit_record(options)));
+
+        let lifecycle = Arc::new(RecordingTopicLifecycle::new());
+        let executor = build_executor()
+            .with_manager_control_plane(Arc::new(mock), 77)
+            .with_manager_topic_lifecycle(lifecycle.clone());
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let response = registry
+            .execute(
+                "forum_topic_create",
+                r#"{"chat_id":-100777,"name":"dry-run","dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("dry-run forum_topic_create must succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("dry-run response must be valid json");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["dry_run"], true);
+        assert_eq!(parsed["audit_status"], "written");
+        assert!(lifecycle.create_calls().is_empty());
     }
 
     #[tokio::test]
