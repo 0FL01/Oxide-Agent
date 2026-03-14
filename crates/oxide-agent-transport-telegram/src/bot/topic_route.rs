@@ -391,10 +391,387 @@ const fn is_mention_char(ch: char) -> bool {
 mod tests {
     use super::{
         build_binding_activity_touch_options, dynamic_route_decision, resolve_active_topic_binding,
-        resolve_topic_route_decision, select_profile_system_prompt, TopicRouteContext,
+        resolve_topic_route, resolve_topic_route_decision, select_profile_system_prompt,
+        touch_dynamic_binding_activity_if_needed, TopicRouteContext, TopicRouteDecision,
     };
-    use crate::config::TelegramTopicSettings;
-    use oxide_agent_core::storage::{TopicBindingKind, TopicBindingRecord};
+    use crate::config::{BotSettings, TelegramSettings, TelegramTopicSettings};
+    use async_trait::async_trait;
+    use oxide_agent_core::agent::providers::{
+        ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult,
+        ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
+        ManagerControlPlaneProvider, ManagerTopicLifecycle,
+    };
+    use oxide_agent_core::agent::ToolProvider;
+    use oxide_agent_core::storage::{
+        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message as StoredMessage,
+        OptionalMetadataPatch, StorageError, StorageProvider, TopicBindingKind, TopicBindingRecord,
+        UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+    };
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use teloxide::{
+        types::{
+            Chat, ChatId, ChatKind, ChatPublic, MediaKind, MediaText, Message, MessageCommon,
+            MessageId, MessageKind, PublicChatKind, PublicChatSupergroup, ThreadId, User, UserId,
+        },
+        Bot,
+    };
+
+    struct RecordingLifecycle {
+        create_calls: Mutex<Vec<ForumTopicCreateRequest>>,
+    }
+
+    impl RecordingLifecycle {
+        fn new() -> Self {
+            Self {
+                create_calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn create_calls(&self) -> Vec<ForumTopicCreateRequest> {
+            match self.create_calls.lock() {
+                Ok(calls) => calls.clone(),
+                Err(_) => Vec::new(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ManagerTopicLifecycle for RecordingLifecycle {
+        async fn forum_topic_create(
+            &self,
+            request: ForumTopicCreateRequest,
+        ) -> anyhow::Result<ForumTopicCreateResult> {
+            if let Ok(mut calls) = self.create_calls.lock() {
+                calls.push(request.clone());
+            }
+            Ok(ForumTopicCreateResult {
+                chat_id: request.chat_id.unwrap_or(-100_111),
+                thread_id: 313,
+                name: request.name,
+                icon_color: request.icon_color.unwrap_or(9_367_192),
+                icon_custom_emoji_id: request.icon_custom_emoji_id,
+            })
+        }
+
+        async fn forum_topic_edit(
+            &self,
+            _request: ForumTopicEditRequest,
+        ) -> anyhow::Result<ForumTopicEditResult> {
+            anyhow::bail!("forum_topic_edit is not exercised in topic_route tests")
+        }
+
+        async fn forum_topic_close(
+            &self,
+            _request: ForumTopicThreadRequest,
+        ) -> anyhow::Result<ForumTopicActionResult> {
+            anyhow::bail!("forum_topic_close is not exercised in topic_route tests")
+        }
+
+        async fn forum_topic_reopen(
+            &self,
+            _request: ForumTopicThreadRequest,
+        ) -> anyhow::Result<ForumTopicActionResult> {
+            anyhow::bail!("forum_topic_reopen is not exercised in topic_route tests")
+        }
+
+        async fn forum_topic_delete(
+            &self,
+            _request: ForumTopicThreadRequest,
+        ) -> anyhow::Result<ForumTopicActionResult> {
+            anyhow::bail!("forum_topic_delete is not exercised in topic_route tests")
+        }
+    }
+
+    #[derive(Default)]
+    struct TestStorage {
+        bindings: Mutex<HashMap<(i64, String), TopicBindingRecord>>,
+        profiles: Mutex<HashMap<(i64, String), AgentProfileRecord>>,
+        audit_version: Mutex<u64>,
+    }
+
+    impl TestStorage {
+        fn unsupported() -> StorageError {
+            StorageError::Config("unsupported in topic route test storage".to_string())
+        }
+
+        fn key(user_id: i64, id: String) -> (i64, String) {
+            (user_id, id)
+        }
+
+        fn with_profile(self, user_id: i64, agent_id: &str, profile: &str) -> Self {
+            if let Ok(mut profiles) = self.profiles.lock() {
+                let profile_value = profile.parse().unwrap_or_default();
+                profiles.insert(
+                    Self::key(user_id, agent_id.to_string()),
+                    AgentProfileRecord {
+                        schema_version: 1,
+                        version: 1,
+                        user_id,
+                        agent_id: agent_id.to_string(),
+                        profile: profile_value,
+                        created_at: 10,
+                        updated_at: 10,
+                    },
+                );
+            }
+            self
+        }
+    }
+
+    #[async_trait]
+    impl StorageProvider for TestStorage {
+        async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
+            Ok(UserConfig::default())
+        }
+
+        async fn update_user_config(
+            &self,
+            _user_id: i64,
+            _config: UserConfig,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn update_user_prompt(
+            &self,
+            _user_id: i64,
+            _system_prompt: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_user_model(
+            &self,
+            _user_id: i64,
+            _model_name: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_user_state(
+            &self,
+            _user_id: i64,
+            _state: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn save_message(
+            &self,
+            _user_id: i64,
+            _role: String,
+            _content: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_chat_history(
+            &self,
+            _user_id: i64,
+            _limit: usize,
+        ) -> Result<Vec<StoredMessage>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_message_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+            _role: String,
+            _content: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_chat_history_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+            _limit: usize,
+        ) -> Result<Vec<StoredMessage>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn clear_chat_history_for_chat(
+            &self,
+            _user_id: i64,
+            _chat_uuid: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn save_agent_memory(
+            &self,
+            _user_id: i64,
+            _memory: &oxide_agent_core::agent::AgentMemory,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn load_agent_memory(
+            &self,
+            _user_id: i64,
+        ) -> Result<Option<oxide_agent_core::agent::AgentMemory>, StorageError> {
+            Ok(None)
+        }
+
+        async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn clear_all_context(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn check_connection(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn get_agent_profile(
+            &self,
+            user_id: i64,
+            agent_id: String,
+        ) -> Result<Option<AgentProfileRecord>, StorageError> {
+            let Ok(profiles) = self.profiles.lock() else {
+                return Err(Self::unsupported());
+            };
+            Ok(profiles.get(&Self::key(user_id, agent_id)).cloned())
+        }
+
+        async fn upsert_agent_profile(
+            &self,
+            _options: UpsertAgentProfileOptions,
+        ) -> Result<AgentProfileRecord, StorageError> {
+            Err(Self::unsupported())
+        }
+
+        async fn delete_agent_profile(
+            &self,
+            _user_id: i64,
+            _agent_id: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_topic_binding(
+            &self,
+            user_id: i64,
+            topic_id: String,
+        ) -> Result<Option<TopicBindingRecord>, StorageError> {
+            let Ok(bindings) = self.bindings.lock() else {
+                return Err(Self::unsupported());
+            };
+            Ok(bindings.get(&Self::key(user_id, topic_id)).cloned())
+        }
+
+        async fn upsert_topic_binding(
+            &self,
+            options: UpsertTopicBindingOptions,
+        ) -> Result<TopicBindingRecord, StorageError> {
+            let Ok(mut bindings) = self.bindings.lock() else {
+                return Err(Self::unsupported());
+            };
+            let key = Self::key(options.user_id, options.topic_id.clone());
+            let current = bindings.get(&key).cloned();
+            let now = options.last_activity_at.unwrap_or(100);
+            let mut record = current.unwrap_or(TopicBindingRecord {
+                schema_version: 1,
+                version: 0,
+                user_id: options.user_id,
+                topic_id: options.topic_id.clone(),
+                agent_id: options.agent_id.clone(),
+                binding_kind: TopicBindingKind::Manual,
+                chat_id: None,
+                thread_id: None,
+                expires_at: None,
+                last_activity_at: None,
+                created_at: now,
+                updated_at: now,
+            });
+
+            record.version += 1;
+            record.agent_id = options.agent_id;
+            if let Some(binding_kind) = options.binding_kind {
+                record.binding_kind = binding_kind;
+            }
+            record.chat_id = options.chat_id.apply(record.chat_id);
+            record.thread_id = options.thread_id.apply(record.thread_id);
+            record.expires_at = options.expires_at.apply(record.expires_at);
+            record.last_activity_at = options.last_activity_at.or(record.last_activity_at);
+            record.updated_at = now;
+            bindings.insert(key, record.clone());
+
+            Ok(record)
+        }
+
+        async fn delete_topic_binding(
+            &self,
+            user_id: i64,
+            topic_id: String,
+        ) -> Result<(), StorageError> {
+            let Ok(mut bindings) = self.bindings.lock() else {
+                return Err(Self::unsupported());
+            };
+            bindings.remove(&Self::key(user_id, topic_id));
+            Ok(())
+        }
+
+        async fn append_audit_event(
+            &self,
+            options: AppendAuditEventOptions,
+        ) -> Result<AuditEventRecord, StorageError> {
+            let Ok(mut version) = self.audit_version.lock() else {
+                return Err(Self::unsupported());
+            };
+            *version += 1;
+
+            Ok(AuditEventRecord {
+                schema_version: 1,
+                version: *version,
+                event_id: format!("evt-{}", *version),
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agent_id: options.agent_id,
+                action: options.action,
+                payload: options.payload,
+                created_at: 100,
+            })
+        }
+
+        async fn list_audit_events(
+            &self,
+            _user_id: i64,
+            _limit: usize,
+        ) -> Result<Vec<AuditEventRecord>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_audit_events_page(
+            &self,
+            _user_id: i64,
+            _before_version: Option<u64>,
+            _limit: usize,
+        ) -> Result<Vec<AuditEventRecord>, StorageError> {
+            Ok(Vec::new())
+        }
+    }
 
     fn topic(
         enabled: bool,
@@ -538,6 +915,60 @@ mod tests {
         }
     }
 
+    fn forum_text_message(chat_id: i64, thread_id: i32, text: &str) -> Message {
+        Message {
+            id: MessageId(71),
+            thread_id: Some(ThreadId(MessageId(thread_id))),
+            from: Some(User {
+                id: UserId(5007),
+                is_bot: false,
+                first_name: "tester".to_string(),
+                last_name: None,
+                username: None,
+                language_code: None,
+                is_premium: false,
+                added_to_attachment_menu: false,
+            }),
+            sender_chat: None,
+            date: std::time::SystemTime::UNIX_EPOCH.into(),
+            chat: Chat {
+                id: ChatId(chat_id),
+                kind: ChatKind::Public(ChatPublic {
+                    title: Some("ops".to_string()),
+                    kind: PublicChatKind::Supergroup(PublicChatSupergroup {
+                        username: None,
+                        is_forum: true,
+                    }),
+                }),
+            },
+            is_topic_message: true,
+            via_bot: None,
+            sender_business_bot: None,
+            kind: MessageKind::Common(MessageCommon {
+                author_signature: None,
+                paid_star_count: None,
+                effect_id: None,
+                forward_origin: None,
+                reply_to_message: None,
+                external_reply: None,
+                quote: None,
+                reply_to_story: None,
+                sender_boost_count: None,
+                edit_date: None,
+                media_kind: MediaKind::Text(MediaText {
+                    text: text.to_string(),
+                    entities: Vec::new(),
+                    link_preview_options: None,
+                }),
+                reply_markup: None,
+                is_automatic_forward: false,
+                has_protected_content: false,
+                is_from_offline: false,
+                business_connection_id: None,
+            }),
+        }
+    }
+
     #[test]
     fn dynamic_binding_route_ignores_static_topic_fields() {
         let binding = topic_binding("-1001:42", "dynamic-agent", None);
@@ -586,6 +1017,107 @@ mod tests {
         assert_eq!(fallback.as_deref(), Some("snake"));
     }
 
+    #[tokio::test]
+    async fn dynamic_binding_precedes_static_topic_config_on_resolve_topic_route() {
+        let user_id = 7;
+        let storage = TestStorage::default().with_profile(
+            user_id,
+            "dynamic-agent",
+            r#"{"systemPrompt":"  dynamic prompt  "}"#,
+        );
+        let upsert_result = storage
+            .upsert_topic_binding(UpsertTopicBindingOptions {
+                user_id,
+                topic_id: "-1001:313".to_string(),
+                agent_id: "dynamic-agent".to_string(),
+                binding_kind: Some(TopicBindingKind::Runtime),
+                chat_id: OptionalMetadataPatch::Set(-1001),
+                thread_id: OptionalMetadataPatch::Set(313),
+                expires_at: OptionalMetadataPatch::Keep,
+                last_activity_at: Some(100),
+            })
+            .await;
+        assert!(upsert_result.is_ok());
+
+        let settings = BotSettings::new(
+            oxide_agent_core::config::AgentSettings::default(),
+            TelegramSettings {
+                telegram_token: "test-token".to_string(),
+                allowed_users_str: None,
+                agent_allowed_users_str: None,
+                manager_allowed_users_str: None,
+                topic_configs: vec![TelegramTopicSettings {
+                    chat_id: -1001,
+                    thread_id: Some(313),
+                    agent_id: Some("static-agent".to_string()),
+                    enabled: false,
+                    require_mention: true,
+                    skills: Vec::new(),
+                    system_prompt: Some("static prompt".to_string()),
+                }],
+            },
+        );
+        let message = forum_text_message(-1001, 313, "hello without mention");
+        let bot = Bot::new("123456:TEST_TOKEN");
+
+        let decision = resolve_topic_route(&bot, &storage, user_id, &settings, &message).await;
+
+        assert!(decision.allows_processing());
+        assert_eq!(decision.agent_id.as_deref(), Some("dynamic-agent"));
+        assert_eq!(
+            decision.system_prompt_override.as_deref(),
+            Some("dynamic prompt")
+        );
+        assert_eq!(
+            decision.dynamic_binding_topic_id.as_deref(),
+            Some("-1001:313")
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_binding_workflow_routes_thread_to_dynamic_binding() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(TestStorage::default());
+        let lifecycle = Arc::new(RecordingLifecycle::new());
+        let provider = ManagerControlPlaneProvider::new(storage.clone(), 77)
+            .with_topic_lifecycle(lifecycle.clone());
+
+        let created = provider
+            .execute(
+                "forum_topic_create",
+                r#"{"chat_id":-1001,"name":"ops-thread"}"#,
+                None,
+                None,
+            )
+            .await;
+        assert!(created.is_ok());
+
+        let applied = provider
+            .execute(
+                "topic_binding_set",
+                r#"{"topic_id":"-1001:313","agent_id":"dynamic-agent","binding_kind":"runtime","chat_id":-1001,"thread_id":313}"#,
+                None,
+                None,
+            )
+            .await;
+        assert!(applied.is_ok());
+
+        let stored = storage.get_topic_binding(77, "-1001:313".to_string()).await;
+        assert!(stored.is_ok());
+        let stored_binding = stored.expect("stored binding fetch must succeed");
+        let active_binding = resolve_active_topic_binding(stored_binding, 1_000);
+
+        assert_eq!(lifecycle.create_calls().len(), 1);
+        assert!(active_binding.is_some());
+        if let Some(binding) = active_binding {
+            let decision = dynamic_route_decision(&binding, None);
+            assert_eq!(decision.agent_id.as_deref(), Some("dynamic-agent"));
+            assert_eq!(
+                decision.dynamic_binding_topic_id.as_deref(),
+                Some("-1001:313")
+            );
+        }
+    }
+
     #[test]
     fn activity_touch_path_only_occurs_for_active_dynamic_binding() {
         let active = topic_binding("-1001:42", "dynamic-agent", Some(50));
@@ -596,5 +1128,63 @@ mod tests {
 
         assert!(active_touch.is_some());
         assert!(expired_touch.is_none());
+    }
+
+    #[tokio::test]
+    async fn dynamic_binding_activity_touch_runs_only_for_successful_processing() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(TestStorage::default());
+        let upsert_result = storage
+            .upsert_topic_binding(UpsertTopicBindingOptions {
+                user_id: 77,
+                topic_id: "-1001:42".to_string(),
+                agent_id: "dynamic-agent".to_string(),
+                binding_kind: Some(TopicBindingKind::Runtime),
+                chat_id: OptionalMetadataPatch::Set(-1001),
+                thread_id: OptionalMetadataPatch::Set(42),
+                expires_at: OptionalMetadataPatch::Keep,
+                last_activity_at: Some(10),
+            })
+            .await;
+        assert!(upsert_result.is_ok());
+
+        let skipped_decision = TopicRouteDecision {
+            enabled: false,
+            require_mention: false,
+            mention_satisfied: true,
+            system_prompt_override: None,
+            agent_id: Some("dynamic-agent".to_string()),
+            dynamic_binding_topic_id: Some("-1001:42".to_string()),
+        };
+        touch_dynamic_binding_activity_if_needed(storage.as_ref(), 77, &skipped_decision).await;
+
+        let skipped = storage
+            .get_topic_binding(77, "-1001:42".to_string())
+            .await
+            .expect("skipped binding fetch must succeed")
+            .expect("skipped binding must exist");
+        let skipped_last_activity = skipped
+            .last_activity_at
+            .expect("skipped binding must keep last activity");
+        assert_eq!(skipped_last_activity, 10);
+
+        let applied_decision = TopicRouteDecision {
+            enabled: true,
+            require_mention: false,
+            mention_satisfied: true,
+            system_prompt_override: None,
+            agent_id: Some("dynamic-agent".to_string()),
+            dynamic_binding_topic_id: Some("-1001:42".to_string()),
+        };
+        touch_dynamic_binding_activity_if_needed(storage.as_ref(), 77, &applied_decision).await;
+
+        let touched = storage
+            .get_topic_binding(77, "-1001:42".to_string())
+            .await
+            .expect("touched binding fetch must succeed")
+            .expect("touched binding must exist");
+        let touched_last_activity = touched
+            .last_activity_at
+            .expect("touched binding must include last activity");
+        assert!(touched_last_activity > skipped_last_activity);
     }
 }

@@ -18,7 +18,7 @@ use teloxide::{
     },
     utils::command::BotCommands,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 const CHAT_ATTACH_PREFIX: &str = "chat_attach:";
 const CHAT_DETACH_CALLBACK: &str = "chat_detach";
@@ -217,7 +217,17 @@ pub async fn start(
         .update_user_state(user_id, "chat_mode".to_string())
         .await;
 
-    let saved_model = storage.get_user_model(user_id).await.unwrap_or(None);
+    let saved_model = match storage.get_user_model(user_id).await {
+        Ok(model) => model,
+        Err(error) => {
+            warn!(
+                error = %error,
+                user_id,
+                "Failed to load saved model on /start, falling back to default"
+            );
+            None
+        }
+    };
     let model = resolve_chat_model(&settings, saved_model);
     info!("User {user_id} ({user_name}) is allowed. Set model to {model}");
 
