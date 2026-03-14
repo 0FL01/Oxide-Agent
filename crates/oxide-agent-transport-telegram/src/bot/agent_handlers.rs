@@ -5,6 +5,7 @@
 
 use crate::bot::agent::extract_agent_input;
 use crate::bot::agent_transport::TelegramAgentTransport;
+use crate::bot::manager_topic_lifecycle::TelegramManagerTopicLifecycle;
 use crate::bot::messaging::send_long_message_in_thread;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
@@ -51,6 +52,22 @@ struct AgentTaskContext {
 struct AgentModeSessionKeys {
     primary: SessionId,
     legacy: SessionId,
+}
+
+#[derive(Clone, Copy)]
+struct SessionTransportContext {
+    chat_id: ChatId,
+    message_thread_id: Option<ThreadId>,
+}
+
+struct EnsureSessionContext<'a> {
+    session_keys: AgentModeSessionKeys,
+    user_id: i64,
+    bot: &'a Bot,
+    transport_ctx: SessionTransportContext,
+    llm: &'a Arc<LlmClient>,
+    storage: &'a Arc<dyn StorageProvider>,
+    settings: &'a Arc<BotSettings>,
 }
 
 impl AgentModeSessionKeys {
@@ -328,7 +345,19 @@ async fn handle_recreate_container_confirmation(
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
     info!(user_id = user_id, "User confirmed container recreation");
-    let session_id = ensure_session_exists(session_keys, user_id, llm, storage, settings).await;
+    let session_id = ensure_session_exists(EnsureSessionContext {
+        session_keys,
+        user_id,
+        bot: send_ctx.bot,
+        transport_ctx: SessionTransportContext {
+            chat_id: send_ctx.chat_id,
+            message_thread_id: send_ctx.outbound_thread.message_thread_id,
+        },
+        llm,
+        storage,
+        settings,
+    })
+    .await;
 
     match SESSION_REGISTRY
         .with_executor_mut(&session_id, |executor| {
@@ -409,7 +438,19 @@ pub async fn activate_agent_mode(
 
     info!("Activating agent mode for user {user_id}");
 
-    ensure_session_exists(session_keys, user_id, &llm, &storage, &settings).await;
+    ensure_session_exists(EnsureSessionContext {
+        session_keys,
+        user_id,
+        bot: &bot,
+        transport_ctx: SessionTransportContext {
+            chat_id: msg.chat.id,
+            message_thread_id: outbound_thread.message_thread_id,
+        },
+        llm: &llm,
+        storage: &storage,
+        settings: &settings,
+    })
+    .await;
 
     // Save state to DB
     storage
@@ -479,7 +520,19 @@ pub async fn handle_agent_message(
     }
 
     // Get or create session
-    let session_id = ensure_session_exists(session_keys, user_id, &llm, &storage, &settings).await;
+    let session_id = ensure_session_exists(EnsureSessionContext {
+        session_keys,
+        user_id,
+        bot: &bot,
+        transport_ctx: SessionTransportContext {
+            chat_id,
+            message_thread_id: outbound_thread.message_thread_id,
+        },
+        llm: &llm,
+        storage: &storage,
+        settings: &settings,
+    })
+    .await;
 
     if is_agent_task_running(session_id).await {
         let mut req = bot.send_message(
@@ -531,7 +584,7 @@ mod tests {
         agent_mode_session_keys, derive_agent_mode_session_id, ensure_session_exists,
         manager_control_plane_enabled, parse_agent_control_command, remove_sessions_with_compat,
         select_existing_session_id, session_manager_control_plane_enabled, AgentControlCommand,
-        SESSION_REGISTRY,
+        EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
     };
     use crate::config::{BotSettings, TelegramSettings};
     use async_trait::async_trait;
@@ -545,6 +598,7 @@ mod tests {
     };
     use std::sync::Arc;
     use teloxide::types::{ChatId, MessageId, ThreadId};
+    use teloxide::Bot;
 
     struct NoopStorage;
 
@@ -889,22 +943,46 @@ mod tests {
 
     #[tokio::test]
     async fn threaded_transport_session_enables_manager_tools_only_for_allowlisted_users() {
+        let bot = Bot::new("token");
+        let chat_id = ChatId(-100_123);
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let manager_settings = test_settings(Some("88"));
         let llm = test_llm(&manager_settings);
 
-        let allowed_keys =
-            agent_mode_session_keys(88, ChatId(-100_123), Some(ThreadId(MessageId(42))));
-        let blocked_keys =
-            agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(43))));
+        let allowed_thread = ThreadId(MessageId(42));
+        let blocked_thread = ThreadId(MessageId(43));
+        let allowed_keys = agent_mode_session_keys(88, chat_id, Some(allowed_thread));
+        let blocked_keys = agent_mode_session_keys(77, chat_id, Some(blocked_thread));
 
         remove_sessions_with_compat(allowed_keys).await;
         remove_sessions_with_compat(blocked_keys).await;
 
-        let allowed_session =
-            ensure_session_exists(allowed_keys, 88, &llm, &storage, &manager_settings).await;
-        let blocked_session =
-            ensure_session_exists(blocked_keys, 77, &llm, &storage, &manager_settings).await;
+        let allowed_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: allowed_keys,
+            user_id: 88,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                chat_id,
+                message_thread_id: Some(allowed_thread),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &manager_settings,
+        })
+        .await;
+        let blocked_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: blocked_keys,
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                chat_id,
+                message_thread_id: Some(blocked_thread),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &manager_settings,
+        })
+        .await;
 
         assert_eq!(allowed_session, allowed_keys.primary);
         assert_eq!(blocked_session, blocked_keys.primary);
@@ -923,24 +1001,49 @@ mod tests {
 
     #[tokio::test]
     async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes() {
+        let bot = Bot::new("token");
+        let chat_id = ChatId(-100_123);
+        let thread_id = ThreadId(MessageId(61));
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
         let llm = test_llm(&allowed_settings);
-        let keys = agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(61))));
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id));
 
         remove_sessions_with_compat(keys).await;
 
-        let first_session =
-            ensure_session_exists(keys, 77, &llm, &storage, &allowed_settings).await;
+        let first_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                chat_id,
+                message_thread_id: Some(thread_id),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &allowed_settings,
+        })
+        .await;
         assert_eq!(first_session, keys.primary);
         assert_eq!(
             session_manager_control_plane_enabled(first_session).await,
             Some(true)
         );
 
-        let second_session =
-            ensure_session_exists(keys, 77, &llm, &storage, &restricted_settings).await;
+        let second_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                chat_id,
+                message_thread_id: Some(thread_id),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &restricted_settings,
+        })
+        .await;
         assert_eq!(second_session, keys.primary);
         assert_eq!(
             session_manager_control_plane_enabled(second_session).await,
@@ -953,16 +1056,30 @@ mod tests {
     #[tokio::test]
     async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refreshes_after_complete(
     ) {
+        let bot = Bot::new("token");
+        let chat_id = ChatId(-100_123);
+        let thread_id = ThreadId(MessageId(62));
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
         let llm = test_llm(&allowed_settings);
-        let keys = agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(62))));
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id));
 
         remove_sessions_with_compat(keys).await;
 
-        let first_session =
-            ensure_session_exists(keys, 77, &llm, &storage, &allowed_settings).await;
+        let first_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                chat_id,
+                message_thread_id: Some(thread_id),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &allowed_settings,
+        })
+        .await;
         assert_eq!(first_session, keys.primary);
         assert_eq!(
             session_manager_control_plane_enabled(first_session).await,
@@ -978,8 +1095,19 @@ mod tests {
             .await;
         assert!(marked_running.is_ok());
 
-        let second_session =
-            ensure_session_exists(keys, 77, &llm, &storage, &restricted_settings).await;
+        let second_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                chat_id,
+                message_thread_id: Some(thread_id),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &restricted_settings,
+        })
+        .await;
         assert_eq!(second_session, first_session);
         assert_eq!(
             session_manager_control_plane_enabled(second_session).await,
@@ -995,8 +1123,19 @@ mod tests {
             .await;
         assert!(marked_completed.is_ok());
 
-        let third_session =
-            ensure_session_exists(keys, 77, &llm, &storage, &restricted_settings).await;
+        let third_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                chat_id,
+                message_thread_id: Some(thread_id),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &restricted_settings,
+        })
+        .await;
         assert_eq!(third_session, first_session);
         assert_eq!(
             session_manager_control_plane_enabled(third_session).await,
@@ -1008,10 +1147,13 @@ mod tests {
 
     #[tokio::test]
     async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
+        let bot = Bot::new("token");
+        let chat_id = ChatId(-100_123);
+        let thread_id = ThreadId(MessageId(52));
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let legacy_manager_settings = test_settings(Some("77"));
         let llm = test_llm(&legacy_manager_settings);
-        let keys = agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(52))));
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id));
 
         remove_sessions_with_compat(keys).await;
 
@@ -1024,8 +1166,19 @@ mod tests {
         SESSION_REGISTRY.insert(keys.legacy, legacy_executor).await;
 
         let restricted_settings = test_settings(None);
-        let resolved_session =
-            ensure_session_exists(keys, 77, &llm, &storage, &restricted_settings).await;
+        let resolved_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                chat_id,
+                message_thread_id: Some(thread_id),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &restricted_settings,
+        })
+        .await;
 
         assert_eq!(resolved_session, keys.primary);
         assert_eq!(
@@ -1037,16 +1190,10 @@ mod tests {
     }
 }
 
-async fn ensure_session_exists(
-    session_keys: AgentModeSessionKeys,
-    user_id: i64,
-    llm: &Arc<LlmClient>,
-    storage: &Arc<dyn StorageProvider>,
-    settings: &Arc<BotSettings>,
-) -> SessionId {
-    let manager_enabled = manager_control_plane_enabled(settings, user_id);
+async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
+    let manager_enabled = manager_control_plane_enabled(ctx.settings, ctx.user_id);
 
-    if let Some(existing_session_id) = resolve_existing_session_id(session_keys).await {
+    if let Some(existing_session_id) = resolve_existing_session_id(ctx.session_keys).await {
         if let Some(existing_manager_enabled) =
             session_manager_control_plane_enabled(existing_session_id).await
         {
@@ -1089,7 +1236,7 @@ async fn ensure_session_exists(
         }
     }
 
-    let session_id = session_keys.primary;
+    let session_id = ctx.session_keys.primary;
     if SESSION_REGISTRY.contains(&session_id).await {
         debug!(session_id = %session_id, "Session already exists in cache");
         return session_id;
@@ -1098,23 +1245,34 @@ async fn ensure_session_exists(
     let mut session = AgentSession::new(session_id);
 
     // Load saved agent memory if exists
-    if let Ok(Some(saved_memory)) = storage.load_agent_memory(user_id).await {
+    if let Ok(Some(saved_memory)) = ctx.storage.load_agent_memory(ctx.user_id).await {
         session.memory = saved_memory;
         info!(
-            user_id = user_id,
+            user_id = ctx.user_id,
             messages_count = session.memory.get_messages().len(),
             "Loaded agent memory for user in ensure_session_exists"
         );
     } else {
         info!(
-            user_id = user_id,
+            user_id = ctx.user_id,
             "No saved agent memory found, starting fresh"
         );
     }
 
-    let mut executor = AgentExecutor::new(llm.clone(), session, settings.agent.clone());
+    let mut executor = AgentExecutor::new(ctx.llm.clone(), session, ctx.settings.agent.clone());
     if manager_enabled {
-        executor = executor.with_manager_control_plane(storage.clone(), user_id);
+        let default_chat_id = if ctx.transport_ctx.message_thread_id.is_some() {
+            Some(ctx.transport_ctx.chat_id)
+        } else {
+            None
+        };
+        let topic_lifecycle = Arc::new(TelegramManagerTopicLifecycle::new(
+            ctx.bot.clone(),
+            default_chat_id,
+        ));
+        executor = executor
+            .with_manager_control_plane(ctx.storage.clone(), ctx.user_id)
+            .with_manager_topic_lifecycle(topic_lifecycle);
     }
     SESSION_REGISTRY.insert(session_id, executor).await;
     session_id
@@ -1367,8 +1525,19 @@ async fn handle_loop_retry(
     llm: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
-    let session_id =
-        ensure_session_exists(ctx.session_keys, ctx.user_id, &llm, &storage, &settings).await;
+    let session_id = ensure_session_exists(EnsureSessionContext {
+        session_keys: ctx.session_keys,
+        user_id: ctx.user_id,
+        bot: &ctx.bot,
+        transport_ctx: SessionTransportContext {
+            chat_id: ctx.chat_id,
+            message_thread_id: ctx.outbound_thread.message_thread_id,
+        },
+        llm: &llm,
+        storage: &storage,
+        settings: &settings,
+    })
+    .await;
     if is_agent_task_running(session_id).await {
         send_agent_message(
             &ctx.bot,
