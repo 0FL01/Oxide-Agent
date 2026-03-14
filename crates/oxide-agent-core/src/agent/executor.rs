@@ -434,9 +434,9 @@ mod tests {
                     updated_at: 20,
                 }))
             });
-        mock.expect_list_audit_events()
-            .with(eq(77_i64), eq(200_usize))
-            .returning(|_, _| {
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(200_usize))
+            .returning(|_, _, _| {
                 Ok(vec![AuditEventRecord {
                     schema_version: 1,
                     version: 4,
@@ -521,9 +521,9 @@ mod tests {
                     updated_at: 20,
                 }))
             });
-        mock.expect_list_audit_events()
-            .with(eq(77_i64), eq(200_usize))
-            .returning(|_, _| {
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(200_usize))
+            .returning(|_, _, _| {
                 Ok(vec![AuditEventRecord {
                     schema_version: 1,
                     version: 4,

@@ -294,6 +294,15 @@ pub trait StorageProvider: Send + Sync {
         user_id: i64,
         limit: usize,
     ) -> Result<Vec<AuditEventRecord>, StorageError>;
+    /// List audit events page in descending version order.
+    ///
+    /// `before_version` acts as an exclusive cursor. When `None`, returns the latest page.
+    async fn list_audit_events_page(
+        &self,
+        user_id: i64,
+        before_version: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<AuditEventRecord>, StorageError>;
 }
 
 /// A message in the chat history
@@ -935,6 +944,20 @@ impl StorageProvider for R2Storage {
         let start = events.len().saturating_sub(limit);
         Ok(events[start..].to_vec())
     }
+
+    async fn list_audit_events_page(
+        &self,
+        user_id: i64,
+        before_version: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<AuditEventRecord>, StorageError> {
+        let events: Vec<AuditEventRecord> = self
+            .load_json(&audit_events_key(user_id))
+            .await?
+            .unwrap_or_default();
+
+        Ok(select_audit_events_page(events, before_version, limit))
+    }
 }
 
 /// Returns the R2 key for a user's configuration file
@@ -977,6 +1000,20 @@ pub fn topic_binding_key(user_id: i64, topic_id: &str) -> String {
 #[must_use]
 pub fn audit_events_key(user_id: i64) -> String {
     format!("users/{user_id}/control_plane/audit/events.json")
+}
+
+#[must_use]
+fn select_audit_events_page(
+    events: Vec<AuditEventRecord>,
+    before_version: Option<u64>,
+    limit: usize,
+) -> Vec<AuditEventRecord> {
+    events
+        .into_iter()
+        .rev()
+        .filter(|event| before_version.is_none_or(|cursor| event.version < cursor))
+        .take(limit)
+        .collect()
 }
 
 #[must_use]
@@ -1095,9 +1132,10 @@ mod tests {
     use super::{
         agent_profile_key, audit_events_key, build_agent_profile_record, build_audit_event_record,
         build_topic_binding_record, generate_chat_uuid, next_record_version,
-        should_retry_control_plane_rmw, topic_binding_key, user_chat_history_key, user_config_key,
-        user_history_key, AgentProfileRecord, AppendAuditEventOptions, ControlPlaneLocks,
-        TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+        select_audit_events_page, should_retry_control_plane_rmw, topic_binding_key,
+        user_chat_history_key, user_config_key, user_history_key, AgentProfileRecord,
+        AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, TopicBindingRecord,
+        UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -1352,6 +1390,57 @@ mod tests {
         );
 
         assert_eq!(event.version, u64::MAX);
+    }
+
+    #[test]
+    fn audit_page_cursor_returns_descending_window() {
+        let events = vec![
+            AuditEventRecord {
+                schema_version: 1,
+                version: 1,
+                event_id: "evt-1".to_string(),
+                user_id: 9,
+                topic_id: None,
+                agent_id: None,
+                action: "a".to_string(),
+                payload: json!({}),
+                created_at: 1,
+            },
+            AuditEventRecord {
+                schema_version: 1,
+                version: 2,
+                event_id: "evt-2".to_string(),
+                user_id: 9,
+                topic_id: None,
+                agent_id: None,
+                action: "b".to_string(),
+                payload: json!({}),
+                created_at: 2,
+            },
+            AuditEventRecord {
+                schema_version: 1,
+                version: 3,
+                event_id: "evt-3".to_string(),
+                user_id: 9,
+                topic_id: None,
+                agent_id: None,
+                action: "c".to_string(),
+                payload: json!({}),
+                created_at: 3,
+            },
+        ];
+
+        let first_page: Vec<u64> = select_audit_events_page(events.clone(), None, 2)
+            .iter()
+            .map(|event| event.version)
+            .collect();
+        let second_page: Vec<u64> = select_audit_events_page(events, Some(2), 2)
+            .iter()
+            .map(|event| event.version)
+            .collect();
+
+        assert_eq!(first_page, vec![3, 2]);
+        assert_eq!(second_page, vec![1]);
     }
 
     #[test]
