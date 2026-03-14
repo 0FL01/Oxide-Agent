@@ -21,6 +21,7 @@ services:
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./config:/app/config
     networks:
       - oxide_network
     depends_on:
