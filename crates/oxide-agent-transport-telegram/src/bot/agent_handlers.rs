@@ -14,7 +14,10 @@ use crate::bot::views::{
     confirmation_keyboard, get_agent_keyboard, AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL,
     LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
-use crate::bot::{build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams};
+use crate::bot::{
+    build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams, TelegramThreadKind,
+    TelegramThreadSpec,
+};
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
 use oxide_agent_core::agent::{
@@ -56,8 +59,7 @@ struct AgentModeSessionKeys {
 
 #[derive(Clone, Copy)]
 struct SessionTransportContext {
-    chat_id: ChatId,
-    message_thread_id: Option<ThreadId>,
+    manager_default_chat_id: Option<ChatId>,
 }
 
 struct EnsureSessionContext<'a> {
@@ -100,6 +102,10 @@ fn parse_agent_control_command(text: Option<&str>) -> Option<AgentControlCommand
         Some("⬅️ Exit Agent Mode") => Some(AgentControlCommand::ExitAgentMode),
         _ => None,
     }
+}
+
+fn manager_default_chat_id(chat_id: ChatId, thread_spec: TelegramThreadSpec) -> Option<ChatId> {
+    matches!(thread_spec.kind, TelegramThreadKind::Forum).then_some(chat_id)
 }
 
 /// Global session registry for agent executors
@@ -288,6 +294,7 @@ struct ConfirmationSendCtx<'a> {
     bot: &'a Bot,
     chat_id: ChatId,
     keyboard: &'a teloxide::types::KeyboardMarkup,
+    manager_default_chat_id: Option<ChatId>,
     outbound_thread: OutboundThreadParams,
 }
 
@@ -350,8 +357,7 @@ async fn handle_recreate_container_confirmation(
         user_id,
         bot: send_ctx.bot,
         transport_ctx: SessionTransportContext {
-            chat_id: send_ctx.chat_id,
-            message_thread_id: send_ctx.outbound_thread.message_thread_id,
+            manager_default_chat_id: send_ctx.manager_default_chat_id,
         },
         llm,
         storage,
@@ -443,8 +449,7 @@ pub async fn activate_agent_mode(
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
-            chat_id: msg.chat.id,
-            message_thread_id: outbound_thread.message_thread_id,
+            manager_default_chat_id: manager_default_chat_id(msg.chat.id, thread_spec),
         },
         llm: &llm,
         storage: &storage,
@@ -525,8 +530,7 @@ pub async fn handle_agent_message(
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
-            chat_id,
-            message_thread_id: outbound_thread.message_thread_id,
+            manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
         },
         llm: &llm,
         storage: &storage,
@@ -584,10 +588,12 @@ pub async fn handle_agent_message(
 mod tests {
     use super::{
         agent_mode_session_keys, derive_agent_mode_session_id, ensure_session_exists,
-        manager_control_plane_enabled, parse_agent_control_command, remove_sessions_with_compat,
-        select_existing_session_id, session_manager_control_plane_enabled, AgentControlCommand,
-        EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
+        manager_control_plane_enabled, manager_default_chat_id, parse_agent_control_command,
+        remove_sessions_with_compat, select_existing_session_id,
+        session_manager_control_plane_enabled, AgentControlCommand, EnsureSessionContext,
+        SessionTransportContext, SESSION_REGISTRY,
     };
+    use crate::bot::resolve_thread_spec_from_context;
     use crate::config::{BotSettings, TelegramSettings};
     use async_trait::async_trait;
     use oxide_agent_core::agent::AgentSession;
@@ -890,6 +896,21 @@ mod tests {
     }
 
     #[test]
+    fn manager_default_chat_id_is_available_in_general_forum_topic() {
+        let spec = resolve_thread_spec_from_context(true, true, None);
+        assert_eq!(
+            manager_default_chat_id(ChatId(-100_123), spec),
+            Some(ChatId(-100_123))
+        );
+    }
+
+    #[test]
+    fn manager_default_chat_id_is_not_available_outside_forum_context() {
+        let spec = resolve_thread_spec_from_context(true, false, None);
+        assert_eq!(manager_default_chat_id(ChatId(-100_123), spec), None);
+    }
+
+    #[test]
     fn manager_control_plane_access_requires_dedicated_allowlist_entry() {
         let settings = BotSettings::new(
             AgentSettings::default(),
@@ -964,8 +985,7 @@ mod tests {
             user_id: 88,
             bot: &bot,
             transport_ctx: SessionTransportContext {
-                chat_id,
-                message_thread_id: Some(allowed_thread),
+                manager_default_chat_id: Some(chat_id),
             },
             llm: &llm,
             storage: &storage,
@@ -977,8 +997,7 @@ mod tests {
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
-                chat_id,
-                message_thread_id: Some(blocked_thread),
+                manager_default_chat_id: Some(chat_id),
             },
             llm: &llm,
             storage: &storage,
@@ -1019,8 +1038,7 @@ mod tests {
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
-                chat_id,
-                message_thread_id: Some(thread_id),
+                manager_default_chat_id: Some(chat_id),
             },
             llm: &llm,
             storage: &storage,
@@ -1038,8 +1056,7 @@ mod tests {
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
-                chat_id,
-                message_thread_id: Some(thread_id),
+                manager_default_chat_id: Some(chat_id),
             },
             llm: &llm,
             storage: &storage,
@@ -1074,8 +1091,7 @@ mod tests {
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
-                chat_id,
-                message_thread_id: Some(thread_id),
+                manager_default_chat_id: Some(chat_id),
             },
             llm: &llm,
             storage: &storage,
@@ -1102,8 +1118,7 @@ mod tests {
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
-                chat_id,
-                message_thread_id: Some(thread_id),
+                manager_default_chat_id: Some(chat_id),
             },
             llm: &llm,
             storage: &storage,
@@ -1130,8 +1145,7 @@ mod tests {
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
-                chat_id,
-                message_thread_id: Some(thread_id),
+                manager_default_chat_id: Some(chat_id),
             },
             llm: &llm,
             storage: &storage,
@@ -1173,8 +1187,7 @@ mod tests {
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
-                chat_id,
-                message_thread_id: Some(thread_id),
+                manager_default_chat_id: Some(chat_id),
             },
             llm: &llm,
             storage: &storage,
@@ -1263,14 +1276,9 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
 
     let mut executor = AgentExecutor::new(ctx.llm.clone(), session, ctx.settings.agent.clone());
     if manager_enabled {
-        let default_chat_id = if ctx.transport_ctx.message_thread_id.is_some() {
-            Some(ctx.transport_ctx.chat_id)
-        } else {
-            None
-        };
         let topic_lifecycle = Arc::new(TelegramManagerTopicLifecycle::new(
             ctx.bot.clone(),
-            default_chat_id,
+            ctx.transport_ctx.manager_default_chat_id,
         ));
         executor = executor
             .with_manager_control_plane(ctx.storage.clone(), ctx.user_id)
@@ -1518,6 +1526,7 @@ struct LoopCallbackContext {
     chat_id: ChatId,
     user_id: i64,
     session_keys: AgentModeSessionKeys,
+    manager_default_chat_id: Option<ChatId>,
     outbound_thread: OutboundThreadParams,
 }
 
@@ -1532,8 +1541,7 @@ async fn handle_loop_retry(
         user_id: ctx.user_id,
         bot: &ctx.bot,
         transport_ctx: SessionTransportContext {
-            chat_id: ctx.chat_id,
-            message_thread_id: ctx.outbound_thread.message_thread_id,
+            manager_default_chat_id: ctx.manager_default_chat_id,
         },
         llm: &llm,
         storage: &storage,
@@ -1678,18 +1686,20 @@ pub async fn handle_loop_callback(
         .as_ref()
         .map(|msg| msg.chat().id)
         .ok_or_else(|| anyhow::anyhow!("Callback message missing chat id"))?;
-    let thread_id = q
+    let thread_spec = q
         .message
         .as_ref()
         .and_then(|message| message.regular_message())
-        .map(resolve_thread_spec)
-        .and_then(|spec| spec.thread_id);
+        .map(resolve_thread_spec);
+    let thread_id = thread_spec.and_then(|spec| spec.thread_id);
     let session_keys = agent_mode_session_keys(user_id, chat_id, thread_id);
     let ctx = LoopCallbackContext {
         bot,
         chat_id,
         user_id,
         session_keys,
+        manager_default_chat_id: thread_spec
+            .and_then(|spec| manager_default_chat_id(chat_id, spec)),
         outbound_thread: outbound_thread_from_callback(&q),
     };
 
@@ -1883,6 +1893,7 @@ pub async fn handle_agent_confirmation(
         bot: &bot,
         chat_id,
         keyboard: &keyboard,
+        manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
         outbound_thread,
     };
 
