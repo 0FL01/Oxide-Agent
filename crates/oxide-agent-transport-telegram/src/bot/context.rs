@@ -158,19 +158,76 @@ pub(crate) async fn reset_current_chat_uuid(
     Ok(chat_uuid)
 }
 
+pub(crate) async fn ensure_current_agent_flow_id(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    chat_id: ChatId,
+    thread_spec: TelegramThreadSpec,
+) -> Result<(String, bool)> {
+    let mut config = storage.get_user_config(user_id).await?;
+    let context_key = storage_context_key(chat_id, thread_spec);
+
+    if let Some(flow_id) = config
+        .contexts
+        .get(&context_key)
+        .and_then(|context| context.current_agent_flow_id.clone())
+    {
+        return Ok((flow_id, false));
+    }
+
+    let flow_id = generate_chat_uuid();
+    let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
+    context.current_agent_flow_id = Some(flow_id.clone());
+    storage.update_user_config(user_id, config).await?;
+    let _ = storage
+        .upsert_agent_flow_record(user_id, context_key, flow_id.clone())
+        .await;
+    Ok((flow_id, true))
+}
+
+pub(crate) async fn set_current_agent_flow_id(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    chat_id: ChatId,
+    thread_spec: TelegramThreadSpec,
+    flow_id: String,
+) -> Result<()> {
+    let mut config = storage.get_user_config(user_id).await?;
+    let context_key = storage_context_key(chat_id, thread_spec);
+    let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
+    context.current_agent_flow_id = Some(flow_id.clone());
+    storage.update_user_config(user_id, config).await?;
+    let _ = storage
+        .upsert_agent_flow_record(user_id, context_key, flow_id)
+        .await;
+    Ok(())
+}
+
+pub(crate) async fn reset_current_agent_flow_id(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    chat_id: ChatId,
+    thread_spec: TelegramThreadSpec,
+) -> Result<String> {
+    let flow_id = generate_chat_uuid();
+    set_current_agent_flow_id(storage, user_id, chat_id, thread_spec, flow_id.clone()).await?;
+    Ok(flow_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        current_context_state_from_config, reset_current_chat_uuid, sandbox_scope,
+        current_context_state_from_config, ensure_current_agent_flow_id,
+        reset_current_agent_flow_id, reset_current_chat_uuid, sandbox_scope,
         scoped_chat_storage_id, storage_context_key,
     };
     use crate::bot::resolve_thread_spec_from_context;
     use async_trait::async_trait;
     use oxide_agent_core::agent::AgentMemory;
     use oxide_agent_core::storage::{
-        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message, StorageError,
-        StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-        UserConfig, UserContextConfig,
+        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message,
+        StorageError, StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions,
+        UpsertTopicBindingOptions, UserConfig, UserContextConfig,
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -306,6 +363,31 @@ mod tests {
             Ok(())
         }
 
+        async fn get_agent_flow_record(
+            &self,
+            _user_id: i64,
+            _context_key: String,
+            _flow_id: String,
+        ) -> Result<Option<AgentFlowRecord>, StorageError> {
+            Ok(None)
+        }
+
+        async fn upsert_agent_flow_record(
+            &self,
+            user_id: i64,
+            context_key: String,
+            flow_id: String,
+        ) -> Result<AgentFlowRecord, StorageError> {
+            Ok(AgentFlowRecord {
+                schema_version: 1,
+                user_id,
+                context_key,
+                flow_id,
+                created_at: 0,
+                updated_at: 0,
+            })
+        }
+
         async fn clear_all_context(&self, _user_id: i64) -> Result<(), StorageError> {
             Ok(())
         }
@@ -431,6 +513,7 @@ mod tests {
             UserContextConfig {
                 state: Some("agent_mode".to_string()),
                 current_chat_uuid: None,
+                current_agent_flow_id: None,
                 chat_id: Some(-1001),
                 thread_id: Some(42),
                 forum_topic_name: None,
@@ -462,6 +545,7 @@ mod tests {
                         UserContextConfig {
                             state: Some("chat_mode".to_string()),
                             current_chat_uuid: Some("chat-a".to_string()),
+                            current_agent_flow_id: None,
                             chat_id: Some(-1001),
                             thread_id: Some(42),
                             forum_topic_name: None,
@@ -475,6 +559,7 @@ mod tests {
                         UserContextConfig {
                             state: Some("chat_mode".to_string()),
                             current_chat_uuid: Some("chat-b".to_string()),
+                            current_agent_flow_id: None,
                             chat_id: Some(-1001),
                             thread_id: Some(77),
                             forum_topic_name: None,
@@ -511,6 +596,119 @@ mod tests {
                 .get("-1001:77")
                 .and_then(|context| context.current_chat_uuid.as_deref()),
             Some("chat-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_current_agent_flow_id_only_touches_requested_context() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(ConfigStorage {
+            config: Mutex::new(UserConfig {
+                contexts: HashMap::from([(
+                    "-1001:77".to_string(),
+                    UserContextConfig {
+                        state: Some("agent_mode".to_string()),
+                        current_chat_uuid: None,
+                        current_agent_flow_id: Some("flow-b".to_string()),
+                        chat_id: Some(-1001),
+                        thread_id: Some(77),
+                        forum_topic_name: None,
+                        forum_topic_icon_color: None,
+                        forum_topic_icon_custom_emoji_id: None,
+                        forum_topic_closed: false,
+                    },
+                )]),
+                ..UserConfig::default()
+            }),
+        });
+        let thread_spec =
+            resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
+        let (flow_id, created) =
+            ensure_current_agent_flow_id(&storage, 7, ChatId(-1001), thread_spec)
+                .await
+                .expect("ensure must succeed");
+
+        let saved = storage
+            .get_user_config(7)
+            .await
+            .expect("config load must succeed");
+        assert!(created);
+        assert_eq!(
+            saved
+                .contexts
+                .get("-1001:42")
+                .and_then(|context| context.current_agent_flow_id.as_deref()),
+            Some(flow_id.as_str())
+        );
+        assert_eq!(
+            saved
+                .contexts
+                .get("-1001:77")
+                .and_then(|context| context.current_agent_flow_id.as_deref()),
+            Some("flow-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_current_agent_flow_id_only_touches_requested_context() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(ConfigStorage {
+            config: Mutex::new(UserConfig {
+                contexts: HashMap::from([
+                    (
+                        "-1001:42".to_string(),
+                        UserContextConfig {
+                            state: Some("agent_mode".to_string()),
+                            current_chat_uuid: None,
+                            current_agent_flow_id: Some("flow-a".to_string()),
+                            chat_id: Some(-1001),
+                            thread_id: Some(42),
+                            forum_topic_name: None,
+                            forum_topic_icon_color: None,
+                            forum_topic_icon_custom_emoji_id: None,
+                            forum_topic_closed: false,
+                        },
+                    ),
+                    (
+                        "-1001:77".to_string(),
+                        UserContextConfig {
+                            state: Some("agent_mode".to_string()),
+                            current_chat_uuid: None,
+                            current_agent_flow_id: Some("flow-b".to_string()),
+                            chat_id: Some(-1001),
+                            thread_id: Some(77),
+                            forum_topic_name: None,
+                            forum_topic_icon_color: None,
+                            forum_topic_icon_custom_emoji_id: None,
+                            forum_topic_closed: false,
+                        },
+                    ),
+                ]),
+                ..UserConfig::default()
+            }),
+        });
+        let thread_spec =
+            resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
+        let new_flow_id = reset_current_agent_flow_id(&storage, 7, ChatId(-1001), thread_spec)
+            .await
+            .expect("reset must succeed");
+
+        let saved = storage
+            .get_user_config(7)
+            .await
+            .expect("config load must succeed");
+        assert_ne!(new_flow_id, "flow-a");
+        assert_eq!(
+            saved
+                .contexts
+                .get("-1001:42")
+                .and_then(|context| context.current_agent_flow_id.as_deref()),
+            Some(new_flow_id.as_str())
+        );
+        assert_eq!(
+            saved
+                .contexts
+                .get("-1001:77")
+                .and_then(|context| context.current_agent_flow_id.as_deref()),
+            Some("flow-b")
         );
     }
 }

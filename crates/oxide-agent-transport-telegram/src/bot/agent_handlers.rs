@@ -6,21 +6,24 @@
 use crate::bot::agent::extract_agent_input;
 use crate::bot::agent_transport::TelegramAgentTransport;
 use crate::bot::context::{
-    current_context_state, sandbox_scope, set_current_context_state, storage_context_key,
+    current_context_state, ensure_current_agent_flow_id, reset_current_agent_flow_id,
+    sandbox_scope, set_current_agent_flow_id, set_current_context_state, storage_context_key,
 };
 use crate::bot::manager_topic_lifecycle::TelegramManagerTopicLifecycle;
-use crate::bot::messaging::send_long_message_in_thread;
+use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::views::{
-    agent_control_markup, cancel_task_confirmation_inline_keyboard, confirmation_markup,
-    get_agent_inline_keyboard_with_exit, progress_inline_keyboard, AgentView, DefaultAgentView,
-    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    agent_control_markup, agent_flow_inline_keyboard, cancel_task_confirmation_inline_keyboard,
+    confirmation_markup, get_agent_inline_keyboard_with_exit, progress_inline_keyboard, AgentView,
+    DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK,
+    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
     AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
-    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_EXIT, AGENT_CALLBACK_RECREATE_CONTAINER,
-    LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
+    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT,
+    AGENT_CALLBACK_RECREATE_CONTAINER, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET,
+    LOOP_CALLBACK_RETRY,
 };
 use crate::bot::{
     build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec,
@@ -57,6 +60,7 @@ struct AgentTaskContext {
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     context_key: String,
+    agent_flow_id: String,
     sandbox_scope: SandboxScope,
     message_thread_id: Option<ThreadId>,
     use_inline_progress_controls: bool,
@@ -78,6 +82,8 @@ struct SessionTransportContext {
 struct EnsureSessionContext<'a> {
     session_keys: AgentModeSessionKeys,
     context_key: String,
+    agent_flow_id: String,
+    agent_flow_created: bool,
     sandbox_scope: SandboxScope,
     user_id: i64,
     bot: &'a Bot,
@@ -140,19 +146,29 @@ fn fnv1a_mix_i64(mut hash: u64, value: i64) -> u64 {
     hash
 }
 
+fn fnv1a_mix_str(mut hash: u64, value: &str) -> u64 {
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    hash
+}
+
 fn derive_agent_mode_session_id(
     user_id: i64,
     chat_id: ChatId,
     thread_id: Option<ThreadId>,
+    agent_flow_id: &str,
 ) -> SessionId {
-    let Some(thread_id) = thread_id else {
-        return SessionId::from(user_id);
-    };
-
     let mut hash = FNV_OFFSET_BASIS;
     hash = fnv1a_mix_i64(hash, user_id);
     hash = fnv1a_mix_i64(hash, chat_id.0);
-    hash = fnv1a_mix_i64(hash, i64::from(thread_id.0 .0));
+    hash = fnv1a_mix_i64(
+        hash,
+        thread_id.map_or(0, |thread_id| i64::from(thread_id.0 .0)),
+    );
+    hash = fnv1a_mix_str(hash, agent_flow_id);
 
     let folded = hash & (i64::MAX as u64);
     let derived = if folded == 0 { -1 } else { -(folded as i64) };
@@ -163,9 +179,10 @@ fn agent_mode_session_keys(
     user_id: i64,
     chat_id: ChatId,
     thread_id: Option<ThreadId>,
+    agent_flow_id: &str,
 ) -> AgentModeSessionKeys {
     AgentModeSessionKeys {
-        primary: derive_agent_mode_session_id(user_id, chat_id, thread_id),
+        primary: derive_agent_mode_session_id(user_id, chat_id, thread_id, agent_flow_id),
         legacy: SessionId::from(user_id),
     }
 }
@@ -335,6 +352,7 @@ struct ConfirmationSendCtx<'a> {
     bot: &'a Bot,
     chat_id: ChatId,
     context_key: &'a str,
+    agent_flow_id: &'a str,
     reply_markup: Option<ReplyMarkup>,
     manager_default_chat_id: Option<ChatId>,
     outbound_thread: OutboundThreadParams,
@@ -348,11 +366,18 @@ fn automatic_agent_control_markup(thread_spec: TelegramThreadSpec) -> Option<Rep
     (!use_inline_topic_controls(thread_spec)).then(|| agent_control_markup(false))
 }
 
-async fn show_agent_controls(bot: Bot, msg: Message) -> Result<()> {
+async fn show_agent_controls(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<dyn StorageProvider>,
+) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
+    let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let reply_markup = if use_inline_topic_controls(thread_spec) {
-        get_agent_inline_keyboard_with_exit(false).into()
+        let (agent_flow_id, _) =
+            ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
+        get_agent_inline_keyboard_with_exit(false, Some(&agent_flow_id)).into()
     } else {
         agent_control_markup(false)
     };
@@ -371,47 +396,40 @@ async fn handle_clear_memory_confirmation(
     user_id: i64,
     session_keys: AgentModeSessionKeys,
     storage: &Arc<dyn StorageProvider>,
+    thread_spec: TelegramThreadSpec,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
     info!(user_id = user_id, "User confirmed memory clear");
-    match reset_sessions_with_compat(session_keys).await {
-        ResetSessionOutcome::Reset => {
-            let _ = storage
-                .clear_agent_memory_for_context(user_id, send_ctx.context_key.to_string())
-                .await;
-            send_agent_message_with_optional_keyboard(
-                send_ctx.bot,
-                send_ctx.chat_id,
-                DefaultAgentView::memory_cleared(),
-                send_ctx.reply_markup.as_ref(),
-                send_ctx.outbound_thread,
-            )
-            .await?;
-        }
-        ResetSessionOutcome::Busy => {
-            send_agent_message_with_optional_keyboard(
-                send_ctx.bot,
-                send_ctx.chat_id,
-                DefaultAgentView::clear_blocked_by_task(),
-                send_ctx.reply_markup.as_ref(),
-                send_ctx.outbound_thread,
-            )
-            .await?;
-        }
-        ResetSessionOutcome::NotFound => {
-            let _ = storage
-                .clear_agent_memory_for_context(user_id, send_ctx.context_key.to_string())
-                .await;
-            send_agent_message_with_optional_keyboard(
-                send_ctx.bot,
-                send_ctx.chat_id,
-                DefaultAgentView::memory_cleared(),
-                send_ctx.reply_markup.as_ref(),
-                send_ctx.outbound_thread,
-            )
-            .await?;
-        }
+    if is_agent_task_running(session_keys.primary).await {
+        send_agent_message_with_optional_keyboard(
+            send_ctx.bot,
+            send_ctx.chat_id,
+            DefaultAgentView::clear_blocked_by_task(),
+            send_ctx.reply_markup.as_ref(),
+            send_ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
     }
+
+    save_memory_after_task(
+        session_keys.primary,
+        user_id,
+        send_ctx.context_key,
+        send_ctx.agent_flow_id,
+        storage,
+    )
+    .await;
+    let _ = SESSION_REGISTRY.remove_if_idle(&session_keys.primary).await;
+    let _ = reset_current_agent_flow_id(storage, user_id, send_ctx.chat_id, thread_spec).await?;
+    send_agent_message_with_optional_keyboard(
+        send_ctx.bot,
+        send_ctx.chat_id,
+        DefaultAgentView::memory_cleared(),
+        send_ctx.reply_markup.as_ref(),
+        send_ctx.outbound_thread,
+    )
+    .await?;
 
     Ok(())
 }
@@ -428,6 +446,8 @@ async fn handle_recreate_container_confirmation(
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
         context_key: send_ctx.context_key.to_string(),
+        agent_flow_id: send_ctx.agent_flow_id.to_string(),
+        agent_flow_created: false,
         sandbox_scope: SandboxScope::new(user_id, send_ctx.context_key.to_string()),
         user_id,
         bot: send_ctx.bot,
@@ -528,14 +548,19 @@ pub async fn activate_agent_mode(
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let context_key = storage_context_key(msg.chat.id, thread_spec);
+    let (agent_flow_id, agent_flow_created) =
+        ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
     let sandbox_scope = sandbox_scope(user_id, msg.chat.id, thread_spec);
-    let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
+    let session_keys =
+        agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
 
     info!("Activating agent mode for user {user_id}");
 
     ensure_session_exists(EnsureSessionContext {
         session_keys,
         context_key,
+        agent_flow_id,
+        agent_flow_created,
         sandbox_scope,
         user_id,
         bot: &bot,
@@ -625,7 +650,6 @@ pub async fn handle_agent_message(
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let context_key = storage_context_key(chat_id, thread_spec);
     let sandbox_scope = sandbox_scope(user_id, chat_id, thread_spec);
-    let session_keys = agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id);
 
     let scoped_state = current_context_state(&storage, user_id, chat_id, thread_spec).await?;
     if scoped_state.as_deref() != Some("agent_mode") {
@@ -633,21 +657,13 @@ pub async fn handle_agent_message(
             .await;
     }
 
+    let (agent_flow_id, agent_flow_created) =
+        ensure_current_agent_flow_id(&storage, user_id, chat_id, thread_spec).await?;
+    let session_keys =
+        agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id, &agent_flow_id);
+
     if let Some(command) = parse_agent_control_command(msg.text()) {
-        return match command {
-            AgentControlCommand::CancelTask => cancel_agent_task(bot, msg, dialogue).await,
-            AgentControlCommand::ClearMemory => {
-                confirm_destructive_action(ConfirmationType::ClearMemory, bot, msg, dialogue).await
-            }
-            AgentControlCommand::RecreateContainer => {
-                confirm_destructive_action(ConfirmationType::RecreateContainer, bot, msg, dialogue)
-                    .await
-            }
-            AgentControlCommand::ExitAgentMode => {
-                exit_agent_mode(bot, msg, dialogue, storage).await
-            }
-            AgentControlCommand::ShowControls => show_agent_controls(bot, msg).await,
-        };
+        return handle_agent_control_command(command, bot, msg, dialogue, storage).await;
     }
 
     let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
@@ -664,6 +680,8 @@ pub async fn handle_agent_message(
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
         context_key: context_key.clone(),
+        agent_flow_id: agent_flow_id.clone(),
+        agent_flow_created,
         sandbox_scope: sandbox_scope.clone(),
         user_id,
         bot: &bot,
@@ -678,43 +696,79 @@ pub async fn handle_agent_message(
     .await;
 
     if is_agent_task_running(session_id).await {
-        let mut req = bot.send_message(
-            chat_id,
-            "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
-        );
-        if let Some(thread_id) = outbound_thread.message_thread_id {
-            req = req.message_thread_id(thread_id);
-        }
-
-        if let Some(reply_markup) = automatic_agent_control_markup(thread_spec) {
-            req.reply_markup(reply_markup).await?;
-        } else {
-            req.await?;
-        }
+        notify_running_agent_task(&bot, chat_id, thread_spec, outbound_thread).await?;
         touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
 
     renew_cancellation_token(session_id).await;
 
-    let task_bot = bot.clone();
-    let task_msg = msg.clone();
-    let task_storage = storage.clone();
-    let task_llm = llm.clone();
+    spawn_agent_task(AgentTaskContext {
+        bot: bot.clone(),
+        msg: msg.clone(),
+        storage: storage.clone(),
+        llm: llm.clone(),
+        context_key,
+        agent_flow_id,
+        sandbox_scope,
+        message_thread_id: outbound_thread.message_thread_id,
+        use_inline_progress_controls: use_inline_topic_controls(thread_spec),
+        session_id,
+    });
 
+    touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
+    Ok(())
+}
+
+async fn handle_agent_control_command(
+    command: AgentControlCommand,
+    bot: Bot,
+    msg: Message,
+    dialogue: AgentDialogue,
+    storage: Arc<dyn StorageProvider>,
+) -> Result<()> {
+    match command {
+        AgentControlCommand::CancelTask => cancel_agent_task(bot, msg, dialogue, storage).await,
+        AgentControlCommand::ClearMemory => {
+            confirm_destructive_action(ConfirmationType::ClearMemory, bot, msg, dialogue).await
+        }
+        AgentControlCommand::RecreateContainer => {
+            confirm_destructive_action(ConfirmationType::RecreateContainer, bot, msg, dialogue)
+                .await
+        }
+        AgentControlCommand::ExitAgentMode => exit_agent_mode(bot, msg, dialogue, storage).await,
+        AgentControlCommand::ShowControls => show_agent_controls(bot, msg, storage).await,
+    }
+}
+
+async fn notify_running_agent_task(
+    bot: &Bot,
+    chat_id: ChatId,
+    thread_spec: TelegramThreadSpec,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    let mut req = bot.send_message(
+        chat_id,
+        "⏳ A task is already running. Press ❌ Cancel Task to stop it.",
+    );
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    if let Some(reply_markup) = automatic_agent_control_markup(thread_spec) {
+        req.reply_markup(reply_markup).await?;
+    } else {
+        req.await?;
+    }
+
+    Ok(())
+}
+
+fn spawn_agent_task(ctx: AgentTaskContext) {
     tokio::spawn(async move {
-        let message_thread_id = outbound_thread.message_thread_id;
-        let ctx = AgentTaskContext {
-            bot: task_bot.clone(),
-            msg: task_msg.clone(),
-            storage: task_storage,
-            llm: task_llm,
-            context_key: context_key.clone(),
-            sandbox_scope,
-            message_thread_id,
-            use_inline_progress_controls: use_inline_topic_controls(thread_spec),
-            session_id,
-        };
+        let task_bot = ctx.bot.clone();
+        let task_msg = ctx.msg.clone();
+        let message_thread_id = ctx.message_thread_id;
 
         if let Err(e) = run_agent_task(ctx).await {
             let mut req = task_bot.send_message(task_msg.chat.id, format!("❌ Error: {e}"));
@@ -725,9 +779,6 @@ pub async fn handle_agent_message(
             let _ = req.await;
         }
     });
-
-    touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -751,9 +802,9 @@ mod tests {
     use oxide_agent_core::llm::LlmClient;
     use oxide_agent_core::sandbox::SandboxScope;
     use oxide_agent_core::storage::{
-        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message, StorageError,
-        StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-        UserConfig,
+        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message,
+        StorageError, StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions,
+        UpsertTopicBindingOptions, UserConfig,
     };
     use std::sync::Arc;
     use teloxide::types::{ChatId, MessageId, ThreadId};
@@ -876,6 +927,31 @@ mod tests {
 
         async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
             Ok(())
+        }
+
+        async fn get_agent_flow_record(
+            &self,
+            _user_id: i64,
+            _context_key: String,
+            _flow_id: String,
+        ) -> Result<Option<AgentFlowRecord>, StorageError> {
+            Ok(None)
+        }
+
+        async fn upsert_agent_flow_record(
+            &self,
+            user_id: i64,
+            context_key: String,
+            flow_id: String,
+        ) -> Result<AgentFlowRecord, StorageError> {
+            Ok(AgentFlowRecord {
+                schema_version: 1,
+                user_id,
+                context_key,
+                flow_id,
+                created_at: 0,
+                updated_at: 0,
+            })
         }
 
         async fn clear_all_context(&self, _user_id: i64) -> Result<(), StorageError> {
@@ -1026,19 +1102,20 @@ mod tests {
     }
 
     #[test]
-    fn session_id_derivation_uses_legacy_without_thread() {
+    fn session_id_derivation_is_stable_without_thread() {
         let user_id = 12345;
-        let session_id = derive_agent_mode_session_id(user_id, ChatId(-1001), None);
+        let first = derive_agent_mode_session_id(user_id, ChatId(-1001), None, "flow-a");
+        let second = derive_agent_mode_session_id(user_id, ChatId(-1001), None, "flow-a");
 
-        assert_eq!(session_id, user_id.into());
+        assert_eq!(first, second);
     }
 
     #[test]
     fn session_id_derivation_is_stable_for_same_thread() {
         let user_id = 12345;
         let thread_id = Some(ThreadId(MessageId(42)));
-        let first = derive_agent_mode_session_id(user_id, ChatId(-1001), thread_id);
-        let second = derive_agent_mode_session_id(user_id, ChatId(-1001), thread_id);
+        let first = derive_agent_mode_session_id(user_id, ChatId(-1001), thread_id, "flow-a");
+        let second = derive_agent_mode_session_id(user_id, ChatId(-1001), thread_id, "flow-a");
 
         assert_eq!(first, second);
     }
@@ -1046,17 +1123,40 @@ mod tests {
     #[test]
     fn session_id_derivation_differs_for_different_threads() {
         let user_id = 12345;
-        let first =
-            derive_agent_mode_session_id(user_id, ChatId(-1001), Some(ThreadId(MessageId(42))));
-        let second =
-            derive_agent_mode_session_id(user_id, ChatId(-1001), Some(ThreadId(MessageId(43))));
+        let first = derive_agent_mode_session_id(
+            user_id,
+            ChatId(-1001),
+            Some(ThreadId(MessageId(42))),
+            "flow-a",
+        );
+        let second = derive_agent_mode_session_id(
+            user_id,
+            ChatId(-1001),
+            Some(ThreadId(MessageId(43))),
+            "flow-a",
+        );
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn session_id_derivation_differs_for_different_flows() {
+        let user_id = 12345;
+        let thread_id = Some(ThreadId(MessageId(42)));
+        let first = derive_agent_mode_session_id(user_id, ChatId(-1001), thread_id, "flow-a");
+        let second = derive_agent_mode_session_id(user_id, ChatId(-1001), thread_id, "flow-b");
 
         assert_ne!(first, second);
     }
 
     #[test]
     fn existing_session_selection_prefers_primary_key() {
-        let keys = agent_mode_session_keys(12345, ChatId(-1001), Some(ThreadId(MessageId(42))));
+        let keys = agent_mode_session_keys(
+            12345,
+            ChatId(-1001),
+            Some(ThreadId(MessageId(42))),
+            "flow-a",
+        );
         let selected = select_existing_session_id(keys, true, true);
 
         assert_eq!(selected, Some(keys.primary));
@@ -1064,7 +1164,12 @@ mod tests {
 
     #[test]
     fn existing_session_selection_falls_back_to_legacy_key() {
-        let keys = agent_mode_session_keys(12345, ChatId(-1001), Some(ThreadId(MessageId(42))));
+        let keys = agent_mode_session_keys(
+            12345,
+            ChatId(-1001),
+            Some(ThreadId(MessageId(42))),
+            "flow-a",
+        );
         let selected = select_existing_session_id(keys, false, true);
 
         assert_eq!(selected, Some(keys.legacy));
@@ -1135,8 +1240,12 @@ mod tests {
             },
         );
 
-        let thread_keys =
-            agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(42))));
+        let thread_keys = agent_mode_session_keys(
+            77,
+            ChatId(-100_123),
+            Some(ThreadId(MessageId(42))),
+            "flow-a",
+        );
         let general_spec = resolve_thread_spec_from_context(true, true, None);
         let created_topic_spec =
             resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
@@ -1161,8 +1270,8 @@ mod tests {
 
         let general_thread = general_forum_topic_id();
         let blocked_thread = ThreadId(MessageId(43));
-        let allowed_keys = agent_mode_session_keys(88, chat_id, Some(general_thread));
-        let blocked_keys = agent_mode_session_keys(77, chat_id, Some(blocked_thread));
+        let allowed_keys = agent_mode_session_keys(88, chat_id, Some(general_thread), "flow-a");
+        let blocked_keys = agent_mode_session_keys(77, chat_id, Some(blocked_thread), "flow-a");
 
         remove_sessions_with_compat(allowed_keys).await;
         remove_sessions_with_compat(blocked_keys).await;
@@ -1170,6 +1279,8 @@ mod tests {
         let allowed_session = ensure_session_exists(EnsureSessionContext {
             session_keys: allowed_keys,
             context_key: "allowed".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(88, "allowed"),
             user_id: 88,
             bot: &bot,
@@ -1185,6 +1296,8 @@ mod tests {
         let blocked_session = ensure_session_exists(EnsureSessionContext {
             session_keys: blocked_keys,
             context_key: "blocked".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "blocked"),
             user_id: 77,
             bot: &bot,
@@ -1222,13 +1335,15 @@ mod tests {
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let manager_settings = test_settings(Some("88"));
         let llm = test_llm(&manager_settings);
-        let keys = agent_mode_session_keys(88, chat_id, Some(thread_id));
+        let keys = agent_mode_session_keys(88, chat_id, Some(thread_id), "flow-a");
 
         remove_sessions_with_compat(keys).await;
 
         let session_id = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(88, "topic-a"),
             user_id: 88,
             bot: &bot,
@@ -1259,13 +1374,15 @@ mod tests {
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
         let llm = test_llm(&allowed_settings);
-        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id));
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
 
         remove_sessions_with_compat(keys).await;
 
         let first_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
@@ -1287,6 +1404,8 @@ mod tests {
         let second_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
@@ -1318,13 +1437,15 @@ mod tests {
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
         let llm = test_llm(&allowed_settings);
-        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id));
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
 
         remove_sessions_with_compat(keys).await;
 
         let first_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
@@ -1355,6 +1476,8 @@ mod tests {
         let second_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
@@ -1385,6 +1508,8 @@ mod tests {
         let third_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
@@ -1414,7 +1539,7 @@ mod tests {
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let legacy_manager_settings = test_settings(Some("77"));
         let llm = test_llm(&legacy_manager_settings);
-        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id));
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
 
         remove_sessions_with_compat(keys).await;
 
@@ -1430,6 +1555,8 @@ mod tests {
         let resolved_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
@@ -1460,7 +1587,7 @@ mod tests {
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let settings = test_settings(None);
         let llm = test_llm(&settings);
-        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id));
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
 
         remove_sessions_with_compat(keys).await;
 
@@ -1474,6 +1601,8 @@ mod tests {
         let resolved_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-a".to_string(),
+            agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
@@ -1554,25 +1683,7 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
     }
 
     let mut session = AgentSession::new_with_sandbox_scope(session_id, ctx.sandbox_scope.clone());
-
-    // Load saved agent memory if exists
-    if let Ok(Some(saved_memory)) = ctx
-        .storage
-        .load_agent_memory_for_context(ctx.user_id, ctx.context_key.clone())
-        .await
-    {
-        session.memory = saved_memory;
-        info!(
-            user_id = ctx.user_id,
-            messages_count = session.memory.get_messages().len(),
-            "Loaded agent memory for user in ensure_session_exists"
-        );
-    } else {
-        info!(
-            user_id = ctx.user_id,
-            "No saved agent memory found, starting fresh"
-        );
-    }
+    load_agent_memory_into_session(&ctx, &mut session).await;
 
     let mut executor = AgentExecutor::new(ctx.llm.clone(), session, ctx.settings.agent.clone());
     if manager_enabled {
@@ -1588,6 +1699,76 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
     session_id
 }
 
+async fn load_agent_memory_into_session(
+    ctx: &EnsureSessionContext<'_>,
+    session: &mut AgentSession,
+) {
+    if let Some(saved_memory) = load_flow_agent_memory(ctx).await {
+        session.memory = saved_memory;
+        info!(
+            user_id = ctx.user_id,
+            messages_count = session.memory.get_messages().len(),
+            "Loaded agent memory for user in ensure_session_exists"
+        );
+        return;
+    }
+
+    if ctx.agent_flow_created {
+        migrate_legacy_agent_memory_into_flow(ctx, session).await;
+    } else {
+        info!(
+            user_id = ctx.user_id,
+            "No saved agent memory found, starting fresh"
+        );
+    }
+}
+
+async fn load_flow_agent_memory(
+    ctx: &EnsureSessionContext<'_>,
+) -> Option<oxide_agent_core::agent::AgentMemory> {
+    ctx.storage
+        .load_agent_memory_for_flow(
+            ctx.user_id,
+            ctx.context_key.clone(),
+            ctx.agent_flow_id.clone(),
+        )
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn migrate_legacy_agent_memory_into_flow(
+    ctx: &EnsureSessionContext<'_>,
+    session: &mut AgentSession,
+) {
+    if let Ok(Some(saved_memory)) = ctx
+        .storage
+        .load_agent_memory_for_context(ctx.user_id, ctx.context_key.clone())
+        .await
+    {
+        session.memory = saved_memory;
+        let _ = ctx
+            .storage
+            .save_agent_memory_for_flow(
+                ctx.user_id,
+                ctx.context_key.clone(),
+                ctx.agent_flow_id.clone(),
+                &session.memory,
+            )
+            .await;
+        info!(
+            user_id = ctx.user_id,
+            messages_count = session.memory.get_messages().len(),
+            "Migrated legacy agent memory into flow-scoped storage"
+        );
+    } else {
+        info!(
+            user_id = ctx.user_id,
+            "No saved agent memory found, starting fresh"
+        );
+    }
+}
+
 async fn is_agent_task_running(session_id: SessionId) -> bool {
     SESSION_REGISTRY.is_running(&session_id).await
 }
@@ -1600,14 +1781,19 @@ async fn save_memory_after_task(
     session_id: SessionId,
     user_id: i64,
     context_key: &str,
+    agent_flow_id: &str,
     storage: &Arc<dyn StorageProvider>,
 ) {
     if let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await {
         let executor = executor_arc.read().await;
         let _ = storage
-            .save_agent_memory_for_context(
+            .upsert_agent_flow_record(user_id, context_key.to_string(), agent_flow_id.to_string())
+            .await;
+        let _ = storage
+            .save_agent_memory_for_flow(
                 user_id,
                 context_key.to_string(),
+                agent_flow_id.to_string(),
                 &executor.session().memory,
             )
             .await;
@@ -1682,32 +1868,63 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let progress_text = render_progress_html(&state);
 
     // Save agent memory after task execution
-    save_memory_after_task(ctx.session_id, user_id, &ctx.context_key, &ctx.storage).await;
+    save_memory_after_task(
+        ctx.session_id,
+        user_id,
+        &ctx.context_key,
+        &ctx.agent_flow_id,
+        &ctx.storage,
+    )
+    .await;
 
-    // Update the message with the result
+    deliver_agent_task_result(
+        &ctx,
+        result,
+        &progress_text,
+        progress_msg.id,
+        progress_reply_markup,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn deliver_agent_task_result(
+    ctx: &AgentTaskContext,
+    result: Result<String>,
+    progress_text: &str,
+    progress_message_id: teloxide::types::MessageId,
+    progress_reply_markup: Option<teloxide::types::InlineKeyboardMarkup>,
+) -> Result<()> {
     match result {
         Ok(response) => {
             super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
-                chat_id,
-                progress_msg.id,
-                &progress_text,
+                ctx.msg.chat.id,
+                progress_message_id,
+                progress_text,
                 progress_reply_markup.clone(),
             )
             .await;
-            // Use send_long_message to properly split response if it exceeds Telegram limit
-            send_long_message_in_thread(&ctx.bot, chat_id, &response, ctx.message_thread_id)
-                .await?;
+            let final_markup = ctx
+                .use_inline_progress_controls
+                .then(|| agent_flow_inline_keyboard(&ctx.agent_flow_id));
+            send_long_message_in_thread_with_final_markup(
+                &ctx.bot,
+                ctx.msg.chat.id,
+                &response,
+                ctx.message_thread_id,
+                final_markup,
+            )
+            .await?;
         }
         Err(e) => {
-            // Sanitize error text to prevent Telegram HTML parse errors
-            // (errors from API may contain raw HTML like Nginx error pages)
             let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
             let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
             super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
-                chat_id,
-                progress_msg.id,
+                ctx.msg.chat.id,
+                progress_message_id,
                 &error_text,
                 progress_reply_markup,
             )
@@ -1726,6 +1943,7 @@ struct RunAgentTaskTextContext {
     task_text: String,
     storage: Arc<dyn StorageProvider>,
     context_key: String,
+    agent_flow_id: String,
     message_thread_id: Option<ThreadId>,
     use_inline_progress_controls: bool,
 }
@@ -1766,7 +1984,14 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
     };
     let progress_text = render_progress_html(&state);
 
-    save_memory_after_task(ctx.session_id, ctx.user_id, &ctx.context_key, &ctx.storage).await;
+    save_memory_after_task(
+        ctx.session_id,
+        ctx.user_id,
+        &ctx.context_key,
+        &ctx.agent_flow_id,
+        &ctx.storage,
+    )
+    .await;
 
     match result {
         Ok(response) => {
@@ -1779,8 +2004,17 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
             )
             .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
-            send_long_message_in_thread(&ctx.bot, ctx.chat_id, &response, ctx.message_thread_id)
-                .await?;
+            let final_markup = ctx
+                .use_inline_progress_controls
+                .then(|| agent_flow_inline_keyboard(&ctx.agent_flow_id));
+            send_long_message_in_thread_with_final_markup(
+                &ctx.bot,
+                ctx.chat_id,
+                &response,
+                ctx.message_thread_id,
+                final_markup,
+            )
+            .await?;
         }
         Err(e) => {
             // Sanitize error text to prevent Telegram HTML parse errors
@@ -1847,6 +2081,7 @@ struct LoopCallbackContext {
     bot: Bot,
     chat_id: ChatId,
     context_key: String,
+    agent_flow_id: String,
     user_id: i64,
     session_keys: AgentModeSessionKeys,
     manager_default_chat_id: Option<ChatId>,
@@ -1859,6 +2094,8 @@ enum AgentCallbackAction {
     LoopRetry,
     LoopReset,
     LoopCancel,
+    Attach(String),
+    Detach,
     StartCancelTaskConfirmation,
     ResolveCancelTaskConfirmation(bool),
     StartConfirmation(ConfirmationType),
@@ -1867,6 +2104,7 @@ enum AgentCallbackAction {
 }
 
 struct AgentCallbackContext {
+    callback_id: teloxide::types::CallbackQueryId,
     loop_ctx: LoopCallbackContext,
     msg: Message,
     dialogue: AgentDialogue,
@@ -1876,6 +2114,13 @@ struct AgentCallbackContext {
 }
 
 fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAction> {
+    if data == AGENT_CALLBACK_DETACH {
+        return Some(AgentCallbackAction::Detach);
+    }
+    if let Some(flow_id) = data.strip_prefix(AGENT_CALLBACK_ATTACH_PREFIX) {
+        return Some(AgentCallbackAction::Attach(flow_id.to_string()));
+    }
+
     match data {
         LOOP_CALLBACK_RETRY => Some(AgentCallbackAction::LoopRetry),
         LOOP_CALLBACK_RESET => Some(AgentCallbackAction::LoopReset),
@@ -1914,6 +2159,32 @@ fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAction> {
     }
 }
 
+fn is_valid_agent_flow_id(flow_id: &str) -> bool {
+    if flow_id.len() != 36 {
+        return false;
+    }
+
+    for (idx, ch) in flow_id.chars().enumerate() {
+        let is_hyphen_pos = matches!(idx, 8 | 13 | 18 | 23);
+        if is_hyphen_pos {
+            if ch != '-' {
+                return false;
+            }
+            continue;
+        }
+
+        if !ch.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn short_flow_id(flow_id: &str) -> String {
+    flow_id.chars().take(8).collect()
+}
+
 async fn handle_loop_retry(
     ctx: &LoopCallbackContext,
     storage: Arc<dyn StorageProvider>,
@@ -1923,6 +2194,8 @@ async fn handle_loop_retry(
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys: ctx.session_keys,
         context_key: ctx.context_key.clone(),
+        agent_flow_id: ctx.agent_flow_id.clone(),
+        agent_flow_created: false,
         sandbox_scope: SandboxScope::new(ctx.user_id, ctx.context_key.clone()),
         user_id: ctx.user_id,
         bot: &ctx.bot,
@@ -1992,6 +2265,7 @@ async fn handle_loop_retry(
             task_text,
             storage,
             context_key: retry_ctx.context_key,
+            agent_flow_id: retry_ctx.agent_flow_id,
             message_thread_id: retry_ctx.outbound_thread.message_thread_id,
             use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
         })
@@ -2067,6 +2341,7 @@ async fn handle_agent_confirmation_callback(
         bot: &loop_ctx.bot,
         chat_id: loop_ctx.chat_id,
         context_key: &loop_ctx.context_key,
+        agent_flow_id: &loop_ctx.agent_flow_id,
         reply_markup,
         manager_default_chat_id: loop_ctx.manager_default_chat_id,
         outbound_thread,
@@ -2079,6 +2354,7 @@ async fn handle_agent_confirmation_callback(
                     loop_ctx.user_id,
                     loop_ctx.session_keys,
                     &ctx.storage,
+                    loop_ctx.thread_spec,
                     &send_ctx,
                 )
                 .await?;
@@ -2145,12 +2421,117 @@ async fn handle_cancel_task_confirmation_callback(
     }
 }
 
+async fn handle_detach_flow_callback(ctx: &AgentCallbackContext) -> Result<()> {
+    if is_agent_task_running(ctx.loop_ctx.session_keys.primary).await {
+        ctx.loop_ctx
+            .bot
+            .answer_callback_query(ctx.callback_id.clone())
+            .text("Task is running")
+            .await?;
+        return Ok(());
+    }
+
+    save_memory_after_task(
+        ctx.loop_ctx.session_keys.primary,
+        ctx.loop_ctx.user_id,
+        &ctx.loop_ctx.context_key,
+        &ctx.loop_ctx.agent_flow_id,
+        &ctx.storage,
+    )
+    .await;
+    let _ = SESSION_REGISTRY
+        .remove_if_idle(&ctx.loop_ctx.session_keys.primary)
+        .await;
+    let new_flow_id = reset_current_agent_flow_id(
+        &ctx.storage,
+        ctx.loop_ctx.user_id,
+        ctx.loop_ctx.chat_id,
+        ctx.loop_ctx.thread_spec,
+    )
+    .await?;
+
+    ctx.loop_ctx
+        .bot
+        .answer_callback_query(ctx.callback_id.clone())
+        .text(format!("Detached: {}", short_flow_id(&new_flow_id)))
+        .await?;
+    Ok(())
+}
+
+async fn handle_attach_flow_callback(
+    ctx: &AgentCallbackContext,
+    selected_flow_id: String,
+) -> Result<()> {
+    if !is_valid_agent_flow_id(&selected_flow_id) {
+        ctx.loop_ctx
+            .bot
+            .answer_callback_query(ctx.callback_id.clone())
+            .text("Invalid flow ID")
+            .await?;
+        return Ok(());
+    }
+
+    if selected_flow_id == ctx.loop_ctx.agent_flow_id {
+        ctx.loop_ctx
+            .bot
+            .answer_callback_query(ctx.callback_id.clone())
+            .text("Already attached")
+            .await?;
+        return Ok(());
+    }
+
+    if is_agent_task_running(ctx.loop_ctx.session_keys.primary).await {
+        ctx.loop_ctx
+            .bot
+            .answer_callback_query(ctx.callback_id.clone())
+            .text("Task is running")
+            .await?;
+        return Ok(());
+    }
+
+    save_memory_after_task(
+        ctx.loop_ctx.session_keys.primary,
+        ctx.loop_ctx.user_id,
+        &ctx.loop_ctx.context_key,
+        &ctx.loop_ctx.agent_flow_id,
+        &ctx.storage,
+    )
+    .await;
+    let _ = SESSION_REGISTRY
+        .remove_if_idle(&ctx.loop_ctx.session_keys.primary)
+        .await;
+    set_current_agent_flow_id(
+        &ctx.storage,
+        ctx.loop_ctx.user_id,
+        ctx.loop_ctx.chat_id,
+        ctx.loop_ctx.thread_spec,
+        selected_flow_id.clone(),
+    )
+    .await?;
+
+    ctx.loop_ctx
+        .bot
+        .answer_callback_query(ctx.callback_id.clone())
+        .text(format!("Attached: {}", short_flow_id(&selected_flow_id)))
+        .await?;
+    Ok(())
+}
+
 async fn dispatch_agent_callback(
     action: AgentCallbackAction,
     ctx: AgentCallbackContext,
 ) -> Result<()> {
     match action {
+        AgentCallbackAction::Attach(selected_flow_id) => {
+            handle_attach_flow_callback(&ctx, selected_flow_id).await
+        }
+        AgentCallbackAction::Detach => handle_detach_flow_callback(&ctx).await,
         AgentCallbackAction::LoopRetry => {
+            let _ = ctx
+                .loop_ctx
+                .bot
+                .answer_callback_query(ctx.callback_id.clone())
+                .await;
             handle_loop_retry(
                 &ctx.loop_ctx,
                 ctx.storage.clone(),
@@ -2159,8 +2540,20 @@ async fn dispatch_agent_callback(
             )
             .await
         }
-        AgentCallbackAction::LoopReset => handle_loop_reset(&ctx.loop_ctx).await,
+        AgentCallbackAction::LoopReset => {
+            let _ = ctx
+                .loop_ctx
+                .bot
+                .answer_callback_query(ctx.callback_id.clone())
+                .await;
+            handle_loop_reset(&ctx.loop_ctx).await
+        }
         AgentCallbackAction::LoopCancel => {
+            let _ = ctx
+                .loop_ctx
+                .bot
+                .answer_callback_query(ctx.callback_id.clone())
+                .await;
             cancel_agent_task_by_id(
                 ctx.loop_ctx.bot.clone(),
                 ctx.loop_ctx.session_keys,
@@ -2171,19 +2564,44 @@ async fn dispatch_agent_callback(
             .await
         }
         AgentCallbackAction::StartCancelTaskConfirmation => {
+            let _ = ctx
+                .loop_ctx
+                .bot
+                .answer_callback_query(ctx.callback_id.clone())
+                .await;
             send_cancel_task_confirmation(&ctx.loop_ctx).await
         }
         AgentCallbackAction::ResolveCancelTaskConfirmation(confirmed) => {
+            let _ = ctx
+                .loop_ctx
+                .bot
+                .answer_callback_query(ctx.callback_id.clone())
+                .await;
             handle_cancel_task_confirmation_callback(&ctx, confirmed).await
         }
         AgentCallbackAction::StartConfirmation(action) => {
+            let _ = ctx
+                .loop_ctx
+                .bot
+                .answer_callback_query(ctx.callback_id.clone())
+                .await;
             confirm_destructive_action(action, ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue)
                 .await
         }
         AgentCallbackAction::Exit => {
+            let _ = ctx
+                .loop_ctx
+                .bot
+                .answer_callback_query(ctx.callback_id.clone())
+                .await;
             exit_agent_mode(ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue, ctx.storage).await
         }
         AgentCallbackAction::ResolveConfirmation(action, confirmed) => {
+            let _ = ctx
+                .loop_ctx
+                .bot
+                .answer_callback_query(ctx.callback_id.clone())
+                .await;
             handle_agent_confirmation_callback(&ctx, action, confirmed).await
         }
     }
@@ -2210,8 +2628,6 @@ pub async fn handle_agent_callback(
         return Ok(());
     };
 
-    let _ = bot.answer_callback_query(q.id.clone()).await;
-
     let msg = q
         .message
         .as_ref()
@@ -2221,12 +2637,17 @@ pub async fn handle_agent_callback(
     let user_id = q.from.id.0.cast_signed();
     let chat_id = msg.chat.id;
     let thread_spec = resolve_thread_spec(&msg);
-    let session_keys = agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id);
+    let (agent_flow_id, _) =
+        ensure_current_agent_flow_id(&storage, user_id, chat_id, thread_spec).await?;
+    let session_keys =
+        agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id, &agent_flow_id);
     let ctx = AgentCallbackContext {
+        callback_id: q.id.clone(),
         loop_ctx: LoopCallbackContext {
             bot,
             chat_id,
             context_key: storage_context_key(chat_id, thread_spec),
+            agent_flow_id,
             user_id,
             session_keys,
             manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
@@ -2248,11 +2669,19 @@ pub async fn handle_agent_callback(
 /// # Errors
 ///
 /// Returns an error if the cancellation message cannot be sent.
-pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue) -> Result<()> {
+pub async fn cancel_agent_task(
+    bot: Bot,
+    msg: Message,
+    _dialogue: AgentDialogue,
+    storage: Arc<dyn StorageProvider>,
+) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
+    let (agent_flow_id, _) =
+        ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
+    let session_keys =
+        agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
     let reply_markup = automatic_agent_control_markup(thread_spec);
 
     let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
@@ -2330,12 +2759,15 @@ pub async fn exit_agent_mode(
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let context_key = storage_context_key(msg.chat.id, thread_spec);
-    let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
+    let (agent_flow_id, _) =
+        ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
+    let session_keys =
+        agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
 
     let session_id = resolve_existing_session_id(session_keys)
         .await
         .unwrap_or(session_keys.primary);
-    save_memory_after_task(session_id, user_id, &context_key, &storage).await;
+    save_memory_after_task(session_id, user_id, &context_key, &agent_flow_id, &storage).await;
     remove_sessions_with_compat(session_keys).await;
 
     let _ = set_current_context_state(
@@ -2411,7 +2843,10 @@ pub async fn handle_agent_confirmation(
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let thread_spec = resolve_thread_spec(&msg);
-    let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
+    let (agent_flow_id, _) =
+        ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
+    let session_keys =
+        agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
     let text = msg.text().unwrap_or("");
     let chat_id = msg.chat.id;
     let outbound_thread = build_outbound_thread_params(thread_spec);
@@ -2434,6 +2869,7 @@ pub async fn handle_agent_confirmation(
         bot: &bot,
         chat_id,
         context_key: &context_key,
+        agent_flow_id: &agent_flow_id,
         reply_markup,
         manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
         outbound_thread,
@@ -2442,8 +2878,14 @@ pub async fn handle_agent_confirmation(
     match text {
         "✅ Yes" => match action {
             ConfirmationType::ClearMemory => {
-                handle_clear_memory_confirmation(user_id, session_keys, &storage, &send_ctx)
-                    .await?;
+                handle_clear_memory_confirmation(
+                    user_id,
+                    session_keys,
+                    &storage,
+                    thread_spec,
+                    &send_ctx,
+                )
+                .await?;
             }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(

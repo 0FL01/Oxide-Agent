@@ -2221,6 +2221,7 @@ mod tests {
                         crate::storage::UserContextConfig {
                             state: None,
                             current_chat_uuid: None,
+                            current_agent_flow_id: None,
                             chat_id: Some(-100777),
                             thread_id: Some(12),
                             forum_topic_name: Some("Alfa".to_string()),
@@ -2234,6 +2235,7 @@ mod tests {
                         crate::storage::UserContextConfig {
                             state: None,
                             current_chat_uuid: None,
+                            current_agent_flow_id: None,
                             chat_id: Some(-100777),
                             thread_id: Some(20),
                             forum_topic_name: Some("Beta".to_string()),
@@ -2247,6 +2249,7 @@ mod tests {
                         crate::storage::UserContextConfig {
                             state: None,
                             current_chat_uuid: None,
+                            current_agent_flow_id: None,
                             chat_id: Some(-100888),
                             thread_id: Some(7),
                             forum_topic_name: Some("Gamma".to_string()),
@@ -2305,6 +2308,7 @@ mod tests {
                     crate::storage::UserContextConfig {
                         state: Some("agent_mode".to_string()),
                         current_chat_uuid: Some("chat-1".to_string()),
+                        current_agent_flow_id: Some("flow-1".to_string()),
                         chat_id: Some(-100999),
                         thread_id: Some(42),
                         forum_topic_name: Some("topic-42".to_string()),

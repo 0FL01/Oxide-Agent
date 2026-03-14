@@ -25,6 +25,10 @@ pub const AGENT_CALLBACK_CANCEL_TASK: &str = "agent:cancel";
 pub const AGENT_CALLBACK_CLEAR_MEMORY: &str = "agent:clear";
 /// Callback data for recreating the container from topic controls
 pub const AGENT_CALLBACK_RECREATE_CONTAINER: &str = "agent:recreate";
+/// Callback prefix for attaching a specific topic-scoped agent flow.
+pub const AGENT_CALLBACK_ATTACH_PREFIX: &str = "agent:attach:";
+/// Callback data for detaching into a fresh topic-scoped agent flow.
+pub const AGENT_CALLBACK_DETACH: &str = "agent:detach";
 /// Callback data for exiting agent mode from topic controls
 pub const AGENT_CALLBACK_EXIT: &str = "agent:exit";
 /// Callback data for confirming memory clear from topic controls
@@ -155,7 +159,7 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
     }
 
     fn memory_cleared() -> &'static str {
-        "🗑 Agent memory cleared"
+        "🗑 Started a fresh agent context. Previous flows are preserved for re-attach."
     }
 
     fn exiting_agent() -> &'static str {
@@ -231,7 +235,7 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
     }
 
     fn memory_clear_confirmation() -> &'static str {
-        "⚠️ <b>Warning!</b>\n\nThis action will clear the agent's entire conversation history. The container and files will remain intact.\n\nAre you sure?"
+        "⚠️ <b>Warning!</b>\n\nThis action will start a fresh agent flow for this topic. Previous flows will be preserved and can be attached later. The container and files will remain intact.\n\nAre you sure?"
     }
 
     fn container_error(error: &str) -> String {
@@ -283,13 +287,16 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
 
 /// Get topic-friendly inline controls for agent mode.
 #[must_use]
-pub fn get_agent_inline_keyboard() -> InlineKeyboardMarkup {
-    get_agent_inline_keyboard_with_exit(true)
+pub fn get_agent_inline_keyboard(agent_flow_id: Option<&str>) -> InlineKeyboardMarkup {
+    get_agent_inline_keyboard_with_exit(true, agent_flow_id)
 }
 
 /// Get topic-friendly inline controls for agent mode with optional exit action.
 #[must_use]
-pub fn get_agent_inline_keyboard_with_exit(include_exit: bool) -> InlineKeyboardMarkup {
+pub fn get_agent_inline_keyboard_with_exit(
+    include_exit: bool,
+    agent_flow_id: Option<&str>,
+) -> InlineKeyboardMarkup {
     let mut keyboard = vec![
         vec![InlineKeyboardButton::callback(
             "❌ Cancel Task",
@@ -304,6 +311,15 @@ pub fn get_agent_inline_keyboard_with_exit(include_exit: bool) -> InlineKeyboard
             AGENT_CALLBACK_RECREATE_CONTAINER,
         )],
     ];
+    if let Some(agent_flow_id) = agent_flow_id {
+        keyboard.push(vec![
+            InlineKeyboardButton::callback(
+                "🔗 Attach",
+                format!("{AGENT_CALLBACK_ATTACH_PREFIX}{agent_flow_id}"),
+            ),
+            InlineKeyboardButton::callback("✂️ Detach", AGENT_CALLBACK_DETACH),
+        ]);
+    }
     if include_exit {
         keyboard.push(vec![InlineKeyboardButton::callback(
             "⬅️ Exit Agent Mode",
@@ -336,10 +352,22 @@ pub fn cancel_task_confirmation_inline_keyboard() -> InlineKeyboardMarkup {
 #[must_use]
 pub fn agent_control_markup(use_inline: bool) -> ReplyMarkup {
     if use_inline {
-        get_agent_inline_keyboard().into()
+        get_agent_inline_keyboard(None).into()
     } else {
         get_agent_keyboard().into()
     }
+}
+
+/// Get inline flow controls for the final agent response in topics.
+#[must_use]
+pub fn agent_flow_inline_keyboard(agent_flow_id: &str) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback(
+            "🔗 Attach",
+            format!("{AGENT_CALLBACK_ATTACH_PREFIX}{agent_flow_id}"),
+        ),
+        InlineKeyboardButton::callback("✂️ Detach", AGENT_CALLBACK_DETACH),
+    ]])
 }
 
 /// Get the loop action inline keyboard

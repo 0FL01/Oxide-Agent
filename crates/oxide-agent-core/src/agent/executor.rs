@@ -554,6 +554,9 @@ mod tests {
     #[tokio::test]
     async fn manager_executor_forum_topic_create_uses_lifecycle_with_non_fatal_audit() {
         let mut mock = MockStorageProvider::new();
+        mock.expect_get_user_config()
+            .returning(|_| Ok(crate::storage::UserConfig::default()));
+        mock.expect_update_user_config().returning(|_, _| Ok(()));
         mock.expect_append_audit_event().returning(|_| {
             Err(crate::storage::StorageError::Config(
                 "audit unavailable".to_string(),
