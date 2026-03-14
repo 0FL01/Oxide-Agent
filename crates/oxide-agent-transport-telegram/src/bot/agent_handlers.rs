@@ -458,10 +458,10 @@ pub async fn activate_agent_mode(
     llm: Arc<LlmClient>,
     storage: Arc<dyn StorageProvider>,
     settings: Arc<BotSettings>,
+    user_id: i64,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
-    let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let context_key = storage_context_key(msg.chat.id, thread_spec);
     let sandbox_scope = sandbox_scope(user_id, msg.chat.id, thread_spec);
     let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
