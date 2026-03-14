@@ -37,7 +37,23 @@ use crate::agent::providers::Crawl4aiProvider;
 #[cfg(feature = "tavily")]
 use crate::agent::providers::TavilyProvider;
 
-const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &["delegate_to_sub_agent", "send_file_to_user"];
+const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
+    "delegate_to_sub_agent",
+    "send_file_to_user",
+    "topic_binding_set",
+    "topic_binding_get",
+    "topic_binding_delete",
+    "topic_binding_rollback",
+    "agent_profile_upsert",
+    "agent_profile_get",
+    "agent_profile_delete",
+    "agent_profile_rollback",
+    "forum_topic_create",
+    "forum_topic_edit",
+    "forum_topic_close",
+    "forum_topic_reopen",
+    "forum_topic_delete",
+];
 const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
 const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
 
@@ -479,5 +495,63 @@ fn role_label(role: &MessageRole) -> &'static str {
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
         MessageRole::Tool => "tool",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DelegationProvider;
+    use crate::config::AgentSettings;
+    use crate::llm::LlmClient;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    #[test]
+    fn sub_agent_blocklist_includes_manager_control_plane_tools() {
+        let blocked = DelegationProvider::blocked_tool_set();
+
+        for tool in [
+            "topic_binding_set",
+            "topic_binding_get",
+            "topic_binding_delete",
+            "topic_binding_rollback",
+            "agent_profile_upsert",
+            "agent_profile_get",
+            "agent_profile_delete",
+            "agent_profile_rollback",
+            "forum_topic_create",
+            "forum_topic_edit",
+            "forum_topic_close",
+            "forum_topic_reopen",
+            "forum_topic_delete",
+        ] {
+            assert!(blocked.contains(tool), "missing blocked tool: {tool}");
+        }
+    }
+
+    #[test]
+    fn filter_allowed_tools_rejects_manager_control_plane_requests() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let available_tools = HashSet::from([
+            "write_todos".to_string(),
+            "forum_topic_create".to_string(),
+            "topic_binding_set".to_string(),
+        ]);
+
+        let allowed = provider
+            .filter_allowed_tools(
+                vec![
+                    "write_todos".to_string(),
+                    "forum_topic_create".to_string(),
+                    "topic_binding_set".to_string(),
+                ],
+                &available_tools,
+                "test-task",
+            )
+            .expect("non-manager tool should survive filtering");
+
+        assert_eq!(allowed, HashSet::from(["write_todos".to_string()]));
     }
 }
