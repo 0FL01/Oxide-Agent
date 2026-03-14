@@ -400,11 +400,12 @@ impl ManagerControlPlaneProvider {
         vec![
             ToolDefinition {
                 name: TOOL_FORUM_TOPIC_CREATE.to_string(),
-                description: "Create Telegram forum topic via transport lifecycle".to_string(),
+                description: "Create Telegram forum topic; omit chat_id to use current forum chat"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier; omit to use the current forum chat when available" },
                         "name": { "type": "string", "description": "Forum topic name" },
                         "icon_color": Self::forum_topic_icon_color_schema(),
                         "icon_custom_emoji_id": { "type": "string", "description": "Optional custom emoji icon id" },
@@ -415,11 +416,12 @@ impl ManagerControlPlaneProvider {
             },
             ToolDefinition {
                 name: TOOL_FORUM_TOPIC_EDIT.to_string(),
-                description: "Edit Telegram forum topic via transport lifecycle".to_string(),
+                description: "Edit Telegram forum topic; omit chat_id to use current forum chat"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier; omit to use the current forum chat when available" },
                         "thread_id": { "type": "integer", "description": "Forum topic thread identifier" },
                         "name": { "type": "string", "description": "Optional new topic name" },
                         "icon_custom_emoji_id": { "type": "string", "description": "Optional icon emoji id; empty clears icon" },
@@ -430,11 +432,12 @@ impl ManagerControlPlaneProvider {
             },
             ToolDefinition {
                 name: TOOL_FORUM_TOPIC_CLOSE.to_string(),
-                description: "Close Telegram forum topic via transport lifecycle".to_string(),
+                description: "Close Telegram forum topic; omit chat_id to use current forum chat"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier; omit to use the current forum chat when available" },
                         "thread_id": { "type": "integer", "description": "Forum topic thread identifier" },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
                     },
@@ -443,11 +446,12 @@ impl ManagerControlPlaneProvider {
             },
             ToolDefinition {
                 name: TOOL_FORUM_TOPIC_REOPEN.to_string(),
-                description: "Reopen Telegram forum topic via transport lifecycle".to_string(),
+                description: "Reopen Telegram forum topic; omit chat_id to use current forum chat"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier; omit to use the current forum chat when available" },
                         "thread_id": { "type": "integer", "description": "Forum topic thread identifier" },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
                     },
@@ -456,11 +460,12 @@ impl ManagerControlPlaneProvider {
             },
             ToolDefinition {
                 name: TOOL_FORUM_TOPIC_DELETE.to_string(),
-                description: "Delete Telegram forum topic via transport lifecycle".to_string(),
+                description: "Delete Telegram forum topic; omit chat_id to use current forum chat"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier; omit to use the current forum chat when available" },
                         "thread_id": { "type": "integer", "description": "Forum topic thread identifier" },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
                     },
