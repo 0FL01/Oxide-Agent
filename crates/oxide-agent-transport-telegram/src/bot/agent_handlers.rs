@@ -21,8 +21,8 @@ use crate::bot::views::{
     LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
 use crate::bot::{
-    build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams, TelegramThreadKind,
-    TelegramThreadSpec,
+    build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec,
+    OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec,
 };
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
@@ -69,6 +69,7 @@ struct AgentModeSessionKeys {
 #[derive(Clone, Copy)]
 struct SessionTransportContext {
     manager_default_chat_id: Option<ChatId>,
+    thread_spec: TelegramThreadSpec,
 }
 
 struct EnsureSessionContext<'a> {
@@ -266,8 +267,18 @@ fn outbound_thread_from_callback(q: &CallbackQuery) -> OutboundThreadParams {
         )
 }
 
-fn manager_control_plane_enabled(settings: &BotSettings, user_id: i64) -> bool {
+fn is_created_forum_topic(thread_spec: TelegramThreadSpec) -> bool {
+    matches!(thread_spec.kind, TelegramThreadKind::Forum)
+        && thread_spec.thread_id != Some(general_forum_topic_id())
+}
+
+fn manager_control_plane_enabled(
+    settings: &BotSettings,
+    user_id: i64,
+    thread_spec: TelegramThreadSpec,
+) -> bool {
     settings.telegram.manager_allowed_users().contains(&user_id)
+        && !is_created_forum_topic(thread_spec)
 }
 
 async fn send_agent_message(
@@ -380,6 +391,18 @@ async fn handle_recreate_container_confirmation(
         bot: send_ctx.bot,
         transport_ctx: SessionTransportContext {
             manager_default_chat_id: send_ctx.manager_default_chat_id,
+            thread_spec: TelegramThreadSpec::new(
+                if send_ctx.manager_default_chat_id.is_some() {
+                    TelegramThreadKind::Forum
+                } else {
+                    TelegramThreadKind::None
+                },
+                send_ctx.outbound_thread.message_thread_id.or_else(|| {
+                    send_ctx
+                        .manager_default_chat_id
+                        .map(|_| general_forum_topic_id())
+                }),
+            ),
         },
         llm,
         storage,
@@ -476,6 +499,7 @@ pub async fn activate_agent_mode(
         bot: &bot,
         transport_ctx: SessionTransportContext {
             manager_default_chat_id: manager_default_chat_id(msg.chat.id, thread_spec),
+            thread_spec,
         },
         llm: &llm,
         storage: &storage,
@@ -599,6 +623,7 @@ pub async fn handle_agent_message(
         bot: &bot,
         transport_ctx: SessionTransportContext {
             manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
+            thread_spec,
         },
         llm: &llm,
         storage: &storage,
@@ -664,7 +689,7 @@ mod tests {
         session_manager_control_plane_enabled, AgentControlCommand, EnsureSessionContext,
         SessionTransportContext, SESSION_REGISTRY,
     };
-    use crate::bot::resolve_thread_spec_from_context;
+    use crate::bot::{general_forum_topic_id, resolve_thread_spec_from_context};
     use crate::config::{BotSettings, TelegramSettings};
     use async_trait::async_trait;
     use oxide_agent_core::agent::AgentSession;
@@ -999,8 +1024,10 @@ mod tests {
             },
         );
 
-        assert!(!manager_control_plane_enabled(&settings, 77));
-        assert!(manager_control_plane_enabled(&settings, 88));
+        let general_spec = resolve_thread_spec_from_context(true, true, None);
+
+        assert!(!manager_control_plane_enabled(&settings, 77, general_spec));
+        assert!(manager_control_plane_enabled(&settings, 88, general_spec));
     }
 
     #[test]
@@ -1016,11 +1043,13 @@ mod tests {
             },
         );
 
-        assert!(!manager_control_plane_enabled(&settings, 77));
+        let general_spec = resolve_thread_spec_from_context(true, true, None);
+
+        assert!(!manager_control_plane_enabled(&settings, 77, general_spec));
     }
 
     #[test]
-    fn manager_control_plane_gating_respects_forum_thread_agent_sessions() {
+    fn manager_control_plane_gating_disables_tools_inside_created_topics() {
         let settings = BotSettings::new(
             AgentSettings::default(),
             TelegramSettings {
@@ -1034,23 +1063,31 @@ mod tests {
 
         let thread_keys =
             agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(42))));
+        let general_spec = resolve_thread_spec_from_context(true, true, None);
+        let created_topic_spec =
+            resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
 
         assert_ne!(thread_keys.primary, thread_keys.legacy);
-        assert!(!manager_control_plane_enabled(&settings, 77));
-        assert!(manager_control_plane_enabled(&settings, 88));
+        assert!(manager_control_plane_enabled(&settings, 88, general_spec));
+        assert!(!manager_control_plane_enabled(
+            &settings,
+            88,
+            created_topic_spec
+        ));
+        assert!(!manager_control_plane_enabled(&settings, 77, general_spec));
     }
 
     #[tokio::test]
-    async fn threaded_transport_session_enables_manager_tools_only_for_allowlisted_users() {
+    async fn threaded_transport_session_disables_manager_tools_inside_created_topics() {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let manager_settings = test_settings(Some("88"));
         let llm = test_llm(&manager_settings);
 
-        let allowed_thread = ThreadId(MessageId(42));
+        let general_thread = general_forum_topic_id();
         let blocked_thread = ThreadId(MessageId(43));
-        let allowed_keys = agent_mode_session_keys(88, chat_id, Some(allowed_thread));
+        let allowed_keys = agent_mode_session_keys(88, chat_id, Some(general_thread));
         let blocked_keys = agent_mode_session_keys(77, chat_id, Some(blocked_thread));
 
         remove_sessions_with_compat(allowed_keys).await;
@@ -1064,6 +1101,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(general_thread)),
             },
             llm: &llm,
             storage: &storage,
@@ -1078,6 +1116,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(blocked_thread)),
             },
             llm: &llm,
             storage: &storage,
@@ -1101,10 +1140,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted_created_topic()
+    {
+        let bot = Bot::new("token");
+        let chat_id = ChatId(-100_123);
+        let thread_id = ThreadId(MessageId(42));
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let manager_settings = test_settings(Some("88"));
+        let llm = test_llm(&manager_settings);
+        let keys = agent_mode_session_keys(88, chat_id, Some(thread_id));
+
+        remove_sessions_with_compat(keys).await;
+
+        let session_id = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            context_key: "topic-a".to_string(),
+            sandbox_scope: test_sandbox_scope(88, "topic-a"),
+            user_id: 88,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &manager_settings,
+        })
+        .await;
+
+        assert_eq!(
+            session_manager_control_plane_enabled(session_id).await,
+            Some(false)
+        );
+
+        remove_sessions_with_compat(keys).await;
+    }
+
+    #[tokio::test]
     async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes() {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
-        let thread_id = ThreadId(MessageId(61));
+        let thread_id = general_forum_topic_id();
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
@@ -1121,6 +1197,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
             },
             llm: &llm,
             storage: &storage,
@@ -1141,6 +1218,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
             },
             llm: &llm,
             storage: &storage,
@@ -1161,7 +1239,7 @@ mod tests {
     ) {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
-        let thread_id = ThreadId(MessageId(62));
+        let thread_id = general_forum_topic_id();
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
@@ -1178,6 +1256,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
             },
             llm: &llm,
             storage: &storage,
@@ -1207,6 +1286,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
             },
             llm: &llm,
             storage: &storage,
@@ -1236,6 +1316,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
             },
             llm: &llm,
             storage: &storage,
@@ -1280,6 +1361,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
             },
             llm: &llm,
             storage: &storage,
@@ -1323,6 +1405,7 @@ mod tests {
             bot: &bot,
             transport_ctx: SessionTransportContext {
                 manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
             },
             llm: &llm,
             storage: &storage,
@@ -1339,7 +1422,8 @@ mod tests {
 }
 
 async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
-    let manager_enabled = manager_control_plane_enabled(ctx.settings, ctx.user_id);
+    let manager_enabled =
+        manager_control_plane_enabled(ctx.settings, ctx.user_id, ctx.transport_ctx.thread_spec);
     let requires_primary_session = ctx.session_keys.primary != ctx.session_keys.legacy;
 
     if let Some(existing_session_id) = resolve_existing_session_id(ctx.session_keys).await {
@@ -1747,6 +1831,7 @@ async fn handle_loop_retry(
         bot: &ctx.bot,
         transport_ctx: SessionTransportContext {
             manager_default_chat_id: ctx.manager_default_chat_id,
+            thread_spec: ctx.thread_spec,
         },
         llm: &llm,
         storage: &storage,
