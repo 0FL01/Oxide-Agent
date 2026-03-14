@@ -1,12 +1,12 @@
 use crate::bot::progress_render::render_progress_html;
-use crate::bot::views::{loop_action_keyboard, loop_type_label};
+use crate::bot::views::{loop_action_keyboard, loop_type_label, progress_inline_keyboard};
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
 use oxide_agent_core::agent::progress::ProgressState;
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, InputFile, MessageId, ParseMode};
+use teloxide::types::{ChatId, InlineKeyboardMarkup, InputFile, MessageId, ParseMode};
 use tracing::warn;
 
 /// Telegram-specific progress runtime transport.
@@ -15,21 +15,28 @@ pub struct TelegramAgentTransport {
     chat_id: ChatId,
     progress_msg_id: MessageId,
     message_thread_id: Option<teloxide::types::ThreadId>,
+    progress_reply_markup: Option<InlineKeyboardMarkup>,
 }
 
 impl TelegramAgentTransport {
     /// Create a Telegram transport bound to a progress message.
-    pub const fn new(
+    pub fn new(
         bot: Bot,
         chat_id: ChatId,
         progress_msg_id: MessageId,
         message_thread_id: Option<teloxide::types::ThreadId>,
+        use_inline_progress_controls: bool,
     ) -> Self {
         Self {
             bot,
             chat_id,
             progress_msg_id,
             message_thread_id,
+            progress_reply_markup: if use_inline_progress_controls {
+                Some(progress_inline_keyboard())
+            } else {
+                None
+            },
         }
     }
 }
@@ -39,11 +46,12 @@ impl AgentTransport for TelegramAgentTransport {
     async fn update_progress(&self, state: &ProgressState) -> Result<()> {
         let text = render_progress_html(state);
         // Preserve existing behavior: resilient helper handles retries and logging internally.
-        let _ = crate::bot::resilient::edit_message_safe_resilient(
+        let _ = crate::bot::resilient::edit_message_safe_resilient_with_markup(
             &self.bot,
             self.chat_id,
             self.progress_msg_id,
             &text,
+            self.progress_reply_markup.clone(),
         )
         .await;
         Ok(())

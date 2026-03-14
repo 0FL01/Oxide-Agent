@@ -14,8 +14,10 @@ use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::views::{
-    agent_control_markup, confirmation_markup, AgentView, DefaultAgentView,
-    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
+    agent_control_markup, cancel_task_confirmation_inline_keyboard, confirmation_markup,
+    progress_inline_keyboard, AgentView, DefaultAgentView, AGENT_CALLBACK_CANCEL_TASK,
+    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
     AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
     AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_EXIT, AGENT_CALLBACK_RECREATE_CONTAINER,
     LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
@@ -57,6 +59,7 @@ struct AgentTaskContext {
     context_key: String,
     sandbox_scope: SandboxScope,
     message_thread_id: Option<ThreadId>,
+    use_inline_progress_controls: bool,
     session_id: SessionId,
 }
 
@@ -663,6 +666,7 @@ pub async fn handle_agent_message(
             context_key: context_key.clone(),
             sandbox_scope,
             message_thread_id,
+            use_inline_progress_controls: use_inline_topic_controls(thread_spec),
             session_id,
         };
 
@@ -684,10 +688,14 @@ pub async fn handle_agent_message(
 mod tests {
     use super::{
         agent_mode_session_keys, derive_agent_mode_session_id, ensure_session_exists,
-        manager_control_plane_enabled, manager_default_chat_id, parse_agent_control_command,
-        remove_sessions_with_compat, select_existing_session_id,
-        session_manager_control_plane_enabled, AgentControlCommand, EnsureSessionContext,
-        SessionTransportContext, SESSION_REGISTRY,
+        manager_control_plane_enabled, manager_default_chat_id, parse_agent_callback_action,
+        parse_agent_control_command, remove_sessions_with_compat, select_existing_session_id,
+        session_manager_control_plane_enabled, AgentCallbackAction, AgentControlCommand,
+        EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
+    };
+    use crate::bot::views::{
+        AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+        AGENT_CALLBACK_CONFIRM_CANCEL_YES,
     };
     use crate::bot::{general_forum_topic_id, resolve_thread_spec_from_context};
     use crate::config::{BotSettings, TelegramSettings};
@@ -949,6 +957,22 @@ mod tests {
         assert_eq!(parse_agent_control_command(Some("please help")), None);
         assert_eq!(parse_agent_control_command(Some("user@example.com")), None);
         assert_eq!(parse_agent_control_command(None), None);
+    }
+
+    #[test]
+    fn inline_cancel_callbacks_are_recognized() {
+        assert_eq!(
+            parse_agent_callback_action(AGENT_CALLBACK_CANCEL_TASK),
+            Some(AgentCallbackAction::StartCancelTaskConfirmation)
+        );
+        assert_eq!(
+            parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_CANCEL_YES),
+            Some(AgentCallbackAction::ResolveCancelTaskConfirmation(true))
+        );
+        assert_eq!(
+            parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_CANCEL_NO),
+            Some(AgentCallbackAction::ResolveCancelTaskConfirmation(false))
+        );
     }
 
     #[test]
@@ -1543,6 +1567,9 @@ async fn save_memory_after_task(
 async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let user_id = ctx.msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = ctx.msg.chat.id;
+    let progress_reply_markup = ctx
+        .use_inline_progress_controls
+        .then_some(progress_inline_keyboard());
 
     // Preprocess input
     let preprocessor = Preprocessor::new(ctx.llm.clone(), ctx.sandbox_scope.clone());
@@ -1571,12 +1598,13 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     );
 
     // Send initial progress message with retry on network failures
-    let progress_msg = super::resilient::send_message_resilient_with_thread(
+    let progress_msg = super::resilient::send_message_resilient_with_thread_and_markup(
         &ctx.bot,
         chat_id,
         "⏳ Processing task...",
         Some(ParseMode::Html),
         ctx.message_thread_id,
+        progress_reply_markup.clone().map(Into::into),
     )
     .await?;
 
@@ -1587,6 +1615,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         chat_id,
         progress_msg.id,
         ctx.message_thread_id,
+        ctx.use_inline_progress_controls,
     );
     let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
@@ -1608,11 +1637,12 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     // Update the message with the result
     match result {
         Ok(response) => {
-            super::resilient::edit_message_safe_resilient(
+            super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
                 chat_id,
                 progress_msg.id,
                 &progress_text,
+                progress_reply_markup.clone(),
             )
             .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
@@ -1624,11 +1654,12 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
             // (errors from API may contain raw HTML like Nginx error pages)
             let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
             let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
-            super::resilient::edit_message_safe_resilient(
+            super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
                 chat_id,
                 progress_msg.id,
                 &error_text,
+                progress_reply_markup,
             )
             .await;
         }
@@ -1646,15 +1677,21 @@ struct RunAgentTaskTextContext {
     storage: Arc<dyn StorageProvider>,
     context_key: String,
     message_thread_id: Option<ThreadId>,
+    use_inline_progress_controls: bool,
 }
 
 async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
-    let progress_msg = super::resilient::send_message_resilient_with_thread(
+    let progress_reply_markup = ctx
+        .use_inline_progress_controls
+        .then_some(progress_inline_keyboard());
+
+    let progress_msg = super::resilient::send_message_resilient_with_thread_and_markup(
         &ctx.bot,
         ctx.chat_id,
         "⏳ Processing task...",
         Some(ParseMode::Html),
         ctx.message_thread_id,
+        progress_reply_markup.clone().map(Into::into),
     )
     .await?;
 
@@ -1664,6 +1701,7 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
         ctx.chat_id,
         progress_msg.id,
         ctx.message_thread_id,
+        ctx.use_inline_progress_controls,
     );
     let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
@@ -1682,11 +1720,12 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
 
     match result {
         Ok(response) => {
-            super::resilient::edit_message_safe_resilient(
+            super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
                 ctx.chat_id,
                 progress_msg.id,
                 &progress_text,
+                progress_reply_markup.clone(),
             )
             .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
@@ -1697,11 +1736,12 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
             // Sanitize error text to prevent Telegram HTML parse errors
             let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
             let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
-            super::resilient::edit_message_safe_resilient(
+            super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
                 ctx.chat_id,
                 progress_msg.id,
                 &error_text,
+                progress_reply_markup,
             )
             .await;
         }
@@ -1764,12 +1804,13 @@ struct LoopCallbackContext {
     outbound_thread: OutboundThreadParams,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum AgentCallbackAction {
     LoopRetry,
     LoopReset,
     LoopCancel,
-    CancelTask,
+    StartCancelTaskConfirmation,
+    ResolveCancelTaskConfirmation(bool),
     StartConfirmation(ConfirmationType),
     Exit,
     ResolveConfirmation(ConfirmationType, bool),
@@ -1789,7 +1830,13 @@ fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAction> {
         LOOP_CALLBACK_RETRY => Some(AgentCallbackAction::LoopRetry),
         LOOP_CALLBACK_RESET => Some(AgentCallbackAction::LoopReset),
         LOOP_CALLBACK_CANCEL => Some(AgentCallbackAction::LoopCancel),
-        AGENT_CALLBACK_CANCEL_TASK => Some(AgentCallbackAction::CancelTask),
+        AGENT_CALLBACK_CANCEL_TASK => Some(AgentCallbackAction::StartCancelTaskConfirmation),
+        AGENT_CALLBACK_CONFIRM_CANCEL_YES => {
+            Some(AgentCallbackAction::ResolveCancelTaskConfirmation(true))
+        }
+        AGENT_CALLBACK_CONFIRM_CANCEL_NO => {
+            Some(AgentCallbackAction::ResolveCancelTaskConfirmation(false))
+        }
         AGENT_CALLBACK_CLEAR_MEMORY => Some(AgentCallbackAction::StartConfirmation(
             ConfirmationType::ClearMemory,
         )),
@@ -1896,6 +1943,7 @@ async fn handle_loop_retry(
             storage,
             context_key: retry_ctx.context_key,
             message_thread_id: retry_ctx.outbound_thread.message_thread_id,
+            use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
         })
         .await
         {
@@ -2011,6 +2059,42 @@ async fn handle_agent_confirmation_callback(
     Ok(())
 }
 
+async fn send_cancel_task_confirmation(ctx: &LoopCallbackContext) -> Result<()> {
+    send_agent_message_with_keyboard(
+        &ctx.bot,
+        ctx.chat_id,
+        DefaultAgentView::task_cancel_confirmation(),
+        &cancel_task_confirmation_inline_keyboard().into(),
+        ctx.outbound_thread,
+    )
+    .await
+}
+
+async fn handle_cancel_task_confirmation_callback(
+    ctx: &AgentCallbackContext,
+    confirmed: bool,
+) -> Result<()> {
+    if confirmed {
+        cancel_agent_task_by_id(
+            ctx.loop_ctx.bot.clone(),
+            ctx.loop_ctx.session_keys,
+            ctx.loop_ctx.chat_id,
+            ctx.loop_ctx.thread_spec,
+            ctx.loop_ctx.outbound_thread.message_thread_id,
+        )
+        .await
+    } else {
+        send_agent_message_with_keyboard(
+            &ctx.loop_ctx.bot,
+            ctx.loop_ctx.chat_id,
+            DefaultAgentView::operation_cancelled(),
+            &agent_control_markup(use_inline_topic_controls(ctx.loop_ctx.thread_spec)),
+            ctx.loop_ctx.outbound_thread,
+        )
+        .await
+    }
+}
+
 async fn dispatch_agent_callback(
     action: AgentCallbackAction,
     ctx: AgentCallbackContext,
@@ -2026,7 +2110,7 @@ async fn dispatch_agent_callback(
             .await
         }
         AgentCallbackAction::LoopReset => handle_loop_reset(&ctx.loop_ctx).await,
-        AgentCallbackAction::LoopCancel | AgentCallbackAction::CancelTask => {
+        AgentCallbackAction::LoopCancel => {
             cancel_agent_task_by_id(
                 ctx.loop_ctx.bot.clone(),
                 ctx.loop_ctx.session_keys,
@@ -2035,6 +2119,12 @@ async fn dispatch_agent_callback(
                 ctx.loop_ctx.outbound_thread.message_thread_id,
             )
             .await
+        }
+        AgentCallbackAction::StartCancelTaskConfirmation => {
+            send_cancel_task_confirmation(&ctx.loop_ctx).await
+        }
+        AgentCallbackAction::ResolveCancelTaskConfirmation(confirmed) => {
+            handle_cancel_task_confirmation_callback(&ctx, confirmed).await
         }
         AgentCallbackAction::StartConfirmation(action) => {
             confirm_destructive_action(action, ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue)
