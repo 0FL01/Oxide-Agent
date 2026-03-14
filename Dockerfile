@@ -1,5 +1,5 @@
 # Chef stage - install cargo-chef for dependency caching
-FROM rust:1.92-slim-trixie AS chef
+FROM rust:1.94-slim-trixie AS chef
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
