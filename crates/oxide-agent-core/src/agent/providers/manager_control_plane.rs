@@ -10,7 +10,7 @@ use crate::storage::{
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -22,7 +22,121 @@ const TOOL_AGENT_PROFILE_UPSERT: &str = "agent_profile_upsert";
 const TOOL_AGENT_PROFILE_GET: &str = "agent_profile_get";
 const TOOL_AGENT_PROFILE_DELETE: &str = "agent_profile_delete";
 const TOOL_AGENT_PROFILE_ROLLBACK: &str = "agent_profile_rollback";
+const TOOL_FORUM_TOPIC_CREATE: &str = "forum_topic_create";
+const TOOL_FORUM_TOPIC_EDIT: &str = "forum_topic_edit";
+const TOOL_FORUM_TOPIC_CLOSE: &str = "forum_topic_close";
+const TOOL_FORUM_TOPIC_REOPEN: &str = "forum_topic_reopen";
+const TOOL_FORUM_TOPIC_DELETE: &str = "forum_topic_delete";
 const ROLLBACK_AUDIT_PAGE_SIZE: usize = 200;
+const TELEGRAM_FORUM_ICON_COLORS: [u32; 6] = [
+    7_322_096, 16_766_590, 13_338_331, 9_367_192, 16_749_490, 16_478_047,
+];
+
+/// Transport-agnostic request for forum topic creation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ForumTopicCreateRequest {
+    /// Explicit chat identifier. If omitted, implementation may use injected context.
+    pub chat_id: Option<i64>,
+    /// Forum topic title.
+    pub name: String,
+    /// Optional topic icon color in RGB integer format.
+    pub icon_color: Option<u32>,
+    /// Optional custom emoji identifier used as topic icon.
+    pub icon_custom_emoji_id: Option<String>,
+}
+
+/// Transport-agnostic request for forum topic updates.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ForumTopicEditRequest {
+    /// Explicit chat identifier. If omitted, implementation may use injected context.
+    pub chat_id: Option<i64>,
+    /// Forum topic thread identifier.
+    pub thread_id: i64,
+    /// Optional new title.
+    pub name: Option<String>,
+    /// Optional custom emoji identifier. Empty string may clear icon depending on transport.
+    pub icon_custom_emoji_id: Option<String>,
+}
+
+/// Transport-agnostic request targeting an existing forum topic thread.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ForumTopicThreadRequest {
+    /// Explicit chat identifier. If omitted, implementation may use injected context.
+    pub chat_id: Option<i64>,
+    /// Forum topic thread identifier.
+    pub thread_id: i64,
+}
+
+/// Result returned by forum topic creation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ForumTopicCreateResult {
+    /// Effective chat identifier used by transport.
+    pub chat_id: i64,
+    /// Created forum topic thread identifier.
+    pub thread_id: i64,
+    /// Created topic title.
+    pub name: String,
+    /// Created topic icon color in RGB integer format.
+    pub icon_color: u32,
+    /// Created topic icon emoji identifier.
+    pub icon_custom_emoji_id: Option<String>,
+}
+
+/// Result returned by forum topic edit operation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ForumTopicEditResult {
+    /// Effective chat identifier used by transport.
+    pub chat_id: i64,
+    /// Target forum topic thread identifier.
+    pub thread_id: i64,
+    /// Applied topic title.
+    pub name: Option<String>,
+    /// Applied topic icon emoji identifier.
+    pub icon_custom_emoji_id: Option<String>,
+}
+
+/// Result returned by thread-scoped forum topic actions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ForumTopicActionResult {
+    /// Effective chat identifier used by transport.
+    pub chat_id: i64,
+    /// Target forum topic thread identifier.
+    pub thread_id: i64,
+}
+
+/// Abstraction over transport-specific forum topic lifecycle operations.
+#[async_trait]
+pub trait ManagerTopicLifecycle: Send + Sync {
+    /// Creates a new forum topic.
+    async fn forum_topic_create(
+        &self,
+        request: ForumTopicCreateRequest,
+    ) -> Result<ForumTopicCreateResult>;
+
+    /// Edits an existing forum topic.
+    async fn forum_topic_edit(
+        &self,
+        request: ForumTopicEditRequest,
+    ) -> Result<ForumTopicEditResult>;
+
+    /// Closes a forum topic.
+    async fn forum_topic_close(
+        &self,
+        request: ForumTopicThreadRequest,
+    ) -> Result<ForumTopicActionResult>;
+
+    /// Reopens a forum topic.
+    async fn forum_topic_reopen(
+        &self,
+        request: ForumTopicThreadRequest,
+    ) -> Result<ForumTopicActionResult>;
+
+    /// Deletes a forum topic.
+    async fn forum_topic_delete(
+        &self,
+        request: ForumTopicThreadRequest,
+    ) -> Result<ForumTopicActionResult>;
+}
 
 enum AuditStatus {
     Written,
@@ -101,17 +215,67 @@ struct AgentProfileRollbackArgs {
     dry_run: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicCreateArgs {
+    #[serde(default)]
+    chat_id: Option<i64>,
+    name: String,
+    #[serde(default)]
+    icon_color: Option<u32>,
+    #[serde(default)]
+    icon_custom_emoji_id: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicEditArgs {
+    #[serde(default)]
+    chat_id: Option<i64>,
+    thread_id: i64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    icon_custom_emoji_id: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicThreadArgs {
+    #[serde(default)]
+    chat_id: Option<i64>,
+    thread_id: i64,
+    #[serde(default)]
+    dry_run: bool,
+}
+
 /// Tool provider that manages user-scoped control-plane records.
 pub struct ManagerControlPlaneProvider {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
+    topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
 }
 
 impl ManagerControlPlaneProvider {
     /// Creates a manager control-plane provider bound to a specific user.
     #[must_use]
-    pub const fn new(storage: Arc<dyn StorageProvider>, user_id: i64) -> Self {
-        Self { storage, user_id }
+    pub fn new(storage: Arc<dyn StorageProvider>, user_id: i64) -> Self {
+        Self {
+            storage,
+            user_id,
+            topic_lifecycle: None,
+        }
+    }
+
+    /// Attaches a transport lifecycle implementation for forum topic tools.
+    #[must_use]
+    pub fn with_topic_lifecycle(mut self, topic_lifecycle: Arc<dyn ManagerTopicLifecycle>) -> Self {
+        self.topic_lifecycle = Some(topic_lifecycle);
+        self
     }
 
     fn topic_binding_set_parameters() -> serde_json::Value {
@@ -131,7 +295,15 @@ impl ManagerControlPlaneProvider {
         })
     }
 
-    fn tools_definitions() -> Vec<ToolDefinition> {
+    fn forum_topic_icon_color_schema() -> serde_json::Value {
+        json!({
+            "type": "integer",
+            "enum": TELEGRAM_FORUM_ICON_COLORS,
+            "description": "Optional Telegram forum icon color"
+        })
+    }
+
+    fn base_tools_definitions() -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
                 name: TOOL_TOPIC_BINDING_SET.to_string(),
@@ -224,12 +396,128 @@ impl ManagerControlPlaneProvider {
         ]
     }
 
+    fn lifecycle_tools_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_FORUM_TOPIC_CREATE.to_string(),
+                description: "Create Telegram forum topic via transport lifecycle".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "name": { "type": "string", "description": "Forum topic name" },
+                        "icon_color": Self::forum_topic_icon_color_schema(),
+                        "icon_custom_emoji_id": { "type": "string", "description": "Optional custom emoji icon id" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
+                    },
+                    "required": ["name"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_FORUM_TOPIC_EDIT.to_string(),
+                description: "Edit Telegram forum topic via transport lifecycle".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "thread_id": { "type": "integer", "description": "Forum topic thread identifier" },
+                        "name": { "type": "string", "description": "Optional new topic name" },
+                        "icon_custom_emoji_id": { "type": "string", "description": "Optional icon emoji id; empty clears icon" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
+                    },
+                    "required": ["thread_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_FORUM_TOPIC_CLOSE.to_string(),
+                description: "Close Telegram forum topic via transport lifecycle".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "thread_id": { "type": "integer", "description": "Forum topic thread identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
+                    },
+                    "required": ["thread_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_FORUM_TOPIC_REOPEN.to_string(),
+                description: "Reopen Telegram forum topic via transport lifecycle".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "thread_id": { "type": "integer", "description": "Forum topic thread identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
+                    },
+                    "required": ["thread_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_FORUM_TOPIC_DELETE.to_string(),
+                description: "Delete Telegram forum topic via transport lifecycle".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier" },
+                        "thread_id": { "type": "integer", "description": "Forum topic thread identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
+                    },
+                    "required": ["thread_id"]
+                }),
+            },
+        ]
+    }
+
+    fn tools_definitions(&self) -> Vec<ToolDefinition> {
+        let mut tools = Self::base_tools_definitions();
+        if self.topic_lifecycle.is_some() {
+            tools.extend(Self::lifecycle_tools_definitions());
+        }
+
+        tools
+    }
+
     fn validate_non_empty(value: String, field_name: &str) -> Result<String> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             bail!("{field_name} must not be empty");
         }
         Ok(trimmed.to_string())
+    }
+
+    fn validate_thread_id(thread_id: i64) -> Result<i64> {
+        if thread_id <= 0 {
+            bail!("thread_id must be a positive integer");
+        }
+        Ok(thread_id)
+    }
+
+    fn validate_optional_non_empty(
+        value: Option<String>,
+        field_name: &str,
+    ) -> Result<Option<String>> {
+        value
+            .map(|inner| Self::validate_non_empty(inner, field_name))
+            .transpose()
+    }
+
+    fn topic_lifecycle(&self) -> Result<&Arc<dyn ManagerTopicLifecycle>> {
+        self.topic_lifecycle
+            .as_ref()
+            .ok_or_else(|| anyhow!("forum topic lifecycle service is unavailable"))
+    }
+
+    fn validate_forum_icon_color(color: Option<u32>) -> Result<Option<u32>> {
+        if let Some(value) = color {
+            if !TELEGRAM_FORUM_ICON_COLORS.contains(&value) {
+                bail!("icon_color is not one of Telegram allowed values");
+            }
+            return Ok(Some(value));
+        }
+
+        Ok(None)
     }
 
     fn validate_profile_object(profile: serde_json::Value) -> Result<serde_json::Value> {
@@ -929,6 +1217,204 @@ impl ManagerControlPlaneProvider {
 
         Self::to_json_string(response)
     }
+
+    async fn execute_forum_topic_create(&self, arguments: &str) -> Result<String> {
+        let args: ForumTopicCreateArgs = Self::parse_args(arguments, TOOL_FORUM_TOPIC_CREATE)?;
+        let name = Self::validate_non_empty(args.name, "name")?;
+        let icon_custom_emoji_id =
+            Self::validate_optional_non_empty(args.icon_custom_emoji_id, "icon_custom_emoji_id")?;
+        let icon_color = Self::validate_forum_icon_color(args.icon_color)?;
+        let request = ForumTopicCreateRequest {
+            chat_id: args.chat_id,
+            name,
+            icon_color,
+            icon_custom_emoji_id,
+        };
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: None,
+                    agent_id: None,
+                    action: TOOL_FORUM_TOPIC_CREATE.to_string(),
+                    payload: json!({
+                        "request": request,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": TOOL_FORUM_TOPIC_CREATE,
+                        "request": request
+                    }
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        let result = self
+            .topic_lifecycle()?
+            .forum_topic_create(request.clone())
+            .await?;
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: None,
+                agent_id: None,
+                action: TOOL_FORUM_TOPIC_CREATE.to_string(),
+                payload: json!({
+                    "request": request,
+                    "result": result,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response =
+            Self::attach_audit_status(json!({ "ok": true, "topic": result }), audit_status);
+        Self::to_json_string(response)
+    }
+
+    async fn execute_forum_topic_edit(&self, arguments: &str) -> Result<String> {
+        let args: ForumTopicEditArgs = Self::parse_args(arguments, TOOL_FORUM_TOPIC_EDIT)?;
+        let thread_id = Self::validate_thread_id(args.thread_id)?;
+        let name = Self::validate_optional_non_empty(args.name, "name")?;
+        if name.is_none() && args.icon_custom_emoji_id.is_none() {
+            bail!("forum_topic_edit requires at least one mutable field");
+        }
+        let request = ForumTopicEditRequest {
+            chat_id: args.chat_id,
+            thread_id,
+            name,
+            icon_custom_emoji_id: args.icon_custom_emoji_id,
+        };
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: None,
+                    agent_id: None,
+                    action: TOOL_FORUM_TOPIC_EDIT.to_string(),
+                    payload: json!({
+                        "request": request,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": TOOL_FORUM_TOPIC_EDIT,
+                        "request": request
+                    }
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        let result = self
+            .topic_lifecycle()?
+            .forum_topic_edit(request.clone())
+            .await?;
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: None,
+                agent_id: None,
+                action: TOOL_FORUM_TOPIC_EDIT.to_string(),
+                payload: json!({
+                    "request": request,
+                    "result": result,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response =
+            Self::attach_audit_status(json!({ "ok": true, "topic": result }), audit_status);
+        Self::to_json_string(response)
+    }
+
+    async fn execute_forum_topic_thread_action(
+        &self,
+        arguments: &str,
+        tool_name: &str,
+    ) -> Result<String> {
+        let args: ForumTopicThreadArgs = Self::parse_args(arguments, tool_name)?;
+        let request = ForumTopicThreadRequest {
+            chat_id: args.chat_id,
+            thread_id: Self::validate_thread_id(args.thread_id)?,
+        };
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: None,
+                    agent_id: None,
+                    action: tool_name.to_string(),
+                    payload: json!({
+                        "request": request,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": tool_name,
+                        "request": request
+                    }
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        let lifecycle = self.topic_lifecycle()?;
+        let result = match tool_name {
+            TOOL_FORUM_TOPIC_CLOSE => lifecycle.forum_topic_close(request.clone()).await?,
+            TOOL_FORUM_TOPIC_REOPEN => lifecycle.forum_topic_reopen(request.clone()).await?,
+            TOOL_FORUM_TOPIC_DELETE => lifecycle.forum_topic_delete(request.clone()).await?,
+            _ => bail!("unsupported forum topic thread action: {tool_name}"),
+        };
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: None,
+                agent_id: None,
+                action: tool_name.to_string(),
+                payload: json!({
+                    "request": request,
+                    "result": result,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response =
+            Self::attach_audit_status(json!({ "ok": true, "topic": result }), audit_status);
+        Self::to_json_string(response)
+    }
 }
 
 #[async_trait]
@@ -938,11 +1424,11 @@ impl ToolProvider for ManagerControlPlaneProvider {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tools_definitions()
+        self.tools_definitions()
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
+        let base_tools = matches!(
             tool_name,
             TOOL_TOPIC_BINDING_SET
                 | TOOL_TOPIC_BINDING_GET
@@ -952,7 +1438,18 @@ impl ToolProvider for ManagerControlPlaneProvider {
                 | TOOL_AGENT_PROFILE_GET
                 | TOOL_AGENT_PROFILE_DELETE
                 | TOOL_AGENT_PROFILE_ROLLBACK
-        )
+        );
+
+        base_tools
+            || (self.topic_lifecycle.is_some()
+                && matches!(
+                    tool_name,
+                    TOOL_FORUM_TOPIC_CREATE
+                        | TOOL_FORUM_TOPIC_EDIT
+                        | TOOL_FORUM_TOPIC_CLOSE
+                        | TOOL_FORUM_TOPIC_REOPEN
+                        | TOOL_FORUM_TOPIC_DELETE
+                ))
     }
 
     async fn execute(
@@ -971,6 +1468,20 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_AGENT_PROFILE_GET => self.execute_agent_profile_get(arguments).await,
             TOOL_AGENT_PROFILE_DELETE => self.execute_agent_profile_delete(arguments).await,
             TOOL_AGENT_PROFILE_ROLLBACK => self.execute_agent_profile_rollback(arguments).await,
+            TOOL_FORUM_TOPIC_CREATE => self.execute_forum_topic_create(arguments).await,
+            TOOL_FORUM_TOPIC_EDIT => self.execute_forum_topic_edit(arguments).await,
+            TOOL_FORUM_TOPIC_CLOSE => {
+                self.execute_forum_topic_thread_action(arguments, TOOL_FORUM_TOPIC_CLOSE)
+                    .await
+            }
+            TOOL_FORUM_TOPIC_REOPEN => {
+                self.execute_forum_topic_thread_action(arguments, TOOL_FORUM_TOPIC_REOPEN)
+                    .await
+            }
+            TOOL_FORUM_TOPIC_DELETE => {
+                self.execute_forum_topic_thread_action(arguments, TOOL_FORUM_TOPIC_DELETE)
+                    .await
+            }
             _ => Err(anyhow!("Unknown manager control-plane tool: {tool_name}")),
         }
     }
@@ -1018,6 +1529,227 @@ mod tests {
             payload,
             created_at: 100,
         }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum LifecycleCall {
+        Create(ForumTopicCreateRequest),
+        Edit(ForumTopicEditRequest),
+        Close(ForumTopicThreadRequest),
+        Reopen(ForumTopicThreadRequest),
+        Delete(ForumTopicThreadRequest),
+    }
+
+    struct FakeTopicLifecycle {
+        calls: std::sync::Mutex<Vec<LifecycleCall>>,
+    }
+
+    impl FakeTopicLifecycle {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<LifecycleCall> {
+            self.calls.lock().expect("mutex poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ManagerTopicLifecycle for FakeTopicLifecycle {
+        async fn forum_topic_create(
+            &self,
+            request: ForumTopicCreateRequest,
+        ) -> Result<ForumTopicCreateResult> {
+            self.calls
+                .lock()
+                .expect("mutex poisoned")
+                .push(LifecycleCall::Create(request.clone()));
+            Ok(ForumTopicCreateResult {
+                chat_id: request.chat_id.unwrap_or(-100_777),
+                thread_id: 313,
+                name: request.name,
+                icon_color: request.icon_color.unwrap_or(9_367_192),
+                icon_custom_emoji_id: request.icon_custom_emoji_id,
+            })
+        }
+
+        async fn forum_topic_edit(
+            &self,
+            request: ForumTopicEditRequest,
+        ) -> Result<ForumTopicEditResult> {
+            self.calls
+                .lock()
+                .expect("mutex poisoned")
+                .push(LifecycleCall::Edit(request.clone()));
+            Ok(ForumTopicEditResult {
+                chat_id: request.chat_id.unwrap_or(-100_777),
+                thread_id: request.thread_id,
+                name: request.name,
+                icon_custom_emoji_id: request.icon_custom_emoji_id,
+            })
+        }
+
+        async fn forum_topic_close(
+            &self,
+            request: ForumTopicThreadRequest,
+        ) -> Result<ForumTopicActionResult> {
+            self.calls
+                .lock()
+                .expect("mutex poisoned")
+                .push(LifecycleCall::Close(request.clone()));
+            Ok(ForumTopicActionResult {
+                chat_id: request.chat_id.unwrap_or(-100_777),
+                thread_id: request.thread_id,
+            })
+        }
+
+        async fn forum_topic_reopen(
+            &self,
+            request: ForumTopicThreadRequest,
+        ) -> Result<ForumTopicActionResult> {
+            self.calls
+                .lock()
+                .expect("mutex poisoned")
+                .push(LifecycleCall::Reopen(request.clone()));
+            Ok(ForumTopicActionResult {
+                chat_id: request.chat_id.unwrap_or(-100_777),
+                thread_id: request.thread_id,
+            })
+        }
+
+        async fn forum_topic_delete(
+            &self,
+            request: ForumTopicThreadRequest,
+        ) -> Result<ForumTopicActionResult> {
+            self.calls
+                .lock()
+                .expect("mutex poisoned")
+                .push(LifecycleCall::Delete(request.clone()));
+            Ok(ForumTopicActionResult {
+                chat_id: request.chat_id.unwrap_or(-100_777),
+                thread_id: request.thread_id,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn forum_topic_tools_unavailable_without_lifecycle_service() {
+        let provider = ManagerControlPlaneProvider::new(
+            Arc::new(crate::storage::MockStorageProvider::new()),
+            77,
+        );
+        let tool_names: Vec<String> = provider.tools().into_iter().map(|tool| tool.name).collect();
+
+        assert!(!tool_names
+            .iter()
+            .any(|name| name == TOOL_FORUM_TOPIC_CREATE));
+        assert!(!provider.can_handle(TOOL_FORUM_TOPIC_CREATE));
+    }
+
+    #[tokio::test]
+    async fn forum_topic_dry_run_mutations_do_not_call_lifecycle_service() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_append_audit_event()
+            .times(3)
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 1,
+                    event_id: "evt-1".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 100,
+                })
+            });
+
+        let lifecycle = Arc::new(FakeTopicLifecycle::new());
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_lifecycle(lifecycle.clone());
+
+        provider
+            .execute(
+                TOOL_FORUM_TOPIC_CREATE,
+                r#"{"name":"topic-a","dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("create dry-run should succeed");
+        provider
+            .execute(
+                TOOL_FORUM_TOPIC_EDIT,
+                r#"{"thread_id":42,"name":"topic-b","dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("edit dry-run should succeed");
+        provider
+            .execute(
+                TOOL_FORUM_TOPIC_DELETE,
+                r#"{"thread_id":42,"dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("delete dry-run should succeed");
+
+        assert!(lifecycle.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn forum_topic_create_invokes_lifecycle_and_audits_success() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.action == TOOL_FORUM_TOPIC_CREATE
+                    && options.payload.get("outcome") == Some(&json!("applied"))
+                    && options
+                        .payload
+                        .get("result")
+                        .and_then(|result| result.get("thread_id"))
+                        == Some(&json!(313))
+            })
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 1,
+                    event_id: "evt-topic-create".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 100,
+                })
+            });
+
+        let lifecycle = Arc::new(FakeTopicLifecycle::new());
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_lifecycle(lifecycle.clone());
+
+        let response = provider
+            .execute(
+                TOOL_FORUM_TOPIC_CREATE,
+                r#"{"chat_id":-100999,"name":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("forum topic create should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["topic"]["thread_id"], 313);
+        assert_eq!(parsed["audit_status"], "written");
+        assert_eq!(lifecycle.calls().len(), 1);
     }
 
     #[tokio::test]

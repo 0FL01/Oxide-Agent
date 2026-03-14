@@ -10,8 +10,8 @@ use super::hooks::{
 use super::memory::AgentMessage;
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
-    DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, SandboxProvider,
-    TodosProvider, YtdlpProvider,
+    DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
+    SandboxProvider, TodosProvider, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -48,6 +48,7 @@ pub struct AgentExecutor {
 struct ManagerControlPlaneContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
+    topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
 }
 
 impl AgentExecutor {
@@ -99,7 +100,23 @@ impl AgentExecutor {
         storage: Arc<dyn StorageProvider>,
         user_id: i64,
     ) -> Self {
-        self.manager_control_plane = Some(ManagerControlPlaneContext { storage, user_id });
+        self.manager_control_plane = Some(ManagerControlPlaneContext {
+            storage,
+            user_id,
+            topic_lifecycle: None,
+        });
+        self
+    }
+
+    /// Attach transport forum topic lifecycle for manager tools.
+    #[must_use]
+    pub fn with_manager_topic_lifecycle(
+        mut self,
+        topic_lifecycle: Arc<dyn ManagerTopicLifecycle>,
+    ) -> Self {
+        if let Some(control_plane) = self.manager_control_plane.as_mut() {
+            control_plane.topic_lifecycle = Some(topic_lifecycle);
+        }
         self
     }
 
@@ -162,10 +179,15 @@ impl AgentExecutor {
         )));
 
         if let Some(control_plane) = &self.manager_control_plane {
-            registry.register(Box::new(ManagerControlPlaneProvider::new(
+            let mut manager_provider = ManagerControlPlaneProvider::new(
                 Arc::clone(&control_plane.storage),
                 control_plane.user_id,
-            )));
+            );
+            if let Some(topic_lifecycle) = &control_plane.topic_lifecycle {
+                manager_provider =
+                    manager_provider.with_topic_lifecycle(Arc::clone(topic_lifecycle));
+            }
+            registry.register(Box::new(manager_provider));
         }
 
         // Register web search provider based on configuration

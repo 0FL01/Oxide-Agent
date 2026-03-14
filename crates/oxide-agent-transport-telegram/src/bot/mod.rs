@@ -6,6 +6,8 @@ pub mod agent_handlers;
 pub mod agent_transport;
 /// General command and message handlers
 pub mod handlers;
+/// Manager forum topic lifecycle bridge.
+pub(crate) mod manager_topic_lifecycle;
 /// Common messaging utilities (split long messages, formatting)
 pub mod messaging;
 /// Progress rendering for UI outputs

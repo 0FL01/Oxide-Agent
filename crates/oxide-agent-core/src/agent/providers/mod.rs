@@ -19,7 +19,11 @@ pub mod crawl4ai;
 
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
-pub use manager_control_plane::ManagerControlPlaneProvider;
+pub use manager_control_plane::{
+    ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
+    ForumTopicEditResult, ForumTopicThreadRequest, ManagerControlPlaneProvider,
+    ManagerTopicLifecycle,
+};
 pub use sandbox::SandboxProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use ytdlp::YtdlpProvider;
