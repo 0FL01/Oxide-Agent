@@ -312,7 +312,8 @@ mod tests {
     use crate::agent::session::AgentSession;
     use crate::llm::LlmClient;
     use crate::storage::{
-        AppendAuditEventOptions, AuditEventRecord, MockStorageProvider, TopicBindingRecord,
+        AppendAuditEventOptions, AuditEventRecord, MockStorageProvider, TopicBindingKind,
+        TopicBindingRecord,
     };
     use mockall::predicate::eq;
     use serde_json::json;
@@ -352,6 +353,11 @@ mod tests {
                     user_id,
                     topic_id,
                     agent_id: "agent-a".to_string(),
+                    binding_kind: TopicBindingKind::Manual,
+                    chat_id: None,
+                    thread_id: None,
+                    expires_at: None,
+                    last_activity_at: Some(20),
                     created_at: 10,
                     updated_at: 20,
                 }))
@@ -430,6 +436,11 @@ mod tests {
                     user_id,
                     topic_id,
                     agent_id: "agent-current".to_string(),
+                    binding_kind: TopicBindingKind::Manual,
+                    chat_id: None,
+                    thread_id: None,
+                    expires_at: None,
+                    last_activity_at: Some(20),
                     created_at: 10,
                     updated_at: 20,
                 }))
@@ -474,6 +485,11 @@ mod tests {
                     user_id: options.user_id,
                     topic_id: options.topic_id,
                     agent_id: options.agent_id,
+                    binding_kind: options.binding_kind.unwrap_or(TopicBindingKind::Manual),
+                    chat_id: options.chat_id.for_new_record(),
+                    thread_id: options.thread_id.for_new_record(),
+                    expires_at: options.expires_at.for_new_record(),
+                    last_activity_at: options.last_activity_at,
                     created_at: 40,
                     updated_at: 50,
                 })
@@ -517,6 +533,11 @@ mod tests {
                     user_id,
                     topic_id,
                     agent_id: "agent-current".to_string(),
+                    binding_kind: TopicBindingKind::Manual,
+                    chat_id: None,
+                    thread_id: None,
+                    expires_at: None,
+                    last_activity_at: Some(20),
                     created_at: 10,
                     updated_at: 20,
                 }))

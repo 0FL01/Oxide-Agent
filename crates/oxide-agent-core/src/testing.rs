@@ -4,8 +4,8 @@
 
 use crate::llm::LlmError;
 use crate::storage::{
-    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, TopicBindingRecord,
-    UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, TopicBindingKind,
+    TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use mockall::predicate::*;
 
@@ -143,6 +143,11 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
                 user_id: options.user_id,
                 topic_id: options.topic_id,
                 agent_id: options.agent_id,
+                binding_kind: options.binding_kind.unwrap_or(TopicBindingKind::Manual),
+                chat_id: options.chat_id.for_new_record(),
+                thread_id: options.thread_id.for_new_record(),
+                expires_at: options.expires_at.for_new_record(),
+                last_activity_at: options.last_activity_at,
                 created_at: 0,
                 updated_at: 0,
             })

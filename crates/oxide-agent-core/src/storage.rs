@@ -26,7 +26,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 const AGENT_PROFILE_SCHEMA_VERSION: u32 = 1;
-const TOPIC_BINDING_SCHEMA_VERSION: u32 = 1;
+const TOPIC_BINDING_SCHEMA_VERSION: u32 = 2;
 const AUDIT_EVENT_SCHEMA_VERSION: u32 = 1;
 const CONTROL_PLANE_RMW_MAX_RETRIES: usize = 5;
 const CONTROL_PLANE_RMW_RETRY_BACKOFF_MS: u64 = 25;
@@ -92,6 +92,17 @@ pub struct AgentProfileRecord {
 }
 
 /// Topic binding record persisted in control-plane storage.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicBindingKind {
+    /// Manually managed static topic binding.
+    #[default]
+    Manual,
+    /// Runtime-generated dynamic topic binding.
+    Runtime,
+}
+
+/// Topic binding record persisted in control-plane storage.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TopicBindingRecord {
     /// Record schema version for forward-compatible evolution.
@@ -104,6 +115,21 @@ pub struct TopicBindingRecord {
     pub topic_id: String,
     /// Agent identifier bound to topic.
     pub agent_id: String,
+    /// Binding source kind.
+    #[serde(default)]
+    pub binding_kind: TopicBindingKind,
+    /// Optional transport chat identifier for runtime resolution.
+    #[serde(default)]
+    pub chat_id: Option<i64>,
+    /// Optional transport thread identifier for runtime resolution.
+    #[serde(default)]
+    pub thread_id: Option<i64>,
+    /// Optional binding expiry timestamp (unix seconds).
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    /// Last activity timestamp (unix seconds) used for future auto-expiry.
+    #[serde(default)]
+    pub last_activity_at: Option<i64>,
     /// Creation timestamp (unix seconds).
     pub created_at: i64,
     /// Last update timestamp (unix seconds).
@@ -153,6 +179,65 @@ pub struct UpsertTopicBindingOptions {
     pub topic_id: String,
     /// Agent identifier bound to topic.
     pub agent_id: String,
+    /// Binding source kind. If omitted, existing value is preserved or defaults to `manual`.
+    pub binding_kind: Option<TopicBindingKind>,
+    /// Optional transport chat identifier for runtime resolution.
+    pub chat_id: OptionalMetadataPatch<i64>,
+    /// Optional transport thread identifier for runtime resolution.
+    pub thread_id: OptionalMetadataPatch<i64>,
+    /// Optional binding expiry timestamp (unix seconds).
+    pub expires_at: OptionalMetadataPatch<i64>,
+    /// Optional last activity timestamp override (unix seconds).
+    pub last_activity_at: Option<i64>,
+}
+
+/// Tri-state patch semantics for optional metadata fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptionalMetadataPatch<T> {
+    /// Keep the currently stored value untouched.
+    #[default]
+    Keep,
+    /// Set a concrete value.
+    Set(T),
+    /// Clear currently stored value to `None`.
+    Clear,
+}
+
+impl<T> OptionalMetadataPatch<T> {
+    /// Applies patch semantics to an existing optional value.
+    #[must_use]
+    pub fn apply(self, current: Option<T>) -> Option<T> {
+        match self {
+            Self::Keep => current,
+            Self::Set(value) => Some(value),
+            Self::Clear => None,
+        }
+    }
+
+    /// Resolves patch semantics for a newly created record.
+    #[must_use]
+    pub fn for_new_record(self) -> Option<T> {
+        match self {
+            Self::Keep | Self::Clear => None,
+            Self::Set(value) => Some(value),
+        }
+    }
+}
+
+impl<'de, T> Deserialize<'de> for OptionalMetadataPatch<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Option::<T>::deserialize(deserializer)?;
+        Ok(match value {
+            Some(inner) => Self::Set(inner),
+            None => Self::Clear,
+        })
+    }
 }
 
 /// Parameters for audit append operation.
@@ -1051,25 +1136,61 @@ fn build_topic_binding_record(
     now: i64,
 ) -> TopicBindingRecord {
     match existing {
-        Some(existing_record) => TopicBindingRecord {
-            schema_version: TOPIC_BINDING_SCHEMA_VERSION,
-            version: next_record_version(Some(existing_record.version)),
-            user_id: options.user_id,
-            topic_id: options.topic_id,
-            agent_id: options.agent_id,
-            created_at: existing_record.created_at,
-            updated_at: now,
-        },
+        Some(existing_record) => {
+            let binding_kind = options.binding_kind.unwrap_or(existing_record.binding_kind);
+            let chat_id = options.chat_id.apply(existing_record.chat_id);
+            let thread_id = options.thread_id.apply(existing_record.thread_id);
+            let expires_at = options.expires_at.apply(existing_record.expires_at);
+            let last_activity_at = Some(options.last_activity_at.unwrap_or(now));
+
+            TopicBindingRecord {
+                schema_version: TOPIC_BINDING_SCHEMA_VERSION,
+                version: next_record_version(Some(existing_record.version)),
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agent_id: options.agent_id,
+                binding_kind,
+                chat_id,
+                thread_id,
+                expires_at,
+                last_activity_at,
+                created_at: existing_record.created_at,
+                updated_at: now,
+            }
+        }
         None => TopicBindingRecord {
             schema_version: TOPIC_BINDING_SCHEMA_VERSION,
             version: next_record_version(None),
             user_id: options.user_id,
             topic_id: options.topic_id,
             agent_id: options.agent_id,
+            binding_kind: options.binding_kind.unwrap_or_default(),
+            chat_id: options.chat_id.for_new_record(),
+            thread_id: options.thread_id.for_new_record(),
+            expires_at: options.expires_at.for_new_record(),
+            last_activity_at: Some(options.last_activity_at.unwrap_or(now)),
             created_at: now,
             updated_at: now,
         },
     }
+}
+
+#[must_use]
+/// Returns `true` when a topic binding is active at `now`.
+pub fn binding_is_active(record: &TopicBindingRecord, now: i64) -> bool {
+    match record.expires_at {
+        Some(expires_at) => expires_at > now,
+        None => true,
+    }
+}
+
+#[must_use]
+/// Returns a binding only when it is active at `now`.
+pub fn resolve_active_topic_binding(
+    record: Option<TopicBindingRecord>,
+    now: i64,
+) -> Option<TopicBindingRecord> {
+    record.filter(|binding| binding_is_active(binding, now))
 }
 
 #[must_use]
@@ -1130,11 +1251,12 @@ pub fn generate_chat_uuid() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_profile_key, audit_events_key, build_agent_profile_record, build_audit_event_record,
-        build_topic_binding_record, generate_chat_uuid, next_record_version,
-        select_audit_events_page, should_retry_control_plane_rmw, topic_binding_key,
-        user_chat_history_key, user_config_key, user_history_key, AgentProfileRecord,
-        AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, TopicBindingRecord,
+        agent_profile_key, audit_events_key, binding_is_active, build_agent_profile_record,
+        build_audit_event_record, build_topic_binding_record, generate_chat_uuid,
+        next_record_version, resolve_active_topic_binding, select_audit_events_page,
+        should_retry_control_plane_rmw, topic_binding_key, user_chat_history_key, user_config_key,
+        user_history_key, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
+        ControlPlaneLocks, OptionalMetadataPatch, TopicBindingKind, TopicBindingRecord,
         UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
     };
     use serde_json::json;
@@ -1305,6 +1427,11 @@ mod tests {
             user_id: 7,
             topic_id: "topic-a".to_string(),
             agent_id: "agent-a".to_string(),
+            binding_kind: TopicBindingKind::Manual,
+            chat_id: Some(100),
+            thread_id: Some(7),
+            expires_at: Some(10_000),
+            last_activity_at: Some(501),
             created_at: 500,
             updated_at: 501,
         };
@@ -1314,6 +1441,11 @@ mod tests {
                 user_id: 7,
                 topic_id: "topic-a".to_string(),
                 agent_id: "agent-b".to_string(),
+                binding_kind: None,
+                chat_id: OptionalMetadataPatch::Keep,
+                thread_id: OptionalMetadataPatch::Keep,
+                expires_at: OptionalMetadataPatch::Keep,
+                last_activity_at: None,
             },
             Some(existing),
             1_000,
@@ -1323,6 +1455,48 @@ mod tests {
         assert_eq!(updated.created_at, 500);
         assert_eq!(updated.updated_at, 1_000);
         assert_eq!(updated.agent_id, "agent-b");
+        assert_eq!(updated.binding_kind, TopicBindingKind::Manual);
+        assert_eq!(updated.chat_id, Some(100));
+        assert_eq!(updated.thread_id, Some(7));
+        assert_eq!(updated.expires_at, Some(10_000));
+        assert_eq!(updated.last_activity_at, Some(1_000));
+    }
+
+    #[test]
+    fn upsert_topic_binding_explicit_clear_resets_optional_metadata_fields() {
+        let existing = TopicBindingRecord {
+            schema_version: 1,
+            version: 8,
+            user_id: 7,
+            topic_id: "topic-a".to_string(),
+            agent_id: "agent-a".to_string(),
+            binding_kind: TopicBindingKind::Manual,
+            chat_id: Some(100),
+            thread_id: Some(7),
+            expires_at: Some(10_000),
+            last_activity_at: Some(501),
+            created_at: 500,
+            updated_at: 501,
+        };
+
+        let updated = build_topic_binding_record(
+            UpsertTopicBindingOptions {
+                user_id: 7,
+                topic_id: "topic-a".to_string(),
+                agent_id: "agent-a".to_string(),
+                binding_kind: None,
+                chat_id: OptionalMetadataPatch::Clear,
+                thread_id: OptionalMetadataPatch::Clear,
+                expires_at: OptionalMetadataPatch::Clear,
+                last_activity_at: None,
+            },
+            Some(existing),
+            1_000,
+        );
+
+        assert_eq!(updated.chat_id, None);
+        assert_eq!(updated.thread_id, None);
+        assert_eq!(updated.expires_at, None);
     }
 
     #[test]
@@ -1332,6 +1506,11 @@ mod tests {
                 user_id: 7,
                 topic_id: "topic-a".to_string(),
                 agent_id: "agent-a".to_string(),
+                binding_kind: Some(TopicBindingKind::Runtime),
+                chat_id: OptionalMetadataPatch::Set(42),
+                thread_id: OptionalMetadataPatch::Set(99),
+                expires_at: OptionalMetadataPatch::Set(2_100),
+                last_activity_at: None,
             },
             None,
             2_000,
@@ -1340,6 +1519,88 @@ mod tests {
         assert_eq!(created.version, 1);
         assert_eq!(created.created_at, 2_000);
         assert_eq!(created.updated_at, 2_000);
+        assert_eq!(created.schema_version, 2);
+        assert_eq!(created.binding_kind, TopicBindingKind::Runtime);
+        assert_eq!(created.chat_id, Some(42));
+        assert_eq!(created.thread_id, Some(99));
+        assert_eq!(created.expires_at, Some(2_100));
+        assert_eq!(created.last_activity_at, Some(2_000));
+    }
+
+    #[test]
+    fn topic_binding_record_backward_compatible_deserialization_defaults_new_fields() {
+        let raw = r#"{
+            "schema_version": 1,
+            "version": 3,
+            "user_id": 7,
+            "topic_id": "topic-a",
+            "agent_id": "agent-a",
+            "created_at": 100,
+            "updated_at": 200
+        }"#;
+
+        let record: TopicBindingRecord =
+            serde_json::from_str(raw).expect("record must deserialize");
+        assert_eq!(record.binding_kind, TopicBindingKind::Manual);
+        assert_eq!(record.chat_id, None);
+        assert_eq!(record.thread_id, None);
+        assert_eq!(record.expires_at, None);
+        assert_eq!(record.last_activity_at, None);
+    }
+
+    #[test]
+    fn topic_binding_record_roundtrip_preserves_runtime_metadata() {
+        let record = TopicBindingRecord {
+            schema_version: 2,
+            version: 1,
+            user_id: 7,
+            topic_id: "topic-a".to_string(),
+            agent_id: "agent-a".to_string(),
+            binding_kind: TopicBindingKind::Runtime,
+            chat_id: Some(10),
+            thread_id: Some(20),
+            expires_at: Some(500),
+            last_activity_at: Some(400),
+            created_at: 100,
+            updated_at: 200,
+        };
+
+        let encoded = serde_json::to_string(&record).expect("record must encode");
+        let decoded_record: TopicBindingRecord =
+            serde_json::from_str(&encoded).expect("roundtrip should decode");
+        assert_eq!(decoded_record.binding_kind, TopicBindingKind::Runtime);
+        assert_eq!(decoded_record.chat_id, Some(10));
+        assert_eq!(decoded_record.thread_id, Some(20));
+        assert_eq!(decoded_record.expires_at, Some(500));
+        assert_eq!(decoded_record.last_activity_at, Some(400));
+        assert_eq!(decoded_record.schema_version, 2);
+    }
+
+    #[test]
+    fn binding_activity_helper_distinguishes_active_and_expired_records() {
+        let active_record = TopicBindingRecord {
+            schema_version: 2,
+            version: 1,
+            user_id: 7,
+            topic_id: "topic-a".to_string(),
+            agent_id: "agent-a".to_string(),
+            binding_kind: TopicBindingKind::Runtime,
+            chat_id: Some(10),
+            thread_id: Some(20),
+            expires_at: Some(500),
+            last_activity_at: Some(450),
+            created_at: 100,
+            updated_at: 200,
+        };
+        let expired_record = TopicBindingRecord {
+            expires_at: Some(300),
+            ..active_record.clone()
+        };
+
+        assert!(binding_is_active(&active_record, 499));
+        assert!(!binding_is_active(&expired_record, 300));
+        assert!(resolve_active_topic_binding(Some(active_record), 499).is_some());
+        assert!(resolve_active_topic_binding(Some(expired_record), 300).is_none());
     }
 
     #[test]
