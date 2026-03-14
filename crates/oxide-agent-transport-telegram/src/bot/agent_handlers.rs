@@ -733,6 +733,15 @@ mod tests {
         ) -> Result<Vec<AuditEventRecord>, StorageError> {
             Ok(Vec::new())
         }
+
+        async fn list_audit_events_page(
+            &self,
+            _user_id: i64,
+            _before_version: Option<u64>,
+            _limit: usize,
+        ) -> Result<Vec<AuditEventRecord>, StorageError> {
+            Ok(Vec::new())
+        }
     }
 
     fn test_settings(manager_users: Option<&str>) -> Arc<BotSettings> {
@@ -913,6 +922,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let allowed_settings = test_settings(Some("77"));
+        let restricted_settings = test_settings(None);
+        let llm = test_llm(&allowed_settings);
+        let keys = agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(61))));
+
+        remove_sessions_with_compat(keys).await;
+
+        let first_session =
+            ensure_session_exists(keys, 77, &llm, &storage, &allowed_settings).await;
+        assert_eq!(first_session, keys.primary);
+        assert_eq!(
+            session_manager_control_plane_enabled(first_session).await,
+            Some(true)
+        );
+
+        let second_session =
+            ensure_session_exists(keys, 77, &llm, &storage, &restricted_settings).await;
+        assert_eq!(second_session, keys.primary);
+        assert_eq!(
+            session_manager_control_plane_enabled(second_session).await,
+            Some(false)
+        );
+
+        remove_sessions_with_compat(keys).await;
+    }
+
+    #[tokio::test]
+    async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refreshes_after_complete(
+    ) {
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let allowed_settings = test_settings(Some("77"));
+        let restricted_settings = test_settings(None);
+        let llm = test_llm(&allowed_settings);
+        let keys = agent_mode_session_keys(77, ChatId(-100_123), Some(ThreadId(MessageId(62))));
+
+        remove_sessions_with_compat(keys).await;
+
+        let first_session =
+            ensure_session_exists(keys, 77, &llm, &storage, &allowed_settings).await;
+        assert_eq!(first_session, keys.primary);
+        assert_eq!(
+            session_manager_control_plane_enabled(first_session).await,
+            Some(true)
+        );
+
+        let marked_running = SESSION_REGISTRY
+            .with_executor_mut(&first_session, |executor| {
+                Box::pin(async move {
+                    executor.session_mut().start_task();
+                })
+            })
+            .await;
+        assert!(marked_running.is_ok());
+
+        let second_session =
+            ensure_session_exists(keys, 77, &llm, &storage, &restricted_settings).await;
+        assert_eq!(second_session, first_session);
+        assert_eq!(
+            session_manager_control_plane_enabled(second_session).await,
+            Some(true)
+        );
+
+        let marked_completed = SESSION_REGISTRY
+            .with_executor_mut(&first_session, |executor| {
+                Box::pin(async move {
+                    executor.session_mut().complete();
+                })
+            })
+            .await;
+        assert!(marked_completed.is_ok());
+
+        let third_session =
+            ensure_session_exists(keys, 77, &llm, &storage, &restricted_settings).await;
+        assert_eq!(third_session, first_session);
+        assert_eq!(
+            session_manager_control_plane_enabled(third_session).await,
+            Some(false)
+        );
+
+        remove_sessions_with_compat(keys).await;
+    }
+
+    #[tokio::test]
     async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
         let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
         let legacy_manager_settings = test_settings(Some("77"));
@@ -950,26 +1044,49 @@ async fn ensure_session_exists(
     storage: &Arc<dyn StorageProvider>,
     settings: &Arc<BotSettings>,
 ) -> SessionId {
+    let manager_enabled = manager_control_plane_enabled(settings, user_id);
+
     if let Some(existing_session_id) = resolve_existing_session_id(session_keys).await {
-        if existing_session_id == session_keys.legacy && session_keys.distinct_legacy().is_some() {
-            let manager_enabled = manager_control_plane_enabled(settings, user_id);
-            if let Some(existing_manager_enabled) =
-                session_manager_control_plane_enabled(existing_session_id).await
-            {
-                if existing_manager_enabled == manager_enabled {
-                    debug!(session_id = %existing_session_id, "Session already exists in cache");
-                    return existing_session_id;
-                }
+        if let Some(existing_manager_enabled) =
+            session_manager_control_plane_enabled(existing_session_id).await
+        {
+            if existing_manager_enabled == manager_enabled {
+                debug!(session_id = %existing_session_id, "Session already exists in cache");
+                return existing_session_id;
+            }
+
+            let removed = SESSION_REGISTRY.remove_if_idle(&existing_session_id).await;
+            if removed {
+                debug!(
+                    session_id = %existing_session_id,
+                    previous_manager_enabled = existing_manager_enabled,
+                    current_manager_enabled = manager_enabled,
+                    "Session manager RBAC changed; recreating session"
+                );
+            } else if SESSION_REGISTRY.contains(&existing_session_id).await {
+                debug!(
+                    session_id = %existing_session_id,
+                    previous_manager_enabled = existing_manager_enabled,
+                    current_manager_enabled = manager_enabled,
+                    "Session manager RBAC changed while task is running; deferring refresh"
+                );
+                return existing_session_id;
             }
         } else {
-            debug!(session_id = %existing_session_id, "Session already exists in cache");
-            return existing_session_id;
-        }
+            let removed = SESSION_REGISTRY.remove_if_idle(&existing_session_id).await;
+            if !removed && SESSION_REGISTRY.contains(&existing_session_id).await {
+                debug!(
+                    session_id = %existing_session_id,
+                    "Session state unavailable while task is running; deferring refresh"
+                );
+                return existing_session_id;
+            }
 
-        debug!(
-            session_id = %existing_session_id,
-            "Legacy compatibility session is not reusable for current manager RBAC"
-        );
+            debug!(
+                session_id = %existing_session_id,
+                "Session state unavailable; recreating session"
+            );
+        }
     }
 
     let session_id = session_keys.primary;
@@ -996,7 +1113,7 @@ async fn ensure_session_exists(
     }
 
     let mut executor = AgentExecutor::new(llm.clone(), session, settings.agent.clone());
-    if manager_control_plane_enabled(settings, user_id) {
+    if manager_enabled {
         executor = executor.with_manager_control_plane(storage.clone(), user_id);
     }
     SESSION_REGISTRY.insert(session_id, executor).await;

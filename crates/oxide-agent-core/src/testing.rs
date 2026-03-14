@@ -168,5 +168,8 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
     mock.expect_list_audit_events()
         .returning(|_, _| Ok(Vec::new()));
 
+    mock.expect_list_audit_events_page()
+        .returning(|_, _, _| Ok(Vec::new()));
+
     mock
 }

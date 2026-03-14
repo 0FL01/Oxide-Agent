@@ -191,6 +191,31 @@ impl SessionRegistry {
         }
     }
 
+    /// Remove a session only if it is currently idle.
+    ///
+    /// Returns `true` when the session and token were removed, `false` otherwise.
+    pub async fn remove_if_idle(&self, id: &SessionId) -> bool {
+        let mut sessions = self.sessions.write().await;
+        let mut tokens = self.cancellation_tokens.write().await;
+
+        let Some(executor_arc) = sessions.get(id).cloned() else {
+            return false;
+        };
+
+        let is_running = match executor_arc.try_read() {
+            Ok(executor) => executor.session().is_processing(),
+            Err(_) => true,
+        };
+
+        if is_running {
+            return false;
+        }
+
+        sessions.remove(id);
+        tokens.remove(id);
+        true
+    }
+
     /// Clear all todos for a session
     pub async fn clear_todos(&self, id: &SessionId) -> bool {
         let executor_arc = {
@@ -221,5 +246,61 @@ impl SessionRegistry {
     pub async fn is_empty(&self) -> bool {
         let sessions = self.sessions.read().await;
         sessions.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionRegistry;
+    use oxide_agent_core::agent::{AgentExecutor, AgentSession, SessionId};
+    use oxide_agent_core::config::AgentSettings;
+    use oxide_agent_core::llm::LlmClient;
+    use std::sync::Arc;
+
+    fn build_executor(session_id: SessionId) -> AgentExecutor {
+        let settings = Arc::new(AgentSettings::default());
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let session = AgentSession::new(session_id);
+        AgentExecutor::new(llm, session, settings)
+    }
+
+    #[tokio::test]
+    async fn remove_if_idle_removes_session_and_token() {
+        let registry = SessionRegistry::new();
+        let session_id = SessionId::from(101_i64);
+        registry
+            .insert(session_id, build_executor(session_id))
+            .await;
+
+        let removed = registry.remove_if_idle(&session_id).await;
+
+        assert!(removed);
+        assert!(!registry.contains(&session_id).await);
+        assert!(registry.get_cancellation_token(&session_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_if_idle_does_not_remove_running_session() {
+        let registry = SessionRegistry::new();
+        let session_id = SessionId::from(202_i64);
+        registry
+            .insert(session_id, build_executor(session_id))
+            .await;
+
+        let executor_arc = registry
+            .get(&session_id)
+            .await
+            .expect("session must exist for running-state test");
+
+        {
+            let mut executor = executor_arc.write().await;
+            executor.session_mut().start_task();
+        }
+
+        let removed = registry.remove_if_idle(&session_id).await;
+
+        assert!(!removed);
+        assert!(registry.contains(&session_id).await);
+        assert!(registry.get_cancellation_token(&session_id).await.is_some());
     }
 }

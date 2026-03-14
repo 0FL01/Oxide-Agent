@@ -22,7 +22,12 @@ const TOOL_AGENT_PROFILE_UPSERT: &str = "agent_profile_upsert";
 const TOOL_AGENT_PROFILE_GET: &str = "agent_profile_get";
 const TOOL_AGENT_PROFILE_DELETE: &str = "agent_profile_delete";
 const TOOL_AGENT_PROFILE_ROLLBACK: &str = "agent_profile_rollback";
-const ROLLBACK_AUDIT_SCAN_LIMIT: usize = 200;
+const ROLLBACK_AUDIT_PAGE_SIZE: usize = 200;
+
+enum AuditStatus {
+    Written,
+    WriteFailed(String),
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -256,17 +261,71 @@ impl ManagerControlPlaneProvider {
         candidates.contains(&action)
     }
 
+    async fn append_audit_with_status(&self, options: AppendAuditEventOptions) -> AuditStatus {
+        match self.storage.append_audit_event(options).await {
+            Ok(_) => AuditStatus::Written,
+            Err(err) => AuditStatus::WriteFailed(err.to_string()),
+        }
+    }
+
+    fn attach_audit_status(
+        mut response: serde_json::Value,
+        status: AuditStatus,
+    ) -> serde_json::Value {
+        if let Some(response_object) = response.as_object_mut() {
+            match status {
+                AuditStatus::Written => {
+                    response_object.insert("audit_status".to_string(), json!("written"));
+                }
+                AuditStatus::WriteFailed(error) => {
+                    response_object.insert("audit_status".to_string(), json!("write_failed"));
+                    response_object.insert("audit_error".to_string(), json!(error));
+                }
+            }
+        }
+
+        response
+    }
+
+    async fn find_latest_applied_mutation<F>(
+        &self,
+        mut predicate: F,
+    ) -> Result<Option<crate::storage::AuditEventRecord>>
+    where
+        F: FnMut(&crate::storage::AuditEventRecord) -> bool,
+    {
+        let mut cursor = None;
+
+        loop {
+            let events = self
+                .storage
+                .list_audit_events_page(self.user_id, cursor, ROLLBACK_AUDIT_PAGE_SIZE)
+                .await
+                .map_err(|err| anyhow!("failed to list audit events: {err}"))?;
+
+            if events.is_empty() {
+                return Ok(None);
+            }
+
+            if let Some(event) = events
+                .iter()
+                .find(|event| Self::is_applied_mutation_event(event) && predicate(event))
+            {
+                return Ok(Some(event.clone()));
+            }
+
+            cursor = events.last().map(|event| event.version);
+            if cursor.is_none() {
+                return Ok(None);
+            }
+        }
+    }
+
     async fn last_topic_binding_mutation(
         &self,
         topic_id: &str,
     ) -> Result<Option<crate::storage::AuditEventRecord>> {
-        let events = self
-            .storage
-            .list_audit_events(self.user_id, ROLLBACK_AUDIT_SCAN_LIMIT)
-            .await
-            .map_err(|err| anyhow!("failed to list audit events: {err}"))?;
-
-        Ok(events.into_iter().rev().find(|event| {
+        self.find_latest_applied_mutation(|event| {
             event.topic_id.as_deref() == Some(topic_id)
                 && Self::action_matches(
                     event.action.as_str(),
@@ -276,21 +335,15 @@ impl ManagerControlPlaneProvider {
                         TOOL_TOPIC_BINDING_ROLLBACK,
                     ],
                 )
-                && Self::is_applied_mutation_event(event)
-        }))
+        })
+        .await
     }
 
     async fn last_agent_profile_mutation(
         &self,
         agent_id: &str,
     ) -> Result<Option<crate::storage::AuditEventRecord>> {
-        let events = self
-            .storage
-            .list_audit_events(self.user_id, ROLLBACK_AUDIT_SCAN_LIMIT)
-            .await
-            .map_err(|err| anyhow!("failed to list audit events: {err}"))?;
-
-        Ok(events.into_iter().rev().find(|event| {
+        self.find_latest_applied_mutation(|event| {
             event.agent_id.as_deref() == Some(agent_id)
                 && Self::action_matches(
                     event.action.as_str(),
@@ -300,8 +353,8 @@ impl ManagerControlPlaneProvider {
                         TOOL_AGENT_PROFILE_ROLLBACK,
                     ],
                 )
-                && Self::is_applied_mutation_event(event)
-        }))
+        })
+        .await
     }
 
     async fn execute_topic_binding_set(&self, arguments: &str) -> Result<String> {
@@ -315,9 +368,8 @@ impl ManagerControlPlaneProvider {
             .map_err(|err| anyhow!("failed to get current topic binding: {err}"))?;
 
         if args.dry_run {
-            let _audit = self
-                .storage
-                .append_audit_event(AppendAuditEventOptions {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
                     user_id: self.user_id,
                     topic_id: Some(topic_id.clone()),
                     agent_id: Some(agent_id.clone()),
@@ -329,19 +381,23 @@ impl ManagerControlPlaneProvider {
                         "outcome": Self::dry_run_outcome(true)
                     }),
                 })
-                .await
-                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+                .await;
 
-            return Self::to_json_string(json!({
-                "ok": true,
-                "dry_run": true,
-                "preview": {
-                    "operation": "upsert",
-                    "topic_id": topic_id,
-                    "agent_id": agent_id
-                },
-                "previous": previous
-            }));
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "upsert",
+                        "topic_id": topic_id,
+                        "agent_id": agent_id
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
         }
 
         let record = self
@@ -354,9 +410,8 @@ impl ManagerControlPlaneProvider {
             .await
             .map_err(|err| anyhow!("failed to upsert topic binding: {err}"))?;
 
-        let _audit = self
-            .storage
-            .append_audit_event(AppendAuditEventOptions {
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
                 topic_id: Some(topic_id),
                 agent_id: Some(agent_id),
@@ -369,10 +424,11 @@ impl ManagerControlPlaneProvider {
                     "outcome": Self::dry_run_outcome(false)
                 }),
             })
-            .await
-            .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+            .await;
 
-        Self::to_json_string(json!({ "ok": true, "binding": record }))
+        let response =
+            Self::attach_audit_status(json!({ "ok": true, "binding": record }), audit_status);
+        Self::to_json_string(response)
     }
 
     async fn execute_topic_binding_get(&self, arguments: &str) -> Result<String> {
@@ -402,9 +458,8 @@ impl ManagerControlPlaneProvider {
             .map_err(|err| anyhow!("failed to get current topic binding: {err}"))?;
 
         if args.dry_run {
-            let _audit = self
-                .storage
-                .append_audit_event(AppendAuditEventOptions {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
                     user_id: self.user_id,
                     topic_id: Some(topic_id.clone()),
                     agent_id: None,
@@ -415,18 +470,22 @@ impl ManagerControlPlaneProvider {
                         "outcome": Self::dry_run_outcome(true)
                     }),
                 })
-                .await
-                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+                .await;
 
-            return Self::to_json_string(json!({
-                "ok": true,
-                "dry_run": true,
-                "preview": {
-                    "operation": "delete",
-                    "topic_id": topic_id
-                },
-                "previous": previous
-            }));
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "delete",
+                        "topic_id": topic_id
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
         }
 
         self.storage
@@ -434,9 +493,8 @@ impl ManagerControlPlaneProvider {
             .await
             .map_err(|err| anyhow!("failed to delete topic binding: {err}"))?;
 
-        let _audit = self
-            .storage
-            .append_audit_event(AppendAuditEventOptions {
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
                 topic_id: Some(topic_id.clone()),
                 agent_id: None,
@@ -447,10 +505,10 @@ impl ManagerControlPlaneProvider {
                     "outcome": Self::dry_run_outcome(false)
                 }),
             })
-            .await
-            .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+            .await;
 
-        Self::to_json_string(json!({ "ok": true }))
+        let response = Self::attach_audit_status(json!({ "ok": true }), audit_status);
+        Self::to_json_string(response)
     }
 
     async fn execute_agent_profile_upsert(&self, arguments: &str) -> Result<String> {
@@ -464,9 +522,8 @@ impl ManagerControlPlaneProvider {
             .map_err(|err| anyhow!("failed to get current agent profile: {err}"))?;
 
         if args.dry_run {
-            let _audit = self
-                .storage
-                .append_audit_event(AppendAuditEventOptions {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
                     user_id: self.user_id,
                     topic_id: None,
                     agent_id: Some(agent_id.clone()),
@@ -478,19 +535,23 @@ impl ManagerControlPlaneProvider {
                         "outcome": Self::dry_run_outcome(true)
                     }),
                 })
-                .await
-                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+                .await;
 
-            return Self::to_json_string(json!({
-                "ok": true,
-                "dry_run": true,
-                "preview": {
-                    "operation": "upsert",
-                    "agent_id": agent_id,
-                    "profile": profile
-                },
-                "previous": previous
-            }));
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "upsert",
+                        "agent_id": agent_id,
+                        "profile": profile
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
         }
 
         let record = self
@@ -503,9 +564,8 @@ impl ManagerControlPlaneProvider {
             .await
             .map_err(|err| anyhow!("failed to upsert agent profile: {err}"))?;
 
-        let _audit = self
-            .storage
-            .append_audit_event(AppendAuditEventOptions {
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
                 topic_id: None,
                 agent_id: Some(agent_id),
@@ -517,10 +577,11 @@ impl ManagerControlPlaneProvider {
                     "outcome": Self::dry_run_outcome(false)
                 }),
             })
-            .await
-            .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+            .await;
 
-        Self::to_json_string(json!({ "ok": true, "profile": record }))
+        let response =
+            Self::attach_audit_status(json!({ "ok": true, "profile": record }), audit_status);
+        Self::to_json_string(response)
     }
 
     async fn execute_agent_profile_get(&self, arguments: &str) -> Result<String> {
@@ -550,9 +611,8 @@ impl ManagerControlPlaneProvider {
             .map_err(|err| anyhow!("failed to get current agent profile: {err}"))?;
 
         if args.dry_run {
-            let _audit = self
-                .storage
-                .append_audit_event(AppendAuditEventOptions {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
                     user_id: self.user_id,
                     topic_id: None,
                     agent_id: Some(agent_id.clone()),
@@ -563,18 +623,22 @@ impl ManagerControlPlaneProvider {
                         "outcome": Self::dry_run_outcome(true)
                     }),
                 })
-                .await
-                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+                .await;
 
-            return Self::to_json_string(json!({
-                "ok": true,
-                "dry_run": true,
-                "preview": {
-                    "operation": "delete",
-                    "agent_id": agent_id
-                },
-                "previous": previous
-            }));
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "delete",
+                        "agent_id": agent_id
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
         }
 
         self.storage
@@ -582,9 +646,8 @@ impl ManagerControlPlaneProvider {
             .await
             .map_err(|err| anyhow!("failed to delete agent profile: {err}"))?;
 
-        let _audit = self
-            .storage
-            .append_audit_event(AppendAuditEventOptions {
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
                 topic_id: None,
                 agent_id: Some(agent_id.clone()),
@@ -595,10 +658,10 @@ impl ManagerControlPlaneProvider {
                     "outcome": Self::dry_run_outcome(false)
                 }),
             })
-            .await
-            .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+            .await;
 
-        Self::to_json_string(json!({ "ok": true }))
+        let response = Self::attach_audit_status(json!({ "ok": true }), audit_status);
+        Self::to_json_string(response)
     }
 
     async fn execute_topic_binding_rollback(&self, arguments: &str) -> Result<String> {
@@ -622,9 +685,8 @@ impl ManagerControlPlaneProvider {
         };
 
         if args.dry_run {
-            let _audit = self
-                .storage
-                .append_audit_event(AppendAuditEventOptions {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
                     user_id: self.user_id,
                     topic_id: Some(topic_id.clone()),
                     agent_id: previous.as_ref().map(|record| record.agent_id.clone()),
@@ -637,19 +699,23 @@ impl ManagerControlPlaneProvider {
                         "outcome": Self::dry_run_outcome(true)
                     }),
                 })
-                .await
-                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+                .await;
 
-            return Self::to_json_string(json!({
-                "ok": true,
-                "dry_run": true,
-                "preview": {
-                    "operation": rollback_operation,
-                    "topic_id": topic_id
-                },
-                "current": current,
-                "restore_to": previous
-            }));
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": rollback_operation,
+                        "topic_id": topic_id
+                    },
+                    "current": current,
+                    "restore_to": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
         }
 
         let rolled_back_binding = if let Some(previous_binding) = previous.clone() {
@@ -671,9 +737,8 @@ impl ManagerControlPlaneProvider {
             None
         };
 
-        let _audit = self
-            .storage
-            .append_audit_event(AppendAuditEventOptions {
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
                 topic_id: Some(topic_id.clone()),
                 agent_id: rolled_back_binding
@@ -688,15 +753,19 @@ impl ManagerControlPlaneProvider {
                     "outcome": Self::dry_run_outcome(false)
                 }),
             })
-            .await
-            .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+            .await;
 
-        Self::to_json_string(json!({
-            "ok": true,
-            "rolled_back": true,
-            "operation": rollback_operation,
-            "binding": rolled_back_binding
-        }))
+        let response = Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "rolled_back": true,
+                "operation": rollback_operation,
+                "binding": rolled_back_binding
+            }),
+            audit_status,
+        );
+
+        Self::to_json_string(response)
     }
 
     async fn execute_agent_profile_rollback(&self, arguments: &str) -> Result<String> {
@@ -720,9 +789,8 @@ impl ManagerControlPlaneProvider {
         };
 
         if args.dry_run {
-            let _audit = self
-                .storage
-                .append_audit_event(AppendAuditEventOptions {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
                     user_id: self.user_id,
                     topic_id: None,
                     agent_id: Some(agent_id.clone()),
@@ -735,19 +803,23 @@ impl ManagerControlPlaneProvider {
                         "outcome": Self::dry_run_outcome(true)
                     }),
                 })
-                .await
-                .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+                .await;
 
-            return Self::to_json_string(json!({
-                "ok": true,
-                "dry_run": true,
-                "preview": {
-                    "operation": rollback_operation,
-                    "agent_id": agent_id
-                },
-                "current": current,
-                "restore_to": previous
-            }));
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": rollback_operation,
+                        "agent_id": agent_id
+                    },
+                    "current": current,
+                    "restore_to": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
         }
 
         let rolled_back_profile = if let Some(previous_profile) = previous.clone() {
@@ -769,9 +841,8 @@ impl ManagerControlPlaneProvider {
             None
         };
 
-        let _audit = self
-            .storage
-            .append_audit_event(AppendAuditEventOptions {
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
                 topic_id: None,
                 agent_id: Some(agent_id.clone()),
@@ -784,15 +855,19 @@ impl ManagerControlPlaneProvider {
                     "outcome": Self::dry_run_outcome(false)
                 }),
             })
-            .await
-            .map_err(|err| anyhow!("failed to append audit event: {err}"))?;
+            .await;
 
-        Self::to_json_string(json!({
-            "ok": true,
-            "rolled_back": true,
-            "operation": rollback_operation,
-            "profile": rolled_back_profile
-        }))
+        let response = Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "rolled_back": true,
+                "operation": rollback_operation,
+                "profile": rolled_back_profile
+            }),
+            audit_status,
+        );
+
+        Self::to_json_string(response)
     }
 }
 
@@ -846,7 +921,39 @@ mod tests {
     use super::*;
     use crate::agent::registry::ToolRegistry;
     use crate::storage::{AgentProfileRecord, AppendAuditEventOptions, TopicBindingRecord};
-    use mockall::predicate::eq;
+    use mockall::{predicate::eq, Sequence};
+
+    fn binding(user_id: i64, topic_id: &str, agent_id: &str, version: u64) -> TopicBindingRecord {
+        TopicBindingRecord {
+            schema_version: 1,
+            version,
+            user_id,
+            topic_id: topic_id.to_string(),
+            agent_id: agent_id.to_string(),
+            created_at: 10,
+            updated_at: 20,
+        }
+    }
+
+    fn audit_event(
+        version: u64,
+        topic_id: Option<&str>,
+        agent_id: Option<&str>,
+        action: &str,
+        payload: serde_json::Value,
+    ) -> crate::storage::AuditEventRecord {
+        crate::storage::AuditEventRecord {
+            schema_version: 1,
+            version,
+            event_id: format!("evt-{version}"),
+            user_id: 77,
+            topic_id: topic_id.map(str::to_string),
+            agent_id: agent_id.map(str::to_string),
+            action: action.to_string(),
+            payload,
+            created_at: 100,
+        }
+    }
 
     #[tokio::test]
     async fn topic_binding_set_rejects_empty_topic_id() {
@@ -960,6 +1067,57 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed.get("ok"), Some(&serde_json::Value::Bool(true)));
         assert_eq!(parsed["binding"]["topic_id"], "topic-a");
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_binding_set_succeeds_when_audit_write_fails() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+
+        mock.expect_upsert_topic_binding()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.agent_id == "agent-a"
+            })
+            .returning(|options| {
+                Ok(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    created_at: 100,
+                    updated_at: 100,
+                })
+            });
+
+        mock.expect_append_audit_event().returning(|_| {
+            Err(crate::storage::StorageError::Config(
+                "audit unavailable".to_string(),
+            ))
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_BINDING_SET,
+                r#"{"topic_id":"topic-a","agent_id":"agent-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("mutation should succeed even when audit write fails");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["binding"]["topic_id"], "topic-a");
+        assert_eq!(parsed["audit_status"], "write_failed");
+        assert!(parsed["audit_error"].as_str().is_some());
     }
 
     #[tokio::test]
@@ -1003,6 +1161,38 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["dry_run"], true);
         assert_eq!(parsed["preview"]["operation"], "upsert");
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_binding_set_dry_run_reports_audit_write_failure() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_binding().times(0);
+        mock.expect_append_audit_event().returning(|_| {
+            Err(crate::storage::StorageError::Config(
+                "audit unavailable".to_string(),
+            ))
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_BINDING_SET,
+                r#"{"topic_id":"topic-a","agent_id":"agent-a","dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("dry-run should succeed even when audit write fails");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["dry_run"], true);
+        assert_eq!(parsed["audit_status"], "write_failed");
     }
 
     #[tokio::test]
@@ -1021,9 +1211,9 @@ mod tests {
                     updated_at: 20,
                 }))
             });
-        mock.expect_list_audit_events()
-            .with(eq(77_i64), eq(ROLLBACK_AUDIT_SCAN_LIMIT))
-            .returning(|_, _| {
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .returning(|_, _, _| {
                 Ok(vec![crate::storage::AuditEventRecord {
                     schema_version: 1,
                     version: 9,
@@ -1101,6 +1291,173 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["operation"], "restore");
         assert_eq!(parsed["binding"]["agent_id"], "agent-old");
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_binding_rollback_succeeds_when_audit_write_fails() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, topic_id| {
+                Ok(Some(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 4,
+                    user_id: 77,
+                    topic_id,
+                    agent_id: "agent-new".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .returning(|_, _, _| {
+                Ok(vec![crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 9,
+                    event_id: "evt-9".to_string(),
+                    user_id: 77,
+                    topic_id: Some("topic-a".to_string()),
+                    agent_id: Some("agent-new".to_string()),
+                    action: TOOL_TOPIC_BINDING_SET.to_string(),
+                    payload: json!({
+                        "topic_id": "topic-a",
+                        "previous": {
+                            "schema_version": 1,
+                            "version": 3,
+                            "user_id": 77,
+                            "topic_id": "topic-a",
+                            "agent_id": "agent-old",
+                            "created_at": 1,
+                            "updated_at": 2
+                        },
+                        "outcome": "applied"
+                    }),
+                    created_at: 100,
+                }])
+            });
+        mock.expect_upsert_topic_binding().returning(|options| {
+            Ok(TopicBindingRecord {
+                schema_version: 1,
+                version: 5,
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agent_id: options.agent_id,
+                created_at: 10,
+                updated_at: 30,
+            })
+        });
+        mock.expect_append_audit_event().returning(|_| {
+            Err(crate::storage::StorageError::Config(
+                "audit unavailable".to_string(),
+            ))
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_BINDING_ROLLBACK,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("rollback should succeed even when audit write fails");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["operation"], "restore");
+        assert_eq!(parsed["audit_status"], "write_failed");
+    }
+
+    #[tokio::test]
+    async fn topic_binding_rollback_scans_multiple_audit_pages() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        let mut sequence = Sequence::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, topic_id| Ok(Some(binding(77, &topic_id, "agent-new", 8))));
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| {
+                Ok(vec![audit_event(
+                    500,
+                    Some("other-topic"),
+                    Some("agent-z"),
+                    TOOL_TOPIC_BINDING_SET,
+                    json!({"outcome":"applied"}),
+                )])
+            });
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(Some(500_u64)), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| {
+                Ok(vec![audit_event(
+                    499,
+                    Some("topic-a"),
+                    Some("agent-new"),
+                    TOOL_TOPIC_BINDING_SET,
+                    json!({
+                        "topic_id": "topic-a",
+                        "previous": {
+                            "schema_version": 1,
+                            "version": 7,
+                            "user_id": 77,
+                            "topic_id": "topic-a",
+                            "agent_id": "agent-old",
+                            "created_at": 1,
+                            "updated_at": 2
+                        },
+                        "outcome": "applied"
+                    }),
+                )])
+            });
+        mock.expect_upsert_topic_binding()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.agent_id == "agent-old"
+            })
+            .returning(|options| {
+                Ok(binding(
+                    options.user_id,
+                    &options.topic_id,
+                    &options.agent_id,
+                    9,
+                ))
+            });
+        mock.expect_append_audit_event().returning(|options| {
+            Ok(crate::storage::AuditEventRecord {
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agent_id: options.agent_id,
+                action: options.action,
+                payload: options.payload,
+                ..audit_event(501, None, None, TOOL_TOPIC_BINDING_ROLLBACK, json!({}))
+            })
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_BINDING_ROLLBACK,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("rollback should search across audit pages");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["operation"], "restore");
+        assert_eq!(parsed["binding"]["agent_id"], "agent-old");
+        assert_eq!(parsed["audit_status"], "written");
     }
 
     #[tokio::test]
@@ -1119,9 +1476,9 @@ mod tests {
                     updated_at: 20,
                 }))
             });
-        mock.expect_list_audit_events()
-            .with(eq(77_i64), eq(ROLLBACK_AUDIT_SCAN_LIMIT))
-            .returning(|_, _| {
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .returning(|_, _, _| {
                 Ok(vec![crate::storage::AuditEventRecord {
                     schema_version: 1,
                     version: 3,
@@ -1172,6 +1529,7 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["operation"], "delete");
         assert!(parsed["profile"].is_null());
+        assert_eq!(parsed["audit_status"], "written");
     }
 
     #[tokio::test]
