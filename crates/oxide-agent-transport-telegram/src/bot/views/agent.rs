@@ -292,21 +292,21 @@ pub fn get_agent_inline_keyboard() -> InlineKeyboardMarkup {
 pub fn get_agent_inline_keyboard_with_exit(include_exit: bool) -> InlineKeyboardMarkup {
     let mut keyboard = vec![
         vec![InlineKeyboardButton::callback(
-            "Cancel Task",
+            "❌ Cancel Task",
             AGENT_CALLBACK_CANCEL_TASK,
         )],
         vec![InlineKeyboardButton::callback(
-            "Clear Memory",
+            "🗑 Clear Memory",
             AGENT_CALLBACK_CLEAR_MEMORY,
         )],
         vec![InlineKeyboardButton::callback(
-            "Recreate Container",
+            "🔄 Recreate Container",
             AGENT_CALLBACK_RECREATE_CONTAINER,
         )],
     ];
     if include_exit {
         keyboard.push(vec![InlineKeyboardButton::callback(
-            "Exit Agent Mode",
+            "⬅️ Exit Agent Mode",
             AGENT_CALLBACK_EXIT,
         )]);
     }
@@ -318,7 +318,7 @@ pub fn get_agent_inline_keyboard_with_exit(include_exit: bool) -> InlineKeyboard
 #[must_use]
 pub fn progress_inline_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-        "Cancel Task",
+        "❌ Cancel Task",
         AGENT_CALLBACK_CANCEL_TASK,
     )]])
 }
