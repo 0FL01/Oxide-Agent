@@ -4,6 +4,8 @@ pub mod agent;
 pub mod agent_handlers;
 /// Telegram transport adapter for the agent runtime
 pub mod agent_transport;
+/// Topic/chat scoped context helpers.
+pub(crate) mod context;
 /// General command and message handlers
 pub mod handlers;
 /// Manager forum topic lifecycle bridge.

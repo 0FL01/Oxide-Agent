@@ -108,9 +108,18 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
 
     mock.expect_save_agent_memory().returning(|_, _| Ok(()));
 
+    mock.expect_save_agent_memory_for_context()
+        .returning(|_, _, _| Ok(()));
+
     mock.expect_load_agent_memory().returning(|_| Ok(None));
 
+    mock.expect_load_agent_memory_for_context()
+        .returning(|_, _| Ok(None));
+
     mock.expect_clear_agent_memory().returning(|_| Ok(()));
+
+    mock.expect_clear_agent_memory_for_context()
+        .returning(|_, _| Ok(()));
 
     mock.expect_clear_all_context().returning(|_| Ok(()));
 

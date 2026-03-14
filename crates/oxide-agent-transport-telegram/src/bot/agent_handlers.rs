@@ -5,6 +5,7 @@
 
 use crate::bot::agent::extract_agent_input;
 use crate::bot::agent_transport::TelegramAgentTransport;
+use crate::bot::context::{current_context_state, set_current_context_state, storage_context_key};
 use crate::bot::manager_topic_lifecycle::TelegramManagerTopicLifecycle;
 use crate::bot::messaging::send_long_message_in_thread;
 use crate::bot::progress_render::render_progress_html;
@@ -50,6 +51,7 @@ struct AgentTaskContext {
     msg: Message,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    context_key: String,
     message_thread_id: Option<ThreadId>,
     session_id: SessionId,
 }
@@ -67,6 +69,7 @@ struct SessionTransportContext {
 
 struct EnsureSessionContext<'a> {
     session_keys: AgentModeSessionKeys,
+    context_key: String,
     user_id: i64,
     bot: &'a Bot,
     transport_ctx: SessionTransportContext,
@@ -296,6 +299,7 @@ async fn send_agent_message_with_keyboard(
 struct ConfirmationSendCtx<'a> {
     bot: &'a Bot,
     chat_id: ChatId,
+    context_key: &'a str,
     reply_markup: &'a ReplyMarkup,
     manager_default_chat_id: Option<ChatId>,
     outbound_thread: OutboundThreadParams,
@@ -314,7 +318,9 @@ async fn handle_clear_memory_confirmation(
     info!(user_id = user_id, "User confirmed memory clear");
     match reset_sessions_with_compat(session_keys).await {
         ResetSessionOutcome::Reset => {
-            let _ = storage.clear_agent_memory(user_id).await;
+            let _ = storage
+                .clear_agent_memory_for_context(user_id, send_ctx.context_key.to_string())
+                .await;
             send_agent_message_with_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
@@ -335,7 +341,9 @@ async fn handle_clear_memory_confirmation(
             .await?;
         }
         ResetSessionOutcome::NotFound => {
-            let _ = storage.clear_agent_memory(user_id).await;
+            let _ = storage
+                .clear_agent_memory_for_context(user_id, send_ctx.context_key.to_string())
+                .await;
             send_agent_message_with_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
@@ -361,6 +369,7 @@ async fn handle_recreate_container_confirmation(
     info!(user_id = user_id, "User confirmed container recreation");
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
+        context_key: send_ctx.context_key.to_string(),
         user_id,
         bot: send_ctx.bot,
         transport_ctx: SessionTransportContext {
@@ -447,12 +456,14 @@ pub async fn activate_agent_mode(
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    let context_key = storage_context_key(msg.chat.id, thread_spec);
     let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
 
     info!("Activating agent mode for user {user_id}");
 
     ensure_session_exists(EnsureSessionContext {
         session_keys,
+        context_key,
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
@@ -464,10 +475,14 @@ pub async fn activate_agent_mode(
     })
     .await;
 
-    // Save state to DB
-    storage
-        .update_user_state(user_id, "agent_mode".to_string())
-        .await?;
+    set_current_context_state(
+        &storage,
+        user_id,
+        msg.chat.id,
+        thread_spec,
+        Some("agent_mode"),
+    )
+    .await?;
 
     // Update dialogue state
     dialogue.update(State::AgentMode).await?;
@@ -483,6 +498,33 @@ pub async fn activate_agent_mode(
 
     req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
         .await?;
+
+    Ok(())
+}
+
+async fn delegate_non_agent_context_message(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<dyn StorageProvider>,
+    llm: Arc<LlmClient>,
+    dialogue: AgentDialogue,
+    settings: Arc<BotSettings>,
+) -> Result<()> {
+    if msg.text().is_some() {
+        return crate::bot::handlers::handle_text(bot, msg, storage, llm, dialogue, settings).await;
+    }
+    if msg.voice().is_some() {
+        return crate::bot::handlers::handle_voice(bot, msg, storage, llm, dialogue, settings)
+            .await;
+    }
+    if msg.photo().is_some() {
+        return crate::bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings)
+            .await;
+    }
+    if msg.document().is_some() {
+        return crate::bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings)
+            .await;
+    }
 
     Ok(())
 }
@@ -504,7 +546,14 @@ pub async fn handle_agent_message(
     let chat_id = msg.chat.id;
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
+    let context_key = storage_context_key(chat_id, thread_spec);
     let session_keys = agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id);
+
+    let scoped_state = current_context_state(&storage, user_id, chat_id, thread_spec).await?;
+    if scoped_state.as_deref() != Some("agent_mode") {
+        return delegate_non_agent_context_message(bot, msg, storage, llm, dialogue, settings)
+            .await;
+    }
 
     if let Some(command) = parse_agent_control_command(msg.text()) {
         return match command {
@@ -535,6 +584,7 @@ pub async fn handle_agent_message(
     // Get or create session
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
+        context_key: context_key.clone(),
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
@@ -575,6 +625,7 @@ pub async fn handle_agent_message(
             msg: task_msg.clone(),
             storage: task_storage,
             llm: task_llm,
+            context_key: context_key.clone(),
             message_thread_id,
             session_id,
         };
@@ -991,6 +1042,7 @@ mod tests {
 
         let allowed_session = ensure_session_exists(EnsureSessionContext {
             session_keys: allowed_keys,
+            context_key: "allowed".to_string(),
             user_id: 88,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1003,6 +1055,7 @@ mod tests {
         .await;
         let blocked_session = ensure_session_exists(EnsureSessionContext {
             session_keys: blocked_keys,
+            context_key: "blocked".to_string(),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1044,6 +1097,7 @@ mod tests {
 
         let first_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
+            context_key: "topic-a".to_string(),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1062,6 +1116,7 @@ mod tests {
 
         let second_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
+            context_key: "topic-a".to_string(),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1097,6 +1152,7 @@ mod tests {
 
         let first_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
+            context_key: "topic-a".to_string(),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1124,6 +1180,7 @@ mod tests {
 
         let second_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
+            context_key: "topic-a".to_string(),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1151,6 +1208,7 @@ mod tests {
 
         let third_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
+            context_key: "topic-a".to_string(),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1193,6 +1251,7 @@ mod tests {
         let restricted_settings = test_settings(None);
         let resolved_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
+            context_key: "topic-a".to_string(),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1269,7 +1328,11 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
     let mut session = AgentSession::new(session_id);
 
     // Load saved agent memory if exists
-    if let Ok(Some(saved_memory)) = ctx.storage.load_agent_memory(ctx.user_id).await {
+    if let Ok(Some(saved_memory)) = ctx
+        .storage
+        .load_agent_memory_for_context(ctx.user_id, ctx.context_key.clone())
+        .await
+    {
         session.memory = saved_memory;
         info!(
             user_id = ctx.user_id,
@@ -1308,12 +1371,17 @@ async fn renew_cancellation_token(session_id: SessionId) {
 async fn save_memory_after_task(
     session_id: SessionId,
     user_id: i64,
+    context_key: &str,
     storage: &Arc<dyn StorageProvider>,
 ) {
     if let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await {
         let executor = executor_arc.read().await;
         let _ = storage
-            .save_agent_memory(user_id, &executor.session().memory)
+            .save_agent_memory_for_context(
+                user_id,
+                context_key.to_string(),
+                &executor.session().memory,
+            )
             .await;
     }
 }
@@ -1381,7 +1449,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let progress_text = render_progress_html(&state);
 
     // Save agent memory after task execution
-    save_memory_after_task(ctx.session_id, user_id, &ctx.storage).await;
+    save_memory_after_task(ctx.session_id, user_id, &ctx.context_key, &ctx.storage).await;
 
     // Update the message with the result
     match result {
@@ -1422,6 +1490,7 @@ struct RunAgentTaskTextContext {
     user_id: i64,
     task_text: String,
     storage: Arc<dyn StorageProvider>,
+    context_key: String,
     message_thread_id: Option<ThreadId>,
 }
 
@@ -1455,7 +1524,7 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
     };
     let progress_text = render_progress_html(&state);
 
-    save_memory_after_task(ctx.session_id, ctx.user_id, &ctx.storage).await;
+    save_memory_after_task(ctx.session_id, ctx.user_id, &ctx.context_key, &ctx.storage).await;
 
     match result {
         Ok(response) => {
@@ -1533,6 +1602,7 @@ async fn execute_agent_task(
 struct LoopCallbackContext {
     bot: Bot,
     chat_id: ChatId,
+    context_key: String,
     user_id: i64,
     session_keys: AgentModeSessionKeys,
     manager_default_chat_id: Option<ChatId>,
@@ -1601,6 +1671,7 @@ async fn handle_loop_retry(
 ) -> Result<()> {
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys: ctx.session_keys,
+        context_key: ctx.context_key.clone(),
         user_id: ctx.user_id,
         bot: &ctx.bot,
         transport_ctx: SessionTransportContext {
@@ -1667,6 +1738,7 @@ async fn handle_loop_retry(
             user_id: retry_ctx.user_id,
             task_text,
             storage,
+            context_key: retry_ctx.context_key,
             message_thread_id: retry_ctx.outbound_thread.message_thread_id,
         })
         .await
@@ -1739,6 +1811,7 @@ async fn handle_agent_confirmation_callback(
     let send_ctx = ConfirmationSendCtx {
         bot: &loop_ctx.bot,
         chat_id: loop_ctx.chat_id,
+        context_key: &loop_ctx.context_key,
         reply_markup: &reply_markup,
         manager_default_chat_id: loop_ctx.manager_default_chat_id,
         outbound_thread,
@@ -1857,6 +1930,7 @@ pub async fn handle_agent_callback(
         loop_ctx: LoopCallbackContext {
             bot,
             chat_id,
+            context_key: storage_context_key(chat_id, thread_spec),
             user_id,
             session_keys,
             manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
@@ -1955,17 +2029,23 @@ pub async fn exit_agent_mode(
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    let context_key = storage_context_key(msg.chat.id, thread_spec);
     let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
 
     let session_id = resolve_existing_session_id(session_keys)
         .await
         .unwrap_or(session_keys.primary);
-    save_memory_after_task(session_id, user_id, &storage).await;
+    save_memory_after_task(session_id, user_id, &context_key, &storage).await;
     remove_sessions_with_compat(session_keys).await;
 
-    let _ = storage
-        .update_user_state(user_id, "chat_mode".to_string())
-        .await;
+    let _ = set_current_context_state(
+        &storage,
+        user_id,
+        msg.chat.id,
+        thread_spec,
+        Some("chat_mode"),
+    )
+    .await;
     dialogue.update(State::Start).await?;
 
     let mut req = bot.send_message(msg.chat.id, "👋 Exited agent mode. Select a working mode:");
@@ -2049,9 +2129,11 @@ pub async fn handle_agent_confirmation(
 
     dialogue.update(State::AgentMode).await?;
     let reply_markup = agent_control_markup(use_inline_topic_controls(thread_spec));
+    let context_key = storage_context_key(chat_id, thread_spec);
     let send_ctx = ConfirmationSendCtx {
         bot: &bot,
         chat_id,
+        context_key: &context_key,
         reply_markup: &reply_markup,
         manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
         outbound_thread,
