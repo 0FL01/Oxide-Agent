@@ -47,6 +47,10 @@ impl TelegramManagerTopicLifecycle {
 
 #[async_trait]
 impl ManagerTopicLifecycle for TelegramManagerTopicLifecycle {
+    fn default_forum_chat_id(&self) -> Option<i64> {
+        self.default_chat_id.map(|chat_id| chat_id.0)
+    }
+
     async fn forum_topic_create(
         &self,
         request: ForumTopicCreateRequest,

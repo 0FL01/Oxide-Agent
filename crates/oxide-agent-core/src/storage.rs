@@ -88,6 +88,18 @@ pub struct UserContextConfig {
     /// Optional transport thread/topic identifier associated with the context.
     #[serde(default)]
     pub thread_id: Option<i64>,
+    /// Persisted Telegram forum topic title for manager topic discovery.
+    #[serde(default)]
+    pub forum_topic_name: Option<String>,
+    /// Persisted Telegram forum topic icon color.
+    #[serde(default)]
+    pub forum_topic_icon_color: Option<u32>,
+    /// Persisted Telegram forum topic custom emoji identifier.
+    #[serde(default)]
+    pub forum_topic_icon_custom_emoji_id: Option<String>,
+    /// Whether the persisted Telegram forum topic is currently closed.
+    #[serde(default)]
+    pub forum_topic_closed: bool,
 }
 
 /// Agent profile record persisted in control-plane storage.
@@ -1501,6 +1513,10 @@ mod tests {
                 current_chat_uuid: Some("chat-42".to_string()),
                 chat_id: Some(-1001),
                 thread_id: Some(42),
+                forum_topic_name: Some("Topic 42".to_string()),
+                forum_topic_icon_color: Some(7_322_096),
+                forum_topic_icon_custom_emoji_id: Some("emoji-42".to_string()),
+                forum_topic_closed: true,
             },
         );
         let config = UserConfig {
@@ -1519,6 +1535,17 @@ mod tests {
                 .and_then(|context| context.state.as_deref()),
             Some("agent_mode")
         );
+        assert_eq!(
+            parsed
+                .contexts
+                .get("-1001:42")
+                .and_then(|context| context.forum_topic_name.as_deref()),
+            Some("Topic 42")
+        );
+        assert!(parsed
+            .contexts
+            .get("-1001:42")
+            .is_some_and(|context| context.forum_topic_closed));
     }
 
     #[test]

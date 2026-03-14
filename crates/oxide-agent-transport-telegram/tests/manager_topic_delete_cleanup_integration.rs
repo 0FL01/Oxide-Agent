@@ -42,6 +42,10 @@ impl IntegrationStorage {
                         current_chat_uuid: Some("chat-1".to_string()),
                         chat_id: Some(-100_123),
                         thread_id: Some(77),
+                        forum_topic_name: Some("Topic 77".to_string()),
+                        forum_topic_icon_color: Some(7_322_096),
+                        forum_topic_icon_custom_emoji_id: None,
+                        forum_topic_closed: false,
                     },
                 )]),
                 ..UserConfig::default()

@@ -8,6 +8,7 @@ use crate::sandbox::{SandboxManager, SandboxScope};
 use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
     TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
+    UserConfig,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -28,6 +29,7 @@ const TOOL_FORUM_TOPIC_EDIT: &str = "forum_topic_edit";
 const TOOL_FORUM_TOPIC_CLOSE: &str = "forum_topic_close";
 const TOOL_FORUM_TOPIC_REOPEN: &str = "forum_topic_reopen";
 const TOOL_FORUM_TOPIC_DELETE: &str = "forum_topic_delete";
+const TOOL_FORUM_TOPIC_LIST: &str = "forum_topic_list";
 const ROLLBACK_AUDIT_PAGE_SIZE: usize = 200;
 const TELEGRAM_FORUM_ICON_COLORS: [u32; 6] = [
     7_322_096, 16_766_590, 13_338_331, 9_367_192, 16_749_490, 16_478_047,
@@ -108,6 +110,11 @@ pub struct ForumTopicActionResult {
 /// Abstraction over transport-specific forum topic lifecycle operations.
 #[async_trait]
 pub trait ManagerTopicLifecycle: Send + Sync {
+    /// Returns default chat identifier for the current transport context when available.
+    fn default_forum_chat_id(&self) -> Option<i64> {
+        None
+    }
+
     /// Creates a new forum topic.
     async fn forum_topic_create(
         &self,
@@ -285,6 +292,26 @@ struct ForumTopicThreadArgs {
     dry_run: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicListArgs {
+    #[serde(default)]
+    chat_id: Option<i64>,
+    #[serde(default)]
+    include_closed: bool,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+struct ForumTopicCatalogEntry {
+    topic_id: String,
+    chat_id: i64,
+    thread_id: i64,
+    name: Option<String>,
+    icon_color: Option<u32>,
+    icon_custom_emoji_id: Option<String>,
+    closed: bool,
+}
+
 /// Tool provider that manages user-scoped control-plane records.
 pub struct ManagerControlPlaneProvider {
     storage: Arc<dyn StorageProvider>,
@@ -334,6 +361,98 @@ impl ManagerControlPlaneProvider {
         } else {
             vec![context_key, raw_thread_key]
         }
+    }
+
+    fn resolve_default_forum_chat_id(&self) -> Option<i64> {
+        self.topic_lifecycle
+            .as_ref()
+            .and_then(|lifecycle| lifecycle.default_forum_chat_id())
+    }
+
+    fn forum_topic_catalog_entry_from_context(
+        context_key: &str,
+        context: &crate::storage::UserContextConfig,
+    ) -> Option<ForumTopicCatalogEntry> {
+        let chat_id = context.chat_id?;
+        let thread_id = context.thread_id?;
+        if chat_id >= 0 || thread_id <= 0 {
+            return None;
+        }
+
+        let expected_key = Self::forum_topic_context_key(chat_id, thread_id);
+        if context_key != expected_key {
+            return None;
+        }
+
+        Some(ForumTopicCatalogEntry {
+            topic_id: expected_key,
+            chat_id,
+            thread_id,
+            name: context.forum_topic_name.clone(),
+            icon_color: context.forum_topic_icon_color,
+            icon_custom_emoji_id: context.forum_topic_icon_custom_emoji_id.clone(),
+            closed: context.forum_topic_closed,
+        })
+    }
+
+    fn upsert_forum_topic_catalog_entry(config: &mut UserConfig, entry: &ForumTopicCatalogEntry) {
+        let context = config.contexts.entry(entry.topic_id.clone()).or_default();
+        context.chat_id = Some(entry.chat_id);
+        context.thread_id = Some(entry.thread_id);
+        context.forum_topic_name = entry.name.clone();
+        context.forum_topic_icon_color = entry.icon_color;
+        context.forum_topic_icon_custom_emoji_id = entry.icon_custom_emoji_id.clone();
+        context.forum_topic_closed = entry.closed;
+    }
+
+    fn existing_forum_topic_catalog_entry(
+        config: &UserConfig,
+        topic_id: &str,
+    ) -> Option<ForumTopicCatalogEntry> {
+        config
+            .contexts
+            .get(topic_id)
+            .and_then(|context| Self::forum_topic_catalog_entry_from_context(topic_id, context))
+    }
+
+    async fn persist_forum_topic_catalog_entry(
+        &self,
+        entry: &ForumTopicCatalogEntry,
+    ) -> Result<()> {
+        let mut config = self
+            .storage
+            .get_user_config(self.user_id)
+            .await
+            .map_err(|err| anyhow!("failed to load user config for {}: {err}", entry.topic_id))?;
+        Self::upsert_forum_topic_catalog_entry(&mut config, entry);
+        self.storage
+            .update_user_config(self.user_id, config)
+            .await
+            .map_err(|err| anyhow!("failed to update user config for {}: {err}", entry.topic_id))
+    }
+
+    async fn list_forum_topic_catalog_entries(
+        &self,
+        requested_chat_id: Option<i64>,
+        include_closed: bool,
+    ) -> Result<Vec<ForumTopicCatalogEntry>> {
+        let config = self
+            .storage
+            .get_user_config(self.user_id)
+            .await
+            .map_err(|err| anyhow!("failed to load user config for forum topic listing: {err}"))?;
+        let effective_chat_id = requested_chat_id.or_else(|| self.resolve_default_forum_chat_id());
+        let mut topics = config
+            .contexts
+            .iter()
+            .filter_map(|(context_key, context)| {
+                Self::forum_topic_catalog_entry_from_context(context_key, context)
+            })
+            .filter(|entry| effective_chat_id.is_none_or(|chat_id| entry.chat_id == chat_id))
+            .filter(|entry| include_closed || !entry.closed)
+            .collect::<Vec<_>>();
+        topics.sort_by_key(|entry| (entry.chat_id, entry.thread_id));
+        Ok(topics)
     }
 
     async fn cleanup_forum_topic_artifacts(
@@ -636,6 +755,19 @@ impl ManagerControlPlaneProvider {
                         "dry_run": { "type": "boolean", "description": "Validate and preview without mutation" }
                     },
                     "required": ["thread_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_FORUM_TOPIC_LIST.to_string(),
+                description:
+                    "List active Telegram forum topics tracked in persisted S3 topic records"
+                        .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": { "type": "integer", "description": "Optional target chat identifier; omit to use the current forum chat when available" },
+                        "include_closed": { "type": "boolean", "description": "Include closed topics in the result" }
+                    }
                 }),
             },
         ]
@@ -1435,10 +1567,23 @@ impl ManagerControlPlaneProvider {
             .topic_lifecycle()?
             .forum_topic_create(request.clone())
             .await?;
+        self.persist_forum_topic_catalog_entry(&ForumTopicCatalogEntry {
+            topic_id: Self::forum_topic_context_key(result.chat_id, result.thread_id),
+            chat_id: result.chat_id,
+            thread_id: result.thread_id,
+            name: Some(result.name.clone()),
+            icon_color: Some(result.icon_color),
+            icon_custom_emoji_id: result.icon_custom_emoji_id.clone(),
+            closed: false,
+        })
+        .await?;
         let audit_status = self
             .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
-                topic_id: None,
+                topic_id: Some(Self::forum_topic_context_key(
+                    result.chat_id,
+                    result.thread_id,
+                )),
                 agent_id: None,
                 action: TOOL_FORUM_TOPIC_CREATE.to_string(),
                 payload: json!({
@@ -1501,10 +1646,38 @@ impl ManagerControlPlaneProvider {
             .topic_lifecycle()?
             .forum_topic_edit(request.clone())
             .await?;
+        let topic_id = Self::forum_topic_context_key(result.chat_id, result.thread_id);
+        let mut config = self
+            .storage
+            .get_user_config(self.user_id)
+            .await
+            .map_err(|err| anyhow!("failed to load user config for {topic_id}: {err}"))?;
+        let mut entry = Self::existing_forum_topic_catalog_entry(&config, &topic_id).unwrap_or(
+            ForumTopicCatalogEntry {
+                topic_id: topic_id.clone(),
+                chat_id: result.chat_id,
+                thread_id: result.thread_id,
+                name: None,
+                icon_color: None,
+                icon_custom_emoji_id: None,
+                closed: false,
+            },
+        );
+        if let Some(name) = result.name.clone() {
+            entry.name = Some(name);
+        }
+        if result.icon_custom_emoji_id.is_some() {
+            entry.icon_custom_emoji_id = result.icon_custom_emoji_id.clone();
+        }
+        Self::upsert_forum_topic_catalog_entry(&mut config, &entry);
+        self.storage
+            .update_user_config(self.user_id, config)
+            .await
+            .map_err(|err| anyhow!("failed to update user config for {topic_id}: {err}"))?;
         let audit_status = self
             .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
-                topic_id: None,
+                topic_id: Some(topic_id),
                 agent_id: None,
                 action: TOOL_FORUM_TOPIC_EDIT.to_string(),
                 payload: json!({
@@ -1568,6 +1741,33 @@ impl ManagerControlPlaneProvider {
             _ => bail!("unsupported forum topic thread action: {tool_name}"),
         };
         let derived_topic_id = Self::forum_topic_context_key(result.chat_id, result.thread_id);
+        if tool_name != TOOL_FORUM_TOPIC_DELETE {
+            let mut config = self
+                .storage
+                .get_user_config(self.user_id)
+                .await
+                .map_err(|err| {
+                    anyhow!("failed to load user config for {derived_topic_id}: {err}")
+                })?;
+            let mut entry = Self::existing_forum_topic_catalog_entry(&config, &derived_topic_id)
+                .unwrap_or(ForumTopicCatalogEntry {
+                    topic_id: derived_topic_id.clone(),
+                    chat_id: result.chat_id,
+                    thread_id: result.thread_id,
+                    name: None,
+                    icon_color: None,
+                    icon_custom_emoji_id: None,
+                    closed: tool_name == TOOL_FORUM_TOPIC_CLOSE,
+                });
+            entry.closed = tool_name == TOOL_FORUM_TOPIC_CLOSE;
+            Self::upsert_forum_topic_catalog_entry(&mut config, &entry);
+            self.storage
+                .update_user_config(self.user_id, config)
+                .await
+                .map_err(|err| {
+                    anyhow!("failed to update user config for {derived_topic_id}: {err}")
+                })?;
+        }
         let (cleanup, cleanup_error) = if tool_name == TOOL_FORUM_TOPIC_DELETE {
             self.cleanup_forum_topic_artifacts(&result).await
         } else {
@@ -1598,6 +1798,23 @@ impl ManagerControlPlaneProvider {
             audit_status,
         );
         Self::to_json_string(response)
+    }
+
+    async fn execute_forum_topic_list(&self, arguments: &str) -> Result<String> {
+        let args: ForumTopicListArgs = Self::parse_args(arguments, TOOL_FORUM_TOPIC_LIST)?;
+        let effective_chat_id = args
+            .chat_id
+            .or_else(|| self.resolve_default_forum_chat_id());
+        let topics = self
+            .list_forum_topic_catalog_entries(args.chat_id, args.include_closed)
+            .await?;
+        Self::to_json_string(json!({
+            "ok": true,
+            "chat_id": effective_chat_id,
+            "include_closed": args.include_closed,
+            "count": topics.len(),
+            "topics": topics,
+        }))
     }
 }
 
@@ -1633,6 +1850,7 @@ impl ToolProvider for ManagerControlPlaneProvider {
                         | TOOL_FORUM_TOPIC_CLOSE
                         | TOOL_FORUM_TOPIC_REOPEN
                         | TOOL_FORUM_TOPIC_DELETE
+                        | TOOL_FORUM_TOPIC_LIST
                 ))
     }
 
@@ -1666,6 +1884,7 @@ impl ToolProvider for ManagerControlPlaneProvider {
                 self.execute_forum_topic_thread_action(arguments, TOOL_FORUM_TOPIC_DELETE)
                     .await
             }
+            TOOL_FORUM_TOPIC_LIST => self.execute_forum_topic_list(arguments).await,
             _ => Err(anyhow!("Unknown manager control-plane tool: {tool_name}")),
         }
     }
@@ -1742,6 +1961,10 @@ mod tests {
 
     #[async_trait]
     impl ManagerTopicLifecycle for FakeTopicLifecycle {
+        fn default_forum_chat_id(&self) -> Option<i64> {
+            Some(-100_777)
+        }
+
         async fn forum_topic_create(
             &self,
             request: ForumTopicCreateRequest,
@@ -1861,7 +2084,9 @@ mod tests {
         assert!(!tool_names
             .iter()
             .any(|name| name == TOOL_FORUM_TOPIC_CREATE));
+        assert!(!tool_names.iter().any(|name| name == TOOL_FORUM_TOPIC_LIST));
         assert!(!provider.can_handle(TOOL_FORUM_TOPIC_CREATE));
+        assert!(!provider.can_handle(TOOL_FORUM_TOPIC_LIST));
     }
 
     #[tokio::test]
@@ -1921,9 +2146,26 @@ mod tests {
     #[tokio::test]
     async fn forum_topic_create_invokes_lifecycle_and_audits_success() {
         let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config()
+            .times(1)
+            .returning(|_| Ok(crate::storage::UserConfig::default()));
+        mock.expect_update_user_config()
+            .withf(|user_id, config| {
+                *user_id == 77
+                    && config.contexts.get("-100999:313").is_some_and(|context| {
+                        context.chat_id == Some(-100999)
+                            && context.thread_id == Some(313)
+                            && context.forum_topic_name.as_deref() == Some("topic-a")
+                            && context.forum_topic_icon_color == Some(9_367_192)
+                            && !context.forum_topic_closed
+                    })
+            })
+            .times(1)
+            .returning(|_, _| Ok(()));
         mock.expect_append_audit_event()
             .withf(|options: &AppendAuditEventOptions| {
                 options.user_id == 77
+                    && options.topic_id.as_deref() == Some("-100999:313")
                     && options.action == TOOL_FORUM_TOPIC_CREATE
                     && options.payload.get("outcome") == Some(&json!("applied"))
                     && options
@@ -1969,6 +2211,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forum_topic_list_returns_persisted_topics_for_current_chat() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config().times(1).returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([
+                    (
+                        "-100777:12".to_string(),
+                        crate::storage::UserContextConfig {
+                            state: None,
+                            current_chat_uuid: None,
+                            chat_id: Some(-100777),
+                            thread_id: Some(12),
+                            forum_topic_name: Some("Alfa".to_string()),
+                            forum_topic_icon_color: Some(16_766_590),
+                            forum_topic_icon_custom_emoji_id: Some("emoji-1".to_string()),
+                            forum_topic_closed: false,
+                        },
+                    ),
+                    (
+                        "-100777:20".to_string(),
+                        crate::storage::UserContextConfig {
+                            state: None,
+                            current_chat_uuid: None,
+                            chat_id: Some(-100777),
+                            thread_id: Some(20),
+                            forum_topic_name: Some("Beta".to_string()),
+                            forum_topic_icon_color: Some(7_322_096),
+                            forum_topic_icon_custom_emoji_id: None,
+                            forum_topic_closed: true,
+                        },
+                    ),
+                    (
+                        "-100888:7".to_string(),
+                        crate::storage::UserContextConfig {
+                            state: None,
+                            current_chat_uuid: None,
+                            chat_id: Some(-100888),
+                            thread_id: Some(7),
+                            forum_topic_name: Some("Gamma".to_string()),
+                            forum_topic_icon_color: None,
+                            forum_topic_icon_custom_emoji_id: None,
+                            forum_topic_closed: false,
+                        },
+                    ),
+                ]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+
+        let lifecycle = Arc::new(FakeTopicLifecycle::new());
+        let provider =
+            ManagerControlPlaneProvider::new(Arc::new(mock), 77).with_topic_lifecycle(lifecycle);
+
+        let response = provider
+            .execute(TOOL_FORUM_TOPIC_LIST, r#"{}"#, None, None)
+            .await
+            .expect("forum topic list should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["chat_id"], -100777);
+        assert_eq!(parsed["count"], 1);
+        assert_eq!(parsed["topics"][0]["topic_id"], "-100777:12");
+        assert_eq!(parsed["topics"][0]["name"], "Alfa");
+        assert_eq!(parsed["topics"][0]["closed"], false);
+    }
+
+    #[tokio::test]
     async fn forum_topic_delete_cleans_topic_storage_and_sandbox() {
         let mut mock = crate::storage::MockStorageProvider::new();
         mock.expect_clear_agent_memory_for_context()
@@ -1996,6 +2307,10 @@ mod tests {
                         current_chat_uuid: Some("chat-1".to_string()),
                         chat_id: Some(-100999),
                         thread_id: Some(42),
+                        forum_topic_name: Some("topic-42".to_string()),
+                        forum_topic_icon_color: Some(7_322_096),
+                        forum_topic_icon_custom_emoji_id: None,
+                        forum_topic_closed: false,
                     },
                 )]),
                 ..crate::storage::UserConfig::default()
