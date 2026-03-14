@@ -1238,7 +1238,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     Ok(())
 }
 
-async fn run_agent_task_with_text(
+struct RunAgentTaskTextContext {
     bot: Bot,
     chat_id: ChatId,
     session_id: SessionId,
@@ -1246,23 +1246,29 @@ async fn run_agent_task_with_text(
     task_text: String,
     storage: Arc<dyn StorageProvider>,
     message_thread_id: Option<ThreadId>,
-) -> Result<()> {
+}
+
+async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
     let progress_msg = super::resilient::send_message_resilient_with_thread(
-        &bot,
-        chat_id,
+        &ctx.bot,
+        ctx.chat_id,
         "⏳ Processing task...",
         Some(ParseMode::Html),
-        message_thread_id,
+        ctx.message_thread_id,
     )
     .await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-    let transport =
-        TelegramAgentTransport::new(bot.clone(), chat_id, progress_msg.id, message_thread_id);
+    let transport = TelegramAgentTransport::new(
+        ctx.bot.clone(),
+        ctx.chat_id,
+        progress_msg.id,
+        ctx.message_thread_id,
+    );
     let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
-    let result = execute_agent_task(session_id, &task_text, Some(tx)).await;
+    let result = execute_agent_task(ctx.session_id, &ctx.task_text, Some(tx)).await;
     let state = match progress_handle.await {
         Ok(state) => state,
         Err(err) => {
@@ -1272,27 +1278,28 @@ async fn run_agent_task_with_text(
     };
     let progress_text = render_progress_html(&state);
 
-    save_memory_after_task(session_id, user_id, &storage).await;
+    save_memory_after_task(ctx.session_id, ctx.user_id, &ctx.storage).await;
 
     match result {
         Ok(response) => {
             super::resilient::edit_message_safe_resilient(
-                &bot,
-                chat_id,
+                &ctx.bot,
+                ctx.chat_id,
                 progress_msg.id,
                 &progress_text,
             )
             .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
-            send_long_message_in_thread(&bot, chat_id, &response, message_thread_id).await?;
+            send_long_message_in_thread(&ctx.bot, ctx.chat_id, &response, ctx.message_thread_id)
+                .await?;
         }
         Err(e) => {
             // Sanitize error text to prevent Telegram HTML parse errors
             let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
             let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
             super::resilient::edit_message_safe_resilient(
-                &bot,
-                chat_id,
+                &ctx.bot,
+                ctx.chat_id,
                 progress_msg.id,
                 &error_text,
             )
@@ -1411,15 +1418,15 @@ async fn handle_loop_retry(
     let retry_ctx = ctx.clone();
     tokio::spawn(async move {
         let error_bot = retry_ctx.bot.clone();
-        if let Err(e) = run_agent_task_with_text(
-            retry_ctx.bot,
-            retry_ctx.chat_id,
+        if let Err(e) = run_agent_task_with_text(RunAgentTaskTextContext {
+            bot: retry_ctx.bot,
+            chat_id: retry_ctx.chat_id,
             session_id,
-            retry_ctx.user_id,
+            user_id: retry_ctx.user_id,
             task_text,
             storage,
-            retry_ctx.outbound_thread.message_thread_id,
-        )
+            message_thread_id: retry_ctx.outbound_thread.message_thread_id,
+        })
         .await
         {
             let _ = send_agent_message(
