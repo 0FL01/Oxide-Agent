@@ -50,14 +50,20 @@ crates/
 │   │   ├── runner.rs                # Инициализация бота и DI
 │   │   ├── bot/
 │   │   │   ├── handlers.rs          # Обработчики команд
-│   │   │   ├── agent_handlers.rs    # Обработчики сообщений агенту
+│   │   │   ├── handlers.rs          # Обработчики команд (chat mode)
+│   │   │   ├── agent_handlers.rs    # Обработчики сообщений агенту (Agent Mode)
 │   │   │   ├── agent_transport.rs   # Реализация AgentTransport
+│   │   │   ├── topic_route.rs       # Topic-based routing с dynamic bindings
+│   │   │   ├── thread.rs            # Thread context extraction и helpers
+│   │   │   ├── manager_topic_lifecycle.rs  # Telegram forum topic lifecycle
 │   │   │   └── ...
 └── oxide-agent-telegram-bot/        # Application Entry Point
     └── src/
         └── main.rs                  # Запуск приложения
 sandbox/
 └── Dockerfile.sandbox               # Образ песочницы (Ubuntu + Python/Node)
+config/
+└── local.yaml                       # Локальная конфигурация (не коммитится)
 .github/workflows/
 └── ci-cd.yml                        # GitHub Actions (Build, Test, Deploy)
 docker-compose.yml                   # Локальный запуск
@@ -65,10 +71,9 @@ Dockerfile                           # Сборка основного Rust-пр
 ```
 
 ### Workspace crates
-- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage.
 - `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools.
-- `oxide-agent-runtime`: оркестрация сессий, цикл исполнения, провайдеры инструментов, sandbox.
-- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, телеметрия доставки.
+- `oxide-agent-runtime`: оркестрация сессий, цикл исполнения, провайдеры инструментов, sandbox, session registry с thread-aware session keys.
+- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, телеметрия доставки.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
 ## 🦀 Rust Architecture & Workflow
@@ -80,6 +85,8 @@ Dockerfile                           # Сборка основного Rust-пр
 - **Error Handling**: Use `thiserror` for libraries and `anyhow` for apps.
 - **Manager Control Plane**: manager CRUD идет через tool provider `manager_control_plane`, user-scoped storage records и audit trail; RBAC включается на уровне Telegram transport через `manager_allowed_users`.
 - **Session Safety**: Для threaded AgentMode reuse/refresh опираемся на `SessionRegistry` safe APIs (`remove_if_idle`) и не удаляем running session из реестра.
+- **Topic/Thread Routing**: Поддержка Telegram Forum Topics с per-topic конфигурацией, dynamic runtime bindings с expiry/activity tracking, и thread-aware session isolation.
+- **Configuration**: Поддержка layered конфигурации через YAML файлы в `config/` (default.yaml, {RUN_MODE}.yaml, local.yaml) + переменные окружения.
 
 Чтобы добавить новый transport (Discord/Slack), создайте `crates/oxide-agent-transport-<name>`, держите SDK и обработчики внутри transport crate, подключите адаптер к runtime, и при необходимости добавьте отдельный бинарь `oxide-agent-<name>-bot` для запуска.
 
