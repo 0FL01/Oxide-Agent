@@ -4,8 +4,9 @@
 
 use crate::llm::LlmError;
 use crate::storage::{
-    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, TopicBindingKind,
-    TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
+    TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
+    UserConfig,
 };
 use mockall::predicate::*;
 
@@ -73,60 +74,75 @@ pub fn mock_llm_simple(response_text: &'static str) -> crate::llm::MockLlmProvid
 pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
     let mut mock = crate::storage::MockStorageProvider::new();
 
+    configure_basic_expectations(&mut mock);
+    configure_chat_expectations(&mut mock);
+    configure_agent_expectations(&mut mock);
+    configure_control_plane_expectations(&mut mock);
+
+    mock
+}
+
+fn configure_basic_expectations(mock: &mut crate::storage::MockStorageProvider) {
     mock.expect_get_user_config()
         .returning(|_| Ok(UserConfig::default()));
 
     mock.expect_update_user_config().returning(|_, _| Ok(()));
-
     mock.expect_update_user_prompt().returning(|_, _| Ok(()));
-
     mock.expect_get_user_prompt().returning(|_| Ok(None));
-
     mock.expect_update_user_model().returning(|_, _| Ok(()));
-
     mock.expect_get_user_model().returning(|_| Ok(None));
-
     mock.expect_update_user_state().returning(|_, _| Ok(()));
-
     mock.expect_get_user_state().returning(|_| Ok(None));
+    mock.expect_check_connection().returning(|| Ok(()));
+    mock.expect_clear_all_context().returning(|_| Ok(()));
+}
 
+fn configure_chat_expectations(mock: &mut crate::storage::MockStorageProvider) {
     mock.expect_save_message().returning(|_, _, _| Ok(()));
-
     mock.expect_get_chat_history()
         .returning(|_, _| Ok(Vec::new()));
-
     mock.expect_clear_chat_history().returning(|_| Ok(()));
-
     mock.expect_save_message_for_chat()
         .returning(|_, _, _, _| Ok(()));
-
     mock.expect_get_chat_history_for_chat()
         .returning(|_, _, _| Ok(Vec::new()));
-
     mock.expect_clear_chat_history_for_chat()
         .returning(|_, _| Ok(()));
+}
 
+fn configure_agent_expectations(mock: &mut crate::storage::MockStorageProvider) {
     mock.expect_save_agent_memory().returning(|_, _| Ok(()));
-
     mock.expect_save_agent_memory_for_context()
         .returning(|_, _, _| Ok(()));
-
     mock.expect_load_agent_memory().returning(|_| Ok(None));
-
     mock.expect_load_agent_memory_for_context()
         .returning(|_, _| Ok(None));
-
     mock.expect_clear_agent_memory().returning(|_| Ok(()));
-
     mock.expect_clear_agent_memory_for_context()
         .returning(|_, _| Ok(()));
+    mock.expect_save_agent_memory_for_flow()
+        .returning(|_, _, _, _| Ok(()));
+    mock.expect_load_agent_memory_for_flow()
+        .returning(|_, _, _| Ok(None));
+    mock.expect_clear_agent_memory_for_flow()
+        .returning(|_, _, _| Ok(()));
+    mock.expect_get_agent_flow_record()
+        .returning(|_, _, _| Ok(None));
+    mock.expect_upsert_agent_flow_record()
+        .returning(|user_id, context_key, flow_id| {
+            Ok(AgentFlowRecord {
+                schema_version: 1,
+                user_id,
+                context_key,
+                flow_id,
+                created_at: 0,
+                updated_at: 0,
+            })
+        });
+}
 
-    mock.expect_clear_all_context().returning(|_| Ok(()));
-
-    mock.expect_check_connection().returning(|| Ok(()));
-
+fn configure_control_plane_expectations(mock: &mut crate::storage::MockStorageProvider) {
     mock.expect_get_agent_profile().returning(|_, _| Ok(None));
-
     mock.expect_upsert_agent_profile()
         .returning(|options: UpsertAgentProfileOptions| {
             Ok(AgentProfileRecord {
@@ -139,11 +155,8 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
                 updated_at: 0,
             })
         });
-
     mock.expect_delete_agent_profile().returning(|_, _| Ok(()));
-
     mock.expect_get_topic_binding().returning(|_, _| Ok(None));
-
     mock.expect_upsert_topic_binding()
         .returning(|options: UpsertTopicBindingOptions| {
             Ok(TopicBindingRecord {
@@ -161,9 +174,7 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
                 updated_at: 0,
             })
         });
-
     mock.expect_delete_topic_binding().returning(|_, _| Ok(()));
-
     mock.expect_append_audit_event()
         .returning(|options: AppendAuditEventOptions| {
             Ok(AuditEventRecord {
@@ -178,12 +189,8 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
                 created_at: 0,
             })
         });
-
     mock.expect_list_audit_events()
         .returning(|_, _| Ok(Vec::new()));
-
     mock.expect_list_audit_events_page()
         .returning(|_, _, _| Ok(Vec::new()));
-
-    mock
 }

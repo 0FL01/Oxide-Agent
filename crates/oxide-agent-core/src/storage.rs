@@ -26,6 +26,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 const AGENT_PROFILE_SCHEMA_VERSION: u32 = 1;
+const AGENT_FLOW_SCHEMA_VERSION: u32 = 1;
 const TOPIC_BINDING_SCHEMA_VERSION: u32 = 2;
 const AUDIT_EVENT_SCHEMA_VERSION: u32 = 1;
 const CONTROL_PLANE_RMW_MAX_RETRIES: usize = 5;
@@ -82,6 +83,9 @@ pub struct UserContextConfig {
     pub state: Option<String>,
     /// Active chat UUID for this specific transport context.
     pub current_chat_uuid: Option<String>,
+    /// Active agent flow UUID for this specific transport context.
+    #[serde(default)]
+    pub current_agent_flow_id: Option<String>,
     /// Optional transport chat identifier associated with the context.
     #[serde(default)]
     pub chat_id: Option<i64>,
@@ -100,6 +104,23 @@ pub struct UserContextConfig {
     /// Whether the persisted Telegram forum topic is currently closed.
     #[serde(default)]
     pub forum_topic_closed: bool,
+}
+
+/// Agent flow metadata persisted per topic-scoped flow.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct AgentFlowRecord {
+    /// Record schema version for forward-compatible evolution.
+    pub schema_version: u32,
+    /// User owning this flow.
+    pub user_id: i64,
+    /// Transport context key the flow belongs to.
+    pub context_key: String,
+    /// Stable flow identifier.
+    pub flow_id: String,
+    /// Creation timestamp (unix seconds).
+    pub created_at: i64,
+    /// Last update timestamp (unix seconds).
+    pub updated_at: i64,
 }
 
 /// Agent profile record persisted in control-plane storage.
@@ -404,6 +425,54 @@ pub trait StorageProvider: Send + Sync {
         let _ = context_key;
         self.clear_agent_memory(user_id).await
     }
+    /// Save agent memory scoped by transport context and specific agent flow.
+    async fn save_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError> {
+        let _ = flow_id;
+        self.save_agent_memory_for_context(user_id, context_key, memory)
+            .await
+    }
+    /// Load agent memory scoped by transport context and specific agent flow.
+    async fn load_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<Option<AgentMemory>, StorageError> {
+        let _ = flow_id;
+        self.load_agent_memory_for_context(user_id, context_key)
+            .await
+    }
+    /// Clear agent memory scoped by transport context and specific agent flow.
+    async fn clear_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<(), StorageError> {
+        let _ = flow_id;
+        self.clear_agent_memory_for_context(user_id, context_key)
+            .await
+    }
+    /// Get metadata for a persisted topic-scoped agent flow.
+    async fn get_agent_flow_record(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<Option<AgentFlowRecord>, StorageError>;
+    /// Upsert metadata for a persisted topic-scoped agent flow.
+    async fn upsert_agent_flow_record(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<AgentFlowRecord, StorageError>;
     /// Clear all context (history and memory) for a user
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError>;
     /// Check connection to storage
@@ -737,6 +806,36 @@ impl R2Storage {
         Ok(())
     }
 
+    async fn delete_prefix(&self, prefix: &str) -> Result<(), StorageError> {
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let response = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_continuation_token(continuation_token.clone())
+                .send()
+                .await
+                .map_err(|error| StorageError::S3Put(error.to_string()))?;
+
+            for object in response.contents() {
+                if let Some(key) = object.key() {
+                    self.delete_object(key).await?;
+                }
+            }
+
+            if !response.is_truncated().unwrap_or(false) {
+                break;
+            }
+
+            continuation_token = response.next_continuation_token().map(str::to_string);
+        }
+
+        Ok(())
+    }
+
     /// Atomically modify user config using a closure.
     ///
     /// # Errors
@@ -898,33 +997,7 @@ impl StorageProvider for R2Storage {
         context_key: String,
     ) -> Result<(), StorageError> {
         let prefix = user_context_chat_history_prefix(user_id, &context_key);
-        let mut continuation_token: Option<String> = None;
-
-        loop {
-            let response = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(&prefix)
-                .set_continuation_token(continuation_token.clone())
-                .send()
-                .await
-                .map_err(|error| StorageError::S3Put(error.to_string()))?;
-
-            for object in response.contents() {
-                if let Some(key) = object.key() {
-                    self.delete_object(key).await?;
-                }
-            }
-
-            if !response.is_truncated().unwrap_or(false) {
-                break;
-            }
-
-            continuation_token = response.next_continuation_token().map(str::to_string);
-        }
-
-        Ok(())
+        self.delete_prefix(&prefix).await
     }
 
     /// Save agent memory to storage
@@ -974,8 +1047,80 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         context_key: String,
     ) -> Result<(), StorageError> {
+        self.delete_prefix(&user_context_agent_flows_prefix(user_id, &context_key))
+            .await?;
         self.delete_object(&user_context_agent_memory_key(user_id, &context_key))
             .await
+    }
+
+    async fn save_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError> {
+        self.save_json(
+            &user_context_agent_flow_memory_key(user_id, &context_key, &flow_id),
+            memory,
+        )
+        .await
+    }
+
+    async fn load_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<Option<AgentMemory>, StorageError> {
+        self.load_json(&user_context_agent_flow_memory_key(
+            user_id,
+            &context_key,
+            &flow_id,
+        ))
+        .await
+    }
+
+    async fn clear_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<(), StorageError> {
+        self.delete_prefix(&user_context_agent_flow_prefix(
+            user_id,
+            &context_key,
+            &flow_id,
+        ))
+        .await
+    }
+
+    async fn get_agent_flow_record(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<Option<AgentFlowRecord>, StorageError> {
+        self.load_json(&user_context_agent_flow_key(
+            user_id,
+            &context_key,
+            &flow_id,
+        ))
+        .await
+    }
+
+    async fn upsert_agent_flow_record(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<AgentFlowRecord, StorageError> {
+        let key = user_context_agent_flow_key(user_id, &context_key, &flow_id);
+        let now = current_timestamp_unix_secs();
+        let existing = self.load_json::<AgentFlowRecord>(&key).await?;
+        let record = build_agent_flow_record(user_id, context_key, flow_id, existing, now);
+        self.save_json(&key, &record).await?;
+        Ok(record)
     }
 
     /// Clear all context (history and memory) for a user
@@ -1221,6 +1366,34 @@ pub fn user_context_agent_memory_key(user_id: i64, context_key: &str) -> String 
     format!("users/{user_id}/topics/{context_key}/agent_memory.json")
 }
 
+/// Returns the R2 prefix for all topic-scoped agent flows in a transport context.
+#[must_use]
+pub fn user_context_agent_flows_prefix(user_id: i64, context_key: &str) -> String {
+    format!("users/{user_id}/topics/{context_key}/flows/")
+}
+
+/// Returns the R2 prefix for a specific topic-scoped agent flow.
+#[must_use]
+pub fn user_context_agent_flow_prefix(user_id: i64, context_key: &str, flow_id: &str) -> String {
+    format!("users/{user_id}/topics/{context_key}/flows/{flow_id}/")
+}
+
+/// Returns the R2 key for a topic-scoped agent flow metadata record.
+#[must_use]
+pub fn user_context_agent_flow_key(user_id: i64, context_key: &str, flow_id: &str) -> String {
+    format!("users/{user_id}/topics/{context_key}/flows/{flow_id}/meta.json")
+}
+
+/// Returns the R2 key for a topic-scoped agent flow memory file.
+#[must_use]
+pub fn user_context_agent_flow_memory_key(
+    user_id: i64,
+    context_key: &str,
+    flow_id: &str,
+) -> String {
+    format!("users/{user_id}/topics/{context_key}/flows/{flow_id}/memory.json")
+}
+
 /// Returns the R2 key for an agent profile record.
 #[must_use]
 pub fn agent_profile_key(user_id: i64, agent_id: &str) -> String {
@@ -1328,6 +1501,34 @@ fn build_topic_binding_record(
 }
 
 #[must_use]
+fn build_agent_flow_record(
+    user_id: i64,
+    context_key: String,
+    flow_id: String,
+    existing: Option<AgentFlowRecord>,
+    now: i64,
+) -> AgentFlowRecord {
+    match existing {
+        Some(existing_record) => AgentFlowRecord {
+            schema_version: AGENT_FLOW_SCHEMA_VERSION,
+            user_id,
+            context_key,
+            flow_id,
+            created_at: existing_record.created_at,
+            updated_at: now,
+        },
+        None => AgentFlowRecord {
+            schema_version: AGENT_FLOW_SCHEMA_VERSION,
+            user_id,
+            context_key,
+            flow_id,
+            created_at: now,
+            updated_at: now,
+        },
+    }
+}
+
+#[must_use]
 /// Returns `true` when a topic binding is active at `now`.
 pub fn binding_is_active(record: &TopicBindingRecord, now: i64) -> bool {
     match record.expires_at {
@@ -1403,14 +1604,16 @@ pub fn generate_chat_uuid() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_profile_key, audit_events_key, binding_is_active, build_agent_profile_record,
-        build_audit_event_record, build_topic_binding_record, generate_chat_uuid,
-        next_record_version, resolve_active_topic_binding, select_audit_events_page,
-        should_retry_control_plane_rmw, topic_binding_key, user_chat_history_key, user_config_key,
+        agent_profile_key, audit_events_key, binding_is_active, build_agent_flow_record,
+        build_agent_profile_record, build_audit_event_record, build_topic_binding_record,
+        generate_chat_uuid, next_record_version, resolve_active_topic_binding,
+        select_audit_events_page, should_retry_control_plane_rmw, topic_binding_key,
+        user_chat_history_key, user_config_key, user_context_agent_flow_key,
+        user_context_agent_flow_memory_key, user_context_agent_flows_prefix,
         user_context_agent_memory_key, user_context_chat_history_prefix, user_history_key,
-        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks,
-        OptionalMetadataPatch, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
-        UpsertTopicBindingOptions, UserConfig, UserContextConfig,
+        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
+        ControlPlaneLocks, OptionalMetadataPatch, TopicBindingKind, TopicBindingRecord,
+        UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig, UserContextConfig,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1447,6 +1650,24 @@ mod tests {
     fn user_context_agent_memory_key_uses_topic_namespace() {
         let key = user_context_agent_memory_key(42, "-1001:77");
         assert_eq!(key, "users/42/topics/-1001:77/agent_memory.json");
+    }
+
+    #[test]
+    fn user_context_agent_flows_prefix_uses_topic_namespace() {
+        let prefix = user_context_agent_flows_prefix(42, "-1001:77");
+        assert_eq!(prefix, "users/42/topics/-1001:77/flows/");
+    }
+
+    #[test]
+    fn user_context_agent_flow_key_uses_flow_namespace() {
+        let key = user_context_agent_flow_key(42, "-1001:77", "flow-123");
+        assert_eq!(key, "users/42/topics/-1001:77/flows/flow-123/meta.json");
+    }
+
+    #[test]
+    fn user_context_agent_flow_memory_key_uses_flow_namespace() {
+        let key = user_context_agent_flow_memory_key(42, "-1001:77", "flow-123");
+        assert_eq!(key, "users/42/topics/-1001:77/flows/flow-123/memory.json");
     }
 
     #[test]
@@ -1511,6 +1732,7 @@ mod tests {
             UserContextConfig {
                 state: Some("agent_mode".to_string()),
                 current_chat_uuid: Some("chat-42".to_string()),
+                current_agent_flow_id: Some("flow-42".to_string()),
                 chat_id: Some(-1001),
                 thread_id: Some(42),
                 forum_topic_name: Some("Topic 42".to_string()),
@@ -1539,6 +1761,13 @@ mod tests {
             parsed
                 .contexts
                 .get("-1001:42")
+                .and_then(|context| context.current_agent_flow_id.as_deref()),
+            Some("flow-42")
+        );
+        assert_eq!(
+            parsed
+                .contexts
+                .get("-1001:42")
                 .and_then(|context| context.forum_topic_name.as_deref()),
             Some("Topic 42")
         );
@@ -1546,6 +1775,30 @@ mod tests {
             .contexts
             .get("-1001:42")
             .is_some_and(|context| context.forum_topic_closed));
+    }
+
+    #[test]
+    fn build_agent_flow_record_preserves_created_at() {
+        let existing = AgentFlowRecord {
+            schema_version: 1,
+            user_id: 7,
+            context_key: "topic-a".to_string(),
+            flow_id: "flow-a".to_string(),
+            created_at: 123,
+            updated_at: 124,
+        };
+
+        let updated = build_agent_flow_record(
+            7,
+            "topic-a".to_string(),
+            "flow-a".to_string(),
+            Some(existing),
+            999,
+        );
+
+        assert_eq!(updated.schema_version, 1);
+        assert_eq!(updated.created_at, 123);
+        assert_eq!(updated.updated_at, 999);
     }
 
     #[test]

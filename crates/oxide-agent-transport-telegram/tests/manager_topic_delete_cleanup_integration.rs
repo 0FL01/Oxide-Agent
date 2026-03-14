@@ -6,9 +6,9 @@ use oxide_agent_core::agent::providers::{
 };
 use oxide_agent_core::agent::{AgentMemory, ToolProvider};
 use oxide_agent_core::storage::{
-    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message as StoredMessage,
-    StorageError, StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions,
-    UpsertTopicBindingOptions, UserConfig, UserContextConfig,
+    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
+    Message as StoredMessage, StorageError, StorageProvider, TopicBindingRecord,
+    UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig, UserContextConfig,
 };
 use oxide_agent_transport_telegram::bot::thread::{
     resolve_thread_spec_from_context, thread_peer_key_from_spec,
@@ -40,6 +40,7 @@ impl IntegrationStorage {
                     UserContextConfig {
                         state: Some("agent_mode".to_string()),
                         current_chat_uuid: Some("chat-1".to_string()),
+                        current_agent_flow_id: Some("flow-1".to_string()),
                         chat_id: Some(-100_123),
                         thread_id: Some(77),
                         forum_topic_name: Some("Topic 77".to_string()),
@@ -180,6 +181,31 @@ impl StorageProvider for IntegrationStorage {
 
     async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
         Ok(())
+    }
+
+    async fn get_agent_flow_record(
+        &self,
+        _user_id: i64,
+        _context_key: String,
+        _flow_id: String,
+    ) -> Result<Option<AgentFlowRecord>, StorageError> {
+        Ok(None)
+    }
+
+    async fn upsert_agent_flow_record(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<AgentFlowRecord, StorageError> {
+        Ok(AgentFlowRecord {
+            schema_version: 1,
+            user_id,
+            context_key,
+            flow_id,
+            created_at: 0,
+            updated_at: 0,
+        })
     }
 
     async fn clear_agent_memory_for_context(
