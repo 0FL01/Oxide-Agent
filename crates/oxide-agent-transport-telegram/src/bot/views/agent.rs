@@ -284,7 +284,13 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
 /// Get topic-friendly inline controls for agent mode.
 #[must_use]
 pub fn get_agent_inline_keyboard() -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![
+    get_agent_inline_keyboard_with_exit(true)
+}
+
+/// Get topic-friendly inline controls for agent mode with optional exit action.
+#[must_use]
+pub fn get_agent_inline_keyboard_with_exit(include_exit: bool) -> InlineKeyboardMarkup {
+    let mut keyboard = vec![
         vec![InlineKeyboardButton::callback(
             "Cancel Task",
             AGENT_CALLBACK_CANCEL_TASK,
@@ -297,11 +303,15 @@ pub fn get_agent_inline_keyboard() -> InlineKeyboardMarkup {
             "Recreate Container",
             AGENT_CALLBACK_RECREATE_CONTAINER,
         )],
-        vec![InlineKeyboardButton::callback(
+    ];
+    if include_exit {
+        keyboard.push(vec![InlineKeyboardButton::callback(
             "Exit Agent Mode",
             AGENT_CALLBACK_EXIT,
-        )],
-    ])
+        )]);
+    }
+
+    InlineKeyboardMarkup::new(keyboard)
 }
 
 /// Get inline controls for an active progress message in topics.

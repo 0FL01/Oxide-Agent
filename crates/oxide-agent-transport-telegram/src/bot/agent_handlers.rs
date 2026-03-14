@@ -15,8 +15,8 @@ use crate::bot::state::{ConfirmationType, State};
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::views::{
     agent_control_markup, cancel_task_confirmation_inline_keyboard, confirmation_markup,
-    progress_inline_keyboard, AgentView, DefaultAgentView, AGENT_CALLBACK_CANCEL_TASK,
-    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    get_agent_inline_keyboard_with_exit, progress_inline_keyboard, AgentView, DefaultAgentView,
+    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
     AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
     AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_EXIT, AGENT_CALLBACK_RECREATE_CONTAINER,
@@ -351,12 +351,17 @@ fn automatic_agent_control_markup(thread_spec: TelegramThreadSpec) -> Option<Rep
 async fn show_agent_controls(bot: Bot, msg: Message) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
+    let reply_markup = if use_inline_topic_controls(thread_spec) {
+        get_agent_inline_keyboard_with_exit(false).into()
+    } else {
+        agent_control_markup(false)
+    };
 
     send_agent_message_with_keyboard(
         &bot,
         msg.chat.id,
         DefaultAgentView::ready_to_work(),
-        &agent_control_markup(use_inline_topic_controls(thread_spec)),
+        &reply_markup,
         outbound_thread,
     )
     .await
