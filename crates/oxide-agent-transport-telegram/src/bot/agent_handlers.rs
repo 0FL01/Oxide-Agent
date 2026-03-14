@@ -9,7 +9,7 @@ use crate::bot::manager_topic_lifecycle::TelegramManagerTopicLifecycle;
 use crate::bot::messaging::send_long_message_in_thread;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
-use crate::bot::topic_route::resolve_topic_route;
+use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::views::{
     confirmation_keyboard, get_agent_keyboard, AgentView, DefaultAgentView, LOOP_CALLBACK_CANCEL,
     LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
@@ -509,7 +509,7 @@ pub async fn handle_agent_message(
         };
     }
 
-    let route = resolve_topic_route(&bot, &settings, &msg).await;
+    let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
 
     if !route.allows_processing() {
         info!(
@@ -544,6 +544,7 @@ pub async fn handle_agent_message(
         }
 
         req.reply_markup(get_agent_keyboard()).await?;
+        touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
 
@@ -575,6 +576,7 @@ pub async fn handle_agent_message(
         }
     });
 
+    touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
     Ok(())
 }
 

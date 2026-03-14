@@ -1,5 +1,5 @@
 use crate::bot::state::State;
-use crate::bot::topic_route::resolve_topic_route;
+use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::UnauthorizedCache;
 use crate::bot::{build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams};
 use crate::config::BotSettings;
@@ -524,7 +524,7 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    let route = resolve_topic_route(&bot, &settings, &msg).await;
+    let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
 
     if !route.allows_processing() {
         info!(
@@ -535,6 +535,7 @@ pub async fn handle_text(
     }
 
     if handle_menu_commands(&bot, &msg, &storage, &llm, &dialogue, &settings, &text).await? {
+        touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
 
@@ -546,6 +547,7 @@ pub async fn handle_text(
         }
 
         req.reply_markup(get_main_keyboard()).await?;
+        touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
 
@@ -560,22 +562,27 @@ pub async fn handle_text(
         }
 
         req.reply_markup(get_chat_keyboard()).await?;
+        touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
 
-    process_llm_request(
+    let result = process_llm_request(
         bot,
         msg,
-        storage,
+        storage.clone(),
         llm,
         settings,
         ChatRequestOptions {
             text,
             outbound_thread,
-            topic_system_prompt_override: route.system_prompt_override,
+            topic_system_prompt_override: route.system_prompt_override.clone(),
         },
     )
-    .await
+    .await;
+    if result.is_ok() {
+        touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
+    }
+    result
 }
 
 async fn handle_menu_commands(
@@ -705,6 +712,23 @@ async fn send_menu_keyboard(
     }
 
     req.reply_markup(keyboard).await?;
+    Ok(())
+}
+
+async fn send_multimodal_unavailable_message(
+    bot: &Bot,
+    msg: &Message,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    let mut req = bot.send_message(
+        msg.chat.id,
+        "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
+    );
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    req.await?;
     Ok(())
 }
 
@@ -936,8 +960,7 @@ pub async fn handle_voice(
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
-    let route = resolve_topic_route(&bot, &settings, &msg).await;
-
+    let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
     if !route.allows_processing() {
         info!(
             "Skipping voice message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
@@ -966,15 +989,7 @@ pub async fn handle_voice(
     }
 
     if !llm.is_multimodal_available() {
-        let mut req = bot.send_message(
-            msg.chat.id,
-            "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
-        );
-        if let Some(thread_id) = outbound_thread.message_thread_id {
-            req = req.message_thread_id(thread_id);
-        }
-
-        req.await?;
+        send_multimodal_unavailable_message(&bot, &msg, outbound_thread).await?;
         return Ok(());
     }
 
@@ -1024,16 +1039,17 @@ pub async fn handle_voice(
                 process_llm_request(
                     bot,
                     msg,
-                    storage,
+                    storage.clone(),
                     llm,
                     settings,
                     ChatRequestOptions {
                         text,
                         outbound_thread,
-                        topic_system_prompt_override: route.system_prompt_override,
+                        topic_system_prompt_override: route.system_prompt_override.clone(),
                     },
                 )
                 .await?;
+                touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
             }
         }
         Err(e) => {
@@ -1063,7 +1079,7 @@ pub async fn handle_photo(
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
     let user_id = get_user_id_safe(&msg);
-    let route = resolve_topic_route(&bot, &settings, &msg).await;
+    let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
 
     if !route.allows_processing() {
         info!(
@@ -1093,15 +1109,7 @@ pub async fn handle_photo(
     }
 
     if !llm.is_multimodal_available() {
-        let mut req = bot.send_message(
-            msg.chat.id,
-            "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
-        );
-        if let Some(thread_id) = outbound_thread.message_thread_id {
-            req = req.message_thread_id(thread_id);
-        }
-
-        req.await?;
+        send_multimodal_unavailable_message(&bot, &msg, outbound_thread).await?;
         return Ok(());
     }
 
@@ -1118,7 +1126,6 @@ pub async fn handle_photo(
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadPhoto)
         .await?;
 
-    // Download photo file with retry logic
     let buffer = oxide_agent_core::utils::retry_transport_operation(|| async {
         let file = bot.get_file(photo.file.id.clone()).await?;
         let mut buf = Vec::new();
@@ -1160,6 +1167,7 @@ pub async fn handle_photo(
             .await?;
             send_chat_flow_controls_in_thread(&bot, msg.chat.id, &chat_uuid, outbound_thread)
                 .await?;
+            touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         }
         Err(e) => {
             let mut req = bot.send_message(msg.chat.id, format!("Image analysis error: {e}"));
@@ -1188,7 +1196,8 @@ pub async fn handle_document(
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
-    let route = resolve_topic_route(&bot, &settings, &msg).await;
+    let user_id = get_user_id_safe(&msg);
+    let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
 
     if !route.allows_processing() {
         return Ok(());
@@ -1197,10 +1206,19 @@ pub async fn handle_document(
     let state = dialogue.get().await?.unwrap_or(State::Start);
 
     if matches!(state, State::AgentMode) {
-        Box::pin(super::agent_handlers::handle_agent_message(
-            bot, msg, storage, llm, dialogue, settings,
+        let result = Box::pin(super::agent_handlers::handle_agent_message(
+            bot,
+            msg,
+            storage.clone(),
+            llm,
+            dialogue,
+            settings,
         ))
-        .await
+        .await;
+        if result.is_ok() {
+            touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
+        }
+        result
     } else {
         let mut req = bot.send_message(
             msg.chat.id,
