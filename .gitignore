@@ -1,4 +1,6 @@
 .env
+config/
+!config/.gitkeep
 logs
 not_env
 fresh_docs.md
