@@ -31,6 +31,10 @@ pub const AGENT_CALLBACK_EXIT: &str = "agent:exit";
 pub const AGENT_CALLBACK_CONFIRM_CLEAR_YES: &str = "agent:confirm:clear:yes";
 /// Callback data for cancelling memory clear from topic controls
 pub const AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL: &str = "agent:confirm:clear:cancel";
+/// Callback data for confirming task cancellation from inline controls
+pub const AGENT_CALLBACK_CONFIRM_CANCEL_YES: &str = "agent:confirm:cancel:yes";
+/// Callback data for aborting task cancellation from inline controls
+pub const AGENT_CALLBACK_CONFIRM_CANCEL_NO: &str = "agent:confirm:cancel:no";
 /// Callback data for confirming container recreation from topic controls
 pub const AGENT_CALLBACK_CONFIRM_RECREATE_YES: &str = "agent:confirm:recreate:yes";
 /// Callback data for cancelling container recreation from topic controls
@@ -64,6 +68,9 @@ pub trait AgentView {
 
     /// Message when task is already running
     fn task_already_running() -> &'static str;
+
+    /// Message asking to confirm task cancellation
+    fn task_cancel_confirmation() -> &'static str;
 
     /// Message when session not found
     fn session_not_found() -> &'static str;
@@ -161,6 +168,10 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
 
     fn task_already_running() -> &'static str {
         "⏳ Task is already running. Press ❌ Cancel Task to stop it."
+    }
+
+    fn task_cancel_confirmation() -> &'static str {
+        "⚠️ Cancel the current task?"
     }
 
     fn session_not_found() -> &'static str {
@@ -291,6 +302,24 @@ pub fn get_agent_inline_keyboard() -> InlineKeyboardMarkup {
             AGENT_CALLBACK_EXIT,
         )],
     ])
+}
+
+/// Get inline controls for an active progress message in topics.
+#[must_use]
+pub fn progress_inline_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+        "Cancel Task",
+        AGENT_CALLBACK_CANCEL_TASK,
+    )]])
+}
+
+/// Get inline confirmation controls for task cancellation.
+#[must_use]
+pub fn cancel_task_confirmation_inline_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("Yes", AGENT_CALLBACK_CONFIRM_CANCEL_YES),
+        InlineKeyboardButton::callback("No", AGENT_CALLBACK_CONFIRM_CANCEL_NO),
+    ]])
 }
 
 /// Get agent controls markup for the current chat context.

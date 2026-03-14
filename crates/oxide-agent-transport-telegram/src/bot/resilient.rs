@@ -17,7 +17,9 @@
 
 use anyhow::Result;
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, Message, MessageId, ParseMode, ThreadId};
+use teloxide::types::{
+    ChatId, InlineKeyboardMarkup, Message, MessageId, ParseMode, ReplyMarkup, ThreadId,
+};
 use tracing::{debug, warn};
 
 /// Send a message with automatic retry on network failures.
@@ -58,6 +60,26 @@ pub async fn send_message_resilient_with_thread(
     parse_mode: Option<ParseMode>,
     message_thread_id: Option<ThreadId>,
 ) -> Result<Message> {
+    send_message_resilient_with_thread_and_markup(
+        bot,
+        chat_id,
+        text,
+        parse_mode,
+        message_thread_id,
+        None,
+    )
+    .await
+}
+
+/// Send a message with automatic retry, optional thread targeting, and reply markup.
+pub async fn send_message_resilient_with_thread_and_markup(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: impl Into<String>,
+    parse_mode: Option<ParseMode>,
+    message_thread_id: Option<ThreadId>,
+    reply_markup: Option<ReplyMarkup>,
+) -> Result<Message> {
     let text = text.into();
     oxide_agent_core::utils::retry_transport_operation(|| async {
         let mut req = bot.send_message(chat_id, text.clone());
@@ -66,6 +88,9 @@ pub async fn send_message_resilient_with_thread(
         }
         if let Some(thread_id) = message_thread_id {
             req = req.message_thread_id(thread_id);
+        }
+        if let Some(markup) = &reply_markup {
+            req = req.reply_markup(markup.clone());
         }
         req.await
             .map_err(|e| anyhow::anyhow!("Telegram send error: {e}"))
@@ -95,11 +120,26 @@ pub async fn edit_message_resilient(
     text: impl Into<String>,
     parse_mode: Option<ParseMode>,
 ) -> Result<Option<Message>> {
+    edit_message_resilient_with_markup(bot, chat_id, msg_id, text, parse_mode, None).await
+}
+
+/// Edit a message with automatic retry and optional reply markup.
+pub async fn edit_message_resilient_with_markup(
+    bot: &Bot,
+    chat_id: ChatId,
+    msg_id: MessageId,
+    text: impl Into<String>,
+    parse_mode: Option<ParseMode>,
+    reply_markup: Option<InlineKeyboardMarkup>,
+) -> Result<Option<Message>> {
     let text = text.into();
     oxide_agent_core::utils::retry_transport_operation(|| async {
         let mut req = bot.edit_message_text(chat_id, msg_id, text.clone());
         if let Some(pm) = parse_mode {
             req = req.parse_mode(pm);
+        }
+        if let Some(markup) = &reply_markup {
+            req = req.reply_markup(markup.clone());
         }
         match req.await {
             Ok(msg) => Ok(Some(msg)),
@@ -141,6 +181,17 @@ pub async fn edit_message_safe_resilient(
     msg_id: MessageId,
     text: &str,
 ) -> bool {
+    edit_message_safe_resilient_with_markup(bot, chat_id, msg_id, text, None).await
+}
+
+/// Edit message with graceful degradation and optional reply markup.
+pub async fn edit_message_safe_resilient_with_markup(
+    bot: &Bot,
+    chat_id: ChatId,
+    msg_id: MessageId,
+    text: &str,
+    reply_markup: Option<InlineKeyboardMarkup>,
+) -> bool {
     const ERROR_NOT_FOUND: &str = "message to edit not found";
 
     // Truncate if too long (Telegram limit is 4096, we use 4000 for safety)
@@ -151,7 +202,16 @@ pub async fn edit_message_safe_resilient(
         text.to_string()
     };
 
-    match edit_message_resilient(bot, chat_id, msg_id, truncated, Some(ParseMode::Html)).await {
+    match edit_message_resilient_with_markup(
+        bot,
+        chat_id,
+        msg_id,
+        truncated,
+        Some(ParseMode::Html),
+        reply_markup,
+    )
+    .await
+    {
         Ok(Some(_)) => true,
         Ok(None) => {
             debug!("Message update skipped: message is not modified");
