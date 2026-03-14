@@ -17,7 +17,7 @@ crates/
 │   ├── src/
 │   │   ├── lib.rs
 │   │   ├── config.rs                # Конфигурация агента
-│   │   ├── storage.rs               # StorageProvider trait + R2 impl
+│   │   ├── storage.rs               # StorageProvider trait + R2 impl + control-plane records/audit
 │   │   ├── testing.rs               # TestKit: моки и хелперы
 │   │   ├── utils.rs
 │   │   ├── agent/                   # Логика агента
@@ -25,6 +25,7 @@ crates/
 │   │   │   ├── runner/              # Цикл исполнения (Loop, Hooks)
 │   │   │   ├── loop_detection/      # Детектор зацикливания
 │   │   │   ├── prompt/              # Компоновщик промптов (Composer)
+│   │   │   ├── providers/           # Tool providers incl. sandbox, todos, manager control-plane
 │   │   │   ├── skills/              # Реестр и поиск навыков
 │   │   │   ├── recovery.rs          # Восстановление XML/JSON
 │   │   │   └── ...
@@ -65,6 +66,7 @@ Dockerfile                           # Сборка основного Rust-пр
 
 ### Workspace crates
 - `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage.
+- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools.
 - `oxide-agent-runtime`: оркестрация сессий, цикл исполнения, провайдеры инструментов, sandbox.
 - `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, телеметрия доставки.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
@@ -76,6 +78,8 @@ Dockerfile                           # Сборка основного Rust-пр
 - **Transport Boundaries**: `teloxide` используется только в `oxide-agent-transport-telegram` (и бинарях, которые ее подключают).
 - **Module Hierarchy**: В каждом crate сохраняем явные `mod.rs` и публичные экспорты модулей.
 - **Error Handling**: Use `thiserror` for libraries and `anyhow` for apps.
+- **Manager Control Plane**: manager CRUD идет через tool provider `manager_control_plane`, user-scoped storage records и audit trail; RBAC включается на уровне Telegram transport через `manager_allowed_users`.
+- **Session Safety**: Для threaded AgentMode reuse/refresh опираемся на `SessionRegistry` safe APIs (`remove_if_idle`) и не удаляем running session из реестра.
 
 Чтобы добавить новый transport (Discord/Slack), создайте `crates/oxide-agent-transport-<name>`, держите SDK и обработчики внутри transport crate, подключите адаптер к runtime, и при необходимости добавьте отдельный бинарь `oxide-agent-<name>-bot` для запуска.
 
