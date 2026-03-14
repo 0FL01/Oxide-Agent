@@ -433,6 +433,10 @@ mod tests {
                 current_chat_uuid: None,
                 chat_id: Some(-1001),
                 thread_id: Some(42),
+                forum_topic_name: None,
+                forum_topic_icon_color: None,
+                forum_topic_icon_custom_emoji_id: None,
+                forum_topic_closed: false,
             },
         );
         let config = UserConfig {
@@ -460,6 +464,10 @@ mod tests {
                             current_chat_uuid: Some("chat-a".to_string()),
                             chat_id: Some(-1001),
                             thread_id: Some(42),
+                            forum_topic_name: None,
+                            forum_topic_icon_color: None,
+                            forum_topic_icon_custom_emoji_id: None,
+                            forum_topic_closed: false,
                         },
                     ),
                     (
@@ -469,6 +477,10 @@ mod tests {
                             current_chat_uuid: Some("chat-b".to_string()),
                             chat_id: Some(-1001),
                             thread_id: Some(77),
+                            forum_topic_name: None,
+                            forum_topic_icon_color: None,
+                            forum_topic_icon_custom_emoji_id: None,
+                            forum_topic_closed: false,
                         },
                     ),
                 ]),

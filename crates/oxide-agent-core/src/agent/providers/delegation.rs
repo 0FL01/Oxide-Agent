@@ -53,6 +53,7 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "forum_topic_close",
     "forum_topic_reopen",
     "forum_topic_delete",
+    "forum_topic_list",
 ];
 const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
 const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
@@ -524,6 +525,7 @@ mod tests {
             "forum_topic_close",
             "forum_topic_reopen",
             "forum_topic_delete",
+            "forum_topic_list",
         ] {
             assert!(blocked.contains(tool), "missing blocked tool: {tool}");
         }
