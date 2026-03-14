@@ -382,8 +382,11 @@ pub async fn start(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
-            .await?;
+        if use_inline_topic_controls(thread_spec) {
+            req.await?;
+        } else {
+            req.reply_markup(agent_control_markup(false)).await?;
+        }
         return Ok(());
     }
 

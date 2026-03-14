@@ -107,6 +107,7 @@ enum AgentControlCommand {
     ClearMemory,
     RecreateContainer,
     ExitAgentMode,
+    ShowControls,
 }
 
 fn parse_agent_control_command(text: Option<&str>) -> Option<AgentControlCommand> {
@@ -115,6 +116,7 @@ fn parse_agent_control_command(text: Option<&str>) -> Option<AgentControlCommand
         Some("🗑 Clear Memory") => Some(AgentControlCommand::ClearMemory),
         Some("🔄 Recreate Container") => Some(AgentControlCommand::RecreateContainer),
         Some("⬅️ Exit Agent Mode") => Some(AgentControlCommand::ExitAgentMode),
+        Some("/c") => Some(AgentControlCommand::ShowControls),
         _ => None,
     }
 }
@@ -315,17 +317,49 @@ async fn send_agent_message_with_keyboard(
     Ok(())
 }
 
+async fn send_agent_message_with_optional_keyboard(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: impl Into<String>,
+    reply_markup: Option<&ReplyMarkup>,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    if let Some(reply_markup) = reply_markup {
+        send_agent_message_with_keyboard(bot, chat_id, text, reply_markup, outbound_thread).await
+    } else {
+        send_agent_message(bot, chat_id, text, outbound_thread).await
+    }
+}
+
 struct ConfirmationSendCtx<'a> {
     bot: &'a Bot,
     chat_id: ChatId,
     context_key: &'a str,
-    reply_markup: &'a ReplyMarkup,
+    reply_markup: Option<ReplyMarkup>,
     manager_default_chat_id: Option<ChatId>,
     outbound_thread: OutboundThreadParams,
 }
 
 fn use_inline_topic_controls(thread_spec: TelegramThreadSpec) -> bool {
     matches!(thread_spec.kind, TelegramThreadKind::Forum)
+}
+
+fn automatic_agent_control_markup(thread_spec: TelegramThreadSpec) -> Option<ReplyMarkup> {
+    (!use_inline_topic_controls(thread_spec)).then(|| agent_control_markup(false))
+}
+
+async fn show_agent_controls(bot: Bot, msg: Message) -> Result<()> {
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
+
+    send_agent_message_with_keyboard(
+        &bot,
+        msg.chat.id,
+        DefaultAgentView::ready_to_work(),
+        &agent_control_markup(use_inline_topic_controls(thread_spec)),
+        outbound_thread,
+    )
+    .await
 }
 
 async fn handle_clear_memory_confirmation(
@@ -340,21 +374,21 @@ async fn handle_clear_memory_confirmation(
             let _ = storage
                 .clear_agent_memory_for_context(user_id, send_ctx.context_key.to_string())
                 .await;
-            send_agent_message_with_keyboard(
+            send_agent_message_with_optional_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::memory_cleared(),
-                send_ctx.reply_markup,
+                send_ctx.reply_markup.as_ref(),
                 send_ctx.outbound_thread,
             )
             .await?;
         }
         ResetSessionOutcome::Busy => {
-            send_agent_message_with_keyboard(
+            send_agent_message_with_optional_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::clear_blocked_by_task(),
-                send_ctx.reply_markup,
+                send_ctx.reply_markup.as_ref(),
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -363,11 +397,11 @@ async fn handle_clear_memory_confirmation(
             let _ = storage
                 .clear_agent_memory_for_context(user_id, send_ctx.context_key.to_string())
                 .await;
-            send_agent_message_with_keyboard(
+            send_agent_message_with_optional_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::memory_cleared(),
-                send_ctx.reply_markup,
+                send_ctx.reply_markup.as_ref(),
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -427,42 +461,42 @@ async fn handle_recreate_container_confirmation(
         .await
     {
         Ok(Ok(())) => {
-            send_agent_message_with_keyboard(
+            send_agent_message_with_optional_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::container_recreated(),
-                send_ctx.reply_markup,
+                send_ctx.reply_markup.as_ref(),
                 send_ctx.outbound_thread,
             )
             .await?;
         }
         Ok(Err(AgentWipeError::Recreate(e))) => {
             warn!(error = %e, "Container recreation failed");
-            send_agent_message_with_keyboard(
+            send_agent_message_with_optional_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::container_error(&format!("{e:#}")),
-                send_ctx.reply_markup,
+                send_ctx.reply_markup.as_ref(),
                 send_ctx.outbound_thread,
             )
             .await?;
         }
         Err("Cannot reset while task is running") => {
-            send_agent_message_with_keyboard(
+            send_agent_message_with_optional_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::container_recreate_blocked_by_task(),
-                send_ctx.reply_markup,
+                send_ctx.reply_markup.as_ref(),
                 send_ctx.outbound_thread,
             )
             .await?;
         }
         Err(_) => {
-            send_agent_message_with_keyboard(
+            send_agent_message_with_optional_keyboard(
                 send_ctx.bot,
                 send_ctx.chat_id,
                 DefaultAgentView::sandbox_access_error(),
-                send_ctx.reply_markup,
+                send_ctx.reply_markup.as_ref(),
                 send_ctx.outbound_thread,
             )
             .await?;
@@ -531,8 +565,11 @@ pub async fn activate_agent_mode(
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
-        .await?;
+    if let Some(reply_markup) = automatic_agent_control_markup(thread_spec) {
+        req.reply_markup(reply_markup).await?;
+    } else {
+        req.await?;
+    }
 
     Ok(())
 }
@@ -604,6 +641,7 @@ pub async fn handle_agent_message(
             AgentControlCommand::ExitAgentMode => {
                 exit_agent_mode(bot, msg, dialogue, storage).await
             }
+            AgentControlCommand::ShowControls => show_agent_controls(bot, msg).await,
         };
     }
 
@@ -643,8 +681,11 @@ pub async fn handle_agent_message(
             req = req.message_thread_id(thread_id);
         }
 
-        req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
-            .await?;
+        if let Some(reply_markup) = automatic_agent_control_markup(thread_spec) {
+            req.reply_markup(reply_markup).await?;
+        } else {
+            req.await?;
+        }
         touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
@@ -949,6 +990,10 @@ mod tests {
         assert_eq!(
             parse_agent_control_command(Some("⬅️ Exit Agent Mode")),
             Some(AgentControlCommand::ExitAgentMode)
+        );
+        assert_eq!(
+            parse_agent_control_command(Some("/c")),
+            Some(AgentControlCommand::ShowControls)
         );
     }
 
@@ -1969,11 +2014,12 @@ async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
 
     match reset_sessions_with_compat(ctx.session_keys).await {
         ResetSessionOutcome::Reset => {
-            send_agent_message_with_keyboard(
+            let reply_markup = automatic_agent_control_markup(ctx.thread_spec);
+            send_agent_message_with_optional_keyboard(
                 &ctx.bot,
                 ctx.chat_id,
                 DefaultAgentView::task_reset(),
-                &agent_control_markup(use_inline_topic_controls(ctx.thread_spec)),
+                reply_markup.as_ref(),
                 ctx.outbound_thread,
             )
             .await?;
@@ -2008,7 +2054,7 @@ async fn handle_agent_confirmation_callback(
 ) -> Result<()> {
     let loop_ctx = &ctx.loop_ctx;
     let outbound_thread = build_outbound_thread_params(loop_ctx.thread_spec);
-    let reply_markup = agent_control_markup(use_inline_topic_controls(loop_ctx.thread_spec));
+    let reply_markup = automatic_agent_control_markup(loop_ctx.thread_spec);
 
     ctx.dialogue.update(State::AgentMode).await?;
 
@@ -2016,7 +2062,7 @@ async fn handle_agent_confirmation_callback(
         bot: &loop_ctx.bot,
         chat_id: loop_ctx.chat_id,
         context_key: &loop_ctx.context_key,
-        reply_markup: &reply_markup,
+        reply_markup,
         manager_default_chat_id: loop_ctx.manager_default_chat_id,
         outbound_thread,
     };
@@ -2046,11 +2092,11 @@ async fn handle_agent_confirmation_callback(
         }
     } else {
         info!(user_id = loop_ctx.user_id, action = ?action, "User cancelled destructive action");
-        send_agent_message_with_keyboard(
+        send_agent_message_with_optional_keyboard(
             &loop_ctx.bot,
             loop_ctx.chat_id,
             DefaultAgentView::operation_cancelled(),
-            &reply_markup,
+            send_ctx.reply_markup.as_ref(),
             outbound_thread,
         )
         .await?;
@@ -2084,11 +2130,10 @@ async fn handle_cancel_task_confirmation_callback(
         )
         .await
     } else {
-        send_agent_message_with_keyboard(
+        send_agent_message(
             &ctx.loop_ctx.bot,
             ctx.loop_ctx.chat_id,
             DefaultAgentView::operation_cancelled(),
-            &agent_control_markup(use_inline_topic_controls(ctx.loop_ctx.thread_spec)),
             ctx.loop_ctx.outbound_thread,
         )
         .await
@@ -2203,26 +2248,29 @@ pub async fn cancel_agent_task(bot: Bot, msg: Message, _dialogue: AgentDialogue)
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
+    let reply_markup = automatic_agent_control_markup(thread_spec);
 
     let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
 
     let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {
-        let mut req = bot.send_message(msg.chat.id, DefaultAgentView::no_active_task());
-        if let Some(thread_id) = outbound_thread.message_thread_id {
-            req = req.message_thread_id(thread_id);
-        }
-
-        req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
-            .await?;
+        send_agent_message_with_optional_keyboard(
+            &bot,
+            msg.chat.id,
+            DefaultAgentView::no_active_task(),
+            reply_markup.as_ref(),
+            outbound_thread,
+        )
+        .await?;
     } else {
-        let mut req = bot.send_message(msg.chat.id, text);
-        if let Some(thread_id) = outbound_thread.message_thread_id {
-            req = req.message_thread_id(thread_id);
-        }
-
-        req.reply_markup(agent_control_markup(use_inline_topic_controls(thread_spec)))
-            .await?;
+        send_agent_message_with_optional_keyboard(
+            &bot,
+            msg.chat.id,
+            text,
+            reply_markup.as_ref(),
+            outbound_thread,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2236,23 +2284,24 @@ async fn cancel_agent_task_by_id(
 ) -> Result<()> {
     let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
     let outbound_thread = OutboundThreadParams { message_thread_id };
+    let reply_markup = automatic_agent_control_markup(thread_spec);
 
     let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {
-        send_agent_message_with_keyboard(
+        send_agent_message_with_optional_keyboard(
             &bot,
             chat_id,
             DefaultAgentView::no_active_task(),
-            &agent_control_markup(use_inline_topic_controls(thread_spec)),
+            reply_markup.as_ref(),
             outbound_thread,
         )
         .await?;
     } else {
-        send_agent_message_with_keyboard(
+        send_agent_message_with_optional_keyboard(
             &bot,
             chat_id,
             text,
-            &agent_control_markup(use_inline_topic_controls(thread_spec)),
+            reply_markup.as_ref(),
             outbound_thread,
         )
         .await?;
@@ -2374,13 +2423,13 @@ pub async fn handle_agent_confirmation(
     }
 
     dialogue.update(State::AgentMode).await?;
-    let reply_markup = agent_control_markup(use_inline_topic_controls(thread_spec));
+    let reply_markup = automatic_agent_control_markup(thread_spec);
     let context_key = storage_context_key(chat_id, thread_spec);
     let send_ctx = ConfirmationSendCtx {
         bot: &bot,
         chat_id,
         context_key: &context_key,
-        reply_markup: &reply_markup,
+        reply_markup,
         manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
         outbound_thread,
     };
@@ -2405,11 +2454,11 @@ pub async fn handle_agent_confirmation(
         },
         "❌ Cancel" => {
             info!(user_id = user_id, action = ?action, "User cancelled destructive action");
-            send_agent_message_with_keyboard(
+            send_agent_message_with_optional_keyboard(
                 &bot,
                 chat_id,
                 DefaultAgentView::operation_cancelled(),
-                &reply_markup,
+                send_ctx.reply_markup.as_ref(),
                 outbound_thread,
             )
             .await?;
