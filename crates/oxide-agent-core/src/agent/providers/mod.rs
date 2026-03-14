@@ -22,7 +22,7 @@ pub use filehoster::FileHosterProvider;
 pub use manager_control_plane::{
     ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
     ForumTopicEditResult, ForumTopicThreadRequest, ManagerControlPlaneProvider,
-    ManagerTopicLifecycle,
+    ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
 pub use sandbox::SandboxProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};

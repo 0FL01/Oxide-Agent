@@ -5,7 +5,9 @@
 
 use crate::bot::agent::extract_agent_input;
 use crate::bot::agent_transport::TelegramAgentTransport;
-use crate::bot::context::{current_context_state, set_current_context_state, storage_context_key};
+use crate::bot::context::{
+    current_context_state, sandbox_scope, set_current_context_state, storage_context_key,
+};
 use crate::bot::manager_topic_lifecycle::TelegramManagerTopicLifecycle;
 use crate::bot::messaging::send_long_message_in_thread;
 use crate::bot::progress_render::render_progress_html;
@@ -32,6 +34,7 @@ use oxide_agent_core::agent::{
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
+use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
@@ -52,6 +55,7 @@ struct AgentTaskContext {
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     context_key: String,
+    sandbox_scope: SandboxScope,
     message_thread_id: Option<ThreadId>,
     session_id: SessionId,
 }
@@ -70,6 +74,7 @@ struct SessionTransportContext {
 struct EnsureSessionContext<'a> {
     session_keys: AgentModeSessionKeys,
     context_key: String,
+    sandbox_scope: SandboxScope,
     user_id: i64,
     bot: &'a Bot,
     transport_ctx: SessionTransportContext,
@@ -370,6 +375,7 @@ async fn handle_recreate_container_confirmation(
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
         context_key: send_ctx.context_key.to_string(),
+        sandbox_scope: SandboxScope::new(user_id, send_ctx.context_key.to_string()),
         user_id,
         bot: send_ctx.bot,
         transport_ctx: SessionTransportContext {
@@ -457,6 +463,7 @@ pub async fn activate_agent_mode(
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let context_key = storage_context_key(msg.chat.id, thread_spec);
+    let sandbox_scope = sandbox_scope(user_id, msg.chat.id, thread_spec);
     let session_keys = agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id);
 
     info!("Activating agent mode for user {user_id}");
@@ -464,6 +471,7 @@ pub async fn activate_agent_mode(
     ensure_session_exists(EnsureSessionContext {
         session_keys,
         context_key,
+        sandbox_scope,
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
@@ -547,6 +555,7 @@ pub async fn handle_agent_message(
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let context_key = storage_context_key(chat_id, thread_spec);
+    let sandbox_scope = sandbox_scope(user_id, chat_id, thread_spec);
     let session_keys = agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id);
 
     let scoped_state = current_context_state(&storage, user_id, chat_id, thread_spec).await?;
@@ -585,6 +594,7 @@ pub async fn handle_agent_message(
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
         context_key: context_key.clone(),
+        sandbox_scope: sandbox_scope.clone(),
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
@@ -626,6 +636,7 @@ pub async fn handle_agent_message(
             storage: task_storage,
             llm: task_llm,
             context_key: context_key.clone(),
+            sandbox_scope,
             message_thread_id,
             session_id,
         };
@@ -659,6 +670,7 @@ mod tests {
     use oxide_agent_core::agent::AgentSession;
     use oxide_agent_core::config::AgentSettings;
     use oxide_agent_core::llm::LlmClient;
+    use oxide_agent_core::sandbox::SandboxScope;
     use oxide_agent_core::storage::{
         AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message, StorageError,
         StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
@@ -883,6 +895,10 @@ mod tests {
         Arc::new(LlmClient::new(settings.agent.as_ref()))
     }
 
+    fn test_sandbox_scope(user_id: i64, context_key: &str) -> SandboxScope {
+        SandboxScope::new(user_id, context_key.to_string())
+    }
+
     #[test]
     fn control_commands_are_recognized_for_topic_gate_bypass() {
         assert_eq!(
@@ -1043,6 +1059,7 @@ mod tests {
         let allowed_session = ensure_session_exists(EnsureSessionContext {
             session_keys: allowed_keys,
             context_key: "allowed".to_string(),
+            sandbox_scope: test_sandbox_scope(88, "allowed"),
             user_id: 88,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1056,6 +1073,7 @@ mod tests {
         let blocked_session = ensure_session_exists(EnsureSessionContext {
             session_keys: blocked_keys,
             context_key: "blocked".to_string(),
+            sandbox_scope: test_sandbox_scope(77, "blocked"),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1098,6 +1116,7 @@ mod tests {
         let first_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1117,6 +1136,7 @@ mod tests {
         let second_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1153,6 +1173,7 @@ mod tests {
         let first_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1181,6 +1202,7 @@ mod tests {
         let second_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1209,6 +1231,7 @@ mod tests {
         let third_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1252,6 +1275,7 @@ mod tests {
         let resolved_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
             bot: &bot,
             transport_ctx: SessionTransportContext {
@@ -1271,16 +1295,60 @@ mod tests {
 
         remove_sessions_with_compat(keys).await;
     }
+
+    #[tokio::test]
+    async fn threaded_transport_session_migrates_idle_legacy_session_to_primary_scope() {
+        let bot = Bot::new("token");
+        let chat_id = ChatId(-100_123);
+        let thread_id = ThreadId(MessageId(53));
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let settings = test_settings(None);
+        let llm = test_llm(&settings);
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id));
+
+        remove_sessions_with_compat(keys).await;
+
+        let legacy_executor = oxide_agent_core::agent::AgentExecutor::new(
+            llm.clone(),
+            AgentSession::new(keys.legacy),
+            settings.agent.clone(),
+        );
+        SESSION_REGISTRY.insert(keys.legacy, legacy_executor).await;
+
+        let resolved_session = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            context_key: "topic-a".to_string(),
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                manager_default_chat_id: Some(chat_id),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &settings,
+        })
+        .await;
+
+        assert_eq!(resolved_session, keys.primary);
+        assert!(SESSION_REGISTRY.contains(&keys.primary).await);
+        assert!(!SESSION_REGISTRY.contains(&keys.legacy).await);
+
+        remove_sessions_with_compat(keys).await;
+    }
 }
 
 async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
     let manager_enabled = manager_control_plane_enabled(ctx.settings, ctx.user_id);
+    let requires_primary_session = ctx.session_keys.primary != ctx.session_keys.legacy;
 
     if let Some(existing_session_id) = resolve_existing_session_id(ctx.session_keys).await {
+        let should_migrate_legacy =
+            requires_primary_session && existing_session_id != ctx.session_keys.primary;
         if let Some(existing_manager_enabled) =
             session_manager_control_plane_enabled(existing_session_id).await
         {
-            if existing_manager_enabled == manager_enabled {
+            if existing_manager_enabled == manager_enabled && !should_migrate_legacy {
                 debug!(session_id = %existing_session_id, "Session already exists in cache");
                 return existing_session_id;
             }
@@ -1291,14 +1359,16 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
                     session_id = %existing_session_id,
                     previous_manager_enabled = existing_manager_enabled,
                     current_manager_enabled = manager_enabled,
-                    "Session manager RBAC changed; recreating session"
+                    migrate_to_primary = should_migrate_legacy,
+                    "Session identity changed; recreating session"
                 );
             } else if SESSION_REGISTRY.contains(&existing_session_id).await {
                 debug!(
                     session_id = %existing_session_id,
                     previous_manager_enabled = existing_manager_enabled,
                     current_manager_enabled = manager_enabled,
-                    "Session manager RBAC changed while task is running; deferring refresh"
+                    migrate_to_primary = should_migrate_legacy,
+                    "Session identity changed while task is running; deferring refresh"
                 );
                 return existing_session_id;
             }
@@ -1325,7 +1395,7 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
         return session_id;
     }
 
-    let mut session = AgentSession::new(session_id);
+    let mut session = AgentSession::new_with_sandbox_scope(session_id, ctx.sandbox_scope.clone());
 
     // Load saved agent memory if exists
     if let Ok(Some(saved_memory)) = ctx
@@ -1391,7 +1461,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let chat_id = ctx.msg.chat.id;
 
     // Preprocess input
-    let preprocessor = Preprocessor::new(ctx.llm.clone(), user_id);
+    let preprocessor = Preprocessor::new(ctx.llm.clone(), ctx.sandbox_scope.clone());
     let input = extract_agent_input(&ctx.bot, &ctx.msg).await?;
     let task_text = match preprocessor.preprocess_input(input).await {
         Ok(text) => text,
@@ -1672,6 +1742,7 @@ async fn handle_loop_retry(
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys: ctx.session_keys,
         context_key: ctx.context_key.clone(),
+        sandbox_scope: SandboxScope::new(ctx.user_id, ctx.context_key.clone()),
         user_id: ctx.user_id,
         bot: &ctx.bot,
         transport_ctx: SessionTransportContext {

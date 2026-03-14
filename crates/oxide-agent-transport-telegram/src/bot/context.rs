@@ -1,5 +1,6 @@
 use crate::bot::{thread_peer_key_from_spec, TelegramThreadKind, TelegramThreadSpec};
 use anyhow::Result;
+use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::{
     generate_chat_uuid, StorageProvider, UserConfig, UserContextConfig,
 };
@@ -32,6 +33,20 @@ pub(crate) fn storage_context_key(chat_id: ChatId, thread_spec: TelegramThreadSp
 #[must_use]
 pub(crate) fn scoped_chat_storage_id(context_key: &str, chat_uuid: &str) -> String {
     format!("{context_key}/{chat_uuid}")
+}
+
+#[must_use]
+pub(crate) fn sandbox_scope(
+    user_id: i64,
+    chat_id: ChatId,
+    thread_spec: TelegramThreadSpec,
+) -> SandboxScope {
+    SandboxScope::new(user_id, storage_context_key(chat_id, thread_spec)).with_transport_metadata(
+        Some(chat_id.0),
+        thread_spec
+            .thread_id
+            .map(|thread_id| i64::from(thread_id.0 .0)),
+    )
 }
 
 #[must_use]
@@ -146,8 +161,8 @@ pub(crate) async fn reset_current_chat_uuid(
 #[cfg(test)]
 mod tests {
     use super::{
-        current_context_state_from_config, reset_current_chat_uuid, scoped_chat_storage_id,
-        storage_context_key,
+        current_context_state_from_config, reset_current_chat_uuid, sandbox_scope,
+        scoped_chat_storage_id, storage_context_key,
     };
     use crate::bot::resolve_thread_spec_from_context;
     use async_trait::async_trait;
@@ -396,6 +411,16 @@ mod tests {
             scoped_chat_storage_id("-1001:42", "chat-1"),
             "-1001:42/chat-1"
         );
+    }
+
+    #[test]
+    fn sandbox_scope_reuses_topic_context_key() {
+        let spec = resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
+        let scope = sandbox_scope(77, ChatId(-1001), spec);
+
+        assert_eq!(scope.namespace(), "-1001:42");
+        assert_eq!(scope.chat_id(), Some(-1001));
+        assert_eq!(scope.thread_id(), Some(42));
     }
 
     #[test]

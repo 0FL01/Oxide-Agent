@@ -26,6 +26,7 @@ use crate::config::{
     get_sandbox_image, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS,
     SANDBOX_MEMORY_LIMIT,
 };
+use crate::sandbox::SandboxScope;
 
 /// Result of executing a command in the sandbox
 #[derive(Debug, Clone)]
@@ -64,7 +65,7 @@ pub struct SandboxManager {
     docker: Docker,
     container_id: Option<String>,
     image_name: String,
-    user_id: i64,
+    scope: SandboxScope,
 }
 
 const RECREATE_REMOVE_MAX_ATTEMPTS: usize = 8;
@@ -127,8 +128,9 @@ impl SandboxManager {
     /// # Errors
     ///
     /// Returns an error if connection to Docker daemon fails or ping fails.
-    #[instrument(skip_all, fields(user_id))]
-    pub async fn new(user_id: i64) -> Result<Self> {
+    #[instrument(skip_all)]
+    pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
+        let scope = scope.into();
         let docker =
             Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
 
@@ -138,13 +140,13 @@ impl SandboxManager {
             .await
             .context("Failed to ping Docker daemon")?;
 
-        debug!(user_id, "Docker connection established");
+        debug!(owner_id = scope.owner_id(), scope = %scope.namespace(), "Docker connection established");
 
         Ok(Self {
             docker,
             container_id: None,
             image_name: get_sandbox_image(),
-            user_id,
+            scope,
         })
     }
 
@@ -169,7 +171,8 @@ impl SandboxManager {
             Err(error) => {
                 if Self::is_not_found_error(&error) {
                     warn!(
-                        user_id = self.user_id,
+                        owner_id = self.scope.owner_id(),
+                        scope = %self.scope.namespace(),
                         container_id = %container_id,
                         error = %error,
                         "Sandbox container not found, resetting tracked container_id"
@@ -178,7 +181,8 @@ impl SandboxManager {
                     false
                 } else {
                     warn!(
-                        user_id = self.user_id,
+                        owner_id = self.scope.owner_id(),
+                        scope = %self.scope.namespace(),
                         container_id = %container_id,
                         error = %error,
                         "Sandbox container inspect failed, preserving tracked container_id"
@@ -193,6 +197,12 @@ impl SandboxManager {
     #[must_use]
     pub fn container_id(&self) -> Option<&str> {
         self.container_id.as_deref()
+    }
+
+    /// Sandbox scope used for persistent container identity.
+    #[must_use]
+    pub fn scope(&self) -> &SandboxScope {
+        &self.scope
     }
 
     async fn has_container_with_name(&self, container_name: &str) -> Result<bool> {
@@ -218,14 +228,16 @@ impl SandboxManager {
         for attempt in 1..=RECREATE_REMOVE_MAX_ATTEMPTS {
             if !self.has_container_with_name(container_name).await? {
                 debug!(
-                    user_id = self.user_id,
+                    owner_id = self.scope.owner_id(),
+                    scope = %self.scope.namespace(),
                     container_name, attempt, "Container name is free for recreate"
                 );
                 return Ok(());
             }
 
             warn!(
-                user_id = self.user_id,
+                owner_id = self.scope.owner_id(),
+                scope = %self.scope.namespace(),
                 container_name,
                 attempt,
                 backoff_ms,
@@ -245,18 +257,18 @@ impl SandboxManager {
     /// # Errors
     ///
     /// Returns an error if container creation or starting fails.
-    #[instrument(skip(self), fields(user_id = self.user_id))]
+    #[instrument(skip(self), fields(owner_id = self.scope.owner_id(), scope = %self.scope.namespace()))]
     pub async fn create_sandbox(&mut self) -> Result<()> {
         if self.refresh_container_liveness().await {
             // Already tracked in this object
             return Ok(());
         }
 
-        let container_name = format!("agent-sandbox-{}", self.user_id);
+        let container_name = self.scope.container_name();
 
         // Check if container already exists
         if let Some(id) = self.get_container_id_by_name(&container_name).await? {
-            info!(user_id = self.user_id, container_id = %id, "Found existing sandbox container");
+            info!(owner_id = self.scope.owner_id(), scope = %self.scope.namespace(), container_id = %id, "Found existing sandbox container");
             self.container_id = Some(id.clone());
 
             // Simpler: Just try to start it.
@@ -289,10 +301,7 @@ impl SandboxManager {
             hostname: Some("sandbox".to_string()),
             working_dir: Some("/workspace".to_string()),
             host_config: Some(host_config),
-            labels: Some(HashMap::from([
-                ("agent.user_id".to_string(), self.user_id.to_string()),
-                ("agent.sandbox".to_string(), "true".to_string()),
-            ])),
+            labels: Some(self.scope.docker_labels()),
             // Keep container running
             cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
             ..Default::default()
@@ -312,7 +321,8 @@ impl SandboxManager {
             }
             Err(error) if Self::is_conflict_error(&error) => {
                 warn!(
-                    user_id = self.user_id,
+                    owner_id = self.scope.owner_id(),
+                    scope = %self.scope.namespace(),
                     container_name = %container_name,
                     error = %error,
                     "Sandbox create conflicted, resolving existing container by name"
@@ -744,8 +754,15 @@ impl SandboxManager {
     /// Returns an error if container removal fails.
     #[instrument(skip(self), fields(container_id = ?self.container_id))]
     pub async fn destroy(&mut self) -> Result<()> {
-        if let Some(container_id) = self.container_id.take() {
-            info!(container_id = %container_id, "Destroying sandbox container");
+        let container_ref = if let Some(container_id) = self.container_id.take() {
+            Some(container_id)
+        } else {
+            self.get_container_id_by_name(&self.scope.container_name())
+                .await?
+        };
+
+        if let Some(container_ref) = container_ref {
+            info!(container_ref = %container_ref, scope = %self.scope.namespace(), "Destroying sandbox container");
 
             let options = RemoveContainerOptions {
                 force: true,
@@ -754,14 +771,16 @@ impl SandboxManager {
 
             if let Err(e) = self
                 .docker
-                .remove_container(&container_id, Some(options))
+                .remove_container(&container_ref, Some(options))
                 .await
             {
                 // Container might already be removed (auto_remove)
-                warn!(container_id = %container_id, error = %e, "Failed to remove container (may already be removed)");
+                warn!(container_ref = %container_ref, error = %e, "Failed to remove container (may already be removed)");
             } else {
-                info!(container_id = %container_id, "Sandbox container destroyed");
+                info!(container_ref = %container_ref, "Sandbox container destroyed");
             }
+        } else {
+            debug!(scope = %self.scope.namespace(), "No sandbox container found for destroy");
         }
 
         Ok(())
@@ -772,14 +791,14 @@ impl SandboxManager {
     /// # Errors
     ///
     /// Returns an error if destruction or creation fails.
-    #[instrument(skip(self), fields(user_id = self.user_id))]
+    #[instrument(skip(self), fields(owner_id = self.scope.owner_id(), scope = %self.scope.namespace()))]
     pub async fn recreate(&mut self) -> Result<()> {
         info!("Recreating sandbox");
 
         // Clear stale in-memory ID before recreation attempts.
         self.refresh_container_liveness().await;
 
-        let container_name = format!("agent-sandbox-{}", self.user_id);
+        let container_name = self.scope.container_name();
 
         // Force destroy current container
         if self.container_id.is_some() {
@@ -799,7 +818,8 @@ impl SandboxManager {
             .await
         {
             debug!(
-                user_id = self.user_id,
+                owner_id = self.scope.owner_id(),
+                scope = %self.scope.namespace(),
                 container_name = %container_name,
                 error = %error,
                 "Remove-by-name before recreate returned error"

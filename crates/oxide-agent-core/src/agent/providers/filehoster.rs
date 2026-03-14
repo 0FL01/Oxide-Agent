@@ -4,7 +4,7 @@
 
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
-use crate::sandbox::SandboxManager;
+use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -23,16 +23,16 @@ const GOFILE_DOWNLOAD_PAGE_PREFIX: &str = "https://gofile.io/d/";
 /// Provider for file hosting tools (executed in sandbox)
 pub struct FileHosterProvider {
     sandbox: Arc<Mutex<Option<SandboxManager>>>,
-    user_id: i64,
+    sandbox_scope: SandboxScope,
 }
 
 impl FileHosterProvider {
     /// Create a new `FileHosterProvider` (sandbox is lazily initialized)
     #[must_use]
-    pub fn new(user_id: i64) -> Self {
+    pub fn new(sandbox_scope: impl Into<SandboxScope>) -> Self {
         Self {
             sandbox: Arc::new(Mutex::new(None)),
-            user_id,
+            sandbox_scope: sandbox_scope.into(),
         }
     }
 
@@ -48,8 +48,8 @@ impl FileHosterProvider {
             return Ok(());
         }
 
-        debug!(user_id = self.user_id, "Creating new sandbox for provider");
-        let mut sandbox = SandboxManager::new(self.user_id).await?;
+        debug!(scope = %self.sandbox_scope.namespace(), "Creating new sandbox for provider");
+        let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
         sandbox.create_sandbox().await?;
 
         *self.sandbox.lock().await = Some(sandbox);

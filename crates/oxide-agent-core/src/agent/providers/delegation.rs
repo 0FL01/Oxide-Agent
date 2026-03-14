@@ -20,6 +20,7 @@ use crate::config::{
     SUB_AGENT_MAX_TOKENS,
 };
 use crate::llm::ToolDefinition;
+use crate::sandbox::SandboxScope;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -43,7 +44,7 @@ const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
 /// Provider for sub-agent delegation tool.
 pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
-    user_id: i64,
+    sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
 }
 
@@ -52,12 +53,12 @@ impl DelegationProvider {
     #[must_use]
     pub fn new(
         llm_client: Arc<crate::llm::LlmClient>,
-        user_id: i64,
+        sandbox_scope: impl Into<SandboxScope>,
         settings: Arc<crate::config::AgentSettings>,
     ) -> Self {
         Self {
             llm_client,
-            user_id,
+            sandbox_scope: sandbox_scope.into(),
             settings,
         }
     }
@@ -75,20 +76,20 @@ impl DelegationProvider {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Vec<Box<dyn ToolProvider>> {
         let sandbox_provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(self.user_id).with_progress_tx(tx.clone())
+            SandboxProvider::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone())
         } else {
-            SandboxProvider::new(self.user_id)
+            SandboxProvider::new(self.sandbox_scope.clone())
         };
         let ytdlp_provider = if let Some(tx) = progress_tx {
-            YtdlpProvider::new(self.user_id).with_progress_tx(tx.clone())
+            YtdlpProvider::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone())
         } else {
-            YtdlpProvider::new(self.user_id)
+            YtdlpProvider::new(self.sandbox_scope.clone())
         };
 
         let mut providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(TodosProvider::new(todos_arc)),
             Box::new(sandbox_provider),
-            Box::new(FileHosterProvider::new(self.user_id)),
+            Box::new(FileHosterProvider::new(self.sandbox_scope.clone())),
             Box::new(ytdlp_provider),
         ];
 

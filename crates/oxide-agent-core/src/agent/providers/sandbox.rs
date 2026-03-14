@@ -5,7 +5,7 @@
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
-use crate::sandbox::SandboxManager;
+use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -25,7 +25,7 @@ const CHAT_DELIVERY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(120);
 /// Provider for Docker sandbox tools
 pub struct SandboxProvider {
     sandbox: Arc<Mutex<Option<SandboxManager>>>,
-    user_id: i64,
+    sandbox_scope: SandboxScope,
     progress_tx: Option<Sender<AgentEvent>>,
 }
 
@@ -38,10 +38,10 @@ struct FileDeliveryRequest {
 impl SandboxProvider {
     /// Create a new sandbox provider (sandbox is lazily initialized)
     #[must_use]
-    pub fn new(user_id: i64) -> Self {
+    pub fn new(sandbox_scope: impl Into<SandboxScope>) -> Self {
         Self {
             sandbox: Arc::new(Mutex::new(None)),
-            user_id,
+            sandbox_scope: sandbox_scope.into(),
             progress_tx: None,
         }
     }
@@ -71,8 +71,8 @@ impl SandboxProvider {
             return Ok(());
         }
 
-        debug!(user_id = self.user_id, "Creating new sandbox for provider");
-        let mut sandbox = SandboxManager::new(self.user_id).await?;
+        debug!(scope = %self.sandbox_scope.namespace(), "Creating new sandbox for provider");
+        let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
         sandbox.create_sandbox().await?;
 
         *self.sandbox.lock().await = Some(sandbox);

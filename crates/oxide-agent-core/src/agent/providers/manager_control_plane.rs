@@ -4,6 +4,7 @@
 
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
+use crate::sandbox::{SandboxManager, SandboxScope};
 use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
     TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
@@ -138,6 +139,37 @@ pub trait ManagerTopicLifecycle: Send + Sync {
     ) -> Result<ForumTopicActionResult>;
 }
 
+/// Abstraction over sandbox cleanup for deleted transport topics.
+#[async_trait]
+pub trait ManagerTopicSandboxCleanup: Send + Sync {
+    /// Remove sandbox resources associated with a deleted topic.
+    async fn cleanup_topic_sandbox(
+        &self,
+        user_id: i64,
+        topic: &ForumTopicActionResult,
+    ) -> Result<()>;
+}
+
+#[derive(Default)]
+struct DockerTopicSandboxCleanup;
+
+#[async_trait]
+impl ManagerTopicSandboxCleanup for DockerTopicSandboxCleanup {
+    async fn cleanup_topic_sandbox(
+        &self,
+        user_id: i64,
+        topic: &ForumTopicActionResult,
+    ) -> Result<()> {
+        let scope = SandboxScope::new(
+            user_id,
+            ManagerControlPlaneProvider::forum_topic_context_key(topic.chat_id, topic.thread_id),
+        )
+        .with_transport_metadata(Some(topic.chat_id), Some(topic.thread_id));
+        let mut sandbox = SandboxManager::new(scope).await?;
+        sandbox.destroy().await
+    }
+}
+
 enum AuditStatus {
     Written,
     WriteFailed(String),
@@ -258,6 +290,7 @@ pub struct ManagerControlPlaneProvider {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
+    sandbox_cleanup: Arc<dyn ManagerTopicSandboxCleanup>,
 }
 
 impl ManagerControlPlaneProvider {
@@ -268,6 +301,7 @@ impl ManagerControlPlaneProvider {
             storage,
             user_id,
             topic_lifecycle: None,
+            sandbox_cleanup: Arc::new(DockerTopicSandboxCleanup),
         }
     }
 
@@ -276,6 +310,138 @@ impl ManagerControlPlaneProvider {
     pub fn with_topic_lifecycle(mut self, topic_lifecycle: Arc<dyn ManagerTopicLifecycle>) -> Self {
         self.topic_lifecycle = Some(topic_lifecycle);
         self
+    }
+
+    /// Overrides sandbox cleanup strategy for forum topic deletion flows.
+    #[must_use]
+    pub fn with_topic_sandbox_cleanup(
+        mut self,
+        sandbox_cleanup: Arc<dyn ManagerTopicSandboxCleanup>,
+    ) -> Self {
+        self.sandbox_cleanup = sandbox_cleanup;
+        self
+    }
+
+    fn forum_topic_context_key(chat_id: i64, thread_id: i64) -> String {
+        format!("{chat_id}:{thread_id}")
+    }
+
+    fn forum_topic_binding_keys(chat_id: i64, thread_id: i64) -> Vec<String> {
+        let context_key = Self::forum_topic_context_key(chat_id, thread_id);
+        let raw_thread_key = thread_id.to_string();
+        if raw_thread_key == context_key {
+            vec![context_key]
+        } else {
+            vec![context_key, raw_thread_key]
+        }
+    }
+
+    async fn cleanup_forum_topic_artifacts(
+        &self,
+        topic: &ForumTopicActionResult,
+    ) -> (serde_json::Value, Option<String>) {
+        let context_key = Self::forum_topic_context_key(topic.chat_id, topic.thread_id);
+        let binding_keys = Self::forum_topic_binding_keys(topic.chat_id, topic.thread_id);
+        let mut errors = Vec::new();
+        let mut removed_context_config = false;
+        let mut deleted_chat_history = false;
+        let deleted_agent_memory = match self
+            .storage
+            .clear_agent_memory_for_context(self.user_id, context_key.clone())
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to clear agent memory for {context_key}: {err}"
+                ));
+                false
+            }
+        };
+
+        let deleted_chat_history_for_context = match self
+            .storage
+            .clear_chat_history_for_context(self.user_id, context_key.clone())
+            .await
+        {
+            Ok(()) => {
+                deleted_chat_history = true;
+                true
+            }
+            Err(err) => {
+                errors.push(format!(
+                    "failed to clear chat history for {context_key}: {err}"
+                ));
+                false
+            }
+        };
+
+        for topic_binding_key in &binding_keys {
+            if let Err(err) = self
+                .storage
+                .delete_topic_binding(self.user_id, topic_binding_key.clone())
+                .await
+            {
+                errors.push(format!(
+                    "failed to delete topic binding {topic_binding_key}: {err}"
+                ));
+            }
+        }
+
+        match self.storage.get_user_config(self.user_id).await {
+            Ok(mut config) => {
+                removed_context_config = config.contexts.remove(&context_key).is_some();
+                if let Err(err) = self.storage.update_user_config(self.user_id, config).await {
+                    errors.push(format!(
+                        "failed to update user config for {context_key}: {err}"
+                    ));
+                }
+            }
+            Err(err) => {
+                errors.push(format!(
+                    "failed to load user config for {context_key}: {err}"
+                ));
+            }
+        }
+
+        let deleted_container = match self
+            .sandbox_cleanup
+            .cleanup_topic_sandbox(self.user_id, topic)
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to destroy sandbox for {context_key}: {err}"
+                ));
+                false
+            }
+        };
+
+        let cleanup = json!({
+            "context_key": context_key,
+            "deleted_chat_history": deleted_chat_history,
+            "deleted_chat_history_for_context": deleted_chat_history_for_context,
+            "deleted_agent_memory": deleted_agent_memory,
+            "deleted_topic_binding_keys": binding_keys,
+            "removed_context_config": removed_context_config,
+            "deleted_container": deleted_container,
+            "errors": errors,
+        });
+
+        let error = cleanup
+            .get("errors")
+            .and_then(|value| value.as_array())
+            .filter(|errors| !errors.is_empty())
+            .map(|errors| {
+                errors
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            });
+
+        (cleanup, error)
     }
 
     fn topic_binding_set_parameters() -> serde_json::Value {
@@ -1401,23 +1567,36 @@ impl ManagerControlPlaneProvider {
             TOOL_FORUM_TOPIC_DELETE => lifecycle.forum_topic_delete(request.clone()).await?,
             _ => bail!("unsupported forum topic thread action: {tool_name}"),
         };
+        let derived_topic_id = Self::forum_topic_context_key(result.chat_id, result.thread_id);
+        let (cleanup, cleanup_error) = if tool_name == TOOL_FORUM_TOPIC_DELETE {
+            self.cleanup_forum_topic_artifacts(&result).await
+        } else {
+            (json!({ "skipped": true }), None)
+        };
 
         let audit_status = self
             .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
-                topic_id: None,
+                topic_id: Some(derived_topic_id),
                 agent_id: None,
                 action: tool_name.to_string(),
                 payload: json!({
                     "request": request,
                     "result": result,
+                    "cleanup": cleanup,
                     "outcome": Self::dry_run_outcome(false)
                 }),
             })
             .await;
 
-        let response =
-            Self::attach_audit_status(json!({ "ok": true, "topic": result }), audit_status);
+        if let Some(cleanup_error) = cleanup_error {
+            bail!("forum topic deleted but cleanup failed: {cleanup_error}");
+        }
+
+        let response = Self::attach_audit_status(
+            json!({ "ok": true, "topic": result, "cleanup": cleanup }),
+            audit_status,
+        );
         Self::to_json_string(response)
     }
 }
@@ -1639,6 +1818,38 @@ mod tests {
         }
     }
 
+    struct FakeTopicSandboxCleanup {
+        calls: std::sync::Mutex<Vec<(i64, i64, i64)>>,
+    }
+
+    impl FakeTopicSandboxCleanup {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<(i64, i64, i64)> {
+            self.calls.lock().expect("mutex poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ManagerTopicSandboxCleanup for FakeTopicSandboxCleanup {
+        async fn cleanup_topic_sandbox(
+            &self,
+            user_id: i64,
+            topic: &ForumTopicActionResult,
+        ) -> Result<()> {
+            self.calls.lock().expect("mutex poisoned").push((
+                user_id,
+                topic.chat_id,
+                topic.thread_id,
+            ));
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn forum_topic_tools_unavailable_without_lifecycle_service() {
         let provider = ManagerControlPlaneProvider::new(
@@ -1755,6 +1966,98 @@ mod tests {
         assert_eq!(parsed["topic"]["thread_id"], 313);
         assert_eq!(parsed["audit_status"], "written");
         assert_eq!(lifecycle.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn forum_topic_delete_cleans_topic_storage_and_sandbox() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_clear_agent_memory_for_context()
+            .with(eq(77_i64), eq("-100999:42".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock.expect_clear_chat_history_for_context()
+            .with(eq(77_i64), eq("-100999:42".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock.expect_delete_topic_binding()
+            .with(eq(77_i64), eq("-100999:42".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock.expect_delete_topic_binding()
+            .with(eq(77_i64), eq("42".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock.expect_get_user_config().times(1).returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([(
+                    "-100999:42".to_string(),
+                    crate::storage::UserContextConfig {
+                        state: Some("agent_mode".to_string()),
+                        current_chat_uuid: Some("chat-1".to_string()),
+                        chat_id: Some(-100999),
+                        thread_id: Some(42),
+                    },
+                )]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+        mock.expect_update_user_config()
+            .withf(|user_id, config| *user_id == 77 && !config.contexts.contains_key("-100999:42"))
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.topic_id.as_deref() == Some("-100999:42")
+                    && options.action == TOOL_FORUM_TOPIC_DELETE
+                    && options
+                        .payload
+                        .get("cleanup")
+                        .and_then(|cleanup| cleanup.get("deleted_container"))
+                        == Some(&json!(true))
+            })
+            .times(1)
+            .returning(|options| {
+                Ok(audit_event(
+                    1,
+                    options.topic_id.as_deref(),
+                    None,
+                    &options.action,
+                    options.payload,
+                ))
+            });
+
+        let lifecycle = Arc::new(FakeTopicLifecycle::new());
+        let sandbox_cleanup = Arc::new(FakeTopicSandboxCleanup::new());
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_lifecycle(lifecycle.clone())
+            .with_topic_sandbox_cleanup(sandbox_cleanup.clone());
+
+        let response = provider
+            .execute(
+                TOOL_FORUM_TOPIC_DELETE,
+                r#"{"chat_id":-100999,"thread_id":42}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("forum topic delete should clean topic artifacts");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["topic"]["thread_id"], 42);
+        assert_eq!(parsed["cleanup"]["context_key"], "-100999:42");
+        assert_eq!(parsed["cleanup"]["deleted_container"], true);
+        assert_eq!(parsed["audit_status"], "written");
+        assert_eq!(
+            lifecycle.calls(),
+            vec![LifecycleCall::Delete(ForumTopicThreadRequest {
+                chat_id: Some(-100999),
+                thread_id: 42
+            })]
+        );
+        assert_eq!(sandbox_cleanup.calls(), vec![(77, -100999, 42)]);
     }
 
     #[tokio::test]

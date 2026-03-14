@@ -338,6 +338,22 @@ pub trait StorageProvider: Send + Sync {
         user_id: i64,
         chat_uuid: String,
     ) -> Result<(), StorageError>;
+    /// Clear all chat histories scoped by transport context.
+    async fn clear_chat_history_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<(), StorageError> {
+        let config = self.get_user_config(user_id).await?;
+        if let Some(chat_uuid) = config
+            .contexts
+            .get(&context_key)
+            .and_then(|context| context.current_chat_uuid.clone())
+        {
+            self.clear_chat_history_for_chat(user_id, chat_uuid).await?;
+        }
+        Ok(())
+    }
     /// Save agent memory to storage
     async fn save_agent_memory(
         &self,
@@ -864,6 +880,41 @@ impl StorageProvider for R2Storage {
             .await
     }
 
+    async fn clear_chat_history_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<(), StorageError> {
+        let prefix = user_context_chat_history_prefix(user_id, &context_key);
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let response = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix)
+                .set_continuation_token(continuation_token.clone())
+                .send()
+                .await
+                .map_err(|error| StorageError::S3Put(error.to_string()))?;
+
+            for object in response.contents() {
+                if let Some(key) = object.key() {
+                    self.delete_object(key).await?;
+                }
+            }
+
+            if !response.is_truncated().unwrap_or(false) {
+                break;
+            }
+
+            continuation_token = response.next_continuation_token().map(str::to_string);
+        }
+
+        Ok(())
+    }
+
     /// Save agent memory to storage
     async fn save_agent_memory(
         &self,
@@ -1140,6 +1191,12 @@ pub fn user_chat_history_key(user_id: i64, chat_uuid: &str) -> String {
     format!("users/{user_id}/chats/{chat_uuid}/history.json")
 }
 
+/// Returns the R2 prefix for all chat histories under a transport context.
+#[must_use]
+pub fn user_context_chat_history_prefix(user_id: i64, context_key: &str) -> String {
+    format!("users/{user_id}/chats/{context_key}/")
+}
+
 /// Returns the R2 key for a user's agent memory file
 #[must_use]
 pub fn user_agent_memory_key(user_id: i64) -> String {
@@ -1338,10 +1395,10 @@ mod tests {
         build_audit_event_record, build_topic_binding_record, generate_chat_uuid,
         next_record_version, resolve_active_topic_binding, select_audit_events_page,
         should_retry_control_plane_rmw, topic_binding_key, user_chat_history_key, user_config_key,
-        user_context_agent_memory_key, user_history_key, AgentProfileRecord,
-        AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, OptionalMetadataPatch,
-        TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-        UserConfig, UserContextConfig,
+        user_context_agent_memory_key, user_context_chat_history_prefix, user_history_key,
+        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks,
+        OptionalMetadataPatch, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
+        UpsertTopicBindingOptions, UserConfig, UserContextConfig,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1378,6 +1435,12 @@ mod tests {
     fn user_context_agent_memory_key_uses_topic_namespace() {
         let key = user_context_agent_memory_key(42, "-1001:77");
         assert_eq!(key, "users/42/topics/-1001:77/agent_memory.json");
+    }
+
+    #[test]
+    fn user_context_chat_history_prefix_uses_topic_namespace() {
+        let prefix = user_context_chat_history_prefix(42, "-1001:77");
+        assert_eq!(prefix, "users/42/chats/-1001:77/");
     }
 
     #[test]
