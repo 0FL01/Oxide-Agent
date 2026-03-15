@@ -39,7 +39,10 @@ use oxide_agent_core::agent::{
     parse_agent_profile,
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
-    providers::inject_ssh_approval_system_message,
+    providers::{
+        inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
+        inspect_topic_infra_config,
+    },
     AgentExecutionProfile, AgentSession, SessionId,
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
@@ -2059,13 +2062,30 @@ async fn apply_topic_infra_config(
     topic_id: String,
     config: Option<oxide_agent_core::storage::TopicInfraConfigRecord>,
 ) {
+    let preflight = match config.as_ref() {
+        Some(config) => {
+            Some(inspect_topic_infra_config(&storage, user_id, &topic_id, config).await)
+        }
+        None => None,
+    };
+    let provider_config = match preflight.as_ref() {
+        Some(report) if report.provider_enabled => config.clone(),
+        Some(_) => None,
+        None => None,
+    };
+    let preflight_message = preflight
+        .as_ref()
+        .map(inject_topic_infra_preflight_system_message)
+        .map(|message| message.content);
+
     let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
         warn!(session_id = %session_id, "Cannot apply topic infra config: session not found");
         return;
     };
 
     let mut executor = executor_arc.write().await;
-    executor.set_topic_infra(storage, user_id, topic_id, config);
+    executor.set_topic_infra(storage, user_id, topic_id, provider_config);
+    executor.set_topic_infra_preflight_status(preflight.as_ref(), preflight_message);
 }
 
 #[cfg(test)]

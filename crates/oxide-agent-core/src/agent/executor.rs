@@ -13,7 +13,7 @@ use super::prompt::create_agent_system_prompt;
 use super::providers::{
     DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
     SandboxProvider, SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
-    TodosProvider, YtdlpProvider,
+    TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -48,6 +48,7 @@ pub struct AgentExecutor {
     topic_infra: Option<TopicInfraContext>,
     execution_profile: AgentExecutionProfile,
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
+    last_topic_infra_preflight_summary: Option<String>,
 }
 
 #[derive(Clone)]
@@ -112,6 +113,7 @@ impl AgentExecutor {
             topic_infra: None,
             execution_profile: AgentExecutionProfile::default(),
             tool_policy_state,
+            last_topic_infra_preflight_summary: None,
         }
     }
 
@@ -141,6 +143,29 @@ impl AgentExecutor {
                 .as_ref()
                 .map_or_else(SshApprovalRegistry::new, |ctx| ctx.approvals.clone()),
         });
+    }
+
+    /// Inject safe topic infra preflight status into session memory once per change.
+    pub fn set_topic_infra_preflight_status(
+        &mut self,
+        report: Option<&TopicInfraPreflightReport>,
+        message: Option<String>,
+    ) {
+        if report.is_none() {
+            self.last_topic_infra_preflight_summary = None;
+            return;
+        }
+
+        let Some(message) = message else {
+            return;
+        };
+
+        if self.last_topic_infra_preflight_summary.as_deref() == Some(message.as_str()) {
+            return;
+        }
+
+        self.last_topic_infra_preflight_summary = Some(message.clone());
+        self.inject_system_message(message);
     }
 
     /// Return pending SSH approvals that have not yet been surfaced to the transport.

@@ -2,6 +2,7 @@
 //!
 //! Exposes user-scoped CRUD tools for topic bindings, topic contexts, and agent profiles.
 
+use super::ssh_mcp::{inspect_topic_infra_config, probe_secret_ref, SecretProbeKind};
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
@@ -30,6 +31,7 @@ const TOOL_TOPIC_INFRA_UPSERT: &str = "topic_infra_upsert";
 const TOOL_TOPIC_INFRA_GET: &str = "topic_infra_get";
 const TOOL_TOPIC_INFRA_DELETE: &str = "topic_infra_delete";
 const TOOL_TOPIC_INFRA_ROLLBACK: &str = "topic_infra_rollback";
+const TOOL_PRIVATE_SECRET_PROBE: &str = "private_secret_probe";
 const TOOL_AGENT_PROFILE_UPSERT: &str = "agent_profile_upsert";
 const TOOL_AGENT_PROFILE_GET: &str = "agent_profile_get";
 const TOOL_AGENT_PROFILE_DELETE: &str = "agent_profile_delete";
@@ -47,6 +49,10 @@ const TELEGRAM_FORUM_ICON_COLORS: [u32; 6] = [
 
 const fn default_ssh_port() -> u16 {
     22
+}
+
+const fn default_secret_probe_kind() -> SecretProbeKind {
+    SecretProbeKind::Opaque
 }
 
 fn default_infra_allowed_tool_modes() -> Vec<TopicInfraToolMode> {
@@ -325,6 +331,14 @@ struct TopicInfraRollbackArgs {
     topic_id: String,
     #[serde(default)]
     dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateSecretProbeArgs {
+    secret_ref: String,
+    #[serde(default = "default_secret_probe_kind")]
+    kind: SecretProbeKind,
 }
 
 #[derive(Debug, Deserialize)]
@@ -785,8 +799,24 @@ impl ManagerControlPlaneProvider {
         tools.extend(Self::topic_binding_tools_definitions());
         tools.extend(Self::topic_context_tools_definitions());
         tools.extend(Self::topic_infra_tools_definitions());
+        tools.extend(Self::private_secret_tools_definitions());
         tools.extend(Self::agent_profile_tools_definitions());
         tools
+    }
+
+    fn private_secret_tools_definitions() -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: TOOL_PRIVATE_SECRET_PROBE.to_string(),
+            description: "Probe a private secret ref without exposing its content".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "secret_ref": { "type": "string", "description": "Opaque secret reference (for example storage:vds or env:SSH_KEY)" },
+                    "kind": { "type": "string", "enum": ["opaque", "ssh_private_key"], "description": "Optional probe mode; defaults to opaque" }
+                },
+                "required": ["secret_ref"]
+            }),
+        }]
     }
 
     fn topic_binding_tools_definitions() -> Vec<ToolDefinition> {
@@ -1224,6 +1254,35 @@ impl ManagerControlPlaneProvider {
             "allowed_tool_modes": record.allowed_tool_modes,
             "approval_required_modes": record.approval_required_modes,
         })
+    }
+
+    fn topic_infra_preview_record(&self, args: &TopicInfraUpsertArgs) -> TopicInfraConfigRecord {
+        TopicInfraConfigRecord {
+            schema_version: 1,
+            version: 0,
+            user_id: self.user_id,
+            topic_id: args.topic_id.clone(),
+            target_name: args.target_name.clone(),
+            host: args.host.clone(),
+            port: args.port,
+            remote_user: args.remote_user.clone(),
+            auth_mode: args.auth_mode,
+            secret_ref: args.secret_ref.clone(),
+            sudo_secret_ref: args.sudo_secret_ref.clone(),
+            environment: args.environment.clone(),
+            tags: args.tags.clone(),
+            allowed_tool_modes: args.allowed_tool_modes.clone(),
+            approval_required_modes: args.approval_required_modes.clone(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    async fn inspect_topic_infra_record(
+        &self,
+        record: &TopicInfraConfigRecord,
+    ) -> crate::agent::providers::TopicInfraPreflightReport {
+        inspect_topic_infra_config(&self.storage, self.user_id, &record.topic_id, record).await
     }
 
     fn topic_lifecycle(&self) -> Result<&Arc<dyn ManagerTopicLifecycle>> {
@@ -2161,6 +2220,17 @@ impl ManagerControlPlaneProvider {
         Self::to_json_string(response)
     }
 
+    async fn execute_private_secret_probe(&self, arguments: &str) -> Result<String> {
+        let args: PrivateSecretProbeArgs = Self::parse_args(arguments, TOOL_PRIVATE_SECRET_PROBE)?;
+        let secret_ref = Self::validate_non_empty(args.secret_ref, "secret_ref")?;
+        let report = probe_secret_ref(&self.storage, self.user_id, &secret_ref, args.kind).await;
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "secret_probe": report
+        }))
+    }
+
     async fn execute_topic_infra_upsert(&self, arguments: &str) -> Result<String> {
         let args =
             Self::validate_topic_infra_args(Self::parse_args(arguments, TOOL_TOPIC_INFRA_UPSERT)?)?;
@@ -2192,7 +2262,10 @@ impl ManagerControlPlaneProvider {
                     "dry_run": true,
                     "preview": {
                         "operation": "upsert",
-                        "desired": desired
+                        "desired": desired,
+                        "preflight": self
+                            .inspect_topic_infra_record(&self.topic_infra_preview_record(&args))
+                            .await
                     },
                     "previous": previous
                 }),
@@ -2219,6 +2292,7 @@ impl ManagerControlPlaneProvider {
             })
             .await
             .map_err(|err| anyhow!("failed to upsert topic infra config: {err}"))?;
+        let preflight = self.inspect_topic_infra_record(&record).await;
 
         let audit_status = self
             .append_audit_with_status(AppendAuditEventOptions {
@@ -2235,7 +2309,7 @@ impl ManagerControlPlaneProvider {
             .await;
 
         Self::to_json_string(Self::attach_audit_status(
-            json!({ "ok": true, "topic_infra": record }),
+            json!({ "ok": true, "topic_infra": record, "preflight": preflight }),
             audit_status,
         ))
     }
@@ -2249,11 +2323,16 @@ impl ManagerControlPlaneProvider {
             .get_topic_infra_config(self.user_id, topic_id)
             .await
             .map_err(|err| anyhow!("failed to get topic infra config: {err}"))?;
+        let preflight = match record.as_ref() {
+            Some(record) => Some(self.inspect_topic_infra_record(record).await),
+            None => None,
+        };
 
         Self::to_json_string(json!({
             "ok": true,
             "found": record.is_some(),
-            "topic_infra": record
+            "topic_infra": record,
+            "preflight": preflight
         }))
     }
 
@@ -2374,6 +2453,10 @@ impl ManagerControlPlaneProvider {
         let rolled_back_infra = self
             .restore_or_delete_topic_infra(&topic_id, previous.clone())
             .await?;
+        let preflight = match rolled_back_infra.as_ref() {
+            Some(record) => Some(self.inspect_topic_infra_record(record).await),
+            None => None,
+        };
 
         let response_topic_id = topic_id.clone();
         let audit_status = self
@@ -2396,7 +2479,8 @@ impl ManagerControlPlaneProvider {
             json!({
                 "ok": true,
                 "operation": rollback_operation,
-                "topic_infra": rolled_back_infra
+                "topic_infra": rolled_back_infra,
+                "preflight": preflight
             }),
             audit_status,
         ))
@@ -2822,6 +2906,11 @@ impl ToolProvider for ManagerControlPlaneProvider {
                 | TOOL_TOPIC_CONTEXT_GET
                 | TOOL_TOPIC_CONTEXT_DELETE
                 | TOOL_TOPIC_CONTEXT_ROLLBACK
+                | TOOL_TOPIC_INFRA_UPSERT
+                | TOOL_TOPIC_INFRA_GET
+                | TOOL_TOPIC_INFRA_DELETE
+                | TOOL_TOPIC_INFRA_ROLLBACK
+                | TOOL_PRIVATE_SECRET_PROBE
                 | TOOL_AGENT_PROFILE_UPSERT
                 | TOOL_AGENT_PROFILE_GET
                 | TOOL_AGENT_PROFILE_DELETE
@@ -2857,6 +2946,7 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_CONTEXT_GET => self.execute_topic_context_get(arguments).await,
             TOOL_TOPIC_CONTEXT_DELETE => self.execute_topic_context_delete(arguments).await,
             TOOL_TOPIC_CONTEXT_ROLLBACK => self.execute_topic_context_rollback(arguments).await,
+            TOOL_PRIVATE_SECRET_PROBE => self.execute_private_secret_probe(arguments).await,
             TOOL_TOPIC_INFRA_UPSERT => self.execute_topic_infra_upsert(arguments).await,
             TOOL_TOPIC_INFRA_GET => self.execute_topic_infra_get(arguments).await,
             TOOL_TOPIC_INFRA_DELETE => self.execute_topic_infra_delete(arguments).await,
@@ -3314,6 +3404,10 @@ mod tests {
             .times(1)
             .returning(|_, _| Ok(()));
         mock.expect_delete_topic_context()
+            .with(eq(77_i64), eq("-100999:42".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock.expect_delete_topic_infra_config()
             .with(eq(77_i64), eq("-100999:42".to_string()))
             .times(1)
             .returning(|_, _| Ok(()));
@@ -4261,6 +4355,7 @@ mod tests {
         mock.expect_get_topic_infra_config()
             .with(eq(77_i64), eq("topic-a".to_string()))
             .returning(|_, _| Ok(None));
+        mock.expect_get_secret_value().returning(|_, _| Ok(None));
         mock.expect_upsert_topic_infra_config()
             .withf(|options| {
                 options.user_id == 77
@@ -4321,6 +4416,7 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["topic_infra"]["topic_id"], "topic-a");
         assert_eq!(parsed["topic_infra"]["target_name"], "prod-app");
+        assert_eq!(parsed["preflight"]["provider_enabled"], false);
         assert_eq!(parsed["audit_status"], "written");
     }
 
@@ -4330,6 +4426,7 @@ mod tests {
         mock.expect_get_topic_infra_config()
             .with(eq(77_i64), eq("topic-a".to_string()))
             .returning(|_, topic_id| Ok(Some(topic_infra(77, &topic_id, 3))));
+        mock.expect_get_secret_value().returning(|_, _| Ok(None));
         mock.expect_list_audit_events_page()
             .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
             .returning(|_, _, _| {
@@ -4404,7 +4501,33 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["operation"], "restore");
         assert_eq!(parsed["topic_infra"]["host"], "prod.example.com");
+        assert_eq!(parsed["preflight"]["provider_enabled"], false);
         assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn private_secret_probe_reports_presence_without_exposing_content() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_secret_value()
+            .with(eq(77_i64), eq("vds".to_string()))
+            .returning(|_, _| Ok(Some("-----BEGIN OPENSSH PRIVATE KEY-----\ninvalid\n-----END OPENSSH PRIVATE KEY-----\n".to_string())));
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_PRIVATE_SECRET_PROBE,
+                r#"{"secret_ref":"storage:vds","kind":"ssh_private_key"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("private secret probe should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["secret_probe"]["secret_ref"], "storage:vds");
+        assert_eq!(parsed["secret_probe"]["present"], true);
+        assert!(parsed["secret_probe"].get("content").is_none());
     }
 
     #[tokio::test]
