@@ -1,14 +1,14 @@
 //! Manager control-plane provider.
 //!
-//! Exposes user-scoped CRUD tools for topic bindings and agent profiles.
+//! Exposes user-scoped CRUD tools for topic bindings, topic contexts, and agent profiles.
 
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
-    TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-    UserConfig,
+    TopicBindingKind, TopicBindingRecord, TopicContextRecord, UpsertAgentProfileOptions,
+    UpsertTopicBindingOptions, UpsertTopicContextOptions, UserConfig,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -20,6 +20,10 @@ const TOOL_TOPIC_BINDING_SET: &str = "topic_binding_set";
 const TOOL_TOPIC_BINDING_GET: &str = "topic_binding_get";
 const TOOL_TOPIC_BINDING_DELETE: &str = "topic_binding_delete";
 const TOOL_TOPIC_BINDING_ROLLBACK: &str = "topic_binding_rollback";
+const TOOL_TOPIC_CONTEXT_UPSERT: &str = "topic_context_upsert";
+const TOOL_TOPIC_CONTEXT_GET: &str = "topic_context_get";
+const TOOL_TOPIC_CONTEXT_DELETE: &str = "topic_context_delete";
+const TOOL_TOPIC_CONTEXT_ROLLBACK: &str = "topic_context_rollback";
 const TOOL_AGENT_PROFILE_UPSERT: &str = "agent_profile_upsert";
 const TOOL_AGENT_PROFILE_GET: &str = "agent_profile_get";
 const TOOL_AGENT_PROFILE_DELETE: &str = "agent_profile_delete";
@@ -218,6 +222,37 @@ struct TopicBindingDeleteArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TopicBindingRollbackArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicContextUpsertArgs {
+    topic_id: String,
+    context: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicContextGetArgs {
+    topic_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicContextDeleteArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicContextRollbackArgs {
     topic_id: String,
     #[serde(default)]
     dry_run: bool,
@@ -462,86 +497,30 @@ impl ManagerControlPlaneProvider {
         let context_key = Self::forum_topic_context_key(topic.chat_id, topic.thread_id);
         let binding_keys = Self::forum_topic_binding_keys(topic.chat_id, topic.thread_id);
         let mut errors = Vec::new();
-        let mut removed_context_config = false;
-        let mut deleted_chat_history = false;
-        let deleted_agent_memory = match self
-            .storage
-            .clear_agent_memory_for_context(self.user_id, context_key.clone())
-            .await
-        {
-            Ok(()) => true,
-            Err(err) => {
-                errors.push(format!(
-                    "failed to clear agent memory for {context_key}: {err}"
-                ));
-                false
-            }
-        };
-
-        let deleted_chat_history_for_context = match self
-            .storage
-            .clear_chat_history_for_context(self.user_id, context_key.clone())
-            .await
-        {
-            Ok(()) => {
-                deleted_chat_history = true;
-                true
-            }
-            Err(err) => {
-                errors.push(format!(
-                    "failed to clear chat history for {context_key}: {err}"
-                ));
-                false
-            }
-        };
-
-        for topic_binding_key in &binding_keys {
-            if let Err(err) = self
-                .storage
-                .delete_topic_binding(self.user_id, topic_binding_key.clone())
-                .await
-            {
-                errors.push(format!(
-                    "failed to delete topic binding {topic_binding_key}: {err}"
-                ));
-            }
-        }
-
-        match self.storage.get_user_config(self.user_id).await {
-            Ok(mut config) => {
-                removed_context_config = config.contexts.remove(&context_key).is_some();
-                if let Err(err) = self.storage.update_user_config(self.user_id, config).await {
-                    errors.push(format!(
-                        "failed to update user config for {context_key}: {err}"
-                    ));
-                }
-            }
-            Err(err) => {
-                errors.push(format!(
-                    "failed to load user config for {context_key}: {err}"
-                ));
-            }
-        }
-
-        let deleted_container = match self
-            .sandbox_cleanup
-            .cleanup_topic_sandbox(self.user_id, topic)
-            .await
-        {
-            Ok(()) => true,
-            Err(err) => {
-                errors.push(format!(
-                    "failed to destroy sandbox for {context_key}: {err}"
-                ));
-                false
-            }
-        };
+        let deleted_agent_memory = self
+            .clear_forum_topic_agent_memory(&context_key, &mut errors)
+            .await;
+        let deleted_chat_history_for_context = self
+            .clear_forum_topic_chat_history(&context_key, &mut errors)
+            .await;
+        let deleted_chat_history = deleted_chat_history_for_context;
+        let deleted_topic_context = self
+            .delete_forum_topic_context_record(&context_key, &mut errors)
+            .await;
+        self.delete_forum_topic_bindings(&binding_keys, &mut errors).await;
+        let removed_context_config = self
+            .remove_forum_topic_context_config(&context_key, &mut errors)
+            .await;
+        let deleted_container = self
+            .cleanup_forum_topic_sandbox(topic, &context_key, &mut errors)
+            .await;
 
         let cleanup = json!({
             "context_key": context_key,
             "deleted_chat_history": deleted_chat_history,
             "deleted_chat_history_for_context": deleted_chat_history_for_context,
             "deleted_agent_memory": deleted_agent_memory,
+            "deleted_topic_context": deleted_topic_context,
             "deleted_topic_binding_keys": binding_keys,
             "removed_context_config": removed_context_config,
             "deleted_container": deleted_container,
@@ -561,6 +540,125 @@ impl ManagerControlPlaneProvider {
             });
 
         (cleanup, error)
+    }
+
+    async fn clear_forum_topic_agent_memory(
+        &self,
+        context_key: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        match self
+            .storage
+            .clear_agent_memory_for_context(self.user_id, context_key.to_string())
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to clear agent memory for {context_key}: {err}"
+                ));
+                false
+            }
+        }
+    }
+
+    async fn clear_forum_topic_chat_history(
+        &self,
+        context_key: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        match self
+            .storage
+            .clear_chat_history_for_context(self.user_id, context_key.to_string())
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to clear chat history for {context_key}: {err}"
+                ));
+                false
+            }
+        }
+    }
+
+    async fn delete_forum_topic_context_record(
+        &self,
+        context_key: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        match self
+            .storage
+            .delete_topic_context(self.user_id, context_key.to_string())
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to delete topic context for {context_key}: {err}"
+                ));
+                false
+            }
+        }
+    }
+
+    async fn delete_forum_topic_bindings(&self, binding_keys: &[String], errors: &mut Vec<String>) {
+        for topic_binding_key in binding_keys {
+            if let Err(err) = self
+                .storage
+                .delete_topic_binding(self.user_id, topic_binding_key.clone())
+                .await
+            {
+                errors.push(format!(
+                    "failed to delete topic binding {topic_binding_key}: {err}"
+                ));
+            }
+        }
+    }
+
+    async fn remove_forum_topic_context_config(
+        &self,
+        context_key: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        match self.storage.get_user_config(self.user_id).await {
+            Ok(mut config) => {
+                let removed_context_config = config.contexts.remove(context_key).is_some();
+                if let Err(err) = self.storage.update_user_config(self.user_id, config).await {
+                    errors.push(format!(
+                        "failed to update user config for {context_key}: {err}"
+                    ));
+                }
+                removed_context_config
+            }
+            Err(err) => {
+                errors.push(format!(
+                    "failed to load user config for {context_key}: {err}"
+                ));
+                false
+            }
+        }
+    }
+
+    async fn cleanup_forum_topic_sandbox(
+        &self,
+        topic: &ForumTopicActionResult,
+        context_key: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        match self
+            .sandbox_cleanup
+            .cleanup_topic_sandbox(self.user_id, topic)
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to destroy sandbox for {context_key}: {err}"
+                ));
+                false
+            }
+        }
     }
 
     fn topic_binding_set_parameters() -> serde_json::Value {
@@ -589,6 +687,14 @@ impl ManagerControlPlaneProvider {
     }
 
     fn base_tools_definitions() -> Vec<ToolDefinition> {
+        let mut tools = Vec::new();
+        tools.extend(Self::topic_binding_tools_definitions());
+        tools.extend(Self::topic_context_tools_definitions());
+        tools.extend(Self::agent_profile_tools_definitions());
+        tools
+    }
+
+    fn topic_binding_tools_definitions() -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
                 name: TOOL_TOPIC_BINDING_SET.to_string(),
@@ -630,6 +736,65 @@ impl ManagerControlPlaneProvider {
                     "required": ["topic_id"]
                 }),
             },
+        ]
+    }
+
+    fn topic_context_tools_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_TOPIC_CONTEXT_UPSERT.to_string(),
+                description: "Create or update topic-specific execution context for current user"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "context": { "type": "string", "description": "Free-form topic instructions injected into the agent prompt" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id", "context"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_CONTEXT_GET.to_string(),
+                description: "Get topic-specific execution context for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_CONTEXT_DELETE.to_string(),
+                description: "Delete topic-specific execution context for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_CONTEXT_ROLLBACK.to_string(),
+                description: "Rollback last topic context mutation for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "dry_run": { "type": "boolean", "description": "Preview rollback without persisting" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+        ]
+    }
+
+    fn agent_profile_tools_definitions() -> Vec<ToolDefinition> {
+        vec![
             ToolDefinition {
                 name: TOOL_AGENT_PROFILE_UPSERT.to_string(),
                 description: "Create or update agent profile for current user".to_string(),
@@ -974,6 +1139,24 @@ impl ManagerControlPlaneProvider {
                         TOOL_AGENT_PROFILE_UPSERT,
                         TOOL_AGENT_PROFILE_DELETE,
                         TOOL_AGENT_PROFILE_ROLLBACK,
+                    ],
+                )
+        })
+        .await
+    }
+
+    async fn last_topic_context_mutation(
+        &self,
+        topic_id: &str,
+    ) -> Result<Option<crate::storage::AuditEventRecord>> {
+        self.find_latest_applied_mutation(|event| {
+            event.topic_id.as_deref() == Some(topic_id)
+                && Self::action_matches(
+                    event.action.as_str(),
+                    &[
+                        TOOL_TOPIC_CONTEXT_UPSERT,
+                        TOOL_TOPIC_CONTEXT_DELETE,
+                        TOOL_TOPIC_CONTEXT_ROLLBACK,
                     ],
                 )
         })
@@ -1419,6 +1602,261 @@ impl ManagerControlPlaneProvider {
         Self::to_json_string(response)
     }
 
+    async fn execute_topic_context_upsert(&self, arguments: &str) -> Result<String> {
+        let args: TopicContextUpsertArgs = Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_UPSERT)?;
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let context = Self::validate_non_empty(args.context, "context")?;
+        let previous = self
+            .storage
+            .get_topic_context(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic context: {err}"))?;
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_CONTEXT_UPSERT.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "context": context,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "upsert",
+                        "topic_id": topic_id,
+                        "context": context
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        let record = self
+            .storage
+            .upsert_topic_context(UpsertTopicContextOptions {
+                user_id: self.user_id,
+                topic_id: topic_id.clone(),
+                context,
+            })
+            .await
+            .map_err(|err| anyhow!("failed to upsert topic context: {err}"))?;
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id),
+                agent_id: None,
+                action: TOOL_TOPIC_CONTEXT_UPSERT.to_string(),
+                payload: json!({
+                    "topic_id": record.topic_id,
+                    "version": record.version,
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response =
+            Self::attach_audit_status(json!({ "ok": true, "topic_context": record }), audit_status);
+        Self::to_json_string(response)
+    }
+
+    async fn execute_topic_context_get(&self, arguments: &str) -> Result<String> {
+        let args: TopicContextGetArgs = Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_GET)?;
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+
+        let record = self
+            .storage
+            .get_topic_context(self.user_id, topic_id)
+            .await
+            .map_err(|err| anyhow!("failed to get topic context: {err}"))?;
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "found": record.is_some(),
+            "topic_context": record
+        }))
+    }
+
+    async fn execute_topic_context_delete(&self, arguments: &str) -> Result<String> {
+        let args: TopicContextDeleteArgs = Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_DELETE)?;
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let previous = self
+            .storage
+            .get_topic_context(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic context: {err}"))?;
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_CONTEXT_DELETE.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "delete",
+                        "topic_id": topic_id
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        self.storage
+            .delete_topic_context(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to delete topic context: {err}"))?;
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id.clone()),
+                agent_id: None,
+                action: TOOL_TOPIC_CONTEXT_DELETE.to_string(),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response = Self::attach_audit_status(json!({ "ok": true }), audit_status);
+        Self::to_json_string(response)
+    }
+
+    async fn execute_topic_context_rollback(&self, arguments: &str) -> Result<String> {
+        let args: TopicContextRollbackArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_ROLLBACK)?;
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let current = self
+            .storage
+            .get_topic_context(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic context: {err}"))?;
+        let previous = match self.last_topic_context_mutation(&topic_id).await? {
+            Some(event) => Self::previous_from_payload::<TopicContextRecord>(&event.payload)?,
+            None => None,
+        };
+
+        let rollback_operation = if previous.is_some() {
+            "restore"
+        } else {
+            "delete"
+        };
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_CONTEXT_ROLLBACK.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "operation": rollback_operation,
+                        "previous": current,
+                        "restore_to": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": rollback_operation,
+                        "topic_id": topic_id
+                    },
+                    "current": current,
+                    "restore_to": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        let rolled_back_context = if let Some(previous_context) = previous.clone() {
+            Some(
+                self.storage
+                    .upsert_topic_context(UpsertTopicContextOptions {
+                        user_id: self.user_id,
+                        topic_id: topic_id.clone(),
+                        context: previous_context.context,
+                    })
+                    .await
+                    .map_err(|err| anyhow!("failed to restore topic context: {err}"))?,
+            )
+        } else {
+            self.storage
+                .delete_topic_context(self.user_id, topic_id.clone())
+                .await
+                .map_err(|err| anyhow!("failed to delete topic context during rollback: {err}"))?;
+            None
+        };
+
+        let response_topic_id = topic_id.clone();
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id),
+                agent_id: None,
+                action: TOOL_TOPIC_CONTEXT_ROLLBACK.to_string(),
+                payload: json!({
+                    "topic_id": response_topic_id,
+                    "operation": rollback_operation,
+                    "previous": current,
+                    "restore_to": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response = Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "operation": rollback_operation,
+                "topic_context": rolled_back_context
+            }),
+            audit_status,
+        );
+
+        Self::to_json_string(response)
+    }
+
     async fn execute_agent_profile_rollback(&self, arguments: &str) -> Result<String> {
         let args: AgentProfileRollbackArgs =
             Self::parse_args(arguments, TOOL_AGENT_PROFILE_ROLLBACK)?;
@@ -1835,6 +2273,10 @@ impl ToolProvider for ManagerControlPlaneProvider {
                 | TOOL_TOPIC_BINDING_GET
                 | TOOL_TOPIC_BINDING_DELETE
                 | TOOL_TOPIC_BINDING_ROLLBACK
+                | TOOL_TOPIC_CONTEXT_UPSERT
+                | TOOL_TOPIC_CONTEXT_GET
+                | TOOL_TOPIC_CONTEXT_DELETE
+                | TOOL_TOPIC_CONTEXT_ROLLBACK
                 | TOOL_AGENT_PROFILE_UPSERT
                 | TOOL_AGENT_PROFILE_GET
                 | TOOL_AGENT_PROFILE_DELETE
@@ -1866,6 +2308,10 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_BINDING_GET => self.execute_topic_binding_get(arguments).await,
             TOOL_TOPIC_BINDING_DELETE => self.execute_topic_binding_delete(arguments).await,
             TOOL_TOPIC_BINDING_ROLLBACK => self.execute_topic_binding_rollback(arguments).await,
+            TOOL_TOPIC_CONTEXT_UPSERT => self.execute_topic_context_upsert(arguments).await,
+            TOOL_TOPIC_CONTEXT_GET => self.execute_topic_context_get(arguments).await,
+            TOOL_TOPIC_CONTEXT_DELETE => self.execute_topic_context_delete(arguments).await,
+            TOOL_TOPIC_CONTEXT_ROLLBACK => self.execute_topic_context_rollback(arguments).await,
             TOOL_AGENT_PROFILE_UPSERT => self.execute_agent_profile_upsert(arguments).await,
             TOOL_AGENT_PROFILE_GET => self.execute_agent_profile_get(arguments).await,
             TOOL_AGENT_PROFILE_DELETE => self.execute_agent_profile_delete(arguments).await,
@@ -1894,7 +2340,9 @@ impl ToolProvider for ManagerControlPlaneProvider {
 mod tests {
     use super::*;
     use crate::agent::registry::ToolRegistry;
-    use crate::storage::{AgentProfileRecord, AppendAuditEventOptions, TopicBindingRecord};
+    use crate::storage::{
+        AgentProfileRecord, AppendAuditEventOptions, TopicBindingRecord, TopicContextRecord,
+    };
     use mockall::{predicate::eq, Sequence};
 
     fn binding(user_id: i64, topic_id: &str, agent_id: &str, version: u64) -> TopicBindingRecord {
@@ -2290,6 +2738,10 @@ mod tests {
             .times(1)
             .returning(|_, _| Ok(()));
         mock.expect_clear_chat_history_for_context()
+            .with(eq(77_i64), eq("-100999:42".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock.expect_delete_topic_context()
             .with(eq(77_i64), eq("-100999:42".to_string()))
             .times(1)
             .returning(|_, _| Ok(()));
@@ -3046,6 +3498,188 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["operation"], "delete");
         assert!(parsed["profile"].is_null());
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_context_upsert_persists_and_audits() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_context()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_context()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.context == "Use maintenance window rules"
+            })
+            .returning(|options| {
+                Ok(TopicContextRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    context: options.context,
+                    created_at: 10,
+                    updated_at: 10,
+                })
+            });
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.topic_id.as_deref() == Some("topic-a")
+                    && options.action == TOOL_TOPIC_CONTEXT_UPSERT
+            })
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 1,
+                    event_id: "evt-1".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 11,
+                })
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_CONTEXT_UPSERT,
+                r#"{"topic_id":"topic-a","context":"Use maintenance window rules"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic context upsert should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["topic_context"]["topic_id"], "topic-a");
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_context_get_reports_missing_record() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_context()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_CONTEXT_GET,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic context get should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["found"], false);
+        assert!(parsed["topic_context"].is_null());
+    }
+
+    #[tokio::test]
+    async fn topic_context_rollback_restores_previous_snapshot() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_context()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, topic_id| {
+                Ok(Some(TopicContextRecord {
+                    schema_version: 1,
+                    version: 3,
+                    user_id: 77,
+                    topic_id,
+                    context: "current context".to_string(),
+                    created_at: 10,
+                    updated_at: 30,
+                }))
+            });
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .returning(|_, _, _| {
+                Ok(vec![crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 2,
+                    event_id: "evt-2".to_string(),
+                    user_id: 77,
+                    topic_id: Some("topic-a".to_string()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_CONTEXT_UPSERT.to_string(),
+                    payload: json!({
+                        "topic_id": "topic-a",
+                        "previous": {
+                            "schema_version": 1,
+                            "version": 1,
+                            "user_id": 77,
+                            "topic_id": "topic-a",
+                            "context": "previous context",
+                            "created_at": 5,
+                            "updated_at": 6
+                        },
+                        "outcome": "applied"
+                    }),
+                    created_at: 20,
+                }])
+            });
+        mock.expect_upsert_topic_context()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.context == "previous context"
+            })
+            .returning(|options| {
+                Ok(TopicContextRecord {
+                    schema_version: 1,
+                    version: 4,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    context: options.context,
+                    created_at: 5,
+                    updated_at: 40,
+                })
+            });
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.action == TOOL_TOPIC_CONTEXT_ROLLBACK
+                    && options.payload.get("operation") == Some(&json!("restore"))
+            })
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 4,
+                    event_id: "evt-4".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 50,
+                })
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_CONTEXT_ROLLBACK,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic context rollback should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["operation"], "restore");
+        assert_eq!(parsed["topic_context"]["context"], "previous context");
         assert_eq!(parsed["audit_status"], "written");
     }
 

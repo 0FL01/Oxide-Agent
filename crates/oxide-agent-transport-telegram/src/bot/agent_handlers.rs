@@ -698,7 +698,8 @@ pub async fn handle_agent_message(
     })
     .await;
 
-    let execution_profile = resolve_execution_profile(&storage, user_id, &route).await;
+    let execution_profile =
+        resolve_execution_profile(&storage, user_id, &context_key, &route).await;
 
     if is_agent_task_running(session_id).await {
         notify_running_agent_task(&bot, chat_id, thread_spec, outbound_thread).await?;
@@ -823,6 +824,7 @@ mod tests {
     struct NoopStorage {
         flow_memory: Option<AgentMemory>,
         agent_profile: Option<serde_json::Value>,
+        topic_context: Option<String>,
         fail_flow_memory_lookup: bool,
         cleared_flows: Arc<Mutex<Vec<(String, String)>>>,
     }
@@ -832,15 +834,20 @@ mod tests {
             Self {
                 flow_memory,
                 agent_profile: None,
+                topic_context: None,
                 fail_flow_memory_lookup: false,
                 cleared_flows: Arc::default(),
             }
         }
 
-        fn with_agent_profile(agent_profile: serde_json::Value) -> Self {
+        fn with_agent_profile_and_topic_context(
+            agent_profile: serde_json::Value,
+            topic_context: &str,
+        ) -> Self {
             Self {
                 flow_memory: None,
                 agent_profile: Some(agent_profile),
+                topic_context: Some(topic_context.to_string()),
                 fail_flow_memory_lookup: false,
                 cleared_flows: Arc::default(),
             }
@@ -850,6 +857,7 @@ mod tests {
             Self {
                 flow_memory: None,
                 agent_profile: None,
+                topic_context: None,
                 fail_flow_memory_lookup: true,
                 cleared_flows: Arc::default(),
             }
@@ -1064,6 +1072,39 @@ mod tests {
             &self,
             _user_id: i64,
             _agent_id: String,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_topic_context(
+            &self,
+            user_id: i64,
+            topic_id: String,
+        ) -> Result<Option<oxide_agent_core::storage::TopicContextRecord>, StorageError> {
+            Ok(self.topic_context.clone().map(|context| {
+                oxide_agent_core::storage::TopicContextRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id,
+                    topic_id,
+                    context,
+                    created_at: 0,
+                    updated_at: 0,
+                }
+            }))
+        }
+
+        async fn upsert_topic_context(
+            &self,
+            _options: oxide_agent_core::storage::UpsertTopicContextOptions,
+        ) -> Result<oxide_agent_core::storage::TopicContextRecord, StorageError> {
+            Err(StorageError::Config("not needed in tests".to_string()))
+        }
+
+        async fn delete_topic_context(
+            &self,
+            _user_id: i64,
+            _topic_id: String,
         ) -> Result<(), StorageError> {
             Ok(())
         }
@@ -1785,11 +1826,14 @@ mod tests {
     #[tokio::test]
     async fn resolve_execution_profile_loads_profile_policy_for_static_topic_agent() {
         let storage: Arc<dyn StorageProvider> =
-            Arc::new(NoopStorage::with_agent_profile(serde_json::json!({
-                "systemPrompt": "act as infra agent",
-                "allowedTools": ["todos_write", "execute_command"],
-                "blockedTools": ["delegate_to_sub_agent"]
-            })));
+            Arc::new(NoopStorage::with_agent_profile_and_topic_context(
+                serde_json::json!({
+                    "systemPrompt": "act as infra agent",
+                    "allowedTools": ["todos_write", "execute_command"],
+                    "blockedTools": ["delegate_to_sub_agent"]
+                }),
+                "persistent topic runbook",
+            ));
         let route = crate::bot::topic_route::TopicRouteDecision {
             enabled: true,
             require_mention: false,
@@ -1799,7 +1843,7 @@ mod tests {
             dynamic_binding_topic_id: None,
         };
 
-        let profile = resolve_execution_profile(&storage, 77, &route).await;
+        let profile = resolve_execution_profile(&storage, 77, "topic-a", &route).await;
 
         assert_eq!(profile.agent_id(), Some("infra-agent"));
         let prompt = profile
@@ -1807,6 +1851,8 @@ mod tests {
             .expect("profile prompt must be resolved");
         assert!(prompt.contains("Profile instructions:"));
         assert!(prompt.contains("Topic instructions:"));
+        assert!(prompt.contains("Persistent topic context:"));
+        assert!(prompt.contains("persistent topic runbook"));
         assert!(profile.tool_policy().allows("todos_write"));
         assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
         assert!(!profile.tool_policy().allows("file_write"));
@@ -1891,11 +1937,37 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
 async fn resolve_execution_profile(
     storage: &Arc<dyn StorageProvider>,
     user_id: i64,
+    topic_id: &str,
     route: &TopicRouteDecision,
 ) -> AgentExecutionProfile {
     let route_prompt = normalize_prompt_section(route.system_prompt_override.as_deref());
+    let topic_context_prompt = match storage
+        .get_topic_context(user_id, topic_id.to_string())
+        .await
+    {
+        Ok(record) => {
+            record.and_then(|record| normalize_prompt_section(Some(record.context.as_str())))
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                user_id,
+                topic_id,
+                "Failed to load topic context for executor configuration"
+            );
+            None
+        }
+    };
     let Some(agent_id) = route.agent_id.clone() else {
-        return AgentExecutionProfile::new(None, route_prompt, Default::default());
+        return AgentExecutionProfile::new(
+            None,
+            compose_execution_prompt_instructions(
+                None,
+                route_prompt.as_deref(),
+                topic_context_prompt.as_deref(),
+            ),
+            Default::default(),
+        );
     };
 
     let parsed_profile = match storage.get_agent_profile(user_id, agent_id.clone()).await {
@@ -1912,9 +1984,10 @@ async fn resolve_execution_profile(
         }
     };
 
-    let prompt_instructions = merge_prompt_instructions(
+    let prompt_instructions = compose_execution_prompt_instructions(
         parsed_profile.prompt_instructions.as_deref(),
         route_prompt.as_deref(),
+        topic_context_prompt.as_deref(),
     );
 
     AgentExecutionProfile::new(
@@ -1934,6 +2007,7 @@ async fn apply_execution_profile(session_id: SessionId, profile: AgentExecutionP
     executor.set_execution_profile(profile);
 }
 
+#[cfg(test)]
 fn merge_prompt_instructions(
     profile_prompt: Option<&str>,
     route_prompt: Option<&str>,
@@ -1952,6 +2026,36 @@ fn merge_prompt_instructions(
         (None, Some(route_prompt)) => Some(route_prompt),
         (None, None) => None,
     }
+}
+
+fn compose_execution_prompt_instructions(
+    profile_prompt: Option<&str>,
+    route_prompt: Option<&str>,
+    topic_context_prompt: Option<&str>,
+) -> Option<String> {
+    let mut sections = Vec::new();
+
+    if let Some(profile_prompt) = normalize_prompt_section(profile_prompt) {
+        sections.push(("Profile instructions", profile_prompt));
+    }
+    if let Some(route_prompt) = normalize_prompt_section(route_prompt) {
+        sections.push(("Topic instructions", route_prompt));
+    }
+    if let Some(topic_context_prompt) = normalize_prompt_section(topic_context_prompt) {
+        sections.push(("Persistent topic context", topic_context_prompt));
+    }
+
+    if sections.is_empty() {
+        return None;
+    }
+
+    Some(
+        sections
+            .into_iter()
+            .map(|(label, content)| format!("{label}:\n{content}"))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
 }
 
 fn normalize_prompt_section(prompt: Option<&str>) -> Option<String> {
