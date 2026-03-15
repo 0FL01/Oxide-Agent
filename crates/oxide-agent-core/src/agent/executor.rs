@@ -5,9 +5,10 @@
 
 use super::hooks::{
     CompletionCheckHook, DelegationGuardHook, SearchBudgetHook, TimeoutReportHook,
-    WorkloadDistributorHook,
+    ToolAccessPolicyHook, WorkloadDistributorHook,
 };
 use super::memory::AgentMessage;
+use super::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
     DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
@@ -23,6 +24,7 @@ use crate::llm::LlmClient;
 use crate::storage::StorageProvider;
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
+use std::sync::RwLock;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
@@ -42,6 +44,8 @@ pub struct AgentExecutor {
     skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
+    execution_profile: AgentExecutionProfile,
+    tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
 }
 
 #[derive(Clone)]
@@ -59,11 +63,15 @@ impl AgentExecutor {
         session: AgentSession,
         settings: Arc<crate::config::AgentSettings>,
     ) -> Self {
+        let tool_policy_state = Arc::new(RwLock::new(ToolAccessPolicy::default()));
         let mut runner = AgentRunner::new(llm_client.clone());
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(WorkloadDistributorHook::new()));
         runner.register_hook(Box::new(DelegationGuardHook::new()));
         runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
+        runner.register_hook(Box::new(ToolAccessPolicyHook::new(Arc::clone(
+            &tool_policy_state,
+        ))));
         runner.register_hook(Box::new(TimeoutReportHook::new()));
 
         let skill_registry = match SkillRegistry::from_env(llm_client.clone()) {
@@ -90,7 +98,17 @@ impl AgentExecutor {
             skill_registry,
             settings,
             manager_control_plane: None,
+            execution_profile: AgentExecutionProfile::default(),
+            tool_policy_state,
         }
+    }
+
+    /// Apply the latest execution profile for the next task run.
+    pub fn set_execution_profile(&mut self, execution_profile: AgentExecutionProfile) {
+        if let Ok(mut policy) = self.tool_policy_state.write() {
+            *policy = execution_profile.tool_policy().clone();
+        }
+        self.execution_profile = execution_profile;
     }
 
     /// Attach user-scoped storage for manager control-plane tools.
@@ -249,7 +267,10 @@ impl AgentExecutor {
 
         let registry = self.build_tool_registry(Arc::clone(&todos_arc), progress_tx.as_ref());
 
-        let tools = registry.all_tools();
+        let tools = self
+            .execution_profile
+            .tool_policy()
+            .filter_definitions(registry.all_tools());
         let (_, provider, _) = self.settings.get_configured_agent_model();
         let structured_output = !provider.eq_ignore_ascii_case("zai");
         let system_prompt = create_agent_system_prompt(
@@ -258,6 +279,7 @@ impl AgentExecutor {
             structured_output,
             self.skill_registry.as_mut(),
             &mut self.session,
+            self.execution_profile.prompt_instructions(),
         )
         .await;
         let mut messages =

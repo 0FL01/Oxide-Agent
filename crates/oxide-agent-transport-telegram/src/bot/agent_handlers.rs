@@ -13,7 +13,9 @@ use crate::bot::manager_topic_lifecycle::TelegramManagerTopicLifecycle;
 use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
-use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
+use crate::bot::topic_route::{
+    resolve_topic_route, touch_dynamic_binding_activity_if_needed, TopicRouteDecision,
+};
 use crate::bot::views::{
     agent_control_markup, agent_flow_inline_keyboard, cancel_task_confirmation_inline_keyboard,
     confirmation_markup, empty_inline_keyboard, get_agent_inline_keyboard_with_exit,
@@ -33,9 +35,10 @@ use crate::config::BotSettings;
 use anyhow::{Error, Result};
 use oxide_agent_core::agent::{
     executor::AgentExecutor,
+    parse_agent_profile,
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
-    AgentSession, SessionId,
+    AgentExecutionProfile, AgentSession, SessionId,
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
@@ -695,11 +698,15 @@ pub async fn handle_agent_message(
     })
     .await;
 
+    let execution_profile = resolve_execution_profile(&storage, user_id, &route).await;
+
     if is_agent_task_running(session_id).await {
         notify_running_agent_task(&bot, chat_id, thread_spec, outbound_thread).await?;
         touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
+
+    apply_execution_profile(session_id, execution_profile).await;
 
     renew_cancellation_token(session_id).await;
 
@@ -786,10 +793,11 @@ mod tests {
     use super::{
         agent_mode_session_keys, cleanup_abandoned_empty_flow, derive_agent_mode_session_id,
         ensure_session_exists, manager_control_plane_enabled, manager_default_chat_id,
-        parse_agent_callback_action, parse_agent_control_command, remove_sessions_with_compat,
-        select_existing_session_id, session_manager_control_plane_enabled,
-        should_create_fresh_flow_on_detach, AgentCallbackAction, AgentControlCommand,
-        EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
+        merge_prompt_instructions, parse_agent_callback_action, parse_agent_control_command,
+        remove_sessions_with_compat, resolve_execution_profile, select_existing_session_id,
+        session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
+        AgentCallbackAction, AgentControlCommand, EnsureSessionContext, SessionTransportContext,
+        SESSION_REGISTRY,
     };
     use crate::bot::views::{
         AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -814,6 +822,7 @@ mod tests {
     #[derive(Default)]
     struct NoopStorage {
         flow_memory: Option<AgentMemory>,
+        agent_profile: Option<serde_json::Value>,
         fail_flow_memory_lookup: bool,
         cleared_flows: Arc<Mutex<Vec<(String, String)>>>,
     }
@@ -822,6 +831,16 @@ mod tests {
         fn with_flow_memory(flow_memory: Option<AgentMemory>) -> Self {
             Self {
                 flow_memory,
+                agent_profile: None,
+                fail_flow_memory_lookup: false,
+                cleared_flows: Arc::default(),
+            }
+        }
+
+        fn with_agent_profile(agent_profile: serde_json::Value) -> Self {
+            Self {
+                flow_memory: None,
+                agent_profile: Some(agent_profile),
                 fail_flow_memory_lookup: false,
                 cleared_flows: Arc::default(),
             }
@@ -830,6 +849,7 @@ mod tests {
         fn with_failed_flow_memory_lookup() -> Self {
             Self {
                 flow_memory: None,
+                agent_profile: None,
                 fail_flow_memory_lookup: true,
                 cleared_flows: Arc::default(),
             }
@@ -1016,10 +1036,21 @@ mod tests {
 
         async fn get_agent_profile(
             &self,
-            _user_id: i64,
-            _agent_id: String,
+            user_id: i64,
+            agent_id: String,
         ) -> Result<Option<AgentProfileRecord>, StorageError> {
-            Ok(None)
+            Ok(self
+                .agent_profile
+                .clone()
+                .map(|profile| AgentProfileRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id,
+                    agent_id,
+                    profile,
+                    created_at: 0,
+                    updated_at: 0,
+                }))
         }
 
         async fn upsert_agent_profile(
@@ -1743,6 +1774,43 @@ mod tests {
             .expect("cleared_flows mutex poisoned")
             .is_empty());
     }
+
+    #[test]
+    fn merge_prompt_instructions_deduplicates_identical_sections() {
+        let merged = merge_prompt_instructions(Some("infra rules"), Some("infra rules"));
+
+        assert_eq!(merged.as_deref(), Some("infra rules"));
+    }
+
+    #[tokio::test]
+    async fn resolve_execution_profile_loads_profile_policy_for_static_topic_agent() {
+        let storage: Arc<dyn StorageProvider> =
+            Arc::new(NoopStorage::with_agent_profile(serde_json::json!({
+                "systemPrompt": "act as infra agent",
+                "allowedTools": ["todos_write", "execute_command"],
+                "blockedTools": ["delegate_to_sub_agent"]
+            })));
+        let route = crate::bot::topic_route::TopicRouteDecision {
+            enabled: true,
+            require_mention: false,
+            mention_satisfied: true,
+            system_prompt_override: Some("topic-specific note".to_string()),
+            agent_id: Some("infra-agent".to_string()),
+            dynamic_binding_topic_id: None,
+        };
+
+        let profile = resolve_execution_profile(&storage, 77, &route).await;
+
+        assert_eq!(profile.agent_id(), Some("infra-agent"));
+        let prompt = profile
+            .prompt_instructions()
+            .expect("profile prompt must be resolved");
+        assert!(prompt.contains("Profile instructions:"));
+        assert!(prompt.contains("Topic instructions:"));
+        assert!(profile.tool_policy().allows("todos_write"));
+        assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
+        assert!(!profile.tool_policy().allows("file_write"));
+    }
 }
 
 async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
@@ -1818,6 +1886,79 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
     }
     SESSION_REGISTRY.insert(session_id, executor).await;
     session_id
+}
+
+async fn resolve_execution_profile(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    route: &TopicRouteDecision,
+) -> AgentExecutionProfile {
+    let route_prompt = normalize_prompt_section(route.system_prompt_override.as_deref());
+    let Some(agent_id) = route.agent_id.clone() else {
+        return AgentExecutionProfile::new(None, route_prompt, Default::default());
+    };
+
+    let parsed_profile = match storage.get_agent_profile(user_id, agent_id.clone()).await {
+        Ok(Some(record)) => parse_agent_profile(&record.profile),
+        Ok(None) => Default::default(),
+        Err(error) => {
+            warn!(
+                error = %error,
+                user_id,
+                agent_id = %agent_id,
+                "Failed to load agent profile for executor configuration"
+            );
+            Default::default()
+        }
+    };
+
+    let prompt_instructions = merge_prompt_instructions(
+        parsed_profile.prompt_instructions.as_deref(),
+        route_prompt.as_deref(),
+    );
+
+    AgentExecutionProfile::new(
+        Some(agent_id),
+        prompt_instructions,
+        parsed_profile.tool_policy,
+    )
+}
+
+async fn apply_execution_profile(session_id: SessionId, profile: AgentExecutionProfile) {
+    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
+        warn!(session_id = %session_id, "Cannot apply execution profile: session not found");
+        return;
+    };
+
+    let mut executor = executor_arc.write().await;
+    executor.set_execution_profile(profile);
+}
+
+fn merge_prompt_instructions(
+    profile_prompt: Option<&str>,
+    route_prompt: Option<&str>,
+) -> Option<String> {
+    match (
+        normalize_prompt_section(profile_prompt),
+        normalize_prompt_section(route_prompt),
+    ) {
+        (Some(profile_prompt), Some(route_prompt)) if profile_prompt == route_prompt => {
+            Some(profile_prompt)
+        }
+        (Some(profile_prompt), Some(route_prompt)) => Some(format!(
+            "Profile instructions:\n{profile_prompt}\n\nTopic instructions:\n{route_prompt}"
+        )),
+        (Some(profile_prompt), None) => Some(profile_prompt),
+        (None, Some(route_prompt)) => Some(route_prompt),
+        (None, None) => None,
+    }
+}
+
+fn normalize_prompt_section(prompt: Option<&str>) -> Option<String> {
+    prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .map(str::to_string)
 }
 
 async fn load_agent_memory_into_session(
