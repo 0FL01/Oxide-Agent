@@ -32,6 +32,7 @@ base64 = "0.22.1"
 async-trait = "0.1.89"
 html-escape = "0.2.13"
 anyhow = "1.0.100"
+rmcp = { version = "1.2.0", default-features = false, features = ["client", "transport-child-process"] }
 tiktoken-rs = "0.9.1"
 bollard = "0.19.4"
 futures-util = "0.3.31"
