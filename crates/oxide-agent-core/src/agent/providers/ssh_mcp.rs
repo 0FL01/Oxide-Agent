@@ -11,6 +11,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use rmcp::{
+    model::CallToolRequestParams,
+    service::{Peer, RoleClient, RunningService, ServiceError},
+    transport::{ConfigureCommandExt, TokioChildProcess},
+    ServiceExt,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -21,10 +27,13 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
@@ -38,6 +47,12 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_REMOTE_OUTPUT_CHARS: usize = 16_000;
 const APPROVAL_TTL_SECS: i64 = 600;
 const KEY_PROBE_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_UPSTREAM_SSH_MCP_BINARY_PATH: &str = "/usr/local/bin/ssh-mcp";
+const UPSTREAM_SSH_MCP_BINARY_ENV: &str = "OXIDE_SSH_MCP_BINARY";
+const UPSTREAM_TOOL_EXEC: &str = "exec";
+const UPSTREAM_TOOL_SUDO_EXEC: &str = "sudo-exec";
+const UPSTREAM_TIMEOUT_GRACE_MS: u64 = 30_000;
+const UPSTREAM_MAX_OUTPUT_TOKENS: usize = 12_000;
 
 /// Supported secret probe kinds for manager-facing diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,14 +420,269 @@ fn purge_expired_entries(entries: &mut HashMap<String, ApprovalEntry>, now: i64)
     });
 }
 
-/// Topic-scoped SSH tool provider backed by the local `ssh` CLI.
 #[derive(Clone)]
-pub struct SshMcpProvider {
+enum SshExecutionBackend {
+    Upstream(UpstreamSshMcpBackend),
+}
+
+impl SshExecutionBackend {
+    async fn execute(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+        sudo: bool,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<RemoteOutput> {
+        match self {
+            Self::Upstream(backend) => {
+                backend
+                    .execute(command, timeout_secs, sudo, cancellation_token)
+                    .await
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct UpstreamSshMcpBackend {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
+    config: TopicInfraConfigRecord,
+    binary_path: PathBuf,
+    session: Arc<Mutex<Option<Arc<UpstreamSshMcpSession>>>>,
+    call_lock: Arc<Mutex<()>>,
+}
+
+struct UpstreamSshMcpSession {
+    client: Mutex<Option<RunningService<RoleClient, ()>>>,
+    peer: Peer<RoleClient>,
+    stderr_task: Mutex<Option<JoinHandle<()>>>,
+    key_path: Option<PathBuf>,
+}
+
+impl UpstreamSshMcpSession {
+    async fn shutdown(&self) {
+        if let Some(mut client) = self.client.lock().await.take() {
+            let _ = client.close_with_timeout(Duration::from_secs(3)).await;
+        }
+        if let Some(stderr_task) = self.stderr_task.lock().await.take() {
+            stderr_task.abort();
+        }
+        if let Some(path) = &self.key_path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl UpstreamSshMcpBackend {
+    fn new(
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+        config: TopicInfraConfigRecord,
+    ) -> Self {
+        let binary_path = std::env::var(UPSTREAM_SSH_MCP_BINARY_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_UPSTREAM_SSH_MCP_BINARY_PATH));
+        Self {
+            storage,
+            user_id,
+            config,
+            binary_path,
+            session: Arc::new(Mutex::new(None)),
+            call_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    async fn execute(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+        sudo: bool,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<RemoteOutput> {
+        let _call_guard = self.call_lock.lock().await;
+        let wrapped = build_wrapped_remote_command(command);
+        let response = self
+            .call_tool(
+                if sudo {
+                    UPSTREAM_TOOL_SUDO_EXEC
+                } else {
+                    UPSTREAM_TOOL_EXEC
+                },
+                json!({
+                    "command": wrapped.command,
+                    "timeout_ms": upstream_timeout_ms(timeout_secs),
+                }),
+                timeout_secs,
+                cancellation_token,
+            )
+            .await?;
+        parse_wrapped_remote_output(&wrapped.markers, &response)
+    }
+
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        let session = self.ensure_session().await?;
+        let args = arguments
+            .as_object()
+            .cloned()
+            .ok_or_else(|| anyhow!("invalid upstream ssh-mcp arguments"))?;
+        let response = session
+            .peer
+            .call_tool(CallToolRequestParams::new(tool_name.to_string()).with_arguments(args));
+        tokio::pin!(response);
+
+        let result = tokio::select! {
+            response = &mut response => response,
+            _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
+                self.reset_session().await;
+                bail!("remote SSH command timed out after {timeout_secs} seconds")
+            }
+            _ = async {
+                if let Some(token) = cancellation_token {
+                    token.cancelled().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                self.reset_session().await;
+                bail!("SSH command cancelled by user")
+            }
+        };
+
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.reset_session().await;
+                return Err(format_upstream_service_error(error));
+            }
+        };
+
+        let text = extract_call_tool_text(&result);
+        if result.is_error.unwrap_or(false) {
+            bail!(
+                "upstream ssh-mcp tool '{tool_name}' failed: {}",
+                text.trim()
+            );
+        }
+        Ok(text)
+    }
+
+    async fn ensure_session(&self) -> Result<Arc<UpstreamSshMcpSession>> {
+        if let Some(existing) = self.session.lock().await.as_ref().cloned() {
+            return Ok(existing);
+        }
+
+        let created = Arc::new(self.spawn_session().await?);
+        let existing = {
+            let mut guard = self.session.lock().await;
+            if let Some(existing) = guard.as_ref().cloned() {
+                Some(existing)
+            } else {
+                *guard = Some(Arc::clone(&created));
+                None
+            }
+        };
+        if let Some(existing) = existing {
+            created.shutdown().await;
+            return Ok(existing);
+        }
+        Ok(created)
+    }
+
+    async fn spawn_session(&self) -> Result<UpstreamSshMcpSession> {
+        let resolved_auth = resolve_backend_auth(&self.storage, self.user_id, &self.config).await?;
+        let binary_path = self.binary_path.clone();
+
+        let command = tokio::process::Command::new(&binary_path);
+        let (transport, stderr) = TokioChildProcess::builder(command.configure(|cmd| {
+            cmd.arg(format!("--host={}", self.config.host))
+                .arg(format!("--port={}", self.config.port))
+                .arg(format!("--user={}", self.config.remote_user))
+                .arg(format!(
+                    "--timeout={}",
+                    upstream_timeout_ms(DEFAULT_TIMEOUT_SECS)
+                ))
+                .arg("--maxChars=none")
+                .arg(format!("--max-output-tokens={UPSTREAM_MAX_OUTPUT_TOKENS}"))
+                .arg("--log-level=warn");
+
+            if let Some(password) = resolved_auth.password.as_deref() {
+                cmd.env("SSH_MCP_PASSWORD", password);
+            }
+            if let Some(key_path) = resolved_auth.key_path.as_deref() {
+                cmd.arg(format!("--key={}", key_path.display()));
+            }
+            if let Some(sudo_password) = resolved_auth.sudo_password.as_deref() {
+                cmd.env("SSH_MCP_SUDO_PASSWORD", sudo_password);
+            }
+        }))
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn upstream ssh-mcp binary at {}",
+                binary_path.display()
+            )
+        })?;
+
+        let stderr_task = stderr.map(|stderr| {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(line)) => tracing::warn!(target: "ssh_mcp_upstream", "{line}"),
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!(target: "ssh_mcp_upstream", "failed to read stderr: {error}");
+                            break;
+                        }
+                    }
+                }
+            })
+        });
+
+        let client = match ().serve(transport).await {
+            Ok(client) => client,
+            Err(error) => {
+                if let Some(path) = resolved_auth.key_path.as_ref() {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(anyhow!(
+                    "failed to initialize upstream ssh-mcp session: {error}"
+                ));
+            }
+        };
+        let peer = client.peer().clone();
+
+        Ok(UpstreamSshMcpSession {
+            client: Mutex::new(Some(client)),
+            peer,
+            stderr_task: Mutex::new(stderr_task),
+            key_path: resolved_auth.key_path,
+        })
+    }
+
+    async fn reset_session(&self) {
+        let session = self.session.lock().await.take();
+        if let Some(session) = session {
+            session.shutdown().await;
+        }
+    }
+}
+
+/// Topic-scoped SSH tool provider backed by the upstream `ssh-mcp` binary.
+#[derive(Clone)]
+pub struct SshMcpProvider {
     topic_id: String,
     config: TopicInfraConfigRecord,
     approvals: SshApprovalRegistry,
+    backend: SshExecutionBackend,
 }
 
 impl SshMcpProvider {
@@ -426,8 +696,11 @@ impl SshMcpProvider {
         approvals: SshApprovalRegistry,
     ) -> Self {
         Self {
-            storage,
-            user_id,
+            backend: SshExecutionBackend::Upstream(UpstreamSshMcpBackend::new(
+                Arc::clone(&storage),
+                user_id,
+                config.clone(),
+            )),
             topic_id,
             config,
             approvals,
@@ -588,7 +861,12 @@ impl SshMcpProvider {
         }
     }
 
-    async fn execute_exec(&self, arguments: &str, sudo: bool) -> Result<String> {
+    async fn execute_exec(
+        &self,
+        arguments: &str,
+        sudo: bool,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
         let args: CommandArgs = serde_json::from_str(arguments)
             .map_err(|err| anyhow!("invalid ssh command args: {err}"))?;
         let command = validate_non_empty(args.command, "command")?;
@@ -630,15 +908,14 @@ impl SshMcpProvider {
             return Ok(response);
         }
 
-        let remote_script = if sudo {
-            self.wrap_sudo_command(&command).await?
-        } else {
-            format!("sh -lc {}", escape_shell_argument(&command))
-        };
+        let remote_script = command;
         let output = self
-            .run_remote_script(
-                remote_script,
+            .backend
+            .execute(
+                &remote_script,
                 args.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+                sudo,
+                cancellation_token,
             )
             .await?;
 
@@ -682,7 +959,8 @@ impl SshMcpProvider {
             max_bytes,
         );
         let output = self
-            .run_remote_script(remote_script, DEFAULT_TIMEOUT_SECS)
+            .backend
+            .execute(&remote_script, DEFAULT_TIMEOUT_SECS, false, None)
             .await?;
         serde_json::to_string(&json!({
             "ok": true,
@@ -719,7 +997,8 @@ impl SshMcpProvider {
 
         let remote_script = format!("pgrep -af -- {} || true", escape_shell_argument(&pattern),);
         let output = self
-            .run_remote_script(remote_script, DEFAULT_TIMEOUT_SECS)
+            .backend
+            .execute(&remote_script, DEFAULT_TIMEOUT_SECS, false, None)
             .await?;
         serde_json::to_string(&json!({
             "ok": true,
@@ -758,9 +1037,12 @@ impl SshMcpProvider {
             if args.create_if_missing { "True" } else { "False" },
         );
         let output = self
-            .run_remote_script(
-                remote_script,
+            .backend
+            .execute(
+                &remote_script,
                 args.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+                false,
+                None,
             )
             .await?;
         serde_json::to_string(&json!({
@@ -769,99 +1051,6 @@ impl SshMcpProvider {
             "status": output.stdout.trim()
         }))
         .map_err(Into::into)
-    }
-
-    async fn wrap_sudo_command(&self, command: &str) -> Result<String> {
-        let escaped_command = escape_shell_argument(command);
-        if let Some(secret_ref) = self.config.sudo_secret_ref.as_deref() {
-            let sudo_password = self.resolve_secret_ref(secret_ref).await?;
-            return Ok(format!(
-                "printf '%s\\n' {} | sudo -S -p '' sh -lc {}",
-                escape_shell_argument(&sudo_password),
-                escaped_command,
-            ));
-        }
-
-        Ok(format!("sudo -n sh -lc {}", escaped_command))
-    }
-
-    async fn resolve_secret_ref(&self, secret_ref: &str) -> Result<String> {
-        if let Some(env_name) = secret_ref.strip_prefix("env:") {
-            return std::env::var(env_name)
-                .with_context(|| format!("missing environment secret '{env_name}'"));
-        }
-
-        let storage_key = secret_ref.strip_prefix("storage:").unwrap_or(secret_ref);
-        self.storage
-            .get_secret_value(self.user_id, storage_key.to_string())
-            .await
-            .map_err(|err| anyhow!("failed to load secret ref '{storage_key}': {err}"))?
-            .ok_or_else(|| anyhow!("secret ref '{storage_key}' is not provisioned"))
-    }
-
-    async fn run_remote_script(
-        &self,
-        remote_script: String,
-        timeout_secs: u64,
-    ) -> Result<RemoteOutput> {
-        let mut cleanup_path = None;
-        let mut command = match self.config.auth_mode {
-            TopicInfraAuthMode::Password => {
-                let secret_ref = self
-                    .config
-                    .secret_ref
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("password auth requires secret_ref"))?;
-                let password = self.resolve_secret_ref(secret_ref).await?;
-                let mut command = Command::new("sshpass");
-                command.arg("-e").arg("ssh");
-                command.env("SSHPASS", password);
-                command
-            }
-            TopicInfraAuthMode::PrivateKey => {
-                let secret_ref = self
-                    .config
-                    .secret_ref
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("private_key auth requires secret_ref"))?;
-                let private_key = self.resolve_secret_ref(secret_ref).await?;
-                let key_path = write_private_key_tempfile(&private_key)?;
-                cleanup_path = Some(key_path.clone());
-                let mut command = Command::new("ssh");
-                command.arg("-i").arg(&key_path);
-                command
-            }
-            TopicInfraAuthMode::None => Command::new("ssh"),
-        };
-
-        command
-            .arg("-p")
-            .arg(self.config.port.to_string())
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-o")
-            .arg("StrictHostKeyChecking=accept-new")
-            .arg(format!("{}@{}", self.config.remote_user, self.config.host))
-            .arg(remote_script)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let output = run_command_with_timeout(command, timeout_secs).await;
-
-        if let Some(path) = cleanup_path {
-            let _ = std::fs::remove_file(path);
-        }
-
-        let output = output?;
-        if output.exit_code != 0 {
-            bail!(
-                "remote SSH command failed (exit {}): {}",
-                output.exit_code,
-                output.stderr
-            );
-        }
-
-        Ok(output)
     }
 }
 
@@ -1027,11 +1216,14 @@ impl ToolProvider for SshMcpProvider {
         tool_name: &str,
         arguments: &str,
         _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         match tool_name {
-            TOOL_SSH_EXEC => self.execute_exec(arguments, false).await,
-            TOOL_SSH_SUDO_EXEC => self.execute_exec(arguments, true).await,
+            TOOL_SSH_EXEC => {
+                self.execute_exec(arguments, false, cancellation_token)
+                    .await
+            }
+            TOOL_SSH_SUDO_EXEC => self.execute_exec(arguments, true, cancellation_token).await,
             TOOL_SSH_READ_FILE => self.execute_read_file(arguments).await,
             TOOL_SSH_APPLY_FILE_EDIT => self.execute_apply_file_edit(arguments).await,
             TOOL_SSH_CHECK_PROCESS => self.execute_check_process(arguments).await,
@@ -1094,6 +1286,203 @@ struct RemoteOutput {
     stdout: String,
     stderr: String,
     exit_code: i32,
+}
+
+struct WrappedRemoteCommand {
+    command: String,
+    markers: WrappedCommandMarkers,
+}
+
+struct WrappedCommandMarkers {
+    stdout_begin: String,
+    stdout_end: String,
+    stderr_begin: String,
+    stderr_end: String,
+    exit_prefix: String,
+}
+
+struct ResolvedBackendAuth {
+    password: Option<String>,
+    key_path: Option<PathBuf>,
+    sudo_password: Option<String>,
+}
+
+fn extract_call_tool_text(result: &rmcp::model::CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|content| content.raw.as_text().map(|text| text.text.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_upstream_service_error(error: ServiceError) -> anyhow::Error {
+    anyhow!("upstream ssh-mcp request failed: {error}")
+}
+
+fn upstream_timeout_ms(timeout_secs: u64) -> u64 {
+    timeout_secs
+        .saturating_mul(1000)
+        .saturating_add(UPSTREAM_TIMEOUT_GRACE_MS)
+}
+
+async fn resolve_secret_ref(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    secret_ref: &str,
+) -> Result<String> {
+    if let Some(env_name) = secret_ref.strip_prefix("env:") {
+        return std::env::var(env_name)
+            .with_context(|| format!("missing environment secret '{env_name}'"));
+    }
+
+    let storage_key = secret_ref.strip_prefix("storage:").unwrap_or(secret_ref);
+    storage
+        .get_secret_value(user_id, storage_key.to_string())
+        .await
+        .map_err(|err| anyhow!("failed to load secret ref '{storage_key}': {err}"))?
+        .ok_or_else(|| anyhow!("secret ref '{storage_key}' is not provisioned"))
+}
+
+async fn resolve_backend_auth(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    config: &TopicInfraConfigRecord,
+) -> Result<ResolvedBackendAuth> {
+    let password = match config.auth_mode {
+        TopicInfraAuthMode::Password => {
+            let secret_ref = config
+                .secret_ref
+                .as_deref()
+                .ok_or_else(|| anyhow!("password auth requires secret_ref"))?;
+            Some(resolve_secret_ref(storage, user_id, secret_ref).await?)
+        }
+        TopicInfraAuthMode::None | TopicInfraAuthMode::PrivateKey => None,
+    };
+
+    let key_path = match config.auth_mode {
+        TopicInfraAuthMode::PrivateKey => {
+            let secret_ref = config
+                .secret_ref
+                .as_deref()
+                .ok_or_else(|| anyhow!("private_key auth requires secret_ref"))?;
+            let private_key = resolve_secret_ref(storage, user_id, secret_ref).await?;
+            Some(write_private_key_tempfile(&private_key)?)
+        }
+        TopicInfraAuthMode::None | TopicInfraAuthMode::Password => None,
+    };
+
+    let sudo_password = match config.sudo_secret_ref.as_deref() {
+        Some(secret_ref) => Some(resolve_secret_ref(storage, user_id, secret_ref).await?),
+        None => None,
+    };
+
+    Ok(ResolvedBackendAuth {
+        password,
+        key_path,
+        sudo_password,
+    })
+}
+
+fn build_wrapped_remote_command(command: &str) -> WrappedRemoteCommand {
+    let token = Uuid::new_v4().simple().to_string();
+    let markers = WrappedCommandMarkers {
+        stdout_begin: format!("__OXIDE_SSH_STDOUT_BEGIN_{token}__"),
+        stdout_end: format!("__OXIDE_SSH_STDOUT_END_{token}__"),
+        stderr_begin: format!("__OXIDE_SSH_STDERR_BEGIN_{token}__"),
+        stderr_end: format!("__OXIDE_SSH_STDERR_END_{token}__"),
+        exit_prefix: format!("__OXIDE_SSH_EXIT_{token}__="),
+    };
+    let wrapped = format!(
+        "tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t oxide-agent-ssh) || exit 125; stdout_file=\"$tmp_dir/stdout\"; stderr_file=\"$tmp_dir/stderr\"; cleanup() {{ rm -rf \"$tmp_dir\"; }}; trap cleanup EXIT; rc=0; sh -lc {} >\"$stdout_file\" 2>\"$stderr_file\" || rc=$?; printf '%s\\n' {}; od -An -tx1 -v \"$stdout_file\" | tr -d ' \\n'; printf '\\n%s\\n' {}; printf '%s\\n' {}; od -An -tx1 -v \"$stderr_file\" | tr -d ' \\n'; printf '\\n%s\\n' {}; printf '%s%s\\n' {} \"$rc\"; exit 0",
+        escape_shell_argument(command),
+        escape_shell_argument(&markers.stdout_begin),
+        escape_shell_argument(&markers.stdout_end),
+        escape_shell_argument(&markers.stderr_begin),
+        escape_shell_argument(&markers.stderr_end),
+        escape_shell_argument(&markers.exit_prefix),
+    );
+    WrappedRemoteCommand {
+        command: wrapped,
+        markers,
+    }
+}
+
+fn parse_wrapped_remote_output(
+    markers: &WrappedCommandMarkers,
+    raw_output: &str,
+) -> Result<RemoteOutput> {
+    let stdout_hex = extract_marker_body(raw_output, &markers.stdout_begin, &markers.stdout_end)?;
+    let stderr_hex = extract_marker_body(raw_output, &markers.stderr_begin, &markers.stderr_end)?;
+    let exit_code = extract_exit_code(raw_output, &markers.exit_prefix)?;
+
+    let stdout = String::from_utf8_lossy(&decode_hex(stdout_hex)?).to_string();
+    let stderr = String::from_utf8_lossy(&decode_hex(stderr_hex)?).to_string();
+
+    Ok(RemoteOutput {
+        stdout: truncate(&stdout, MAX_REMOTE_OUTPUT_CHARS),
+        stderr: truncate(&stderr, MAX_REMOTE_OUTPUT_CHARS),
+        exit_code,
+    })
+}
+
+fn extract_marker_body<'a>(raw: &'a str, begin: &str, end: &str) -> Result<&'a str> {
+    let begin_marker = format!("{begin}\n");
+    let begin_index = raw
+        .find(&begin_marker)
+        .ok_or_else(|| anyhow!("upstream ssh-mcp response is missing marker '{begin}'"))?
+        + begin_marker.len();
+    let end_marker = format!("\n{end}\n");
+    let end_index = raw[begin_index..]
+        .find(&end_marker)
+        .map(|index| begin_index + index)
+        .ok_or_else(|| anyhow!("upstream ssh-mcp response is missing marker '{end}'"))?;
+    Ok(&raw[begin_index..end_index])
+}
+
+fn extract_exit_code(raw: &str, exit_prefix: &str) -> Result<i32> {
+    let start = raw
+        .rfind(exit_prefix)
+        .ok_or_else(|| anyhow!("upstream ssh-mcp response is missing exit code marker"))?
+        + exit_prefix.len();
+    let value = raw[start..]
+        .lines()
+        .next()
+        .ok_or_else(|| anyhow!("upstream ssh-mcp response exit code is empty"))?;
+    value
+        .trim()
+        .parse::<i32>()
+        .map_err(|err| anyhow!("invalid upstream ssh-mcp exit code '{value}': {err}"))
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !trimmed.len().is_multiple_of(2) {
+        bail!("invalid hex payload length {}", trimmed.len());
+    }
+
+    let mut bytes = Vec::with_capacity(trimmed.len() / 2);
+    let raw = trimmed.as_bytes();
+    let mut index = 0;
+    while index < raw.len() {
+        let high = hex_value(raw[index])?;
+        let low = hex_value(raw[index + 1])?;
+        bytes.push((high << 4) | low);
+        index += 2;
+    }
+    Ok(bytes)
+}
+
+fn hex_value(byte: u8) -> Result<u8> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => bail!("invalid hex digit '{}'", byte as char),
+    }
 }
 
 async fn run_command_with_timeout(mut command: Command, timeout_secs: u64) -> Result<RemoteOutput> {
@@ -1420,10 +1809,10 @@ pub fn inject_topic_infra_preflight_system_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        fingerprint_for_request, inject_ssh_approval_system_message,
+        decode_hex, fingerprint_for_request, inject_ssh_approval_system_message,
         inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
-        parse_ssh_keygen_listing, SecretProbeKind, SecretProbeReport, SshApprovalRegistry,
-        TopicInfraPreflightReport,
+        parse_ssh_keygen_listing, parse_wrapped_remote_output, SecretProbeKind, SecretProbeReport,
+        SshApprovalRegistry, TopicInfraPreflightReport, WrappedCommandMarkers,
     };
     use crate::storage::TopicInfraAuthMode;
     use std::path::Path;
@@ -1536,5 +1925,29 @@ mod tests {
         let message = inject_topic_infra_preflight_system_message(&report);
         assert!(message.content.contains("safe summary only"));
         assert!(!message.content.contains("BEGIN OPENSSH PRIVATE KEY"));
+    }
+
+    #[test]
+    fn decode_hex_round_trips_ascii_payload() {
+        let decoded = decode_hex("68656c6c6f20776f726c64").expect("hex should decode");
+        assert_eq!(String::from_utf8_lossy(&decoded), "hello world");
+    }
+
+    #[test]
+    fn wrapped_remote_output_parser_extracts_sections() {
+        let markers = WrappedCommandMarkers {
+            stdout_begin: "__OUT_BEGIN__".to_string(),
+            stdout_end: "__OUT_END__".to_string(),
+            stderr_begin: "__ERR_BEGIN__".to_string(),
+            stderr_end: "__ERR_END__".to_string(),
+            exit_prefix: "__EXIT__=".to_string(),
+        };
+        let raw = "__OUT_BEGIN__\n68656c6c6f\n__OUT_END__\n__ERR_BEGIN__\n7761726e\n__ERR_END__\n__EXIT__=7\n";
+        let parsed =
+            parse_wrapped_remote_output(&markers, raw).expect("wrapped output should parse");
+
+        assert_eq!(parsed.stdout, "hello");
+        assert_eq!(parsed.stderr, "warn");
+        assert_eq!(parsed.exit_code, 7);
     }
 }

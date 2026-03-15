@@ -23,6 +23,20 @@ RUN cargo chef cook --release --workspace --features oxide-agent-core/crawl4ai -
 COPY . .
 RUN cargo build --release -p oxide-agent-telegram-bot -F oxide-agent-core/crawl4ai
 
+FROM debian:trixie-slim AS ssh-mcp-binary
+
+ARG SSH_MCP_VERSION=v2.0.4
+ARG SSH_MCP_LINUX_X86_64_SHA256=ac77c6b0908fbc2e41b9d300432f32e4ccfe9174df5b6a0ed92274fc76f83ca2
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/0FL01/ssh-mcp-rs/releases/download/${SSH_MCP_VERSION}/ssh-mcp-linux-x86_64" -o /usr/local/bin/ssh-mcp \
+    && echo "${SSH_MCP_LINUX_X86_64_SHA256}  /usr/local/bin/ssh-mcp" | sha256sum -c - \
+    && chmod +x /usr/local/bin/ssh-mcp
+
 # Runtime stage - Debian Trixie (stable)
 FROM debian:trixie-slim
 
@@ -34,6 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/oxide-agent-telegram-bot /app/oxide-agent-telegram-bot
+COPY --from=ssh-mcp-binary /usr/local/bin/ssh-mcp /usr/local/bin/ssh-mcp
 COPY skills/ /app/skills/
 
 
