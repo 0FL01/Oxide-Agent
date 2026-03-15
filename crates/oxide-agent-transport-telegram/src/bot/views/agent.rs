@@ -62,8 +62,11 @@ pub trait AgentView {
     /// Message shown while task is processing
     fn task_processing() -> &'static str;
 
-    /// Message when task is cancelled
-    fn task_cancelled(cleared_todos: bool) -> &'static str;
+    /// Message while task cancellation is in progress
+    fn task_cancelling(cleared_todos: bool) -> &'static str;
+
+    /// Message when task cancellation is complete
+    fn task_cancelled() -> &'static str;
 
     /// Message when memory is cleared
     fn memory_cleared() -> &'static str;
@@ -154,12 +157,16 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
         "⏳ Processing task..."
     }
 
-    fn task_cancelled(cleared_todos: bool) -> &'static str {
+    fn task_cancelling(cleared_todos: bool) -> &'static str {
         if cleared_todos {
             "❌ Cancelling task...\n📋 Task list cleared."
         } else {
             "❌ Cancelling task..."
         }
+    }
+
+    fn task_cancelled() -> &'static str {
+        "❌ Task canceled"
     }
 
     fn memory_cleared() -> &'static str {
@@ -447,5 +454,23 @@ pub fn confirmation_markup(use_inline: bool, action: ConfirmationType) -> ReplyM
         confirmation_inline_keyboard(action).into()
     } else {
         confirmation_keyboard().into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentView, DefaultAgentView};
+
+    #[test]
+    fn cancellation_messages_use_distinct_in_progress_and_terminal_text() {
+        assert_eq!(
+            DefaultAgentView::task_cancelling(false),
+            "❌ Cancelling task..."
+        );
+        assert_eq!(
+            DefaultAgentView::task_cancelling(true),
+            "❌ Cancelling task...\n📋 Task list cleared."
+        );
+        assert_eq!(DefaultAgentView::task_cancelled(), "❌ Task canceled");
     }
 }

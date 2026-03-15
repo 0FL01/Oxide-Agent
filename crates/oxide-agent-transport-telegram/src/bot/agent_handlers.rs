@@ -51,11 +51,15 @@ use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQuery, ParseMode, ReplyMarkup, ThreadId};
+use teloxide::types::{
+    CallbackQuery, InlineKeyboardMarkup, MessageId, ParseMode, ReplyMarkup, ThreadId,
+};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Type alias for dialogue
@@ -141,6 +145,10 @@ fn manager_default_chat_id(chat_id: ChatId, thread_spec: TelegramThreadSpec) -> 
 
 /// Global session registry for agent executors
 static SESSION_REGISTRY: LazyLock<SessionRegistry> = LazyLock::new(SessionRegistry::new);
+static PENDING_CANCEL_MESSAGES: LazyLock<RwLock<HashMap<SessionId, MessageId>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+const TASK_CANCELLED_BY_USER: &str = "Task cancelled by user";
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
@@ -276,8 +284,10 @@ async fn cancel_and_clear_with_compat(keys: AgentModeSessionKeys) -> (bool, bool
 
 async fn remove_sessions_with_compat(keys: AgentModeSessionKeys) {
     SESSION_REGISTRY.remove(&keys.primary).await;
+    clear_pending_cancel_message(keys.primary).await;
     if let Some(legacy) = keys.distinct_legacy() {
         SESSION_REGISTRY.remove(&legacy).await;
+        clear_pending_cancel_message(legacy).await;
     }
 }
 
@@ -326,6 +336,24 @@ async fn send_agent_message(
     Ok(())
 }
 
+async fn send_agent_message_and_return(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: impl Into<String>,
+    reply_markup: Option<ReplyMarkup>,
+    outbound_thread: OutboundThreadParams,
+) -> Result<Message> {
+    super::resilient::send_message_resilient_with_thread_and_markup(
+        bot,
+        chat_id,
+        text,
+        None,
+        outbound_thread.message_thread_id,
+        reply_markup,
+    )
+    .await
+}
+
 async fn send_agent_message_with_keyboard(
     bot: &Bot,
     chat_id: ChatId,
@@ -372,6 +400,119 @@ fn use_inline_topic_controls(thread_spec: TelegramThreadSpec) -> bool {
 
 fn automatic_agent_control_markup(thread_spec: TelegramThreadSpec) -> Option<ReplyMarkup> {
     (!use_inline_topic_controls(thread_spec)).then(|| agent_control_markup(false))
+}
+
+fn cancel_status_reply_markup(thread_spec: TelegramThreadSpec, agent_flow_id: &str) -> ReplyMarkup {
+    if use_inline_topic_controls(thread_spec) {
+        agent_flow_inline_keyboard(agent_flow_id).into()
+    } else {
+        agent_control_markup(false)
+    }
+}
+
+fn cancel_status_inline_markup(
+    use_inline_controls: bool,
+    agent_flow_id: &str,
+) -> Option<InlineKeyboardMarkup> {
+    use_inline_controls.then(|| agent_flow_inline_keyboard(agent_flow_id))
+}
+
+fn is_task_cancelled_error(error: &anyhow::Error) -> bool {
+    error.to_string() == TASK_CANCELLED_BY_USER
+}
+
+async fn pending_cancel_message(session_id: SessionId) -> Option<MessageId> {
+    let pending = PENDING_CANCEL_MESSAGES.read().await;
+    pending.get(&session_id).copied()
+}
+
+async fn remember_pending_cancel_message(session_id: SessionId, message_id: MessageId) {
+    let mut pending = PENDING_CANCEL_MESSAGES.write().await;
+    pending.insert(session_id, message_id);
+}
+
+async fn clear_pending_cancel_message(session_id: SessionId) {
+    let mut pending = PENDING_CANCEL_MESSAGES.write().await;
+    pending.remove(&session_id);
+}
+
+async fn take_pending_cancel_message(session_id: SessionId) -> Option<MessageId> {
+    let mut pending = PENDING_CANCEL_MESSAGES.write().await;
+    pending.remove(&session_id)
+}
+
+async fn send_or_update_pending_cancel_message(
+    bot: &Bot,
+    session_id: SessionId,
+    chat_id: ChatId,
+    text: &str,
+    reply_markup: ReplyMarkup,
+    inline_reply_markup: Option<InlineKeyboardMarkup>,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    if let Some(message_id) = pending_cancel_message(session_id).await {
+        if super::resilient::edit_message_safe_resilient_with_markup(
+            bot,
+            chat_id,
+            message_id,
+            text,
+            inline_reply_markup.clone(),
+        )
+        .await
+        {
+            return Ok(());
+        }
+
+        clear_pending_cancel_message(session_id).await;
+    }
+
+    let message =
+        send_agent_message_and_return(bot, chat_id, text, Some(reply_markup), outbound_thread)
+            .await?;
+    remember_pending_cancel_message(session_id, message.id).await;
+    Ok(())
+}
+
+async fn finalize_pending_cancel_message(
+    bot: &Bot,
+    session_id: SessionId,
+    chat_id: ChatId,
+    text: &str,
+    inline_reply_markup: Option<InlineKeyboardMarkup>,
+) {
+    let Some(message_id) = take_pending_cancel_message(session_id).await else {
+        return;
+    };
+
+    let _ = super::resilient::edit_message_safe_resilient_with_markup(
+        bot,
+        chat_id,
+        message_id,
+        text,
+        inline_reply_markup,
+    )
+    .await;
+}
+
+async fn finalize_cancel_status_if_needed(
+    bot: &Bot,
+    session_id: SessionId,
+    chat_id: ChatId,
+    cancelled: bool,
+    inline_reply_markup: Option<InlineKeyboardMarkup>,
+) {
+    if cancelled {
+        finalize_pending_cancel_message(
+            bot,
+            session_id,
+            chat_id,
+            DefaultAgentView::task_cancelled(),
+            inline_reply_markup,
+        )
+        .await;
+    } else {
+        clear_pending_cancel_message(session_id).await;
+    }
 }
 
 async fn show_agent_controls(
@@ -806,13 +947,14 @@ fn spawn_agent_task(ctx: AgentTaskContext) {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_mode_session_keys, cleanup_abandoned_empty_flow, derive_agent_mode_session_id,
-        ensure_session_exists, manager_control_plane_enabled, manager_default_chat_id,
-        merge_prompt_instructions, parse_agent_callback_action, parse_agent_control_command,
-        remove_sessions_with_compat, resolve_execution_profile, select_existing_session_id,
-        session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
-        AgentCallbackAction, AgentControlCommand, EnsureSessionContext, SessionTransportContext,
-        SESSION_REGISTRY,
+        agent_mode_session_keys, cancel_status_reply_markup, cleanup_abandoned_empty_flow,
+        clear_pending_cancel_message, derive_agent_mode_session_id, ensure_session_exists,
+        manager_control_plane_enabled, manager_default_chat_id, merge_prompt_instructions,
+        parse_agent_callback_action, parse_agent_control_command, pending_cancel_message,
+        remember_pending_cancel_message, remove_sessions_with_compat, resolve_execution_profile,
+        select_existing_session_id, session_manager_control_plane_enabled,
+        should_create_fresh_flow_on_detach, take_pending_cancel_message, AgentCallbackAction,
+        AgentControlCommand, EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
     };
     use crate::bot::views::{
         AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -821,6 +963,7 @@ mod tests {
     use crate::bot::{general_forum_topic_id, resolve_thread_spec_from_context};
     use crate::config::{BotSettings, TelegramSettings};
     use async_trait::async_trait;
+    use oxide_agent_core::agent::SessionId;
     use oxide_agent_core::agent::{AgentMemory, AgentSession};
     use oxide_agent_core::config::AgentSettings;
     use oxide_agent_core::llm::LlmClient;
@@ -831,7 +974,7 @@ mod tests {
         UpsertTopicBindingOptions, UserConfig,
     };
     use std::sync::{Arc, Mutex};
-    use teloxide::types::{ChatId, MessageId, ThreadId};
+    use teloxide::types::{ChatId, MessageId, ReplyMarkup, ThreadId};
     use teloxide::Bot;
 
     #[derive(Default)]
@@ -1326,6 +1469,40 @@ mod tests {
     }
 
     #[test]
+    fn cancel_status_reply_markup_uses_flow_controls_in_topics() {
+        let thread_id = ThreadId(MessageId(42));
+        let markup = cancel_status_reply_markup(
+            resolve_thread_spec_from_context(true, true, Some(thread_id)),
+            "flow-a",
+        );
+
+        let ReplyMarkup::InlineKeyboard(keyboard) = markup else {
+            panic!("topic cancel status should use inline keyboard");
+        };
+
+        assert_eq!(keyboard.inline_keyboard.len(), 1);
+        assert_eq!(keyboard.inline_keyboard[0].len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pending_cancel_message_round_trip_clears_entry() {
+        let session_id = SessionId::from(777_i64);
+
+        clear_pending_cancel_message(session_id).await;
+        remember_pending_cancel_message(session_id, MessageId(55)).await;
+
+        assert_eq!(
+            pending_cancel_message(session_id).await,
+            Some(MessageId(55))
+        );
+        assert_eq!(
+            take_pending_cancel_message(session_id).await,
+            Some(MessageId(55))
+        );
+        assert_eq!(pending_cancel_message(session_id).await, None);
+    }
+
+    #[test]
     fn manager_default_chat_id_is_available_in_general_forum_topic() {
         let spec = resolve_thread_spec_from_context(true, true, None);
         assert_eq!(
@@ -1517,6 +1694,7 @@ mod tests {
 
     #[tokio::test]
     async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes() {
+        let flow_id = "flow-rbac-refresh";
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
         let thread_id = general_forum_topic_id();
@@ -1524,14 +1702,14 @@ mod tests {
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
         let llm = test_llm(&allowed_settings);
-        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
 
         remove_sessions_with_compat(keys).await;
 
         let first_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
-            agent_flow_id: "flow-a".to_string(),
+            agent_flow_id: flow_id.to_string(),
             agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
@@ -1554,7 +1732,7 @@ mod tests {
         let second_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
-            agent_flow_id: "flow-a".to_string(),
+            agent_flow_id: flow_id.to_string(),
             agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
@@ -1580,6 +1758,7 @@ mod tests {
     #[tokio::test]
     async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refreshes_after_complete(
     ) {
+        let flow_id = "flow-rbac-running";
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
         let thread_id = general_forum_topic_id();
@@ -1587,14 +1766,14 @@ mod tests {
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
         let llm = test_llm(&allowed_settings);
-        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
 
         remove_sessions_with_compat(keys).await;
 
         let first_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
-            agent_flow_id: "flow-a".to_string(),
+            agent_flow_id: flow_id.to_string(),
             agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
@@ -1626,7 +1805,7 @@ mod tests {
         let second_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
-            agent_flow_id: "flow-a".to_string(),
+            agent_flow_id: flow_id.to_string(),
             agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
@@ -1658,7 +1837,7 @@ mod tests {
         let third_session = ensure_session_exists(EnsureSessionContext {
             session_keys: keys,
             context_key: "topic-a".to_string(),
-            agent_flow_id: "flow-a".to_string(),
+            agent_flow_id: flow_id.to_string(),
             agent_flow_created: false,
             sandbox_scope: test_sandbox_scope(77, "topic-a"),
             user_id: 77,
@@ -2417,6 +2596,7 @@ async fn deliver_agent_task_result(
     let terminal_progress_reply_markup = progress_reply_markup
         .as_ref()
         .map(|_| empty_inline_keyboard());
+    let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
 
     match result {
         Ok(response) => {
@@ -2453,6 +2633,15 @@ async fn deliver_agent_task_result(
             .await;
         }
     }
+
+    finalize_cancel_status_if_needed(
+        &ctx.bot,
+        ctx.session_id,
+        ctx.msg.chat.id,
+        cancelled,
+        cancel_status_inline_markup(ctx.use_inline_progress_controls, &ctx.agent_flow_id),
+    )
+    .await;
 
     Ok(())
 }
@@ -2516,6 +2705,8 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
     )
     .await;
 
+    let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
+
     match result {
         Ok(response) => {
             let terminal_progress_reply_markup = progress_reply_markup
@@ -2566,6 +2757,15 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
             .await;
         }
     }
+
+    finalize_cancel_status_if_needed(
+        &ctx.bot,
+        ctx.session_id,
+        ctx.chat_id,
+        cancelled,
+        cancel_status_inline_markup(ctx.use_inline_progress_controls, &ctx.agent_flow_id),
+    )
+    .await;
 
     Ok(())
 }
@@ -3134,6 +3334,7 @@ async fn handle_cancel_task_confirmation_callback(
             ctx.loop_ctx.chat_id,
             ctx.loop_ctx.thread_spec,
             ctx.loop_ctx.outbound_thread.message_thread_id,
+            &ctx.loop_ctx.agent_flow_id,
         )
         .await
     } else {
@@ -3327,6 +3528,7 @@ async fn dispatch_agent_callback(
                 ctx.loop_ctx.chat_id,
                 ctx.loop_ctx.thread_spec,
                 ctx.loop_ctx.outbound_thread.message_thread_id,
+                &ctx.loop_ctx.agent_flow_id,
             )
             .await
         }
@@ -3429,12 +3631,15 @@ pub async fn cancel_agent_task(
         ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
     let session_keys =
         agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
+    let session_id = resolve_existing_session_id(session_keys)
+        .await
+        .unwrap_or(session_keys.primary);
     let reply_markup = automatic_agent_control_markup(thread_spec);
 
     let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
 
-    let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {
+        clear_pending_cancel_message(session_id).await;
         send_agent_message_with_optional_keyboard(
             &bot,
             msg.chat.id,
@@ -3444,11 +3649,13 @@ pub async fn cancel_agent_task(
         )
         .await?;
     } else {
-        send_agent_message_with_optional_keyboard(
+        send_or_update_pending_cancel_message(
             &bot,
+            session_id,
             msg.chat.id,
-            text,
-            reply_markup.as_ref(),
+            DefaultAgentView::task_cancelling(cleared_todos),
+            cancel_status_reply_markup(thread_spec, &agent_flow_id),
+            cancel_status_inline_markup(use_inline_topic_controls(thread_spec), &agent_flow_id),
             outbound_thread,
         )
         .await?;
@@ -3462,13 +3669,17 @@ async fn cancel_agent_task_by_id(
     chat_id: ChatId,
     thread_spec: TelegramThreadSpec,
     message_thread_id: Option<ThreadId>,
+    agent_flow_id: &str,
 ) -> Result<()> {
+    let session_id = resolve_existing_session_id(session_keys)
+        .await
+        .unwrap_or(session_keys.primary);
     let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
     let outbound_thread = OutboundThreadParams { message_thread_id };
     let reply_markup = automatic_agent_control_markup(thread_spec);
 
-    let text = DefaultAgentView::task_cancelled(cleared_todos);
     if !cancelled && !cleared_todos {
+        clear_pending_cancel_message(session_id).await;
         send_agent_message_with_optional_keyboard(
             &bot,
             chat_id,
@@ -3478,11 +3689,13 @@ async fn cancel_agent_task_by_id(
         )
         .await?;
     } else {
-        send_agent_message_with_optional_keyboard(
+        send_or_update_pending_cancel_message(
             &bot,
+            session_id,
             chat_id,
-            text,
-            reply_markup.as_ref(),
+            DefaultAgentView::task_cancelling(cleared_todos),
+            cancel_status_reply_markup(thread_spec, agent_flow_id),
+            cancel_status_inline_markup(use_inline_topic_controls(thread_spec), agent_flow_id),
             outbound_thread,
         )
         .await?;
