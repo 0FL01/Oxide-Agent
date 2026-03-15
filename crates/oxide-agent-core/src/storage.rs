@@ -26,6 +26,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 const AGENT_PROFILE_SCHEMA_VERSION: u32 = 1;
+const TOPIC_CONTEXT_SCHEMA_VERSION: u32 = 1;
 const AGENT_FLOW_SCHEMA_VERSION: u32 = 1;
 const TOPIC_BINDING_SCHEMA_VERSION: u32 = 2;
 const AUDIT_EVENT_SCHEMA_VERSION: u32 = 1;
@@ -142,6 +143,25 @@ pub struct AgentProfileRecord {
     pub updated_at: i64,
 }
 
+/// Topic-specific prompt context persisted in control-plane storage.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TopicContextRecord {
+    /// Record schema version for forward-compatible evolution.
+    pub schema_version: u32,
+    /// Logical record revision incremented on each upsert.
+    pub version: u64,
+    /// User owning this topic context.
+    pub user_id: i64,
+    /// Stable topic identifier.
+    pub topic_id: String,
+    /// Free-form prompt context for the topic.
+    pub context: String,
+    /// Creation timestamp (unix seconds).
+    pub created_at: i64,
+    /// Last update timestamp (unix seconds).
+    pub updated_at: i64,
+}
+
 /// Topic binding record persisted in control-plane storage.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -219,6 +239,17 @@ pub struct UpsertAgentProfileOptions {
     pub agent_id: String,
     /// Arbitrary profile payload.
     pub profile: serde_json::Value,
+}
+
+/// Parameters for topic context upsert.
+#[derive(Debug, Clone)]
+pub struct UpsertTopicContextOptions {
+    /// User owning this topic context.
+    pub user_id: i64,
+    /// Stable topic identifier.
+    pub topic_id: String,
+    /// Free-form prompt context for the topic.
+    pub context: String,
 }
 
 /// Parameters for topic binding upsert.
@@ -494,6 +525,36 @@ pub trait StorageProvider: Send + Sync {
         user_id: i64,
         agent_id: String,
     ) -> Result<(), StorageError>;
+    /// Get a topic context record.
+    async fn get_topic_context(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicContextRecord>, StorageError> {
+        let _ = user_id;
+        let _ = topic_id;
+        Ok(None)
+    }
+    /// Upsert a topic context record.
+    async fn upsert_topic_context(
+        &self,
+        options: UpsertTopicContextOptions,
+    ) -> Result<TopicContextRecord, StorageError> {
+        let _ = options;
+        Err(StorageError::Config(
+            "topic context upsert is not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Delete a topic context record.
+    async fn delete_topic_context(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = topic_id;
+        Ok(())
+    }
     /// Get a topic binding record.
     async fn get_topic_binding(
         &self,
@@ -1200,6 +1261,61 @@ impl StorageProvider for R2Storage {
             .await
     }
 
+    async fn get_topic_context(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicContextRecord>, StorageError> {
+        self.load_json(&topic_context_key(user_id, &topic_id)).await
+    }
+
+    async fn upsert_topic_context(
+        &self,
+        options: UpsertTopicContextOptions,
+    ) -> Result<TopicContextRecord, StorageError> {
+        let key = topic_context_key(options.user_id, &options.topic_id);
+        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
+
+        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
+            let (existing, etag) = self.load_json_with_etag::<TopicContextRecord>(&key).await?;
+            let now = current_timestamp_unix_secs();
+            let record = build_topic_context_record(options.clone(), existing, now);
+
+            if self
+                .save_json_conditionally(&key, &record, etag.as_deref())
+                .await?
+            {
+                return Ok(record);
+            }
+
+            if should_retry_control_plane_rmw(attempt) {
+                warn!(
+                    key = %key,
+                    attempt,
+                    "topic context optimistic concurrency conflict, retrying"
+                );
+                sleep(Duration::from_millis(
+                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
+                ))
+                .await;
+            }
+        }
+
+        Err(StorageError::ConcurrencyConflict {
+            key,
+            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
+        })
+    }
+
+    async fn delete_topic_context(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        self.delete_object(&topic_context_key(user_id, &topic_id))
+            .await
+    }
+
     async fn get_topic_binding(
         &self,
         user_id: i64,
@@ -1400,6 +1516,12 @@ pub fn agent_profile_key(user_id: i64, agent_id: &str) -> String {
     format!("users/{user_id}/control_plane/agent_profiles/{agent_id}.json")
 }
 
+/// Returns the R2 key for a topic context record.
+#[must_use]
+pub fn topic_context_key(user_id: i64, topic_id: &str) -> String {
+    format!("users/{user_id}/control_plane/topic_contexts/{topic_id}.json")
+}
+
 /// Returns the R2 key for a topic binding record.
 #[must_use]
 pub fn topic_binding_key(user_id: i64, topic_id: &str) -> String {
@@ -1448,6 +1570,34 @@ fn build_agent_profile_record(
             user_id: options.user_id,
             agent_id: options.agent_id,
             profile: options.profile,
+            created_at: now,
+            updated_at: now,
+        },
+    }
+}
+
+#[must_use]
+fn build_topic_context_record(
+    options: UpsertTopicContextOptions,
+    existing: Option<TopicContextRecord>,
+    now: i64,
+) -> TopicContextRecord {
+    match existing {
+        Some(existing_record) => TopicContextRecord {
+            schema_version: TOPIC_CONTEXT_SCHEMA_VERSION,
+            version: next_record_version(Some(existing_record.version)),
+            user_id: options.user_id,
+            topic_id: options.topic_id,
+            context: options.context,
+            created_at: existing_record.created_at,
+            updated_at: now,
+        },
+        None => TopicContextRecord {
+            schema_version: TOPIC_CONTEXT_SCHEMA_VERSION,
+            version: next_record_version(None),
+            user_id: options.user_id,
+            topic_id: options.topic_id,
+            context: options.context,
             created_at: now,
             updated_at: now,
         },
@@ -1606,14 +1756,15 @@ mod tests {
     use super::{
         agent_profile_key, audit_events_key, binding_is_active, build_agent_flow_record,
         build_agent_profile_record, build_audit_event_record, build_topic_binding_record,
-        generate_chat_uuid, next_record_version, resolve_active_topic_binding,
-        select_audit_events_page, should_retry_control_plane_rmw, topic_binding_key,
-        user_chat_history_key, user_config_key, user_context_agent_flow_key,
-        user_context_agent_flow_memory_key, user_context_agent_flows_prefix,
-        user_context_agent_memory_key, user_context_chat_history_prefix, user_history_key,
-        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-        ControlPlaneLocks, OptionalMetadataPatch, TopicBindingKind, TopicBindingRecord,
-        UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig, UserContextConfig,
+        build_topic_context_record, generate_chat_uuid, next_record_version,
+        resolve_active_topic_binding, select_audit_events_page, should_retry_control_plane_rmw,
+        topic_binding_key, topic_context_key, user_chat_history_key, user_config_key,
+        user_context_agent_flow_key, user_context_agent_flow_memory_key,
+        user_context_agent_flows_prefix, user_context_agent_memory_key,
+        user_context_chat_history_prefix, user_history_key, AgentFlowRecord, AgentProfileRecord,
+        AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, OptionalMetadataPatch,
+        TopicBindingKind, TopicBindingRecord, TopicContextRecord, UpsertAgentProfileOptions,
+        UpsertTopicBindingOptions, UpsertTopicContextOptions, UserConfig, UserContextConfig,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1820,6 +1971,12 @@ mod tests {
     }
 
     #[test]
+    fn topic_context_key_uses_control_plane_namespace() {
+        let key = topic_context_key(42, "topic-a");
+        assert_eq!(key, "users/42/control_plane/topic_contexts/topic-a.json");
+    }
+
+    #[test]
     fn audit_events_key_uses_control_plane_namespace() {
         let key = audit_events_key(42);
         assert_eq!(key, "users/42/control_plane/audit/events.json");
@@ -1882,6 +2039,52 @@ mod tests {
         assert_eq!(created.version, 1);
         assert_eq!(created.created_at, 777);
         assert_eq!(created.updated_at, 777);
+    }
+
+    #[test]
+    fn upsert_topic_context_increments_version_and_preserves_created_at() {
+        let existing = TopicContextRecord {
+            schema_version: 1,
+            version: 3,
+            user_id: 7,
+            topic_id: "topic-a".to_string(),
+            context: "before".to_string(),
+            created_at: 123,
+            updated_at: 124,
+        };
+
+        let updated = build_topic_context_record(
+            UpsertTopicContextOptions {
+                user_id: 7,
+                topic_id: "topic-a".to_string(),
+                context: "after".to_string(),
+            },
+            Some(existing),
+            999,
+        );
+
+        assert_eq!(updated.version, 4);
+        assert_eq!(updated.created_at, 123);
+        assert_eq!(updated.updated_at, 999);
+        assert_eq!(updated.context, "after");
+    }
+
+    #[test]
+    fn upsert_topic_context_initial_insert_starts_version_and_sets_timestamps() {
+        let created = build_topic_context_record(
+            UpsertTopicContextOptions {
+                user_id: 7,
+                topic_id: "topic-a".to_string(),
+                context: "topic instructions".to_string(),
+            },
+            None,
+            777,
+        );
+
+        assert_eq!(created.version, 1);
+        assert_eq!(created.created_at, 777);
+        assert_eq!(created.updated_at, 777);
+        assert_eq!(created.schema_version, 1);
     }
 
     #[test]
