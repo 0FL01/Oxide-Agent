@@ -16,9 +16,9 @@ use crate::bot::state::{ConfirmationType, State};
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
 use crate::bot::views::{
     agent_control_markup, agent_flow_inline_keyboard, cancel_task_confirmation_inline_keyboard,
-    confirmation_markup, get_agent_inline_keyboard_with_exit, progress_inline_keyboard, AgentView,
-    DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK,
-    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    confirmation_markup, empty_inline_keyboard, get_agent_inline_keyboard_with_exit,
+    progress_inline_keyboard, AgentView, DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX,
+    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
     AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
     AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT,
@@ -2088,6 +2088,10 @@ async fn deliver_agent_task_result(
     progress_message_id: teloxide::types::MessageId,
     progress_reply_markup: Option<teloxide::types::InlineKeyboardMarkup>,
 ) -> Result<()> {
+    let terminal_progress_reply_markup = progress_reply_markup
+        .as_ref()
+        .map(|_| empty_inline_keyboard());
+
     match result {
         Ok(response) => {
             super::resilient::edit_message_safe_resilient_with_markup(
@@ -2095,7 +2099,7 @@ async fn deliver_agent_task_result(
                 ctx.msg.chat.id,
                 progress_message_id,
                 progress_text,
-                progress_reply_markup.clone(),
+                terminal_progress_reply_markup.clone(),
             )
             .await;
             let final_markup = ctx
@@ -2118,7 +2122,7 @@ async fn deliver_agent_task_result(
                 ctx.msg.chat.id,
                 progress_message_id,
                 &error_text,
-                progress_reply_markup,
+                terminal_progress_reply_markup,
             )
             .await;
         }
@@ -2187,12 +2191,15 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
 
     match result {
         Ok(response) => {
+            let terminal_progress_reply_markup = progress_reply_markup
+                .as_ref()
+                .map(|_| empty_inline_keyboard());
             super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
                 ctx.chat_id,
                 progress_msg.id,
                 &progress_text,
-                progress_reply_markup.clone(),
+                terminal_progress_reply_markup.clone(),
             )
             .await;
             // Use send_long_message to properly split response if it exceeds Telegram limit
@@ -2212,12 +2219,15 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
             // Sanitize error text to prevent Telegram HTML parse errors
             let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
             let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
+            let terminal_progress_reply_markup = progress_reply_markup
+                .as_ref()
+                .map(|_| empty_inline_keyboard());
             super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
                 ctx.chat_id,
                 progress_msg.id,
                 &error_text,
-                progress_reply_markup,
+                terminal_progress_reply_markup,
             )
             .await;
         }
