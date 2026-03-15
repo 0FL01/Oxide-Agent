@@ -147,6 +147,8 @@ fn manager_default_chat_id(chat_id: ChatId, thread_spec: TelegramThreadSpec) -> 
 static SESSION_REGISTRY: LazyLock<SessionRegistry> = LazyLock::new(SessionRegistry::new);
 static PENDING_CANCEL_MESSAGES: LazyLock<RwLock<HashMap<SessionId, MessageId>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+static PENDING_CANCEL_CONFIRMATIONS: LazyLock<RwLock<HashMap<SessionId, MessageId>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 const TASK_CANCELLED_BY_USER: &str = "Task cancelled by user";
 
@@ -285,9 +287,11 @@ async fn cancel_and_clear_with_compat(keys: AgentModeSessionKeys) -> (bool, bool
 async fn remove_sessions_with_compat(keys: AgentModeSessionKeys) {
     SESSION_REGISTRY.remove(&keys.primary).await;
     clear_pending_cancel_message(keys.primary).await;
+    clear_pending_cancel_confirmation(keys.primary).await;
     if let Some(legacy) = keys.distinct_legacy() {
         SESSION_REGISTRY.remove(&legacy).await;
         clear_pending_cancel_message(legacy).await;
+        clear_pending_cancel_confirmation(legacy).await;
     }
 }
 
@@ -426,6 +430,11 @@ async fn pending_cancel_message(session_id: SessionId) -> Option<MessageId> {
     pending.get(&session_id).copied()
 }
 
+async fn pending_cancel_confirmation(session_id: SessionId) -> Option<MessageId> {
+    let pending = PENDING_CANCEL_CONFIRMATIONS.read().await;
+    pending.get(&session_id).copied()
+}
+
 async fn remember_pending_cancel_message(session_id: SessionId, message_id: MessageId) {
     let mut pending = PENDING_CANCEL_MESSAGES.write().await;
     pending.insert(session_id, message_id);
@@ -436,8 +445,23 @@ async fn clear_pending_cancel_message(session_id: SessionId) {
     pending.remove(&session_id);
 }
 
+async fn remember_pending_cancel_confirmation(session_id: SessionId, message_id: MessageId) {
+    let mut pending = PENDING_CANCEL_CONFIRMATIONS.write().await;
+    pending.insert(session_id, message_id);
+}
+
+async fn clear_pending_cancel_confirmation(session_id: SessionId) {
+    let mut pending = PENDING_CANCEL_CONFIRMATIONS.write().await;
+    pending.remove(&session_id);
+}
+
 async fn take_pending_cancel_message(session_id: SessionId) -> Option<MessageId> {
     let mut pending = PENDING_CANCEL_MESSAGES.write().await;
+    pending.remove(&session_id)
+}
+
+async fn take_pending_cancel_confirmation(session_id: SessionId) -> Option<MessageId> {
+    let mut pending = PENDING_CANCEL_CONFIRMATIONS.write().await;
     pending.remove(&session_id)
 }
 
@@ -494,6 +518,57 @@ async fn finalize_pending_cancel_message(
     .await;
 }
 
+async fn send_or_update_cancel_confirmation(
+    bot: &Bot,
+    session_id: SessionId,
+    chat_id: ChatId,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    let inline_reply_markup = cancel_task_confirmation_inline_keyboard();
+
+    if let Some(message_id) = pending_cancel_confirmation(session_id).await {
+        if super::resilient::edit_message_safe_resilient_with_markup(
+            bot,
+            chat_id,
+            message_id,
+            DefaultAgentView::task_cancel_confirmation(),
+            Some(inline_reply_markup.clone()),
+        )
+        .await
+        {
+            return Ok(());
+        }
+
+        clear_pending_cancel_confirmation(session_id).await;
+    }
+
+    let message = send_agent_message_and_return(
+        bot,
+        chat_id,
+        DefaultAgentView::task_cancel_confirmation(),
+        Some(inline_reply_markup.into()),
+        outbound_thread,
+    )
+    .await?;
+    remember_pending_cancel_confirmation(session_id, message.id).await;
+    Ok(())
+}
+
+async fn clear_cancel_confirmation_message(bot: &Bot, session_id: SessionId, chat_id: ChatId) {
+    let Some(message_id) = take_pending_cancel_confirmation(session_id).await else {
+        return;
+    };
+
+    let _ = super::resilient::edit_message_safe_resilient_with_markup(
+        bot,
+        chat_id,
+        message_id,
+        DefaultAgentView::task_cancel_confirmation(),
+        Some(empty_inline_keyboard()),
+    )
+    .await;
+}
+
 async fn finalize_cancel_status_if_needed(
     bot: &Bot,
     session_id: SessionId,
@@ -501,6 +576,8 @@ async fn finalize_cancel_status_if_needed(
     cancelled: bool,
     inline_reply_markup: Option<InlineKeyboardMarkup>,
 ) {
+    clear_cancel_confirmation_message(bot, session_id, chat_id).await;
+
     if cancelled {
         finalize_pending_cancel_message(
             bot,
@@ -948,12 +1025,14 @@ fn spawn_agent_task(ctx: AgentTaskContext) {
 mod tests {
     use super::{
         agent_mode_session_keys, cancel_status_reply_markup, cleanup_abandoned_empty_flow,
-        clear_pending_cancel_message, derive_agent_mode_session_id, ensure_session_exists,
-        manager_control_plane_enabled, manager_default_chat_id, merge_prompt_instructions,
-        parse_agent_callback_action, parse_agent_control_command, pending_cancel_message,
-        remember_pending_cancel_message, remove_sessions_with_compat, resolve_execution_profile,
-        select_existing_session_id, session_manager_control_plane_enabled,
-        should_create_fresh_flow_on_detach, take_pending_cancel_message, AgentCallbackAction,
+        clear_pending_cancel_confirmation, clear_pending_cancel_message,
+        derive_agent_mode_session_id, ensure_session_exists, manager_control_plane_enabled,
+        manager_default_chat_id, merge_prompt_instructions, parse_agent_callback_action,
+        parse_agent_control_command, pending_cancel_confirmation, pending_cancel_message,
+        remember_pending_cancel_confirmation, remember_pending_cancel_message,
+        remove_sessions_with_compat, resolve_execution_profile, select_existing_session_id,
+        session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
+        take_pending_cancel_confirmation, take_pending_cancel_message, AgentCallbackAction,
         AgentControlCommand, EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
     };
     use crate::bot::views::{
@@ -1500,6 +1579,24 @@ mod tests {
             Some(MessageId(55))
         );
         assert_eq!(pending_cancel_message(session_id).await, None);
+    }
+
+    #[tokio::test]
+    async fn pending_cancel_confirmation_round_trip_clears_entry() {
+        let session_id = SessionId::from(778_i64);
+
+        clear_pending_cancel_confirmation(session_id).await;
+        remember_pending_cancel_confirmation(session_id, MessageId(56)).await;
+
+        assert_eq!(
+            pending_cancel_confirmation(session_id).await,
+            Some(MessageId(56))
+        );
+        assert_eq!(
+            take_pending_cancel_confirmation(session_id).await,
+            Some(MessageId(56))
+        );
+        assert_eq!(pending_cancel_confirmation(session_id).await, None);
     }
 
     #[test]
@@ -3313,20 +3410,21 @@ async fn handle_agent_confirmation_callback(
 }
 
 async fn send_cancel_task_confirmation(ctx: &LoopCallbackContext) -> Result<()> {
-    send_agent_message_with_keyboard(
-        &ctx.bot,
-        ctx.chat_id,
-        DefaultAgentView::task_cancel_confirmation(),
-        &cancel_task_confirmation_inline_keyboard().into(),
-        ctx.outbound_thread,
-    )
-    .await
+    let session_id = resolve_existing_session_id(ctx.session_keys)
+        .await
+        .unwrap_or(ctx.session_keys.primary);
+    send_or_update_cancel_confirmation(&ctx.bot, session_id, ctx.chat_id, ctx.outbound_thread).await
 }
 
 async fn handle_cancel_task_confirmation_callback(
     ctx: &AgentCallbackContext,
     confirmed: bool,
 ) -> Result<()> {
+    let session_id = resolve_existing_session_id(ctx.loop_ctx.session_keys)
+        .await
+        .unwrap_or(ctx.loop_ctx.session_keys.primary);
+    clear_cancel_confirmation_message(&ctx.loop_ctx.bot, session_id, ctx.loop_ctx.chat_id).await;
+
     if confirmed {
         cancel_agent_task_by_id(
             ctx.loop_ctx.bot.clone(),
@@ -3640,6 +3738,7 @@ pub async fn cancel_agent_task(
 
     if !cancelled && !cleared_todos {
         clear_pending_cancel_message(session_id).await;
+        clear_cancel_confirmation_message(&bot, session_id, msg.chat.id).await;
         send_agent_message_with_optional_keyboard(
             &bot,
             msg.chat.id,
@@ -3680,6 +3779,7 @@ async fn cancel_agent_task_by_id(
 
     if !cancelled && !cleared_todos {
         clear_pending_cancel_message(session_id).await;
+        clear_cancel_confirmation_message(&bot, session_id, chat_id).await;
         send_agent_message_with_optional_keyboard(
             &bot,
             chat_id,
