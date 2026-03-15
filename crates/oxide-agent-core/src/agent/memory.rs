@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use tiktoken_rs::cl100k_base;
 use tracing::info;
 
+const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
+
 /// A message in the agent's conversation memory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMessage {
@@ -52,6 +54,14 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
         }
+    }
+
+    /// Create a pinned system message carrying topic-scoped `AGENTS.md` content.
+    pub fn topic_agents_md(content: impl AsRef<str>) -> Self {
+        Self::system(format!(
+            "{TOPIC_AGENTS_MD_SYSTEM_PREFIX}{}",
+            content.as_ref().trim()
+        ))
     }
 
     /// Create a new user message
@@ -164,6 +174,12 @@ impl AgentMemory {
         }
     }
 
+    /// Returns true when memory already contains a pinned topic `AGENTS.md` message.
+    #[must_use]
+    pub fn has_topic_agents_md(&self) -> bool {
+        self.messages.iter().any(AgentMessage::is_topic_agents_md)
+    }
+
     /// Get all messages in memory
     #[must_use]
     pub fn get_messages(&self) -> &[AgentMessage] {
@@ -241,29 +257,48 @@ impl AgentMemory {
             return; // Not enough messages to compact
         }
 
+        let mut pinned_messages = Vec::new();
+        let mut regular_messages = Vec::new();
+        for message in self.messages.drain(..) {
+            if message.is_topic_agents_md() {
+                pinned_messages.push(message);
+            } else {
+                regular_messages.push(message);
+            }
+        }
+
+        if regular_messages.len() < 5 {
+            self.messages = pinned_messages;
+            self.messages.extend(regular_messages);
+            return;
+        }
+
         info!(
             "Compacting agent memory: {} tokens, {} messages",
             self.token_count,
-            self.messages.len()
+            pinned_messages.len() + regular_messages.len()
         );
 
         // Calculate split point (keep last 20%)
-        let keep_count = (self.messages.len() * 2).div_ceil(10);
-        let split_at = self.messages.len().saturating_sub(keep_count);
+        let keep_count = (regular_messages.len() * 2).div_ceil(10);
+        let split_at = regular_messages.len().saturating_sub(keep_count);
 
         if split_at == 0 {
+            self.messages = pinned_messages;
+            self.messages.extend(regular_messages);
             return;
         }
 
         // Extract messages to summarize
-        let to_summarize: Vec<_> = self.messages.drain(..split_at).collect();
+        let to_summarize: Vec<_> = regular_messages.drain(..split_at).collect();
 
         // Create a summary of the old messages (simple version)
         let summary = Self::create_simple_summary(&to_summarize);
         let summary_msg = AgentMessage::system(format!("[Previous context compressed]\n{summary}"));
 
-        // Insert summary at the beginning
-        self.messages.insert(0, summary_msg);
+        self.messages = pinned_messages;
+        self.messages.push(summary_msg);
+        self.messages.extend(regular_messages);
 
         // Recalculate token count
         self.token_count = self
@@ -362,6 +397,13 @@ impl AgentMemory {
     }
 }
 
+impl AgentMessage {
+    #[must_use]
+    fn is_topic_agents_md(&self) -> bool {
+        self.role == MessageRole::System && self.content.starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,5 +446,39 @@ mod tests {
         // Clear
         memory.clear();
         assert_eq!(memory.api_token_count(), None);
+    }
+
+    #[test]
+    fn test_topic_agents_md_detection() {
+        let mut memory = AgentMemory::new(100_000);
+        assert!(!memory.has_topic_agents_md());
+
+        memory.add_message(AgentMessage::topic_agents_md("# Topic AGENTS"));
+
+        assert!(memory.has_topic_agents_md());
+        assert!(memory.get_messages()[0]
+            .content
+            .starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX));
+    }
+
+    #[test]
+    fn test_compaction_preserves_topic_agents_md_message() {
+        let mut memory = AgentMemory::new(300);
+        memory.add_message(AgentMessage::topic_agents_md(
+            "# Topic AGENTS\nAlways respect deployment windows.",
+        ));
+
+        for idx in 0..12 {
+            memory.add_message(AgentMessage::user(format!(
+                "Message {idx}: {}",
+                "x".repeat(80)
+            )));
+        }
+
+        assert!(memory.has_topic_agents_md());
+        assert!(memory
+            .get_messages()
+            .iter()
+            .any(|message| message.content.starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX)));
     }
 }

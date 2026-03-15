@@ -12,10 +12,10 @@ use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
-    TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
-    TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
-    UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
-    UserConfig,
+    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
+    TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
+    UpsertTopicInfraConfigOptions, UserConfig,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -32,6 +32,10 @@ const TOOL_TOPIC_CONTEXT_UPSERT: &str = "topic_context_upsert";
 const TOOL_TOPIC_CONTEXT_GET: &str = "topic_context_get";
 const TOOL_TOPIC_CONTEXT_DELETE: &str = "topic_context_delete";
 const TOOL_TOPIC_CONTEXT_ROLLBACK: &str = "topic_context_rollback";
+const TOOL_TOPIC_AGENTS_MD_UPSERT: &str = "topic_agents_md_upsert";
+const TOOL_TOPIC_AGENTS_MD_GET: &str = "topic_agents_md_get";
+const TOOL_TOPIC_AGENTS_MD_DELETE: &str = "topic_agents_md_delete";
+const TOOL_TOPIC_AGENTS_MD_ROLLBACK: &str = "topic_agents_md_rollback";
 const TOOL_TOPIC_INFRA_UPSERT: &str = "topic_infra_upsert";
 const TOOL_TOPIC_INFRA_GET: &str = "topic_infra_get";
 const TOOL_TOPIC_INFRA_DELETE: &str = "topic_infra_delete";
@@ -55,6 +59,7 @@ const TOOL_FORUM_TOPIC_REOPEN: &str = "forum_topic_reopen";
 const TOOL_FORUM_TOPIC_DELETE: &str = "forum_topic_delete";
 const TOOL_FORUM_TOPIC_LIST: &str = "forum_topic_list";
 const ROLLBACK_AUDIT_PAGE_SIZE: usize = 200;
+const TOPIC_AGENTS_MD_MAX_LINES: usize = 300;
 const TELEGRAM_FORUM_ICON_COLORS: [u32; 6] = [
     7_322_096, 16_766_590, 13_338_331, 9_367_192, 16_749_490, 16_478_047,
 ];
@@ -338,6 +343,37 @@ struct TopicContextDeleteArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TopicContextRollbackArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicAgentsMdUpsertArgs {
+    topic_id: String,
+    agents_md: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicAgentsMdGetArgs {
+    topic_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicAgentsMdDeleteArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicAgentsMdRollbackArgs {
     topic_id: String,
     #[serde(default)]
     dry_run: bool,
@@ -826,6 +862,9 @@ impl ManagerControlPlaneProvider {
         let deleted_topic_context = self
             .delete_forum_topic_context_record(&context_key, &mut errors)
             .await;
+        let deleted_topic_agents_md = self
+            .delete_forum_topic_agents_md_record(&context_key, &mut errors)
+            .await;
         let deleted_topic_infra = self
             .delete_forum_topic_infra_record(&context_key, &mut errors)
             .await;
@@ -844,6 +883,7 @@ impl ManagerControlPlaneProvider {
             "deleted_chat_history_for_context": deleted_chat_history_for_context,
             "deleted_agent_memory": deleted_agent_memory,
             "deleted_topic_context": deleted_topic_context,
+            "deleted_topic_agents_md": deleted_topic_agents_md,
             "deleted_topic_infra": deleted_topic_infra,
             "deleted_topic_binding_keys": binding_keys,
             "removed_context_config": removed_context_config,
@@ -920,6 +960,26 @@ impl ManagerControlPlaneProvider {
             Err(err) => {
                 errors.push(format!(
                     "failed to delete topic context for {context_key}: {err}"
+                ));
+                false
+            }
+        }
+    }
+
+    async fn delete_forum_topic_agents_md_record(
+        &self,
+        context_key: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        match self
+            .storage
+            .delete_topic_agents_md(self.user_id, context_key.to_string())
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to delete topic AGENTS.md for {context_key}: {err}"
                 ));
                 false
             }
@@ -1034,6 +1094,7 @@ impl ManagerControlPlaneProvider {
         let mut tools = Vec::new();
         tools.extend(Self::topic_binding_tools_definitions());
         tools.extend(Self::topic_context_tools_definitions());
+        tools.extend(Self::topic_agents_md_tools_definitions());
         tools.extend(Self::topic_infra_tools_definitions());
         tools.extend(Self::private_secret_tools_definitions());
         tools.extend(Self::agent_profile_tools_definitions());
@@ -1143,6 +1204,62 @@ impl ManagerControlPlaneProvider {
             ToolDefinition {
                 name: TOOL_TOPIC_CONTEXT_ROLLBACK.to_string(),
                 description: "Rollback last topic context mutation for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "dry_run": { "type": "boolean", "description": "Preview rollback without persisting" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+        ]
+    }
+
+    fn topic_agents_md_tools_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENTS_MD_UPSERT.to_string(),
+                description:
+                    "Create or update topic-scoped AGENTS.md for new flows (max 300 lines)"
+                        .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "agents_md": { "type": "string", "description": "Full AGENTS.md content injected once when a new flow starts" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id", "agents_md"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENTS_MD_GET.to_string(),
+                description: "Get topic-scoped AGENTS.md for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENTS_MD_DELETE.to_string(),
+                description: "Delete topic-scoped AGENTS.md for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENTS_MD_ROLLBACK.to_string(),
+                description: "Rollback last topic-scoped AGENTS.md mutation for current user"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -1526,6 +1643,15 @@ impl ManagerControlPlaneProvider {
             bail!("{field_name} must not be empty");
         }
         Ok(trimmed.to_string())
+    }
+
+    fn validate_agents_md(value: String) -> Result<String> {
+        let agents_md = Self::validate_non_empty(value, "agents_md")?;
+        let line_count = agents_md.lines().count();
+        if line_count > TOPIC_AGENTS_MD_MAX_LINES {
+            bail!("agents_md must not exceed {TOPIC_AGENTS_MD_MAX_LINES} lines (got {line_count})");
+        }
+        Ok(agents_md)
     }
 
     fn validate_thread_id(thread_id: i64) -> Result<i64> {
@@ -2982,6 +3108,24 @@ impl ManagerControlPlaneProvider {
         .await
     }
 
+    async fn last_topic_agents_md_mutation(
+        &self,
+        topic_id: &str,
+    ) -> Result<Option<crate::storage::AuditEventRecord>> {
+        self.find_latest_applied_mutation(|event| {
+            event.topic_id.as_deref() == Some(topic_id)
+                && Self::action_matches(
+                    event.action.as_str(),
+                    &[
+                        TOOL_TOPIC_AGENTS_MD_UPSERT,
+                        TOOL_TOPIC_AGENTS_MD_DELETE,
+                        TOOL_TOPIC_AGENTS_MD_ROLLBACK,
+                    ],
+                )
+        })
+        .await
+    }
+
     async fn last_topic_infra_mutation(
         &self,
         topic_id: &str,
@@ -4006,6 +4150,266 @@ impl ManagerControlPlaneProvider {
         Self::to_json_string(response)
     }
 
+    async fn execute_topic_agents_md_upsert(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentsMdUpsertArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_AGENTS_MD_UPSERT)?;
+        let topic_id = self.resolve_mutation_topic_id(args.topic_id).await?;
+        let agents_md = Self::validate_agents_md(args.agents_md)?;
+        let previous = self
+            .storage
+            .get_topic_agents_md(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic AGENTS.md: {err}"))?;
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_AGENTS_MD_UPSERT.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "agents_md": agents_md,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "upsert",
+                        "topic_id": topic_id,
+                        "agents_md": agents_md
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        let record = self
+            .storage
+            .upsert_topic_agents_md(UpsertTopicAgentsMdOptions {
+                user_id: self.user_id,
+                topic_id: topic_id.clone(),
+                agents_md,
+            })
+            .await
+            .map_err(|err| anyhow!("failed to upsert topic AGENTS.md: {err}"))?;
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id),
+                agent_id: None,
+                action: TOOL_TOPIC_AGENTS_MD_UPSERT.to_string(),
+                payload: json!({
+                    "topic_id": record.topic_id,
+                    "version": record.version,
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response = Self::attach_audit_status(
+            json!({ "ok": true, "topic_agents_md": record }),
+            audit_status,
+        );
+        Self::to_json_string(response)
+    }
+
+    async fn execute_topic_agents_md_get(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentsMdGetArgs = Self::parse_args(arguments, TOOL_TOPIC_AGENTS_MD_GET)?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
+
+        let record = self
+            .storage
+            .get_topic_agents_md(self.user_id, topic_id)
+            .await
+            .map_err(|err| anyhow!("failed to get topic AGENTS.md: {err}"))?;
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "found": record.is_some(),
+            "topic_agents_md": record
+        }))
+    }
+
+    async fn execute_topic_agents_md_delete(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentsMdDeleteArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_AGENTS_MD_DELETE)?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
+        let previous = self
+            .storage
+            .get_topic_agents_md(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic AGENTS.md: {err}"))?;
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_AGENTS_MD_DELETE.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "delete",
+                        "topic_id": topic_id
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        self.storage
+            .delete_topic_agents_md(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to delete topic AGENTS.md: {err}"))?;
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id),
+                agent_id: None,
+                action: TOOL_TOPIC_AGENTS_MD_DELETE.to_string(),
+                payload: json!({
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response = Self::attach_audit_status(json!({ "ok": true }), audit_status);
+        Self::to_json_string(response)
+    }
+
+    async fn execute_topic_agents_md_rollback(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentsMdRollbackArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_AGENTS_MD_ROLLBACK)?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
+        let current = self
+            .storage
+            .get_topic_agents_md(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic AGENTS.md: {err}"))?;
+        let previous = match self.last_topic_agents_md_mutation(&topic_id).await? {
+            Some(event) => Self::previous_from_payload::<TopicAgentsMdRecord>(&event.payload)?,
+            None => None,
+        };
+
+        let rollback_operation = if previous.is_some() {
+            "restore"
+        } else {
+            "delete"
+        };
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_AGENTS_MD_ROLLBACK.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "operation": rollback_operation,
+                        "previous": current,
+                        "restore_to": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": rollback_operation,
+                        "topic_id": topic_id
+                    },
+                    "current": current,
+                    "restore_to": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        let rolled_back_agents_md = if let Some(previous_agents_md) = previous.clone() {
+            Some(
+                self.storage
+                    .upsert_topic_agents_md(UpsertTopicAgentsMdOptions {
+                        user_id: self.user_id,
+                        topic_id: topic_id.clone(),
+                        agents_md: previous_agents_md.agents_md,
+                    })
+                    .await
+                    .map_err(|err| anyhow!("failed to restore topic AGENTS.md: {err}"))?,
+            )
+        } else {
+            self.storage
+                .delete_topic_agents_md(self.user_id, topic_id.clone())
+                .await
+                .map_err(|err| {
+                    anyhow!("failed to delete topic AGENTS.md during rollback: {err}")
+                })?;
+            None
+        };
+
+        let response_topic_id = topic_id.clone();
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id),
+                agent_id: None,
+                action: TOOL_TOPIC_AGENTS_MD_ROLLBACK.to_string(),
+                payload: json!({
+                    "topic_id": response_topic_id,
+                    "operation": rollback_operation,
+                    "previous": current,
+                    "restore_to": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response = Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "operation": rollback_operation,
+                "topic_agents_md": rolled_back_agents_md
+            }),
+            audit_status,
+        );
+
+        Self::to_json_string(response)
+    }
+
     async fn execute_private_secret_probe(&self, arguments: &str) -> Result<String> {
         let args: PrivateSecretProbeArgs = Self::parse_args(arguments, TOOL_PRIVATE_SECRET_PROBE)?;
         let secret_ref = Self::validate_non_empty(args.secret_ref, "secret_ref")?;
@@ -4827,6 +5231,10 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_CONTEXT_GET => self.execute_topic_context_get(arguments).await,
             TOOL_TOPIC_CONTEXT_DELETE => self.execute_topic_context_delete(arguments).await,
             TOOL_TOPIC_CONTEXT_ROLLBACK => self.execute_topic_context_rollback(arguments).await,
+            TOOL_TOPIC_AGENTS_MD_UPSERT => self.execute_topic_agents_md_upsert(arguments).await,
+            TOOL_TOPIC_AGENTS_MD_GET => self.execute_topic_agents_md_get(arguments).await,
+            TOOL_TOPIC_AGENTS_MD_DELETE => self.execute_topic_agents_md_delete(arguments).await,
+            TOOL_TOPIC_AGENTS_MD_ROLLBACK => self.execute_topic_agents_md_rollback(arguments).await,
             TOOL_PRIVATE_SECRET_PROBE => self.execute_private_secret_probe(arguments).await,
             TOOL_TOPIC_INFRA_UPSERT => self.execute_topic_infra_upsert(arguments).await,
             TOOL_TOPIC_INFRA_GET => self.execute_topic_infra_get(arguments).await,
@@ -4875,8 +5283,8 @@ mod tests {
     use super::*;
     use crate::agent::registry::ToolRegistry;
     use crate::storage::{
-        AgentProfileRecord, AppendAuditEventOptions, TopicBindingRecord, TopicContextRecord,
-        TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode,
+        AgentProfileRecord, AppendAuditEventOptions, TopicAgentsMdRecord, TopicBindingRecord,
+        TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode,
     };
     use mockall::{predicate::eq, Sequence};
 
@@ -5061,6 +5469,26 @@ mod tests {
             action: action.to_string(),
             payload,
             created_at: 100,
+        }
+    }
+
+    fn topic_delete_user_config() -> crate::storage::UserConfig {
+        crate::storage::UserConfig {
+            contexts: std::collections::HashMap::from([(
+                "-100999:42".to_string(),
+                crate::storage::UserContextConfig {
+                    state: Some("agent_mode".to_string()),
+                    current_chat_uuid: Some("chat-1".to_string()),
+                    current_agent_flow_id: Some("flow-1".to_string()),
+                    chat_id: Some(-100999),
+                    thread_id: Some(42),
+                    forum_topic_name: Some("topic-42".to_string()),
+                    forum_topic_icon_color: Some(7_322_096),
+                    forum_topic_icon_custom_emoji_id: None,
+                    forum_topic_closed: false,
+                },
+            )]),
+            ..crate::storage::UserConfig::default()
         }
     }
 
@@ -5427,6 +5855,10 @@ mod tests {
             .with(eq(77_i64), eq("-100999:42".to_string()))
             .times(1)
             .returning(|_, _| Ok(()));
+        mock.expect_delete_topic_agents_md()
+            .with(eq(77_i64), eq("-100999:42".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(()));
         mock.expect_delete_topic_infra_config()
             .with(eq(77_i64), eq("-100999:42".to_string()))
             .times(1)
@@ -5439,25 +5871,9 @@ mod tests {
             .with(eq(77_i64), eq("42".to_string()))
             .times(1)
             .returning(|_, _| Ok(()));
-        mock.expect_get_user_config().times(1).returning(|_| {
-            Ok(crate::storage::UserConfig {
-                contexts: std::collections::HashMap::from([(
-                    "-100999:42".to_string(),
-                    crate::storage::UserContextConfig {
-                        state: Some("agent_mode".to_string()),
-                        current_chat_uuid: Some("chat-1".to_string()),
-                        current_agent_flow_id: Some("flow-1".to_string()),
-                        chat_id: Some(-100999),
-                        thread_id: Some(42),
-                        forum_topic_name: Some("topic-42".to_string()),
-                        forum_topic_icon_color: Some(7_322_096),
-                        forum_topic_icon_custom_emoji_id: None,
-                        forum_topic_closed: false,
-                    },
-                )]),
-                ..crate::storage::UserConfig::default()
-            })
-        });
+        mock.expect_get_user_config()
+            .times(1)
+            .returning(|_| Ok(topic_delete_user_config()));
         mock.expect_update_user_config()
             .withf(|user_id, config| *user_id == 77 && !config.contexts.contains_key("-100999:42"))
             .times(1)
@@ -5503,9 +5919,11 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&response).expect("response must be valid json");
         assert_eq!(parsed["ok"], true);
+        let cleanup = &parsed["cleanup"];
         assert_eq!(parsed["topic"]["thread_id"], 42);
-        assert_eq!(parsed["cleanup"]["context_key"], "-100999:42");
-        assert_eq!(parsed["cleanup"]["deleted_container"], true);
+        assert_eq!(cleanup["context_key"], "-100999:42");
+        assert_eq!(cleanup["deleted_topic_agents_md"], true);
+        assert_eq!(cleanup["deleted_container"], true);
         assert_eq!(parsed["audit_status"], "written");
         assert_eq!(
             lifecycle.calls(),
@@ -6811,6 +7229,209 @@ mod tests {
         assert_eq!(parsed["operation"], "restore");
         assert_eq!(parsed["topic_context"]["context"], "previous context");
         assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_agents_md_upsert_persists_and_audits() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_agents_md()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.agents_md == "# Topic AGENTS\nFollow release process"
+            })
+            .returning(|options| {
+                Ok(TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agents_md: options.agents_md,
+                    created_at: 10,
+                    updated_at: 10,
+                })
+            });
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.topic_id.as_deref() == Some("topic-a")
+                    && options.action == TOOL_TOPIC_AGENTS_MD_UPSERT
+            })
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 1,
+                    event_id: "evt-1".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 11,
+                })
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENTS_MD_UPSERT,
+                r##"{"topic_id":"topic-a","agents_md":"# Topic AGENTS\nFollow release process"}"##,
+                None,
+                None,
+            )
+            .await
+            .expect("topic AGENTS.md upsert should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["topic_agents_md"]["topic_id"], "topic-a");
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_agents_md_get_reports_missing_record() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENTS_MD_GET,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic AGENTS.md get should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["found"], false);
+        assert!(parsed["topic_agents_md"].is_null());
+    }
+
+    #[tokio::test]
+    async fn topic_agents_md_rollback_restores_previous_snapshot() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, topic_id| {
+                Ok(Some(TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 3,
+                    user_id: 77,
+                    topic_id,
+                    agents_md: "# Current AGENTS".to_string(),
+                    created_at: 10,
+                    updated_at: 30,
+                }))
+            });
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .returning(|_, _, _| {
+                Ok(vec![crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 2,
+                    event_id: "evt-2".to_string(),
+                    user_id: 77,
+                    topic_id: Some("topic-a".to_string()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_AGENTS_MD_UPSERT.to_string(),
+                    payload: json!({
+                        "topic_id": "topic-a",
+                        "previous": {
+                            "schema_version": 1,
+                            "version": 1,
+                            "user_id": 77,
+                            "topic_id": "topic-a",
+                            "agents_md": "# Previous AGENTS",
+                            "created_at": 5,
+                            "updated_at": 6
+                        },
+                        "outcome": "applied"
+                    }),
+                    created_at: 20,
+                }])
+            });
+        mock.expect_upsert_topic_agents_md()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.agents_md == "# Previous AGENTS"
+            })
+            .returning(|options| {
+                Ok(TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 4,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agents_md: options.agents_md,
+                    created_at: 5,
+                    updated_at: 40,
+                })
+            });
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.action == TOOL_TOPIC_AGENTS_MD_ROLLBACK
+                    && options.payload.get("operation") == Some(&json!("restore"))
+            })
+            .returning(|options| {
+                Ok(crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 4,
+                    event_id: "evt-4".to_string(),
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    action: options.action,
+                    payload: options.payload,
+                    created_at: 50,
+                })
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENTS_MD_ROLLBACK,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic AGENTS.md rollback should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["operation"], "restore");
+        assert_eq!(parsed["topic_agents_md"]["agents_md"], "# Previous AGENTS");
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_agents_md_upsert_rejects_more_than_300_lines() {
+        let mock = crate::storage::MockStorageProvider::new();
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let oversized = vec!["line"; TOPIC_AGENTS_MD_MAX_LINES + 1].join("\n");
+        let arguments = serde_json::json!({
+            "topic_id": "topic-a",
+            "agents_md": oversized,
+        })
+        .to_string();
+
+        let error = provider
+            .execute(TOOL_TOPIC_AGENTS_MD_UPSERT, &arguments, None, None)
+            .await
+            .expect_err("oversized AGENTS.md must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("agents_md must not exceed 300 lines"));
     }
 
     #[tokio::test]

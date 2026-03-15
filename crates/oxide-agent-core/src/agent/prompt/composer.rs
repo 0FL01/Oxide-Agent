@@ -1,12 +1,11 @@
 //! Prompt composer module
 //!
-//! Handles construction of system prompts for the agent, including skill-based
-//! prompts, date context, and fallback prompts.
+//! Handles construction of system prompts for the agent, including
+//! date context and fallback prompts.
 
 use crate::agent::session::AgentSession;
 use crate::agent::skills::{SkillContext, SkillRegistry};
 use crate::llm::ToolDefinition;
-use tracing::{error, info, warn};
 
 /// Build the date context block for the system prompt
 fn build_date_context() -> String {
@@ -19,22 +18,20 @@ fn build_date_context() -> String {
     )
 }
 
-/// Get the fallback prompt when AGENT.md is missing
+/// Get the built-in fallback prompt for the main agent.
 #[must_use]
 pub fn get_fallback_prompt() -> String {
-    r"You are an AI agent with access to a sandbox environment and web search.
-## Available Tools (Basic Examples):
-- **execute_command**: execute bash command in sandbox (available: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep and other standard utilities)
-- **write_file**: write content to file
-- **read_file**: read file content
-- **web_search**: search information on the web
-- **web_extract**: extract text from web pages
-- **write_todos**: create or update todo list
-## Important Rules:
-- If real data is needed - USE TOOLS
-- Use Python for calculations
-- After receiving tool result - analyze it and continue working
-- For COMPLEX requests, YOU MUST use write_todos to create a plan"
+    r"You are an AI agent operating inside Oxide Agent.
+## Core Rules:
+- Follow the active topic AGENTS.md instructions when they are present in memory
+- Use tools whenever you need real data, file contents, system state, or external information
+- After each tool result, analyze it and continue until the task is complete
+- For complex work, create and maintain a todo list
+- Keep answers concise, accurate, and directly useful to the user
+## Tool Usage:
+- Use sandbox and file tools for local work
+- Use web tools for external information
+- Prefer verifying your changes with relevant tests or checks when possible"
         .to_string()
 }
 
@@ -89,56 +86,20 @@ fn strip_structured_output_requirement(prompt: &str) -> String {
 ///
 /// This function builds the complete system prompt by:
 /// 1. Adding date/time context
-/// 2. Either loading skill-based prompts or falling back to AGENT.md
+/// 2. Adding built-in operational instructions
 pub async fn create_agent_system_prompt(
-    task: &str,
+    _task: &str,
     tools: &[ToolDefinition],
     structured_output: bool,
-    skill_registry: Option<&mut SkillRegistry>,
-    session: &mut AgentSession,
+    _skill_registry: Option<&mut SkillRegistry>,
+    _session: &mut AgentSession,
     prompt_instructions: Option<&str>,
 ) -> String {
     let date_context = build_date_context();
+    let empty_skills: [SkillContext; 0] = [];
+    _session.set_loaded_skills(&empty_skills);
 
-    let base_prompt = if let Some(registry) = skill_registry {
-        match registry.build_prompt(task).await {
-            Ok(skill_prompt) if !skill_prompt.content.is_empty() => {
-                session.set_loaded_skills(&skill_prompt.skills);
-                info!(
-                    skills = ?skill_prompt.skills,
-                    total_tokens = skill_prompt.token_count,
-                    skipped = ?skill_prompt.skipped,
-                    "Skills loaded for request"
-                );
-                skill_prompt.content
-            }
-            Ok(_) => {
-                warn!("Skills prompt empty, falling back to AGENT.md");
-                String::new()
-            }
-            Err(err) => {
-                warn!(error = %err, "Failed to build skills prompt, falling back to AGENT.md");
-                String::new()
-            }
-        }
-    } else {
-        String::new()
-    };
-
-    let base_prompt = if !base_prompt.is_empty() {
-        base_prompt
-    } else {
-        let empty_skills: [SkillContext; 0] = [];
-        session.set_loaded_skills(&empty_skills);
-
-        match std::fs::read_to_string("AGENT.md") {
-            Ok(prompt) => prompt,
-            Err(e) => {
-                error!("Failed to load AGENT.md: {e}. Using default fallback prompt.");
-                get_fallback_prompt()
-            }
-        }
-    };
+    let base_prompt = get_fallback_prompt();
 
     let base_prompt = if let Some(instructions) = normalize_prompt_instructions(prompt_instructions)
     {
@@ -220,9 +181,9 @@ mod tests {
     #[test]
     fn test_fallback_prompt_contains_tools() {
         let prompt = get_fallback_prompt();
-        assert!(prompt.contains("execute_command"));
-        assert!(prompt.contains("write_file"));
-        assert!(prompt.contains("read_file"));
+        assert!(prompt.contains("Oxide Agent"));
+        assert!(prompt.contains("Follow the active topic AGENTS.md instructions"));
+        assert!(prompt.contains("create and maintain a todo list"));
     }
 
     #[tokio::test]
