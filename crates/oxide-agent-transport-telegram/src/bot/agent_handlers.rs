@@ -784,12 +784,12 @@ fn spawn_agent_task(ctx: AgentTaskContext) {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_mode_session_keys, derive_agent_mode_session_id, ensure_session_exists,
-        manager_control_plane_enabled, manager_default_chat_id, parse_agent_callback_action,
-        parse_agent_control_command, remove_sessions_with_compat, select_existing_session_id,
-        session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
-        AgentCallbackAction, AgentControlCommand, EnsureSessionContext, SessionTransportContext,
-        SESSION_REGISTRY,
+        agent_mode_session_keys, cleanup_abandoned_empty_flow, derive_agent_mode_session_id,
+        ensure_session_exists, manager_control_plane_enabled, manager_default_chat_id,
+        parse_agent_callback_action, parse_agent_control_command, remove_sessions_with_compat,
+        select_existing_session_id, session_manager_control_plane_enabled,
+        should_create_fresh_flow_on_detach, AgentCallbackAction, AgentControlCommand,
+        EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
     };
     use crate::bot::views::{
         AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -807,7 +807,7 @@ mod tests {
         StorageError, StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions,
         UpsertTopicBindingOptions, UserConfig,
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use teloxide::types::{ChatId, MessageId, ThreadId};
     use teloxide::Bot;
 
@@ -815,6 +815,7 @@ mod tests {
     struct NoopStorage {
         flow_memory: Option<AgentMemory>,
         fail_flow_memory_lookup: bool,
+        cleared_flows: Arc<Mutex<Vec<(String, String)>>>,
     }
 
     impl NoopStorage {
@@ -822,6 +823,7 @@ mod tests {
             Self {
                 flow_memory,
                 fail_flow_memory_lookup: false,
+                cleared_flows: Arc::default(),
             }
         }
 
@@ -829,6 +831,7 @@ mod tests {
             Self {
                 flow_memory: None,
                 fail_flow_memory_lookup: true,
+                cleared_flows: Arc::default(),
             }
         }
     }
@@ -947,6 +950,19 @@ mod tests {
         }
 
         async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn clear_agent_memory_for_flow(
+            &self,
+            _user_id: i64,
+            context_key: String,
+            flow_id: String,
+        ) -> Result<(), StorageError> {
+            self.cleared_flows
+                .lock()
+                .expect("cleared_flows mutex poisoned")
+                .push((context_key, flow_id));
             Ok(())
         }
 
@@ -1681,6 +1697,52 @@ mod tests {
 
         assert!(should_create_fresh_flow_on_detach(&storage, 77, "-100123:42", "flow-a").await);
     }
+
+    #[tokio::test]
+    async fn attach_cleanup_deletes_abandoned_empty_flow_record() {
+        let storage = NoopStorage::with_flow_memory(None);
+        let cleared_flows = storage.cleared_flows.clone();
+        let storage: Arc<dyn StorageProvider> = Arc::new(storage);
+
+        cleanup_abandoned_empty_flow(&storage, 77, "-100123:42", "flow-empty").await;
+
+        let cleared_flows = cleared_flows
+            .lock()
+            .expect("cleared_flows mutex poisoned")
+            .clone();
+        assert_eq!(
+            cleared_flows,
+            vec![("-100123:42".to_string(), "flow-empty".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_cleanup_keeps_non_empty_flow_record() {
+        let storage = NoopStorage::with_flow_memory(Some(AgentMemory::new(1024)));
+        let cleared_flows = storage.cleared_flows.clone();
+        let storage: Arc<dyn StorageProvider> = Arc::new(storage);
+
+        cleanup_abandoned_empty_flow(&storage, 77, "-100123:42", "flow-a").await;
+
+        assert!(cleared_flows
+            .lock()
+            .expect("cleared_flows mutex poisoned")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn attach_cleanup_skips_delete_when_memory_lookup_fails() {
+        let storage = NoopStorage::with_failed_flow_memory_lookup();
+        let cleared_flows = storage.cleared_flows.clone();
+        let storage: Arc<dyn StorageProvider> = Arc::new(storage);
+
+        cleanup_abandoned_empty_flow(&storage, 77, "-100123:42", "flow-a").await;
+
+        assert!(cleared_flows
+            .lock()
+            .expect("cleared_flows mutex poisoned")
+            .is_empty());
+    }
 }
 
 async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
@@ -1859,18 +1921,26 @@ async fn save_memory_after_task(
     }
 }
 
+async fn flow_has_saved_memory(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    context_key: &str,
+    agent_flow_id: &str,
+) -> Result<bool, oxide_agent_core::storage::StorageError> {
+    storage
+        .load_agent_memory_for_flow(user_id, context_key.to_string(), agent_flow_id.to_string())
+        .await
+        .map(|memory| memory.is_some())
+}
+
 async fn should_create_fresh_flow_on_detach(
     storage: &Arc<dyn StorageProvider>,
     user_id: i64,
     context_key: &str,
     agent_flow_id: &str,
 ) -> bool {
-    match storage
-        .load_agent_memory_for_flow(user_id, context_key.to_string(), agent_flow_id.to_string())
-        .await
-    {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
+    match flow_has_saved_memory(storage, user_id, context_key, agent_flow_id).await {
+        Ok(has_saved_memory) => has_saved_memory,
         Err(err) => {
             warn!(
                 user_id,
@@ -1880,6 +1950,44 @@ async fn should_create_fresh_flow_on_detach(
                 "Failed to inspect current flow memory before detach; falling back to detach"
             );
             true
+        }
+    }
+}
+
+async fn cleanup_abandoned_empty_flow(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    context_key: &str,
+    agent_flow_id: &str,
+) {
+    match flow_has_saved_memory(storage, user_id, context_key, agent_flow_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Err(err) = storage
+                .clear_agent_memory_for_flow(
+                    user_id,
+                    context_key.to_string(),
+                    agent_flow_id.to_string(),
+                )
+                .await
+            {
+                warn!(
+                    user_id,
+                    context_key,
+                    agent_flow_id,
+                    error = %err,
+                    "Failed to delete abandoned empty flow after attach"
+                );
+            }
+        }
+        Err(err) => {
+            warn!(
+                user_id,
+                context_key,
+                agent_flow_id,
+                error = %err,
+                "Failed to inspect current flow memory before attach; leaving flow record intact"
+            );
         }
     }
 }
@@ -2600,6 +2708,13 @@ async fn handle_attach_flow_callback(
     let _ = SESSION_REGISTRY
         .remove_if_idle(&ctx.loop_ctx.session_keys.primary)
         .await;
+    cleanup_abandoned_empty_flow(
+        &ctx.storage,
+        ctx.loop_ctx.user_id,
+        &ctx.loop_ctx.context_key,
+        &ctx.loop_ctx.agent_flow_id,
+    )
+    .await;
     set_current_agent_flow_id(
         &ctx.storage,
         ctx.loop_ctx.user_id,
