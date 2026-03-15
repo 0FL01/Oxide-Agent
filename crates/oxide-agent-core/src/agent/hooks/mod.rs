@@ -9,6 +9,7 @@ pub mod registry;
 pub mod search_budget;
 pub mod sub_agent_safety;
 pub mod timeout_report;
+pub mod tool_access;
 pub mod types;
 pub mod workload;
 
@@ -18,5 +19,6 @@ pub use registry::{Hook, HookRegistry};
 pub use search_budget::SearchBudgetHook;
 pub use sub_agent_safety::{SubAgentSafetyConfig, SubAgentSafetyHook};
 pub use timeout_report::TimeoutReportHook;
+pub use tool_access::ToolAccessPolicyHook;
 pub use types::{HookContext, HookEvent, HookResult};
 pub use workload::WorkloadDistributorHook;

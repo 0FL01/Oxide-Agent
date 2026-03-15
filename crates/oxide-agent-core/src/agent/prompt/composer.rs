@@ -96,6 +96,7 @@ pub async fn create_agent_system_prompt(
     structured_output: bool,
     skill_registry: Option<&mut SkillRegistry>,
     session: &mut AgentSession,
+    prompt_instructions: Option<&str>,
 ) -> String {
     let date_context = build_date_context();
 
@@ -139,6 +140,13 @@ pub async fn create_agent_system_prompt(
         }
     };
 
+    let base_prompt = if let Some(instructions) = normalize_prompt_instructions(prompt_instructions)
+    {
+        format!("{base_prompt}\n\nAdditional agent role instructions:\n{instructions}")
+    } else {
+        base_prompt
+    };
+
     let base_prompt = if structured_output {
         base_prompt
     } else {
@@ -151,6 +159,13 @@ pub async fn create_agent_system_prompt(
     } else {
         format!("{date_context}{base_prompt}")
     }
+}
+
+fn normalize_prompt_instructions(prompt_instructions: Option<&str>) -> Option<&str> {
+    prompt_instructions.and_then(|instructions| {
+        let trimmed = instructions.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
 }
 
 /// Create a minimal system prompt for sub-agent execution.
@@ -208,5 +223,28 @@ mod tests {
         assert!(prompt.contains("execute_command"));
         assert!(prompt.contains("write_file"));
         assert!(prompt.contains("read_file"));
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_system_prompt_appends_role_instructions() {
+        let tools = [ToolDefinition {
+            name: "demo_tool".to_string(),
+            description: "demo".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }];
+        let mut session = AgentSession::new(1_i64.into());
+
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            &tools,
+            true,
+            None,
+            &mut session,
+            Some("Stay within the infra role."),
+        )
+        .await;
+
+        assert!(prompt.contains("Additional agent role instructions:"));
+        assert!(prompt.contains("Stay within the infra role."));
     }
 }

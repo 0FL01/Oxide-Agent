@@ -18,6 +18,8 @@ pub mod identity;
 pub mod memory;
 /// Preprocessor for different input types (voice, photo, etc)
 pub mod preprocessor;
+/// Execution profile parsing and policy helpers
+pub mod profile;
 /// Prompt composition for system prompts
 pub mod prompt;
 /// Tool provider trait
@@ -57,6 +59,9 @@ pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry,
 pub use identity::SessionId;
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::AgentMemory;
+pub use profile::{
+    parse_agent_profile, AgentExecutionProfile, ParsedAgentProfile, ToolAccessPolicy,
+};
 pub use progress::{AgentEvent, ProgressState};
 pub use provider::ToolProvider;
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
