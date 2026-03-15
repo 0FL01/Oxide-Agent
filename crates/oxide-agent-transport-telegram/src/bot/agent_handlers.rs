@@ -787,8 +787,9 @@ mod tests {
         agent_mode_session_keys, derive_agent_mode_session_id, ensure_session_exists,
         manager_control_plane_enabled, manager_default_chat_id, parse_agent_callback_action,
         parse_agent_control_command, remove_sessions_with_compat, select_existing_session_id,
-        session_manager_control_plane_enabled, AgentCallbackAction, AgentControlCommand,
-        EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
+        session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
+        AgentCallbackAction, AgentControlCommand, EnsureSessionContext, SessionTransportContext,
+        SESSION_REGISTRY,
     };
     use crate::bot::views::{
         AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -797,7 +798,7 @@ mod tests {
     use crate::bot::{general_forum_topic_id, resolve_thread_spec_from_context};
     use crate::config::{BotSettings, TelegramSettings};
     use async_trait::async_trait;
-    use oxide_agent_core::agent::AgentSession;
+    use oxide_agent_core::agent::{AgentMemory, AgentSession};
     use oxide_agent_core::config::AgentSettings;
     use oxide_agent_core::llm::LlmClient;
     use oxide_agent_core::sandbox::SandboxScope;
@@ -810,7 +811,27 @@ mod tests {
     use teloxide::types::{ChatId, MessageId, ThreadId};
     use teloxide::Bot;
 
-    struct NoopStorage;
+    #[derive(Default)]
+    struct NoopStorage {
+        flow_memory: Option<AgentMemory>,
+        fail_flow_memory_lookup: bool,
+    }
+
+    impl NoopStorage {
+        fn with_flow_memory(flow_memory: Option<AgentMemory>) -> Self {
+            Self {
+                flow_memory,
+                fail_flow_memory_lookup: false,
+            }
+        }
+
+        fn with_failed_flow_memory_lookup() -> Self {
+            Self {
+                flow_memory: None,
+                fail_flow_memory_lookup: true,
+            }
+        }
+    }
 
     #[async_trait]
     impl StorageProvider for NoopStorage {
@@ -927,6 +948,21 @@ mod tests {
 
         async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
             Ok(())
+        }
+
+        async fn load_agent_memory_for_flow(
+            &self,
+            _user_id: i64,
+            _context_key: String,
+            _flow_id: String,
+        ) -> Result<Option<AgentMemory>, StorageError> {
+            if self.fail_flow_memory_lookup {
+                return Err(StorageError::Config(
+                    "flow memory lookup failed".to_string(),
+                ));
+            }
+
+            Ok(self.flow_memory.clone())
         }
 
         async fn get_agent_flow_record(
@@ -1264,7 +1300,7 @@ mod tests {
     async fn threaded_transport_session_disables_manager_tools_inside_created_topics() {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
-        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
         let manager_settings = test_settings(Some("88"));
         let llm = test_llm(&manager_settings);
 
@@ -1332,7 +1368,7 @@ mod tests {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
         let thread_id = ThreadId(MessageId(42));
-        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
         let manager_settings = test_settings(Some("88"));
         let llm = test_llm(&manager_settings);
         let keys = agent_mode_session_keys(88, chat_id, Some(thread_id), "flow-a");
@@ -1370,7 +1406,7 @@ mod tests {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
         let thread_id = general_forum_topic_id();
-        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
         let llm = test_llm(&allowed_settings);
@@ -1433,7 +1469,7 @@ mod tests {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
         let thread_id = general_forum_topic_id();
-        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
         let allowed_settings = test_settings(Some("77"));
         let restricted_settings = test_settings(None);
         let llm = test_llm(&allowed_settings);
@@ -1536,7 +1572,7 @@ mod tests {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
         let thread_id = ThreadId(MessageId(52));
-        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
         let legacy_manager_settings = test_settings(Some("77"));
         let llm = test_llm(&legacy_manager_settings);
         let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
@@ -1584,7 +1620,7 @@ mod tests {
         let bot = Bot::new("token");
         let chat_id = ChatId(-100_123);
         let thread_id = ThreadId(MessageId(53));
-        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage);
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
         let settings = test_settings(None);
         let llm = test_llm(&settings);
         let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
@@ -1621,6 +1657,29 @@ mod tests {
         assert!(!SESSION_REGISTRY.contains(&keys.legacy).await);
 
         remove_sessions_with_compat(keys).await;
+    }
+
+    #[tokio::test]
+    async fn detach_creates_new_flow_only_when_current_flow_has_saved_memory() {
+        let storage: Arc<dyn StorageProvider> =
+            Arc::new(NoopStorage::with_flow_memory(Some(AgentMemory::new(1024))));
+
+        assert!(should_create_fresh_flow_on_detach(&storage, 77, "-100123:42", "flow-a").await);
+    }
+
+    #[tokio::test]
+    async fn detach_reuses_current_flow_when_current_flow_has_no_saved_memory() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::with_flow_memory(None));
+
+        assert!(!should_create_fresh_flow_on_detach(&storage, 77, "-100123:42", "flow-a").await);
+    }
+
+    #[tokio::test]
+    async fn detach_falls_back_to_reset_when_memory_lookup_fails() {
+        let storage: Arc<dyn StorageProvider> =
+            Arc::new(NoopStorage::with_failed_flow_memory_lookup());
+
+        assert!(should_create_fresh_flow_on_detach(&storage, 77, "-100123:42", "flow-a").await);
     }
 }
 
@@ -1797,6 +1856,31 @@ async fn save_memory_after_task(
                 &executor.session().memory,
             )
             .await;
+    }
+}
+
+async fn should_create_fresh_flow_on_detach(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    context_key: &str,
+    agent_flow_id: &str,
+) -> bool {
+    match storage
+        .load_agent_memory_for_flow(user_id, context_key.to_string(), agent_flow_id.to_string())
+        .await
+    {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            warn!(
+                user_id,
+                context_key,
+                agent_flow_id,
+                error = %err,
+                "Failed to inspect current flow memory before detach; falling back to detach"
+            );
+            true
+        }
     }
 }
 
@@ -2427,6 +2511,22 @@ async fn handle_detach_flow_callback(ctx: &AgentCallbackContext) -> Result<()> {
             .bot
             .answer_callback_query(ctx.callback_id.clone())
             .text("Task is running")
+            .await?;
+        return Ok(());
+    }
+
+    if !should_create_fresh_flow_on_detach(
+        &ctx.storage,
+        ctx.loop_ctx.user_id,
+        &ctx.loop_ctx.context_key,
+        &ctx.loop_ctx.agent_flow_id,
+    )
+    .await
+    {
+        ctx.loop_ctx
+            .bot
+            .answer_callback_query(ctx.callback_id.clone())
+            .text("Already using empty session")
             .await?;
         return Ok(());
     }
