@@ -32,6 +32,7 @@ const TOOL_TOPIC_INFRA_GET: &str = "topic_infra_get";
 const TOOL_TOPIC_INFRA_DELETE: &str = "topic_infra_delete";
 const TOOL_TOPIC_INFRA_ROLLBACK: &str = "topic_infra_rollback";
 const TOOL_PRIVATE_SECRET_PROBE: &str = "private_secret_probe";
+const TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT: &str = "forum_topic_provision_ssh_agent";
 const TOOL_AGENT_PROFILE_UPSERT: &str = "agent_profile_upsert";
 const TOOL_AGENT_PROFILE_GET: &str = "agent_profile_get";
 const TOOL_AGENT_PROFILE_DELETE: &str = "agent_profile_delete";
@@ -62,6 +63,24 @@ fn default_infra_allowed_tool_modes() -> Vec<TopicInfraToolMode> {
         TopicInfraToolMode::ReadFile,
         TopicInfraToolMode::ApplyFileEdit,
         TopicInfraToolMode::CheckProcess,
+    ]
+}
+
+fn default_infra_approval_required_modes() -> Vec<TopicInfraToolMode> {
+    vec![
+        TopicInfraToolMode::SudoExec,
+        TopicInfraToolMode::ApplyFileEdit,
+    ]
+}
+
+fn default_ssh_agent_allowed_tools() -> Vec<String> {
+    vec![
+        "write_todos".to_string(),
+        "ssh_exec".to_string(),
+        "ssh_sudo_exec".to_string(),
+        "ssh_read_file".to_string(),
+        "ssh_apply_file_edit".to_string(),
+        "ssh_check_process".to_string(),
     ]
 }
 
@@ -308,6 +327,66 @@ struct TopicInfraUpsertArgs {
     #[serde(default)]
     approval_required_modes: Vec<TopicInfraToolMode>,
     #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicProvisionSshAgentArgs {
+    name: String,
+    #[serde(default)]
+    chat_id: Option<i64>,
+    #[serde(default)]
+    icon_color: Option<u32>,
+    #[serde(default)]
+    icon_custom_emoji_id: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    system_prompt: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    topic_context: Option<String>,
+    #[serde(default)]
+    target_name: Option<String>,
+    host: String,
+    #[serde(default = "default_ssh_port")]
+    port: u16,
+    remote_user: String,
+    auth_mode: TopicInfraAuthMode,
+    #[serde(default)]
+    secret_ref: Option<String>,
+    #[serde(default)]
+    sudo_secret_ref: Option<String>,
+    #[serde(default)]
+    environment: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default = "default_infra_allowed_tool_modes")]
+    allowed_tool_modes: Vec<TopicInfraToolMode>,
+    #[serde(default = "default_infra_approval_required_modes")]
+    approval_required_modes: Vec<TopicInfraToolMode>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+struct ForumTopicProvisionSshAgentPlan {
+    request: ForumTopicCreateRequest,
+    agent_id: String,
+    profile: serde_json::Value,
+    topic_context: Option<String>,
+    target_name: String,
+    host: String,
+    port: u16,
+    remote_user: String,
+    auth_mode: TopicInfraAuthMode,
+    secret_ref: Option<String>,
+    sudo_secret_ref: Option<String>,
+    environment: Option<String>,
+    tags: Vec<String>,
+    allowed_tool_modes: Vec<TopicInfraToolMode>,
+    approval_required_modes: Vec<TopicInfraToolMode>,
     dry_run: bool,
 }
 
@@ -773,7 +852,7 @@ impl ManagerControlPlaneProvider {
         json!({
             "type": "object",
             "properties": {
-                "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                "topic_id": { "type": "string", "description": "Stable topic identifier. For Telegram forum topics use the canonical '<chat_id>:<thread_id>' value returned by forum_topic_create or forum_topic_provision_ssh_agent; topic names are resolved only as a convenience alias." },
                 "agent_id": { "type": "string", "description": "Target agent identifier" },
                 "binding_kind": { "type": "string", "enum": ["manual", "runtime"], "description": "Binding source kind" },
                 "chat_id": { "type": ["integer", "null"], "description": "Optional transport chat identifier; null clears stored value" },
@@ -823,7 +902,8 @@ impl ManagerControlPlaneProvider {
         vec![
             ToolDefinition {
                 name: TOOL_TOPIC_BINDING_SET.to_string(),
-                description: "Set or update topic-to-agent binding for current user".to_string(),
+                description: "Low-level binding mutation. For newly created Telegram forum topics prefer forum_topic_provision_ssh_agent or pass the canonical topic_id '<chat_id>:<thread_id>'"
+                    .to_string(),
                 parameters: Self::topic_binding_set_parameters(),
             },
             ToolDefinition {
@@ -922,7 +1002,7 @@ impl ManagerControlPlaneProvider {
         vec![
             ToolDefinition {
                 name: TOOL_TOPIC_INFRA_UPSERT.to_string(),
-                description: "Create or update topic-scoped infra target config for current user"
+                description: "Low-level infra mutation. For newly created Telegram forum topics prefer forum_topic_provision_ssh_agent or pass the canonical topic_id '<chat_id>:<thread_id>'"
                     .to_string(),
                 parameters: json!({
                     "type": "object",
@@ -1036,8 +1116,43 @@ impl ManagerControlPlaneProvider {
         ]
     }
 
+    fn forum_topic_provision_ssh_agent_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT.to_string(),
+            description: "Atomically create a Telegram forum topic, derive the canonical topic_id, create an SSH-ready agent profile, bind the topic, and attach topic-scoped SSH infra"
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer", "description": "Optional target forum chat id; omit to use the current manager forum chat" },
+                    "name": { "type": "string", "description": "Forum topic name; also used as default agent_id and target_name when omitted" },
+                    "icon_color": Self::forum_topic_icon_color_schema(),
+                    "icon_custom_emoji_id": { "type": "string", "description": "Optional custom emoji icon id" },
+                    "agent_id": { "type": "string", "description": "Optional explicit agent id; defaults to the topic name" },
+                    "system_prompt": { "type": "string", "description": "Optional agent system prompt instructions" },
+                    "description": { "type": "string", "description": "Optional human-readable profile description" },
+                    "topic_context": { "type": "string", "description": "Optional persistent topic context" },
+                    "target_name": { "type": "string", "description": "Optional infra target name; defaults to the topic name" },
+                    "host": { "type": "string", "description": "SSH host or DNS name" },
+                    "port": { "type": "integer", "description": "SSH port, defaults to 22" },
+                    "remote_user": { "type": "string", "description": "Remote SSH username" },
+                    "auth_mode": { "type": "string", "enum": ["none", "password", "private_key"], "description": "SSH authentication mode" },
+                    "secret_ref": { "type": "string", "description": "Opaque secret reference for SSH auth material" },
+                    "sudo_secret_ref": { "type": "string", "description": "Opaque secret reference for sudo password material" },
+                    "environment": { "type": "string", "description": "Optional environment label such as prod or stage" },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional free-form target tags" },
+                    "allowed_tool_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process"] }, "description": "Allowlisted SSH tool modes; defaults to all SSH modes" },
+                    "approval_required_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process"] }, "description": "Modes that always require approval; defaults to sudo_exec and apply_file_edit" },
+                    "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Telegram or storage" }
+                },
+                "required": ["name", "host", "remote_user", "auth_mode"]
+            }),
+        }
+    }
+
     fn lifecycle_tools_definitions() -> Vec<ToolDefinition> {
         vec![
+            Self::forum_topic_provision_ssh_agent_definition(),
             ToolDefinition {
                 name: TOOL_FORUM_TOPIC_CREATE.to_string(),
                 description: "Create Telegram forum topic; omit chat_id to use current forum chat"
@@ -1306,7 +1421,300 @@ impl ManagerControlPlaneProvider {
         if !profile.is_object() {
             bail!("profile must be a JSON object");
         }
+        if profile.get("tools").is_some() {
+            bail!(
+                "profile.tools is not supported; use allowedTools/blockedTools or forum_topic_provision_ssh_agent"
+            );
+        }
         Ok(profile)
+    }
+
+    fn is_canonical_forum_topic_id(value: &str) -> bool {
+        let Some((chat_id, thread_id)) = value.split_once(':') else {
+            return false;
+        };
+        chat_id.parse::<i64>().is_ok() && thread_id.parse::<i64>().ok().is_some_and(|id| id > 0)
+    }
+
+    async fn resolve_mutation_topic_id(&self, topic_id: String) -> Result<String> {
+        let topic_id = Self::validate_non_empty(topic_id, "topic_id")?;
+        if Self::is_canonical_forum_topic_id(&topic_id) || self.topic_lifecycle.is_none() {
+            return Ok(topic_id);
+        }
+
+        match self.resolve_forum_topic_id_alias(&topic_id).await? {
+            Some(resolved) => Ok(resolved),
+            None => bail!(
+                "topic_id '{topic_id}' is not a canonical Telegram forum topic id. Use '<chat_id>:<thread_id>' from forum_topic_create / forum_topic_provision_ssh_agent results."
+            ),
+        }
+    }
+
+    async fn resolve_lookup_topic_id(&self, topic_id: String) -> Result<String> {
+        let topic_id = Self::validate_non_empty(topic_id, "topic_id")?;
+        if Self::is_canonical_forum_topic_id(&topic_id) || self.topic_lifecycle.is_none() {
+            return Ok(topic_id);
+        }
+
+        Ok(self
+            .resolve_forum_topic_id_alias(&topic_id)
+            .await?
+            .unwrap_or(topic_id))
+    }
+
+    async fn resolve_forum_topic_id_alias(&self, alias: &str) -> Result<Option<String>> {
+        if self.topic_lifecycle.is_none() {
+            return Ok(None);
+        }
+
+        let mut matches = self
+            .list_forum_topic_catalog_entries(None, true)
+            .await?
+            .into_iter()
+            .filter(|entry| entry.name.as_deref() == Some(alias))
+            .collect::<Vec<_>>();
+
+        matches.sort_by(|left, right| left.topic_id.cmp(&right.topic_id));
+        matches.dedup_by(|left, right| left.topic_id == right.topic_id);
+
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop().map(|entry| entry.topic_id)),
+            _ => bail!(
+                "topic alias '{alias}' is ambiguous across multiple forum topics; use canonical '<chat_id>:<thread_id>'"
+            ),
+        }
+    }
+
+    fn forum_topic_payload(result: &ForumTopicCreateResult) -> serde_json::Value {
+        json!({
+            "chat_id": result.chat_id,
+            "thread_id": result.thread_id,
+            "topic_id": Self::forum_topic_context_key(result.chat_id, result.thread_id),
+            "name": result.name,
+            "icon_color": result.icon_color,
+            "icon_custom_emoji_id": result.icon_custom_emoji_id,
+        })
+    }
+
+    fn build_default_ssh_agent_profile(
+        agent_id: &str,
+        topic_name: &str,
+        system_prompt: Option<String>,
+        description: Option<String>,
+        host: &str,
+    ) -> serde_json::Value {
+        let default_description = format!("SSH agent for managing server at {host}");
+        json!({
+            "name": topic_name,
+            "agentId": agent_id,
+            "description": description.unwrap_or(default_description),
+            "systemPrompt": system_prompt,
+            "allowedTools": default_ssh_agent_allowed_tools(),
+        })
+    }
+
+    fn build_forum_topic_provision_plan(
+        &self,
+        args: ForumTopicProvisionSshAgentArgs,
+    ) -> Result<ForumTopicProvisionSshAgentPlan> {
+        let name = Self::validate_non_empty(args.name, "name")?;
+        let icon_custom_emoji_id =
+            Self::validate_optional_non_empty(args.icon_custom_emoji_id, "icon_custom_emoji_id")?;
+        let icon_color = Self::validate_forum_icon_color(args.icon_color)?;
+        let agent_id = Self::validate_optional_non_empty(args.agent_id, "agent_id")?
+            .unwrap_or_else(|| name.clone());
+        let system_prompt = Self::validate_optional_non_empty(args.system_prompt, "system_prompt")?;
+        let description = Self::validate_optional_non_empty(args.description, "description")?;
+        let topic_context = Self::validate_optional_non_empty(args.topic_context, "topic_context")?;
+        let target_name = Self::validate_optional_non_empty(args.target_name, "target_name")?
+            .unwrap_or_else(|| name.clone());
+        let host = Self::validate_non_empty(args.host, "host")?;
+        let remote_user = Self::validate_non_empty(args.remote_user, "remote_user")?;
+        if args.port == 0 {
+            bail!("port must be a positive integer");
+        }
+
+        let secret_ref = Self::validate_optional_non_empty(args.secret_ref, "secret_ref")?;
+        let sudo_secret_ref =
+            Self::validate_optional_non_empty(args.sudo_secret_ref, "sudo_secret_ref")?;
+        let environment = Self::validate_optional_non_empty(args.environment, "environment")?;
+        let tags = Self::normalize_tags(args.tags);
+        let allowed_tool_modes = Self::normalize_tool_modes(args.allowed_tool_modes);
+        if allowed_tool_modes.is_empty() {
+            bail!("allowed_tool_modes must not be empty");
+        }
+        let approval_required_modes = Self::normalize_tool_modes(args.approval_required_modes);
+        let profile = Self::validate_profile_object(Self::build_default_ssh_agent_profile(
+            &agent_id,
+            &name,
+            system_prompt,
+            description,
+            &host,
+        ))?;
+
+        Ok(ForumTopicProvisionSshAgentPlan {
+            request: ForumTopicCreateRequest {
+                chat_id: args.chat_id,
+                name,
+                icon_color,
+                icon_custom_emoji_id,
+            },
+            agent_id,
+            profile,
+            topic_context,
+            target_name,
+            host,
+            port: args.port,
+            remote_user,
+            auth_mode: args.auth_mode,
+            secret_ref,
+            sudo_secret_ref,
+            environment,
+            tags,
+            allowed_tool_modes,
+            approval_required_modes,
+            dry_run: args.dry_run,
+        })
+    }
+
+    fn topic_infra_preview_record_from_plan(
+        &self,
+        topic_id: String,
+        plan: &ForumTopicProvisionSshAgentPlan,
+    ) -> TopicInfraConfigRecord {
+        TopicInfraConfigRecord {
+            schema_version: 1,
+            version: 0,
+            user_id: self.user_id,
+            topic_id,
+            target_name: plan.target_name.clone(),
+            host: plan.host.clone(),
+            port: plan.port,
+            remote_user: plan.remote_user.clone(),
+            auth_mode: plan.auth_mode,
+            secret_ref: plan.secret_ref.clone(),
+            sudo_secret_ref: plan.sudo_secret_ref.clone(),
+            environment: plan.environment.clone(),
+            tags: plan.tags.clone(),
+            allowed_tool_modes: plan.allowed_tool_modes.clone(),
+            approval_required_modes: plan.approval_required_modes.clone(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    async fn dry_run_forum_topic_provision_ssh_agent(
+        &self,
+        plan: &ForumTopicProvisionSshAgentPlan,
+    ) -> Result<String> {
+        let preview_infra =
+            self.topic_infra_preview_record_from_plan("<created_topic_id>".to_string(), plan);
+        let preview_preflight = self.inspect_topic_infra_record(&preview_infra).await;
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: None,
+                agent_id: Some(plan.agent_id.clone()),
+                action: TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT.to_string(),
+                payload: json!({
+                    "name": plan.request.name,
+                    "agent_id": plan.agent_id,
+                    "host": plan.host,
+                    "port": plan.port,
+                    "remote_user": plan.remote_user,
+                    "auth_mode": plan.auth_mode,
+                    "secret_ref": plan.secret_ref,
+                    "sudo_secret_ref": plan.sudo_secret_ref,
+                    "topic_context": plan.topic_context,
+                    "outcome": Self::dry_run_outcome(true)
+                }),
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "forum_topic_request": plan.request,
+                    "agent_id": plan.agent_id,
+                    "profile": plan.profile,
+                    "topic_context": plan.topic_context,
+                    "topic_infra": Self::topic_infra_value_from_record(&preview_infra),
+                    "preflight": preview_preflight,
+                    "canonical_topic_id_note": "topic_id will be derived automatically as '<chat_id>:<thread_id>' after Telegram creates the topic"
+                }
+            }),
+            audit_status,
+        ))
+    }
+
+    async fn execute_forum_topic_provision_substeps(
+        &self,
+        topic_id: &str,
+        created_topic: &ForumTopicCreateResult,
+        plan: &ForumTopicProvisionSshAgentPlan,
+    ) -> Result<(String, Option<String>, String, String)> {
+        let profile_response = self
+            .execute_agent_profile_upsert(&Self::to_json_string(json!({
+                "agent_id": plan.agent_id,
+                "profile": plan.profile,
+            }))?)
+            .await?;
+        let topic_context_response = match plan.topic_context.as_ref() {
+            Some(context) => Some(
+                self.execute_topic_context_upsert(&Self::to_json_string(json!({
+                    "topic_id": topic_id,
+                    "context": context,
+                }))?)
+                .await?,
+            ),
+            None => None,
+        };
+        let binding_response = self
+            .execute_topic_binding_set(&Self::to_json_string(json!({
+                "topic_id": topic_id,
+                "agent_id": plan.agent_id,
+                "binding_kind": "manual",
+                "chat_id": created_topic.chat_id,
+                "thread_id": created_topic.thread_id,
+            }))?)
+            .await?;
+        let infra_response = self
+            .execute_topic_infra_upsert(&Self::to_json_string(json!({
+                "topic_id": topic_id,
+                "target_name": plan.target_name,
+                "host": plan.host,
+                "port": plan.port,
+                "remote_user": plan.remote_user,
+                "auth_mode": plan.auth_mode,
+                "secret_ref": plan.secret_ref,
+                "sudo_secret_ref": plan.sudo_secret_ref,
+                "environment": plan.environment,
+                "tags": plan.tags,
+                "allowed_tool_modes": plan.allowed_tool_modes,
+                "approval_required_modes": plan.approval_required_modes,
+            }))?)
+            .await?;
+
+        Ok((
+            profile_response,
+            topic_context_response,
+            binding_response,
+            infra_response,
+        ))
+    }
+
+    async fn cleanup_failed_forum_topic_provision(&self, created_topic: &ForumTopicCreateResult) {
+        if let Some(lifecycle) = &self.topic_lifecycle {
+            let _ = lifecycle
+                .forum_topic_delete(ForumTopicThreadRequest {
+                    chat_id: Some(created_topic.chat_id),
+                    thread_id: created_topic.thread_id,
+                })
+                .await;
+        }
     }
 
     fn to_json_string(value: serde_json::Value) -> Result<String> {
@@ -1532,7 +1940,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_binding_set(&self, arguments: &str) -> Result<String> {
         let args: TopicBindingSetArgs = Self::parse_args(arguments, TOOL_TOPIC_BINDING_SET)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_mutation_topic_id(args.topic_id).await?;
         let agent_id = Self::validate_non_empty(args.agent_id, "agent_id")?;
         let binding_kind = args.binding_kind;
         let chat_id = args.chat_id;
@@ -1629,7 +2037,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_binding_get(&self, arguments: &str) -> Result<String> {
         let args: TopicBindingGetArgs = Self::parse_args(arguments, TOOL_TOPIC_BINDING_GET)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
 
         let record = self
             .storage
@@ -1646,7 +2054,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_binding_delete(&self, arguments: &str) -> Result<String> {
         let args: TopicBindingDeleteArgs = Self::parse_args(arguments, TOOL_TOPIC_BINDING_DELETE)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
         let previous = self
             .storage
             .get_topic_binding(self.user_id, topic_id.clone())
@@ -1863,7 +2271,7 @@ impl ManagerControlPlaneProvider {
     async fn execute_topic_binding_rollback(&self, arguments: &str) -> Result<String> {
         let args: TopicBindingRollbackArgs =
             Self::parse_args(arguments, TOOL_TOPIC_BINDING_ROLLBACK)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
         let current = self
             .storage
             .get_topic_binding(self.user_id, topic_id.clone())
@@ -1967,7 +2375,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_context_upsert(&self, arguments: &str) -> Result<String> {
         let args: TopicContextUpsertArgs = Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_UPSERT)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_mutation_topic_id(args.topic_id).await?;
         let context = Self::validate_non_empty(args.context, "context")?;
         let previous = self
             .storage
@@ -2040,7 +2448,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_context_get(&self, arguments: &str) -> Result<String> {
         let args: TopicContextGetArgs = Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_GET)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
 
         let record = self
             .storage
@@ -2057,7 +2465,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_context_delete(&self, arguments: &str) -> Result<String> {
         let args: TopicContextDeleteArgs = Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_DELETE)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
         let previous = self
             .storage
             .get_topic_context(self.user_id, topic_id.clone())
@@ -2121,7 +2529,7 @@ impl ManagerControlPlaneProvider {
     async fn execute_topic_context_rollback(&self, arguments: &str) -> Result<String> {
         let args: TopicContextRollbackArgs =
             Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_ROLLBACK)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
         let current = self
             .storage
             .get_topic_context(self.user_id, topic_id.clone())
@@ -2232,8 +2640,9 @@ impl ManagerControlPlaneProvider {
     }
 
     async fn execute_topic_infra_upsert(&self, arguments: &str) -> Result<String> {
-        let args =
+        let mut args =
             Self::validate_topic_infra_args(Self::parse_args(arguments, TOOL_TOPIC_INFRA_UPSERT)?)?;
+        args.topic_id = self.resolve_mutation_topic_id(args.topic_id).await?;
         let desired = Self::topic_infra_value_from_args(&args);
         let previous = self
             .storage
@@ -2316,7 +2725,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_infra_get(&self, arguments: &str) -> Result<String> {
         let args: TopicInfraGetArgs = Self::parse_args(arguments, TOOL_TOPIC_INFRA_GET)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
 
         let record = self
             .storage
@@ -2338,7 +2747,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_infra_delete(&self, arguments: &str) -> Result<String> {
         let args: TopicInfraDeleteArgs = Self::parse_args(arguments, TOOL_TOPIC_INFRA_DELETE)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
         let previous = self
             .storage
             .get_topic_infra_config(self.user_id, topic_id.clone())
@@ -2401,7 +2810,7 @@ impl ManagerControlPlaneProvider {
 
     async fn execute_topic_infra_rollback(&self, arguments: &str) -> Result<String> {
         let args: TopicInfraRollbackArgs = Self::parse_args(arguments, TOOL_TOPIC_INFRA_ROLLBACK)?;
-        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
         let current = self
             .storage
             .get_topic_infra_config(self.user_id, topic_id.clone())
@@ -2481,6 +2890,91 @@ impl ManagerControlPlaneProvider {
                 "operation": rollback_operation,
                 "topic_infra": rolled_back_infra,
                 "preflight": preflight
+            }),
+            audit_status,
+        ))
+    }
+
+    async fn execute_forum_topic_provision_ssh_agent(&self, arguments: &str) -> Result<String> {
+        let args: ForumTopicProvisionSshAgentArgs =
+            Self::parse_args(arguments, TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT)?;
+        let plan = self.build_forum_topic_provision_plan(args)?;
+        if plan.dry_run {
+            return self.dry_run_forum_topic_provision_ssh_agent(&plan).await;
+        }
+
+        let created_topic = self
+            .topic_lifecycle()?
+            .forum_topic_create(plan.request.clone())
+            .await?;
+        let topic_id =
+            Self::forum_topic_context_key(created_topic.chat_id, created_topic.thread_id);
+        self.persist_forum_topic_catalog_entry(&ForumTopicCatalogEntry {
+            topic_id: topic_id.clone(),
+            chat_id: created_topic.chat_id,
+            thread_id: created_topic.thread_id,
+            name: Some(created_topic.name.clone()),
+            icon_color: Some(created_topic.icon_color),
+            icon_custom_emoji_id: created_topic.icon_custom_emoji_id.clone(),
+            closed: false,
+        })
+        .await?;
+
+        let (profile_response, topic_context_response, binding_response, infra_response) =
+            match self
+                .execute_forum_topic_provision_substeps(&topic_id, &created_topic, &plan)
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    self.cleanup_failed_forum_topic_provision(&created_topic)
+                        .await;
+                    return Err(error);
+                }
+            };
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id.clone()),
+                agent_id: Some(plan.agent_id.clone()),
+                action: TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT.to_string(),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "agent_id": plan.agent_id,
+                    "host": plan.host,
+                    "port": plan.port,
+                    "remote_user": plan.remote_user,
+                    "auth_mode": plan.auth_mode,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let parsed_profile: serde_json::Value = serde_json::from_str(&profile_response)
+            .map_err(|err| anyhow!("failed to parse profile response: {err}"))?;
+        let parsed_binding: serde_json::Value = serde_json::from_str(&binding_response)
+            .map_err(|err| anyhow!("failed to parse binding response: {err}"))?;
+        let parsed_infra: serde_json::Value = serde_json::from_str(&infra_response)
+            .map_err(|err| anyhow!("failed to parse infra response: {err}"))?;
+        let parsed_context = match topic_context_response {
+            Some(response) => Some(
+                serde_json::from_str::<serde_json::Value>(&response)
+                    .map_err(|err| anyhow!("failed to parse topic context response: {err}"))?,
+            ),
+            None => None,
+        };
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "provisioned": true,
+                "topic": Self::forum_topic_payload(&created_topic),
+                "binding": parsed_binding.get("binding").cloned().unwrap_or(serde_json::Value::Null),
+                "profile": parsed_profile.get("profile").cloned().unwrap_or(serde_json::Value::Null),
+                "topic_context": parsed_context.as_ref().and_then(|value| value.get("topic_context")).cloned(),
+                "topic_infra": parsed_infra.get("topic_infra").cloned().unwrap_or(serde_json::Value::Null),
+                "preflight": parsed_infra.get("preflight").cloned().unwrap_or(serde_json::Value::Null),
             }),
             audit_status,
         ))
@@ -2661,8 +3155,10 @@ impl ManagerControlPlaneProvider {
             })
             .await;
 
-        let response =
-            Self::attach_audit_status(json!({ "ok": true, "topic": result }), audit_status);
+        let response = Self::attach_audit_status(
+            json!({ "ok": true, "topic": Self::forum_topic_payload(&result) }),
+            audit_status,
+        );
         Self::to_json_string(response)
     }
 
@@ -2921,7 +3417,8 @@ impl ToolProvider for ManagerControlPlaneProvider {
             || (self.topic_lifecycle.is_some()
                 && matches!(
                     tool_name,
-                    TOOL_FORUM_TOPIC_CREATE
+                    TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT
+                        | TOOL_FORUM_TOPIC_CREATE
                         | TOOL_FORUM_TOPIC_EDIT
                         | TOOL_FORUM_TOPIC_CLOSE
                         | TOOL_FORUM_TOPIC_REOPEN
@@ -2951,6 +3448,10 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_INFRA_GET => self.execute_topic_infra_get(arguments).await,
             TOOL_TOPIC_INFRA_DELETE => self.execute_topic_infra_delete(arguments).await,
             TOOL_TOPIC_INFRA_ROLLBACK => self.execute_topic_infra_rollback(arguments).await,
+            TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT => {
+                self.execute_forum_topic_provision_ssh_agent(arguments)
+                    .await
+            }
             TOOL_AGENT_PROFILE_UPSERT => self.execute_agent_profile_upsert(arguments).await,
             TOOL_AGENT_PROFILE_GET => self.execute_agent_profile_get(arguments).await,
             TOOL_AGENT_PROFILE_DELETE => self.execute_agent_profile_delete(arguments).await,
@@ -3022,6 +3523,108 @@ mod tests {
             created_at: 10,
             updated_at: 20,
         }
+    }
+
+    fn mock_storage_for_forum_topic_provision() -> crate::storage::MockStorageProvider {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config()
+            .times(1)
+            .returning(|_| Ok(crate::storage::UserConfig::default()));
+        mock.expect_update_user_config()
+            .times(1)
+            .withf(|user_id, config| *user_id == 77 && config.contexts.contains_key("-100777:313"))
+            .returning(|_, _| Ok(()));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("n-ru1".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_agent_profile()
+            .withf(|options| {
+                options.agent_id == "n-ru1"
+                    && options
+                        .profile
+                        .get("allowedTools")
+                        .and_then(|value| value.as_array())
+                        .is_some()
+            })
+            .returning(|options| {
+                Ok(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: options.user_id,
+                    agent_id: options.agent_id,
+                    profile: options.profile,
+                    created_at: 10,
+                    updated_at: 10,
+                })
+            });
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("-100777:313".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_binding()
+            .withf(|options| {
+                options.topic_id == "-100777:313"
+                    && options.agent_id == "n-ru1"
+                    && options.chat_id == OptionalMetadataPatch::Set(-100777)
+                    && options.thread_id == OptionalMetadataPatch::Set(313)
+            })
+            .returning(|options| {
+                Ok(TopicBindingRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    agent_id: options.agent_id,
+                    binding_kind: options.binding_kind.unwrap_or(TopicBindingKind::Manual),
+                    chat_id: options.chat_id.for_new_record(),
+                    thread_id: options.thread_id.for_new_record(),
+                    expires_at: options.expires_at.for_new_record(),
+                    last_activity_at: options.last_activity_at,
+                    created_at: 10,
+                    updated_at: 10,
+                })
+            });
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("-100777:313".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_infra_config()
+            .withf(|options| {
+                options.topic_id == "-100777:313"
+                    && options.target_name == "n-ru1"
+                    && options.auth_mode == TopicInfraAuthMode::None
+            })
+            .returning(|options| {
+                Ok(TopicInfraConfigRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    target_name: options.target_name,
+                    host: options.host,
+                    port: options.port,
+                    remote_user: options.remote_user,
+                    auth_mode: options.auth_mode,
+                    secret_ref: options.secret_ref,
+                    sudo_secret_ref: options.sudo_secret_ref,
+                    environment: options.environment,
+                    tags: options.tags,
+                    allowed_tool_modes: options.allowed_tool_modes,
+                    approval_required_modes: options.approval_required_modes,
+                    created_at: 10,
+                    updated_at: 10,
+                })
+            });
+        mock.expect_append_audit_event()
+            .times(4)
+            .returning(|options| {
+                Ok(audit_event(
+                    1,
+                    options.topic_id.as_deref(),
+                    options.agent_id.as_deref(),
+                    &options.action,
+                    options.payload,
+                ))
+            });
+        mock
     }
 
     fn audit_event(
@@ -3546,6 +4149,124 @@ mod tests {
             .expect_err("expected profile validation error");
 
         assert!(err.to_string().contains("profile must be a JSON object"));
+    }
+
+    #[tokio::test]
+    async fn agent_profile_upsert_rejects_legacy_tools_shorthand() {
+        let storage = Arc::new(crate::storage::MockStorageProvider::new());
+        let provider = ManagerControlPlaneProvider::new(storage, 77);
+        let err = provider
+            .execute(
+                TOOL_AGENT_PROFILE_UPSERT,
+                r#"{"agent_id":"agent-a","profile":{"tools":["ssh"]}}"#,
+                None,
+                None,
+            )
+            .await
+            .expect_err("expected unsupported profile.tools validation error");
+
+        assert!(err.to_string().contains("allowedTools/blockedTools"));
+    }
+
+    #[tokio::test]
+    async fn topic_infra_upsert_resolves_unique_forum_topic_name_alias() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config().returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([(
+                    "-100777:240".to_string(),
+                    crate::storage::UserContextConfig {
+                        chat_id: Some(-100777),
+                        thread_id: Some(240),
+                        forum_topic_name: Some("n-ru1".to_string()),
+                        forum_topic_icon_color: Some(9_367_192),
+                        ..crate::storage::UserContextConfig::default()
+                    },
+                )]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_infra_config()
+            .withf(|options| options.topic_id == "-100777:240")
+            .returning(|options| {
+                Ok(TopicInfraConfigRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    target_name: options.target_name,
+                    host: options.host,
+                    port: options.port,
+                    remote_user: options.remote_user,
+                    auth_mode: options.auth_mode,
+                    secret_ref: options.secret_ref,
+                    sudo_secret_ref: options.sudo_secret_ref,
+                    environment: options.environment,
+                    tags: options.tags,
+                    allowed_tool_modes: options.allowed_tool_modes,
+                    approval_required_modes: options.approval_required_modes,
+                    created_at: 10,
+                    updated_at: 10,
+                })
+            });
+        mock.expect_append_audit_event().returning(|options| {
+            Ok(audit_event(
+                1,
+                options.topic_id.as_deref(),
+                options.agent_id.as_deref(),
+                &options.action,
+                options.payload,
+            ))
+        });
+
+        let lifecycle = Arc::new(FakeTopicLifecycle::new());
+        let provider =
+            ManagerControlPlaneProvider::new(Arc::new(mock), 77).with_topic_lifecycle(lifecycle);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_INFRA_UPSERT,
+                r#"{"topic_id":"n-ru1","target_name":"n-ru1","host":"213.171.27.211","port":31924,"remote_user":"user1","auth_mode":"none","allowed_tool_modes":["exec"]}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("alias resolution should canonicalize forum topic name");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["topic_infra"]["topic_id"], "-100777:240");
+    }
+
+    #[tokio::test]
+    async fn forum_topic_provision_ssh_agent_creates_canonical_binding_and_infra() {
+        let lifecycle = Arc::new(FakeTopicLifecycle::new());
+        let provider = ManagerControlPlaneProvider::new(
+            Arc::new(mock_storage_for_forum_topic_provision()),
+            77,
+        )
+        .with_topic_lifecycle(lifecycle.clone());
+        let response = provider
+            .execute(
+                TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT,
+                r#"{"name":"n-ru1","host":"213.171.27.211","port":31924,"remote_user":"user1","auth_mode":"none"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("atomic ssh topic provisioning should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["topic"]["topic_id"], "-100777:313");
+        assert_eq!(parsed["binding"]["topic_id"], "-100777:313");
+        assert_eq!(parsed["topic_infra"]["topic_id"], "-100777:313");
+        assert_eq!(parsed["preflight"]["provider_enabled"], true);
+
+        let calls = lifecycle.calls();
+        assert!(matches!(calls.first(), Some(LifecycleCall::Create(_))));
     }
 
     #[tokio::test]
