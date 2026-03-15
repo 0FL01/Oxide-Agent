@@ -12,7 +12,8 @@ use super::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
     DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
-    SandboxProvider, TodosProvider, YtdlpProvider,
+    SandboxProvider, SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
+    TodosProvider, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -21,7 +22,7 @@ use super::skills::SkillRegistry;
 use crate::agent::progress::AgentEvent;
 use crate::config::{get_agent_search_limit, AGENT_TIMEOUT_SECS};
 use crate::llm::LlmClient;
-use crate::storage::StorageProvider;
+use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -44,6 +45,7 @@ pub struct AgentExecutor {
     skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
+    topic_infra: Option<TopicInfraContext>,
     execution_profile: AgentExecutionProfile,
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
 }
@@ -53,6 +55,15 @@ struct ManagerControlPlaneContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
+}
+
+#[derive(Clone)]
+struct TopicInfraContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_id: String,
+    config: TopicInfraConfigRecord,
+    approvals: SshApprovalRegistry,
 }
 
 impl AgentExecutor {
@@ -98,6 +109,7 @@ impl AgentExecutor {
             skill_registry,
             settings,
             manager_control_plane: None,
+            topic_infra: None,
             execution_profile: AgentExecutionProfile::default(),
             tool_policy_state,
         }
@@ -109,6 +121,53 @@ impl AgentExecutor {
             *policy = execution_profile.tool_policy().clone();
         }
         self.execution_profile = execution_profile;
+    }
+
+    /// Attach or clear topic-scoped infrastructure tooling.
+    pub fn set_topic_infra(
+        &mut self,
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+        topic_id: String,
+        config: Option<TopicInfraConfigRecord>,
+    ) {
+        self.topic_infra = config.map(|config| TopicInfraContext {
+            storage,
+            user_id,
+            topic_id,
+            config,
+            approvals: self
+                .topic_infra
+                .as_ref()
+                .map_or_else(SshApprovalRegistry::new, |ctx| ctx.approvals.clone()),
+        });
+    }
+
+    /// Return pending SSH approvals that have not yet been surfaced to the transport.
+    pub async fn take_pending_ssh_approvals(&self) -> Vec<SshApprovalRequestView> {
+        match &self.topic_infra {
+            Some(topic_infra) => topic_infra.approvals.take_unannounced().await,
+            None => Vec::new(),
+        }
+    }
+
+    /// Grant a pending SSH approval request and return the replay token.
+    pub async fn grant_ssh_approval(&self, request_id: &str) -> Option<SshApprovalGrant> {
+        let topic_infra = self.topic_infra.as_ref()?;
+        topic_infra.approvals.grant(request_id).await
+    }
+
+    /// Reject a pending SSH approval request.
+    pub async fn reject_ssh_approval(&self, request_id: &str) -> Option<SshApprovalRequestView> {
+        let topic_infra = self.topic_infra.as_ref()?;
+        topic_infra.approvals.reject(request_id).await
+    }
+
+    /// Inject transport-generated system context into the next run.
+    pub fn inject_system_message(&mut self, content: String) {
+        self.session
+            .memory
+            .add_message(AgentMessage::system(content.clone()));
     }
 
     /// Attach user-scoped storage for manager control-plane tools.
@@ -206,6 +265,16 @@ impl AgentExecutor {
                     manager_provider.with_topic_lifecycle(Arc::clone(topic_lifecycle));
             }
             registry.register(Box::new(manager_provider));
+        }
+
+        if let Some(topic_infra) = &self.topic_infra {
+            registry.register(Box::new(SshMcpProvider::new(
+                Arc::clone(&topic_infra.storage),
+                topic_infra.user_id,
+                topic_infra.topic_id.clone(),
+                topic_infra.config.clone(),
+                topic_infra.approvals.clone(),
+            )));
         }
 
         // Register web search provider based on configuration

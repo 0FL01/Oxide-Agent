@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 const AGENT_PROFILE_SCHEMA_VERSION: u32 = 1;
 const TOPIC_CONTEXT_SCHEMA_VERSION: u32 = 1;
+const TOPIC_INFRA_CONFIG_SCHEMA_VERSION: u32 = 1;
 const AGENT_FLOW_SCHEMA_VERSION: u32 = 1;
 const TOPIC_BINDING_SCHEMA_VERSION: u32 = 2;
 const AUDIT_EVENT_SCHEMA_VERSION: u32 = 1;
@@ -162,6 +163,77 @@ pub struct TopicContextRecord {
     pub updated_at: i64,
 }
 
+/// Authentication mode used by topic-scoped infrastructure access.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicInfraAuthMode {
+    /// Reuse agent host environment authentication.
+    #[default]
+    None,
+    /// Resolve a password from external secret storage.
+    Password,
+    /// Resolve a private key from external secret storage.
+    PrivateKey,
+}
+
+/// SSH-capable tool modes allowed by topic infrastructure configuration.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicInfraToolMode {
+    /// Remote command execution without sudo.
+    Exec,
+    /// Remote command execution with sudo privileges.
+    SudoExec,
+    /// Read a remote file.
+    ReadFile,
+    /// Apply an in-place file edit on a remote host.
+    ApplyFileEdit,
+    /// Inspect remote process state.
+    CheckProcess,
+}
+
+/// Topic-specific infrastructure configuration persisted in control-plane storage.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TopicInfraConfigRecord {
+    /// Record schema version for forward-compatible evolution.
+    pub schema_version: u32,
+    /// Logical record revision incremented on each upsert.
+    pub version: u64,
+    /// User owning this infrastructure configuration.
+    pub user_id: i64,
+    /// Stable topic identifier.
+    pub topic_id: String,
+    /// Human-readable target name surfaced to operators.
+    pub target_name: String,
+    /// Target SSH host or DNS name.
+    pub host: String,
+    /// Target SSH port.
+    pub port: u16,
+    /// Remote SSH username.
+    pub remote_user: String,
+    /// Authentication mode for this target.
+    pub auth_mode: TopicInfraAuthMode,
+    /// External secret reference for SSH authentication material.
+    pub secret_ref: Option<String>,
+    /// External secret reference for sudo password material.
+    pub sudo_secret_ref: Option<String>,
+    /// Optional environment label, e.g. prod/stage.
+    pub environment: Option<String>,
+    /// Free-form target tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Allowlisted SSH-capable tool modes.
+    #[serde(default)]
+    pub allowed_tool_modes: Vec<TopicInfraToolMode>,
+    /// Tool modes that always require operator approval.
+    #[serde(default)]
+    pub approval_required_modes: Vec<TopicInfraToolMode>,
+    /// Creation timestamp (unix seconds).
+    pub created_at: i64,
+    /// Last update timestamp (unix seconds).
+    pub updated_at: i64,
+}
+
 /// Topic binding record persisted in control-plane storage.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -250,6 +322,37 @@ pub struct UpsertTopicContextOptions {
     pub topic_id: String,
     /// Free-form prompt context for the topic.
     pub context: String,
+}
+
+/// Parameters for topic infrastructure configuration upsert.
+#[derive(Debug, Clone)]
+pub struct UpsertTopicInfraConfigOptions {
+    /// User owning this infrastructure configuration.
+    pub user_id: i64,
+    /// Stable topic identifier.
+    pub topic_id: String,
+    /// Human-readable target name surfaced to operators.
+    pub target_name: String,
+    /// Target SSH host or DNS name.
+    pub host: String,
+    /// Target SSH port.
+    pub port: u16,
+    /// Remote SSH username.
+    pub remote_user: String,
+    /// Authentication mode for this target.
+    pub auth_mode: TopicInfraAuthMode,
+    /// External secret reference for SSH authentication material.
+    pub secret_ref: Option<String>,
+    /// External secret reference for sudo password material.
+    pub sudo_secret_ref: Option<String>,
+    /// Optional environment label.
+    pub environment: Option<String>,
+    /// Free-form target tags.
+    pub tags: Vec<String>,
+    /// Allowlisted SSH-capable tool modes.
+    pub allowed_tool_modes: Vec<TopicInfraToolMode>,
+    /// Tool modes that always require operator approval.
+    pub approval_required_modes: Vec<TopicInfraToolMode>,
 }
 
 /// Parameters for topic binding upsert.
@@ -553,6 +656,70 @@ pub trait StorageProvider: Send + Sync {
     ) -> Result<(), StorageError> {
         let _ = user_id;
         let _ = topic_id;
+        Ok(())
+    }
+    /// Get a topic infrastructure configuration record.
+    async fn get_topic_infra_config(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicInfraConfigRecord>, StorageError> {
+        let _ = user_id;
+        let _ = topic_id;
+        Ok(None)
+    }
+    /// Upsert a topic infrastructure configuration record.
+    async fn upsert_topic_infra_config(
+        &self,
+        options: UpsertTopicInfraConfigOptions,
+    ) -> Result<TopicInfraConfigRecord, StorageError> {
+        let _ = options;
+        Err(StorageError::Config(
+            "topic infra config upsert is not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Delete a topic infrastructure configuration record.
+    async fn delete_topic_infra_config(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = topic_id;
+        Ok(())
+    }
+    /// Resolve secret material from a private storage namespace.
+    async fn get_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+    ) -> Result<Option<String>, StorageError> {
+        let _ = user_id;
+        let _ = secret_ref;
+        Ok(None)
+    }
+    /// Persist secret material in a private storage namespace.
+    async fn put_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+        value: String,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = secret_ref;
+        let _ = value;
+        Err(StorageError::Config(
+            "secret storage is not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Delete secret material from a private storage namespace.
+    async fn delete_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = secret_ref;
         Ok(())
     }
     /// Get a topic binding record.
@@ -1316,6 +1483,92 @@ impl StorageProvider for R2Storage {
             .await
     }
 
+    async fn get_topic_infra_config(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicInfraConfigRecord>, StorageError> {
+        self.load_json(&topic_infra_config_key(user_id, &topic_id))
+            .await
+    }
+
+    async fn upsert_topic_infra_config(
+        &self,
+        options: UpsertTopicInfraConfigOptions,
+    ) -> Result<TopicInfraConfigRecord, StorageError> {
+        let key = topic_infra_config_key(options.user_id, &options.topic_id);
+        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
+
+        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
+            let (existing, etag) = self
+                .load_json_with_etag::<TopicInfraConfigRecord>(&key)
+                .await?;
+            let now = current_timestamp_unix_secs();
+            let record = build_topic_infra_config_record(options.clone(), existing, now);
+
+            if self
+                .save_json_conditionally(&key, &record, etag.as_deref())
+                .await?
+            {
+                return Ok(record);
+            }
+
+            if should_retry_control_plane_rmw(attempt) {
+                warn!(
+                    key = %key,
+                    attempt,
+                    "topic infra config optimistic concurrency conflict, retrying"
+                );
+                sleep(Duration::from_millis(
+                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
+                ))
+                .await;
+            }
+        }
+
+        Err(StorageError::ConcurrencyConflict {
+            key,
+            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
+        })
+    }
+
+    async fn delete_topic_infra_config(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        self.delete_object(&topic_infra_config_key(user_id, &topic_id))
+            .await
+    }
+
+    async fn get_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+    ) -> Result<Option<String>, StorageError> {
+        self.load_json(&private_secret_key(user_id, &secret_ref))
+            .await
+    }
+
+    async fn put_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+        value: String,
+    ) -> Result<(), StorageError> {
+        self.save_json(&private_secret_key(user_id, &secret_ref), &value)
+            .await
+    }
+
+    async fn delete_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+    ) -> Result<(), StorageError> {
+        self.delete_object(&private_secret_key(user_id, &secret_ref))
+            .await
+    }
+
     async fn get_topic_binding(
         &self,
         user_id: i64,
@@ -1522,10 +1775,22 @@ pub fn topic_context_key(user_id: i64, topic_id: &str) -> String {
     format!("users/{user_id}/control_plane/topic_contexts/{topic_id}.json")
 }
 
+/// Returns the R2 key for a topic infrastructure configuration record.
+#[must_use]
+pub fn topic_infra_config_key(user_id: i64, topic_id: &str) -> String {
+    format!("users/{user_id}/control_plane/topic_infra/{topic_id}.json")
+}
+
 /// Returns the R2 key for a topic binding record.
 #[must_use]
 pub fn topic_binding_key(user_id: i64, topic_id: &str) -> String {
     format!("users/{user_id}/control_plane/topic_bindings/{topic_id}.json")
+}
+
+/// Returns the R2 key for private secret material.
+#[must_use]
+pub fn private_secret_key(user_id: i64, secret_ref: &str) -> String {
+    format!("users/{user_id}/private/secrets/{secret_ref}")
 }
 
 /// Returns the R2 key for a user audit events stream.
@@ -1598,6 +1863,54 @@ fn build_topic_context_record(
             user_id: options.user_id,
             topic_id: options.topic_id,
             context: options.context,
+            created_at: now,
+            updated_at: now,
+        },
+    }
+}
+
+#[must_use]
+fn build_topic_infra_config_record(
+    options: UpsertTopicInfraConfigOptions,
+    existing: Option<TopicInfraConfigRecord>,
+    now: i64,
+) -> TopicInfraConfigRecord {
+    match existing {
+        Some(existing_record) => TopicInfraConfigRecord {
+            schema_version: TOPIC_INFRA_CONFIG_SCHEMA_VERSION,
+            version: next_record_version(Some(existing_record.version)),
+            user_id: options.user_id,
+            topic_id: options.topic_id,
+            target_name: options.target_name,
+            host: options.host,
+            port: options.port,
+            remote_user: options.remote_user,
+            auth_mode: options.auth_mode,
+            secret_ref: options.secret_ref,
+            sudo_secret_ref: options.sudo_secret_ref,
+            environment: options.environment,
+            tags: options.tags,
+            allowed_tool_modes: options.allowed_tool_modes,
+            approval_required_modes: options.approval_required_modes,
+            created_at: existing_record.created_at,
+            updated_at: now,
+        },
+        None => TopicInfraConfigRecord {
+            schema_version: TOPIC_INFRA_CONFIG_SCHEMA_VERSION,
+            version: next_record_version(None),
+            user_id: options.user_id,
+            topic_id: options.topic_id,
+            target_name: options.target_name,
+            host: options.host,
+            port: options.port,
+            remote_user: options.remote_user,
+            auth_mode: options.auth_mode,
+            secret_ref: options.secret_ref,
+            sudo_secret_ref: options.sudo_secret_ref,
+            environment: options.environment,
+            tags: options.tags,
+            allowed_tool_modes: options.allowed_tool_modes,
+            approval_required_modes: options.approval_required_modes,
             created_at: now,
             updated_at: now,
         },
@@ -1756,15 +2069,18 @@ mod tests {
     use super::{
         agent_profile_key, audit_events_key, binding_is_active, build_agent_flow_record,
         build_agent_profile_record, build_audit_event_record, build_topic_binding_record,
-        build_topic_context_record, generate_chat_uuid, next_record_version,
-        resolve_active_topic_binding, select_audit_events_page, should_retry_control_plane_rmw,
-        topic_binding_key, topic_context_key, user_chat_history_key, user_config_key,
+        build_topic_context_record, build_topic_infra_config_record, generate_chat_uuid,
+        next_record_version, private_secret_key, resolve_active_topic_binding,
+        select_audit_events_page, should_retry_control_plane_rmw, topic_binding_key,
+        topic_context_key, topic_infra_config_key, user_chat_history_key, user_config_key,
         user_context_agent_flow_key, user_context_agent_flow_memory_key,
         user_context_agent_flows_prefix, user_context_agent_memory_key,
         user_context_chat_history_prefix, user_history_key, AgentFlowRecord, AgentProfileRecord,
         AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, OptionalMetadataPatch,
-        TopicBindingKind, TopicBindingRecord, TopicContextRecord, UpsertAgentProfileOptions,
-        UpsertTopicBindingOptions, UpsertTopicContextOptions, UserConfig, UserContextConfig,
+        TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
+        TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+        UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
+        UserConfig, UserContextConfig,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1977,6 +2293,18 @@ mod tests {
     }
 
     #[test]
+    fn topic_infra_config_key_uses_control_plane_namespace() {
+        let key = topic_infra_config_key(42, "topic-a");
+        assert_eq!(key, "users/42/control_plane/topic_infra/topic-a.json");
+    }
+
+    #[test]
+    fn private_secret_key_uses_private_namespace() {
+        let key = private_secret_key(42, "ssh/prod-key");
+        assert_eq!(key, "users/42/private/secrets/ssh/prod-key");
+    }
+
+    #[test]
     fn audit_events_key_uses_control_plane_namespace() {
         let key = audit_events_key(42);
         assert_eq!(key, "users/42/control_plane/audit/events.json");
@@ -2076,6 +2404,83 @@ mod tests {
                 user_id: 7,
                 topic_id: "topic-a".to_string(),
                 context: "topic instructions".to_string(),
+            },
+            None,
+            777,
+        );
+
+        assert_eq!(created.version, 1);
+        assert_eq!(created.created_at, 777);
+        assert_eq!(created.updated_at, 777);
+        assert_eq!(created.schema_version, 1);
+    }
+
+    #[test]
+    fn upsert_topic_infra_config_increments_version_and_preserves_created_at() {
+        let existing = TopicInfraConfigRecord {
+            schema_version: 1,
+            version: 2,
+            user_id: 7,
+            topic_id: "topic-a".to_string(),
+            target_name: "prod-app".to_string(),
+            host: "prod.example.com".to_string(),
+            port: 22,
+            remote_user: "deploy".to_string(),
+            auth_mode: TopicInfraAuthMode::PrivateKey,
+            secret_ref: Some("storage:ssh/prod-key".to_string()),
+            sudo_secret_ref: Some("storage:ssh/prod-sudo".to_string()),
+            environment: Some("prod".to_string()),
+            tags: vec!["prod".to_string()],
+            allowed_tool_modes: vec![TopicInfraToolMode::Exec],
+            approval_required_modes: vec![TopicInfraToolMode::SudoExec],
+            created_at: 123,
+            updated_at: 124,
+        };
+
+        let updated = build_topic_infra_config_record(
+            UpsertTopicInfraConfigOptions {
+                user_id: 7,
+                topic_id: "topic-a".to_string(),
+                target_name: "prod-app-new".to_string(),
+                host: "prod2.example.com".to_string(),
+                port: 2222,
+                remote_user: "ops".to_string(),
+                auth_mode: TopicInfraAuthMode::Password,
+                secret_ref: Some("env:SSH_PASSWORD".to_string()),
+                sudo_secret_ref: None,
+                environment: Some("prod".to_string()),
+                tags: vec!["prod".to_string(), "critical".to_string()],
+                allowed_tool_modes: vec![TopicInfraToolMode::Exec, TopicInfraToolMode::ReadFile],
+                approval_required_modes: vec![TopicInfraToolMode::Exec],
+            },
+            Some(existing),
+            999,
+        );
+
+        assert_eq!(updated.version, 3);
+        assert_eq!(updated.created_at, 123);
+        assert_eq!(updated.updated_at, 999);
+        assert_eq!(updated.target_name, "prod-app-new");
+        assert_eq!(updated.port, 2222);
+    }
+
+    #[test]
+    fn upsert_topic_infra_config_initial_insert_starts_version_and_sets_timestamps() {
+        let created = build_topic_infra_config_record(
+            UpsertTopicInfraConfigOptions {
+                user_id: 7,
+                topic_id: "topic-a".to_string(),
+                target_name: "stage-app".to_string(),
+                host: "stage.example.com".to_string(),
+                port: 22,
+                remote_user: "deploy".to_string(),
+                auth_mode: TopicInfraAuthMode::PrivateKey,
+                secret_ref: Some("storage:ssh/stage-key".to_string()),
+                sudo_secret_ref: None,
+                environment: Some("stage".to_string()),
+                tags: vec!["stage".to_string()],
+                allowed_tool_modes: vec![TopicInfraToolMode::Exec],
+                approval_required_modes: vec![TopicInfraToolMode::SudoExec],
             },
             None,
             777,

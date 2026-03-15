@@ -43,6 +43,10 @@ pub const AGENT_CALLBACK_CONFIRM_CANCEL_NO: &str = "agent:confirm:cancel:no";
 pub const AGENT_CALLBACK_CONFIRM_RECREATE_YES: &str = "agent:confirm:recreate:yes";
 /// Callback data for cancelling container recreation from topic controls
 pub const AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL: &str = "agent:confirm:recreate:cancel";
+/// Callback prefix for approving a pending SSH action.
+pub const AGENT_CALLBACK_SSH_APPROVE_PREFIX: &str = "agent:ssh:approve:";
+/// Callback prefix for rejecting a pending SSH action.
+pub const AGENT_CALLBACK_SSH_REJECT_PREFIX: &str = "agent:ssh:reject:";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Trait definition
@@ -418,6 +422,21 @@ pub fn confirmation_inline_keyboard(action: ConfirmationType) -> InlineKeyboardM
     InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback("Yes", yes_callback),
         InlineKeyboardButton::callback("Cancel", cancel_callback),
+    ]])
+}
+
+/// Get inline approval controls for a pending SSH action.
+#[must_use]
+pub fn ssh_approval_inline_keyboard(request_id: &str) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback(
+            "Approve",
+            format!("{AGENT_CALLBACK_SSH_APPROVE_PREFIX}{request_id}"),
+        ),
+        InlineKeyboardButton::callback(
+            "Reject",
+            format!("{AGENT_CALLBACK_SSH_REJECT_PREFIX}{request_id}"),
+        ),
     ]])
 }
 

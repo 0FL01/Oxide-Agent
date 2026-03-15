@@ -6,6 +6,7 @@ pub mod delegation;
 pub mod filehoster;
 pub mod manager_control_plane;
 pub mod sandbox;
+pub mod ssh_mcp;
 pub mod todos;
 pub mod ytdlp;
 
@@ -25,6 +26,10 @@ pub use manager_control_plane::{
     ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
 pub use sandbox::SandboxProvider;
+pub use ssh_mcp::{
+    inject_ssh_approval_system_message, SshApprovalGrant, SshApprovalRegistry,
+    SshApprovalRequestView, SshMcpProvider,
+};
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use ytdlp::YtdlpProvider;
 
