@@ -7,8 +7,10 @@ use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
-    TopicBindingKind, TopicBindingRecord, TopicContextRecord, UpsertAgentProfileOptions,
-    UpsertTopicBindingOptions, UpsertTopicContextOptions, UserConfig,
+    TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
+    TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
+    UserConfig,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -24,6 +26,10 @@ const TOOL_TOPIC_CONTEXT_UPSERT: &str = "topic_context_upsert";
 const TOOL_TOPIC_CONTEXT_GET: &str = "topic_context_get";
 const TOOL_TOPIC_CONTEXT_DELETE: &str = "topic_context_delete";
 const TOOL_TOPIC_CONTEXT_ROLLBACK: &str = "topic_context_rollback";
+const TOOL_TOPIC_INFRA_UPSERT: &str = "topic_infra_upsert";
+const TOOL_TOPIC_INFRA_GET: &str = "topic_infra_get";
+const TOOL_TOPIC_INFRA_DELETE: &str = "topic_infra_delete";
+const TOOL_TOPIC_INFRA_ROLLBACK: &str = "topic_infra_rollback";
 const TOOL_AGENT_PROFILE_UPSERT: &str = "agent_profile_upsert";
 const TOOL_AGENT_PROFILE_GET: &str = "agent_profile_get";
 const TOOL_AGENT_PROFILE_DELETE: &str = "agent_profile_delete";
@@ -38,6 +44,20 @@ const ROLLBACK_AUDIT_PAGE_SIZE: usize = 200;
 const TELEGRAM_FORUM_ICON_COLORS: [u32; 6] = [
     7_322_096, 16_766_590, 13_338_331, 9_367_192, 16_749_490, 16_478_047,
 ];
+
+const fn default_ssh_port() -> u16 {
+    22
+}
+
+fn default_infra_allowed_tool_modes() -> Vec<TopicInfraToolMode> {
+    vec![
+        TopicInfraToolMode::Exec,
+        TopicInfraToolMode::SudoExec,
+        TopicInfraToolMode::ReadFile,
+        TopicInfraToolMode::ApplyFileEdit,
+        TopicInfraToolMode::CheckProcess,
+    ]
+}
 
 /// Transport-agnostic request for forum topic creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -253,6 +273,55 @@ struct TopicContextDeleteArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TopicContextRollbackArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicInfraUpsertArgs {
+    topic_id: String,
+    target_name: String,
+    host: String,
+    #[serde(default = "default_ssh_port")]
+    port: u16,
+    remote_user: String,
+    #[serde(default)]
+    auth_mode: TopicInfraAuthMode,
+    #[serde(default)]
+    secret_ref: Option<String>,
+    #[serde(default)]
+    sudo_secret_ref: Option<String>,
+    #[serde(default)]
+    environment: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default = "default_infra_allowed_tool_modes")]
+    allowed_tool_modes: Vec<TopicInfraToolMode>,
+    #[serde(default)]
+    approval_required_modes: Vec<TopicInfraToolMode>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicInfraGetArgs {
+    topic_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicInfraDeleteArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicInfraRollbackArgs {
     topic_id: String,
     #[serde(default)]
     dry_run: bool,
@@ -507,7 +576,11 @@ impl ManagerControlPlaneProvider {
         let deleted_topic_context = self
             .delete_forum_topic_context_record(&context_key, &mut errors)
             .await;
-        self.delete_forum_topic_bindings(&binding_keys, &mut errors).await;
+        let deleted_topic_infra = self
+            .delete_forum_topic_infra_record(&context_key, &mut errors)
+            .await;
+        self.delete_forum_topic_bindings(&binding_keys, &mut errors)
+            .await;
         let removed_context_config = self
             .remove_forum_topic_context_config(&context_key, &mut errors)
             .await;
@@ -521,6 +594,7 @@ impl ManagerControlPlaneProvider {
             "deleted_chat_history_for_context": deleted_chat_history_for_context,
             "deleted_agent_memory": deleted_agent_memory,
             "deleted_topic_context": deleted_topic_context,
+            "deleted_topic_infra": deleted_topic_infra,
             "deleted_topic_binding_keys": binding_keys,
             "removed_context_config": removed_context_config,
             "deleted_container": deleted_container,
@@ -596,6 +670,26 @@ impl ManagerControlPlaneProvider {
             Err(err) => {
                 errors.push(format!(
                     "failed to delete topic context for {context_key}: {err}"
+                ));
+                false
+            }
+        }
+    }
+
+    async fn delete_forum_topic_infra_record(
+        &self,
+        context_key: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        match self
+            .storage
+            .delete_topic_infra_config(self.user_id, context_key.to_string())
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to delete topic infra config for {context_key}: {err}"
                 ));
                 false
             }
@@ -690,6 +784,7 @@ impl ManagerControlPlaneProvider {
         let mut tools = Vec::new();
         tools.extend(Self::topic_binding_tools_definitions());
         tools.extend(Self::topic_context_tools_definitions());
+        tools.extend(Self::topic_infra_tools_definitions());
         tools.extend(Self::agent_profile_tools_definitions());
         tools
     }
@@ -781,6 +876,71 @@ impl ManagerControlPlaneProvider {
             ToolDefinition {
                 name: TOOL_TOPIC_CONTEXT_ROLLBACK.to_string(),
                 description: "Rollback last topic context mutation for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "dry_run": { "type": "boolean", "description": "Preview rollback without persisting" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+        ]
+    }
+
+    fn topic_infra_tools_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_TOPIC_INFRA_UPSERT.to_string(),
+                description: "Create or update topic-scoped infra target config for current user"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "target_name": { "type": "string", "description": "Human-readable target name" },
+                        "host": { "type": "string", "description": "SSH host or DNS name" },
+                        "port": { "type": "integer", "description": "SSH port, defaults to 22" },
+                        "remote_user": { "type": "string", "description": "Remote SSH username" },
+                        "auth_mode": { "type": "string", "enum": ["none", "password", "private_key"], "description": "SSH authentication mode" },
+                        "secret_ref": { "type": "string", "description": "Opaque secret reference for SSH auth material" },
+                        "sudo_secret_ref": { "type": "string", "description": "Opaque secret reference for sudo password material" },
+                        "environment": { "type": "string", "description": "Optional environment label such as prod or stage" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional free-form target tags" },
+                        "allowed_tool_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process"] }, "description": "Allowlisted SSH tool modes" },
+                        "approval_required_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process"] }, "description": "Modes that always require operator approval" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id", "target_name", "host", "remote_user"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_INFRA_GET.to_string(),
+                description: "Get topic-scoped infra target config for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_INFRA_DELETE.to_string(),
+                description: "Delete topic-scoped infra target config for current user".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_INFRA_ROLLBACK.to_string(),
+                description: "Rollback last topic infra config mutation for current user"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -969,6 +1129,101 @@ impl ManagerControlPlaneProvider {
         value
             .map(|inner| Self::validate_non_empty(inner, field_name))
             .transpose()
+    }
+
+    fn normalize_tags(tags: Vec<String>) -> Vec<String> {
+        let mut tags = tags
+            .into_iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect::<Vec<_>>();
+        tags.sort();
+        tags.dedup();
+        tags
+    }
+
+    fn normalize_tool_modes(modes: Vec<TopicInfraToolMode>) -> Vec<TopicInfraToolMode> {
+        let mut modes = modes;
+        modes.sort_by_key(|mode| match mode {
+            TopicInfraToolMode::Exec => 0,
+            TopicInfraToolMode::SudoExec => 1,
+            TopicInfraToolMode::ReadFile => 2,
+            TopicInfraToolMode::ApplyFileEdit => 3,
+            TopicInfraToolMode::CheckProcess => 4,
+        });
+        modes.dedup();
+        modes
+    }
+
+    fn validate_topic_infra_args(args: TopicInfraUpsertArgs) -> Result<TopicInfraUpsertArgs> {
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let target_name = Self::validate_non_empty(args.target_name, "target_name")?;
+        let host = Self::validate_non_empty(args.host, "host")?;
+        let remote_user = Self::validate_non_empty(args.remote_user, "remote_user")?;
+        if args.port == 0 {
+            bail!("port must be a positive integer");
+        }
+
+        let secret_ref = Self::validate_optional_non_empty(args.secret_ref, "secret_ref")?;
+        let sudo_secret_ref =
+            Self::validate_optional_non_empty(args.sudo_secret_ref, "sudo_secret_ref")?;
+        let environment = Self::validate_optional_non_empty(args.environment, "environment")?;
+        let allowed_tool_modes = Self::normalize_tool_modes(args.allowed_tool_modes);
+        if allowed_tool_modes.is_empty() {
+            bail!("allowed_tool_modes must not be empty");
+        }
+        let approval_required_modes = Self::normalize_tool_modes(args.approval_required_modes);
+
+        Ok(TopicInfraUpsertArgs {
+            topic_id,
+            target_name,
+            host,
+            port: args.port,
+            remote_user,
+            auth_mode: args.auth_mode,
+            secret_ref,
+            sudo_secret_ref,
+            environment,
+            tags: Self::normalize_tags(args.tags),
+            allowed_tool_modes,
+            approval_required_modes,
+            dry_run: args.dry_run,
+        })
+    }
+
+    fn topic_infra_value_from_args(args: &TopicInfraUpsertArgs) -> serde_json::Value {
+        json!({
+            "topic_id": args.topic_id,
+            "target_name": args.target_name,
+            "host": args.host,
+            "port": args.port,
+            "remote_user": args.remote_user,
+            "auth_mode": args.auth_mode,
+            "secret_ref": args.secret_ref,
+            "sudo_secret_ref": args.sudo_secret_ref,
+            "environment": args.environment,
+            "tags": args.tags,
+            "allowed_tool_modes": args.allowed_tool_modes,
+            "approval_required_modes": args.approval_required_modes,
+        })
+    }
+
+    fn topic_infra_value_from_record(record: &TopicInfraConfigRecord) -> serde_json::Value {
+        json!({
+            "topic_id": record.topic_id,
+            "version": record.version,
+            "target_name": record.target_name,
+            "host": record.host,
+            "port": record.port,
+            "remote_user": record.remote_user,
+            "auth_mode": record.auth_mode,
+            "secret_ref": record.secret_ref,
+            "sudo_secret_ref": record.sudo_secret_ref,
+            "environment": record.environment,
+            "tags": record.tags,
+            "allowed_tool_modes": record.allowed_tool_modes,
+            "approval_required_modes": record.approval_required_modes,
+        })
     }
 
     fn topic_lifecycle(&self) -> Result<&Arc<dyn ManagerTopicLifecycle>> {
@@ -1161,6 +1416,59 @@ impl ManagerControlPlaneProvider {
                 )
         })
         .await
+    }
+
+    async fn last_topic_infra_mutation(
+        &self,
+        topic_id: &str,
+    ) -> Result<Option<crate::storage::AuditEventRecord>> {
+        self.find_latest_applied_mutation(|event| {
+            event.topic_id.as_deref() == Some(topic_id)
+                && Self::action_matches(
+                    event.action.as_str(),
+                    &[
+                        TOOL_TOPIC_INFRA_UPSERT,
+                        TOOL_TOPIC_INFRA_DELETE,
+                        TOOL_TOPIC_INFRA_ROLLBACK,
+                    ],
+                )
+        })
+        .await
+    }
+
+    async fn restore_or_delete_topic_infra(
+        &self,
+        topic_id: &str,
+        previous: Option<TopicInfraConfigRecord>,
+    ) -> Result<Option<TopicInfraConfigRecord>> {
+        if let Some(previous_infra) = previous {
+            return self
+                .storage
+                .upsert_topic_infra_config(UpsertTopicInfraConfigOptions {
+                    user_id: self.user_id,
+                    topic_id: topic_id.to_string(),
+                    target_name: previous_infra.target_name,
+                    host: previous_infra.host,
+                    port: previous_infra.port,
+                    remote_user: previous_infra.remote_user,
+                    auth_mode: previous_infra.auth_mode,
+                    secret_ref: previous_infra.secret_ref,
+                    sudo_secret_ref: previous_infra.sudo_secret_ref,
+                    environment: previous_infra.environment,
+                    tags: previous_infra.tags,
+                    allowed_tool_modes: previous_infra.allowed_tool_modes,
+                    approval_required_modes: previous_infra.approval_required_modes,
+                })
+                .await
+                .map(Some)
+                .map_err(|err| anyhow!("failed to restore topic infra config: {err}"));
+        }
+
+        self.storage
+            .delete_topic_infra_config(self.user_id, topic_id.to_string())
+            .await
+            .map_err(|err| anyhow!("failed to delete topic infra config during rollback: {err}"))?;
+        Ok(None)
     }
 
     async fn execute_topic_binding_set(&self, arguments: &str) -> Result<String> {
@@ -1507,11 +1815,7 @@ impl ManagerControlPlaneProvider {
             None => None,
         };
 
-        let rollback_operation = if previous.is_some() {
-            "restore"
-        } else {
-            "delete"
-        };
+        let rollback_operation = previous.as_ref().map_or("delete", |_| "restore");
 
         if args.dry_run {
             let audit_status = self
@@ -1855,6 +2159,247 @@ impl ManagerControlPlaneProvider {
         );
 
         Self::to_json_string(response)
+    }
+
+    async fn execute_topic_infra_upsert(&self, arguments: &str) -> Result<String> {
+        let args =
+            Self::validate_topic_infra_args(Self::parse_args(arguments, TOOL_TOPIC_INFRA_UPSERT)?)?;
+        let desired = Self::topic_infra_value_from_args(&args);
+        let previous = self
+            .storage
+            .get_topic_infra_config(self.user_id, args.topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic infra config: {err}"))?;
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(args.topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_INFRA_UPSERT.to_string(),
+                    payload: json!({
+                        "desired": desired,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            return Self::to_json_string(Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "upsert",
+                        "desired": desired
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            ));
+        }
+
+        let record = self
+            .storage
+            .upsert_topic_infra_config(UpsertTopicInfraConfigOptions {
+                user_id: self.user_id,
+                topic_id: args.topic_id.clone(),
+                target_name: args.target_name,
+                host: args.host,
+                port: args.port,
+                remote_user: args.remote_user,
+                auth_mode: args.auth_mode,
+                secret_ref: args.secret_ref,
+                sudo_secret_ref: args.sudo_secret_ref,
+                environment: args.environment,
+                tags: args.tags,
+                allowed_tool_modes: args.allowed_tool_modes,
+                approval_required_modes: args.approval_required_modes,
+            })
+            .await
+            .map_err(|err| anyhow!("failed to upsert topic infra config: {err}"))?;
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(args.topic_id),
+                agent_id: None,
+                action: TOOL_TOPIC_INFRA_UPSERT.to_string(),
+                payload: json!({
+                    "record": Self::topic_infra_value_from_record(&record),
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({ "ok": true, "topic_infra": record }),
+            audit_status,
+        ))
+    }
+
+    async fn execute_topic_infra_get(&self, arguments: &str) -> Result<String> {
+        let args: TopicInfraGetArgs = Self::parse_args(arguments, TOOL_TOPIC_INFRA_GET)?;
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+
+        let record = self
+            .storage
+            .get_topic_infra_config(self.user_id, topic_id)
+            .await
+            .map_err(|err| anyhow!("failed to get topic infra config: {err}"))?;
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "found": record.is_some(),
+            "topic_infra": record
+        }))
+    }
+
+    async fn execute_topic_infra_delete(&self, arguments: &str) -> Result<String> {
+        let args: TopicInfraDeleteArgs = Self::parse_args(arguments, TOOL_TOPIC_INFRA_DELETE)?;
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let previous = self
+            .storage
+            .get_topic_infra_config(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic infra config: {err}"))?;
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_INFRA_DELETE.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "previous": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            let response = Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "delete",
+                        "topic_id": topic_id
+                    },
+                    "previous": previous
+                }),
+                audit_status,
+            );
+
+            return Self::to_json_string(response);
+        }
+
+        self.storage
+            .delete_topic_infra_config(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to delete topic infra config: {err}"))?;
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id.clone()),
+                agent_id: None,
+                action: TOOL_TOPIC_INFRA_DELETE.to_string(),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "previous": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        let response = Self::attach_audit_status(json!({ "ok": true }), audit_status);
+        Self::to_json_string(response)
+    }
+
+    async fn execute_topic_infra_rollback(&self, arguments: &str) -> Result<String> {
+        let args: TopicInfraRollbackArgs = Self::parse_args(arguments, TOOL_TOPIC_INFRA_ROLLBACK)?;
+        let topic_id = Self::validate_non_empty(args.topic_id, "topic_id")?;
+        let current = self
+            .storage
+            .get_topic_infra_config(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current topic infra config: {err}"))?;
+        let previous = match self.last_topic_infra_mutation(&topic_id).await? {
+            Some(event) => Self::previous_from_payload::<TopicInfraConfigRecord>(&event.payload)?,
+            None => None,
+        };
+
+        let rollback_operation = if previous.is_some() {
+            "restore"
+        } else {
+            "delete"
+        };
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_INFRA_ROLLBACK.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "operation": rollback_operation,
+                        "previous": current,
+                        "restore_to": previous,
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            return Self::to_json_string(Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": rollback_operation,
+                        "topic_id": topic_id
+                    },
+                    "current": current,
+                    "restore_to": previous
+                }),
+                audit_status,
+            ));
+        }
+
+        let rolled_back_infra = self
+            .restore_or_delete_topic_infra(&topic_id, previous.clone())
+            .await?;
+
+        let response_topic_id = topic_id.clone();
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id),
+                agent_id: None,
+                action: TOOL_TOPIC_INFRA_ROLLBACK.to_string(),
+                payload: json!({
+                    "topic_id": response_topic_id,
+                    "operation": rollback_operation,
+                    "previous": current,
+                    "restore_to": previous,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "operation": rollback_operation,
+                "topic_infra": rolled_back_infra
+            }),
+            audit_status,
+        ))
     }
 
     async fn execute_agent_profile_rollback(&self, arguments: &str) -> Result<String> {
@@ -2312,6 +2857,10 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_CONTEXT_GET => self.execute_topic_context_get(arguments).await,
             TOOL_TOPIC_CONTEXT_DELETE => self.execute_topic_context_delete(arguments).await,
             TOOL_TOPIC_CONTEXT_ROLLBACK => self.execute_topic_context_rollback(arguments).await,
+            TOOL_TOPIC_INFRA_UPSERT => self.execute_topic_infra_upsert(arguments).await,
+            TOOL_TOPIC_INFRA_GET => self.execute_topic_infra_get(arguments).await,
+            TOOL_TOPIC_INFRA_DELETE => self.execute_topic_infra_delete(arguments).await,
+            TOOL_TOPIC_INFRA_ROLLBACK => self.execute_topic_infra_rollback(arguments).await,
             TOOL_AGENT_PROFILE_UPSERT => self.execute_agent_profile_upsert(arguments).await,
             TOOL_AGENT_PROFILE_GET => self.execute_agent_profile_get(arguments).await,
             TOOL_AGENT_PROFILE_DELETE => self.execute_agent_profile_delete(arguments).await,
@@ -2342,6 +2891,7 @@ mod tests {
     use crate::agent::registry::ToolRegistry;
     use crate::storage::{
         AgentProfileRecord, AppendAuditEventOptions, TopicBindingRecord, TopicContextRecord,
+        TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode,
     };
     use mockall::{predicate::eq, Sequence};
 
@@ -2357,6 +2907,28 @@ mod tests {
             thread_id: None,
             expires_at: None,
             last_activity_at: Some(20),
+            created_at: 10,
+            updated_at: 20,
+        }
+    }
+
+    fn topic_infra(user_id: i64, topic_id: &str, version: u64) -> TopicInfraConfigRecord {
+        TopicInfraConfigRecord {
+            schema_version: 1,
+            version,
+            user_id,
+            topic_id: topic_id.to_string(),
+            target_name: "prod-app".to_string(),
+            host: "prod.example.com".to_string(),
+            port: 22,
+            remote_user: "deploy".to_string(),
+            auth_mode: TopicInfraAuthMode::PrivateKey,
+            secret_ref: Some("storage:ssh/prod-key".to_string()),
+            sudo_secret_ref: Some("storage:ssh/prod-sudo".to_string()),
+            environment: Some("prod".to_string()),
+            tags: vec!["prod".to_string()],
+            allowed_tool_modes: vec![TopicInfraToolMode::Exec, TopicInfraToolMode::ReadFile],
+            approval_required_modes: vec![TopicInfraToolMode::SudoExec],
             created_at: 10,
             updated_at: 20,
         }
@@ -3680,6 +4252,158 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["operation"], "restore");
         assert_eq!(parsed["topic_context"]["context"], "previous context");
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_infra_upsert_persists_and_audits() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_infra_config()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.target_name == "prod-app"
+                    && options.host == "prod.example.com"
+                    && options.remote_user == "deploy"
+            })
+            .returning(|options| {
+                Ok(TopicInfraConfigRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    target_name: options.target_name,
+                    host: options.host,
+                    port: options.port,
+                    remote_user: options.remote_user,
+                    auth_mode: options.auth_mode,
+                    secret_ref: options.secret_ref,
+                    sudo_secret_ref: options.sudo_secret_ref,
+                    environment: options.environment,
+                    tags: options.tags,
+                    allowed_tool_modes: options.allowed_tool_modes,
+                    approval_required_modes: options.approval_required_modes,
+                    created_at: 10,
+                    updated_at: 10,
+                })
+            });
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.topic_id.as_deref() == Some("topic-a")
+                    && options.action == TOOL_TOPIC_INFRA_UPSERT
+            })
+            .returning(|options| {
+                Ok(audit_event(
+                    1,
+                    options.topic_id.as_deref(),
+                    None,
+                    &options.action,
+                    options.payload,
+                ))
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_INFRA_UPSERT,
+                r#"{"topic_id":"topic-a","target_name":"prod-app","host":"prod.example.com","remote_user":"deploy","auth_mode":"private_key","secret_ref":"storage:ssh/prod-key","sudo_secret_ref":"storage:ssh/prod-sudo","environment":"prod","tags":["prod"],"allowed_tool_modes":["exec","read_file"],"approval_required_modes":["sudo_exec"]}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic infra upsert should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["topic_infra"]["topic_id"], "topic-a");
+        assert_eq!(parsed["topic_infra"]["target_name"], "prod-app");
+        assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_infra_rollback_restores_previous_snapshot() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, topic_id| Ok(Some(topic_infra(77, &topic_id, 3))));
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .returning(|_, _, _| {
+                Ok(vec![audit_event(
+                    2,
+                    Some("topic-a"),
+                    None,
+                    TOOL_TOPIC_INFRA_UPSERT,
+                    json!({
+                        "topic_id": "topic-a",
+                        "previous": topic_infra(77, "topic-a", 1),
+                        "outcome": "applied"
+                    }),
+                )])
+            });
+        mock.expect_upsert_topic_infra_config()
+            .withf(|options| {
+                options.user_id == 77
+                    && options.topic_id == "topic-a"
+                    && options.target_name == "prod-app"
+                    && options.host == "prod.example.com"
+            })
+            .returning(|options| {
+                Ok(TopicInfraConfigRecord {
+                    schema_version: 1,
+                    version: 4,
+                    user_id: options.user_id,
+                    topic_id: options.topic_id,
+                    target_name: options.target_name,
+                    host: options.host,
+                    port: options.port,
+                    remote_user: options.remote_user,
+                    auth_mode: options.auth_mode,
+                    secret_ref: options.secret_ref,
+                    sudo_secret_ref: options.sudo_secret_ref,
+                    environment: options.environment,
+                    tags: options.tags,
+                    allowed_tool_modes: options.allowed_tool_modes,
+                    approval_required_modes: options.approval_required_modes,
+                    created_at: 10,
+                    updated_at: 40,
+                })
+            });
+        mock.expect_append_audit_event()
+            .withf(|options: &AppendAuditEventOptions| {
+                options.user_id == 77
+                    && options.action == TOOL_TOPIC_INFRA_ROLLBACK
+                    && options.payload.get("operation") == Some(&json!("restore"))
+            })
+            .returning(|options| {
+                Ok(audit_event(
+                    4,
+                    options.topic_id.as_deref(),
+                    None,
+                    &options.action,
+                    options.payload,
+                ))
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_INFRA_ROLLBACK,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic infra rollback should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["operation"], "restore");
+        assert_eq!(parsed["topic_infra"]["host"], "prod.example.com");
         assert_eq!(parsed["audit_status"], "written");
     }
 

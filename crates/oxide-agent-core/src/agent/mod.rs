@@ -64,6 +64,7 @@ pub use profile::{
 };
 pub use progress::{AgentEvent, ProgressState};
 pub use provider::ToolProvider;
+pub use providers::{SshApprovalGrant, SshApprovalRequestView};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;

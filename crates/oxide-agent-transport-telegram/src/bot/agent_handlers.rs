@@ -19,13 +19,14 @@ use crate::bot::topic_route::{
 use crate::bot::views::{
     agent_control_markup, agent_flow_inline_keyboard, cancel_task_confirmation_inline_keyboard,
     confirmation_markup, empty_inline_keyboard, get_agent_inline_keyboard_with_exit,
-    progress_inline_keyboard, AgentView, DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX,
-    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
-    AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
-    AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
-    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT,
-    AGENT_CALLBACK_RECREATE_CONTAINER, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET,
-    LOOP_CALLBACK_RETRY,
+    progress_inline_keyboard, ssh_approval_inline_keyboard, AgentView, DefaultAgentView,
+    AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY,
+    AGENT_CALLBACK_CONFIRM_CANCEL_NO, AGENT_CALLBACK_CONFIRM_CANCEL_YES,
+    AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL, AGENT_CALLBACK_CONFIRM_CLEAR_YES,
+    AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL, AGENT_CALLBACK_CONFIRM_RECREATE_YES,
+    AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT, AGENT_CALLBACK_RECREATE_CONTAINER,
+    AGENT_CALLBACK_SSH_APPROVE_PREFIX, AGENT_CALLBACK_SSH_REJECT_PREFIX, LOOP_CALLBACK_CANCEL,
+    LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
 use crate::bot::{
     build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec,
@@ -38,6 +39,7 @@ use oxide_agent_core::agent::{
     parse_agent_profile,
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
+    providers::inject_ssh_approval_system_message,
     AgentExecutionProfile, AgentSession, SessionId,
 };
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
@@ -700,6 +702,7 @@ pub async fn handle_agent_message(
 
     let execution_profile =
         resolve_execution_profile(&storage, user_id, &context_key, &route).await;
+    let topic_infra_config = resolve_topic_infra_config(&storage, user_id, &context_key).await;
 
     if is_agent_task_running(session_id).await {
         notify_running_agent_task(&bot, chat_id, thread_spec, outbound_thread).await?;
@@ -708,6 +711,14 @@ pub async fn handle_agent_message(
     }
 
     apply_execution_profile(session_id, execution_profile).await;
+    apply_topic_infra_config(
+        session_id,
+        storage.clone(),
+        user_id,
+        context_key.clone(),
+        topic_infra_config,
+    )
+    .await;
 
     renew_cancellation_token(session_id).await;
 
@@ -1222,6 +1233,18 @@ mod tests {
         assert_eq!(
             parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_CANCEL_NO),
             Some(AgentCallbackAction::ResolveCancelTaskConfirmation(false))
+        );
+    }
+
+    #[test]
+    fn ssh_approval_callbacks_are_recognized() {
+        assert_eq!(
+            parse_agent_callback_action("agent:ssh:approve:req-1"),
+            Some(AgentCallbackAction::ApproveSsh("req-1".to_string()))
+        );
+        assert_eq!(
+            parse_agent_callback_action("agent:ssh:reject:req-1"),
+            Some(AgentCallbackAction::RejectSsh("req-1".to_string()))
         );
     }
 
@@ -1997,6 +2020,28 @@ async fn resolve_execution_profile(
     )
 }
 
+async fn resolve_topic_infra_config(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_id: &str,
+) -> Option<oxide_agent_core::storage::TopicInfraConfigRecord> {
+    match storage
+        .get_topic_infra_config(user_id, topic_id.to_string())
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => {
+            warn!(
+                error = %error,
+                user_id,
+                topic_id,
+                "Failed to load topic infra config for executor configuration"
+            );
+            None
+        }
+    }
+}
+
 async fn apply_execution_profile(session_id: SessionId, profile: AgentExecutionProfile) {
     let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
         warn!(session_id = %session_id, "Cannot apply execution profile: session not found");
@@ -2005,6 +2050,22 @@ async fn apply_execution_profile(session_id: SessionId, profile: AgentExecutionP
 
     let mut executor = executor_arc.write().await;
     executor.set_execution_profile(profile);
+}
+
+async fn apply_topic_infra_config(
+    session_id: SessionId,
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_id: String,
+    config: Option<oxide_agent_core::storage::TopicInfraConfigRecord>,
+) {
+    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
+        warn!(session_id = %session_id, "Cannot apply topic infra config: session not found");
+        return;
+    };
+
+    let mut executor = executor_arc.write().await;
+    executor.set_topic_infra(storage, user_id, topic_id, config);
 }
 
 #[cfg(test)]
@@ -2424,6 +2485,7 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
         }
     };
     let progress_text = render_progress_html(&state);
+    let pending_ssh_approvals = take_pending_ssh_approvals(ctx.session_id).await;
 
     save_memory_after_task(
         ctx.session_id,
@@ -2457,6 +2519,13 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
                 &response,
                 ctx.message_thread_id,
                 final_markup,
+            )
+            .await?;
+            send_pending_ssh_approval_messages(
+                &ctx.bot,
+                ctx.chat_id,
+                ctx.message_thread_id,
+                &pending_ssh_approvals,
             )
             .await?;
         }
@@ -2523,6 +2592,40 @@ async fn execute_agent_task(
     executor.execute(task, progress_tx).await
 }
 
+async fn take_pending_ssh_approvals(
+    session_id: SessionId,
+) -> Vec<oxide_agent_core::agent::SshApprovalRequestView> {
+    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
+        return Vec::new();
+    };
+    let executor = executor_arc.read().await;
+    executor.take_pending_ssh_approvals().await
+}
+
+async fn send_pending_ssh_approval_messages(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_thread_id: Option<ThreadId>,
+    requests: &[oxide_agent_core::agent::SshApprovalRequestView],
+) -> Result<()> {
+    for request in requests {
+        let text = format!(
+            "⚠️ <b>SSH approval required</b>\n\nTarget: <b>{}</b>\nTool: <code>{}</code>\n\n{}",
+            html_escape::encode_text(&request.target_name),
+            html_escape::encode_text(&request.tool_name),
+            html_escape::encode_text(&request.summary),
+        );
+        let mut req = bot.send_message(chat_id, text).parse_mode(ParseMode::Html);
+        if let Some(thread_id) = message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+        req.reply_markup(ssh_approval_inline_keyboard(&request.request_id))
+            .await?;
+    }
+
+    Ok(())
+}
+
 #[derive(Clone)]
 struct LoopCallbackContext {
     bot: Bot,
@@ -2543,6 +2646,8 @@ enum AgentCallbackAction {
     LoopCancel,
     Attach(String),
     Detach,
+    ApproveSsh(String),
+    RejectSsh(String),
     StartCancelTaskConfirmation,
     ResolveCancelTaskConfirmation(bool),
     StartConfirmation(ConfirmationType),
@@ -2566,6 +2671,12 @@ fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAction> {
     }
     if let Some(flow_id) = data.strip_prefix(AGENT_CALLBACK_ATTACH_PREFIX) {
         return Some(AgentCallbackAction::Attach(flow_id.to_string()));
+    }
+    if let Some(request_id) = data.strip_prefix(AGENT_CALLBACK_SSH_APPROVE_PREFIX) {
+        return Some(AgentCallbackAction::ApproveSsh(request_id.to_string()));
+    }
+    if let Some(request_id) = data.strip_prefix(AGENT_CALLBACK_SSH_REJECT_PREFIX) {
+        return Some(AgentCallbackAction::RejectSsh(request_id.to_string()));
     }
 
     match data {
@@ -2770,6 +2881,154 @@ async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn handle_ssh_approval_callback(
+    ctx: &AgentCallbackContext,
+    request_id: String,
+) -> Result<()> {
+    let Some(session_id) = resolve_existing_session_id(ctx.loop_ctx.session_keys).await else {
+        send_agent_message(
+            &ctx.loop_ctx.bot,
+            ctx.loop_ctx.chat_id,
+            DefaultAgentView::session_not_found(),
+            ctx.loop_ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    if is_agent_task_running(session_id).await {
+        send_agent_message(
+            &ctx.loop_ctx.bot,
+            ctx.loop_ctx.chat_id,
+            DefaultAgentView::task_already_running(),
+            ctx.loop_ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    renew_cancellation_token(session_id).await;
+
+    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
+        send_agent_message(
+            &ctx.loop_ctx.bot,
+            ctx.loop_ctx.chat_id,
+            DefaultAgentView::session_not_found(),
+            ctx.loop_ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let task_text = {
+        let mut executor = executor_arc.write().await;
+        let Some(grant) = executor.grant_ssh_approval(&request_id).await else {
+            send_agent_message(
+                &ctx.loop_ctx.bot,
+                ctx.loop_ctx.chat_id,
+                "SSH approval request not found or already handled.",
+                ctx.loop_ctx.outbound_thread,
+            )
+            .await?;
+            return Ok(());
+        };
+        executor.inject_system_message(inject_ssh_approval_system_message(&grant).content);
+        executor.last_task().map(str::to_string)
+    };
+
+    let Some(task_text) = task_text else {
+        send_agent_message(
+            &ctx.loop_ctx.bot,
+            ctx.loop_ctx.chat_id,
+            DefaultAgentView::no_saved_task(),
+            ctx.loop_ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    send_agent_message(
+        &ctx.loop_ctx.bot,
+        ctx.loop_ctx.chat_id,
+        "SSH approval granted. Resuming the task.",
+        ctx.loop_ctx.outbound_thread,
+    )
+    .await?;
+
+    let retry_ctx = ctx.loop_ctx.clone();
+    let storage = ctx.storage.clone();
+    tokio::spawn(async move {
+        let error_bot = retry_ctx.bot.clone();
+        if let Err(e) = run_agent_task_with_text(RunAgentTaskTextContext {
+            bot: retry_ctx.bot,
+            chat_id: retry_ctx.chat_id,
+            session_id,
+            user_id: retry_ctx.user_id,
+            task_text,
+            storage,
+            context_key: retry_ctx.context_key,
+            agent_flow_id: retry_ctx.agent_flow_id,
+            message_thread_id: retry_ctx.outbound_thread.message_thread_id,
+            use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
+        })
+        .await
+        {
+            let _ = send_agent_message(
+                &error_bot,
+                retry_ctx.chat_id,
+                DefaultAgentView::error_message(&e.to_string()),
+                retry_ctx.outbound_thread,
+            )
+            .await;
+        }
+    });
+
+    Ok(())
+}
+
+async fn handle_ssh_reject_callback(ctx: &AgentCallbackContext, request_id: String) -> Result<()> {
+    let Some(session_id) = resolve_existing_session_id(ctx.loop_ctx.session_keys).await else {
+        send_agent_message(
+            &ctx.loop_ctx.bot,
+            ctx.loop_ctx.chat_id,
+            DefaultAgentView::session_not_found(),
+            ctx.loop_ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
+        send_agent_message(
+            &ctx.loop_ctx.bot,
+            ctx.loop_ctx.chat_id,
+            DefaultAgentView::session_not_found(),
+            ctx.loop_ctx.outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let rejected = {
+        let executor = executor_arc.read().await;
+        executor.reject_ssh_approval(&request_id).await
+    };
+
+    let message = if rejected.is_some() {
+        "SSH action rejected. The agent will not replay the command."
+    } else {
+        "SSH approval request not found or already handled."
+    };
+    send_agent_message(
+        &ctx.loop_ctx.bot,
+        ctx.loop_ctx.chat_id,
+        message,
+        ctx.loop_ctx.outbound_thread,
+    )
+    .await?;
     Ok(())
 }
 
@@ -2987,6 +3246,18 @@ async fn handle_attach_flow_callback(
     Ok(())
 }
 
+async fn answer_agent_callback(
+    bot: &Bot,
+    callback_id: teloxide::types::CallbackQueryId,
+    text: Option<&str>,
+) {
+    let mut req = bot.answer_callback_query(callback_id);
+    if let Some(text) = text {
+        req = req.text(text);
+    }
+    let _ = req.await;
+}
+
 async fn dispatch_agent_callback(
     action: AgentCallbackAction,
     ctx: AgentCallbackContext,
@@ -2996,12 +3267,26 @@ async fn dispatch_agent_callback(
             handle_attach_flow_callback(&ctx, selected_flow_id).await
         }
         AgentCallbackAction::Detach => handle_detach_flow_callback(&ctx).await,
+        AgentCallbackAction::ApproveSsh(request_id) => {
+            answer_agent_callback(
+                &ctx.loop_ctx.bot,
+                ctx.callback_id.clone(),
+                Some("SSH action approved"),
+            )
+            .await;
+            handle_ssh_approval_callback(&ctx, request_id).await
+        }
+        AgentCallbackAction::RejectSsh(request_id) => {
+            answer_agent_callback(
+                &ctx.loop_ctx.bot,
+                ctx.callback_id.clone(),
+                Some("SSH action rejected"),
+            )
+            .await;
+            handle_ssh_reject_callback(&ctx, request_id).await
+        }
         AgentCallbackAction::LoopRetry => {
-            let _ = ctx
-                .loop_ctx
-                .bot
-                .answer_callback_query(ctx.callback_id.clone())
-                .await;
+            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             handle_loop_retry(
                 &ctx.loop_ctx,
                 ctx.storage.clone(),
@@ -3011,19 +3296,11 @@ async fn dispatch_agent_callback(
             .await
         }
         AgentCallbackAction::LoopReset => {
-            let _ = ctx
-                .loop_ctx
-                .bot
-                .answer_callback_query(ctx.callback_id.clone())
-                .await;
+            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             handle_loop_reset(&ctx.loop_ctx).await
         }
         AgentCallbackAction::LoopCancel => {
-            let _ = ctx
-                .loop_ctx
-                .bot
-                .answer_callback_query(ctx.callback_id.clone())
-                .await;
+            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             cancel_agent_task_by_id(
                 ctx.loop_ctx.bot.clone(),
                 ctx.loop_ctx.session_keys,
@@ -3034,44 +3311,24 @@ async fn dispatch_agent_callback(
             .await
         }
         AgentCallbackAction::StartCancelTaskConfirmation => {
-            let _ = ctx
-                .loop_ctx
-                .bot
-                .answer_callback_query(ctx.callback_id.clone())
-                .await;
+            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             send_cancel_task_confirmation(&ctx.loop_ctx).await
         }
         AgentCallbackAction::ResolveCancelTaskConfirmation(confirmed) => {
-            let _ = ctx
-                .loop_ctx
-                .bot
-                .answer_callback_query(ctx.callback_id.clone())
-                .await;
+            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             handle_cancel_task_confirmation_callback(&ctx, confirmed).await
         }
         AgentCallbackAction::StartConfirmation(action) => {
-            let _ = ctx
-                .loop_ctx
-                .bot
-                .answer_callback_query(ctx.callback_id.clone())
-                .await;
+            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             confirm_destructive_action(action, ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue)
                 .await
         }
         AgentCallbackAction::Exit => {
-            let _ = ctx
-                .loop_ctx
-                .bot
-                .answer_callback_query(ctx.callback_id.clone())
-                .await;
+            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             exit_agent_mode(ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue, ctx.storage).await
         }
         AgentCallbackAction::ResolveConfirmation(action, confirmed) => {
-            let _ = ctx
-                .loop_ctx
-                .bot
-                .answer_callback_query(ctx.callback_id.clone())
-                .await;
+            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             handle_agent_confirmation_callback(&ctx, action, confirmed).await
         }
     }
