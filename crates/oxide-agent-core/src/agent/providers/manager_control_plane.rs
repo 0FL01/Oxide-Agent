@@ -5225,45 +5225,8 @@ impl ToolProvider for ManagerControlPlaneProvider {
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
-        let base_tools = matches!(
-            tool_name,
-            TOOL_TOPIC_BINDING_SET
-                | TOOL_TOPIC_BINDING_GET
-                | TOOL_TOPIC_BINDING_DELETE
-                | TOOL_TOPIC_BINDING_ROLLBACK
-                | TOOL_TOPIC_CONTEXT_UPSERT
-                | TOOL_TOPIC_CONTEXT_GET
-                | TOOL_TOPIC_CONTEXT_DELETE
-                | TOOL_TOPIC_CONTEXT_ROLLBACK
-                | TOOL_TOPIC_INFRA_UPSERT
-                | TOOL_TOPIC_INFRA_GET
-                | TOOL_TOPIC_INFRA_DELETE
-                | TOOL_TOPIC_INFRA_ROLLBACK
-                | TOOL_PRIVATE_SECRET_PROBE
-                | TOOL_AGENT_PROFILE_UPSERT
-                | TOOL_AGENT_PROFILE_GET
-                | TOOL_AGENT_PROFILE_DELETE
-                | TOOL_AGENT_PROFILE_ROLLBACK
-                | TOOL_TOPIC_AGENT_TOOLS_GET
-                | TOOL_TOPIC_AGENT_TOOLS_ENABLE
-                | TOOL_TOPIC_AGENT_TOOLS_DISABLE
-                | TOOL_TOPIC_AGENT_HOOKS_GET
-                | TOOL_TOPIC_AGENT_HOOKS_ENABLE
-                | TOOL_TOPIC_AGENT_HOOKS_DISABLE
-        );
-
-        base_tools
-            || (self.topic_lifecycle.is_some()
-                && matches!(
-                    tool_name,
-                    TOOL_FORUM_TOPIC_PROVISION_SSH_AGENT
-                        | TOOL_FORUM_TOPIC_CREATE
-                        | TOOL_FORUM_TOPIC_EDIT
-                        | TOOL_FORUM_TOPIC_CLOSE
-                        | TOOL_FORUM_TOPIC_REOPEN
-                        | TOOL_FORUM_TOPIC_DELETE
-                        | TOOL_FORUM_TOPIC_LIST
-                ))
+        BASE_TOOL_NAMES.contains(&tool_name)
+            || (self.topic_lifecycle.is_some() && LIFECYCLE_TOOL_NAMES.contains(&tool_name))
     }
 
     async fn execute(
@@ -7703,6 +7666,45 @@ mod tests {
             serde_json::from_str(&response).expect("response must be json");
         assert_eq!(parsed["found"], true);
         assert_eq!(parsed["profile"]["agent_id"], "agent-x");
+    }
+
+    #[tokio::test]
+    async fn tool_registry_routes_topic_agents_md_to_manager_provider() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, topic_id| {
+                Ok(Some(TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: 77,
+                    topic_id,
+                    agents_md: "# Topic AGENTS".to_string(),
+                    created_at: 10,
+                    updated_at: 10,
+                }))
+            });
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ManagerControlPlaneProvider::new(
+            Arc::new(mock),
+            77,
+        )));
+
+        let response = registry
+            .execute(
+                TOOL_TOPIC_AGENTS_MD_GET,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("registry execution should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be json");
+        assert_eq!(parsed["found"], true);
+        assert_eq!(parsed["topic_agents_md"]["topic_id"], "topic-a");
     }
 
     #[tokio::test]
