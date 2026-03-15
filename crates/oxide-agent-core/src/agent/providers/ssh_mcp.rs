@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use shell_escape::unix::escape;
@@ -37,6 +37,174 @@ const TOOL_SSH_CHECK_PROCESS: &str = "ssh_check_process";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_REMOTE_OUTPUT_CHARS: usize = 16_000;
 const APPROVAL_TTL_SECS: i64 = 600;
+const KEY_PROBE_TIMEOUT_SECS: u64 = 10;
+
+/// Supported secret probe kinds for manager-facing diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretProbeKind {
+    /// Probe an opaque secret for presence only.
+    Opaque,
+    /// Probe and validate an SSH private key using `ssh-keygen`.
+    SshPrivateKey,
+}
+
+/// Safe secret probe result exposed to manager tools and runtime context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SecretProbeReport {
+    /// Original opaque secret reference.
+    pub secret_ref: String,
+    /// Secret source kind (`env` or `storage`).
+    pub source: String,
+    /// Requested probe kind.
+    pub kind: SecretProbeKind,
+    /// Whether the secret payload exists.
+    pub present: bool,
+    /// Whether the probed secret is safe to use.
+    pub usable: bool,
+    /// Probe status (`valid`, `missing`, `invalid`).
+    pub status: String,
+    /// Optional SSH key fingerprint from `ssh-keygen -l`.
+    pub fingerprint: Option<String>,
+    /// Optional SSH key algorithm label.
+    pub key_type: Option<String>,
+    /// Optional SSH key comment when available.
+    pub comment: Option<String>,
+    /// Safe error summary without secret material.
+    pub error: Option<String>,
+}
+
+impl SecretProbeReport {
+    fn valid(secret_ref: &str, source: &str, kind: SecretProbeKind) -> Self {
+        Self {
+            secret_ref: secret_ref.to_string(),
+            source: source.to_string(),
+            kind,
+            present: true,
+            usable: true,
+            status: "valid".to_string(),
+            fingerprint: None,
+            key_type: None,
+            comment: None,
+            error: None,
+        }
+    }
+
+    fn missing(
+        secret_ref: &str,
+        source: &str,
+        kind: SecretProbeKind,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            secret_ref: secret_ref.to_string(),
+            source: source.to_string(),
+            kind,
+            present: false,
+            usable: false,
+            status: "missing".to_string(),
+            fingerprint: None,
+            key_type: None,
+            comment: None,
+            error,
+        }
+    }
+
+    fn invalid(secret_ref: &str, source: &str, kind: SecretProbeKind, error: String) -> Self {
+        Self {
+            secret_ref: secret_ref.to_string(),
+            source: source.to_string(),
+            kind,
+            present: true,
+            usable: false,
+            status: "invalid".to_string(),
+            fingerprint: None,
+            key_type: None,
+            comment: None,
+            error: Some(error),
+        }
+    }
+
+    fn summary(&self) -> String {
+        match self.kind {
+            SecretProbeKind::Opaque => match self.status.as_str() {
+                "valid" => format!(
+                    "secret_ref '{}' from {} is present and usable",
+                    self.secret_ref, self.source
+                ),
+                "missing" => format!(
+                    "secret_ref '{}' from {} is missing",
+                    self.secret_ref, self.source
+                ),
+                _ => format!(
+                    "secret_ref '{}' from {} is invalid{}",
+                    self.secret_ref,
+                    self.source,
+                    self.error
+                        .as_deref()
+                        .map(|err| format!(": {err}"))
+                        .unwrap_or_default()
+                ),
+            },
+            SecretProbeKind::SshPrivateKey => match self.status.as_str() {
+                "valid" => {
+                    let mut parts = vec![format!(
+                        "secret_ref '{}' from {} is a valid SSH private key",
+                        self.secret_ref, self.source
+                    )];
+                    if let Some(fingerprint) = self.fingerprint.as_deref() {
+                        parts.push(format!("fingerprint {fingerprint}"));
+                    }
+                    if let Some(key_type) = self.key_type.as_deref() {
+                        parts.push(format!("type {key_type}"));
+                    }
+                    if let Some(comment) = self.comment.as_deref() {
+                        parts.push(format!("comment {comment}"));
+                    }
+                    parts.join(", ")
+                }
+                "missing" => format!(
+                    "secret_ref '{}' from {} is missing",
+                    self.secret_ref, self.source
+                ),
+                _ => format!(
+                    "secret_ref '{}' from {} is not a valid SSH private key{}",
+                    self.secret_ref,
+                    self.source,
+                    self.error
+                        .as_deref()
+                        .map(|err| format!(": {err}"))
+                        .unwrap_or_default()
+                ),
+            },
+        }
+    }
+}
+
+/// Safe preflight status for a topic-scoped SSH target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TopicInfraPreflightReport {
+    /// Stable topic id where the target is attached.
+    pub topic_id: String,
+    /// Human-readable target name.
+    pub target_name: String,
+    /// Target SSH host.
+    pub host: String,
+    /// Target SSH port.
+    pub port: u16,
+    /// Remote SSH username.
+    pub remote_user: String,
+    /// Effective SSH auth mode.
+    pub auth_mode: TopicInfraAuthMode,
+    /// Whether `ssh_mcp` is safe to register for this topic.
+    pub provider_enabled: bool,
+    /// Auth secret probe details when a secret-backed mode is used.
+    pub auth_secret: Option<SecretProbeReport>,
+    /// Optional sudo secret probe details.
+    pub sudo_secret: Option<SecretProbeReport>,
+    /// Safe human-readable summary suitable for prompt injection.
+    pub summary: String,
+}
 
 /// Transport-facing view of a pending SSH approval request.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -697,6 +865,142 @@ impl SshMcpProvider {
     }
 }
 
+struct ResolvedSecretMaterial {
+    source: &'static str,
+    value: Option<String>,
+}
+
+/// Probe a secret reference without exposing secret material.
+pub async fn probe_secret_ref(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    secret_ref: &str,
+    kind: SecretProbeKind,
+) -> SecretProbeReport {
+    match resolve_secret_material(storage, user_id, secret_ref).await {
+        Ok(ResolvedSecretMaterial {
+            source,
+            value: None,
+        }) => SecretProbeReport::missing(secret_ref, source, kind, None),
+        Ok(ResolvedSecretMaterial {
+            source,
+            value: Some(value),
+        }) => match kind {
+            SecretProbeKind::Opaque => validate_opaque_secret(secret_ref, source, &value),
+            SecretProbeKind::SshPrivateKey => {
+                validate_ssh_private_key(secret_ref, source, &value).await
+            }
+        },
+        Err(error) => SecretProbeReport::invalid(
+            secret_ref,
+            secret_source(secret_ref),
+            kind,
+            error.to_string(),
+        ),
+    }
+}
+
+/// Inspect a topic infra config and decide whether `ssh_mcp` should be enabled.
+pub async fn inspect_topic_infra_config(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_id: &str,
+    config: &TopicInfraConfigRecord,
+) -> TopicInfraPreflightReport {
+    let auth_secret = match config.auth_mode {
+        TopicInfraAuthMode::None => None,
+        TopicInfraAuthMode::Password => {
+            let report = match config.secret_ref.as_deref() {
+                Some(secret_ref) => {
+                    probe_secret_ref(storage, user_id, secret_ref, SecretProbeKind::Opaque).await
+                }
+                None => SecretProbeReport::invalid(
+                    "<unset>",
+                    "storage",
+                    SecretProbeKind::Opaque,
+                    "password auth requires secret_ref".to_string(),
+                ),
+            };
+            Some(report)
+        }
+        TopicInfraAuthMode::PrivateKey => {
+            let report = match config.secret_ref.as_deref() {
+                Some(secret_ref) => {
+                    probe_secret_ref(storage, user_id, secret_ref, SecretProbeKind::SshPrivateKey)
+                        .await
+                }
+                None => SecretProbeReport::invalid(
+                    "<unset>",
+                    "storage",
+                    SecretProbeKind::SshPrivateKey,
+                    "private_key auth requires secret_ref".to_string(),
+                ),
+            };
+            Some(report)
+        }
+    };
+
+    let sudo_secret = match config.sudo_secret_ref.as_deref() {
+        Some(secret_ref) => {
+            Some(probe_secret_ref(storage, user_id, secret_ref, SecretProbeKind::Opaque).await)
+        }
+        None => None,
+    };
+
+    let provider_enabled = match config.auth_mode {
+        TopicInfraAuthMode::None => true,
+        TopicInfraAuthMode::Password | TopicInfraAuthMode::PrivateKey => {
+            auth_secret.as_ref().is_some_and(|report| report.usable)
+        }
+    };
+
+    let auth_summary = match config.auth_mode {
+        TopicInfraAuthMode::None => {
+            "host authentication is delegated to the runtime environment".to_string()
+        }
+        TopicInfraAuthMode::Password | TopicInfraAuthMode::PrivateKey => auth_secret
+            .as_ref()
+            .map(SecretProbeReport::summary)
+            .unwrap_or_else(|| "auth secret is unavailable".to_string()),
+    };
+    let sudo_summary = sudo_secret
+        .as_ref()
+        .map(|report| format!(" Sudo secret check: {}.", report.summary()))
+        .unwrap_or_else(|| {
+            " Sudo secret check: no sudo secret configured; sudo will rely on passwordless sudo or fail.".to_string()
+        });
+    let availability = if provider_enabled {
+        "ssh_mcp tools are enabled"
+    } else {
+        "ssh_mcp tools are disabled until auth issues are fixed"
+    };
+    let summary = format!(
+        "SSH target '{}' for topic '{}' uses {}@{}:{} with auth mode {:?}. Auth check: {}. {}.{}",
+        config.target_name,
+        topic_id,
+        config.remote_user,
+        config.host,
+        config.port,
+        config.auth_mode,
+        auth_summary,
+        availability,
+        sudo_summary,
+    );
+
+    TopicInfraPreflightReport {
+        topic_id: topic_id.to_string(),
+        target_name: config.target_name.clone(),
+        host: config.host.clone(),
+        port: config.port,
+        remote_user: config.remote_user.clone(),
+        auth_mode: config.auth_mode,
+        provider_enabled,
+        auth_secret,
+        sudo_secret,
+        summary,
+    }
+}
+
 #[async_trait]
 impl ToolProvider for SshMcpProvider {
     fn name(&self) -> &'static str {
@@ -813,6 +1117,187 @@ async fn run_command_with_timeout(mut command: Command, timeout_secs: u64) -> Re
     }
 }
 
+async fn resolve_secret_material(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    secret_ref: &str,
+) -> Result<ResolvedSecretMaterial> {
+    if let Some(env_name) = secret_ref.strip_prefix("env:") {
+        return Ok(ResolvedSecretMaterial {
+            source: "env",
+            value: std::env::var(env_name).ok(),
+        });
+    }
+
+    let storage_key = secret_ref.strip_prefix("storage:").unwrap_or(secret_ref);
+    let value = storage
+        .get_secret_value(user_id, storage_key.to_string())
+        .await
+        .map_err(|err| anyhow!("failed to load secret ref '{storage_key}': {err}"))?;
+    Ok(ResolvedSecretMaterial {
+        source: "storage",
+        value,
+    })
+}
+
+fn secret_source(secret_ref: &str) -> &'static str {
+    if secret_ref.starts_with("env:") {
+        "env"
+    } else {
+        "storage"
+    }
+}
+
+fn validate_opaque_secret(secret_ref: &str, source: &str, value: &str) -> SecretProbeReport {
+    if value.trim().is_empty() {
+        return SecretProbeReport::invalid(
+            secret_ref,
+            source,
+            SecretProbeKind::Opaque,
+            "secret payload is empty".to_string(),
+        );
+    }
+
+    SecretProbeReport::valid(secret_ref, source, SecretProbeKind::Opaque)
+}
+
+async fn validate_ssh_private_key(
+    secret_ref: &str,
+    source: &str,
+    private_key: &str,
+) -> SecretProbeReport {
+    if private_key.trim().is_empty() {
+        return SecretProbeReport::invalid(
+            secret_ref,
+            source,
+            SecretProbeKind::SshPrivateKey,
+            "secret payload is empty".to_string(),
+        );
+    }
+
+    let key_path = match write_private_key_tempfile(private_key) {
+        Ok(path) => path,
+        Err(error) => {
+            return SecretProbeReport::invalid(
+                secret_ref,
+                source,
+                SecretProbeKind::SshPrivateKey,
+                error.to_string(),
+            )
+        }
+    };
+
+    let mut public_command = Command::new("ssh-keygen");
+    public_command.arg("-y").arg("-f").arg(&key_path);
+    let public_result = run_command_with_timeout(public_command, KEY_PROBE_TIMEOUT_SECS).await;
+
+    let report = match public_result {
+        Ok(output) if output.exit_code == 0 => {
+            let mut listing_command = Command::new("ssh-keygen");
+            listing_command.arg("-l").arg("-f").arg(&key_path);
+            match run_command_with_timeout(listing_command, KEY_PROBE_TIMEOUT_SECS).await {
+                Ok(listing_output) if listing_output.exit_code == 0 => {
+                    let mut report = SecretProbeReport::valid(
+                        secret_ref,
+                        source,
+                        SecretProbeKind::SshPrivateKey,
+                    );
+                    let listing = listing_output.stdout.trim();
+                    if let Some((fingerprint, key_type, comment)) =
+                        parse_ssh_keygen_listing(listing, &key_path)
+                    {
+                        report.fingerprint = Some(fingerprint);
+                        report.key_type = key_type;
+                        report.comment = comment;
+                    }
+                    report
+                }
+                Ok(listing_output) => SecretProbeReport::invalid(
+                    secret_ref,
+                    source,
+                    SecretProbeKind::SshPrivateKey,
+                    format!(
+                        "ssh-keygen -l failed with exit code {}{}",
+                        listing_output.exit_code,
+                        format_stderr_suffix(&listing_output.stderr)
+                    ),
+                ),
+                Err(error) => SecretProbeReport::invalid(
+                    secret_ref,
+                    source,
+                    SecretProbeKind::SshPrivateKey,
+                    format!("ssh-keygen -l failed: {error}"),
+                ),
+            }
+        }
+        Ok(output) => SecretProbeReport::invalid(
+            secret_ref,
+            source,
+            SecretProbeKind::SshPrivateKey,
+            format!(
+                "ssh-keygen -y failed with exit code {}{}",
+                output.exit_code,
+                format_stderr_suffix(&output.stderr)
+            ),
+        ),
+        Err(error) => SecretProbeReport::invalid(
+            secret_ref,
+            source,
+            SecretProbeKind::SshPrivateKey,
+            format!("ssh-keygen -y failed: {error}"),
+        ),
+    };
+
+    let _ = std::fs::remove_file(&key_path);
+    report
+}
+
+fn format_stderr_suffix(stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!(": {trimmed}")
+    }
+}
+
+fn parse_ssh_keygen_listing(
+    listing: &str,
+    key_path: &std::path::Path,
+) -> Option<(String, Option<String>, Option<String>)> {
+    let tokens = listing.split_whitespace().collect::<Vec<_>>();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let fingerprint = tokens.get(1)?.to_string();
+    let key_type = tokens
+        .last()
+        .filter(|token| token.starts_with('(') && token.ends_with(')'))
+        .map(|token| token.trim_matches(|c| c == '(' || c == ')').to_string());
+    let comment_end = if key_type.is_some() {
+        tokens.len().saturating_sub(1)
+    } else {
+        tokens.len()
+    };
+    let raw_comment = if comment_end > 2 {
+        Some(tokens[2..comment_end].join(" "))
+    } else {
+        None
+    };
+    let temp_path = key_path.display().to_string();
+    let comment = raw_comment.and_then(|comment| {
+        let trimmed = comment.trim();
+        if trimmed.is_empty() || trimmed == temp_path {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    Some((fingerprint, key_type, comment))
+}
+
 fn fingerprint_for_request(tool_name: &str, arguments: &str) -> Result<String> {
     let mut value = serde_json::from_str::<serde_json::Value>(arguments)
         .map_err(|err| anyhow!("invalid approval fingerprint payload: {err}"))?;
@@ -922,12 +1407,26 @@ pub fn inject_ssh_approval_system_message(grant: &SshApprovalGrant) -> AgentMess
     ))
 }
 
+/// Build a safe system message describing SSH preflight status for the current topic.
+pub fn inject_topic_infra_preflight_system_message(
+    report: &TopicInfraPreflightReport,
+) -> AgentMessage {
+    AgentMessage::system(format!(
+        "Topic-scoped SSH preflight status: {} Never request, reveal, or print the underlying secret material.",
+        report.summary
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        fingerprint_for_request, inject_ssh_approval_system_message, is_dangerous_command,
-        is_sensitive_path, SshApprovalRegistry,
+        fingerprint_for_request, inject_ssh_approval_system_message,
+        inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
+        parse_ssh_keygen_listing, SecretProbeKind, SecretProbeReport, SshApprovalRegistry,
+        TopicInfraPreflightReport,
     };
+    use crate::storage::TopicInfraAuthMode;
+    use std::path::Path;
 
     #[tokio::test]
     async fn approval_registry_grants_and_consumes_matching_request() {
@@ -994,5 +1493,48 @@ mod tests {
         let message = inject_ssh_approval_system_message(&grant);
         assert!(message.content.contains("approval_request_id='req-1'"));
         assert!(message.content.contains("approval_token='token-1'"));
+    }
+
+    #[test]
+    fn ssh_keygen_listing_parser_extracts_safe_metadata() {
+        let parsed = parse_ssh_keygen_listing(
+            "256 SHA256:abc123 deploy@example (ED25519)",
+            Path::new("/tmp/oxide-agent-ssh-key-test"),
+        )
+        .expect("listing should parse");
+        assert_eq!(parsed.0, "SHA256:abc123");
+        assert_eq!(parsed.1.as_deref(), Some("ED25519"));
+        assert_eq!(parsed.2.as_deref(), Some("deploy@example"));
+    }
+
+    #[test]
+    fn topic_infra_preflight_system_message_never_contains_secret_material() {
+        let report = TopicInfraPreflightReport {
+            topic_id: "topic-a".to_string(),
+            target_name: "prod-app".to_string(),
+            host: "prod.example.com".to_string(),
+            port: 22,
+            remote_user: "deploy".to_string(),
+            auth_mode: TopicInfraAuthMode::PrivateKey,
+            provider_enabled: false,
+            auth_secret: Some(SecretProbeReport {
+                secret_ref: "storage:vds".to_string(),
+                source: "storage".to_string(),
+                kind: SecretProbeKind::SshPrivateKey,
+                present: true,
+                usable: false,
+                status: "invalid".to_string(),
+                fingerprint: None,
+                key_type: None,
+                comment: None,
+                error: Some("ssh-keygen -y failed".to_string()),
+            }),
+            sudo_secret: None,
+            summary: "safe summary only".to_string(),
+        };
+
+        let message = inject_topic_infra_preflight_system_message(&report);
+        assert!(message.content.contains("safe summary only"));
+        assert!(!message.content.contains("BEGIN OPENSSH PRIVATE KEY"));
     }
 }

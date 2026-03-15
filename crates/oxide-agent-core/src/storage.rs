@@ -889,6 +889,27 @@ impl R2Storage {
         Ok(())
     }
 
+    /// Save raw UTF-8 text to R2.
+    pub async fn save_text(&self, key: &str, data: &str) -> Result<(), StorageError> {
+        let body_bytes = data.as_bytes().to_vec();
+
+        self.cache
+            .insert(key.to_string(), Arc::new(body_bytes.clone()))
+            .await;
+
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from(body_bytes))
+            .content_type("text/plain; charset=utf-8")
+            .send()
+            .await
+            .map_err(|e| StorageError::S3Put(e.to_string()))?;
+
+        Ok(())
+    }
+
     async fn save_json_conditionally<T: serde::Serialize + Sync>(
         &self,
         key: &str,
@@ -971,6 +992,50 @@ impl R2Storage {
 
                 let json_data = serde_json::from_slice(&data)?;
                 Ok(Some(json_data))
+            }
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
+            Err(e) => Err(StorageError::S3Get(Box::new(e))),
+        }
+    }
+
+    /// Load raw UTF-8 text from R2.
+    pub async fn load_text(&self, key: &str) -> Result<Option<String>, StorageError> {
+        if let Some(cached_data) = self.cache.get(key).await {
+            return String::from_utf8(cached_data.to_vec())
+                .map(Some)
+                .map_err(|err| {
+                    StorageError::Config(format!(
+                        "stored secret at key '{key}' is not valid UTF-8: {err}"
+                    ))
+                });
+        }
+
+        let result = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await;
+
+        match result {
+            Ok(output) => {
+                let data = output
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|e| StorageError::Io(std::io::Error::other(e)))?
+                    .into_bytes();
+
+                self.cache
+                    .insert(key.to_string(), Arc::new(data.to_vec()))
+                    .await;
+
+                String::from_utf8(data.to_vec()).map(Some).map_err(|err| {
+                    StorageError::Config(format!(
+                        "stored secret at key '{key}' is not valid UTF-8: {err}"
+                    ))
+                })
             }
             Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
             Err(e) => Err(StorageError::S3Get(Box::new(e))),
@@ -1546,7 +1611,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         secret_ref: String,
     ) -> Result<Option<String>, StorageError> {
-        self.load_json(&private_secret_key(user_id, &secret_ref))
+        self.load_text(&private_secret_key(user_id, &secret_ref))
             .await
     }
 
@@ -1556,7 +1621,7 @@ impl StorageProvider for R2Storage {
         secret_ref: String,
         value: String,
     ) -> Result<(), StorageError> {
-        self.save_json(&private_secret_key(user_id, &secret_ref), &value)
+        self.save_text(&private_secret_key(user_id, &secret_ref), &value)
             .await
     }
 
