@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
-use tracing::{info, warn};
+use tracing::info;
 
 #[cfg(feature = "crawl4ai")]
 use super::providers::Crawl4aiProvider;
@@ -372,7 +372,7 @@ impl AgentExecutor {
                     }
                 }
                 #[cfg(not(feature = "tavily"))]
-                warn!("Tavily requested but feature not enabled");
+                tracing::warn!("Tavily requested but feature not enabled");
             }
             "crawl4ai" => {
                 #[cfg(feature = "crawl4ai")]
@@ -382,7 +382,7 @@ impl AgentExecutor {
                     }
                 }
                 #[cfg(not(feature = "crawl4ai"))]
-                warn!("Crawl4AI requested but feature not enabled");
+                tracing::warn!("Crawl4AI requested but feature not enabled");
             }
             _ => unreachable!(), // get_search_provider() guarantees valid value
         }
