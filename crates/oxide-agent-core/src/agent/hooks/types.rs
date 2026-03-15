@@ -3,6 +3,7 @@
 //! Defines the data structures used for agent lifecycle hooks.
 
 use super::super::providers::TodoList;
+use crate::llm::ToolDefinition;
 
 /// Events in the agent lifecycle that can trigger hooks
 #[derive(Debug, Clone)]
@@ -89,6 +90,8 @@ pub struct HookContext<'a> {
     pub max_tokens: usize,
     /// Whether this is a sub-agent
     pub is_sub_agent: bool,
+    /// Tools exposed to the current agent execution.
+    pub available_tools: &'a [ToolDefinition],
 }
 
 impl<'a> HookContext<'a> {
@@ -110,6 +113,7 @@ impl<'a> HookContext<'a> {
             token_count: 0,
             max_tokens: usize::MAX,
             is_sub_agent: false,
+            available_tools: &[],
         }
     }
 
@@ -126,6 +130,21 @@ impl<'a> HookContext<'a> {
         self.token_count = token_count;
         self.max_tokens = max_tokens;
         self
+    }
+
+    /// Add available tool definitions to the hook context.
+    #[must_use]
+    pub fn with_available_tools(mut self, available_tools: &'a [ToolDefinition]) -> Self {
+        self.available_tools = available_tools;
+        self
+    }
+
+    /// Returns true when the current agent can call the named tool.
+    #[must_use]
+    pub fn has_tool(&self, tool_name: &str) -> bool {
+        self.available_tools
+            .iter()
+            .any(|tool| tool.name == tool_name)
     }
 
     /// Check if we've reached the continuation limit

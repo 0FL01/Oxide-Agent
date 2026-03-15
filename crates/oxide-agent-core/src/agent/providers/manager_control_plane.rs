@@ -3,7 +3,9 @@
 //! Exposes user-scoped CRUD tools for topic bindings, topic contexts, and agent profiles.
 
 use super::ssh_mcp::{inspect_topic_infra_config, probe_secret_ref, SecretProbeKind};
-use crate::agent::profile::{parse_agent_profile, ToolAccessPolicy};
+use crate::agent::profile::{
+    parse_agent_profile, topic_agent_default_blocked_tools, ToolAccessPolicy,
+};
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
@@ -2135,6 +2137,7 @@ impl ManagerControlPlaneProvider {
             "description": description.unwrap_or(default_description),
             "systemPrompt": system_prompt,
             "allowedTools": default_ssh_agent_allowed_tools(),
+            "blockedTools": topic_agent_default_blocked_tools(),
         })
     }
 
@@ -4306,15 +4309,7 @@ mod tests {
         }
     }
 
-    fn mock_storage_for_forum_topic_provision() -> crate::storage::MockStorageProvider {
-        let mut mock = crate::storage::MockStorageProvider::new();
-        mock.expect_get_user_config()
-            .times(1)
-            .returning(|_| Ok(crate::storage::UserConfig::default()));
-        mock.expect_update_user_config()
-            .times(1)
-            .withf(|user_id, config| *user_id == 77 && config.contexts.contains_key("-100777:313"))
-            .returning(|_, _| Ok(()));
+    fn expect_forum_topic_provision_profile_calls(mock: &mut crate::storage::MockStorageProvider) {
         mock.expect_get_agent_profile()
             .with(eq(77_i64), eq("n-ru1".to_string()))
             .returning(|_, _| Ok(None));
@@ -4326,6 +4321,17 @@ mod tests {
                         .get("allowedTools")
                         .and_then(|value| value.as_array())
                         .is_some()
+                    && options
+                        .profile
+                        .get("blockedTools")
+                        .and_then(|value| value.as_array())
+                        .is_some_and(|tools| {
+                            topic_agent_default_blocked_tools().iter().all(|tool| {
+                                tools
+                                    .iter()
+                                    .any(|value| value.as_str() == Some(tool.as_str()))
+                            })
+                        })
             })
             .returning(|options| {
                 Ok(AgentProfileRecord {
@@ -4338,6 +4344,9 @@ mod tests {
                     updated_at: 10,
                 })
             });
+    }
+
+    fn expect_forum_topic_provision_binding_calls(mock: &mut crate::storage::MockStorageProvider) {
         mock.expect_get_topic_binding()
             .with(eq(77_i64), eq("-100777:313".to_string()))
             .returning(|_, _| Ok(None));
@@ -4364,6 +4373,9 @@ mod tests {
                     updated_at: 10,
                 })
             });
+    }
+
+    fn expect_forum_topic_provision_infra_calls(mock: &mut crate::storage::MockStorageProvider) {
         mock.expect_get_topic_infra_config()
             .with(eq(77_i64), eq("-100777:313".to_string()))
             .returning(|_, _| Ok(None));
@@ -4394,6 +4406,20 @@ mod tests {
                     updated_at: 10,
                 })
             });
+    }
+
+    fn mock_storage_for_forum_topic_provision() -> crate::storage::MockStorageProvider {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config()
+            .times(1)
+            .returning(|_| Ok(crate::storage::UserConfig::default()));
+        mock.expect_update_user_config()
+            .times(1)
+            .withf(|user_id, config| *user_id == 77 && config.contexts.contains_key("-100777:313"))
+            .returning(|_, _| Ok(()));
+        expect_forum_topic_provision_profile_calls(&mut mock);
+        expect_forum_topic_provision_binding_calls(&mut mock);
+        expect_forum_topic_provision_infra_calls(&mut mock);
         mock.expect_append_audit_event()
             .times(4)
             .returning(|options| {
@@ -5233,6 +5259,10 @@ mod tests {
         assert_eq!(parsed["topic"]["topic_id"], "-100777:313");
         assert_eq!(parsed["binding"]["topic_id"], "-100777:313");
         assert_eq!(parsed["topic_infra"]["topic_id"], "-100777:313");
+        assert_eq!(
+            parsed["profile"]["profile"]["blockedTools"],
+            json!(topic_agent_default_blocked_tools())
+        );
         assert_eq!(parsed["preflight"]["provider_enabled"], true);
 
         let calls = lifecycle.calls();

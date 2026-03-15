@@ -36,7 +36,7 @@ use crate::config::BotSettings;
 use anyhow::{Error, Result};
 use oxide_agent_core::agent::{
     executor::AgentExecutor,
-    parse_agent_profile,
+    manager_default_blocked_tools, parse_agent_profile,
     preprocessor::Preprocessor,
     progress::{AgentEvent, ProgressState},
     providers::{
@@ -902,6 +902,8 @@ pub async fn handle_agent_message(
         return Ok(());
     }
 
+    let manager_enabled = manager_control_plane_enabled(&settings, user_id, thread_spec);
+
     // Get or create session
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
@@ -922,7 +924,7 @@ pub async fn handle_agent_message(
     .await;
 
     let execution_profile =
-        resolve_execution_profile(&storage, user_id, &context_key, &route).await;
+        resolve_execution_profile(&storage, user_id, &context_key, &route, manager_enabled).await;
     let topic_infra_config = resolve_topic_infra_config(&storage, user_id, &context_key).await;
 
     if is_agent_task_running(session_id).await {
@@ -2145,7 +2147,7 @@ mod tests {
             dynamic_binding_topic_id: None,
         };
 
-        let profile = resolve_execution_profile(&storage, 77, "topic-a", &route).await;
+        let profile = resolve_execution_profile(&storage, 77, "topic-a", &route, false).await;
 
         assert_eq!(profile.agent_id(), Some("infra-agent"));
         let prompt = profile
@@ -2158,6 +2160,26 @@ mod tests {
         assert!(profile.tool_policy().allows("todos_write"));
         assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
         assert!(!profile.tool_policy().allows("file_write"));
+    }
+
+    #[tokio::test]
+    async fn resolve_execution_profile_applies_manager_default_blocklist() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
+        let route = crate::bot::topic_route::TopicRouteDecision {
+            enabled: true,
+            require_mention: false,
+            mention_satisfied: true,
+            system_prompt_override: None,
+            agent_id: None,
+            dynamic_binding_topic_id: None,
+        };
+
+        let profile = resolve_execution_profile(&storage, 77, "manager-topic", &route, true).await;
+
+        assert!(profile.tool_policy().allows("execute_command"));
+        assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
+        assert!(!profile.tool_policy().allows("ytdlp_get_video_metadata"));
+        assert!(!profile.tool_policy().allows("ytdlp_download_video"));
     }
 }
 
@@ -2241,6 +2263,7 @@ async fn resolve_execution_profile(
     user_id: i64,
     topic_id: &str,
     route: &TopicRouteDecision,
+    manager_enabled: bool,
 ) -> AgentExecutionProfile {
     let route_prompt = normalize_prompt_section(route.system_prompt_override.as_deref());
     let topic_context_prompt = match storage
@@ -2261,6 +2284,12 @@ async fn resolve_execution_profile(
         }
     };
     let Some(agent_id) = route.agent_id.clone() else {
+        let tool_policy = if manager_enabled {
+            oxide_agent_core::agent::ToolAccessPolicy::default()
+                .with_additional_blocked_tools(manager_default_blocked_tools())
+        } else {
+            oxide_agent_core::agent::ToolAccessPolicy::default()
+        };
         return AgentExecutionProfile::new(
             None,
             compose_execution_prompt_instructions(
@@ -2268,11 +2297,11 @@ async fn resolve_execution_profile(
                 route_prompt.as_deref(),
                 topic_context_prompt.as_deref(),
             ),
-            Default::default(),
+            tool_policy,
         );
     };
 
-    let parsed_profile = match storage.get_agent_profile(user_id, agent_id.clone()).await {
+    let mut parsed_profile = match storage.get_agent_profile(user_id, agent_id.clone()).await {
         Ok(Some(record)) => parse_agent_profile(&record.profile),
         Ok(None) => Default::default(),
         Err(error) => {
@@ -2285,6 +2314,11 @@ async fn resolve_execution_profile(
             Default::default()
         }
     };
+    if manager_enabled {
+        parsed_profile.tool_policy = parsed_profile
+            .tool_policy
+            .with_additional_blocked_tools(manager_default_blocked_tools());
+    }
 
     let prompt_instructions = compose_execution_prompt_instructions(
         parsed_profile.prompt_instructions.as_deref(),
