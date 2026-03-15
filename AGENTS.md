@@ -2,7 +2,7 @@
 
 Этот проект представляет собой Telegram-бота, который интегрируется с различными API больших языковых моделей (LLM) для предоставления пользователям многофункционального ИИ-ассистента. Бот может обрабатывать текстовые, голосовые, видео сообщения и изображения, работать с документами, управлять историей диалога и выполнять сложные задачи в изолированной песочнице.
 
-Бот разработан с использованием **Rust 1.92**, библиотеки `teloxide`, AWS SDK для взаимодействия с Cloudflare R2, и нативной интеграции с провайдерами ИИ (Groq, Mistral AI, Google Gemini, OpenRouter, ZAI/Zhipu AI).
+Бот разработан с использованием **Rust 1.94**, библиотеки `teloxide`, AWS SDK для взаимодействия с Cloudflare R2, и нативной интеграции с провайдерами ИИ (Groq, Mistral AI, Google Gemini, OpenRouter, ZAI/Zhipu AI).
 
 ## Branch
 
@@ -23,6 +23,7 @@ crates/
 │   │   │   ├── thoughts.rs          # Agent thought inference
 │   │   │   ├── memory.rs            # Memory management with auto-compaction
 │   │   │   ├── progress.rs          # Agent events
+│   │   │   ├── session.rs           # AgentSession lifecycle management
 │   │   │   ├── provider.rs          # Tool Provider trait
 │   │   │   ├── registry.rs          # Tool Registry
 │   │   │   ├── runner/              # Цикл исполнения
@@ -37,6 +38,7 @@ crates/
 │   │   │   ├── embeddings.rs        # Embedding provider
 │   │   │   └── providers/           # Groq, Mistral, Gemini, OpenRouter, ZAI
 │   │   ├── sandbox/                 # Docker-менеджер
+│   │   │   └── scope.rs             # SandboxScope stable container identity
 │   │   ├── config.rs
 │   │   ├── storage.rs
 │   │   └── testing.rs               # TestKit: моки и хелперы
@@ -62,6 +64,7 @@ crates/
 │   │   │   ├── unauthorized_cache.rs
 │   │   │   ├── state.rs
 │   │   │   └── views/               # UI component views
+│   │   │       └── agent.rs         # Agent Mode UI components
 │   │   └── tests/
 └── oxide-agent-telegram-bot/        # Application Entry Point
     └── src/main.rs
@@ -130,6 +133,16 @@ Three levels of protection against infinite loops: Content Detector (pattern mat
 
 Integration via `LoopDetectionHook` in agent execution loop.
 
+## 🎬 Agent Session Management
+
+Task lifecycle tracking with timeout control, cancellation support, and sandbox persistence.
+
+**Components**: `AgentSession`, `AgentStatus`, `session.rs`
+
+**Features**: Task lifecycle tracking, 30-minute timeout, cancellation tokens, loaded skills tracking, memory management with auto-compaction.
+
+**SandboxScope**: Stable container identity via FNV-1a hashing for persistent Docker containers across sessions.
+
 ## 👥 Sub-Agent Architecture
 
 **EphemeralSession**: Isolated context for sub-agent tasks, automatic cleanup, blocked tools (`delegate_to_sub_agent`, `send_file_to_user`), session-scoped storage and memory.
@@ -139,6 +152,18 @@ Integration via `LoopDetectionHook` in agent execution loop.
 **Components**: `DelegationProvider`, `DelegationGuardHook`, `SubAgentSafetyHook`, `executor.rs`.
 
 **Configuration**: `sub_agent_model_id`, `sub_agent_model_provider`, `sub_agent_max_tokens`.
+
+## 🔄 Flow Storage & Attach/Detach
+
+Topic-scoped agent flows with persistent memory isolation within forum topics.
+
+**Components**: `AgentFlowRecord`, `UserContextConfig.current_agent_flow_id`, `context.rs`, `views/agent.rs`
+
+**Features**: Multiple flows per topic, Attach/Detach UI controls (inline keyboard), flow-scoped storage API, automatic cleanup of abandoned empty flows.
+
+**Storage**: `users/{user_id}/topics/{context_key}/flows/{flow_id}/` - flow-scoped memory and metadata in R2/S3.
+
+**Delegation**: `forum_topic_list` tool is blocked for sub-agents.
 
 ## 🎭 Narrator System
 
@@ -156,6 +181,18 @@ Transport-agnostic progress reporting system.
 
 **Transport Adaptation**: `AgentTransport::send_progress()`, views module for consistent UI, multi-step operations with status updates.
 
+## 🖼 Views Module
+
+UI component system for Agent Mode with localization support and transport-agnostic design.
+
+**Components**: `AgentView` trait, `DefaultAgentView`, `views/agent.rs`
+
+**Features**: 
+- Text messages for all agent states (welcome, processing, errors, confirmations)
+- Keyboard markups (resize keyboards for DM, inline keyboards for forum topics)
+- 16 callback constants for user actions (cancel, clear memory, recreate container, attach/detach, exit)
+- Loop detection action keyboards
+
 ## 🔧 Hook System
 
 Centralized hook system for agent behavior modification.
@@ -172,6 +209,10 @@ CRUD operations for forum topics and manager tasks with full audit trail.
 
 **Features**: Forum topic creation/deletion, topic binding management, task assignment and tracking, complete audit trail, RBAC via `manager_allowed_users`.
 
+**Forum Topic Catalog**: `forum_topic_list` tool for memory-independent topic discovery. Catalog entries persist topic metadata (name, icon, closed status) in S3 with automatic cleanup on topic deletion.
+
+**Cleanup on Delete**: Automatic cleanup of agent memory, chat history, Docker containers, and topic bindings when forum topic is deleted.
+
 **Storage**: User-scoped storage records, audit events logged to R2/S3, thread-aware isolation.
 
 ## 🎯 Skills System
@@ -187,7 +228,7 @@ Embedding-based skill matching and retrieval.
 ## 🔌 Provider Ecosystem
 
 ### Tool Providers
-`sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane.rs`.
+`sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane.rs`, `ytdlp.rs`.
 
 ### LLM Providers
 `gemini.rs`, `groq.rs`, `mistral.rs`, `openrouter.rs`, `zai.rs`.
