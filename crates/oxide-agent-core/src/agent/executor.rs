@@ -4,11 +4,11 @@
 //! session lifecycle, skill prompts, and tool registry setup.
 
 use super::hooks::{
-    CompletionCheckHook, DelegationGuardHook, SearchBudgetHook, TimeoutReportHook,
-    ToolAccessPolicyHook, WorkloadDistributorHook,
+    CompletionCheckHook, DelegationGuardHook, Hook, HookContext, HookEvent, HookResult,
+    SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook, WorkloadDistributorHook,
 };
 use super::memory::AgentMessage;
-use super::profile::{AgentExecutionProfile, ToolAccessPolicy};
+use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
     DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
@@ -48,6 +48,7 @@ pub struct AgentExecutor {
     topic_infra: Option<TopicInfraContext>,
     execution_profile: AgentExecutionProfile,
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
+    hook_policy_state: Arc<RwLock<HookAccessPolicy>>,
     last_topic_infra_preflight_summary: Option<String>,
 }
 
@@ -67,6 +68,42 @@ struct TopicInfraContext {
     approvals: SshApprovalRegistry,
 }
 
+struct PolicyControlledHook {
+    name: &'static str,
+    inner: Box<dyn Hook>,
+    policy: Arc<RwLock<HookAccessPolicy>>,
+}
+
+impl PolicyControlledHook {
+    fn new(
+        name: &'static str,
+        inner: Box<dyn Hook>,
+        policy: Arc<RwLock<HookAccessPolicy>>,
+    ) -> Self {
+        Self {
+            name,
+            inner,
+            policy,
+        }
+    }
+}
+
+impl Hook for PolicyControlledHook {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn handle(&self, event: &HookEvent, context: &HookContext) -> HookResult {
+        if let Ok(policy) = self.policy.read() {
+            if !policy.allows(self.name) {
+                return HookResult::Continue;
+            }
+        }
+
+        self.inner.handle(event, context)
+    }
+}
+
 impl AgentExecutor {
     /// Create a new agent executor
     #[must_use]
@@ -76,15 +113,32 @@ impl AgentExecutor {
         settings: Arc<crate::config::AgentSettings>,
     ) -> Self {
         let tool_policy_state = Arc::new(RwLock::new(ToolAccessPolicy::default()));
+        let hook_policy_state = Arc::new(RwLock::new(HookAccessPolicy::default()));
         let mut runner = AgentRunner::new(llm_client.clone());
         runner.register_hook(Box::new(CompletionCheckHook::new()));
-        runner.register_hook(Box::new(WorkloadDistributorHook::new()));
-        runner.register_hook(Box::new(DelegationGuardHook::new()));
-        runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
+        Self::register_policy_controlled_hook(
+            &mut runner,
+            WorkloadDistributorHook::new(),
+            Arc::clone(&hook_policy_state),
+        );
+        Self::register_policy_controlled_hook(
+            &mut runner,
+            DelegationGuardHook::new(),
+            Arc::clone(&hook_policy_state),
+        );
+        Self::register_policy_controlled_hook(
+            &mut runner,
+            SearchBudgetHook::new(get_agent_search_limit()),
+            Arc::clone(&hook_policy_state),
+        );
         runner.register_hook(Box::new(ToolAccessPolicyHook::new(Arc::clone(
             &tool_policy_state,
         ))));
-        runner.register_hook(Box::new(TimeoutReportHook::new()));
+        Self::register_policy_controlled_hook(
+            &mut runner,
+            TimeoutReportHook::new(),
+            Arc::clone(&hook_policy_state),
+        );
 
         let skill_registry = match SkillRegistry::from_env(llm_client.clone()) {
             Ok(Some(registry)) => {
@@ -113,14 +167,33 @@ impl AgentExecutor {
             topic_infra: None,
             execution_profile: AgentExecutionProfile::default(),
             tool_policy_state,
+            hook_policy_state,
             last_topic_infra_preflight_summary: None,
         }
+    }
+
+    fn register_policy_controlled_hook<H>(
+        runner: &mut AgentRunner,
+        hook: H,
+        policy: Arc<RwLock<HookAccessPolicy>>,
+    ) where
+        H: Hook + 'static,
+    {
+        let name = hook.name();
+        runner.register_hook(Box::new(PolicyControlledHook::new(
+            name,
+            Box::new(hook),
+            policy,
+        )));
     }
 
     /// Apply the latest execution profile for the next task run.
     pub fn set_execution_profile(&mut self, execution_profile: AgentExecutionProfile) {
         if let Ok(mut policy) = self.tool_policy_state.write() {
             *policy = execution_profile.tool_policy().clone();
+        }
+        if let Ok(mut policy) = self.hook_policy_state.write() {
+            *policy = execution_profile.hook_policy().clone();
         }
         self.execution_profile = execution_profile;
     }
@@ -445,7 +518,9 @@ impl AgentExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentExecutor;
+    use super::{AgentExecutor, PolicyControlledHook};
+    use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
+    use crate::agent::profile::HookAccessPolicy;
     use crate::agent::providers::TodoList;
     use crate::agent::providers::{
         ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult,
@@ -549,6 +624,41 @@ mod tests {
             payload: options.payload,
             created_at: 100,
         }
+    }
+
+    struct BlockingTestHook;
+
+    impl Hook for BlockingTestHook {
+        fn name(&self) -> &'static str {
+            "workload_distributor"
+        }
+
+        fn handle(&self, _event: &HookEvent, _context: &HookContext) -> HookResult {
+            HookResult::Block {
+                reason: "test hook blocked".to_string(),
+            }
+        }
+    }
+
+    #[test]
+    fn policy_controlled_hook_skips_disabled_manageable_hook() {
+        let policy = Arc::new(std::sync::RwLock::new(HookAccessPolicy::new(
+            None,
+            std::collections::HashSet::from(["workload_distributor".to_string()]),
+        )));
+        let hook =
+            PolicyControlledHook::new("workload_distributor", Box::new(BlockingTestHook), policy);
+        let todos = TodoList::new();
+        let memory = crate::agent::memory::AgentMemory::new(1024);
+
+        let result = hook.handle(
+            &HookEvent::BeforeAgent {
+                prompt: "test".to_string(),
+            },
+            &HookContext::new(&todos, &memory, 0, 0, 4),
+        );
+
+        assert!(matches!(result, HookResult::Continue));
     }
 
     #[tokio::test]

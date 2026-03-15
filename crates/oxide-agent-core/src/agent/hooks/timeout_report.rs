@@ -77,7 +77,7 @@ fn role_label(role: &MessageRole) -> &'static str {
 
 impl Hook for TimeoutReportHook {
     fn name(&self) -> &'static str {
-        "TimeoutReportHook"
+        "timeout_report"
     }
 
     fn handle(&self, event: &HookEvent, context: &HookContext) -> HookResult {
