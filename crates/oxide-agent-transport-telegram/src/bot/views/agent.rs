@@ -339,6 +339,12 @@ pub fn progress_inline_keyboard() -> InlineKeyboardMarkup {
     )]])
 }
 
+/// Get an empty inline keyboard to clear topic controls.
+#[must_use]
+pub fn empty_inline_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())
+}
+
 /// Get inline confirmation controls for task cancellation.
 #[must_use]
 pub fn cancel_task_confirmation_inline_keyboard() -> InlineKeyboardMarkup {

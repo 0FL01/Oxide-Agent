@@ -1,5 +1,7 @@
 use crate::bot::progress_render::render_progress_html;
-use crate::bot::views::{loop_action_keyboard, loop_type_label, progress_inline_keyboard};
+use crate::bot::views::{
+    empty_inline_keyboard, loop_action_keyboard, loop_type_label, progress_inline_keyboard,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
@@ -41,17 +43,30 @@ impl TelegramAgentTransport {
     }
 }
 
+fn progress_reply_markup_for_state(
+    progress_reply_markup: Option<&InlineKeyboardMarkup>,
+    state: &ProgressState,
+) -> Option<InlineKeyboardMarkup> {
+    match progress_reply_markup {
+        Some(_) if state.is_finished || state.error.is_some() => Some(empty_inline_keyboard()),
+        Some(markup) => Some(markup.clone()),
+        None => None,
+    }
+}
+
 #[async_trait]
 impl AgentTransport for TelegramAgentTransport {
     async fn update_progress(&self, state: &ProgressState) -> Result<()> {
         let text = render_progress_html(state);
+        let reply_markup =
+            progress_reply_markup_for_state(self.progress_reply_markup.as_ref(), state);
         // Preserve existing behavior: resilient helper handles retries and logging internally.
         let _ = crate::bot::resilient::edit_message_safe_resilient_with_markup(
             &self.bot,
             self.chat_id,
             self.progress_msg_id,
             &text,
-            self.progress_reply_markup.clone(),
+            reply_markup,
         )
         .await;
         Ok(())
@@ -195,4 +210,43 @@ async fn send_file_smart(
     }
 
     req.await.map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use oxide_agent_core::agent::progress::ProgressState;
+
+    use super::progress_reply_markup_for_state;
+    use crate::bot::views::progress_inline_keyboard;
+
+    #[test]
+    fn keeps_progress_controls_while_task_is_active() {
+        let state = ProgressState::new(10);
+        let markup = progress_reply_markup_for_state(Some(&progress_inline_keyboard()), &state)
+            .expect("active task should keep inline controls");
+
+        assert!(!markup.inline_keyboard.is_empty());
+    }
+
+    #[test]
+    fn clears_progress_controls_after_finish() {
+        let mut state = ProgressState::new(10);
+        state.is_finished = true;
+
+        let markup = progress_reply_markup_for_state(Some(&progress_inline_keyboard()), &state)
+            .expect("finished task should still edit reply markup");
+
+        assert!(markup.inline_keyboard.is_empty());
+    }
+
+    #[test]
+    fn clears_progress_controls_after_terminal_error() {
+        let mut state = ProgressState::new(10);
+        state.error = Some("boom".to_string());
+
+        let markup = progress_reply_markup_for_state(Some(&progress_inline_keyboard()), &state)
+            .expect("errored task should still edit reply markup");
+
+        assert!(markup.inline_keyboard.is_empty());
+    }
 }
