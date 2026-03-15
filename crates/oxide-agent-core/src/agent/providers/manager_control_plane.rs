@@ -4,7 +4,8 @@
 
 use super::ssh_mcp::{inspect_topic_infra_config, probe_secret_ref, SecretProbeKind};
 use crate::agent::profile::{
-    parse_agent_profile, topic_agent_default_blocked_tools, ToolAccessPolicy,
+    parse_agent_profile, topic_agent_all_hooks, topic_agent_default_blocked_tools,
+    topic_agent_manageable_hooks, topic_agent_protected_hooks, HookAccessPolicy, ToolAccessPolicy,
 };
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
@@ -44,6 +45,9 @@ const TOOL_AGENT_PROFILE_ROLLBACK: &str = "agent_profile_rollback";
 const TOOL_TOPIC_AGENT_TOOLS_GET: &str = "topic_agent_tools_get";
 const TOOL_TOPIC_AGENT_TOOLS_ENABLE: &str = "topic_agent_tools_enable";
 const TOOL_TOPIC_AGENT_TOOLS_DISABLE: &str = "topic_agent_tools_disable";
+const TOOL_TOPIC_AGENT_HOOKS_GET: &str = "topic_agent_hooks_get";
+const TOOL_TOPIC_AGENT_HOOKS_ENABLE: &str = "topic_agent_hooks_enable";
+const TOOL_TOPIC_AGENT_HOOKS_DISABLE: &str = "topic_agent_hooks_disable";
 const TOOL_FORUM_TOPIC_CREATE: &str = "forum_topic_create";
 const TOOL_FORUM_TOPIC_EDIT: &str = "forum_topic_edit";
 const TOOL_FORUM_TOPIC_CLOSE: &str = "forum_topic_close";
@@ -546,6 +550,61 @@ struct TopicAgentToolMutationContext {
     topic_id: String,
     agent_id: String,
     requested_tools: Vec<String>,
+    previous: Option<AgentProfileRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicAgentHooksGetArgs {
+    topic_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicAgentHooksMutationArgs {
+    topic_id: String,
+    hooks: Vec<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TopicAgentHookCatalog {
+    manageable_hooks: BTreeSet<String>,
+    protected_hooks: BTreeSet<String>,
+    all_hooks: BTreeSet<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct TopicAgentHookStatus {
+    hook: String,
+    active: bool,
+    manageable: bool,
+    protected: bool,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct TopicAgentHookSnapshot {
+    policy_mode: String,
+    available_hooks: Vec<String>,
+    active_hooks: Vec<String>,
+    disabled_hooks: Vec<String>,
+    enabled_hooks_raw: Option<Vec<String>>,
+    unknown_profile_hooks: Vec<String>,
+    hook_statuses: Vec<TopicAgentHookStatus>,
+}
+
+#[derive(Debug)]
+struct TopicAgentHookMutation {
+    profile: serde_json::Value,
+    changed: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TopicAgentHookMutationContext {
+    topic_id: String,
+    agent_id: String,
+    requested_hooks: Vec<String>,
     previous: Option<AgentProfileRecord>,
 }
 
@@ -1162,7 +1221,7 @@ impl ManagerControlPlaneProvider {
     }
 
     fn agent_profile_tools_definitions() -> Vec<ToolDefinition> {
-        vec![
+        let mut tools = vec![
             ToolDefinition {
                 name: TOOL_AGENT_PROFILE_UPSERT.to_string(),
                 description: "Create or update agent profile for current user".to_string(),
@@ -1211,6 +1270,14 @@ impl ManagerControlPlaneProvider {
                     "required": ["agent_id"]
                 }),
             },
+        ];
+        tools.extend(Self::topic_agent_tools_management_definitions());
+        tools.extend(Self::topic_agent_hooks_management_definitions());
+        tools
+    }
+
+    fn topic_agent_tools_management_definitions() -> Vec<ToolDefinition> {
+        vec![
             ToolDefinition {
                 name: TOOL_TOPIC_AGENT_TOOLS_GET.to_string(),
                 description: "Inspect the effective tool set for the agent bound to a topic"
@@ -1259,6 +1326,59 @@ impl ManagerControlPlaneProvider {
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
                     "required": ["topic_id", "tools"]
+                }),
+            },
+        ]
+    }
+
+    fn topic_agent_hooks_management_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENT_HOOKS_GET.to_string(),
+                description: "Inspect the effective hook set for the agent bound to a topic"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier or unique forum topic alias" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENT_HOOKS_ENABLE.to_string(),
+                description: "Enable one or more manageable hooks for the agent bound to a topic"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier or unique forum topic alias" },
+                        "hooks": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Hook names such as workload_distributor, delegation_guard, search_budget, timeout_report"
+                        },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id", "hooks"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENT_HOOKS_DISABLE.to_string(),
+                description: "Disable one or more manageable hooks for the agent bound to a topic"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier or unique forum topic alias" },
+                        "hooks": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Hook names such as workload_distributor, delegation_guard, search_budget, timeout_report"
+                        },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id", "hooks"]
                 }),
             },
         ]
@@ -2055,6 +2175,346 @@ impl ManagerControlPlaneProvider {
         ))
     }
 
+    fn topic_agent_hook_catalog() -> TopicAgentHookCatalog {
+        let manageable_hooks = topic_agent_manageable_hooks()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let protected_hooks = topic_agent_protected_hooks()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let all_hooks = topic_agent_all_hooks().into_iter().collect::<BTreeSet<_>>();
+
+        TopicAgentHookCatalog {
+            manageable_hooks,
+            protected_hooks,
+            all_hooks,
+        }
+    }
+
+    fn normalize_topic_agent_hook_name(token: &str) -> Option<&'static str> {
+        match token {
+            "workload" => Some("workload_distributor"),
+            "delegation" => Some("delegation_guard"),
+            "search" => Some("search_budget"),
+            "timeout" => Some("timeout_report"),
+            _ => None,
+        }
+    }
+
+    fn profile_hook_snapshot(
+        profile: Option<&serde_json::Value>,
+    ) -> (Option<Vec<String>>, Vec<String>, HookAccessPolicy) {
+        let Some(profile) = profile else {
+            return (None, Vec::new(), HookAccessPolicy::default());
+        };
+
+        let enabled = Self::parse_profile_tool_set(profile, "enabledHooks", "enabled_hooks")
+            .map(|set| set.into_iter().collect::<Vec<_>>());
+        let disabled = Self::parse_profile_tool_set(profile, "disabledHooks", "disabled_hooks")
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let parsed = parse_agent_profile(profile);
+
+        (enabled, disabled, parsed.hook_policy)
+    }
+
+    fn topic_agent_hook_snapshot(
+        catalog: &TopicAgentHookCatalog,
+        profile: Option<&serde_json::Value>,
+    ) -> TopicAgentHookSnapshot {
+        let (enabled_hooks_raw, disabled_hooks_raw, policy) = Self::profile_hook_snapshot(profile);
+        let available_hooks = catalog.all_hooks.iter().cloned().collect::<Vec<_>>();
+        let active_hooks = available_hooks
+            .iter()
+            .filter(|hook| {
+                catalog.protected_hooks.contains(*hook)
+                    || (catalog.manageable_hooks.contains(*hook) && policy.allows(hook))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let disabled_hooks = catalog
+            .manageable_hooks
+            .iter()
+            .filter(|hook| !policy.allows(hook))
+            .cloned()
+            .collect::<Vec<_>>();
+        let unknown_profile_hooks = enabled_hooks_raw
+            .iter()
+            .flatten()
+            .chain(disabled_hooks_raw.iter())
+            .filter(|hook| !catalog.all_hooks.contains(*hook))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let hook_statuses = available_hooks
+            .iter()
+            .map(|hook| {
+                let protected = catalog.protected_hooks.contains(hook);
+                let manageable = catalog.manageable_hooks.contains(hook);
+                let active = protected || (manageable && policy.allows(hook));
+                TopicAgentHookStatus {
+                    hook: hook.clone(),
+                    active,
+                    manageable,
+                    protected,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        TopicAgentHookSnapshot {
+            policy_mode: if enabled_hooks_raw.is_some() {
+                "allowlist".to_string()
+            } else {
+                "all_except_disabled".to_string()
+            },
+            available_hooks,
+            active_hooks,
+            disabled_hooks,
+            enabled_hooks_raw,
+            unknown_profile_hooks,
+            hook_statuses,
+        }
+    }
+
+    fn expand_topic_agent_hooks(
+        catalog: &TopicAgentHookCatalog,
+        requested_hooks: Vec<String>,
+    ) -> Result<Vec<String>> {
+        let mut requested = BTreeSet::new();
+        for raw in requested_hooks {
+            let mut token = raw.trim().to_ascii_lowercase();
+            if token.is_empty() {
+                continue;
+            }
+            if let Some(alias) = Self::normalize_topic_agent_hook_name(&token) {
+                token = alias.to_string();
+            }
+
+            if catalog.protected_hooks.contains(&token) {
+                bail!("hook '{token}' is system-protected and cannot be toggled");
+            }
+            if !catalog.manageable_hooks.contains(&token) {
+                bail!("unknown manageable hook '{token}' for the topic agent");
+            }
+
+            requested.insert(token);
+        }
+
+        if requested.is_empty() {
+            bail!("hooks must contain at least one non-empty hook name");
+        }
+
+        Ok(requested.into_iter().collect())
+    }
+
+    fn enable_topic_agent_hooks(
+        profile: Option<&AgentProfileRecord>,
+        hooks: &[String],
+    ) -> Result<TopicAgentHookMutation> {
+        let mut next_profile = match profile {
+            Some(profile) => Self::validate_profile_object(profile.profile.clone())?,
+            None => json!({}),
+        };
+        let mut enabled =
+            Self::parse_profile_tool_set(&next_profile, "enabledHooks", "enabled_hooks");
+        let mut disabled =
+            Self::parse_profile_tool_set(&next_profile, "disabledHooks", "disabled_hooks")
+                .unwrap_or_default();
+
+        for hook in hooks {
+            disabled.remove(hook);
+            if let Some(enabled) = enabled.as_mut() {
+                enabled.insert(hook.clone());
+            }
+        }
+
+        Self::write_profile_tool_set(
+            &mut next_profile,
+            "enabledHooks",
+            "enabled_hooks",
+            enabled.as_ref(),
+            false,
+        )?;
+        Self::write_profile_tool_set(
+            &mut next_profile,
+            "disabledHooks",
+            "disabled_hooks",
+            Some(&disabled),
+            true,
+        )?;
+
+        let changed = match profile {
+            Some(profile) => profile.profile != next_profile,
+            None => next_profile != json!({}),
+        };
+        Ok(TopicAgentHookMutation {
+            profile: next_profile,
+            changed,
+        })
+    }
+
+    fn disable_topic_agent_hooks(
+        profile: Option<&AgentProfileRecord>,
+        hooks: &[String],
+    ) -> Result<TopicAgentHookMutation> {
+        let mut next_profile = match profile {
+            Some(profile) => Self::validate_profile_object(profile.profile.clone())?,
+            None => json!({}),
+        };
+        let mut enabled =
+            Self::parse_profile_tool_set(&next_profile, "enabledHooks", "enabled_hooks");
+        let mut disabled =
+            Self::parse_profile_tool_set(&next_profile, "disabledHooks", "disabled_hooks")
+                .unwrap_or_default();
+
+        for hook in hooks {
+            if let Some(enabled) = enabled.as_mut() {
+                enabled.remove(hook);
+            }
+            disabled.insert(hook.clone());
+        }
+
+        Self::write_profile_tool_set(
+            &mut next_profile,
+            "enabledHooks",
+            "enabled_hooks",
+            enabled.as_ref(),
+            false,
+        )?;
+        Self::write_profile_tool_set(
+            &mut next_profile,
+            "disabledHooks",
+            "disabled_hooks",
+            Some(&disabled),
+            true,
+        )?;
+
+        let changed = match profile {
+            Some(profile) => profile.profile != next_profile,
+            None => next_profile != json!({}),
+        };
+        Ok(TopicAgentHookMutation {
+            profile: next_profile,
+            changed,
+        })
+    }
+
+    fn topic_agent_hooks_operation_name(action: &str) -> Result<&'static str> {
+        match action {
+            TOOL_TOPIC_AGENT_HOOKS_ENABLE => Ok("enable"),
+            TOOL_TOPIC_AGENT_HOOKS_DISABLE => Ok("disable"),
+            _ => bail!("unsupported topic agent hooks action: {action}"),
+        }
+    }
+
+    async fn prepare_topic_agent_hook_mutation(
+        &self,
+        raw_topic_id: String,
+        requested_hooks: Vec<String>,
+    ) -> Result<(TopicAgentHookMutationContext, TopicAgentHookCatalog)> {
+        let topic_id = self.resolve_mutation_topic_id(raw_topic_id).await?;
+        let binding = self
+            .storage
+            .get_topic_binding(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get topic binding: {err}"))?
+            .ok_or_else(|| anyhow!("topic_id '{topic_id}' is not bound to an agent"))?;
+        let agent_id = binding.agent_id;
+        let catalog = Self::topic_agent_hook_catalog();
+        let requested_hooks = Self::expand_topic_agent_hooks(&catalog, requested_hooks)?;
+        let previous = self
+            .storage
+            .get_agent_profile(self.user_id, agent_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current agent profile: {err}"))?;
+
+        Ok((
+            TopicAgentHookMutationContext {
+                topic_id,
+                agent_id,
+                requested_hooks,
+                previous,
+            },
+            catalog,
+        ))
+    }
+
+    async fn append_topic_agent_hooks_audit(
+        &self,
+        action: &str,
+        context: &TopicAgentHookMutationContext,
+        changed: bool,
+        outcome: &str,
+        version: Option<u64>,
+    ) -> AuditStatus {
+        self.append_audit_with_status(AppendAuditEventOptions {
+            user_id: self.user_id,
+            topic_id: Some(context.topic_id.clone()),
+            agent_id: Some(context.agent_id.clone()),
+            action: action.to_string(),
+            payload: json!({
+                "topic_id": context.topic_id.clone(),
+                "agent_id": context.agent_id.clone(),
+                "requested": context.requested_hooks.clone(),
+                "previous": context.previous.clone(),
+                "changed": changed,
+                "version": version,
+                "outcome": outcome
+            }),
+        })
+        .await
+    }
+
+    fn topic_agent_hooks_preview_response(
+        operation: &str,
+        context: TopicAgentHookMutationContext,
+        changed: bool,
+        profile: serde_json::Value,
+        snapshot: TopicAgentHookSnapshot,
+        audit_status: AuditStatus,
+    ) -> Result<String> {
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": operation,
+                    "topic_id": context.topic_id,
+                    "agent_id": context.agent_id,
+                    "requested_hooks": context.requested_hooks,
+                    "changed": changed,
+                    "profile": profile,
+                    "hooks": snapshot
+                },
+                "previous": context.previous
+            }),
+            audit_status,
+        ))
+    }
+
+    fn topic_agent_hooks_result_response(
+        updated: bool,
+        context: TopicAgentHookMutationContext,
+        profile: Option<AgentProfileRecord>,
+        snapshot: TopicAgentHookSnapshot,
+        audit_status: AuditStatus,
+    ) -> Result<String> {
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "updated": updated,
+                "topic_id": context.topic_id,
+                "agent_id": context.agent_id,
+                "requested_hooks": context.requested_hooks,
+                "profile": profile,
+                "hooks": snapshot
+            }),
+            audit_status,
+        ))
+    }
+
     fn is_canonical_forum_topic_id(value: &str) -> bool {
         let Some((chat_id, thread_id)) = value.split_once(':') else {
             return false;
@@ -2495,6 +2955,8 @@ impl ManagerControlPlaneProvider {
                         TOOL_AGENT_PROFILE_DELETE,
                         TOOL_TOPIC_AGENT_TOOLS_ENABLE,
                         TOOL_TOPIC_AGENT_TOOLS_DISABLE,
+                        TOOL_TOPIC_AGENT_HOOKS_ENABLE,
+                        TOOL_TOPIC_AGENT_HOOKS_DISABLE,
                         TOOL_AGENT_PROFILE_ROLLBACK,
                     ],
                 )
@@ -2972,6 +3434,146 @@ impl ManagerControlPlaneProvider {
         Self::topic_agent_tools_result_response(
             true,
             TopicAgentToolMutationContext {
+                agent_id: record.agent_id.clone(),
+                ..context
+            },
+            Some(record),
+            snapshot,
+            audit_status,
+        )
+    }
+
+    async fn execute_topic_agent_hooks_get(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentHooksGetArgs = Self::parse_args(arguments, TOOL_TOPIC_AGENT_HOOKS_GET)?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
+        let binding = self
+            .storage
+            .get_topic_binding(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get topic binding: {err}"))?;
+
+        let Some(binding) = binding else {
+            return Self::to_json_string(json!({
+                "ok": true,
+                "found": false,
+                "topic_id": topic_id
+            }));
+        };
+
+        let profile = self
+            .storage
+            .get_agent_profile(self.user_id, binding.agent_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get agent profile: {err}"))?;
+        let snapshot = Self::topic_agent_hook_snapshot(
+            &Self::topic_agent_hook_catalog(),
+            profile.as_ref().map(|profile| &profile.profile),
+        );
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "found": true,
+            "topic_id": topic_id,
+            "agent_id": binding.agent_id,
+            "profile_found": profile.is_some(),
+            "hooks": snapshot
+        }))
+    }
+
+    async fn execute_topic_agent_hooks_enable(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentHooksMutationArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_AGENT_HOOKS_ENABLE)?;
+        self.execute_topic_agent_hooks_mutation(args, TOOL_TOPIC_AGENT_HOOKS_ENABLE)
+            .await
+    }
+
+    async fn execute_topic_agent_hooks_disable(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentHooksMutationArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_AGENT_HOOKS_DISABLE)?;
+        self.execute_topic_agent_hooks_mutation(args, TOOL_TOPIC_AGENT_HOOKS_DISABLE)
+            .await
+    }
+
+    async fn execute_topic_agent_hooks_mutation(
+        &self,
+        args: TopicAgentHooksMutationArgs,
+        action: &str,
+    ) -> Result<String> {
+        let operation = Self::topic_agent_hooks_operation_name(action)?;
+        let (context, catalog) = self
+            .prepare_topic_agent_hook_mutation(args.topic_id, args.hooks)
+            .await?;
+        let mutation = match action {
+            TOOL_TOPIC_AGENT_HOOKS_ENABLE => {
+                Self::enable_topic_agent_hooks(context.previous.as_ref(), &context.requested_hooks)?
+            }
+            TOOL_TOPIC_AGENT_HOOKS_DISABLE => Self::disable_topic_agent_hooks(
+                context.previous.as_ref(),
+                &context.requested_hooks,
+            )?,
+            _ => bail!("unsupported topic agent hooks action: {action}"),
+        };
+        let snapshot = Self::topic_agent_hook_snapshot(&catalog, Some(&mutation.profile));
+
+        if args.dry_run {
+            let audit_status = self
+                .append_topic_agent_hooks_audit(
+                    action,
+                    &context,
+                    mutation.changed,
+                    Self::dry_run_outcome(true),
+                    None,
+                )
+                .await;
+
+            return Self::topic_agent_hooks_preview_response(
+                operation,
+                context,
+                mutation.changed,
+                mutation.profile,
+                snapshot,
+                audit_status,
+            );
+        }
+
+        if !mutation.changed {
+            let audit_status = self
+                .append_topic_agent_hooks_audit(action, &context, false, "noop", None)
+                .await;
+
+            return Self::topic_agent_hooks_result_response(
+                false,
+                context,
+                None,
+                snapshot,
+                audit_status,
+            );
+        }
+
+        let record = self
+            .storage
+            .upsert_agent_profile(UpsertAgentProfileOptions {
+                user_id: self.user_id,
+                agent_id: context.agent_id.clone(),
+                profile: mutation.profile,
+            })
+            .await
+            .map_err(|err| anyhow!("failed to upsert agent profile: {err}"))?;
+        let snapshot = Self::topic_agent_hook_snapshot(&catalog, Some(&record.profile));
+
+        let audit_status = self
+            .append_topic_agent_hooks_audit(
+                action,
+                &context,
+                true,
+                Self::dry_run_outcome(false),
+                Some(record.version),
+            )
+            .await;
+
+        Self::topic_agent_hooks_result_response(
+            true,
+            TopicAgentHookMutationContext {
                 agent_id: record.agent_id.clone(),
                 ..context
             },
@@ -4190,6 +4792,9 @@ impl ToolProvider for ManagerControlPlaneProvider {
                 | TOOL_TOPIC_AGENT_TOOLS_GET
                 | TOOL_TOPIC_AGENT_TOOLS_ENABLE
                 | TOOL_TOPIC_AGENT_TOOLS_DISABLE
+                | TOOL_TOPIC_AGENT_HOOKS_GET
+                | TOOL_TOPIC_AGENT_HOOKS_ENABLE
+                | TOOL_TOPIC_AGENT_HOOKS_DISABLE
         );
 
         base_tools
@@ -4239,6 +4844,11 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_AGENT_TOOLS_ENABLE => self.execute_topic_agent_tools_enable(arguments).await,
             TOOL_TOPIC_AGENT_TOOLS_DISABLE => {
                 self.execute_topic_agent_tools_disable(arguments).await
+            }
+            TOOL_TOPIC_AGENT_HOOKS_GET => self.execute_topic_agent_hooks_get(arguments).await,
+            TOOL_TOPIC_AGENT_HOOKS_ENABLE => self.execute_topic_agent_hooks_enable(arguments).await,
+            TOOL_TOPIC_AGENT_HOOKS_DISABLE => {
+                self.execute_topic_agent_hooks_disable(arguments).await
             }
             TOOL_FORUM_TOPIC_CREATE => self.execute_forum_topic_create(arguments).await,
             TOOL_FORUM_TOPIC_EDIT => self.execute_forum_topic_edit(arguments).await,
@@ -5234,6 +5844,139 @@ mod tests {
             serde_json::from_str(&response).expect("response must be valid json");
         assert_eq!(parsed["updated"], false);
         assert_eq!(parsed["tools"]["blocked_tools"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn topic_agent_hooks_get_reports_manageable_and_protected_hooks() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: 77,
+                    agent_id: "agent-a".to_string(),
+                    profile: json!({
+                        "disabledHooks": ["search_budget"],
+                    }),
+                    created_at: 10,
+                    updated_at: 10,
+                }))
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENT_HOOKS_GET,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic agent hooks get should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(
+            parsed["hooks"]["active_hooks"].as_array().map(Vec::len),
+            Some(5)
+        );
+        assert_eq!(parsed["hooks"]["disabled_hooks"], json!(["search_budget"]));
+        assert!(parsed["hooks"]["hook_statuses"]
+            .as_array()
+            .expect("hook_statuses must be an array")
+            .iter()
+            .any(|entry| entry["hook"] == "completion_check" && entry["protected"] == true));
+    }
+
+    #[tokio::test]
+    async fn topic_agent_hooks_disable_rejects_protected_hook() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let err = provider
+            .execute(
+                TOOL_TOPIC_AGENT_HOOKS_DISABLE,
+                r#"{"topic_id":"topic-a","hooks":["completion_check"]}"#,
+                None,
+                None,
+            )
+            .await
+            .expect_err("protected hook must not be disableable");
+
+        assert!(err.to_string().contains("system-protected"));
+    }
+
+    #[tokio::test]
+    async fn topic_agent_hooks_disable_persists_manageable_hook_change() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: 77,
+                    agent_id: "agent-a".to_string(),
+                    profile: json!({}),
+                    created_at: 10,
+                    updated_at: 10,
+                }))
+            });
+        mock.expect_upsert_agent_profile()
+            .withf(|options| {
+                options.agent_id == "agent-a"
+                    && options.profile["disabledHooks"] == json!(["timeout_report"])
+            })
+            .returning(|options| {
+                Ok(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 2,
+                    user_id: options.user_id,
+                    agent_id: options.agent_id,
+                    profile: options.profile,
+                    created_at: 10,
+                    updated_at: 20,
+                })
+            });
+        mock.expect_append_audit_event().returning(|options| {
+            Ok(audit_event(
+                1,
+                options.topic_id.as_deref(),
+                options.agent_id.as_deref(),
+                &options.action,
+                options.payload,
+            ))
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENT_HOOKS_DISABLE,
+                r#"{"topic_id":"topic-a","hooks":["timeout"]}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("manageable hook disable should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["hooks"]["disabled_hooks"], json!(["timeout_report"]));
+        assert_eq!(
+            parsed["profile"]["profile"]["disabledHooks"],
+            json!(["timeout_report"])
+        );
     }
 
     #[tokio::test]

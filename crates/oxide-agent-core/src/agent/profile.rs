@@ -21,6 +21,15 @@ const MANAGER_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
     "ytdlp_download_audio",
 ];
 
+const TOPIC_AGENT_MANAGEABLE_HOOKS: &[&str] = &[
+    "workload_distributor",
+    "delegation_guard",
+    "search_budget",
+    "timeout_report",
+];
+
+const TOPIC_AGENT_PROTECTED_HOOKS: &[&str] = &["completion_check", "tool_access_policy"];
+
 /// Tool access policy derived from an agent profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolAccessPolicy {
@@ -85,6 +94,61 @@ impl ToolAccessPolicy {
     }
 }
 
+/// Hook access policy derived from an agent profile.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HookAccessPolicy {
+    enabled_hooks: Option<HashSet<String>>,
+    disabled_hooks: HashSet<String>,
+}
+
+impl HookAccessPolicy {
+    /// Create a new hook access policy.
+    #[must_use]
+    pub fn new(enabled_hooks: Option<HashSet<String>>, disabled_hooks: HashSet<String>) -> Self {
+        Self {
+            enabled_hooks,
+            disabled_hooks,
+        }
+    }
+
+    /// Returns the allowlist, if configured.
+    #[must_use]
+    pub fn enabled_hooks(&self) -> Option<&HashSet<String>> {
+        self.enabled_hooks.as_ref()
+    }
+
+    /// Returns the explicit blocklist.
+    #[must_use]
+    pub fn disabled_hooks(&self) -> &HashSet<String> {
+        &self.disabled_hooks
+    }
+
+    /// Returns true when the hook is allowed by this policy.
+    #[must_use]
+    pub fn allows(&self, hook_name: &str) -> bool {
+        if self.disabled_hooks.contains(hook_name) {
+            return false;
+        }
+
+        match self.enabled_hooks.as_ref() {
+            Some(enabled) => enabled.contains(hook_name),
+            None => true,
+        }
+    }
+
+    /// Merge an additional blocklist into the policy.
+    #[must_use]
+    pub fn with_additional_disabled_hooks<I, S>(mut self, disabled_hooks: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.disabled_hooks
+            .extend(disabled_hooks.into_iter().map(Into::into));
+        self
+    }
+}
+
 /// Default blocked tools for manager-mode agent sessions.
 #[must_use]
 pub fn manager_default_blocked_tools() -> Vec<String> {
@@ -103,6 +167,34 @@ pub fn topic_agent_default_blocked_tools() -> Vec<String> {
         .collect()
 }
 
+/// Hooks that managers may enable or disable for topic agents.
+#[must_use]
+pub fn topic_agent_manageable_hooks() -> Vec<String> {
+    TOPIC_AGENT_MANAGEABLE_HOOKS
+        .iter()
+        .map(|hook| (*hook).to_string())
+        .collect()
+}
+
+/// Hooks that remain always active for topic agents.
+#[must_use]
+pub fn topic_agent_protected_hooks() -> Vec<String> {
+    TOPIC_AGENT_PROTECTED_HOOKS
+        .iter()
+        .map(|hook| (*hook).to_string())
+        .collect()
+}
+
+/// All visible main-agent hooks for topic agents.
+#[must_use]
+pub fn topic_agent_all_hooks() -> Vec<String> {
+    TOPIC_AGENT_MANAGEABLE_HOOKS
+        .iter()
+        .chain(TOPIC_AGENT_PROTECTED_HOOKS.iter())
+        .map(|hook| (*hook).to_string())
+        .collect()
+}
+
 /// Parsed agent profile settings used at execution time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedAgentProfile {
@@ -110,6 +202,8 @@ pub struct ParsedAgentProfile {
     pub prompt_instructions: Option<String>,
     /// Tool access policy for this profile.
     pub tool_policy: ToolAccessPolicy,
+    /// Hook access policy for this profile.
+    pub hook_policy: HookAccessPolicy,
 }
 
 /// Execution profile applied to a live executor.
@@ -118,6 +212,7 @@ pub struct AgentExecutionProfile {
     agent_id: Option<String>,
     prompt_instructions: Option<String>,
     tool_policy: ToolAccessPolicy,
+    hook_policy: HookAccessPolicy,
 }
 
 impl AgentExecutionProfile {
@@ -132,6 +227,7 @@ impl AgentExecutionProfile {
             agent_id,
             prompt_instructions,
             tool_policy,
+            hook_policy: HookAccessPolicy::default(),
         }
     }
 
@@ -152,6 +248,19 @@ impl AgentExecutionProfile {
     pub fn tool_policy(&self) -> &ToolAccessPolicy {
         &self.tool_policy
     }
+
+    /// Hook policy for this execution.
+    #[must_use]
+    pub fn hook_policy(&self) -> &HookAccessPolicy {
+        &self.hook_policy
+    }
+
+    /// Attach hook policy settings to the execution profile.
+    #[must_use]
+    pub fn with_hook_policy(mut self, hook_policy: HookAccessPolicy) -> Self {
+        self.hook_policy = hook_policy;
+        self
+    }
 }
 
 /// Parse an arbitrary JSON agent profile payload into execution settings.
@@ -162,6 +271,10 @@ pub fn parse_agent_profile(value: &Value) -> ParsedAgentProfile {
         tool_policy: ToolAccessPolicy::new(
             parse_tool_name_set(value, "allowedTools", "allowed_tools"),
             parse_tool_name_set(value, "blockedTools", "blocked_tools").unwrap_or_default(),
+        ),
+        hook_policy: HookAccessPolicy::new(
+            parse_tool_name_set(value, "enabledHooks", "enabled_hooks"),
+            parse_tool_name_set(value, "disabledHooks", "disabled_hooks").unwrap_or_default(),
         ),
     }
 }
@@ -199,7 +312,8 @@ fn parse_tool_name_set(value: &Value, camel_key: &str, snake_key: &str) -> Optio
 mod tests {
     use super::{
         manager_default_blocked_tools, parse_agent_profile, topic_agent_default_blocked_tools,
-        AgentExecutionProfile, ToolAccessPolicy,
+        topic_agent_manageable_hooks, topic_agent_protected_hooks, AgentExecutionProfile,
+        HookAccessPolicy, ToolAccessPolicy,
     };
     use crate::llm::ToolDefinition;
     use serde_json::json;
@@ -218,13 +332,18 @@ mod tests {
         let parsed = parse_agent_profile(&json!({
             "systemPrompt": "  you are infra  ",
             "allowedTools": ["todos_write", "execute_command", "execute_command"],
-            "blockedTools": ["delegate_to_sub_agent"]
+            "blockedTools": ["delegate_to_sub_agent"],
+            "enabledHooks": ["workload_distributor", "search_budget"],
+            "disabledHooks": ["delegation_guard"]
         }));
 
         assert_eq!(parsed.prompt_instructions.as_deref(), Some("you are infra"));
         assert!(parsed.tool_policy.allows("todos_write"));
         assert!(!parsed.tool_policy.allows("delegate_to_sub_agent"));
         assert!(!parsed.tool_policy.allows("unknown_tool"));
+        assert!(parsed.hook_policy.allows("workload_distributor"));
+        assert!(!parsed.hook_policy.allows("delegation_guard"));
+        assert!(!parsed.hook_policy.allows("timeout_report"));
     }
 
     #[test]
@@ -280,5 +399,32 @@ mod tests {
 
         assert!(blocked.iter().all(|tool| tool.starts_with("ytdlp_")));
         assert!(!blocked.iter().any(|tool| tool == "delegate_to_sub_agent"));
+    }
+
+    #[test]
+    fn additional_disabled_hooks_override_existing_policy() {
+        let policy = HookAccessPolicy::new(
+            Some(HashSet::from([
+                "delegation_guard".to_string(),
+                "workload_distributor".to_string(),
+            ])),
+            HashSet::new(),
+        )
+        .with_additional_disabled_hooks(["delegation_guard"]);
+
+        assert!(policy.allows("workload_distributor"));
+        assert!(!policy.allows("delegation_guard"));
+    }
+
+    #[test]
+    fn topic_agent_hook_catalogs_expose_manageable_and_protected_sets() {
+        let manageable = topic_agent_manageable_hooks();
+        let protected = topic_agent_protected_hooks();
+
+        assert!(manageable.iter().any(|hook| hook == "workload_distributor"));
+        assert!(manageable.iter().any(|hook| hook == "timeout_report"));
+        assert!(protected.iter().any(|hook| hook == "completion_check"));
+        assert!(protected.iter().any(|hook| hook == "tool_access_policy"));
+        assert!(manageable.iter().all(|hook| !protected.contains(hook)));
     }
 }

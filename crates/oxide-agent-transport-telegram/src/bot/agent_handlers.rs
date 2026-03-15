@@ -2134,7 +2134,8 @@ mod tests {
                 serde_json::json!({
                     "systemPrompt": "act as infra agent",
                     "allowedTools": ["todos_write", "execute_command"],
-                    "blockedTools": ["delegate_to_sub_agent"]
+                    "blockedTools": ["delegate_to_sub_agent"],
+                    "disabledHooks": ["search_budget"]
                 }),
                 "persistent topic runbook",
             ));
@@ -2160,6 +2161,7 @@ mod tests {
         assert!(profile.tool_policy().allows("todos_write"));
         assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
         assert!(!profile.tool_policy().allows("file_write"));
+        assert!(!profile.hook_policy().allows("search_budget"));
     }
 
     #[tokio::test]
@@ -2298,7 +2300,8 @@ async fn resolve_execution_profile(
                 topic_context_prompt.as_deref(),
             ),
             tool_policy,
-        );
+        )
+        .with_hook_policy(Default::default());
     };
 
     let mut parsed_profile = match storage.get_agent_profile(user_id, agent_id.clone()).await {
@@ -2331,6 +2334,7 @@ async fn resolve_execution_profile(
         prompt_instructions,
         parsed_profile.tool_policy,
     )
+    .with_hook_policy(parsed_profile.hook_policy)
 }
 
 async fn resolve_topic_infra_config(
