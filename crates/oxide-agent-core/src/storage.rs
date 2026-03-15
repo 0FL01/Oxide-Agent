@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 const AGENT_PROFILE_SCHEMA_VERSION: u32 = 1;
 const TOPIC_CONTEXT_SCHEMA_VERSION: u32 = 1;
+const TOPIC_AGENTS_MD_SCHEMA_VERSION: u32 = 1;
 const TOPIC_INFRA_CONFIG_SCHEMA_VERSION: u32 = 1;
 const AGENT_FLOW_SCHEMA_VERSION: u32 = 1;
 const TOPIC_BINDING_SCHEMA_VERSION: u32 = 2;
@@ -157,6 +158,25 @@ pub struct TopicContextRecord {
     pub topic_id: String,
     /// Free-form prompt context for the topic.
     pub context: String,
+    /// Creation timestamp (unix seconds).
+    pub created_at: i64,
+    /// Last update timestamp (unix seconds).
+    pub updated_at: i64,
+}
+
+/// Topic-scoped `AGENTS.md` instructions persisted in control-plane storage.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TopicAgentsMdRecord {
+    /// Record schema version for forward-compatible evolution.
+    pub schema_version: u32,
+    /// Logical record revision incremented on each upsert.
+    pub version: u64,
+    /// User owning this topic configuration.
+    pub user_id: i64,
+    /// Stable topic identifier.
+    pub topic_id: String,
+    /// Full `AGENTS.md` content pinned for new flows in the topic.
+    pub agents_md: String,
     /// Creation timestamp (unix seconds).
     pub created_at: i64,
     /// Last update timestamp (unix seconds).
@@ -322,6 +342,17 @@ pub struct UpsertTopicContextOptions {
     pub topic_id: String,
     /// Free-form prompt context for the topic.
     pub context: String,
+}
+
+/// Parameters for topic-scoped `AGENTS.md` upsert.
+#[derive(Debug, Clone)]
+pub struct UpsertTopicAgentsMdOptions {
+    /// User owning this topic configuration.
+    pub user_id: i64,
+    /// Stable topic identifier.
+    pub topic_id: String,
+    /// Full `AGENTS.md` content for the topic.
+    pub agents_md: String,
 }
 
 /// Parameters for topic infrastructure configuration upsert.
@@ -650,6 +681,36 @@ pub trait StorageProvider: Send + Sync {
     }
     /// Delete a topic context record.
     async fn delete_topic_context(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = topic_id;
+        Ok(())
+    }
+    /// Get a topic-scoped `AGENTS.md` record.
+    async fn get_topic_agents_md(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicAgentsMdRecord>, StorageError> {
+        let _ = user_id;
+        let _ = topic_id;
+        Ok(None)
+    }
+    /// Upsert a topic-scoped `AGENTS.md` record.
+    async fn upsert_topic_agents_md(
+        &self,
+        options: UpsertTopicAgentsMdOptions,
+    ) -> Result<TopicAgentsMdRecord, StorageError> {
+        let _ = options;
+        Err(StorageError::Config(
+            "topic AGENTS.md upsert is not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Delete a topic-scoped `AGENTS.md` record.
+    async fn delete_topic_agents_md(
         &self,
         user_id: i64,
         topic_id: String,
@@ -1548,6 +1609,64 @@ impl StorageProvider for R2Storage {
             .await
     }
 
+    async fn get_topic_agents_md(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicAgentsMdRecord>, StorageError> {
+        self.load_json(&topic_agents_md_key(user_id, &topic_id))
+            .await
+    }
+
+    async fn upsert_topic_agents_md(
+        &self,
+        options: UpsertTopicAgentsMdOptions,
+    ) -> Result<TopicAgentsMdRecord, StorageError> {
+        let key = topic_agents_md_key(options.user_id, &options.topic_id);
+        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
+
+        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
+            let (existing, etag) = self
+                .load_json_with_etag::<TopicAgentsMdRecord>(&key)
+                .await?;
+            let now = current_timestamp_unix_secs();
+            let record = build_topic_agents_md_record(options.clone(), existing, now);
+
+            if self
+                .save_json_conditionally(&key, &record, etag.as_deref())
+                .await?
+            {
+                return Ok(record);
+            }
+
+            if should_retry_control_plane_rmw(attempt) {
+                warn!(
+                    key = %key,
+                    attempt,
+                    "topic AGENTS.md optimistic concurrency conflict, retrying"
+                );
+                sleep(Duration::from_millis(
+                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
+                ))
+                .await;
+            }
+        }
+
+        Err(StorageError::ConcurrencyConflict {
+            key,
+            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
+        })
+    }
+
+    async fn delete_topic_agents_md(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        self.delete_object(&topic_agents_md_key(user_id, &topic_id))
+            .await
+    }
+
     async fn get_topic_infra_config(
         &self,
         user_id: i64,
@@ -1840,6 +1959,12 @@ pub fn topic_context_key(user_id: i64, topic_id: &str) -> String {
     format!("users/{user_id}/control_plane/topic_contexts/{topic_id}.json")
 }
 
+/// Returns the R2 key for a topic-scoped `AGENTS.md` record.
+#[must_use]
+pub fn topic_agents_md_key(user_id: i64, topic_id: &str) -> String {
+    format!("users/{user_id}/control_plane/topic_agents_md/{topic_id}.json")
+}
+
 /// Returns the R2 key for a topic infrastructure configuration record.
 #[must_use]
 pub fn topic_infra_config_key(user_id: i64, topic_id: &str) -> String {
@@ -1928,6 +2053,34 @@ fn build_topic_context_record(
             user_id: options.user_id,
             topic_id: options.topic_id,
             context: options.context,
+            created_at: now,
+            updated_at: now,
+        },
+    }
+}
+
+#[must_use]
+fn build_topic_agents_md_record(
+    options: UpsertTopicAgentsMdOptions,
+    existing: Option<TopicAgentsMdRecord>,
+    now: i64,
+) -> TopicAgentsMdRecord {
+    match existing {
+        Some(existing_record) => TopicAgentsMdRecord {
+            schema_version: TOPIC_AGENTS_MD_SCHEMA_VERSION,
+            version: next_record_version(Some(existing_record.version)),
+            user_id: options.user_id,
+            topic_id: options.topic_id,
+            agents_md: options.agents_md,
+            created_at: existing_record.created_at,
+            updated_at: now,
+        },
+        None => TopicAgentsMdRecord {
+            schema_version: TOPIC_AGENTS_MD_SCHEMA_VERSION,
+            version: next_record_version(None),
+            user_id: options.user_id,
+            topic_id: options.topic_id,
+            agents_md: options.agents_md,
             created_at: now,
             updated_at: now,
         },
@@ -2133,19 +2286,19 @@ pub fn generate_chat_uuid() -> String {
 mod tests {
     use super::{
         agent_profile_key, audit_events_key, binding_is_active, build_agent_flow_record,
-        build_agent_profile_record, build_audit_event_record, build_topic_binding_record,
-        build_topic_context_record, build_topic_infra_config_record, generate_chat_uuid,
-        next_record_version, private_secret_key, resolve_active_topic_binding,
-        select_audit_events_page, should_retry_control_plane_rmw, topic_binding_key,
-        topic_context_key, topic_infra_config_key, user_chat_history_key, user_config_key,
-        user_context_agent_flow_key, user_context_agent_flow_memory_key,
+        build_agent_profile_record, build_audit_event_record, build_topic_agents_md_record,
+        build_topic_binding_record, build_topic_context_record, build_topic_infra_config_record,
+        generate_chat_uuid, next_record_version, private_secret_key, resolve_active_topic_binding,
+        select_audit_events_page, should_retry_control_plane_rmw, topic_agents_md_key,
+        topic_binding_key, topic_context_key, topic_infra_config_key, user_chat_history_key,
+        user_config_key, user_context_agent_flow_key, user_context_agent_flow_memory_key,
         user_context_agent_flows_prefix, user_context_agent_memory_key,
         user_context_chat_history_prefix, user_history_key, AgentFlowRecord, AgentProfileRecord,
         AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, OptionalMetadataPatch,
-        TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
-        TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
-        UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
-        UserConfig, UserContextConfig,
+        TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
+        TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+        UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
+        UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -2358,6 +2511,12 @@ mod tests {
     }
 
     #[test]
+    fn topic_agents_md_key_uses_control_plane_namespace() {
+        let key = topic_agents_md_key(42, "topic-a");
+        assert_eq!(key, "users/42/control_plane/topic_agents_md/topic-a.json");
+    }
+
+    #[test]
     fn topic_infra_config_key_uses_control_plane_namespace() {
         let key = topic_infra_config_key(42, "topic-a");
         assert_eq!(key, "users/42/control_plane/topic_infra/topic-a.json");
@@ -2469,6 +2628,52 @@ mod tests {
                 user_id: 7,
                 topic_id: "topic-a".to_string(),
                 context: "topic instructions".to_string(),
+            },
+            None,
+            777,
+        );
+
+        assert_eq!(created.version, 1);
+        assert_eq!(created.created_at, 777);
+        assert_eq!(created.updated_at, 777);
+        assert_eq!(created.schema_version, 1);
+    }
+
+    #[test]
+    fn upsert_topic_agents_md_increments_version_and_preserves_created_at() {
+        let existing = TopicAgentsMdRecord {
+            schema_version: 1,
+            version: 3,
+            user_id: 7,
+            topic_id: "topic-a".to_string(),
+            agents_md: "before".to_string(),
+            created_at: 123,
+            updated_at: 124,
+        };
+
+        let updated = build_topic_agents_md_record(
+            UpsertTopicAgentsMdOptions {
+                user_id: 7,
+                topic_id: "topic-a".to_string(),
+                agents_md: "after".to_string(),
+            },
+            Some(existing),
+            999,
+        );
+
+        assert_eq!(updated.version, 4);
+        assert_eq!(updated.created_at, 123);
+        assert_eq!(updated.updated_at, 999);
+        assert_eq!(updated.agents_md, "after");
+    }
+
+    #[test]
+    fn upsert_topic_agents_md_initial_insert_starts_version_and_sets_timestamps() {
+        let created = build_topic_agents_md_record(
+            UpsertTopicAgentsMdOptions {
+                user_id: 7,
+                topic_id: "topic-a".to_string(),
+                agents_md: "# Topic agent instructions".to_string(),
             },
             None,
             777,

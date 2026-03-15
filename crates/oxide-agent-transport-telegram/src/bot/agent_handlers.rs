@@ -1051,8 +1051,8 @@ mod tests {
     use oxide_agent_core::sandbox::SandboxScope;
     use oxide_agent_core::storage::{
         AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message,
-        StorageError, StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions,
-        UpsertTopicBindingOptions, UserConfig,
+        StorageError, StorageProvider, TopicAgentsMdRecord, TopicBindingRecord,
+        UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
     };
     use std::sync::{Arc, Mutex};
     use teloxide::types::{ChatId, MessageId, ReplyMarkup, ThreadId};
@@ -1063,6 +1063,7 @@ mod tests {
         flow_memory: Option<AgentMemory>,
         agent_profile: Option<serde_json::Value>,
         topic_context: Option<String>,
+        topic_agents_md: Option<String>,
         fail_flow_memory_lookup: bool,
         cleared_flows: Arc<Mutex<Vec<(String, String)>>>,
     }
@@ -1073,6 +1074,7 @@ mod tests {
                 flow_memory,
                 agent_profile: None,
                 topic_context: None,
+                topic_agents_md: None,
                 fail_flow_memory_lookup: false,
                 cleared_flows: Arc::default(),
             }
@@ -1086,6 +1088,18 @@ mod tests {
                 flow_memory: None,
                 agent_profile: Some(agent_profile),
                 topic_context: Some(topic_context.to_string()),
+                topic_agents_md: None,
+                fail_flow_memory_lookup: false,
+                cleared_flows: Arc::default(),
+            }
+        }
+
+        fn with_topic_agents_md(topic_agents_md: &str) -> Self {
+            Self {
+                flow_memory: None,
+                agent_profile: None,
+                topic_context: None,
+                topic_agents_md: Some(topic_agents_md.to_string()),
                 fail_flow_memory_lookup: false,
                 cleared_flows: Arc::default(),
             }
@@ -1096,6 +1110,7 @@ mod tests {
                 flow_memory: None,
                 agent_profile: None,
                 topic_context: None,
+                topic_agents_md: None,
                 fail_flow_memory_lookup: true,
                 cleared_flows: Arc::default(),
             }
@@ -1345,6 +1360,25 @@ mod tests {
             _topic_id: String,
         ) -> Result<(), StorageError> {
             Ok(())
+        }
+
+        async fn get_topic_agents_md(
+            &self,
+            user_id: i64,
+            topic_id: String,
+        ) -> Result<Option<TopicAgentsMdRecord>, StorageError> {
+            Ok(self
+                .topic_agents_md
+                .clone()
+                .map(|agents_md| TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id,
+                    topic_id,
+                    agents_md,
+                    created_at: 0,
+                    updated_at: 0,
+                }))
         }
 
         async fn get_topic_binding(
@@ -1787,6 +1821,117 @@ mod tests {
             session_manager_control_plane_enabled(session_id).await,
             Some(false)
         );
+
+        remove_sessions_with_compat(keys).await;
+    }
+
+    #[tokio::test]
+    async fn new_flow_injects_topic_agents_md_once() {
+        let bot = Bot::new("token");
+        let chat_id = ChatId(-100_123);
+        let thread_id = general_forum_topic_id();
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::with_topic_agents_md(
+            "# Topic AGENTS\nUse deploy checklist.",
+        ));
+        let settings = test_settings(None);
+        let llm = test_llm(&settings);
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-agents");
+
+        remove_sessions_with_compat(keys).await;
+
+        let session_id = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-agents".to_string(),
+            agent_flow_created: true,
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &settings,
+        })
+        .await;
+
+        let executor = SESSION_REGISTRY
+            .get(&session_id)
+            .await
+            .expect("session must exist");
+        let executor = executor.read().await;
+        let memory = &executor.session().memory;
+        let pinned_count = memory
+            .get_messages()
+            .iter()
+            .filter(|message| message.content.starts_with("[TOPIC_AGENTS_MD]\n"))
+            .count();
+
+        assert!(memory.has_topic_agents_md());
+        assert_eq!(pinned_count, 1);
+
+        remove_sessions_with_compat(keys).await;
+    }
+
+    #[tokio::test]
+    async fn restored_flow_does_not_duplicate_topic_agents_md() {
+        let bot = Bot::new("token");
+        let chat_id = ChatId(-100_123);
+        let thread_id = general_forum_topic_id();
+        let mut flow_memory = AgentMemory::new(10_000);
+        flow_memory.add_message(
+            oxide_agent_core::agent::memory::AgentMessage::topic_agents_md(
+                "# Topic AGENTS\nUse deploy checklist.",
+            ),
+        );
+        let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage {
+            flow_memory: Some(flow_memory),
+            agent_profile: None,
+            topic_context: None,
+            topic_agents_md: Some("# Topic AGENTS\nUse deploy checklist.".to_string()),
+            fail_flow_memory_lookup: false,
+            cleared_flows: Arc::default(),
+        });
+        let settings = test_settings(None);
+        let llm = test_llm(&settings);
+        let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-existing");
+
+        remove_sessions_with_compat(keys).await;
+
+        let session_id = ensure_session_exists(EnsureSessionContext {
+            session_keys: keys,
+            context_key: "topic-a".to_string(),
+            agent_flow_id: "flow-existing".to_string(),
+            agent_flow_created: false,
+            sandbox_scope: test_sandbox_scope(77, "topic-a"),
+            user_id: 77,
+            bot: &bot,
+            transport_ctx: SessionTransportContext {
+                manager_default_chat_id: Some(chat_id),
+                thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
+            },
+            llm: &llm,
+            storage: &storage,
+            settings: &settings,
+        })
+        .await;
+
+        let executor = SESSION_REGISTRY
+            .get(&session_id)
+            .await
+            .expect("session must exist");
+        let executor = executor.read().await;
+        let pinned_count = executor
+            .session()
+            .memory
+            .get_messages()
+            .iter()
+            .filter(|message| message.content.starts_with("[TOPIC_AGENTS_MD]\n"))
+            .count();
+
+        assert_eq!(pinned_count, 1);
 
         remove_sessions_with_compat(keys).await;
     }
@@ -2245,6 +2390,7 @@ async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
 
     let mut session = AgentSession::new_with_sandbox_scope(session_id, ctx.sandbox_scope.clone());
     load_agent_memory_into_session(&ctx, &mut session).await;
+    inject_topic_agents_md_for_flow(&ctx, &mut session).await;
 
     let mut executor = AgentExecutor::new(ctx.llm.clone(), session, ctx.settings.agent.clone());
     if manager_enabled {
@@ -2480,6 +2626,66 @@ async fn load_agent_memory_into_session(
         info!(
             user_id = ctx.user_id,
             "No saved agent memory found, starting fresh"
+        );
+    }
+}
+
+async fn inject_topic_agents_md_for_flow(
+    ctx: &EnsureSessionContext<'_>,
+    session: &mut AgentSession,
+) {
+    if session.memory.has_topic_agents_md() {
+        return;
+    }
+
+    if !ctx.agent_flow_created && !session.memory.get_messages().is_empty() {
+        return;
+    }
+
+    let topic_agents_md = match ctx
+        .storage
+        .get_topic_agents_md(ctx.user_id, ctx.context_key.clone())
+        .await
+    {
+        Ok(record) => record.map(|record| record.agents_md),
+        Err(error) => {
+            warn!(
+                error = %error,
+                user_id = ctx.user_id,
+                topic_id = %ctx.context_key,
+                "Failed to load topic AGENTS.md for flow bootstrap"
+            );
+            None
+        }
+    };
+
+    let Some(topic_agents_md) = topic_agents_md.map(|content| content.trim().to_string()) else {
+        return;
+    };
+    if topic_agents_md.is_empty() {
+        return;
+    }
+
+    session.memory.add_message(
+        oxide_agent_core::agent::memory::AgentMessage::topic_agents_md(&topic_agents_md),
+    );
+
+    if let Err(error) = ctx
+        .storage
+        .save_agent_memory_for_flow(
+            ctx.user_id,
+            ctx.context_key.clone(),
+            ctx.agent_flow_id.clone(),
+            &session.memory,
+        )
+        .await
+    {
+        warn!(
+            error = %error,
+            user_id = ctx.user_id,
+            topic_id = %ctx.context_key,
+            flow_id = %ctx.agent_flow_id,
+            "Failed to persist pinned topic AGENTS.md after bootstrap"
         );
     }
 }

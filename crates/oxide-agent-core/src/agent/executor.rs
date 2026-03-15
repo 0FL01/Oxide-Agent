@@ -140,23 +140,7 @@ impl AgentExecutor {
             Arc::clone(&hook_policy_state),
         );
 
-        let skill_registry = match SkillRegistry::from_env(llm_client.clone()) {
-            Ok(Some(registry)) => {
-                info!(
-                    skills_dir = %registry.skills_dir().display(),
-                    "Skills system active"
-                );
-                Some(registry)
-            }
-            Ok(None) => {
-                info!("Skills system inactive, will use AGENT.md or fallback prompt");
-                None
-            }
-            Err(err) => {
-                warn!(error = %err, "Failed to initialize skills registry, falling back to AGENT.md");
-                None
-            }
-        };
+        let skill_registry = None;
 
         Self {
             runner,
