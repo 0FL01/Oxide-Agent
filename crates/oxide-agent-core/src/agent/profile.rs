@@ -92,6 +92,19 @@ impl ToolAccessPolicy {
             .extend(blocked_tools.into_iter().map(Into::into));
         self
     }
+
+    /// Merge additional tools into the allowlist when one is configured.
+    #[must_use]
+    pub fn with_additional_allowed_tools<I, S>(mut self, allowed_tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        if let Some(existing_allowed_tools) = self.allowed_tools.as_mut() {
+            existing_allowed_tools.extend(allowed_tools.into_iter().map(Into::into));
+        }
+        self
+    }
 }
 
 /// Hook access policy derived from an agent profile.

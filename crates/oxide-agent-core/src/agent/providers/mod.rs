@@ -21,9 +21,9 @@ pub mod crawl4ai;
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
 pub use manager_control_plane::{
-    ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
-    ForumTopicEditResult, ForumTopicThreadRequest, ManagerControlPlaneProvider,
-    ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
+    manager_control_plane_tool_names, ForumTopicActionResult, ForumTopicCreateRequest,
+    ForumTopicCreateResult, ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
+    ManagerControlPlaneProvider, ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
 pub use sandbox::SandboxProvider;
 pub use ssh_mcp::{

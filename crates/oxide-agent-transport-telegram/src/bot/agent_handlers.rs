@@ -41,7 +41,7 @@ use oxide_agent_core::agent::{
     progress::{AgentEvent, ProgressState},
     providers::{
         inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
-        inspect_topic_infra_config,
+        inspect_topic_infra_config, manager_control_plane_tool_names,
     },
     AgentExecutionProfile, AgentSession, SessionId,
 };
@@ -2328,6 +2328,34 @@ mod tests {
         assert!(!profile.tool_policy().allows("ytdlp_get_video_metadata"));
         assert!(!profile.tool_policy().allows("ytdlp_download_video"));
     }
+
+    #[tokio::test]
+    async fn resolve_execution_profile_keeps_manager_tools_available_with_profile_allowlist() {
+        let storage: Arc<dyn StorageProvider> =
+            Arc::new(NoopStorage::with_agent_profile_and_topic_context(
+                serde_json::json!({
+                    "systemPrompt": "act as control plane agent",
+                    "allowedTools": ["execute_command"],
+                }),
+                "manager topic context",
+            ));
+        let route = crate::bot::topic_route::TopicRouteDecision {
+            enabled: true,
+            require_mention: false,
+            mention_satisfied: true,
+            system_prompt_override: None,
+            agent_id: Some("control-plane".to_string()),
+            dynamic_binding_topic_id: None,
+        };
+
+        let profile = resolve_execution_profile(&storage, 77, "manager-topic", &route, true).await;
+
+        assert!(profile.tool_policy().allows("execute_command"));
+        assert!(profile.tool_policy().allows("topic_agents_md_upsert"));
+        assert!(profile.tool_policy().allows("topic_agents_md_get"));
+        assert!(profile.tool_policy().allows("forum_topic_list"));
+        assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
+    }
 }
 
 async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
@@ -2466,6 +2494,7 @@ async fn resolve_execution_profile(
     if manager_enabled {
         parsed_profile.tool_policy = parsed_profile
             .tool_policy
+            .with_additional_allowed_tools(manager_control_plane_tool_names())
             .with_additional_blocked_tools(manager_default_blocked_tools());
     }
 
