@@ -29,7 +29,7 @@ crates/
 │   │   │   ├── runner/              # Цикл исполнения
 │   │   │   ├── hooks/               # Hook system (9 hooks)
 │   │   │   ├── loop_detection/      # Детектор зацикливания
-│   │   │   ├── providers/           # Tool providers (sandbox, todos, manager, search)
+│   │   │   ├── providers/           # Tool providers (sandbox, todos, manager, search, ssh_mcp)
 │   │   │   ├── skills/              # Реестр и поиск навыков (embeddings)
 │   │   │   └── recovery.rs          # Восстановление XML/JSON
 │   │   ├── llm/                     # Интеграции с AI
@@ -81,7 +81,7 @@ sandbox/
 ```
 
 ### Workspace crates
-- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов и context-scoped storage API (save/load/clear для контекстов), embeddings support, и полный hook system.
+- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов и context-scoped storage API, embeddings support, hook system, `AgentExecutionProfile` с `ToolAccessPolicy`, `TopicContextRecord`, `TopicInfraConfigRecord`, SSH MCP provider с approval flow.
 - `oxide-agent-runtime`: оркестрация сессий, прогресс-рендеринг, session registry с thread-aware session keys.
 - `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, resilient messaging, progress rendering, unauthorized access protection, телеметрия доставки. Включает `context.rs` для context-scoped state management с legacy fallback для DM-чатов и views module для UI компонентов.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
@@ -165,6 +165,23 @@ Topic-scoped agent flows with persistent memory isolation within forum topics.
 
 **Delegation**: `forum_topic_list` tool is blocked for sub-agents.
 
+## 🎭 Agent Profiles & Topic Context
+
+Per-topic agent configuration with tool access policies and prompt context layering.
+
+**Components**: `AgentProfileRecord`, `ParsedAgentProfile`, `AgentExecutionProfile`, `TopicContextRecord`, `ToolAccessPolicy`, `ToolAccessPolicyHook`.
+
+**Profile Features**:
+- `prompt_instructions`: Role-specific system prompt additions
+- `tool_policy`: Allowlist/blocklist tool access control
+- Storage: User-scoped records keyed by `user_id` + `agent_id`
+
+**Topic Context**: Free-form prompt instructions persisted per topic, merged with profile prompts during executor initialization.
+
+**Manager Tools**: `agent_profile_upsert/get/delete/rollback`, `topic_context_upsert/get/delete/rollback` with audit trail.
+
+---
+
 ## 🎭 Narrator System
 
 Separate LLM model for summarizing agent thoughts and generating narrative summaries.
@@ -190,30 +207,30 @@ UI component system for Agent Mode with localization support and transport-agnos
 **Features**: 
 - Text messages for all agent states (welcome, processing, errors, confirmations)
 - Keyboard markups (resize keyboards for DM, inline keyboards for forum topics)
-- 16 callback constants for user actions (cancel, clear memory, recreate container, attach/detach, exit)
+- 18 callback constants for user actions (cancel, clear memory, recreate container, attach/detach, exit, ssh approve/reject)
 - Loop detection action keyboards
 
 ## 🔧 Hook System
 
 Centralized hook system for agent behavior modification.
 
-**Available Hooks**: `CompletionCheckHook`, `DelegationGuardHook`, `SearchBudgetHook`, `SubAgentSafetyHook`, `TimeoutReportHook`, `WorkloadDistributorHook`.
+**Available Hooks**: `CompletionCheckHook`, `DelegationGuardHook`, `SearchBudgetHook`, `SubAgentSafetyHook`, `TimeoutReportHook`, `ToolAccessPolicyHook`, `WorkloadDistributorHook`.
 
 **Management**: `HookRegistry`, `hooks.rs` (runner), `types.rs`. See `docs/hooks/` for comprehensive documentation.
 
 ## 🧩 Manager Control Plane
 
-CRUD operations for forum topics and manager tasks with full audit trail.
+CRUD operations for forum topics, agent profiles, topic contexts, infrastructure configs, and bindings with full audit trail.
 
-**Components**: `ManagerControlPlaneProvider`, `manager_control_plane.rs` (104KB), `AuditEventRecord`, `TopicBindingRecord`, `TopicBindingKind`.
+**Components**: `ManagerControlPlaneProvider`, `manager_control_plane.rs`, `AuditEventRecord`, `TopicBindingRecord`, `TopicBindingKind`.
 
-**Features**: Forum topic creation/deletion, topic binding management, task assignment and tracking, complete audit trail, RBAC via `manager_allowed_users`.
+**Features**: Forum topic creation/deletion, topic binding management, agent profile CRUD, topic context CRUD, infrastructure config CRUD, task assignment and tracking, complete audit trail, RBAC via `manager_allowed_users`.
 
 **Forum Topic Catalog**: `forum_topic_list` tool for memory-independent topic discovery. Catalog entries persist topic metadata (name, icon, closed status) in S3 with automatic cleanup on topic deletion.
 
-**Cleanup on Delete**: Automatic cleanup of agent memory, chat history, Docker containers, and topic bindings when forum topic is deleted.
+**Cleanup on Delete**: Automatic cleanup of agent memory, chat history, Docker containers, topic bindings, topic contexts, and infrastructure configs when forum topic is deleted.
 
-**Storage**: User-scoped storage records, audit events logged to R2/S3, thread-aware isolation.
+**Storage**: User-scoped storage records, audit events logged to R2/S3, thread-aware isolation, private secret namespace for infrastructure credentials.
 
 ## 🎯 Skills System
 
@@ -225,10 +242,39 @@ Embedding-based skill matching and retrieval.
 
 **Configuration**: `embedding_provider`, `embedding_model_id`, auto-probing for embedding dimensions.
 
+## 🔐 Topic Infrastructure Layer
+
+Topic-scoped SSH infrastructure configuration with secure secret resolution and approval gating.
+
+**Components**: `TopicInfraConfigRecord`, `TopicInfraAuthMode`, `TopicInfraToolMode`, `SshMcpProvider`, secret resolution (`env:KEY` or `storage:PATH` refs).
+
+**Features**:
+- SSH target configuration: host, port, remote_user, auth_mode (None/Password/PrivateKey)
+- Allowed tool modes: exec, sudo_exec, read_file, apply_file_edit, check_process
+- Secret refs resolved from private storage namespace or environment (never in prompts/memory)
+- Manager tools: `topic_infra_upsert/get/delete/rollback` with audit trail
+- Automatic cleanup on forum topic deletion
+
+---
+
+## ✅ Approval Flow System
+
+Short-lived approval gating for sensitive SSH operations with transport integration.
+
+**Components**: `SshApprovalRegistry`, `SshApprovalRequestView`, `SshApprovalGrant`, `ApprovalState`.
+
+**Flow**: Tool request → Approval registry → Transport UI (approve/reject) → System message injection → Replay with token → Execute.
+
+**Approval Triggers**: Modes in `approval_required_modes`, dangerous commands (rm -rf, shutdown, terraform), sensitive paths (/etc/, /root/, .ssh).
+
+**Features**: 600s TTL, topic-scoped, single-use tokens, automatic task retry after approval.
+
+---
+
 ## 🔌 Provider Ecosystem
 
 ### Tool Providers
-`sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane.rs`, `ytdlp.rs`.
+`sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane.rs`, `ssh_mcp.rs`, `ytdlp.rs`.
 
 ### LLM Providers
 `gemini.rs`, `groq.rs`, `mistral.rs`, `openrouter.rs`, `zai.rs`.
