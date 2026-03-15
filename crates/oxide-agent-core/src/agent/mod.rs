@@ -60,7 +60,8 @@ pub use identity::SessionId;
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::AgentMemory;
 pub use profile::{
-    parse_agent_profile, AgentExecutionProfile, ParsedAgentProfile, ToolAccessPolicy,
+    manager_default_blocked_tools, parse_agent_profile, topic_agent_default_blocked_tools,
+    AgentExecutionProfile, ParsedAgentProfile, ToolAccessPolicy,
 };
 pub use progress::{AgentEvent, ProgressState};
 pub use provider::ToolProvider;

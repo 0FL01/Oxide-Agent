@@ -98,6 +98,10 @@ impl WorkloadDistributorHook {
 
         sentence_hits >= 3
     }
+
+    fn can_delegate(&self, context: &HookContext) -> bool {
+        context.has_tool("delegate_to_sub_agent")
+    }
 }
 
 impl Default for WorkloadDistributorHook {
@@ -115,7 +119,7 @@ impl Hook for WorkloadDistributorHook {
         match event {
             // 1. Context Injection for Complex Prompts
             HookEvent::BeforeAgent { prompt } => {
-                if self.is_complex_prompt(prompt) {
+                if self.is_complex_prompt(prompt) && self.can_delegate(context) {
                     return HookResult::InjectContext(
                         "[SYSTEM NOTICE: High Complexity Detected]\n\
                         You must SPLIT your workflow to handle this request efficiently:\n\
@@ -138,6 +142,10 @@ impl Hook for WorkloadDistributorHook {
             } => {
                 // Sub-agents are allowed to run everything
                 if context.is_sub_agent {
+                    return HookResult::Continue;
+                }
+
+                if !self.can_delegate(context) {
                     return HookResult::Continue;
                 }
 
@@ -180,5 +188,85 @@ impl Hook for WorkloadDistributorHook {
         }
 
         HookResult::Continue
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkloadDistributorHook;
+    use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
+    use crate::agent::memory::AgentMemory;
+    use crate::agent::providers::TodoList;
+    use crate::llm::ToolDefinition;
+    use serde_json::json;
+
+    fn hook_context<'a>(
+        memory: &'a AgentMemory,
+        todos: &'a TodoList,
+        tools: &'a [ToolDefinition],
+    ) -> HookContext<'a> {
+        HookContext::new(todos, memory, 0, 0, 4).with_available_tools(tools)
+    }
+
+    fn tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: name.to_string(),
+            parameters: json!({ "type": "object" }),
+        }
+    }
+
+    #[test]
+    fn does_not_inject_delegation_pressure_without_delegate_tool() {
+        let hook = WorkloadDistributorHook::new();
+        let memory = AgentMemory::new(1024);
+        let todos = TodoList::new();
+        let tools = [tool("execute_command")];
+
+        let result = hook.handle(
+            &HookEvent::BeforeAgent {
+                prompt: "Исследуй кодовую базу, сравни варианты и подготовь отчет по архитектуре."
+                    .to_string(),
+            },
+            &hook_context(&memory, &todos, &tools),
+        );
+
+        assert!(matches!(result, HookResult::Continue));
+    }
+
+    #[test]
+    fn does_not_block_heavy_command_when_delegate_tool_is_unavailable() {
+        let hook = WorkloadDistributorHook::new();
+        let memory = AgentMemory::new(1024);
+        let todos = TodoList::new();
+        let tools = [tool("execute_command")];
+
+        let result = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "execute_command".to_string(),
+                arguments: r#"{"command":"git clone https://example.com/repo.git"}"#.to_string(),
+            },
+            &hook_context(&memory, &todos, &tools),
+        );
+
+        assert!(matches!(result, HookResult::Continue));
+    }
+
+    #[test]
+    fn still_injects_delegation_pressure_when_delegate_tool_is_available() {
+        let hook = WorkloadDistributorHook::new();
+        let memory = AgentMemory::new(1024);
+        let todos = TodoList::new();
+        let tools = [tool("execute_command"), tool("delegate_to_sub_agent")];
+
+        let result = hook.handle(
+            &HookEvent::BeforeAgent {
+                prompt: "Investigate the repository, compare approaches, and prepare a report."
+                    .to_string(),
+            },
+            &hook_context(&memory, &todos, &tools),
+        );
+
+        assert!(matches!(result, HookResult::InjectContext(_)));
     }
 }

@@ -4,6 +4,23 @@ use crate::llm::ToolDefinition;
 use serde_json::Value;
 use std::collections::HashSet;
 
+const TOPIC_AGENT_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
+    "ytdlp_get_video_metadata",
+    "ytdlp_download_transcript",
+    "ytdlp_search_videos",
+    "ytdlp_download_video",
+    "ytdlp_download_audio",
+];
+
+const MANAGER_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
+    "delegate_to_sub_agent",
+    "ytdlp_get_video_metadata",
+    "ytdlp_download_transcript",
+    "ytdlp_search_videos",
+    "ytdlp_download_video",
+    "ytdlp_download_audio",
+];
+
 /// Tool access policy derived from an agent profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolAccessPolicy {
@@ -54,6 +71,36 @@ impl ToolAccessPolicy {
             .filter(|tool| self.allows(&tool.name))
             .collect()
     }
+
+    /// Merge an additional blocklist into the policy.
+    #[must_use]
+    pub fn with_additional_blocked_tools<I, S>(mut self, blocked_tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.blocked_tools
+            .extend(blocked_tools.into_iter().map(Into::into));
+        self
+    }
+}
+
+/// Default blocked tools for manager-mode agent sessions.
+#[must_use]
+pub fn manager_default_blocked_tools() -> Vec<String> {
+    MANAGER_DEFAULT_BLOCKED_TOOLS
+        .iter()
+        .map(|tool| (*tool).to_string())
+        .collect()
+}
+
+/// Default blocked tools for newly provisioned topic agents.
+#[must_use]
+pub fn topic_agent_default_blocked_tools() -> Vec<String> {
+    TOPIC_AGENT_DEFAULT_BLOCKED_TOOLS
+        .iter()
+        .map(|tool| (*tool).to_string())
+        .collect()
 }
 
 /// Parsed agent profile settings used at execution time.
@@ -150,7 +197,10 @@ fn parse_tool_name_set(value: &Value, camel_key: &str, snake_key: &str) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_agent_profile, AgentExecutionProfile, ToolAccessPolicy};
+    use super::{
+        manager_default_blocked_tools, parse_agent_profile, topic_agent_default_blocked_tools,
+        AgentExecutionProfile, ToolAccessPolicy,
+    };
     use crate::llm::ToolDefinition;
     use serde_json::json;
     use std::collections::HashSet;
@@ -207,5 +257,28 @@ mod tests {
 
         assert_eq!(profile.agent_id(), Some("infra-agent"));
         assert_eq!(profile.prompt_instructions(), Some("infra only"));
+    }
+
+    #[test]
+    fn additional_blocked_tools_override_existing_policy() {
+        let policy = ToolAccessPolicy::new(
+            Some(HashSet::from([
+                "delegate_to_sub_agent".to_string(),
+                "execute_command".to_string(),
+            ])),
+            HashSet::new(),
+        )
+        .with_additional_blocked_tools(manager_default_blocked_tools());
+
+        assert!(policy.allows("execute_command"));
+        assert!(!policy.allows("delegate_to_sub_agent"));
+    }
+
+    #[test]
+    fn topic_agent_default_blocklist_contains_ytdlp_tools_only() {
+        let blocked = topic_agent_default_blocked_tools();
+
+        assert!(blocked.iter().all(|tool| tool.starts_with("ytdlp_")));
+        assert!(!blocked.iter().any(|tool| tool == "delegate_to_sub_agent"));
     }
 }
