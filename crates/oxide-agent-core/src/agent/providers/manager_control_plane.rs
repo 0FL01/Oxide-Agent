@@ -3,6 +3,7 @@
 //! Exposes user-scoped CRUD tools for topic bindings, topic contexts, and agent profiles.
 
 use super::ssh_mcp::{inspect_topic_infra_config, probe_secret_ref, SecretProbeKind};
+use crate::agent::profile::{parse_agent_profile, ToolAccessPolicy};
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
@@ -17,6 +18,7 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 const TOOL_TOPIC_BINDING_SET: &str = "topic_binding_set";
@@ -37,6 +39,9 @@ const TOOL_AGENT_PROFILE_UPSERT: &str = "agent_profile_upsert";
 const TOOL_AGENT_PROFILE_GET: &str = "agent_profile_get";
 const TOOL_AGENT_PROFILE_DELETE: &str = "agent_profile_delete";
 const TOOL_AGENT_PROFILE_ROLLBACK: &str = "agent_profile_rollback";
+const TOOL_TOPIC_AGENT_TOOLS_GET: &str = "topic_agent_tools_get";
+const TOOL_TOPIC_AGENT_TOOLS_ENABLE: &str = "topic_agent_tools_enable";
+const TOOL_TOPIC_AGENT_TOOLS_DISABLE: &str = "topic_agent_tools_disable";
 const TOOL_FORUM_TOPIC_CREATE: &str = "forum_topic_create";
 const TOOL_FORUM_TOPIC_EDIT: &str = "forum_topic_edit";
 const TOOL_FORUM_TOPIC_CLOSE: &str = "forum_topic_close";
@@ -83,6 +88,35 @@ fn default_ssh_agent_allowed_tools() -> Vec<String> {
         "ssh_check_process".to_string(),
     ]
 }
+
+const TOPIC_AGENT_TODOS_TOOLS: &[&str] = &["write_todos"];
+const TOPIC_AGENT_SANDBOX_TOOLS: &[&str] = &[
+    "execute_command",
+    "write_file",
+    "read_file",
+    "send_file_to_user",
+    "list_files",
+];
+const TOPIC_AGENT_FILEHOSTER_TOOLS: &[&str] = &["upload_file"];
+const TOPIC_AGENT_YTDLP_TOOLS: &[&str] = &[
+    "ytdlp_get_video_metadata",
+    "ytdlp_download_transcript",
+    "ytdlp_search_videos",
+    "ytdlp_download_video",
+    "ytdlp_download_audio",
+];
+const TOPIC_AGENT_DELEGATION_TOOLS: &[&str] = &["delegate_to_sub_agent"];
+#[cfg(feature = "tavily")]
+const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
+#[cfg(feature = "crawl4ai")]
+const TOPIC_AGENT_CRAWL4AI_TOOLS: &[&str] = &["deep_crawl", "web_markdown", "web_pdf"];
+const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
+    "ssh_exec",
+    "ssh_sudo_exec",
+    "ssh_read_file",
+    "ssh_apply_file_edit",
+    "ssh_check_process",
+];
 
 /// Transport-agnostic request for forum topic creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -449,6 +483,68 @@ struct AgentProfileRollbackArgs {
     agent_id: String,
     #[serde(default)]
     dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicAgentToolsGetArgs {
+    topic_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicAgentToolsMutationArgs {
+    topic_id: String,
+    tools: Vec<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TopicAgentToolGroup {
+    provider: &'static str,
+    aliases: &'static [&'static str],
+    tools: &'static [&'static str],
+}
+
+#[derive(Clone, Debug)]
+struct TopicAgentToolCatalog {
+    groups: Vec<TopicAgentToolGroup>,
+    tool_names: BTreeSet<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct TopicAgentToolGroupStatus {
+    provider: String,
+    available_tools: Vec<String>,
+    active_tools: Vec<String>,
+    blocked_tools: Vec<String>,
+    enabled: bool,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct TopicAgentToolSnapshot {
+    policy_mode: String,
+    available_tools: Vec<String>,
+    active_tools: Vec<String>,
+    blocked_tools: Vec<String>,
+    allowed_tools_raw: Option<Vec<String>>,
+    unknown_profile_tools: Vec<String>,
+    provider_statuses: Vec<TopicAgentToolGroupStatus>,
+}
+
+#[derive(Debug)]
+struct TopicAgentToolMutation {
+    profile: serde_json::Value,
+    changed: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TopicAgentToolMutationContext {
+    topic_id: String,
+    agent_id: String,
+    requested_tools: Vec<String>,
+    previous: Option<AgentProfileRecord>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1113,6 +1209,56 @@ impl ManagerControlPlaneProvider {
                     "required": ["agent_id"]
                 }),
             },
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENT_TOOLS_GET.to_string(),
+                description: "Inspect the effective tool set for the agent bound to a topic"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier or unique forum topic alias" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENT_TOOLS_ENABLE.to_string(),
+                description:
+                    "Enable one or more tools or provider groups for the agent bound to a topic"
+                        .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier or unique forum topic alias" },
+                        "tools": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search"
+                        },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id", "tools"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_AGENT_TOOLS_DISABLE.to_string(),
+                description:
+                    "Disable one or more tools or provider groups for the agent bound to a topic"
+                        .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Stable topic identifier or unique forum topic alias" },
+                        "tools": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search"
+                        },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
+                    },
+                    "required": ["topic_id", "tools"]
+                }),
+            },
         ]
     }
 
@@ -1427,6 +1573,484 @@ impl ManagerControlPlaneProvider {
             );
         }
         Ok(profile)
+    }
+
+    fn configured_search_tool_group() -> Option<TopicAgentToolGroup> {
+        match crate::config::get_search_provider().as_str() {
+            "tavily" => {
+                #[cfg(feature = "tavily")]
+                {
+                    std::env::var("TAVILY_API_KEY")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|_| TopicAgentToolGroup {
+                            provider: "search",
+                            aliases: &["search", "tavily"],
+                            tools: TOPIC_AGENT_TAVILY_TOOLS,
+                        })
+                }
+                #[cfg(not(feature = "tavily"))]
+                {
+                    None
+                }
+            }
+            "crawl4ai" => {
+                #[cfg(feature = "crawl4ai")]
+                {
+                    std::env::var("CRAWL4AI_URL")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|_| TopicAgentToolGroup {
+                            provider: "search",
+                            aliases: &["search", "crawl4ai"],
+                            tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
+                        })
+                }
+                #[cfg(not(feature = "crawl4ai"))]
+                {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    async fn topic_agent_tool_catalog(&self, topic_id: &str) -> Result<TopicAgentToolCatalog> {
+        let mut groups = vec![
+            TopicAgentToolGroup {
+                provider: "todos",
+                aliases: &["todos"],
+                tools: TOPIC_AGENT_TODOS_TOOLS,
+            },
+            TopicAgentToolGroup {
+                provider: "sandbox",
+                aliases: &["sandbox"],
+                tools: TOPIC_AGENT_SANDBOX_TOOLS,
+            },
+            TopicAgentToolGroup {
+                provider: "filehoster",
+                aliases: &["filehoster", "files"],
+                tools: TOPIC_AGENT_FILEHOSTER_TOOLS,
+            },
+            TopicAgentToolGroup {
+                provider: "ytdlp",
+                aliases: &["ytdlp", "youtube"],
+                tools: TOPIC_AGENT_YTDLP_TOOLS,
+            },
+            TopicAgentToolGroup {
+                provider: "delegation",
+                aliases: &["delegation", "delegate"],
+                tools: TOPIC_AGENT_DELEGATION_TOOLS,
+            },
+        ];
+
+        if let Some(search_group) = Self::configured_search_tool_group() {
+            groups.push(search_group);
+        }
+
+        let topic_infra = self
+            .storage
+            .get_topic_infra_config(self.user_id, topic_id.to_string())
+            .await
+            .map_err(|err| anyhow!("failed to get topic infra config: {err}"))?;
+        if topic_infra.is_some() {
+            groups.push(TopicAgentToolGroup {
+                provider: "ssh",
+                aliases: &["ssh"],
+                tools: TOPIC_AGENT_SSH_TOOLS,
+            });
+        }
+
+        let mut tool_names = BTreeSet::new();
+        for group in &groups {
+            for tool in group.tools {
+                tool_names.insert((*tool).to_string());
+            }
+        }
+
+        Ok(TopicAgentToolCatalog { groups, tool_names })
+    }
+
+    fn parse_profile_tool_set(
+        profile: &serde_json::Value,
+        camel_key: &str,
+        snake_key: &str,
+    ) -> Option<BTreeSet<String>> {
+        let array = profile
+            .get(camel_key)
+            .and_then(serde_json::Value::as_array)
+            .or_else(|| profile.get(snake_key).and_then(serde_json::Value::as_array))?;
+
+        Some(
+            array
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect(),
+        )
+    }
+
+    fn write_profile_tool_set(
+        profile: &mut serde_json::Value,
+        camel_key: &str,
+        snake_key: &str,
+        values: Option<&BTreeSet<String>>,
+        remove_when_empty: bool,
+    ) -> Result<()> {
+        let object = profile
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("profile must be a JSON object"))?;
+        object.remove(snake_key);
+
+        match values {
+            Some(values) if !(remove_when_empty && values.is_empty()) => {
+                object.insert(
+                    camel_key.to_string(),
+                    serde_json::Value::Array(
+                        values
+                            .iter()
+                            .cloned()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            _ => {
+                object.remove(camel_key);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn profile_tool_snapshot(
+        profile: Option<&serde_json::Value>,
+    ) -> (Option<Vec<String>>, Vec<String>, ToolAccessPolicy) {
+        let Some(profile) = profile else {
+            return (None, Vec::new(), ToolAccessPolicy::default());
+        };
+
+        let allowed = Self::parse_profile_tool_set(profile, "allowedTools", "allowed_tools")
+            .map(|set| set.into_iter().collect::<Vec<_>>());
+        let blocked = Self::parse_profile_tool_set(profile, "blockedTools", "blocked_tools")
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let parsed = parse_agent_profile(profile);
+
+        (allowed, blocked, parsed.tool_policy)
+    }
+
+    fn topic_agent_tool_snapshot(
+        catalog: &TopicAgentToolCatalog,
+        profile: Option<&serde_json::Value>,
+    ) -> TopicAgentToolSnapshot {
+        let (allowed_tools_raw, blocked_tools, policy) = Self::profile_tool_snapshot(profile);
+        let available_tools = catalog.tool_names.iter().cloned().collect::<Vec<_>>();
+        let active_tools = available_tools
+            .iter()
+            .filter(|tool| policy.allows(tool))
+            .cloned()
+            .collect::<Vec<_>>();
+        let known_tools = &catalog.tool_names;
+        let unknown_profile_tools = allowed_tools_raw
+            .iter()
+            .flatten()
+            .chain(blocked_tools.iter())
+            .filter(|tool| !known_tools.contains(*tool))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let blocked_lookup = blocked_tools.iter().cloned().collect::<HashSet<_>>();
+        let provider_statuses = catalog
+            .groups
+            .iter()
+            .map(|group| {
+                let available_tools = group
+                    .tools
+                    .iter()
+                    .map(|tool| (*tool).to_string())
+                    .collect::<Vec<_>>();
+                let active_tools = available_tools
+                    .iter()
+                    .filter(|tool| policy.allows(tool))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let blocked_tools = available_tools
+                    .iter()
+                    .filter(|tool| blocked_lookup.contains(*tool))
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                TopicAgentToolGroupStatus {
+                    provider: group.provider.to_string(),
+                    enabled: !active_tools.is_empty(),
+                    available_tools,
+                    active_tools,
+                    blocked_tools,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        TopicAgentToolSnapshot {
+            policy_mode: if allowed_tools_raw.is_some() {
+                "allowlist".to_string()
+            } else {
+                "all_except_blocked".to_string()
+            },
+            available_tools,
+            active_tools,
+            blocked_tools,
+            allowed_tools_raw,
+            unknown_profile_tools,
+            provider_statuses,
+        }
+    }
+
+    fn expand_topic_agent_tools(
+        catalog: &TopicAgentToolCatalog,
+        requested_tools: Vec<String>,
+    ) -> Result<Vec<String>> {
+        let mut requested = BTreeSet::new();
+        for raw in requested_tools {
+            let token = raw.trim().to_ascii_lowercase();
+            if token.is_empty() {
+                continue;
+            }
+
+            if catalog.tool_names.contains(&token) {
+                requested.insert(token);
+                continue;
+            }
+
+            let Some(group) = catalog
+                .groups
+                .iter()
+                .find(|group| group.provider == token || group.aliases.contains(&token.as_str()))
+            else {
+                bail!("unknown tool or provider alias '{token}' for the topic agent");
+            };
+
+            for tool in group.tools {
+                requested.insert((*tool).to_string());
+            }
+        }
+
+        if requested.is_empty() {
+            bail!("tools must contain at least one non-empty tool name or provider alias");
+        }
+
+        Ok(requested.into_iter().collect())
+    }
+
+    fn enable_topic_agent_tools(
+        profile: Option<&AgentProfileRecord>,
+        tools: &[String],
+    ) -> Result<TopicAgentToolMutation> {
+        let mut next_profile = match profile {
+            Some(profile) => Self::validate_profile_object(profile.profile.clone())?,
+            None => json!({}),
+        };
+        let mut allowed =
+            Self::parse_profile_tool_set(&next_profile, "allowedTools", "allowed_tools");
+        let mut blocked =
+            Self::parse_profile_tool_set(&next_profile, "blockedTools", "blocked_tools")
+                .unwrap_or_default();
+
+        for tool in tools {
+            blocked.remove(tool);
+            if let Some(allowed) = allowed.as_mut() {
+                allowed.insert(tool.clone());
+            }
+        }
+
+        Self::write_profile_tool_set(
+            &mut next_profile,
+            "allowedTools",
+            "allowed_tools",
+            allowed.as_ref(),
+            false,
+        )?;
+        Self::write_profile_tool_set(
+            &mut next_profile,
+            "blockedTools",
+            "blocked_tools",
+            Some(&blocked),
+            true,
+        )?;
+
+        let changed = match profile {
+            Some(profile) => profile.profile != next_profile,
+            None => next_profile != json!({}),
+        };
+        Ok(TopicAgentToolMutation {
+            changed,
+            profile: next_profile,
+        })
+    }
+
+    fn disable_topic_agent_tools(
+        profile: Option<&AgentProfileRecord>,
+        tools: &[String],
+    ) -> Result<TopicAgentToolMutation> {
+        let mut next_profile = match profile {
+            Some(profile) => Self::validate_profile_object(profile.profile.clone())?,
+            None => json!({}),
+        };
+        let mut allowed =
+            Self::parse_profile_tool_set(&next_profile, "allowedTools", "allowed_tools");
+        let mut blocked =
+            Self::parse_profile_tool_set(&next_profile, "blockedTools", "blocked_tools")
+                .unwrap_or_default();
+
+        for tool in tools {
+            if let Some(allowed) = allowed.as_mut() {
+                allowed.remove(tool);
+            }
+            blocked.insert(tool.clone());
+        }
+
+        Self::write_profile_tool_set(
+            &mut next_profile,
+            "allowedTools",
+            "allowed_tools",
+            allowed.as_ref(),
+            false,
+        )?;
+        Self::write_profile_tool_set(
+            &mut next_profile,
+            "blockedTools",
+            "blocked_tools",
+            Some(&blocked),
+            true,
+        )?;
+
+        let changed = match profile {
+            Some(profile) => profile.profile != next_profile,
+            None => next_profile != json!({}),
+        };
+        Ok(TopicAgentToolMutation {
+            changed,
+            profile: next_profile,
+        })
+    }
+
+    fn topic_agent_tools_operation_name(action: &str) -> Result<&'static str> {
+        match action {
+            TOOL_TOPIC_AGENT_TOOLS_ENABLE => Ok("enable"),
+            TOOL_TOPIC_AGENT_TOOLS_DISABLE => Ok("disable"),
+            _ => bail!("unsupported topic agent tools action: {action}"),
+        }
+    }
+
+    async fn prepare_topic_agent_tool_mutation(
+        &self,
+        raw_topic_id: String,
+        requested_tools: Vec<String>,
+    ) -> Result<(TopicAgentToolMutationContext, TopicAgentToolCatalog)> {
+        let topic_id = self.resolve_mutation_topic_id(raw_topic_id).await?;
+        let binding = self
+            .storage
+            .get_topic_binding(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get topic binding: {err}"))?
+            .ok_or_else(|| anyhow!("topic_id '{topic_id}' is not bound to an agent"))?;
+        let agent_id = binding.agent_id;
+        let catalog = self.topic_agent_tool_catalog(&topic_id).await?;
+        let requested_tools = Self::expand_topic_agent_tools(&catalog, requested_tools)?;
+        let previous = self
+            .storage
+            .get_agent_profile(self.user_id, agent_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get current agent profile: {err}"))?;
+
+        Ok((
+            TopicAgentToolMutationContext {
+                topic_id,
+                agent_id,
+                requested_tools,
+                previous,
+            },
+            catalog,
+        ))
+    }
+
+    async fn append_topic_agent_tools_audit(
+        &self,
+        action: &str,
+        context: &TopicAgentToolMutationContext,
+        changed: bool,
+        outcome: &str,
+        version: Option<u64>,
+    ) -> AuditStatus {
+        self.append_audit_with_status(AppendAuditEventOptions {
+            user_id: self.user_id,
+            topic_id: Some(context.topic_id.clone()),
+            agent_id: Some(context.agent_id.clone()),
+            action: action.to_string(),
+            payload: json!({
+                "topic_id": context.topic_id.clone(),
+                "agent_id": context.agent_id.clone(),
+                "requested": context.requested_tools.clone(),
+                "previous": context.previous.clone(),
+                "changed": changed,
+                "version": version,
+                "outcome": outcome
+            }),
+        })
+        .await
+    }
+
+    fn topic_agent_tools_preview_response(
+        operation: &str,
+        context: TopicAgentToolMutationContext,
+        changed: bool,
+        profile: serde_json::Value,
+        snapshot: TopicAgentToolSnapshot,
+        audit_status: AuditStatus,
+    ) -> Result<String> {
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": operation,
+                    "topic_id": context.topic_id,
+                    "agent_id": context.agent_id,
+                    "requested_tools": context.requested_tools,
+                    "changed": changed,
+                    "profile": profile,
+                    "tools": snapshot
+                },
+                "previous": context.previous
+            }),
+            audit_status,
+        ))
+    }
+
+    fn topic_agent_tools_result_response(
+        updated: bool,
+        context: TopicAgentToolMutationContext,
+        profile: Option<AgentProfileRecord>,
+        snapshot: TopicAgentToolSnapshot,
+        audit_status: AuditStatus,
+    ) -> Result<String> {
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "updated": updated,
+                "topic_id": context.topic_id,
+                "agent_id": context.agent_id,
+                "requested_tools": context.requested_tools,
+                "profile": profile,
+                "tools": snapshot
+            }),
+            audit_status,
+        ))
     }
 
     fn is_canonical_forum_topic_id(value: &str) -> bool {
@@ -1764,7 +2388,13 @@ impl ManagerControlPlaneProvider {
     }
 
     fn is_applied_mutation_event(event: &crate::storage::AuditEventRecord) -> bool {
-        event.payload.get("outcome") != Some(&json!("dry_run"))
+        !matches!(
+            event
+                .payload
+                .get("outcome")
+                .and_then(serde_json::Value::as_str),
+            Some("dry_run" | "noop")
+        )
     }
 
     fn action_matches(action: &str, candidates: &[&str]) -> bool {
@@ -1860,6 +2490,8 @@ impl ManagerControlPlaneProvider {
                     &[
                         TOOL_AGENT_PROFILE_UPSERT,
                         TOOL_AGENT_PROFILE_DELETE,
+                        TOOL_TOPIC_AGENT_TOOLS_ENABLE,
+                        TOOL_TOPIC_AGENT_TOOLS_DISABLE,
                         TOOL_AGENT_PROFILE_ROLLBACK,
                     ],
                 )
@@ -2203,6 +2835,147 @@ impl ManagerControlPlaneProvider {
             "found": record.is_some(),
             "profile": record
         }))
+    }
+
+    async fn execute_topic_agent_tools_get(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentToolsGetArgs = Self::parse_args(arguments, TOOL_TOPIC_AGENT_TOOLS_GET)?;
+        let topic_id = self.resolve_lookup_topic_id(args.topic_id).await?;
+        let catalog = self.topic_agent_tool_catalog(&topic_id).await?;
+        let binding = self
+            .storage
+            .get_topic_binding(self.user_id, topic_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get topic binding: {err}"))?;
+
+        let Some(binding) = binding else {
+            return Self::to_json_string(json!({
+                "ok": true,
+                "found": false,
+                "topic_id": topic_id
+            }));
+        };
+
+        let profile = self
+            .storage
+            .get_agent_profile(self.user_id, binding.agent_id.clone())
+            .await
+            .map_err(|err| anyhow!("failed to get agent profile: {err}"))?;
+        let snapshot = Self::topic_agent_tool_snapshot(
+            &catalog,
+            profile.as_ref().map(|profile| &profile.profile),
+        );
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "found": true,
+            "topic_id": topic_id,
+            "agent_id": binding.agent_id,
+            "profile_found": profile.is_some(),
+            "tools": snapshot
+        }))
+    }
+
+    async fn execute_topic_agent_tools_enable(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentToolsMutationArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_AGENT_TOOLS_ENABLE)?;
+        self.execute_topic_agent_tools_mutation(args, TOOL_TOPIC_AGENT_TOOLS_ENABLE)
+            .await
+    }
+
+    async fn execute_topic_agent_tools_disable(&self, arguments: &str) -> Result<String> {
+        let args: TopicAgentToolsMutationArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_AGENT_TOOLS_DISABLE)?;
+        self.execute_topic_agent_tools_mutation(args, TOOL_TOPIC_AGENT_TOOLS_DISABLE)
+            .await
+    }
+
+    async fn execute_topic_agent_tools_mutation(
+        &self,
+        args: TopicAgentToolsMutationArgs,
+        action: &str,
+    ) -> Result<String> {
+        let operation = Self::topic_agent_tools_operation_name(action)?;
+        let (context, catalog) = self
+            .prepare_topic_agent_tool_mutation(args.topic_id, args.tools)
+            .await?;
+        let mutation = match action {
+            TOOL_TOPIC_AGENT_TOOLS_ENABLE => {
+                Self::enable_topic_agent_tools(context.previous.as_ref(), &context.requested_tools)?
+            }
+            TOOL_TOPIC_AGENT_TOOLS_DISABLE => Self::disable_topic_agent_tools(
+                context.previous.as_ref(),
+                &context.requested_tools,
+            )?,
+            _ => bail!("unsupported topic agent tools action: {action}"),
+        };
+        let snapshot = Self::topic_agent_tool_snapshot(&catalog, Some(&mutation.profile));
+
+        if args.dry_run {
+            let audit_status = self
+                .append_topic_agent_tools_audit(
+                    action,
+                    &context,
+                    mutation.changed,
+                    Self::dry_run_outcome(true),
+                    None,
+                )
+                .await;
+
+            return Self::topic_agent_tools_preview_response(
+                operation,
+                context,
+                mutation.changed,
+                mutation.profile,
+                snapshot,
+                audit_status,
+            );
+        }
+
+        if !mutation.changed {
+            let audit_status = self
+                .append_topic_agent_tools_audit(action, &context, false, "noop", None)
+                .await;
+
+            return Self::topic_agent_tools_result_response(
+                false,
+                context,
+                None,
+                snapshot,
+                audit_status,
+            );
+        }
+
+        let record = self
+            .storage
+            .upsert_agent_profile(UpsertAgentProfileOptions {
+                user_id: self.user_id,
+                agent_id: context.agent_id.clone(),
+                profile: mutation.profile,
+            })
+            .await
+            .map_err(|err| anyhow!("failed to upsert agent profile: {err}"))?;
+        let snapshot = Self::topic_agent_tool_snapshot(&catalog, Some(&record.profile));
+
+        let audit_status = self
+            .append_topic_agent_tools_audit(
+                action,
+                &context,
+                true,
+                Self::dry_run_outcome(false),
+                Some(record.version),
+            )
+            .await;
+
+        Self::topic_agent_tools_result_response(
+            true,
+            TopicAgentToolMutationContext {
+                agent_id: record.agent_id.clone(),
+                ..context
+            },
+            Some(record),
+            snapshot,
+            audit_status,
+        )
     }
 
     async fn execute_agent_profile_delete(&self, arguments: &str) -> Result<String> {
@@ -3411,6 +4184,9 @@ impl ToolProvider for ManagerControlPlaneProvider {
                 | TOOL_AGENT_PROFILE_GET
                 | TOOL_AGENT_PROFILE_DELETE
                 | TOOL_AGENT_PROFILE_ROLLBACK
+                | TOOL_TOPIC_AGENT_TOOLS_GET
+                | TOOL_TOPIC_AGENT_TOOLS_ENABLE
+                | TOOL_TOPIC_AGENT_TOOLS_DISABLE
         );
 
         base_tools
@@ -3456,6 +4232,11 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_AGENT_PROFILE_GET => self.execute_agent_profile_get(arguments).await,
             TOOL_AGENT_PROFILE_DELETE => self.execute_agent_profile_delete(arguments).await,
             TOOL_AGENT_PROFILE_ROLLBACK => self.execute_agent_profile_rollback(arguments).await,
+            TOOL_TOPIC_AGENT_TOOLS_GET => self.execute_topic_agent_tools_get(arguments).await,
+            TOOL_TOPIC_AGENT_TOOLS_ENABLE => self.execute_topic_agent_tools_enable(arguments).await,
+            TOOL_TOPIC_AGENT_TOOLS_DISABLE => {
+                self.execute_topic_agent_tools_disable(arguments).await
+            }
             TOOL_FORUM_TOPIC_CREATE => self.execute_forum_topic_create(arguments).await,
             TOOL_FORUM_TOPIC_EDIT => self.execute_forum_topic_edit(arguments).await,
             TOOL_FORUM_TOPIC_CLOSE => {
@@ -4238,6 +5019,195 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&response).expect("response must be valid json");
         assert_eq!(parsed["topic_infra"]["topic_id"], "-100777:240");
+    }
+
+    #[tokio::test]
+    async fn topic_agent_tools_get_hides_blocked_tools_from_effective_snapshot() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: 77,
+                    agent_id: "agent-a".to_string(),
+                    profile: json!({
+                        "blockedTools": TOPIC_AGENT_YTDLP_TOOLS,
+                    }),
+                    created_at: 10,
+                    updated_at: 10,
+                }))
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENT_TOOLS_GET,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic agent tools get should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        let active_tools = parsed["tools"]["active_tools"]
+            .as_array()
+            .expect("active_tools must be an array");
+        assert!(!active_tools
+            .iter()
+            .any(|tool| { TOPIC_AGENT_YTDLP_TOOLS.contains(&tool.as_str().unwrap_or_default()) }));
+
+        let ytdlp_status = parsed["tools"]["provider_statuses"]
+            .as_array()
+            .expect("provider_statuses must be an array")
+            .iter()
+            .find(|entry| entry["provider"] == "ytdlp")
+            .expect("ytdlp provider status must be present");
+        assert_eq!(ytdlp_status["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn topic_agent_tools_disable_expands_provider_alias_and_persists_profile() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config().returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([(
+                    "-100777:240".to_string(),
+                    crate::storage::UserContextConfig {
+                        chat_id: Some(-100777),
+                        thread_id: Some(240),
+                        forum_topic_name: Some("n-ru1".to_string()),
+                        forum_topic_icon_color: Some(9_367_192),
+                        ..crate::storage::UserContextConfig::default()
+                    },
+                )]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "-100777:240", "agent-a", 1))));
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 3,
+                    user_id: 77,
+                    agent_id: "agent-a".to_string(),
+                    profile: json!({
+                        "systemPrompt": "infra agent",
+                    }),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        mock.expect_upsert_agent_profile()
+            .withf(|options| {
+                options.agent_id == "agent-a"
+                    && options.profile["systemPrompt"] == "infra agent"
+                    && options
+                        .profile
+                        .get("blockedTools")
+                        .and_then(|value| value.as_array())
+                        .is_some_and(|tools| {
+                            TOPIC_AGENT_YTDLP_TOOLS
+                                .iter()
+                                .all(|tool| tools.iter().any(|value| value.as_str() == Some(*tool)))
+                        })
+            })
+            .returning(|options| {
+                Ok(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 4,
+                    user_id: options.user_id,
+                    agent_id: options.agent_id,
+                    profile: options.profile,
+                    created_at: 10,
+                    updated_at: 30,
+                })
+            });
+        mock.expect_append_audit_event().returning(|options| {
+            Ok(audit_event(
+                1,
+                options.topic_id.as_deref(),
+                options.agent_id.as_deref(),
+                &options.action,
+                options.payload,
+            ))
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_lifecycle(Arc::new(FakeTopicLifecycle::new()));
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENT_TOOLS_DISABLE,
+                r#"{"topic_id":"n-ru1","tools":["ytdlp"]}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic agent tools disable should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        let blocked_tools = parsed["profile"]["profile"]["blockedTools"]
+            .as_array()
+            .expect("blockedTools must be present");
+        assert_eq!(blocked_tools.len(), TOPIC_AGENT_YTDLP_TOOLS.len());
+        assert_eq!(parsed["tools"]["provider_statuses"][3]["provider"], "ytdlp");
+        assert_eq!(parsed["tools"]["provider_statuses"][3]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn topic_agent_tools_enable_is_noop_without_existing_profile() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_append_audit_event().returning(|options| {
+            Ok(audit_event(
+                1,
+                options.topic_id.as_deref(),
+                options.agent_id.as_deref(),
+                &options.action,
+                options.payload,
+            ))
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENT_TOOLS_ENABLE,
+                r#"{"topic_id":"topic-a","tools":["ytdlp_get_video_metadata"]}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic agent tools enable should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["updated"], false);
+        assert_eq!(parsed["tools"]["blocked_tools"], json!([]));
     }
 
     #[tokio::test]
