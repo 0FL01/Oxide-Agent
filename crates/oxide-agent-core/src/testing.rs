@@ -241,4 +241,5 @@ fn configure_control_plane_expectations(mock: &mut crate::storage::MockStoragePr
         .returning(|_, _, _, _| Ok(None));
     mock.expect_retry_reminder_job()
         .returning(|_, _, _, _| Ok(None));
+    mock.expect_delete_reminder_job().returning(|_, _| Ok(()));
 }

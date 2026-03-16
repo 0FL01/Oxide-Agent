@@ -3507,6 +3507,9 @@ async fn finalize_one_shot_reminder_success(
         }),
     )
     .await;
+    let _ = storage
+        .delete_reminder_job(reminder.user_id, reminder.reminder_id.clone())
+        .await;
 }
 
 async fn finalize_recurring_reminder_failure(
