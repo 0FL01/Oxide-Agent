@@ -2318,8 +2318,11 @@ impl ManagerControlPlaneProvider {
             .into_iter()
             .collect::<Vec<_>>();
         let parsed = parse_agent_profile(profile);
+        let policy = parsed
+            .tool_policy
+            .with_additional_allowed_tools(TOPIC_AGENT_REMINDER_TOOLS.iter().copied());
 
-        (allowed, blocked, parsed.tool_policy)
+        (allowed, blocked, policy)
     }
 
     fn topic_agent_tool_snapshot(
@@ -7261,6 +7264,62 @@ mod tests {
             .expect("reminder provider status must be present");
         assert_eq!(reminder_status["enabled"], true);
         assert!(reminder_status["available_tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool == "reminder_schedule")));
+    }
+
+    #[tokio::test]
+    async fn topic_agent_tools_get_keeps_reminders_enabled_for_allowlisted_profiles() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: 77,
+                    agent_id: "agent-a".to_string(),
+                    profile: json!({
+                        "allowedTools": ["execute_command"],
+                    }),
+                    created_at: 10,
+                    updated_at: 10,
+                }))
+            });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENT_TOOLS_GET,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic agent tools get should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        let active_tools = parsed["tools"]["active_tools"]
+            .as_array()
+            .expect("active_tools must be an array");
+        assert!(active_tools
+            .iter()
+            .any(|tool| tool.as_str() == Some("reminder_schedule")));
+        let reminder_status = parsed["tools"]["provider_statuses"]
+            .as_array()
+            .expect("provider_statuses must be an array")
+            .iter()
+            .find(|entry| entry["provider"] == "reminder")
+            .expect("reminder provider status must be present");
+        assert_eq!(reminder_status["enabled"], true);
+        assert!(reminder_status["active_tools"]
             .as_array()
             .is_some_and(|tools| tools.iter().any(|tool| tool == "reminder_schedule")));
     }

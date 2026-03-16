@@ -41,7 +41,7 @@ use oxide_agent_core::agent::{
     progress::{AgentEvent, ProgressState},
     providers::{
         inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
-        inspect_topic_infra_config, manager_control_plane_tool_names,
+        inspect_topic_infra_config, manager_control_plane_tool_names, reminder_tool_names,
     },
     AgentExecutionProfile, AgentSession, SessionId,
 };
@@ -2348,6 +2348,7 @@ mod tests {
         assert!(prompt.contains("Persistent topic context:"));
         assert!(prompt.contains("persistent topic runbook"));
         assert!(profile.tool_policy().allows("todos_write"));
+        assert!(profile.tool_policy().allows("reminder_schedule"));
         assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
         assert!(!profile.tool_policy().allows("file_write"));
         assert!(!profile.hook_policy().allows("search_budget"));
@@ -2541,6 +2542,9 @@ async fn resolve_execution_profile(
             .with_additional_allowed_tools(manager_control_plane_tool_names())
             .with_additional_blocked_tools(manager_default_blocked_tools());
     }
+    parsed_profile.tool_policy = parsed_profile
+        .tool_policy
+        .with_additional_allowed_tools(reminder_tool_names());
 
     let prompt_instructions = compose_execution_prompt_instructions(
         parsed_profile.prompt_instructions.as_deref(),
