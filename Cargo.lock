@@ -731,6 +731,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2925,6 +2934,7 @@ dependencies = [
  "aws-sdk-s3",
  "aws-types",
  "base64",
+ "bincode",
  "bollard",
  "bytes",
  "chrono",
@@ -2971,6 +2981,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "oxide-agent-sandboxd"
+version = "0.1.0"
+dependencies = [
+ "dotenvy",
+ "oxide-agent-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

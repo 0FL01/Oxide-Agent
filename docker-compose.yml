@@ -19,14 +19,39 @@ services:
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
+      - SANDBOX_BACKEND=broker
+      - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/app/config
+      - sandboxd-run:/run/sandboxd
     networks:
       - oxide_network
     # depends_on:
     #   crawl4ai:
     #     condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  sandboxd:
+    build:
+      context: .
+    image: oxide-agent:latest
+    container_name: oxide_agent_sandboxd
+    restart: unless-stopped
+    command: ["./oxide-agent-sandboxd"]
+    environment:
+      - RUST_LOG=oxide_agent_core=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
+      - DEBUG_MODE=false
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
+      - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandboxd-run:/run/sandboxd
+    networks:
+      - oxide_network
     logging:
       driver: json-file
       options:
@@ -61,3 +86,6 @@ services:
 networks:
   oxide_network:
     driver: bridge
+
+volumes:
+  sandboxd-run:

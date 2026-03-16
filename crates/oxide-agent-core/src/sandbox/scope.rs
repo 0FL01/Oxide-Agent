@@ -2,11 +2,13 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
 /// Stable sandbox scope used to derive persistent container identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxScope {
     owner_id: i64,
     namespace: String,
