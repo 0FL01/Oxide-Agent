@@ -34,6 +34,9 @@ const TOPIC_BINDING_SCHEMA_VERSION: u32 = 2;
 const AUDIT_EVENT_SCHEMA_VERSION: u32 = 1;
 const CONTROL_PLANE_RMW_MAX_RETRIES: usize = 5;
 const CONTROL_PLANE_RMW_RETRY_BACKOFF_MS: u64 = 25;
+pub(crate) const TOPIC_CONTEXT_MAX_LINES: usize = 40;
+pub(crate) const TOPIC_CONTEXT_MAX_CHARS: usize = 4_000;
+pub(crate) const TOPIC_AGENTS_MD_MAX_LINES: usize = 300;
 
 /// Errors that can occur during storage operations
 #[derive(Error, Debug)]
@@ -53,6 +56,21 @@ pub enum StorageError {
     /// Configuration error (missing credentials, etc.)
     #[error("Configuration error: {0}")]
     Config(String),
+    /// Invalid storage input.
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+    /// Duplicate topic prompt content across context and AGENTS.md stores.
+    #[error(
+        "duplicate topic prompt content for topic {topic_id}: {attempted_kind} matches existing {existing_kind}; store AGENTS.md only in topic_agents_md and keep topic_context for short operational context"
+    )]
+    DuplicateTopicPromptContent {
+        /// Stable topic identifier.
+        topic_id: String,
+        /// Existing store containing the same normalized payload.
+        existing_kind: String,
+        /// Store that attempted to write the duplicate payload.
+        attempted_kind: String,
+    },
     /// Optimistic concurrency retries exhausted.
     #[error("Concurrent update conflict for key {key} after {attempts} attempts")]
     ConcurrencyConflict {
@@ -866,6 +884,21 @@ impl ControlPlaneLocks {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TopicPromptStoreKind {
+    Context,
+    AgentsMd,
+}
+
+impl TopicPromptStoreKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Context => "topic_context",
+            Self::AgentsMd => "topic_agents_md",
+        }
+    }
+}
+
 impl R2Storage {
     /// Create a new R2 storage instance
     ///
@@ -1138,6 +1171,38 @@ impl R2Storage {
             }
             Err(e) => Err(StorageError::S3Get(Box::new(e))),
         }
+    }
+
+    async fn ensure_topic_prompt_not_duplicated(
+        &self,
+        user_id: i64,
+        topic_id: &str,
+        attempted_kind: TopicPromptStoreKind,
+        candidate: &str,
+    ) -> Result<(), StorageError> {
+        let normalized_candidate = normalize_topic_prompt_payload(candidate);
+        let existing = match attempted_kind {
+            TopicPromptStoreKind::Context => self
+                .load_json::<TopicAgentsMdRecord>(&topic_agents_md_key(user_id, topic_id))
+                .await?
+                .map(|record| (TopicPromptStoreKind::AgentsMd, record.agents_md)),
+            TopicPromptStoreKind::AgentsMd => self
+                .load_json::<TopicContextRecord>(&topic_context_key(user_id, topic_id))
+                .await?
+                .map(|record| (TopicPromptStoreKind::Context, record.context)),
+        };
+
+        if let Some((existing_kind, existing_content)) = existing {
+            if normalize_topic_prompt_payload(&existing_content) == normalized_candidate {
+                return Err(StorageError::DuplicateTopicPromptContent {
+                    topic_id: topic_id.to_string(),
+                    existing_kind: existing_kind.as_str().to_string(),
+                    attempted_kind: attempted_kind.as_str().to_string(),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     /// Delete object from R2
@@ -1566,8 +1631,22 @@ impl StorageProvider for R2Storage {
         &self,
         options: UpsertTopicContextOptions,
     ) -> Result<TopicContextRecord, StorageError> {
+        let context = validate_topic_context_content(&options.context)?;
+        let topic_prompt_guard_key = topic_prompt_guard_key(options.user_id, &options.topic_id);
+        let _topic_prompt_guard = self
+            .control_plane_locks
+            .acquire(topic_prompt_guard_key)
+            .await;
         let key = topic_context_key(options.user_id, &options.topic_id);
         let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
+        self.ensure_topic_prompt_not_duplicated(
+            options.user_id,
+            &options.topic_id,
+            TopicPromptStoreKind::Context,
+            &context,
+        )
+        .await?;
+        let options = UpsertTopicContextOptions { context, ..options };
 
         for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
             let (existing, etag) = self.load_json_with_etag::<TopicContextRecord>(&key).await?;
@@ -1622,8 +1701,25 @@ impl StorageProvider for R2Storage {
         &self,
         options: UpsertTopicAgentsMdOptions,
     ) -> Result<TopicAgentsMdRecord, StorageError> {
+        let agents_md = validate_topic_agents_md_content(&options.agents_md)?;
+        let topic_prompt_guard_key = topic_prompt_guard_key(options.user_id, &options.topic_id);
+        let _topic_prompt_guard = self
+            .control_plane_locks
+            .acquire(topic_prompt_guard_key)
+            .await;
         let key = topic_agents_md_key(options.user_id, &options.topic_id);
         let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
+        self.ensure_topic_prompt_not_duplicated(
+            options.user_id,
+            &options.topic_id,
+            TopicPromptStoreKind::AgentsMd,
+            &agents_md,
+        )
+        .await?;
+        let options = UpsertTopicAgentsMdOptions {
+            agents_md,
+            ..options
+        };
 
         for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
             let (existing, etag) = self
@@ -1965,6 +2061,11 @@ pub fn topic_agents_md_key(user_id: i64, topic_id: &str) -> String {
     format!("users/{user_id}/control_plane/topic_agents_md/{topic_id}.json")
 }
 
+#[must_use]
+fn topic_prompt_guard_key(user_id: i64, topic_id: &str) -> String {
+    format!("users/{user_id}/control_plane/topic_prompts/{topic_id}")
+}
+
 /// Returns the R2 key for a topic infrastructure configuration record.
 #[must_use]
 pub fn topic_infra_config_key(user_id: i64, topic_id: &str) -> String {
@@ -1987,6 +2088,73 @@ pub fn private_secret_key(user_id: i64, secret_ref: &str) -> String {
 #[must_use]
 pub fn audit_events_key(user_id: i64) -> String {
     format!("users/{user_id}/control_plane/audit/events.json")
+}
+
+#[must_use]
+pub(crate) fn normalize_topic_prompt_payload(value: &str) -> String {
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+pub(crate) fn validate_topic_context_content(value: &str) -> Result<String, StorageError> {
+    let context = normalize_topic_prompt_payload(value);
+    if context.is_empty() {
+        return Err(StorageError::InvalidInput(
+            "context must not be empty".to_string(),
+        ));
+    }
+
+    let line_count = context.lines().count();
+    if line_count > TOPIC_CONTEXT_MAX_LINES {
+        return Err(StorageError::InvalidInput(format!(
+            "context must not exceed {TOPIC_CONTEXT_MAX_LINES} lines; store AGENTS.md in topic_agents_md via topic_agents_md_upsert"
+        )));
+    }
+
+    let char_count = context.chars().count();
+    if char_count > TOPIC_CONTEXT_MAX_CHARS {
+        return Err(StorageError::InvalidInput(format!(
+            "context must not exceed {TOPIC_CONTEXT_MAX_CHARS} characters; store AGENTS.md in topic_agents_md via topic_agents_md_upsert"
+        )));
+    }
+
+    let lower = context.to_ascii_lowercase();
+    if lower.contains("agents.md")
+        || context
+            .lines()
+            .any(|line| line.trim_start().starts_with('#'))
+    {
+        return Err(StorageError::InvalidInput(
+            "context is for short operational notes only; store AGENTS.md-style documents in topic_agents_md via topic_agents_md_upsert".to_string(),
+        ));
+    }
+
+    Ok(context)
+}
+
+pub(crate) fn validate_topic_agents_md_content(value: &str) -> Result<String, StorageError> {
+    let agents_md = normalize_topic_prompt_payload(value);
+    if agents_md.is_empty() {
+        return Err(StorageError::InvalidInput(
+            "agents_md must not be empty".to_string(),
+        ));
+    }
+
+    let line_count = agents_md.lines().count();
+    if line_count > TOPIC_AGENTS_MD_MAX_LINES {
+        return Err(StorageError::InvalidInput(format!(
+            "agents_md must not exceed {TOPIC_AGENTS_MD_MAX_LINES} lines (got {line_count})"
+        )));
+    }
+
+    Ok(agents_md)
 }
 
 #[must_use]
@@ -2288,17 +2456,20 @@ mod tests {
         agent_profile_key, audit_events_key, binding_is_active, build_agent_flow_record,
         build_agent_profile_record, build_audit_event_record, build_topic_agents_md_record,
         build_topic_binding_record, build_topic_context_record, build_topic_infra_config_record,
-        generate_chat_uuid, next_record_version, private_secret_key, resolve_active_topic_binding,
-        select_audit_events_page, should_retry_control_plane_rmw, topic_agents_md_key,
-        topic_binding_key, topic_context_key, topic_infra_config_key, user_chat_history_key,
-        user_config_key, user_context_agent_flow_key, user_context_agent_flow_memory_key,
+        generate_chat_uuid, next_record_version, normalize_topic_prompt_payload,
+        private_secret_key, resolve_active_topic_binding, select_audit_events_page,
+        should_retry_control_plane_rmw, topic_agents_md_key, topic_binding_key, topic_context_key,
+        topic_infra_config_key, user_chat_history_key, user_config_key,
+        user_context_agent_flow_key, user_context_agent_flow_memory_key,
         user_context_agent_flows_prefix, user_context_agent_memory_key,
-        user_context_chat_history_prefix, user_history_key, AgentFlowRecord, AgentProfileRecord,
+        user_context_chat_history_prefix, user_history_key, validate_topic_agents_md_content,
+        validate_topic_context_content, AgentFlowRecord, AgentProfileRecord,
         AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, OptionalMetadataPatch,
         TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
         TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
         UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
-        UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
+        UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig, TOPIC_AGENTS_MD_MAX_LINES,
+        TOPIC_CONTEXT_MAX_CHARS, TOPIC_CONTEXT_MAX_LINES,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -2532,6 +2703,59 @@ mod tests {
     fn audit_events_key_uses_control_plane_namespace() {
         let key = audit_events_key(42);
         assert_eq!(key, "users/42/control_plane/audit/events.json");
+    }
+
+    #[test]
+    fn normalize_topic_prompt_payload_normalizes_line_endings_and_trailing_spaces() {
+        let normalized = normalize_topic_prompt_payload("  line 1  \r\nline 2\t\r\n\r\n");
+        assert_eq!(normalized, "line 1\nline 2");
+    }
+
+    #[test]
+    fn validate_topic_context_rejects_markdown_documents() {
+        let error = validate_topic_context_content("# AGENTS\nDo the thing")
+            .expect_err("markdown document must be rejected");
+        assert!(error
+            .to_string()
+            .contains("store AGENTS.md-style documents in topic_agents_md"));
+    }
+
+    #[test]
+    fn validate_topic_context_rejects_oversized_payload() {
+        let oversized = vec!["line"; TOPIC_CONTEXT_MAX_LINES + 1].join("\n");
+        let error = validate_topic_context_content(&oversized)
+            .expect_err("oversized topic context must be rejected");
+        assert!(error.to_string().contains(&format!(
+            "context must not exceed {TOPIC_CONTEXT_MAX_LINES} lines"
+        )));
+    }
+
+    #[test]
+    fn validate_topic_context_rejects_too_many_characters() {
+        let oversized = "x".repeat(TOPIC_CONTEXT_MAX_CHARS + 1);
+        let error = validate_topic_context_content(&oversized)
+            .expect_err("oversized topic context must be rejected");
+        assert!(error.to_string().contains(&format!(
+            "context must not exceed {TOPIC_CONTEXT_MAX_CHARS} characters"
+        )));
+    }
+
+    #[test]
+    fn validate_topic_agents_md_normalizes_payload() {
+        let normalized =
+            validate_topic_agents_md_content("\r\n# Topic AGENTS  \r\nUse checklist\r\n")
+                .expect("agents md must normalize");
+        assert_eq!(normalized, "# Topic AGENTS\nUse checklist");
+    }
+
+    #[test]
+    fn validate_topic_agents_md_rejects_oversized_payload() {
+        let oversized = vec!["line"; TOPIC_AGENTS_MD_MAX_LINES + 1].join("\n");
+        let error = validate_topic_agents_md_content(&oversized)
+            .expect_err("oversized agents md must be rejected");
+        assert!(error.to_string().contains(&format!(
+            "agents_md must not exceed {TOPIC_AGENTS_MD_MAX_LINES} lines"
+        )));
     }
 
     #[test]

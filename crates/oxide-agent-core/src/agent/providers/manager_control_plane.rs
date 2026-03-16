@@ -11,11 +11,12 @@ use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxContainerRecord, SandboxManager, SandboxScope};
 use crate::storage::{
-    AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
-    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
-    TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    validate_topic_agents_md_content, validate_topic_context_content, AgentProfileRecord,
+    AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider, TopicAgentsMdRecord,
+    TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
+    TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
-    UpsertTopicInfraConfigOptions, UserConfig,
+    UpsertTopicInfraConfigOptions, UserConfig, TOPIC_CONTEXT_MAX_CHARS, TOPIC_CONTEXT_MAX_LINES,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -65,7 +66,6 @@ const TOOL_FORUM_TOPIC_REOPEN: &str = "forum_topic_reopen";
 const TOOL_FORUM_TOPIC_DELETE: &str = "forum_topic_delete";
 const TOOL_FORUM_TOPIC_LIST: &str = "forum_topic_list";
 const ROLLBACK_AUDIT_PAGE_SIZE: usize = 200;
-const TOPIC_AGENTS_MD_MAX_LINES: usize = 300;
 
 const BASE_TOOL_NAMES: &[&str] = &[
     TOOL_TOPIC_BINDING_SET,
@@ -1478,13 +1478,14 @@ impl ManagerControlPlaneProvider {
         vec![
             ToolDefinition {
                 name: TOOL_TOPIC_CONTEXT_UPSERT.to_string(),
-                description: "Create or update topic-specific execution context for current user"
-                    .to_string(),
+                description: format!(
+                    "Create or update short topic operational context for current user (max {TOPIC_CONTEXT_MAX_LINES} lines / {TOPIC_CONTEXT_MAX_CHARS} chars; not for AGENTS.md)"
+                ),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "topic_id": { "type": "string", "description": "Stable topic identifier" },
-                        "context": { "type": "string", "description": "Free-form topic instructions injected into the agent prompt" },
+                        "context": { "type": "string", "description": "Short operational context injected into the agent prompt; use topic_agents_md_upsert for AGENTS.md documents" },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
                     "required": ["topic_id", "context"]
@@ -1958,12 +1959,11 @@ impl ManagerControlPlaneProvider {
     }
 
     fn validate_agents_md(value: String) -> Result<String> {
-        let agents_md = Self::validate_non_empty(value, "agents_md")?;
-        let line_count = agents_md.lines().count();
-        if line_count > TOPIC_AGENTS_MD_MAX_LINES {
-            bail!("agents_md must not exceed {TOPIC_AGENTS_MD_MAX_LINES} lines (got {line_count})");
-        }
-        Ok(agents_md)
+        validate_topic_agents_md_content(&value).map_err(Into::into)
+    }
+
+    fn validate_topic_context(value: String) -> Result<String> {
+        validate_topic_context_content(&value).map_err(Into::into)
     }
 
     fn validate_thread_id(thread_id: i64) -> Result<i64> {
@@ -4467,7 +4467,7 @@ impl ManagerControlPlaneProvider {
     async fn execute_topic_context_upsert(&self, arguments: &str) -> Result<String> {
         let args: TopicContextUpsertArgs = Self::parse_args(arguments, TOOL_TOPIC_CONTEXT_UPSERT)?;
         let topic_id = self.resolve_mutation_topic_id(args.topic_id).await?;
-        let context = Self::validate_non_empty(args.context, "context")?;
+        let context = Self::validate_topic_context(args.context)?;
         let previous = self
             .storage
             .get_topic_context(self.user_id, topic_id.clone())
@@ -8597,6 +8597,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn topic_context_upsert_rejects_agents_style_content() {
+        let mock = crate::storage::MockStorageProvider::new();
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+
+        let error = provider
+            .execute(
+                TOOL_TOPIC_CONTEXT_UPSERT,
+                r##"{"topic_id":"topic-a","context":"# AGENTS\nUse release checklist"}"##,
+                None,
+                None,
+            )
+            .await
+            .expect_err("AGENTS-style topic context must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("store AGENTS.md-style documents in topic_agents_md"));
+    }
+
+    #[tokio::test]
+    async fn topic_context_upsert_surfaces_duplicate_topic_prompt_error() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_context()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_upsert_topic_context().returning(|_| {
+            Err(crate::storage::StorageError::DuplicateTopicPromptContent {
+                topic_id: "topic-a".to_string(),
+                existing_kind: "topic_agents_md".to_string(),
+                attempted_kind: "topic_context".to_string(),
+            })
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let error = provider
+            .execute(
+                TOOL_TOPIC_CONTEXT_UPSERT,
+                r#"{"topic_id":"topic-a","context":"Use release checklist"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect_err("duplicate topic prompt must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("duplicate topic prompt content for topic topic-a"));
+    }
+
+    #[tokio::test]
     async fn topic_context_rollback_restores_previous_snapshot() {
         let mut mock = crate::storage::MockStorageProvider::new();
         mock.expect_get_topic_context()
@@ -8692,6 +8742,73 @@ mod tests {
         assert_eq!(parsed["operation"], "restore");
         assert_eq!(parsed["topic_context"]["context"], "previous context");
         assert_eq!(parsed["audit_status"], "written");
+    }
+
+    #[tokio::test]
+    async fn topic_context_rollback_rejects_duplicate_topic_prompt_restore() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_context()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, topic_id| {
+                Ok(Some(TopicContextRecord {
+                    schema_version: 1,
+                    version: 3,
+                    user_id: 77,
+                    topic_id,
+                    context: "current context".to_string(),
+                    created_at: 10,
+                    updated_at: 30,
+                }))
+            });
+        mock.expect_list_audit_events_page()
+            .with(eq(77_i64), eq(None), eq(ROLLBACK_AUDIT_PAGE_SIZE))
+            .returning(|_, _, _| {
+                Ok(vec![crate::storage::AuditEventRecord {
+                    schema_version: 1,
+                    version: 2,
+                    event_id: "evt-2".to_string(),
+                    user_id: 77,
+                    topic_id: Some("topic-a".to_string()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_CONTEXT_UPSERT.to_string(),
+                    payload: json!({
+                        "topic_id": "topic-a",
+                        "previous": {
+                            "schema_version": 1,
+                            "version": 1,
+                            "user_id": 77,
+                            "topic_id": "topic-a",
+                            "context": "duplicate context",
+                            "created_at": 5,
+                            "updated_at": 6
+                        },
+                        "outcome": "applied"
+                    }),
+                    created_at: 20,
+                }])
+            });
+        mock.expect_upsert_topic_context().returning(|_| {
+            Err(crate::storage::StorageError::DuplicateTopicPromptContent {
+                topic_id: "topic-a".to_string(),
+                existing_kind: "topic_agents_md".to_string(),
+                attempted_kind: "topic_context".to_string(),
+            })
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let error = provider
+            .execute(
+                TOOL_TOPIC_CONTEXT_ROLLBACK,
+                r#"{"topic_id":"topic-a"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect_err("duplicate rollback restore must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("duplicate topic prompt content for topic topic-a"));
     }
 
     #[tokio::test]
@@ -8880,7 +8997,7 @@ mod tests {
     async fn topic_agents_md_upsert_rejects_more_than_300_lines() {
         let mock = crate::storage::MockStorageProvider::new();
         let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
-        let oversized = vec!["line"; TOPIC_AGENTS_MD_MAX_LINES + 1].join("\n");
+        let oversized = vec!["line"; crate::storage::TOPIC_AGENTS_MD_MAX_LINES + 1].join("\n");
         let arguments = serde_json::json!({
             "topic_id": "topic-a",
             "agents_md": oversized,
