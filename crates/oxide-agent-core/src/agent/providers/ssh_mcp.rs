@@ -23,13 +23,13 @@ use sha2::{Digest, Sha256};
 use shell_escape::unix::escape;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs::OpenOptions;
+use std::fs;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::{Builder, NamedTempFile};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -53,6 +53,7 @@ const UPSTREAM_TOOL_EXEC: &str = "exec";
 const UPSTREAM_TOOL_SUDO_EXEC: &str = "sudo-exec";
 const UPSTREAM_TIMEOUT_GRACE_MS: u64 = 30_000;
 const UPSTREAM_MAX_OUTPUT_TOKENS: usize = 12_000;
+const PRIVATE_KEY_TEMPFILE_PREFIX: &str = "oxide-agent-ssh-key-";
 
 /// Supported secret probe kinds for manager-facing diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -457,7 +458,7 @@ struct UpstreamSshMcpSession {
     client: Mutex<Option<RunningService<RoleClient, ()>>>,
     peer: Peer<RoleClient>,
     stderr_task: Mutex<Option<JoinHandle<()>>>,
-    key_path: Option<PathBuf>,
+    _key_file: Option<NamedTempFile>,
 }
 
 impl UpstreamSshMcpSession {
@@ -468,8 +469,18 @@ impl UpstreamSshMcpSession {
         if let Some(stderr_task) = self.stderr_task.lock().await.take() {
             stderr_task.abort();
         }
-        if let Some(path) = &self.key_path {
-            let _ = std::fs::remove_file(path);
+    }
+}
+
+impl Drop for UpstreamSshMcpSession {
+    fn drop(&mut self) {
+        if let Ok(mut client) = self.client.try_lock() {
+            client.take();
+        }
+        if let Ok(mut stderr_task) = self.stderr_task.try_lock() {
+            if let Some(task) = stderr_task.take() {
+                task.abort();
+            }
         }
     }
 }
@@ -615,8 +626,8 @@ impl UpstreamSshMcpBackend {
             if let Some(password) = resolved_auth.password.as_deref() {
                 cmd.env("SSH_MCP_PASSWORD", password);
             }
-            if let Some(key_path) = resolved_auth.key_path.as_deref() {
-                cmd.arg(format!("--key={}", key_path.display()));
+            if let Some(key_file) = resolved_auth.key_file.as_ref() {
+                cmd.arg(format!("--key={}", key_file.path().display()));
             }
             if let Some(sudo_password) = resolved_auth.sudo_password.as_deref() {
                 cmd.env("SSH_MCP_SUDO_PASSWORD", sudo_password);
@@ -650,9 +661,6 @@ impl UpstreamSshMcpBackend {
         let client = match ().serve(transport).await {
             Ok(client) => client,
             Err(error) => {
-                if let Some(path) = resolved_auth.key_path.as_ref() {
-                    let _ = std::fs::remove_file(path);
-                }
                 return Err(anyhow!(
                     "failed to initialize upstream ssh-mcp session: {error}"
                 ));
@@ -664,7 +672,7 @@ impl UpstreamSshMcpBackend {
             client: Mutex::new(Some(client)),
             peer,
             stderr_task: Mutex::new(stderr_task),
-            key_path: resolved_auth.key_path,
+            _key_file: resolved_auth.key_file,
         })
     }
 
@@ -1303,7 +1311,7 @@ struct WrappedCommandMarkers {
 
 struct ResolvedBackendAuth {
     password: Option<String>,
-    key_path: Option<PathBuf>,
+    key_file: Option<NamedTempFile>,
     sudo_password: Option<String>,
 }
 
@@ -1360,7 +1368,7 @@ async fn resolve_backend_auth(
         TopicInfraAuthMode::None | TopicInfraAuthMode::PrivateKey => None,
     };
 
-    let key_path = match config.auth_mode {
+    let key_file = match config.auth_mode {
         TopicInfraAuthMode::PrivateKey => {
             let secret_ref = config
                 .secret_ref
@@ -1379,7 +1387,7 @@ async fn resolve_backend_auth(
 
     Ok(ResolvedBackendAuth {
         password,
-        key_path,
+        key_file,
         sudo_password,
     })
 }
@@ -1564,8 +1572,8 @@ async fn validate_ssh_private_key(
         );
     }
 
-    let key_path = match write_private_key_tempfile(private_key) {
-        Ok(path) => path,
+    let key_file = match write_private_key_tempfile(private_key) {
+        Ok(file) => file,
         Err(error) => {
             return SecretProbeReport::invalid(
                 secret_ref,
@@ -1575,15 +1583,16 @@ async fn validate_ssh_private_key(
             )
         }
     };
+    let key_path = key_file.path();
 
     let mut public_command = Command::new("ssh-keygen");
-    public_command.arg("-y").arg("-f").arg(&key_path);
+    public_command.arg("-y").arg("-f").arg(key_path);
     let public_result = run_command_with_timeout(public_command, KEY_PROBE_TIMEOUT_SECS).await;
 
     let report = match public_result {
         Ok(output) if output.exit_code == 0 => {
             let mut listing_command = Command::new("ssh-keygen");
-            listing_command.arg("-l").arg("-f").arg(&key_path);
+            listing_command.arg("-l").arg("-f").arg(key_path);
             match run_command_with_timeout(listing_command, KEY_PROBE_TIMEOUT_SECS).await {
                 Ok(listing_output) if listing_output.exit_code == 0 => {
                     let mut report = SecretProbeReport::valid(
@@ -1593,7 +1602,7 @@ async fn validate_ssh_private_key(
                     );
                     let listing = listing_output.stdout.trim();
                     if let Some((fingerprint, key_type, comment)) =
-                        parse_ssh_keygen_listing(listing, &key_path)
+                        parse_ssh_keygen_listing(listing, key_path)
                     {
                         report.fingerprint = Some(fingerprint);
                         report.key_type = key_type;
@@ -1637,7 +1646,6 @@ async fn validate_ssh_private_key(
         ),
     };
 
-    let _ = std::fs::remove_file(&key_path);
     report
 }
 
@@ -1652,7 +1660,7 @@ fn format_stderr_suffix(stderr: &str) -> String {
 
 fn parse_ssh_keygen_listing(
     listing: &str,
-    key_path: &std::path::Path,
+    key_path: &Path,
 ) -> Option<(String, Option<String>, Option<String>)> {
     let tokens = listing.split_whitespace().collect::<Vec<_>>();
     if tokens.len() < 2 {
@@ -1766,26 +1774,75 @@ fn now_unix_secs() -> i64 {
     }
 }
 
-fn write_private_key_tempfile(private_key: &str) -> Result<PathBuf> {
-    let path = std::env::temp_dir().join(format!("oxide-agent-ssh-key-{}", Uuid::new_v4()));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&path)
+/// Remove any stale SSH private key temp files left from previous process runs.
+pub fn cleanup_stale_private_key_tempfiles() -> Result<usize> {
+    cleanup_stale_private_key_tempfiles_in(&std::env::temp_dir())
+}
+
+fn cleanup_stale_private_key_tempfiles_in(temp_dir: &Path) -> Result<usize> {
+    let mut removed = 0_usize;
+    let entries = fs::read_dir(temp_dir)
+        .with_context(|| format!("failed to read temp directory {}", temp_dir.display()))?;
+
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to inspect temp directory entry in {}",
+                temp_dir.display()
+            )
+        })?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if !file_name.starts_with(PRIVATE_KEY_TEMPFILE_PREFIX) {
+            continue;
+        }
+
+        match fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to remove stale private key temp file {}",
+                        entry.path().display()
+                    )
+                });
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+fn write_private_key_tempfile(private_key: &str) -> Result<NamedTempFile> {
+    write_private_key_tempfile_in(&std::env::temp_dir(), private_key)
+}
+
+fn write_private_key_tempfile_in(temp_dir: &Path, private_key: &str) -> Result<NamedTempFile> {
+    let mut file = Builder::new()
+        .prefix(PRIVATE_KEY_TEMPFILE_PREFIX)
+        .tempfile_in(temp_dir)
         .with_context(|| {
             format!(
-                "failed to create private key temp file at {}",
-                path.display()
+                "failed to create private key temp file in {}",
+                temp_dir.display()
             )
         })?;
     file.write_all(private_key.as_bytes()).with_context(|| {
         format!(
             "failed to write private key temp file at {}",
-            path.display()
+            file.path().display()
         )
     })?;
-    Ok(path)
+    file.flush().with_context(|| {
+        format!(
+            "failed to flush private key temp file at {}",
+            file.path().display()
+        )
+    })?;
+    Ok(file)
 }
 
 /// Build a system message instructing the agent to replay an approved SSH tool call.
@@ -1809,13 +1866,15 @@ pub fn inject_topic_infra_preflight_system_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_hex, fingerprint_for_request, inject_ssh_approval_system_message,
-        inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
-        parse_ssh_keygen_listing, parse_wrapped_remote_output, SecretProbeKind, SecretProbeReport,
-        SshApprovalRegistry, TopicInfraPreflightReport, WrappedCommandMarkers,
+        cleanup_stale_private_key_tempfiles_in, decode_hex, fingerprint_for_request,
+        inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
+        is_dangerous_command, is_sensitive_path, parse_ssh_keygen_listing,
+        parse_wrapped_remote_output, write_private_key_tempfile_in, SecretProbeKind,
+        SecretProbeReport, SshApprovalRegistry, TopicInfraPreflightReport, WrappedCommandMarkers,
     };
     use crate::storage::TopicInfraAuthMode;
-    use std::path::Path;
+    use std::{fs, path::Path};
+    use tempfile::tempdir;
 
     #[tokio::test]
     async fn approval_registry_grants_and_consumes_matching_request() {
@@ -1949,5 +2008,36 @@ mod tests {
         assert_eq!(parsed.stdout, "hello");
         assert_eq!(parsed.stderr, "warn");
         assert_eq!(parsed.exit_code, 7);
+    }
+
+    #[test]
+    fn private_key_tempfile_is_removed_on_drop() {
+        let temp_dir = tempdir().expect("temp dir must be created");
+        let path = {
+            let key_file = write_private_key_tempfile_in(temp_dir.path(), "secret")
+                .expect("temp key file must be created");
+            let path = key_file.path().to_path_buf();
+            assert!(path.exists());
+            path
+        };
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cleanup_stale_private_key_tempfiles_removes_only_matching_files() {
+        let temp_dir = tempdir().expect("temp dir must be created");
+        let stale_path = temp_dir.path().join("oxide-agent-ssh-key-stale-test");
+        let keep_path = temp_dir.path().join("keep-me.txt");
+
+        fs::write(&stale_path, "secret").expect("stale file must be written");
+        fs::write(&keep_path, "safe").expect("control file must be written");
+
+        let removed =
+            cleanup_stale_private_key_tempfiles_in(temp_dir.path()).expect("cleanup must succeed");
+
+        assert_eq!(removed, 1);
+        assert!(!stale_path.exists());
+        assert!(keep_path.exists());
     }
 }

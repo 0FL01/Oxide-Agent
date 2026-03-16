@@ -1,11 +1,12 @@
 use dotenvy::dotenv;
+use oxide_agent_core::agent::providers::cleanup_stale_private_key_tempfiles;
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_transport_telegram::config::{BotSettings, TelegramSettings};
 use oxide_agent_transport_telegram::runner::run_bot;
 use regex::Regex;
 use std::io::{self, Write};
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
 /// Regex patterns for redacting sensitive data
@@ -136,6 +137,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup logging with redaction
     init_logging(patterns);
+
+    match cleanup_stale_private_key_tempfiles() {
+        Ok(removed) if removed > 0 => {
+            info!(removed, "Removed stale SSH private key temp files");
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(%error, "Failed to clean up stale SSH private key temp files");
+        }
+    }
 
     info!("Starting Oxide Agent TG Bot...");
 
