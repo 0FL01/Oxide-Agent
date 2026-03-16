@@ -71,6 +71,9 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "reminder_schedule",
     "reminder_list",
     "reminder_cancel",
+    "reminder_pause",
+    "reminder_resume",
+    "reminder_retry",
 ];
 const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
 const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
