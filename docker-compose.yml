@@ -86,7 +86,7 @@ services:
 
 networks:
   oxide_network:
-    driver: bridge
+    driver: host
 
 volumes:
   sandboxd-run:
