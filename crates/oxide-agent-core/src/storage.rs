@@ -1143,6 +1143,18 @@ pub trait StorageProvider: Send + Sync {
         let _ = retried_at;
         Ok(None)
     }
+    /// Permanently delete a reminder job record.
+    async fn delete_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        Err(StorageError::Config(
+            "reminder job deletion is not implemented for this storage provider".to_string(),
+        ))
+    }
 }
 
 /// A message in the chat history
@@ -2634,6 +2646,15 @@ impl StorageProvider for R2Storage {
             })
         })
         .await
+    }
+
+    async fn delete_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+    ) -> Result<(), StorageError> {
+        self.delete_object(&reminder_job_key(user_id, &reminder_id))
+            .await
     }
 }
 
