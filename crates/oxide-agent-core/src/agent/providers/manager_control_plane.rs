@@ -180,6 +180,14 @@ const TOPIC_AGENT_YTDLP_TOOLS: &[&str] = &[
     "ytdlp_download_audio",
 ];
 const TOPIC_AGENT_DELEGATION_TOOLS: &[&str] = &["delegate_to_sub_agent"];
+const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
+    "reminder_schedule",
+    "reminder_list",
+    "reminder_cancel",
+    "reminder_pause",
+    "reminder_resume",
+    "reminder_retry",
+];
 #[cfg(feature = "tavily")]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
 #[cfg(feature = "crawl4ai")]
@@ -1732,7 +1740,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -1751,7 +1759,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -2201,6 +2209,11 @@ impl ManagerControlPlaneProvider {
                 provider: "delegation",
                 aliases: &["delegation", "delegate"],
                 tools: TOPIC_AGENT_DELEGATION_TOOLS,
+            },
+            TopicAgentToolGroup {
+                provider: "reminder",
+                aliases: &["reminder", "wakeups", "wakeup"],
+                tools: TOPIC_AGENT_REMINDER_TOOLS,
             },
         ];
 
@@ -7233,6 +7246,17 @@ mod tests {
             .find(|entry| entry["provider"] == "ytdlp")
             .expect("ytdlp provider status must be present");
         assert_eq!(ytdlp_status["enabled"], false);
+
+        let reminder_status = parsed["tools"]["provider_statuses"]
+            .as_array()
+            .expect("provider_statuses must be an array")
+            .iter()
+            .find(|entry| entry["provider"] == "reminder")
+            .expect("reminder provider status must be present");
+        assert_eq!(reminder_status["enabled"], true);
+        assert!(reminder_status["available_tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool == "reminder_schedule")));
     }
 
     #[tokio::test]
@@ -7327,8 +7351,86 @@ mod tests {
             .as_array()
             .expect("blockedTools must be present");
         assert_eq!(blocked_tools.len(), TOPIC_AGENT_YTDLP_TOOLS.len());
-        assert_eq!(parsed["tools"]["provider_statuses"][3]["provider"], "ytdlp");
-        assert_eq!(parsed["tools"]["provider_statuses"][3]["enabled"], false);
+        let ytdlp_status = parsed["tools"]["provider_statuses"]
+            .as_array()
+            .expect("provider_statuses must be an array")
+            .iter()
+            .find(|entry| entry["provider"] == "ytdlp")
+            .expect("ytdlp provider status must be present");
+        assert_eq!(ytdlp_status["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn topic_agent_tools_enable_accepts_reminder_provider_alias() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config()
+            .returning(|_| Ok(crate::storage::UserConfig::default()));
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 1,
+                    user_id: 77,
+                    agent_id: "agent-a".to_string(),
+                    profile: json!({
+                        "blockedTools": TOPIC_AGENT_REMINDER_TOOLS,
+                    }),
+                    created_at: 10,
+                    updated_at: 10,
+                }))
+            });
+        mock.expect_upsert_agent_profile()
+            .withf(|options| {
+                options.agent_id == "agent-a" && options.profile.get("blockedTools").is_none()
+            })
+            .returning(|options| {
+                Ok(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 2,
+                    user_id: options.user_id,
+                    agent_id: options.agent_id,
+                    profile: options.profile,
+                    created_at: 10,
+                    updated_at: 20,
+                })
+            });
+        mock.expect_append_audit_event().returning(|options| {
+            Ok(audit_event(
+                1,
+                options.topic_id.as_deref(),
+                options.agent_id.as_deref(),
+                &options.action,
+                options.payload,
+            ))
+        });
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENT_TOOLS_ENABLE,
+                r#"{"topic_id":"topic-a","tools":["reminder"]}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic agent tools enable should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        let reminder_status = parsed["tools"]["provider_statuses"]
+            .as_array()
+            .expect("provider_statuses must be an array")
+            .iter()
+            .find(|entry| entry["provider"] == "reminder")
+            .expect("reminder provider status must be present");
+        assert_eq!(reminder_status["enabled"], true);
     }
 
     #[tokio::test]
