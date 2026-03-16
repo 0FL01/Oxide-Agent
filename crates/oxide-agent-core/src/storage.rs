@@ -32,6 +32,7 @@ const TOPIC_INFRA_CONFIG_SCHEMA_VERSION: u32 = 1;
 const AGENT_FLOW_SCHEMA_VERSION: u32 = 1;
 const TOPIC_BINDING_SCHEMA_VERSION: u32 = 2;
 const AUDIT_EVENT_SCHEMA_VERSION: u32 = 1;
+const REMINDER_JOB_SCHEMA_VERSION: u32 = 1;
 const CONTROL_PLANE_RMW_MAX_RETRIES: usize = 5;
 const CONTROL_PLANE_RMW_RETRY_BACKOFF_MS: u64 = 25;
 pub(crate) const TOPIC_CONTEXT_MAX_LINES: usize = 40;
@@ -317,6 +318,110 @@ pub struct TopicBindingRecord {
     pub updated_at: i64,
 }
 
+/// Thread routing kind persisted for reminder delivery.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderThreadKind {
+    /// Direct/private chat context.
+    Dm,
+    /// Telegram forum topic context.
+    Forum,
+    /// Non-threaded group or fallback context.
+    None,
+}
+
+/// Reminder schedule kind persisted in storage.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderScheduleKind {
+    /// Execute once and then finish.
+    Once,
+    /// Execute repeatedly using a fixed interval.
+    Interval,
+}
+
+/// Reminder lifecycle status.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderJobStatus {
+    /// Reminder is scheduled and may be claimed by a worker.
+    Scheduled,
+    /// Reminder completed successfully and will not run again.
+    Completed,
+    /// Reminder was cancelled by the user.
+    Cancelled,
+    /// Reminder stopped after an unrecoverable error.
+    Failed,
+}
+
+/// Reminder job metadata persisted in control-plane storage.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct ReminderJobRecord {
+    /// Record schema version for forward-compatible evolution.
+    pub schema_version: u32,
+    /// Logical record revision incremented on each mutation.
+    pub version: u64,
+    /// Stable reminder identifier.
+    pub reminder_id: String,
+    /// User owning this reminder.
+    pub user_id: i64,
+    /// Transport context key the reminder belongs to.
+    pub context_key: String,
+    /// Stable agent flow identifier used for wake-up execution.
+    pub flow_id: String,
+    /// Destination Telegram chat identifier.
+    pub chat_id: i64,
+    /// Destination Telegram thread/topic identifier when available.
+    pub thread_id: Option<i64>,
+    /// Logical thread kind required to reconstruct delivery routing.
+    pub thread_kind: ReminderThreadKind,
+    /// Agent task to execute on wake-up.
+    pub task_prompt: String,
+    /// Schedule kind.
+    pub schedule_kind: ReminderScheduleKind,
+    /// Current lifecycle status.
+    pub status: ReminderJobStatus,
+    /// Next scheduled execution timestamp (unix seconds).
+    pub next_run_at: i64,
+    /// Fixed interval for recurring reminders (seconds).
+    pub interval_secs: Option<u64>,
+    /// Temporary lease expiry while a worker is processing the reminder.
+    pub lease_until: Option<i64>,
+    /// Last successful or attempted execution timestamp (unix seconds).
+    pub last_run_at: Option<i64>,
+    /// Last execution error, if any.
+    pub last_error: Option<String>,
+    /// Number of completed executions.
+    pub run_count: u64,
+    /// Creation timestamp (unix seconds).
+    pub created_at: i64,
+    /// Last update timestamp (unix seconds).
+    pub updated_at: i64,
+}
+
+impl ReminderJobRecord {
+    /// Returns true when the reminder is due and available for claiming.
+    #[must_use]
+    pub fn is_due(&self, now: i64) -> bool {
+        self.status == ReminderJobStatus::Scheduled
+            && self.next_run_at <= now
+            && !self.is_leased(now)
+    }
+
+    /// Returns true when the reminder has an active worker lease.
+    #[must_use]
+    pub fn is_leased(&self, now: i64) -> bool {
+        self.lease_until
+            .is_some_and(|lease_until| lease_until > now)
+    }
+
+    /// Returns true when the reminder repeats indefinitely.
+    #[must_use]
+    pub const fn is_recurring(&self) -> bool {
+        matches!(self.schedule_kind, ReminderScheduleKind::Interval)
+    }
+}
+
 /// Audit event record persisted in control-plane storage.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditEventRecord {
@@ -487,6 +592,31 @@ pub struct AppendAuditEventOptions {
     pub action: String,
     /// Arbitrary event payload.
     pub payload: serde_json::Value,
+}
+
+/// Parameters used when creating a reminder job.
+#[derive(Debug, Clone)]
+pub struct CreateReminderJobOptions {
+    /// User owning this reminder.
+    pub user_id: i64,
+    /// Transport context key.
+    pub context_key: String,
+    /// Agent flow identifier used for wake-up execution.
+    pub flow_id: String,
+    /// Destination chat identifier.
+    pub chat_id: i64,
+    /// Destination thread/topic identifier.
+    pub thread_id: Option<i64>,
+    /// Delivery thread kind.
+    pub thread_kind: ReminderThreadKind,
+    /// Task the agent must execute on wake-up.
+    pub task_prompt: String,
+    /// Schedule kind.
+    pub schedule_kind: ReminderScheduleKind,
+    /// First execution timestamp (unix seconds).
+    pub next_run_at: i64,
+    /// Fixed interval for recurring reminders (seconds).
+    pub interval_secs: Option<u64>,
 }
 
 /// Interface for storage providers
@@ -838,6 +968,122 @@ pub trait StorageProvider: Send + Sync {
         before_version: Option<u64>,
         limit: usize,
     ) -> Result<Vec<AuditEventRecord>, StorageError>;
+    /// Create a new reminder job.
+    async fn create_reminder_job(
+        &self,
+        options: CreateReminderJobOptions,
+    ) -> Result<ReminderJobRecord, StorageError> {
+        let _ = options;
+        Err(StorageError::Config(
+            "reminder job creation is not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Get a reminder job by id.
+    async fn get_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        Ok(None)
+    }
+    /// List reminder jobs for a user with optional context and status filters.
+    async fn list_reminder_jobs(
+        &self,
+        user_id: i64,
+        context_key: Option<String>,
+        statuses: Option<Vec<ReminderJobStatus>>,
+        limit: usize,
+    ) -> Result<Vec<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        let _ = statuses;
+        let _ = limit;
+        Ok(Vec::new())
+    }
+    /// List reminder jobs that are due for execution.
+    async fn list_due_reminder_jobs(
+        &self,
+        user_id: i64,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = now;
+        let _ = limit;
+        Ok(Vec::new())
+    }
+    /// Claim a due reminder job by assigning a temporary lease.
+    async fn claim_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        lease_until: i64,
+        now: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        let _ = lease_until;
+        let _ = now;
+        Ok(None)
+    }
+    /// Reschedule an existing reminder and clear any active lease.
+    async fn reschedule_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        last_run_at: Option<i64>,
+        last_error: Option<String>,
+        increment_run_count: bool,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        let _ = next_run_at;
+        let _ = last_run_at;
+        let _ = last_error;
+        let _ = increment_run_count;
+        Ok(None)
+    }
+    /// Mark a reminder job as completed.
+    async fn complete_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        completed_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        let _ = completed_at;
+        Ok(None)
+    }
+    /// Mark a reminder job as failed and stop future executions.
+    async fn fail_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        failed_at: i64,
+        error: String,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        let _ = failed_at;
+        let _ = error;
+        Ok(None)
+    }
+    /// Cancel an existing reminder job.
+    async fn cancel_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        cancelled_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        let _ = cancelled_at;
+        Ok(None)
+    }
 }
 
 /// A message in the chat history
@@ -1253,6 +1499,91 @@ impl R2Storage {
         }
 
         Ok(())
+    }
+
+    async fn list_json_under_prefix<T: serde::de::DeserializeOwned>(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<T>, StorageError> {
+        let mut continuation_token: Option<String> = None;
+        let mut records = Vec::new();
+
+        loop {
+            let response = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_continuation_token(continuation_token.clone())
+                .send()
+                .await
+                .map_err(|error| StorageError::S3Put(error.to_string()))?;
+
+            for object in response.contents() {
+                let Some(key) = object.key() else {
+                    continue;
+                };
+                if let Some(record) = self.load_json::<T>(key).await? {
+                    records.push(record);
+                }
+            }
+
+            if !response.is_truncated().unwrap_or(false) {
+                break;
+            }
+
+            continuation_token = response.next_continuation_token().map(str::to_string);
+        }
+
+        Ok(records)
+    }
+
+    async fn mutate_reminder_job<F>(
+        &self,
+        user_id: i64,
+        reminder_id: &str,
+        mutator: F,
+    ) -> Result<Option<ReminderJobRecord>, StorageError>
+    where
+        F: Fn(ReminderJobRecord, i64) -> Option<ReminderJobRecord>,
+    {
+        let key = reminder_job_key(user_id, reminder_id);
+        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
+
+        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
+            let (existing, etag) = self.load_json_with_etag::<ReminderJobRecord>(&key).await?;
+            let Some(existing) = existing else {
+                return Ok(None);
+            };
+            let now = current_timestamp_unix_secs();
+            let Some(record) = mutator(existing, now) else {
+                return Ok(None);
+            };
+
+            if self
+                .save_json_conditionally(&key, &record, etag.as_deref())
+                .await?
+            {
+                return Ok(Some(record));
+            }
+
+            if should_retry_control_plane_rmw(attempt) {
+                warn!(
+                    key = %key,
+                    attempt,
+                    "reminder job optimistic concurrency conflict, retrying"
+                );
+                sleep(Duration::from_millis(
+                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
+                ))
+                .await;
+            }
+        }
+
+        Err(StorageError::ConcurrencyConflict {
+            key,
+            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
+        })
     }
 
     /// Atomically modify user config using a closure.
@@ -1977,6 +2308,203 @@ impl StorageProvider for R2Storage {
 
         Ok(select_audit_events_page(events, before_version, limit))
     }
+
+    async fn create_reminder_job(
+        &self,
+        options: CreateReminderJobOptions,
+    ) -> Result<ReminderJobRecord, StorageError> {
+        let reminder_id = Uuid::new_v4().to_string();
+        let key = reminder_job_key(options.user_id, &reminder_id);
+        let now = current_timestamp_unix_secs();
+        let record = build_reminder_job_record(options, reminder_id, now);
+        self.save_json(&key, &record).await?;
+        Ok(record)
+    }
+
+    async fn get_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.load_json(&reminder_job_key(user_id, &reminder_id))
+            .await
+    }
+
+    async fn list_reminder_jobs(
+        &self,
+        user_id: i64,
+        context_key: Option<String>,
+        statuses: Option<Vec<ReminderJobStatus>>,
+        limit: usize,
+    ) -> Result<Vec<ReminderJobRecord>, StorageError> {
+        let mut records = self
+            .list_json_under_prefix::<ReminderJobRecord>(&reminder_jobs_prefix(user_id))
+            .await?;
+
+        if let Some(context_key) = context_key.as_ref() {
+            records.retain(|record| record.context_key == *context_key);
+        }
+
+        if let Some(statuses) = statuses.as_ref() {
+            records.retain(|record| statuses.contains(&record.status));
+        }
+
+        records.sort_by(|left, right| {
+            right
+                .next_run_at
+                .cmp(&left.next_run_at)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+        });
+        if records.len() > limit {
+            records.truncate(limit);
+        }
+        Ok(records)
+    }
+
+    async fn list_due_reminder_jobs(
+        &self,
+        user_id: i64,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<ReminderJobRecord>, StorageError> {
+        let mut records = self
+            .list_json_under_prefix::<ReminderJobRecord>(&reminder_jobs_prefix(user_id))
+            .await?;
+        records.retain(|record| record.is_due(now));
+        records.sort_by(|left, right| {
+            left.next_run_at
+                .cmp(&right.next_run_at)
+                .then_with(|| left.created_at.cmp(&right.created_at))
+        });
+        if records.len() > limit {
+            records.truncate(limit);
+        }
+        Ok(records)
+    }
+
+    async fn claim_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        lease_until: i64,
+        now: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
+            if !record.is_due(now) {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                lease_until: Some(lease_until),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn reschedule_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        last_run_at: Option<i64>,
+        last_error: Option<String>,
+        increment_run_count: bool,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            let run_count = if increment_run_count {
+                record.run_count.saturating_add(1)
+            } else {
+                record.run_count
+            };
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Scheduled,
+                next_run_at,
+                lease_until: None,
+                last_run_at: last_run_at.or(record.last_run_at),
+                last_error: last_error.clone(),
+                run_count,
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn complete_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        completed_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Completed,
+                lease_until: None,
+                last_run_at: Some(completed_at),
+                last_error: None,
+                run_count: record.run_count.saturating_add(1),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn fail_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        failed_at: i64,
+        error: String,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Failed,
+                lease_until: None,
+                last_run_at: Some(failed_at),
+                last_error: Some(error.clone()),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn cancel_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        cancelled_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Cancelled,
+                lease_until: None,
+                last_run_at: record.last_run_at.or(Some(cancelled_at)),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
 }
 
 /// Returns the R2 key for a user's configuration file
@@ -2076,6 +2604,18 @@ pub fn topic_infra_config_key(user_id: i64, topic_id: &str) -> String {
 #[must_use]
 pub fn topic_binding_key(user_id: i64, topic_id: &str) -> String {
     format!("users/{user_id}/control_plane/topic_bindings/{topic_id}.json")
+}
+
+/// Returns the R2 prefix for reminder job records.
+#[must_use]
+pub fn reminder_jobs_prefix(user_id: i64) -> String {
+    format!("users/{user_id}/control_plane/reminders/")
+}
+
+/// Returns the R2 key for a reminder job record.
+#[must_use]
+pub fn reminder_job_key(user_id: i64, reminder_id: &str) -> String {
+    format!("users/{user_id}/control_plane/reminders/{reminder_id}.json")
 }
 
 /// Returns the R2 key for private secret material.
@@ -2413,6 +2953,41 @@ fn build_audit_event_record(
         payload: options.payload,
         created_at: now,
     }
+}
+
+#[must_use]
+fn build_reminder_job_record(
+    options: CreateReminderJobOptions,
+    reminder_id: String,
+    now: i64,
+) -> ReminderJobRecord {
+    ReminderJobRecord {
+        schema_version: REMINDER_JOB_SCHEMA_VERSION,
+        version: next_record_version(None),
+        reminder_id,
+        user_id: options.user_id,
+        context_key: options.context_key,
+        flow_id: options.flow_id,
+        chat_id: options.chat_id,
+        thread_id: options.thread_id,
+        thread_kind: options.thread_kind,
+        task_prompt: options.task_prompt,
+        schedule_kind: options.schedule_kind,
+        status: ReminderJobStatus::Scheduled,
+        next_run_at: options.next_run_at,
+        interval_secs: options.interval_secs,
+        lease_until: None,
+        last_run_at: None,
+        last_error: None,
+        run_count: 0,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[must_use]
+fn with_next_reminder_version(record: &ReminderJobRecord) -> u64 {
+    next_record_version(Some(record.version))
 }
 
 #[must_use]

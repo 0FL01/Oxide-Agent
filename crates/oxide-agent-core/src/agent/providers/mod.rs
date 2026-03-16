@@ -5,6 +5,7 @@
 pub mod delegation;
 pub mod filehoster;
 pub mod manager_control_plane;
+pub mod reminder;
 pub mod sandbox;
 pub mod ssh_mcp;
 pub mod todos;
@@ -25,6 +26,7 @@ pub use manager_control_plane::{
     ForumTopicCreateResult, ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
     ManagerControlPlaneProvider, ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
+pub use reminder::{reminder_tool_names, ReminderContext, ReminderProvider};
 pub use sandbox::SandboxProvider;
 pub use ssh_mcp::{
     cleanup_stale_private_key_tempfiles, inject_ssh_approval_system_message,
