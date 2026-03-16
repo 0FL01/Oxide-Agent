@@ -5,5 +5,5 @@
 pub mod manager;
 pub mod scope;
 
-pub use manager::{ExecResult, SandboxManager};
+pub use manager::{ExecResult, SandboxContainerRecord, SandboxManager};
 pub use scope::SandboxScope;
