@@ -15,6 +15,7 @@ use bollard::Docker;
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{Either, Full};
+use serde::Serialize;
 use shell_escape::escape;
 use std::collections::HashMap;
 use std::io::Read;
@@ -37,6 +38,35 @@ pub struct ExecResult {
     pub stderr: String,
     /// Exit code of the command
     pub exit_code: i64,
+}
+
+/// Docker metadata for a user-owned sandbox container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SandboxContainerRecord {
+    /// Docker container id.
+    pub container_id: String,
+    /// Stable Docker container name.
+    pub container_name: String,
+    /// Docker image reference.
+    pub image: Option<String>,
+    /// Container creation timestamp reported by Docker.
+    pub created_at: Option<i64>,
+    /// Low-level Docker state such as `running` or `exited`.
+    pub state: Option<String>,
+    /// Human-readable Docker status string.
+    pub status: Option<String>,
+    /// Whether Docker currently reports the container as running.
+    pub running: bool,
+    /// Owning user id from Docker labels.
+    pub user_id: Option<i64>,
+    /// Sandbox namespace / topic scope from Docker labels.
+    pub scope: Option<String>,
+    /// Optional transport chat id from Docker labels.
+    pub chat_id: Option<i64>,
+    /// Optional transport thread id from Docker labels.
+    pub thread_id: Option<i64>,
+    /// Full Docker labels attached to the container.
+    pub labels: HashMap<String, String>,
 }
 
 impl ExecResult {
@@ -73,6 +103,70 @@ const RECREATE_REMOVE_INITIAL_BACKOFF_MS: u64 = 50;
 const RECREATE_REMOVE_MAX_BACKOFF_MS: u64 = 800;
 
 impl SandboxManager {
+    fn parse_label_i64(labels: &HashMap<String, String>, key: &str) -> Option<i64> {
+        labels.get(key).and_then(|value| value.parse::<i64>().ok())
+    }
+
+    fn normalize_container_name(names: Option<&Vec<String>>, fallback: &str) -> String {
+        names
+            .and_then(|names| names.first())
+            .map(|name| name.trim_start_matches('/').to_string())
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    fn record_from_container_summary(
+        summary: &bollard::models::ContainerSummary,
+    ) -> Option<SandboxContainerRecord> {
+        let container_id = summary.id.clone()?;
+        let labels = summary.labels.clone().unwrap_or_default();
+        let state_raw = summary.state;
+        let state = state_raw
+            .as_ref()
+            .map(|state| format!("{state:?}").to_ascii_lowercase());
+        let status = summary.status.clone();
+        let running = matches!(
+            state_raw,
+            Some(bollard::models::ContainerSummaryStateEnum::RUNNING)
+        ) || status
+            .as_deref()
+            .is_some_and(|status| status.starts_with("Up"));
+
+        Some(SandboxContainerRecord {
+            container_name: Self::normalize_container_name(summary.names.as_ref(), &container_id),
+            container_id,
+            image: summary.image.clone(),
+            created_at: summary.created,
+            state,
+            status,
+            running,
+            user_id: Self::parse_label_i64(&labels, "agent.user_id"),
+            scope: labels.get("agent.scope").cloned(),
+            chat_id: Self::parse_label_i64(&labels, "agent.chat_id"),
+            thread_id: Self::parse_label_i64(&labels, "agent.thread_id"),
+            labels,
+        })
+    }
+
+    fn sandbox_filters(user_id: i64) -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            "label".to_string(),
+            vec![
+                "agent.sandbox=true".to_string(),
+                format!("agent.user_id={user_id}"),
+            ],
+        )])
+    }
+
+    async fn connect_and_ping() -> Result<Docker> {
+        let docker =
+            Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
+        docker
+            .ping()
+            .await
+            .context("Failed to ping Docker daemon")?;
+        Ok(docker)
+    }
+
     fn is_not_found_error(error: &DockerError) -> bool {
         matches!(
             error,
@@ -131,14 +225,7 @@ impl SandboxManager {
     #[instrument(skip_all)]
     pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
         let scope = scope.into();
-        let docker =
-            Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
-
-        // Verify Docker connection
-        docker
-            .ping()
-            .await
-            .context("Failed to ping Docker daemon")?;
+        let docker = Self::connect_and_ping().await?;
 
         debug!(owner_id = scope.owner_id(), scope = %scope.namespace(), "Docker connection established");
 
@@ -148,6 +235,93 @@ impl SandboxManager {
             image_name: get_sandbox_image(),
             scope,
         })
+    }
+
+    /// List all sandbox containers owned by a user.
+    pub async fn list_user_sandboxes(user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+        let docker = Self::connect_and_ping().await?;
+        let containers = docker
+            .list_containers(Some(bollard::query_parameters::ListContainersOptions {
+                all: true,
+                filters: Some(Self::sandbox_filters(user_id)),
+                ..Default::default()
+            }))
+            .await
+            .context("Failed to list sandbox containers")?;
+
+        let mut records = containers
+            .iter()
+            .filter_map(Self::record_from_container_summary)
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| left.container_name.cmp(&right.container_name));
+        Ok(records)
+    }
+
+    /// Inspect a sandbox container by its Docker name.
+    pub async fn inspect_sandbox_by_name(
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<Option<SandboxContainerRecord>> {
+        let docker = Self::connect_and_ping().await?;
+        let mut filters = Self::sandbox_filters(user_id);
+        filters.insert("name".to_string(), vec![container_name.to_string()]);
+        let containers = docker
+            .list_containers(Some(bollard::query_parameters::ListContainersOptions {
+                all: true,
+                filters: Some(filters),
+                ..Default::default()
+            }))
+            .await
+            .context("Failed to inspect sandbox container by name")?;
+
+        Ok(containers
+            .iter()
+            .filter_map(Self::record_from_container_summary)
+            .find(|record| record.container_name == container_name))
+    }
+
+    /// Ensure a sandbox exists for the provided scope and return its Docker metadata.
+    pub async fn ensure_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+        let container_name = scope.container_name();
+        let owner_id = scope.owner_id();
+        let mut sandbox = Self::new(scope).await?;
+        sandbox.create_sandbox().await?;
+        Self::inspect_sandbox_by_name(owner_id, &container_name)
+            .await?
+            .ok_or_else(|| {
+                anyhow!("sandbox container '{container_name}' was not found after create")
+            })
+    }
+
+    /// Recreate a sandbox for the provided scope and return its Docker metadata.
+    pub async fn recreate_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+        let container_name = scope.container_name();
+        let owner_id = scope.owner_id();
+        let mut sandbox = Self::new(scope).await?;
+        sandbox.recreate().await?;
+        Self::inspect_sandbox_by_name(owner_id, &container_name)
+            .await?
+            .ok_or_else(|| {
+                anyhow!("sandbox container '{container_name}' was not found after recreate")
+            })
+    }
+
+    /// Delete a user-owned sandbox by Docker container name.
+    pub async fn delete_sandbox_by_name(user_id: i64, container_name: &str) -> Result<bool> {
+        let Some(_) = Self::inspect_sandbox_by_name(user_id, container_name).await? else {
+            return Ok(false);
+        };
+
+        let docker = Self::connect_and_ping().await?;
+        let options = RemoveContainerOptions {
+            force: true,
+            ..Default::default()
+        };
+        match docker.remove_container(container_name, Some(options)).await {
+            Ok(()) => Ok(true),
+            Err(error) if Self::is_not_found_error(&error) => Ok(false),
+            Err(error) => Err(error).context("Failed to delete sandbox container by name"),
+        }
     }
 
     /// Check if sandbox container is running

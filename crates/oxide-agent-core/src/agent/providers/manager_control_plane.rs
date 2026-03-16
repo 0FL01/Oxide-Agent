@@ -9,7 +9,7 @@ use crate::agent::profile::{
 };
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{SandboxContainerRecord, SandboxManager, SandboxScope};
 use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
     TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
@@ -52,6 +52,12 @@ const TOOL_TOPIC_AGENT_TOOLS_DISABLE: &str = "topic_agent_tools_disable";
 const TOOL_TOPIC_AGENT_HOOKS_GET: &str = "topic_agent_hooks_get";
 const TOOL_TOPIC_AGENT_HOOKS_ENABLE: &str = "topic_agent_hooks_enable";
 const TOOL_TOPIC_AGENT_HOOKS_DISABLE: &str = "topic_agent_hooks_disable";
+const TOOL_TOPIC_SANDBOX_LIST: &str = "topic_sandbox_list";
+const TOOL_TOPIC_SANDBOX_GET: &str = "topic_sandbox_get";
+const TOOL_TOPIC_SANDBOX_CREATE: &str = "topic_sandbox_create";
+const TOOL_TOPIC_SANDBOX_RECREATE: &str = "topic_sandbox_recreate";
+const TOOL_TOPIC_SANDBOX_DELETE: &str = "topic_sandbox_delete";
+const TOOL_TOPIC_SANDBOX_PRUNE: &str = "topic_sandbox_prune";
 const TOOL_FORUM_TOPIC_CREATE: &str = "forum_topic_create";
 const TOOL_FORUM_TOPIC_EDIT: &str = "forum_topic_edit";
 const TOOL_FORUM_TOPIC_CLOSE: &str = "forum_topic_close";
@@ -89,6 +95,12 @@ const BASE_TOOL_NAMES: &[&str] = &[
     TOOL_TOPIC_AGENT_HOOKS_GET,
     TOOL_TOPIC_AGENT_HOOKS_ENABLE,
     TOOL_TOPIC_AGENT_HOOKS_DISABLE,
+    TOOL_TOPIC_SANDBOX_LIST,
+    TOOL_TOPIC_SANDBOX_GET,
+    TOOL_TOPIC_SANDBOX_CREATE,
+    TOOL_TOPIC_SANDBOX_RECREATE,
+    TOOL_TOPIC_SANDBOX_DELETE,
+    TOOL_TOPIC_SANDBOX_PRUNE,
 ];
 
 const LIFECYCLE_TOOL_NAMES: &[&str] = &[
@@ -302,8 +314,41 @@ pub trait ManagerTopicSandboxCleanup: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Abstraction over sandbox inventory and lifecycle controls exposed via manager tools.
+#[async_trait]
+pub trait ManagerTopicSandboxControl: Send + Sync {
+    /// List all user-owned sandbox containers.
+    async fn list_topic_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>>;
+
+    /// Get a user-owned sandbox container by Docker name.
+    async fn get_topic_sandbox(
+        &self,
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<Option<SandboxContainerRecord>>;
+
+    /// Ensure a topic sandbox exists for the given scope.
+    async fn ensure_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord>;
+
+    /// Recreate a topic sandbox for the given scope.
+    async fn recreate_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord>;
+
+    /// Delete a topic sandbox by its logical scope.
+    async fn delete_topic_sandbox_by_scope(&self, scope: SandboxScope) -> Result<bool>;
+
+    /// Delete a topic sandbox by Docker container name.
+    async fn delete_topic_sandbox_by_name(
+        &self,
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<bool>;
+}
+
 #[derive(Default)]
 struct DockerTopicSandboxCleanup;
+
+#[derive(Default)]
+struct DockerTopicSandboxControl;
 
 #[async_trait]
 impl ManagerTopicSandboxCleanup for DockerTopicSandboxCleanup {
@@ -319,6 +364,41 @@ impl ManagerTopicSandboxCleanup for DockerTopicSandboxCleanup {
         .with_transport_metadata(Some(topic.chat_id), Some(topic.thread_id));
         let mut sandbox = SandboxManager::new(scope).await?;
         sandbox.destroy().await
+    }
+}
+
+#[async_trait]
+impl ManagerTopicSandboxControl for DockerTopicSandboxControl {
+    async fn list_topic_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+        SandboxManager::list_user_sandboxes(user_id).await
+    }
+
+    async fn get_topic_sandbox(
+        &self,
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<Option<SandboxContainerRecord>> {
+        SandboxManager::inspect_sandbox_by_name(user_id, container_name).await
+    }
+
+    async fn ensure_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
+        SandboxManager::ensure_scope_sandbox(scope).await
+    }
+
+    async fn recreate_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
+        SandboxManager::recreate_scope_sandbox(scope).await
+    }
+
+    async fn delete_topic_sandbox_by_scope(&self, scope: SandboxScope) -> Result<bool> {
+        SandboxManager::delete_sandbox_by_name(scope.owner_id(), &scope.container_name()).await
+    }
+
+    async fn delete_topic_sandbox_by_name(
+        &self,
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<bool> {
+        SandboxManager::delete_sandbox_by_name(user_id, container_name).await
     }
 }
 
@@ -742,6 +822,93 @@ struct ForumTopicListArgs {
     include_closed: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TopicSandboxPruneReason {
+    TopicMissing,
+    BindingMissing,
+    SandboxDisabled,
+    #[default]
+    All,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxListArgs {
+    #[serde(default)]
+    orphaned_only: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxGetArgs {
+    #[serde(default)]
+    topic_id: Option<String>,
+    #[serde(default)]
+    container_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxCreateArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxRecreateArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxDeleteArgs {
+    #[serde(default)]
+    topic_id: Option<String>,
+    #[serde(default)]
+    container_name: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxPruneArgs {
+    #[serde(default)]
+    reason: TopicSandboxPruneReason,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct TopicSandboxInventoryRecord {
+    container_id: String,
+    container_name: String,
+    image: Option<String>,
+    created_at: Option<i64>,
+    state: Option<String>,
+    status: Option<String>,
+    running: bool,
+    topic_id: Option<String>,
+    chat_id: Option<i64>,
+    thread_id: Option<i64>,
+    labels: std::collections::HashMap<String, String>,
+    bound_topic_exists: bool,
+    binding_found: bool,
+    sandbox_tools_enabled: Option<bool>,
+    orphan_reason: Option<String>,
+}
+
+#[derive(Debug)]
+enum TopicSandboxTarget {
+    TopicId(String),
+    ContainerName(String),
+}
+
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 struct ForumTopicCatalogEntry {
     topic_id: String,
@@ -759,6 +926,7 @@ pub struct ManagerControlPlaneProvider {
     user_id: i64,
     topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
     sandbox_cleanup: Arc<dyn ManagerTopicSandboxCleanup>,
+    sandbox_control: Arc<dyn ManagerTopicSandboxControl>,
 }
 
 impl ManagerControlPlaneProvider {
@@ -770,6 +938,7 @@ impl ManagerControlPlaneProvider {
             user_id,
             topic_lifecycle: None,
             sandbox_cleanup: Arc::new(DockerTopicSandboxCleanup),
+            sandbox_control: Arc::new(DockerTopicSandboxControl),
         }
     }
 
@@ -787,6 +956,16 @@ impl ManagerControlPlaneProvider {
         sandbox_cleanup: Arc<dyn ManagerTopicSandboxCleanup>,
     ) -> Self {
         self.sandbox_cleanup = sandbox_cleanup;
+        self
+    }
+
+    /// Overrides sandbox inventory/control strategy for manager sandbox tools.
+    #[must_use]
+    pub fn with_topic_sandbox_control(
+        mut self,
+        sandbox_control: Arc<dyn ManagerTopicSandboxControl>,
+    ) -> Self {
+        self.sandbox_control = sandbox_control;
         self
     }
 
@@ -1148,8 +1327,90 @@ impl ManagerControlPlaneProvider {
         tools.extend(Self::topic_agents_md_tools_definitions());
         tools.extend(Self::topic_infra_tools_definitions());
         tools.extend(Self::private_secret_tools_definitions());
+        tools.extend(Self::topic_sandbox_tools_definitions());
         tools.extend(Self::agent_profile_tools_definitions());
         tools
+    }
+
+    fn topic_sandbox_tools_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_TOPIC_SANDBOX_LIST.to_string(),
+                description: "List user-owned topic sandbox containers and orphan status"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "orphaned_only": { "type": "boolean", "description": "Return only containers that look orphaned or disabled" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_SANDBOX_GET.to_string(),
+                description: "Inspect a topic sandbox by topic_id or Docker container name"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Canonical topic identifier or unique forum topic alias" },
+                        "container_name": { "type": "string", "description": "Exact Docker container name" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_SANDBOX_CREATE.to_string(),
+                description: "Ensure a sandbox container exists for a tracked forum topic"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Canonical topic identifier or unique forum topic alias" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Docker" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_SANDBOX_RECREATE.to_string(),
+                description: "Recreate a topic sandbox container, wiping previous workspace state"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Canonical topic identifier or unique forum topic alias" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Docker" }
+                    },
+                    "required": ["topic_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_SANDBOX_DELETE.to_string(),
+                description:
+                    "Delete a topic sandbox container by topic_id or Docker container name"
+                        .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic_id": { "type": "string", "description": "Canonical topic identifier or unique forum topic alias" },
+                        "container_name": { "type": "string", "description": "Exact Docker container name" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Docker" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_TOPIC_SANDBOX_PRUNE.to_string(),
+                description:
+                    "Delete orphaned or disabled topic sandbox containers for the current user"
+                        .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "reason": { "type": "string", "enum": ["topic_missing", "binding_missing", "sandbox_disabled", "all"], "description": "Which orphan class to delete; defaults to all" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Docker" }
+                    }
+                }),
+            },
+        ]
     }
 
     fn private_secret_tools_definitions() -> Vec<ToolDefinition> {
@@ -2285,6 +2546,7 @@ impl ManagerControlPlaneProvider {
         changed: bool,
         outcome: &str,
         version: Option<u64>,
+        sandbox_cleanup: Option<serde_json::Value>,
     ) -> AuditStatus {
         self.append_audit_with_status(AppendAuditEventOptions {
             user_id: self.user_id,
@@ -2298,6 +2560,7 @@ impl ManagerControlPlaneProvider {
                 "previous": context.previous.clone(),
                 "changed": changed,
                 "version": version,
+                "sandbox_cleanup": sandbox_cleanup,
                 "outcome": outcome
             }),
         })
@@ -2336,6 +2599,7 @@ impl ManagerControlPlaneProvider {
         context: TopicAgentToolMutationContext,
         profile: Option<AgentProfileRecord>,
         snapshot: TopicAgentToolSnapshot,
+        sandbox_cleanup: Option<serde_json::Value>,
         audit_status: AuditStatus,
     ) -> Result<String> {
         Self::to_json_string(Self::attach_audit_status(
@@ -2346,7 +2610,8 @@ impl ManagerControlPlaneProvider {
                 "agent_id": context.agent_id,
                 "requested_tools": context.requested_tools,
                 "profile": profile,
-                "tools": snapshot
+                "tools": snapshot,
+                "sandbox_cleanup": sandbox_cleanup
             }),
             audit_status,
         ))
@@ -2746,6 +3011,240 @@ impl ManagerControlPlaneProvider {
             _ => bail!(
                 "topic alias '{alias}' is ambiguous across multiple forum topics; use canonical '<chat_id>:<thread_id>'"
             ),
+        }
+    }
+
+    fn parse_canonical_forum_topic_id(topic_id: &str) -> Option<(i64, i64)> {
+        let (chat_id, thread_id) = topic_id.split_once(':')?;
+        let chat_id = chat_id.parse::<i64>().ok()?;
+        let thread_id = thread_id.parse::<i64>().ok()?;
+        (thread_id > 0).then_some((chat_id, thread_id))
+    }
+
+    fn topic_sandbox_scope(&self, topic_id: &str) -> Result<SandboxScope> {
+        let (chat_id, thread_id) = Self::parse_canonical_forum_topic_id(topic_id).ok_or_else(|| {
+            anyhow!(
+                "topic_id '{topic_id}' is not a canonical Telegram forum topic id. Use '<chat_id>:<thread_id>'"
+            )
+        })?;
+
+        Ok(SandboxScope::new(self.user_id, topic_id.to_string())
+            .with_transport_metadata(Some(chat_id), Some(thread_id)))
+    }
+
+    fn forum_topic_action_from_topic_id(topic_id: &str) -> Option<ForumTopicActionResult> {
+        let (chat_id, thread_id) = Self::parse_canonical_forum_topic_id(topic_id)?;
+        Some(ForumTopicActionResult { chat_id, thread_id })
+    }
+
+    fn sandbox_provider_enabled(snapshot: &TopicAgentToolSnapshot) -> bool {
+        snapshot
+            .provider_statuses
+            .iter()
+            .find(|status| status.provider == "sandbox")
+            .is_some_and(|status| status.enabled)
+    }
+
+    fn prune_reason_matches(
+        reason: TopicSandboxPruneReason,
+        record: &TopicSandboxInventoryRecord,
+    ) -> bool {
+        match reason {
+            TopicSandboxPruneReason::TopicMissing => {
+                record.orphan_reason.as_deref() == Some("topic_missing")
+            }
+            TopicSandboxPruneReason::BindingMissing => {
+                record.orphan_reason.as_deref() == Some("binding_missing")
+            }
+            TopicSandboxPruneReason::SandboxDisabled => {
+                record.orphan_reason.as_deref() == Some("sandbox_disabled")
+            }
+            TopicSandboxPruneReason::All => matches!(
+                record.orphan_reason.as_deref(),
+                Some("topic_missing" | "binding_missing" | "sandbox_disabled")
+            ),
+        }
+    }
+
+    async fn ensure_tracked_forum_topic(&self, topic_id: &str) -> Result<()> {
+        let config = self
+            .storage
+            .get_user_config(self.user_id)
+            .await
+            .map_err(|err| anyhow!("failed to load user config for topic sandbox: {err}"))?;
+        if config.contexts.contains_key(topic_id) {
+            return Ok(());
+        }
+
+        bail!("topic_id '{topic_id}' is not tracked in the user topic catalog")
+    }
+
+    async fn build_topic_sandbox_inventory(
+        &self,
+        containers: Vec<SandboxContainerRecord>,
+    ) -> Result<Vec<TopicSandboxInventoryRecord>> {
+        let config = self
+            .storage
+            .get_user_config(self.user_id)
+            .await
+            .map_err(|err| {
+                anyhow!("failed to load user config for topic sandbox inventory: {err}")
+            })?;
+
+        let mut records = Vec::with_capacity(containers.len());
+        for container in containers {
+            let topic_id = container.scope.clone();
+            let canonical_topic_id = topic_id
+                .as_deref()
+                .filter(|topic_id| Self::is_canonical_forum_topic_id(topic_id))
+                .map(str::to_string);
+            let bound_topic_exists = canonical_topic_id
+                .as_ref()
+                .is_some_and(|topic_id| config.contexts.contains_key(topic_id));
+
+            let (binding_found, sandbox_tools_enabled) =
+                if let Some(topic_id) = canonical_topic_id.as_ref() {
+                    let binding = self
+                        .storage
+                        .get_topic_binding(self.user_id, topic_id.clone())
+                        .await
+                        .map_err(|err| {
+                            anyhow!("failed to get topic binding for topic sandbox: {err}")
+                        })?;
+
+                    if let Some(binding) = binding {
+                        let catalog = self.topic_agent_tool_catalog(topic_id).await?;
+                        let profile = self
+                            .storage
+                            .get_agent_profile(self.user_id, binding.agent_id)
+                            .await
+                            .map_err(|err| {
+                                anyhow!("failed to get agent profile for topic sandbox: {err}")
+                            })?;
+                        let snapshot = Self::topic_agent_tool_snapshot(
+                            &catalog,
+                            profile.as_ref().map(|profile| &profile.profile),
+                        );
+                        (true, Some(Self::sandbox_provider_enabled(&snapshot)))
+                    } else {
+                        (false, None)
+                    }
+                } else {
+                    (false, None)
+                };
+
+            let orphan_reason = if canonical_topic_id.is_none() {
+                Some("non_topic_scope".to_string())
+            } else if !bound_topic_exists {
+                Some("topic_missing".to_string())
+            } else if !binding_found {
+                Some("binding_missing".to_string())
+            } else if sandbox_tools_enabled == Some(false) {
+                Some("sandbox_disabled".to_string())
+            } else {
+                None
+            };
+
+            records.push(TopicSandboxInventoryRecord {
+                container_id: container.container_id,
+                container_name: container.container_name,
+                image: container.image,
+                created_at: container.created_at,
+                state: container.state,
+                status: container.status,
+                running: container.running,
+                topic_id,
+                chat_id: container.chat_id,
+                thread_id: container.thread_id,
+                labels: container.labels,
+                bound_topic_exists,
+                binding_found,
+                sandbox_tools_enabled,
+                orphan_reason,
+            });
+        }
+
+        records.sort_by(|left, right| left.container_name.cmp(&right.container_name));
+        Ok(records)
+    }
+
+    async fn get_topic_sandbox_inventory_by_name(
+        &self,
+        container_name: &str,
+    ) -> Result<Option<TopicSandboxInventoryRecord>> {
+        let Some(container) = self
+            .sandbox_control
+            .get_topic_sandbox(self.user_id, container_name)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(self
+            .build_topic_sandbox_inventory(vec![container])
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    async fn get_topic_sandbox_inventory_by_topic(
+        &self,
+        topic_id: &str,
+    ) -> Result<Option<TopicSandboxInventoryRecord>> {
+        let scope = self.topic_sandbox_scope(topic_id)?;
+        self.get_topic_sandbox_inventory_by_name(&scope.container_name())
+            .await
+    }
+
+    async fn resolve_topic_sandbox_target(
+        &self,
+        topic_id: Option<String>,
+        container_name: Option<String>,
+        mutation: bool,
+    ) -> Result<TopicSandboxTarget> {
+        match (topic_id, container_name) {
+            (Some(topic_id), None) => {
+                let topic_id = if mutation {
+                    self.resolve_mutation_topic_id(topic_id).await?
+                } else {
+                    self.resolve_lookup_topic_id(topic_id).await?
+                };
+                Ok(TopicSandboxTarget::TopicId(topic_id))
+            }
+            (None, Some(container_name)) => Ok(TopicSandboxTarget::ContainerName(
+                Self::validate_non_empty(container_name, "container_name")?,
+            )),
+            (Some(_), Some(_)) => {
+                bail!("provide either topic_id or container_name, not both")
+            }
+            (None, None) => bail!("either topic_id or container_name is required"),
+        }
+    }
+
+    async fn cleanup_topic_sandbox_for_topic_id(&self, topic_id: &str) -> serde_json::Value {
+        let Some(topic) = Self::forum_topic_action_from_topic_id(topic_id) else {
+            return json!({
+                "skipped": true,
+                "reason": "topic_id is not a canonical Telegram forum topic id"
+            });
+        };
+
+        match self
+            .sandbox_cleanup
+            .cleanup_topic_sandbox(self.user_id, &topic)
+            .await
+        {
+            Ok(()) => json!({
+                "skipped": false,
+                "deleted_container": true,
+                "topic_id": topic_id,
+            }),
+            Err(err) => json!({
+                "skipped": false,
+                "deleted_container": false,
+                "topic_id": topic_id,
+                "error": err.to_string(),
+            }),
         }
     }
 
@@ -3558,6 +4057,10 @@ impl ManagerControlPlaneProvider {
         let (context, catalog) = self
             .prepare_topic_agent_tool_mutation(args.topic_id, args.tools)
             .await?;
+        let previous_snapshot = Self::topic_agent_tool_snapshot(
+            &catalog,
+            context.previous.as_ref().map(|profile| &profile.profile),
+        );
         let mutation = match action {
             TOOL_TOPIC_AGENT_TOOLS_ENABLE => {
                 Self::enable_topic_agent_tools(context.previous.as_ref(), &context.requested_tools)?
@@ -3578,6 +4081,7 @@ impl ManagerControlPlaneProvider {
                     mutation.changed,
                     Self::dry_run_outcome(true),
                     None,
+                    None,
                 )
                 .await;
 
@@ -3593,7 +4097,7 @@ impl ManagerControlPlaneProvider {
 
         if !mutation.changed {
             let audit_status = self
-                .append_topic_agent_tools_audit(action, &context, false, "noop", None)
+                .append_topic_agent_tools_audit(action, &context, false, "noop", None, None)
                 .await;
 
             return Self::topic_agent_tools_result_response(
@@ -3601,6 +4105,7 @@ impl ManagerControlPlaneProvider {
                 context,
                 None,
                 snapshot,
+                None,
                 audit_status,
             );
         }
@@ -3615,6 +4120,17 @@ impl ManagerControlPlaneProvider {
             .await
             .map_err(|err| anyhow!("failed to upsert agent profile: {err}"))?;
         let snapshot = Self::topic_agent_tool_snapshot(&catalog, Some(&record.profile));
+        let sandbox_cleanup = if action == TOOL_TOPIC_AGENT_TOOLS_DISABLE
+            && Self::sandbox_provider_enabled(&previous_snapshot)
+            && !Self::sandbox_provider_enabled(&snapshot)
+        {
+            Some(
+                self.cleanup_topic_sandbox_for_topic_id(&context.topic_id)
+                    .await,
+            )
+        } else {
+            None
+        };
 
         let audit_status = self
             .append_topic_agent_tools_audit(
@@ -3623,6 +4139,7 @@ impl ManagerControlPlaneProvider {
                 true,
                 Self::dry_run_outcome(false),
                 Some(record.version),
+                sandbox_cleanup.clone(),
             )
             .await;
 
@@ -3634,6 +4151,7 @@ impl ManagerControlPlaneProvider {
             },
             Some(record),
             snapshot,
+            sandbox_cleanup,
             audit_status,
         )
     }
@@ -5212,6 +5730,426 @@ impl ManagerControlPlaneProvider {
             "topics": topics,
         }))
     }
+
+    async fn execute_topic_sandbox_list(&self, arguments: &str) -> Result<String> {
+        let args: TopicSandboxListArgs = Self::parse_args(arguments, TOOL_TOPIC_SANDBOX_LIST)?;
+        let sandboxes = self
+            .build_topic_sandbox_inventory(
+                self.sandbox_control
+                    .list_topic_sandboxes(self.user_id)
+                    .await?,
+            )
+            .await?;
+        let sandboxes = if args.orphaned_only {
+            sandboxes
+                .into_iter()
+                .filter(|record| Self::prune_reason_matches(TopicSandboxPruneReason::All, record))
+                .collect::<Vec<_>>()
+        } else {
+            sandboxes
+        };
+
+        Self::to_json_string(json!({
+            "ok": true,
+            "orphaned_only": args.orphaned_only,
+            "count": sandboxes.len(),
+            "sandboxes": sandboxes,
+        }))
+    }
+
+    async fn execute_topic_sandbox_get(&self, arguments: &str) -> Result<String> {
+        let args: TopicSandboxGetArgs = Self::parse_args(arguments, TOOL_TOPIC_SANDBOX_GET)?;
+        let target = self
+            .resolve_topic_sandbox_target(args.topic_id, args.container_name, false)
+            .await?;
+        let sandbox = match &target {
+            TopicSandboxTarget::TopicId(topic_id) => {
+                self.get_topic_sandbox_inventory_by_topic(topic_id).await?
+            }
+            TopicSandboxTarget::ContainerName(container_name) => {
+                self.get_topic_sandbox_inventory_by_name(container_name)
+                    .await?
+            }
+        };
+
+        let response = match target {
+            TopicSandboxTarget::TopicId(topic_id) => json!({
+                "ok": true,
+                "found": sandbox.is_some(),
+                "topic_id": topic_id,
+                "sandbox": sandbox,
+            }),
+            TopicSandboxTarget::ContainerName(container_name) => json!({
+                "ok": true,
+                "found": sandbox.is_some(),
+                "container_name": container_name,
+                "sandbox": sandbox,
+            }),
+        };
+
+        Self::to_json_string(response)
+    }
+
+    async fn execute_topic_sandbox_create(&self, arguments: &str) -> Result<String> {
+        let args: TopicSandboxCreateArgs = Self::parse_args(arguments, TOOL_TOPIC_SANDBOX_CREATE)?;
+        let topic_id = self.resolve_mutation_topic_id(args.topic_id).await?;
+        self.ensure_tracked_forum_topic(&topic_id).await?;
+        let scope = self.topic_sandbox_scope(&topic_id)?;
+        let previous = self.get_topic_sandbox_inventory_by_topic(&topic_id).await?;
+        let container_name = scope.container_name();
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_SANDBOX_CREATE.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "container_name": container_name,
+                        "previous": previous.clone(),
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            return Self::to_json_string(Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "create",
+                        "topic_id": topic_id,
+                        "container_name": container_name,
+                    },
+                    "previous": previous,
+                }),
+                audit_status,
+            ));
+        }
+
+        let sandbox = self
+            .build_topic_sandbox_inventory(vec![
+                self.sandbox_control.ensure_topic_sandbox(scope).await?,
+            ])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("topic sandbox inventory is empty after create"))?;
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id.clone()),
+                agent_id: None,
+                action: TOOL_TOPIC_SANDBOX_CREATE.to_string(),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "container_name": sandbox.container_name.clone(),
+                    "previous": previous,
+                    "sandbox": sandbox.clone(),
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "sandbox": sandbox,
+            }),
+            audit_status,
+        ))
+    }
+
+    async fn execute_topic_sandbox_recreate(&self, arguments: &str) -> Result<String> {
+        let args: TopicSandboxRecreateArgs =
+            Self::parse_args(arguments, TOOL_TOPIC_SANDBOX_RECREATE)?;
+        let topic_id = self.resolve_mutation_topic_id(args.topic_id).await?;
+        let scope = self.topic_sandbox_scope(&topic_id)?;
+        let previous = self.get_topic_sandbox_inventory_by_topic(&topic_id).await?;
+        let container_name = scope.container_name();
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: Some(topic_id.clone()),
+                    agent_id: None,
+                    action: TOOL_TOPIC_SANDBOX_RECREATE.to_string(),
+                    payload: json!({
+                        "topic_id": topic_id,
+                        "container_name": container_name,
+                        "previous": previous.clone(),
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            return Self::to_json_string(Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": {
+                        "operation": "recreate",
+                        "topic_id": topic_id,
+                        "container_name": container_name,
+                    },
+                    "previous": previous,
+                }),
+                audit_status,
+            ));
+        }
+
+        let sandbox = self
+            .build_topic_sandbox_inventory(vec![
+                self.sandbox_control.recreate_topic_sandbox(scope).await?,
+            ])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("topic sandbox inventory is empty after recreate"))?;
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: Some(topic_id.clone()),
+                agent_id: None,
+                action: TOOL_TOPIC_SANDBOX_RECREATE.to_string(),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "container_name": sandbox.container_name.clone(),
+                    "previous": previous,
+                    "sandbox": sandbox.clone(),
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "sandbox": sandbox,
+            }),
+            audit_status,
+        ))
+    }
+
+    async fn topic_sandbox_delete_preview(
+        &self,
+        target: &TopicSandboxTarget,
+        previous: Option<TopicSandboxInventoryRecord>,
+    ) -> Result<String> {
+        let (topic_id, container_name, preview_target) = match target {
+            TopicSandboxTarget::TopicId(topic_id) => {
+                let scope = self.topic_sandbox_scope(topic_id)?;
+                (
+                    Some(topic_id.clone()),
+                    scope.container_name(),
+                    json!({ "topic_id": topic_id }),
+                )
+            }
+            TopicSandboxTarget::ContainerName(container_name) => (
+                previous
+                    .as_ref()
+                    .and_then(|sandbox| sandbox.topic_id.clone()),
+                container_name.clone(),
+                json!({ "container_name": container_name }),
+            ),
+        };
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: topic_id.clone(),
+                agent_id: None,
+                action: TOOL_TOPIC_SANDBOX_DELETE.to_string(),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "container_name": container_name,
+                    "previous": previous.clone(),
+                    "outcome": Self::dry_run_outcome(true)
+                }),
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "dry_run": true,
+                "preview": {
+                    "operation": "delete",
+                    "target": preview_target,
+                },
+                "previous": previous,
+            }),
+            audit_status,
+        ))
+    }
+
+    async fn apply_topic_sandbox_delete(
+        &self,
+        target: TopicSandboxTarget,
+        previous: Option<TopicSandboxInventoryRecord>,
+    ) -> Result<String> {
+        let (deleted, topic_id, container_name) = match target {
+            TopicSandboxTarget::TopicId(topic_id) => {
+                let scope = self.topic_sandbox_scope(&topic_id)?;
+                let deleted = self
+                    .sandbox_control
+                    .delete_topic_sandbox_by_scope(scope.clone())
+                    .await?;
+                (deleted, Some(topic_id), scope.container_name())
+            }
+            TopicSandboxTarget::ContainerName(container_name) => {
+                let deleted = self
+                    .sandbox_control
+                    .delete_topic_sandbox_by_name(self.user_id, &container_name)
+                    .await?;
+                (
+                    deleted,
+                    previous
+                        .as_ref()
+                        .and_then(|sandbox| sandbox.topic_id.clone()),
+                    container_name,
+                )
+            }
+        };
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: topic_id.clone(),
+                agent_id: None,
+                action: TOOL_TOPIC_SANDBOX_DELETE.to_string(),
+                payload: json!({
+                    "topic_id": topic_id,
+                    "container_name": container_name,
+                    "previous": previous.clone(),
+                    "deleted": deleted,
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "deleted": deleted,
+                "container_name": container_name,
+                "sandbox": previous,
+            }),
+            audit_status,
+        ))
+    }
+
+    async fn execute_topic_sandbox_delete(&self, arguments: &str) -> Result<String> {
+        let args: TopicSandboxDeleteArgs = Self::parse_args(arguments, TOOL_TOPIC_SANDBOX_DELETE)?;
+        let target = self
+            .resolve_topic_sandbox_target(args.topic_id, args.container_name, true)
+            .await?;
+        let previous = match &target {
+            TopicSandboxTarget::TopicId(topic_id) => {
+                self.get_topic_sandbox_inventory_by_topic(topic_id).await?
+            }
+            TopicSandboxTarget::ContainerName(container_name) => {
+                self.get_topic_sandbox_inventory_by_name(container_name)
+                    .await?
+            }
+        };
+
+        if args.dry_run {
+            return self.topic_sandbox_delete_preview(&target, previous).await;
+        }
+
+        self.apply_topic_sandbox_delete(target, previous).await
+    }
+
+    async fn execute_topic_sandbox_prune(&self, arguments: &str) -> Result<String> {
+        let args: TopicSandboxPruneArgs = Self::parse_args(arguments, TOOL_TOPIC_SANDBOX_PRUNE)?;
+        let candidates = self
+            .build_topic_sandbox_inventory(
+                self.sandbox_control
+                    .list_topic_sandboxes(self.user_id)
+                    .await?,
+            )
+            .await?
+            .into_iter()
+            .filter(|record| Self::prune_reason_matches(args.reason, record))
+            .collect::<Vec<_>>();
+
+        if args.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: None,
+                    agent_id: None,
+                    action: TOOL_TOPIC_SANDBOX_PRUNE.to_string(),
+                    payload: json!({
+                        "reason": args.reason,
+                        "count": candidates.len(),
+                        "candidates": candidates.clone(),
+                        "outcome": Self::dry_run_outcome(true)
+                    }),
+                })
+                .await;
+
+            return Self::to_json_string(Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "reason": args.reason,
+                    "count": candidates.len(),
+                    "candidates": candidates,
+                }),
+                audit_status,
+            ));
+        }
+
+        let mut deleted = Vec::new();
+        let mut errors = Vec::new();
+        for candidate in &candidates {
+            match self
+                .sandbox_control
+                .delete_topic_sandbox_by_name(self.user_id, &candidate.container_name)
+                .await
+            {
+                Ok(true) => deleted.push(candidate.container_name.clone()),
+                Ok(false) => {}
+                Err(err) => errors.push(format!(
+                    "failed to delete {}: {err}",
+                    candidate.container_name
+                )),
+            }
+        }
+
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: None,
+                agent_id: None,
+                action: TOOL_TOPIC_SANDBOX_PRUNE.to_string(),
+                payload: json!({
+                    "reason": args.reason,
+                    "count": candidates.len(),
+                    "candidates": candidates.clone(),
+                    "deleted": deleted.clone(),
+                    "errors": errors.clone(),
+                    "outcome": Self::dry_run_outcome(false)
+                }),
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            json!({
+                "ok": true,
+                "reason": args.reason,
+                "count": candidates.len(),
+                "candidates": candidates,
+                "deleted": deleted,
+                "errors": errors,
+            }),
+            audit_status,
+        ))
+    }
 }
 
 #[async_trait]
@@ -5272,6 +6210,12 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_TOPIC_AGENT_HOOKS_DISABLE => {
                 self.execute_topic_agent_hooks_disable(arguments).await
             }
+            TOOL_TOPIC_SANDBOX_LIST => self.execute_topic_sandbox_list(arguments).await,
+            TOOL_TOPIC_SANDBOX_GET => self.execute_topic_sandbox_get(arguments).await,
+            TOOL_TOPIC_SANDBOX_CREATE => self.execute_topic_sandbox_create(arguments).await,
+            TOOL_TOPIC_SANDBOX_RECREATE => self.execute_topic_sandbox_recreate(arguments).await,
+            TOOL_TOPIC_SANDBOX_DELETE => self.execute_topic_sandbox_delete(arguments).await,
+            TOOL_TOPIC_SANDBOX_PRUNE => self.execute_topic_sandbox_prune(arguments).await,
             TOOL_FORUM_TOPIC_CREATE => self.execute_forum_topic_create(arguments).await,
             TOOL_FORUM_TOPIC_EDIT => self.execute_forum_topic_edit(arguments).await,
             TOOL_FORUM_TOPIC_CLOSE => {
@@ -5642,6 +6586,154 @@ mod tests {
                 topic.thread_id,
             ));
             Ok(())
+        }
+    }
+
+    struct FakeTopicSandboxControl {
+        records: std::sync::Mutex<std::collections::HashMap<String, SandboxContainerRecord>>,
+        ensured: std::sync::Mutex<Vec<String>>,
+        recreated: std::sync::Mutex<Vec<String>>,
+        deleted: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl FakeTopicSandboxControl {
+        fn new(records: Vec<SandboxContainerRecord>) -> Self {
+            Self {
+                records: std::sync::Mutex::new(
+                    records
+                        .into_iter()
+                        .map(|record| (record.container_name.clone(), record))
+                        .collect(),
+                ),
+                ensured: std::sync::Mutex::new(Vec::new()),
+                recreated: std::sync::Mutex::new(Vec::new()),
+                deleted: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn sandbox_record(user_id: i64, topic_id: &str) -> SandboxContainerRecord {
+            let (chat_id, thread_id) =
+                ManagerControlPlaneProvider::parse_canonical_forum_topic_id(topic_id)
+                    .expect("topic id must be canonical");
+            let scope = SandboxScope::new(user_id, topic_id.to_string())
+                .with_transport_metadata(Some(chat_id), Some(thread_id));
+            SandboxContainerRecord {
+                container_id: format!("ctr-{}", scope.container_name()),
+                container_name: scope.container_name(),
+                image: Some("agent-sandbox:latest".to_string()),
+                created_at: Some(100),
+                state: Some("running".to_string()),
+                status: Some("Up 1 hour".to_string()),
+                running: true,
+                user_id: Some(user_id),
+                scope: Some(topic_id.to_string()),
+                chat_id: Some(chat_id),
+                thread_id: Some(thread_id),
+                labels: scope.docker_labels(),
+            }
+        }
+
+        fn ensured(&self) -> Vec<String> {
+            self.ensured.lock().expect("mutex poisoned").clone()
+        }
+
+        fn recreated(&self) -> Vec<String> {
+            self.recreated.lock().expect("mutex poisoned").clone()
+        }
+
+        fn deleted(&self) -> Vec<String> {
+            self.deleted.lock().expect("mutex poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ManagerTopicSandboxControl for FakeTopicSandboxControl {
+        async fn list_topic_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+            Ok(self
+                .records
+                .lock()
+                .expect("mutex poisoned")
+                .values()
+                .filter(|record| record.user_id == Some(user_id))
+                .cloned()
+                .collect())
+        }
+
+        async fn get_topic_sandbox(
+            &self,
+            user_id: i64,
+            container_name: &str,
+        ) -> Result<Option<SandboxContainerRecord>> {
+            Ok(self
+                .records
+                .lock()
+                .expect("mutex poisoned")
+                .get(container_name)
+                .filter(|record| record.user_id == Some(user_id))
+                .cloned())
+        }
+
+        async fn ensure_topic_sandbox(
+            &self,
+            scope: SandboxScope,
+        ) -> Result<SandboxContainerRecord> {
+            self.ensured
+                .lock()
+                .expect("mutex poisoned")
+                .push(scope.namespace().to_string());
+            let record = Self::sandbox_record(scope.owner_id(), scope.namespace());
+            self.records
+                .lock()
+                .expect("mutex poisoned")
+                .insert(record.container_name.clone(), record.clone());
+            Ok(record)
+        }
+
+        async fn recreate_topic_sandbox(
+            &self,
+            scope: SandboxScope,
+        ) -> Result<SandboxContainerRecord> {
+            self.recreated
+                .lock()
+                .expect("mutex poisoned")
+                .push(scope.namespace().to_string());
+            let record = Self::sandbox_record(scope.owner_id(), scope.namespace());
+            self.records
+                .lock()
+                .expect("mutex poisoned")
+                .insert(record.container_name.clone(), record.clone());
+            Ok(record)
+        }
+
+        async fn delete_topic_sandbox_by_scope(&self, scope: SandboxScope) -> Result<bool> {
+            let container_name = scope.container_name();
+            self.deleted
+                .lock()
+                .expect("mutex poisoned")
+                .push(container_name.clone());
+            Ok(self
+                .records
+                .lock()
+                .expect("mutex poisoned")
+                .remove(&container_name)
+                .is_some())
+        }
+
+        async fn delete_topic_sandbox_by_name(
+            &self,
+            _user_id: i64,
+            container_name: &str,
+        ) -> Result<bool> {
+            self.deleted
+                .lock()
+                .expect("mutex poisoned")
+                .push(container_name.to_string());
+            Ok(self
+                .records
+                .lock()
+                .expect("mutex poisoned")
+                .remove(container_name)
+                .is_some())
         }
     }
 
@@ -6237,6 +7329,363 @@ mod tests {
         assert_eq!(blocked_tools.len(), TOPIC_AGENT_YTDLP_TOOLS.len());
         assert_eq!(parsed["tools"]["provider_statuses"][3]["provider"], "ytdlp");
         assert_eq!(parsed["tools"]["provider_statuses"][3]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn topic_agent_tools_disable_sandbox_triggers_container_cleanup() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .returning(|_, _| Ok(Some(binding(77, "-100777:240", "agent-a", 1))));
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .returning(|_, _| Ok(None));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .returning(|_, _| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 3,
+                    user_id: 77,
+                    agent_id: "agent-a".to_string(),
+                    profile: json!({
+                        "systemPrompt": "infra agent",
+                    }),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        mock.expect_upsert_agent_profile()
+            .withf(|options| {
+                options.agent_id == "agent-a"
+                    && TOPIC_AGENT_SANDBOX_TOOLS.iter().all(|tool| {
+                        options.profile["blockedTools"]
+                            .as_array()
+                            .is_some_and(|tools| {
+                                tools.iter().any(|value| value.as_str() == Some(*tool))
+                            })
+                    })
+            })
+            .returning(|options| {
+                Ok(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 4,
+                    user_id: options.user_id,
+                    agent_id: options.agent_id,
+                    profile: options.profile,
+                    created_at: 10,
+                    updated_at: 30,
+                })
+            });
+        mock.expect_append_audit_event()
+            .withf(|options| {
+                options.action == TOOL_TOPIC_AGENT_TOOLS_DISABLE
+                    && options
+                        .payload
+                        .get("sandbox_cleanup")
+                        .and_then(|value| value.get("deleted_container"))
+                        == Some(&json!(true))
+            })
+            .returning(|options| {
+                Ok(audit_event(
+                    1,
+                    options.topic_id.as_deref(),
+                    options.agent_id.as_deref(),
+                    &options.action,
+                    options.payload,
+                ))
+            });
+
+        let sandbox_cleanup = Arc::new(FakeTopicSandboxCleanup::new());
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_sandbox_cleanup(sandbox_cleanup.clone());
+        let response = provider
+            .execute(
+                TOOL_TOPIC_AGENT_TOOLS_DISABLE,
+                r#"{"topic_id":"-100777:240","tools":["sandbox"]}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic agent sandbox disable should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["sandbox_cleanup"]["deleted_container"], true);
+        assert_eq!(sandbox_cleanup.calls(), vec![(77, -100777, 240)],);
+    }
+
+    #[tokio::test]
+    async fn topic_sandbox_list_marks_disabled_container_as_orphaned() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config().times(1).returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([(
+                    "-100777:240".to_string(),
+                    crate::storage::UserContextConfig {
+                        chat_id: Some(-100777),
+                        thread_id: Some(240),
+                        ..crate::storage::UserContextConfig::default()
+                    },
+                )]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(Some(binding(77, "-100777:240", "agent-a", 1))));
+        mock.expect_get_topic_infra_config()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(None));
+        mock.expect_get_agent_profile()
+            .with(eq(77_i64), eq("agent-a".to_string()))
+            .times(1)
+            .returning(|_, _| {
+                Ok(Some(AgentProfileRecord {
+                    schema_version: 1,
+                    version: 3,
+                    user_id: 77,
+                    agent_id: "agent-a".to_string(),
+                    profile: json!({
+                        "blockedTools": TOPIC_AGENT_SANDBOX_TOOLS,
+                    }),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+
+        let sandbox_control = Arc::new(FakeTopicSandboxControl::new(vec![
+            FakeTopicSandboxControl::sandbox_record(77, "-100777:240"),
+        ]));
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_sandbox_control(sandbox_control);
+        let response = provider
+            .execute(
+                TOOL_TOPIC_SANDBOX_LIST,
+                r#"{"orphaned_only":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic sandbox list should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["count"], 1);
+        assert_eq!(parsed["sandboxes"][0]["orphan_reason"], "sandbox_disabled");
+        assert_eq!(parsed["sandboxes"][0]["sandbox_tools_enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn topic_sandbox_create_ensures_container_for_tracked_topic() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config().times(2).returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([(
+                    "-100777:240".to_string(),
+                    crate::storage::UserContextConfig {
+                        chat_id: Some(-100777),
+                        thread_id: Some(240),
+                        ..crate::storage::UserContextConfig::default()
+                    },
+                )]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(None));
+        mock.expect_append_audit_event()
+            .times(1)
+            .returning(|options| {
+                Ok(audit_event(
+                    1,
+                    options.topic_id.as_deref(),
+                    options.agent_id.as_deref(),
+                    &options.action,
+                    options.payload,
+                ))
+            });
+
+        let sandbox_control = Arc::new(FakeTopicSandboxControl::new(Vec::new()));
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_sandbox_control(sandbox_control.clone());
+        let response = provider
+            .execute(
+                TOOL_TOPIC_SANDBOX_CREATE,
+                r#"{"topic_id":"-100777:240"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic sandbox create should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["sandbox"]["topic_id"], "-100777:240");
+        assert_eq!(sandbox_control.ensured(), vec!["-100777:240".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn topic_sandbox_delete_supports_container_name_lookup() {
+        let sandbox_record = FakeTopicSandboxControl::sandbox_record(77, "-100777:240");
+        let container_name = sandbox_record.container_name.clone();
+
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config().times(1).returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([(
+                    "-100777:240".to_string(),
+                    crate::storage::UserContextConfig {
+                        chat_id: Some(-100777),
+                        thread_id: Some(240),
+                        ..crate::storage::UserContextConfig::default()
+                    },
+                )]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(None));
+        mock.expect_append_audit_event()
+            .times(1)
+            .returning(|options| {
+                Ok(audit_event(
+                    1,
+                    options.topic_id.as_deref(),
+                    options.agent_id.as_deref(),
+                    &options.action,
+                    options.payload,
+                ))
+            });
+
+        let sandbox_control = Arc::new(FakeTopicSandboxControl::new(vec![sandbox_record]));
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_sandbox_control(sandbox_control.clone());
+        let response = provider
+            .execute(
+                TOOL_TOPIC_SANDBOX_DELETE,
+                &format!(r#"{{"container_name":"{container_name}"}}"#),
+                None,
+                None,
+            )
+            .await
+            .expect("topic sandbox delete should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["deleted"], true);
+        assert_eq!(sandbox_control.deleted(), vec![container_name]);
+    }
+
+    #[tokio::test]
+    async fn topic_sandbox_recreate_calls_control_plane() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config().times(1).returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([(
+                    "-100777:240".to_string(),
+                    crate::storage::UserContextConfig {
+                        chat_id: Some(-100777),
+                        thread_id: Some(240),
+                        ..crate::storage::UserContextConfig::default()
+                    },
+                )]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(None));
+        mock.expect_append_audit_event()
+            .times(1)
+            .returning(|options| {
+                Ok(audit_event(
+                    1,
+                    options.topic_id.as_deref(),
+                    options.agent_id.as_deref(),
+                    &options.action,
+                    options.payload,
+                ))
+            });
+
+        let sandbox_control = Arc::new(FakeTopicSandboxControl::new(Vec::new()));
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_sandbox_control(sandbox_control.clone());
+        let response = provider
+            .execute(
+                TOOL_TOPIC_SANDBOX_RECREATE,
+                r#"{"topic_id":"-100777:240"}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic sandbox recreate should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["sandbox"]["topic_id"], "-100777:240");
+        assert_eq!(sandbox_control.recreated(), vec!["-100777:240".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn topic_sandbox_prune_dry_run_reports_binding_missing_candidates() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_user_config().times(1).returning(|_| {
+            Ok(crate::storage::UserConfig {
+                contexts: std::collections::HashMap::from([(
+                    "-100777:240".to_string(),
+                    crate::storage::UserContextConfig {
+                        chat_id: Some(-100777),
+                        thread_id: Some(240),
+                        ..crate::storage::UserContextConfig::default()
+                    },
+                )]),
+                ..crate::storage::UserConfig::default()
+            })
+        });
+        mock.expect_get_topic_binding()
+            .with(eq(77_i64), eq("-100777:240".to_string()))
+            .times(1)
+            .returning(|_, _| Ok(None));
+        mock.expect_append_audit_event()
+            .times(1)
+            .returning(|options| {
+                Ok(audit_event(
+                    1,
+                    options.topic_id.as_deref(),
+                    options.agent_id.as_deref(),
+                    &options.action,
+                    options.payload,
+                ))
+            });
+
+        let sandbox_control = Arc::new(FakeTopicSandboxControl::new(vec![
+            FakeTopicSandboxControl::sandbox_record(77, "-100777:240"),
+        ]));
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+            .with_topic_sandbox_control(sandbox_control.clone());
+        let response = provider
+            .execute(
+                TOOL_TOPIC_SANDBOX_PRUNE,
+                r#"{"reason":"binding_missing","dry_run":true}"#,
+                None,
+                None,
+            )
+            .await
+            .expect("topic sandbox prune dry-run should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("response must be valid json");
+        assert_eq!(parsed["count"], 1);
+        assert_eq!(parsed["candidates"][0]["orphan_reason"], "binding_missing");
+        assert!(sandbox_control.deleted().is_empty());
     }
 
     #[tokio::test]
