@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! Docker sandbox manager using Bollard
 //!
 //! Manages Docker containers for isolated code execution.
@@ -15,7 +17,7 @@ use bollard::Docker;
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{Either, Full};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shell_escape::escape;
 use std::collections::HashMap;
 use std::io::Read;
@@ -24,13 +26,14 @@ use tokio::time::sleep;
 use tracing::{debug, info, instrument, warn};
 
 use crate::config::{
-    get_sandbox_image, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS,
-    SANDBOX_MEMORY_LIMIT,
+    get_sandbox_image, sandbox_uses_broker, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA,
+    SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
 };
+use crate::sandbox::broker::SandboxBrokerClient;
 use crate::sandbox::SandboxScope;
 
 /// Result of executing a command in the sandbox
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecResult {
     /// Standard output of the command
     pub stdout: String,
@@ -41,7 +44,7 @@ pub struct ExecResult {
 }
 
 /// Docker metadata for a user-owned sandbox container.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxContainerRecord {
     /// Docker container id.
     pub container_id: String,
@@ -69,6 +72,25 @@ pub struct SandboxContainerRecord {
     pub labels: HashMap<String, String>,
 }
 
+#[derive(Clone)]
+pub struct SandboxManager {
+    inner: SandboxManagerInner,
+}
+
+#[derive(Clone)]
+enum SandboxManagerInner {
+    Docker(DockerSandboxManager),
+    Broker(BrokerSandboxManager),
+}
+
+#[derive(Clone)]
+struct BrokerSandboxManager {
+    client: SandboxBrokerClient,
+    container_id: Option<String>,
+    image_name: String,
+    scope: SandboxScope,
+}
+
 impl ExecResult {
     /// Check if the command succeeded (exit code 0)
     #[must_use]
@@ -89,9 +111,343 @@ impl ExecResult {
     }
 }
 
+impl BrokerSandboxManager {
+    fn new(scope: SandboxScope) -> Self {
+        Self {
+            client: SandboxBrokerClient::from_env(),
+            container_id: None,
+            image_name: get_sandbox_image(),
+            scope,
+        }
+    }
+
+    const fn is_running(&self) -> bool {
+        self.container_id.is_some()
+    }
+
+    fn container_id(&self) -> Option<&str> {
+        self.container_id.as_deref()
+    }
+
+    const fn scope(&self) -> &SandboxScope {
+        &self.scope
+    }
+
+    async fn create_sandbox(&mut self) -> Result<()> {
+        self.container_id = self
+            .client
+            .create_sandbox(self.scope.clone(), self.image_name.clone())
+            .await?
+            .or_else(|| Some(self.scope.container_name()));
+        Ok(())
+    }
+
+    async fn exec_command(
+        &mut self,
+        cmd: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<ExecResult> {
+        let result = self
+            .client
+            .exec_command(
+                self.scope.clone(),
+                self.image_name.clone(),
+                cmd,
+                cancellation_token,
+            )
+            .await?;
+        self.container_id
+            .get_or_insert_with(|| self.scope.container_name());
+        Ok(result)
+    }
+
+    async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
+        if self.container_id.is_none() {
+            return Err(anyhow!("Sandbox not running"));
+        }
+        self.client
+            .write_file(self.scope.clone(), self.image_name.clone(), path, content)
+            .await
+    }
+
+    async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+        let result = self
+            .client
+            .read_file(self.scope.clone(), self.image_name.clone(), path)
+            .await?;
+        self.container_id
+            .get_or_insert_with(|| self.scope.container_name());
+        Ok(result)
+    }
+
+    async fn upload_file(&mut self, container_path: &str, content: &[u8]) -> Result<()> {
+        if self.container_id.is_none() {
+            return Err(anyhow!("Sandbox not running"));
+        }
+        self.client
+            .upload_file(
+                self.scope.clone(),
+                self.image_name.clone(),
+                container_path,
+                content,
+            )
+            .await
+    }
+
+    async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>> {
+        if self.container_id.is_none() {
+            return Err(anyhow!("Sandbox not running"));
+        }
+        self.client
+            .download_file(self.scope.clone(), self.image_name.clone(), container_path)
+            .await
+    }
+
+    async fn get_uploads_size(&mut self) -> Result<u64> {
+        let size = self
+            .client
+            .get_uploads_size(self.scope.clone(), self.image_name.clone())
+            .await?;
+        self.container_id
+            .get_or_insert_with(|| self.scope.container_name());
+        Ok(size)
+    }
+
+    async fn cleanup_old_downloads(&mut self) -> Result<u64> {
+        let count = self
+            .client
+            .cleanup_old_downloads(self.scope.clone(), self.image_name.clone())
+            .await?;
+        self.container_id
+            .get_or_insert_with(|| self.scope.container_name());
+        Ok(count)
+    }
+
+    async fn destroy(&mut self) -> Result<()> {
+        self.client
+            .destroy(self.scope.clone(), self.image_name.clone())
+            .await?;
+        self.container_id = None;
+        Ok(())
+    }
+
+    async fn recreate(&mut self) -> Result<()> {
+        self.client
+            .recreate(self.scope.clone(), self.image_name.clone())
+            .await?;
+        self.container_id = Some(self.scope.container_name());
+        Ok(())
+    }
+
+    async fn file_size_bytes(
+        &mut self,
+        container_path: &str,
+        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<u64> {
+        let size = self
+            .client
+            .file_size_bytes(self.scope.clone(), self.image_name.clone(), container_path)
+            .await?;
+        self.container_id
+            .get_or_insert_with(|| self.scope.container_name());
+        Ok(size)
+    }
+}
+
+impl SandboxManager {
+    #[instrument(skip_all)]
+    pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
+        let scope = scope.into();
+        let inner = if sandbox_uses_broker() {
+            SandboxManagerInner::Broker(BrokerSandboxManager::new(scope))
+        } else {
+            SandboxManagerInner::Docker(DockerSandboxManager::new(scope).await?)
+        };
+        Ok(Self { inner })
+    }
+
+    pub async fn list_user_sandboxes(user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .list_user_sandboxes(user_id)
+                .await
+        } else {
+            DockerSandboxManager::list_user_sandboxes(user_id).await
+        }
+    }
+
+    pub async fn inspect_sandbox_by_name(
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<Option<SandboxContainerRecord>> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .inspect_sandbox_by_name(user_id, container_name)
+                .await
+        } else {
+            DockerSandboxManager::inspect_sandbox_by_name(user_id, container_name).await
+        }
+    }
+
+    pub async fn ensure_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .ensure_scope_sandbox(scope, get_sandbox_image())
+                .await
+        } else {
+            DockerSandboxManager::ensure_scope_sandbox(scope).await
+        }
+    }
+
+    pub async fn recreate_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .recreate_scope_sandbox(scope, get_sandbox_image())
+                .await
+        } else {
+            DockerSandboxManager::recreate_scope_sandbox(scope).await
+        }
+    }
+
+    pub async fn delete_sandbox_by_name(user_id: i64, container_name: &str) -> Result<bool> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .delete_sandbox_by_name(user_id, container_name)
+                .await
+        } else {
+            DockerSandboxManager::delete_sandbox_by_name(user_id, container_name).await
+        }
+    }
+
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        match &self.inner {
+            SandboxManagerInner::Docker(manager) => manager.is_running(),
+            SandboxManagerInner::Broker(manager) => manager.is_running(),
+        }
+    }
+
+    #[must_use]
+    pub fn container_id(&self) -> Option<&str> {
+        match &self.inner {
+            SandboxManagerInner::Docker(manager) => manager.container_id(),
+            SandboxManagerInner::Broker(manager) => manager.container_id(),
+        }
+    }
+
+    #[must_use]
+    pub fn scope(&self) -> &SandboxScope {
+        match &self.inner {
+            SandboxManagerInner::Docker(manager) => manager.scope(),
+            SandboxManagerInner::Broker(manager) => manager.scope(),
+        }
+    }
+
+    pub async fn create_sandbox(&mut self) -> Result<()> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => manager.create_sandbox().await,
+            SandboxManagerInner::Broker(manager) => manager.create_sandbox().await,
+        }
+    }
+
+    pub async fn exec_command(
+        &mut self,
+        cmd: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<ExecResult> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => {
+                manager.exec_command(cmd, cancellation_token).await
+            }
+            SandboxManagerInner::Broker(manager) => {
+                manager.exec_command(cmd, cancellation_token).await
+            }
+        }
+    }
+
+    pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => manager.write_file(path, content).await,
+            SandboxManagerInner::Broker(manager) => manager.write_file(path, content).await,
+        }
+    }
+
+    pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => manager.read_file(path).await,
+            SandboxManagerInner::Broker(manager) => manager.read_file(path).await,
+        }
+    }
+
+    pub async fn upload_file(&mut self, container_path: &str, content: &[u8]) -> Result<()> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => {
+                manager.upload_file(container_path, content).await
+            }
+            SandboxManagerInner::Broker(manager) => {
+                manager.upload_file(container_path, content).await
+            }
+        }
+    }
+
+    pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => manager.download_file(container_path).await,
+            SandboxManagerInner::Broker(manager) => manager.download_file(container_path).await,
+        }
+    }
+
+    pub async fn get_uploads_size(&mut self) -> Result<u64> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => manager.get_uploads_size().await,
+            SandboxManagerInner::Broker(manager) => manager.get_uploads_size().await,
+        }
+    }
+
+    pub async fn cleanup_old_downloads(&mut self) -> Result<u64> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => manager.cleanup_old_downloads().await,
+            SandboxManagerInner::Broker(manager) => manager.cleanup_old_downloads().await,
+        }
+    }
+
+    pub async fn destroy(&mut self) -> Result<()> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => manager.destroy().await,
+            SandboxManagerInner::Broker(manager) => manager.destroy().await,
+        }
+    }
+
+    pub async fn recreate(&mut self) -> Result<()> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => manager.recreate().await,
+            SandboxManagerInner::Broker(manager) => manager.recreate().await,
+        }
+    }
+
+    pub async fn file_size_bytes(
+        &mut self,
+        container_path: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<u64> {
+        match &mut self.inner {
+            SandboxManagerInner::Docker(manager) => {
+                manager
+                    .file_size_bytes(container_path, cancellation_token)
+                    .await
+            }
+            SandboxManagerInner::Broker(manager) => {
+                manager
+                    .file_size_bytes(container_path, cancellation_token)
+                    .await
+            }
+        }
+    }
+}
+
 /// Docker sandbox manager for isolated code execution
 #[derive(Clone)]
-pub struct SandboxManager {
+pub(crate) struct DockerSandboxManager {
     docker: Docker,
     container_id: Option<String>,
     image_name: String,
@@ -102,7 +458,7 @@ const RECREATE_REMOVE_MAX_ATTEMPTS: usize = 8;
 const RECREATE_REMOVE_INITIAL_BACKOFF_MS: u64 = 50;
 const RECREATE_REMOVE_MAX_BACKOFF_MS: u64 = 800;
 
-impl SandboxManager {
+impl DockerSandboxManager {
     fn parse_label_i64(labels: &HashMap<String, String>, key: &str) -> Option<i64> {
         labels.get(key).and_then(|value| value.parse::<i64>().ok())
     }
@@ -223,7 +579,15 @@ impl SandboxManager {
     ///
     /// Returns an error if connection to Docker daemon fails or ping fails.
     #[instrument(skip_all)]
-    pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
+    pub(crate) async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
+        Self::new_with_image(scope, get_sandbox_image()).await
+    }
+
+    #[instrument(skip_all)]
+    pub(crate) async fn new_with_image(
+        scope: impl Into<SandboxScope>,
+        image_name: String,
+    ) -> Result<Self> {
         let scope = scope.into();
         let docker = Self::connect_and_ping().await?;
 
@@ -232,7 +596,7 @@ impl SandboxManager {
         Ok(Self {
             docker,
             container_id: None,
-            image_name: get_sandbox_image(),
+            image_name,
             scope,
         })
     }
@@ -282,9 +646,17 @@ impl SandboxManager {
 
     /// Ensure a sandbox exists for the provided scope and return its Docker metadata.
     pub async fn ensure_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+        Self::ensure_scope_sandbox_with_image(scope, get_sandbox_image()).await
+    }
+
+    /// Ensure a sandbox exists for the provided scope and image and return its Docker metadata.
+    pub(crate) async fn ensure_scope_sandbox_with_image(
+        scope: SandboxScope,
+        image_name: String,
+    ) -> Result<SandboxContainerRecord> {
         let container_name = scope.container_name();
         let owner_id = scope.owner_id();
-        let mut sandbox = Self::new(scope).await?;
+        let mut sandbox = Self::new_with_image(scope, image_name).await?;
         sandbox.create_sandbox().await?;
         Self::inspect_sandbox_by_name(owner_id, &container_name)
             .await?
@@ -295,9 +667,17 @@ impl SandboxManager {
 
     /// Recreate a sandbox for the provided scope and return its Docker metadata.
     pub async fn recreate_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+        Self::recreate_scope_sandbox_with_image(scope, get_sandbox_image()).await
+    }
+
+    /// Recreate a sandbox for the provided scope and image and return its Docker metadata.
+    pub(crate) async fn recreate_scope_sandbox_with_image(
+        scope: SandboxScope,
+        image_name: String,
+    ) -> Result<SandboxContainerRecord> {
         let container_name = scope.container_name();
         let owner_id = scope.owner_id();
-        let mut sandbox = Self::new(scope).await?;
+        let mut sandbox = Self::new_with_image(scope, image_name).await?;
         sandbox.recreate().await?;
         Self::inspect_sandbox_by_name(owner_id, &container_name)
             .await?
@@ -1038,12 +1418,12 @@ impl SandboxManager {
     }
 }
 
-impl Drop for SandboxManager {
+impl Drop for DockerSandboxManager {
     fn drop(&mut self) {
         if let Some(ref id) = self.container_id {
             info!(
                 container_id = %id,
-                "SandboxManager dropped. Container persists in Docker (intentional)."
+                "DockerSandboxManager dropped. Container persists in Docker (intentional)."
             );
         }
     }
@@ -1057,7 +1437,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker daemon"]
     async fn test_sandbox_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
-        let mut sandbox = SandboxManager::new(12345).await?;
+        let mut sandbox = DockerSandboxManager::new(12345).await?;
 
         // Create sandbox
         sandbox.create_sandbox().await?;
@@ -1084,7 +1464,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker daemon"]
     async fn test_exec_self_heals_stale_container_id() -> Result<(), Box<dyn std::error::Error>> {
-        let mut sandbox = SandboxManager::new(12346).await?;
+        let mut sandbox = DockerSandboxManager::new(12346).await?;
         sandbox.create_sandbox().await?;
 
         sandbox.container_id = Some("stale-container-id".to_string());

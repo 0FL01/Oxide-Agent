@@ -21,7 +21,7 @@ RUN cargo chef cook --release --workspace --features oxide-agent-core/crawl4ai -
 
 # Build application - this layer is rebuilt when source changes
 COPY . .
-RUN cargo build --release -p oxide-agent-telegram-bot -F oxide-agent-core/crawl4ai
+RUN cargo build --release -p oxide-agent-telegram-bot -p oxide-agent-sandboxd -F oxide-agent-core/crawl4ai
 
 FROM debian:trixie-slim AS ssh-mcp-binary
 
@@ -48,6 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/oxide-agent-telegram-bot /app/oxide-agent-telegram-bot
+COPY --from=builder /app/target/release/oxide-agent-sandboxd /app/oxide-agent-sandboxd
 COPY --from=ssh-mcp-binary /usr/local/bin/ssh-mcp /usr/local/bin/ssh-mcp
 COPY skills/ /app/skills/
 

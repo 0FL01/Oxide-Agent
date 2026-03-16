@@ -705,6 +705,10 @@ pub fn get_agent_search_limit() -> usize {
 // Sandbox configuration
 /// Docker image for the sandbox
 pub const SANDBOX_IMAGE: &str = "agent-sandbox:latest";
+/// Sandbox backend mode.
+pub const SANDBOX_BACKEND: &str = "docker";
+/// Unix socket path for sandbox broker.
+pub const SANDBOXD_SOCKET: &str = "/run/sandboxd/sandboxd.sock";
 /// Memory limit for sandbox container (1GB)
 pub const SANDBOX_MEMORY_LIMIT: i64 = 1024 * 1024 * 1024; // 1GB
 /// CPU period for sandbox container
@@ -723,6 +727,30 @@ pub fn get_sandbox_image() -> String {
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| SANDBOX_IMAGE.to_string())
+}
+
+/// Get sandbox backend mode from env or default.
+#[must_use]
+pub fn get_sandbox_backend() -> String {
+    std::env::var("SANDBOX_BACKEND")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| SANDBOX_BACKEND.to_string())
+}
+
+/// Check whether sandbox broker mode is enabled.
+#[must_use]
+pub fn sandbox_uses_broker() -> bool {
+    get_sandbox_backend().eq_ignore_ascii_case("broker")
+}
+
+/// Get sandbox broker Unix socket path from env or default.
+#[must_use]
+pub fn get_sandboxd_socket() -> String {
+    std::env::var("SANDBOXD_SOCKET")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| SANDBOXD_SOCKET.to_string())
 }
 
 /// Transport API retry configuration for file operations.

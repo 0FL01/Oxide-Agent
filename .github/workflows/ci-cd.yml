@@ -317,6 +317,20 @@ jobs:
             # Create docker-compose.yml
             echo "Creating docker-compose.yml..."
             echo "services:
+              sandboxd:
+                build:
+                  context: ./build_context
+                container_name: oxide_agent_sandboxd
+                restart: unless-stopped
+                command: [\"./oxide-agent-sandboxd\"]
+                env_file:
+                  - .env
+                environment:
+                  - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
+                  - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+                volumes:
+                  - /var/run/docker.sock:/var/run/docker.sock
+                  - sandboxd-run:/run/sandboxd
               oxide_agent:
                 build:
                   context: ./build_context
@@ -325,15 +339,19 @@ jobs:
                 restart: unless-stopped
                 env_file:
                   - .env
+                environment:
+                  - SANDBOX_BACKEND=broker
+                  - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
                 volumes:
-                  - /var/run/docker.sock:/var/run/docker.sock
+                  - sandboxd-run:/run/sandboxd
                 logging:
                   driver: json-file
                   options:
                     max-size: \"1m\"
                     max-file: \"3\"
             volumes:
-              logs: {}" > docker-compose.yml
+              logs: {}
+              sandboxd-run: {}" > docker-compose.yml
             echo "docker-compose.yml created."
 
             mkdir -p ./logs

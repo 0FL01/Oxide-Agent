@@ -4,5 +4,6 @@ members = [
     "crates/oxide-agent-runtime",
     "crates/oxide-agent-transport-telegram",
     "crates/oxide-agent-telegram-bot",
+    "crates/oxide-agent-sandboxd",
 ]
 resolver = "2"

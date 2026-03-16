@@ -39,7 +39,9 @@ crates/
 │   │   │   ├── common.rs            # Common utilities
 │   │   │   ├── embeddings.rs        # Embedding provider
 │   │   │   └── providers/           # Groq, Mistral, Gemini, OpenRouter, ZAI
-│   │   ├── sandbox/                 # Docker-менеджер
+│   │   ├── sandbox/                 # Sandbox facade, Docker backend, Unix-socket broker
+│   │   │   ├── manager.rs           # SandboxManager facade + Docker backend implementation
+│   │   │   ├── broker.rs            # Sandbox broker protocol/client/server over Unix socket
 │   │   │   └── scope.rs             # SandboxScope stable container identity
 │   │   ├── config.rs
 │   │   ├── storage.rs
@@ -49,6 +51,8 @@ crates/
 │   └── src/
 │       ├── session_registry.rs      # Управление сессиями
 │       └── agent/runtime/           # Progress runtime
+├── oxide-agent-sandboxd/            # Sandbox broker daemon with Docker access
+│   └── src/main.rs                  # Unix socket broker entry point
 ├── oxide-agent-transport-telegram/  # Транспорт: Telegram Bot API
 │   ├── src/
 │   │   ├── runner.rs                # Инициализация бота
@@ -85,6 +89,7 @@ sandbox/
 ### Workspace crates
 - `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов и context-scoped storage API, embeddings support, hook system с manageable/protected hooks, `AgentExecutionProfile` с `ToolAccessPolicy`, `TopicContextRecord`, `TopicInfraConfigRecord`, `TopicAgentsMdRecord` для topic-scoped системных промптов, SSH MCP provider с approval flow.
 - `oxide-agent-runtime`: оркестрация сессий, прогресс-рендеринг, session registry с thread-aware session keys.
+- `oxide-agent-sandboxd`: отдельный broker daemon для sandbox. Слушает Unix socket (`SANDBOXD_SOCKET`), владеет `docker.sock`, принимает узкий sandbox protocol и выполняет Docker operations от имени основного агента.
 - `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, resilient messaging, progress rendering, unauthorized access protection, телеметрия доставки. Включает `context.rs` для context-scoped state management с legacy fallback для DM-чатов и views module для UI компонентов.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
@@ -114,6 +119,7 @@ sandbox/
 - **Topic/Thread Routing**: Поддержка Telegram Forum Topics с per-topic конфигурацией, dynamic runtime bindings с expiry/activity tracking, и thread-aware session isolation.
 - **Context-Scoped Storage**: Per-transport контексты используют `UserContextConfig` в `UserConfig.contexts`, context-scoped storage API для памяти агента (`save_agent_memory_for_context`, `load_agent_memory_for_context`, `clear_agent_memory_for_context`), и chat history isolation через `scoped_chat_storage_id` (format: `"{context_key}/{chat_uuid}"`). Legacy fallback для DM-чатов сохраняет обратную совместимость.
 - **Configuration**: Поддержка layered конфигурации через YAML файлы в `config/` ({RUN_MODE}.yaml, local.yaml) + переменные окружения. Config files are optional (`required(false)`).
+- **Sandbox Isolation Boundary**: при `SANDBOX_BACKEND=broker` основной `oxide_agent` больше не требует прямой доступ к `/var/run/docker.sock`; sandbox operations идут через `oxide-agent-sandboxd` по Unix socket, а Docker access остается только у broker service.
 
 Чтобы добавить новый transport (Discord/Slack), создайте `crates/oxide-agent-transport-<name>`, держите SDK и обработчики внутри transport crate, подключите адаптер к runtime, и при необходимости добавьте отдельный бинарь `oxide-agent-<name>-bot` для запуска.
 
@@ -144,6 +150,8 @@ Task lifecycle tracking with timeout control, cancellation support, and sandbox 
 **Features**: Task lifecycle tracking, 30-minute timeout, cancellation tokens, loaded skills tracking, memory management with auto-compaction.
 
 **SandboxScope**: Stable container identity via FNV-1a hashing for persistent Docker containers across sessions.
+
+**Sandbox Backends**: `SandboxManager` в `sandbox/manager.rs` является facade и поддерживает direct Docker backend и broker backend через Unix socket protocol (`sandbox/broker.rs`). Это сохраняет текущий API tool providers и выносит `docker.sock` из основного runtime container.
 
 ## 👥 Sub-Agent Architecture
 
@@ -229,6 +237,8 @@ CRUD operations for forum topics, agent profiles, topic contexts, infrastructure
 
 **Cleanup on Delete**: Automatic cleanup of agent memory, chat history, Docker containers, topic bindings, topic contexts, topic AGENTS.md, and infrastructure configs when forum topic is deleted.
 
+**Sandbox Cleanup Path**: cleanup topic sandboxes по-прежнему строится вокруг `SandboxScope`, но фактическое удаление контейнера может идти либо напрямую через Docker backend, либо через broker client depending on `SANDBOX_BACKEND`.
+
 **Storage**: User-scoped storage records, audit events logged to R2/S3, thread-aware isolation, private secret namespace for infrastructure credentials.
 
 ## 🎯 Skills System
@@ -276,6 +286,9 @@ Short-lived approval gating for sensitive SSH operations with transport integrat
 ### Tool Providers
 `sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane.rs`, `ssh_mcp.rs`, `ytdlp.rs`.
 
+### Sandbox Stack
+`sandbox/manager.rs` - facade and Docker backend, `sandbox/broker.rs` - Unix socket protocol/client/server, `sandbox/scope.rs` - stable sandbox naming/labels, `oxide-agent-sandboxd` - standalone broker binary.
+
 ### LLM Providers
 `gemini.rs`, `groq.rs`, `mistral.rs`, `openrouter.rs`, `zai.rs`.
 
@@ -288,7 +301,7 @@ Short-lived approval gating for sensitive SSH operations with transport integrat
 `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables (all optional).
 
 ### Key Settings
-`crawl4ai_url`, `crawl4ai_timeout_secs`, `search_provider` (tavily/crawl4ai), `embedding_provider`, `embedding_model_id`, `narrator_model_id`, `sub_agent_model_id`, model overrides (chat, agent, sub_agent, media, narrator).
+`crawl4ai_url`, `crawl4ai_timeout_secs`, `search_provider` (tavily/crawl4ai), `embedding_provider`, `embedding_model_id`, `narrator_model_id`, `sub_agent_model_id`, model overrides (chat, agent, sub_agent, media, narrator), `SANDBOX_BACKEND` (`docker` or `broker`), `SANDBOXD_SOCKET`, `SANDBOX_IMAGE`.
 
 ### Telegram Settings
 `topic_configs`, `manager_allowed_users_str`, cooldown constants for unauthorized access protection.
