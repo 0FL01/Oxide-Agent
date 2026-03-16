@@ -12,8 +12,9 @@ use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
     DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
-    SandboxProvider, SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
-    TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
+    ReminderContext, ReminderProvider, SandboxProvider, SshApprovalGrant, SshApprovalRegistry,
+    SshApprovalRequestView, SshMcpProvider, TodosProvider, TopicInfraPreflightReport,
+    YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -46,6 +47,7 @@ pub struct AgentExecutor {
     settings: Arc<crate::config::AgentSettings>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
     topic_infra: Option<TopicInfraContext>,
+    reminder_context: Option<ReminderContext>,
     execution_profile: AgentExecutionProfile,
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
     hook_policy_state: Arc<RwLock<HookAccessPolicy>>,
@@ -149,6 +151,7 @@ impl AgentExecutor {
             settings,
             manager_control_plane: None,
             topic_infra: None,
+            reminder_context: None,
             execution_profile: AgentExecutionProfile::default(),
             tool_policy_state,
             hook_policy_state,
@@ -200,6 +203,11 @@ impl AgentExecutor {
                 .as_ref()
                 .map_or_else(SshApprovalRegistry::new, |ctx| ctx.approvals.clone()),
         });
+    }
+
+    /// Attach or clear reminder scheduling context for this executor.
+    pub fn set_reminder_context(&mut self, context: ReminderContext) {
+        self.reminder_context = Some(context);
     }
 
     /// Inject safe topic infra preflight status into session memory once per change.
@@ -357,6 +365,10 @@ impl AgentExecutor {
                 topic_infra.config.clone(),
                 topic_infra.approvals.clone(),
             )));
+        }
+
+        if let Some(reminder_context) = &self.reminder_context {
+            registry.register(Box::new(ReminderProvider::new(reminder_context.clone())));
         }
 
         // Register web search provider based on configuration

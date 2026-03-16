@@ -5,8 +5,8 @@
 use crate::llm::LlmError;
 use crate::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-    UserConfig,
+    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, TopicBindingKind,
+    TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use mockall::predicate::*;
 
@@ -193,4 +193,44 @@ fn configure_control_plane_expectations(mock: &mut crate::storage::MockStoragePr
         .returning(|_, _| Ok(Vec::new()));
     mock.expect_list_audit_events_page()
         .returning(|_, _, _| Ok(Vec::new()));
+    mock.expect_create_reminder_job()
+        .returning(|options: CreateReminderJobOptions| {
+            Ok(ReminderJobRecord {
+                schema_version: 1,
+                version: 1,
+                reminder_id: "mock-reminder".to_string(),
+                user_id: options.user_id,
+                context_key: options.context_key,
+                flow_id: options.flow_id,
+                chat_id: options.chat_id,
+                thread_id: options.thread_id,
+                thread_kind: options.thread_kind,
+                task_prompt: options.task_prompt,
+                schedule_kind: options.schedule_kind,
+                status: ReminderJobStatus::Scheduled,
+                next_run_at: options.next_run_at,
+                interval_secs: options.interval_secs,
+                lease_until: None,
+                last_run_at: None,
+                last_error: None,
+                run_count: 0,
+                created_at: 0,
+                updated_at: 0,
+            })
+        });
+    mock.expect_get_reminder_job().returning(|_, _| Ok(None));
+    mock.expect_list_reminder_jobs()
+        .returning(|_, _, _, _| Ok(Vec::new()));
+    mock.expect_list_due_reminder_jobs()
+        .returning(|_, _, _| Ok(Vec::new()));
+    mock.expect_claim_reminder_job()
+        .returning(|_, _, _, _| Ok(None));
+    mock.expect_reschedule_reminder_job()
+        .returning(|_, _, _, _, _, _| Ok(None));
+    mock.expect_complete_reminder_job()
+        .returning(|_, _, _| Ok(None));
+    mock.expect_fail_reminder_job()
+        .returning(|_, _, _, _| Ok(None));
+    mock.expect_cancel_reminder_job()
+        .returning(|_, _, _| Ok(None));
 }

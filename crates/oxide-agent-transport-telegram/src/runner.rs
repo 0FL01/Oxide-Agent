@@ -23,6 +23,12 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
     info!("LLM Client initialized.");
 
     let bot = Bot::new(settings.telegram.telegram_token.clone());
+    bot::agent_handlers::spawn_reminder_scheduler(
+        bot.clone(),
+        storage.clone(),
+        llm_client.clone(),
+        settings.clone(),
+    );
     let bot_state = init_bot_state();
     let unauthorized_cache = init_unauthorized_cache();
     let handler = setup_handler();
