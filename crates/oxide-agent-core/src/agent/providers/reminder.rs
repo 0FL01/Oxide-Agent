@@ -3,8 +3,9 @@
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::storage::{
-    AppendAuditEventOptions, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
-    ReminderScheduleKind, ReminderThreadKind, StorageProvider,
+    compute_cron_next_run_at, compute_next_reminder_run_at, AppendAuditEventOptions,
+    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind,
+    ReminderThreadKind, StorageProvider,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -66,6 +67,8 @@ struct ReminderScheduleArgs {
     delay_secs: Option<u64>,
     interval_secs: Option<u64>,
     first_run_at_unix: Option<i64>,
+    cron_expression: Option<String>,
+    timezone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,10 +121,10 @@ impl ReminderProvider {
             bail!("task must not be empty");
         }
 
-        let (next_run_at, interval_secs) = match args.kind {
+        let (next_run_at, interval_secs, cron_expression, timezone) = match args.kind {
             ReminderScheduleKind::Once => {
                 let next_run_at = resolve_once_next_run_at(&args, now)?;
-                (next_run_at, None)
+                (next_run_at, None, None, None)
             }
             ReminderScheduleKind::Interval => {
                 let interval_secs = args
@@ -136,7 +139,25 @@ impl ReminderProvider {
                 if next_run_at <= now {
                     bail!("first_run_at_unix must be in the future");
                 }
-                (next_run_at, Some(interval_secs))
+                (next_run_at, Some(interval_secs), None, None)
+            }
+            ReminderScheduleKind::Cron => {
+                let cron_expression = args
+                    .cron_expression
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|expression| !expression.is_empty())
+                    .ok_or_else(|| {
+                        anyhow!("cron_expression must be provided for cron reminders")
+                    })?;
+                let next_run_at =
+                    compute_cron_next_run_at(cron_expression, args.timezone.as_deref(), now)?;
+                (
+                    next_run_at,
+                    None,
+                    Some(cron_expression.to_string()),
+                    args.timezone.clone(),
+                )
             }
         };
 
@@ -154,6 +175,8 @@ impl ReminderProvider {
                 schedule_kind: args.kind,
                 next_run_at,
                 interval_secs,
+                cron_expression,
+                timezone,
             })
             .await?;
 
@@ -171,6 +194,8 @@ impl ReminderProvider {
                     "schedule_kind": record.schedule_kind,
                     "next_run_at": record.next_run_at,
                     "interval_secs": record.interval_secs,
+                    "cron_expression": record.cron_expression,
+                    "timezone": record.timezone,
                 }),
             })
             .await;
@@ -352,7 +377,8 @@ impl ReminderProvider {
         }
 
         let now = now_unix_secs();
-        let next_run_at = resolve_retry_next_run_at(args.run_at_unix, args.delay_secs, now)?;
+        let next_run_at =
+            resolve_retry_next_run_at(&record, args.run_at_unix, args.delay_secs, now)?;
         let retried = self
             .context
             .storage
@@ -478,8 +504,8 @@ fn reminder_schedule_definition() -> ToolDefinition {
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["once", "interval"],
-                    "description": "Schedule type: one-time or recurring interval"
+                    "enum": ["once", "interval", "cron"],
+                    "description": "Schedule type: one-time, fixed interval, or cron"
                 },
                 "task": {
                     "type": "string",
@@ -500,6 +526,14 @@ fn reminder_schedule_definition() -> ToolDefinition {
                 "first_run_at_unix": {
                     "type": "integer",
                     "description": "Optional first execution timestamp for recurring reminders; defaults to now + interval_secs"
+                },
+                "cron_expression": {
+                    "type": "string",
+                    "description": "Cron expression for cron reminders"
+                },
+                "timezone": {
+                    "type": "string",
+                    "description": "Optional IANA timezone for cron reminders; defaults to UTC"
                 }
             },
             "required": ["kind", "task"]
@@ -614,25 +648,28 @@ fn resolve_resume_next_run_at(
 ) -> Result<i64> {
     match resolve_override_next_run_at(run_at_unix, delay_secs, now)? {
         Some(next_run_at) => Ok(next_run_at),
-        None => {
-            if record.next_run_at > now {
-                Ok(record.next_run_at)
-            } else if let Some(interval_secs) = record.interval_secs {
-                Ok(now.saturating_add(i64::try_from(interval_secs).unwrap_or(i64::MAX)))
-            } else {
-                Ok(now.saturating_add(1))
-            }
-        }
+        None if record.next_run_at > now => Ok(record.next_run_at),
+        None => compute_next_reminder_run_at(record, now)?.ok_or_else(|| {
+            anyhow!(
+                "reminder '{}' does not have a recurring schedule to resume",
+                record.reminder_id
+            )
+        }),
     }
 }
 
 fn resolve_retry_next_run_at(
+    record: &ReminderJobRecord,
     run_at_unix: Option<i64>,
     delay_secs: Option<u64>,
     now: i64,
 ) -> Result<i64> {
-    Ok(resolve_override_next_run_at(run_at_unix, delay_secs, now)?
-        .unwrap_or_else(|| now.saturating_add(1)))
+    match resolve_override_next_run_at(run_at_unix, delay_secs, now)? {
+        Some(next_run_at) => Ok(next_run_at),
+        None => {
+            Ok(compute_next_reminder_run_at(record, now)?.unwrap_or_else(|| now.saturating_add(1)))
+        }
+    }
 }
 
 fn resolve_override_next_run_at(
@@ -657,6 +694,11 @@ fn format_reminder_created(record: &ReminderJobRecord) -> String {
             "recurring every {} seconds",
             record.interval_secs.unwrap_or_default()
         ),
+        ReminderScheduleKind::Cron => format!(
+            "cron '{}' ({})",
+            record.cron_expression.as_deref().unwrap_or("?"),
+            record.timezone.as_deref().unwrap_or("UTC")
+        ),
     };
     format!(
         "Reminder scheduled. ID: {}. Type: {}. Next run at unix {}.",
@@ -669,18 +711,30 @@ fn format_reminder_line(record: &ReminderJobRecord) -> String {
         .interval_secs
         .map(|value| format!(", interval={}s", value))
         .unwrap_or_default();
+    let cron = record
+        .cron_expression
+        .as_deref()
+        .map(|value| format!(", cron={value}"))
+        .unwrap_or_default();
+    let timezone = record
+        .timezone
+        .as_deref()
+        .map(|value| format!(", timezone={value}"))
+        .unwrap_or_default();
     let last_error = record
         .last_error
         .as_deref()
         .map(|value| format!(", last_error={value}"))
         .unwrap_or_default();
     format!(
-        "- id={}, status={:?}, kind={:?}, next_run_at={}{}{}",
+        "- id={}, status={:?}, kind={:?}, next_run_at={}{}{}{}{}",
         record.reminder_id,
         record.status,
         record.schedule_kind,
         record.next_run_at,
         interval,
+        cron,
+        timezone,
         last_error
     )
 }

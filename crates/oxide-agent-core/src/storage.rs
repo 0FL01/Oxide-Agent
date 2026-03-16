@@ -12,6 +12,10 @@ use aws_sdk_s3::operation::put_object::PutObjectError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use aws_types::region::Region;
+use chrono::{TimeZone, Utc};
+use chrono_tz::Tz;
+use cron::Schedule;
+use std::str::FromStr;
 use thiserror::Error;
 use tracing::{error, info, warn};
 
@@ -32,7 +36,7 @@ const TOPIC_INFRA_CONFIG_SCHEMA_VERSION: u32 = 1;
 const AGENT_FLOW_SCHEMA_VERSION: u32 = 1;
 const TOPIC_BINDING_SCHEMA_VERSION: u32 = 2;
 const AUDIT_EVENT_SCHEMA_VERSION: u32 = 1;
-const REMINDER_JOB_SCHEMA_VERSION: u32 = 1;
+const REMINDER_JOB_SCHEMA_VERSION: u32 = 2;
 const CONTROL_PLANE_RMW_MAX_RETRIES: usize = 5;
 const CONTROL_PLANE_RMW_RETRY_BACKOFF_MS: u64 = 25;
 pub(crate) const TOPIC_CONTEXT_MAX_LINES: usize = 40;
@@ -338,6 +342,8 @@ pub enum ReminderScheduleKind {
     Once,
     /// Execute repeatedly using a fixed interval.
     Interval,
+    /// Execute on a cron schedule in a specific timezone.
+    Cron,
 }
 
 /// Reminder lifecycle status.
@@ -387,6 +393,10 @@ pub struct ReminderJobRecord {
     pub next_run_at: i64,
     /// Fixed interval for recurring reminders (seconds).
     pub interval_secs: Option<u64>,
+    /// Cron expression for cron-based reminders.
+    pub cron_expression: Option<String>,
+    /// IANA timezone identifier for cron-based reminders.
+    pub timezone: Option<String>,
     /// Temporary lease expiry while a worker is processing the reminder.
     pub lease_until: Option<i64>,
     /// Last successful or attempted execution timestamp (unix seconds).
@@ -420,7 +430,10 @@ impl ReminderJobRecord {
     /// Returns true when the reminder repeats indefinitely.
     #[must_use]
     pub const fn is_recurring(&self) -> bool {
-        matches!(self.schedule_kind, ReminderScheduleKind::Interval)
+        matches!(
+            self.schedule_kind,
+            ReminderScheduleKind::Interval | ReminderScheduleKind::Cron
+        )
     }
 }
 
@@ -619,6 +632,10 @@ pub struct CreateReminderJobOptions {
     pub next_run_at: i64,
     /// Fixed interval for recurring reminders (seconds).
     pub interval_secs: Option<u64>,
+    /// Cron expression for cron-based reminders.
+    pub cron_expression: Option<String>,
+    /// IANA timezone identifier for cron-based reminders.
+    pub timezone: Option<String>,
 }
 
 /// Interface for storage providers
@@ -2731,6 +2748,81 @@ pub fn reminder_job_key(user_id: i64, reminder_id: &str) -> String {
     format!("users/{user_id}/control_plane/reminders/{reminder_id}.json")
 }
 
+/// Parse a reminder timezone identifier.
+///
+/// Falls back to `UTC` when not specified.
+pub fn parse_reminder_timezone(timezone: Option<&str>) -> Result<Tz, StorageError> {
+    let timezone = timezone.unwrap_or("UTC").trim();
+    Tz::from_str(timezone).map_err(|error| {
+        StorageError::InvalidInput(format!("invalid reminder timezone '{timezone}': {error}"))
+    })
+}
+
+/// Compute the next cron wake-up timestamp after `after_unix`.
+pub fn compute_cron_next_run_at(
+    cron_expression: &str,
+    timezone: Option<&str>,
+    after_unix: i64,
+) -> Result<i64, StorageError> {
+    let timezone = parse_reminder_timezone(timezone)?;
+    let schedule = Schedule::from_str(cron_expression).map_err(|error| {
+        StorageError::InvalidInput(format!(
+            "invalid reminder cron expression '{cron_expression}': {error}"
+        ))
+    })?;
+    let after = timezone
+        .timestamp_opt(after_unix, 0)
+        .single()
+        .ok_or_else(|| {
+            StorageError::InvalidInput(format!(
+                "cannot resolve reminder timestamp {after_unix} in timezone {timezone}"
+            ))
+        })?;
+    schedule
+        .after(&after)
+        .next()
+        .map(|next| next.with_timezone(&Utc).timestamp())
+        .ok_or_else(|| {
+            StorageError::InvalidInput(format!(
+                "cron expression '{cron_expression}' does not yield future occurrences"
+            ))
+        })
+}
+
+/// Compute the next recurring execution timestamp for a reminder.
+pub fn compute_next_reminder_run_at(
+    record: &ReminderJobRecord,
+    after_unix: i64,
+) -> Result<Option<i64>, StorageError> {
+    match record.schedule_kind {
+        ReminderScheduleKind::Once => Ok(None),
+        ReminderScheduleKind::Interval => {
+            let interval_secs = record.interval_secs.ok_or_else(|| {
+                StorageError::InvalidInput(format!(
+                    "interval reminder '{}' is missing interval_secs",
+                    record.reminder_id
+                ))
+            })?;
+            Ok(Some(after_unix.saturating_add(
+                i64::try_from(interval_secs).unwrap_or(i64::MAX),
+            )))
+        }
+        ReminderScheduleKind::Cron => {
+            let cron_expression = record.cron_expression.as_deref().ok_or_else(|| {
+                StorageError::InvalidInput(format!(
+                    "cron reminder '{}' is missing cron_expression",
+                    record.reminder_id
+                ))
+            })?;
+            Ok(Some(compute_cron_next_run_at(
+                cron_expression,
+                record.timezone.as_deref(),
+                after_unix,
+            )?))
+        }
+    }
+}
+
 /// Returns the R2 key for private secret material.
 #[must_use]
 pub fn private_secret_key(user_id: i64, secret_ref: &str) -> String {
@@ -3089,6 +3181,8 @@ fn build_reminder_job_record(
         status: ReminderJobStatus::Scheduled,
         next_run_at: options.next_run_at,
         interval_secs: options.interval_secs,
+        cron_expression: options.cron_expression,
+        timezone: options.timezone,
         lease_until: None,
         last_run_at: None,
         last_error: None,
@@ -3144,7 +3238,8 @@ mod tests {
         agent_profile_key, audit_events_key, binding_is_active, build_agent_flow_record,
         build_agent_profile_record, build_audit_event_record, build_topic_agents_md_record,
         build_topic_binding_record, build_topic_context_record, build_topic_infra_config_record,
-        generate_chat_uuid, next_record_version, normalize_topic_prompt_payload,
+        compute_cron_next_run_at, compute_next_reminder_run_at, generate_chat_uuid,
+        next_record_version, normalize_topic_prompt_payload, parse_reminder_timezone,
         private_secret_key, resolve_active_topic_binding, select_audit_events_page,
         should_retry_control_plane_rmw, topic_agents_md_key, topic_binding_key, topic_context_key,
         topic_infra_config_key, user_chat_history_key, user_config_key,
@@ -3153,12 +3248,14 @@ mod tests {
         user_context_chat_history_prefix, user_history_key, validate_topic_agents_md_content,
         validate_topic_context_content, AgentFlowRecord, AgentProfileRecord,
         AppendAuditEventOptions, AuditEventRecord, ControlPlaneLocks, OptionalMetadataPatch,
+        ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
         TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
         TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
         UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
         UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig, TOPIC_AGENTS_MD_MAX_LINES,
         TOPIC_CONTEXT_MAX_CHARS, TOPIC_CONTEXT_MAX_LINES,
     };
+    use chrono::TimeZone;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -3379,6 +3476,70 @@ mod tests {
     fn topic_infra_config_key_uses_control_plane_namespace() {
         let key = topic_infra_config_key(42, "topic-a");
         assert_eq!(key, "users/42/control_plane/topic_infra/topic-a.json");
+    }
+
+    #[test]
+    fn parse_reminder_timezone_defaults_to_utc() {
+        let timezone = parse_reminder_timezone(None).expect("timezone should parse");
+        assert_eq!(timezone.name(), "UTC");
+    }
+
+    #[test]
+    fn compute_cron_next_run_at_uses_timezone() {
+        let after = chrono::Utc
+            .with_ymd_and_hms(2026, 6, 1, 6, 0, 0)
+            .single()
+            .expect("valid datetime")
+            .timestamp();
+        let next = compute_cron_next_run_at("0 0 9 * * * *", Some("Europe/Berlin"), after)
+            .expect("cron should resolve");
+        let expected = chrono::Utc
+            .with_ymd_and_hms(2026, 6, 1, 7, 0, 0)
+            .single()
+            .expect("valid datetime")
+            .timestamp();
+        assert_eq!(next, expected);
+    }
+
+    #[test]
+    fn compute_next_reminder_run_at_supports_cron_records() {
+        let record = ReminderJobRecord {
+            schema_version: 2,
+            version: 1,
+            reminder_id: "rem-1".to_string(),
+            user_id: 1,
+            context_key: "ctx".to_string(),
+            flow_id: "flow".to_string(),
+            chat_id: 1,
+            thread_id: None,
+            thread_kind: ReminderThreadKind::Dm,
+            task_prompt: "Ping".to_string(),
+            schedule_kind: ReminderScheduleKind::Cron,
+            status: ReminderJobStatus::Scheduled,
+            next_run_at: 0,
+            interval_secs: None,
+            cron_expression: Some("0 0 9 * * * *".to_string()),
+            timezone: Some("UTC".to_string()),
+            lease_until: None,
+            last_run_at: None,
+            last_error: None,
+            run_count: 0,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let after = chrono::Utc
+            .with_ymd_and_hms(2026, 6, 1, 8, 0, 0)
+            .single()
+            .expect("valid datetime")
+            .timestamp();
+
+        let next = compute_next_reminder_run_at(&record, after).expect("next run should compute");
+        let expected = chrono::Utc
+            .with_ymd_and_hms(2026, 6, 1, 9, 0, 0)
+            .single()
+            .expect("valid datetime")
+            .timestamp();
+        assert_eq!(next, Some(expected));
     }
 
     #[test]
