@@ -210,6 +210,8 @@ fn configure_control_plane_expectations(mock: &mut crate::storage::MockStoragePr
                 status: ReminderJobStatus::Scheduled,
                 next_run_at: options.next_run_at,
                 interval_secs: options.interval_secs,
+                cron_expression: options.cron_expression,
+                timezone: options.timezone,
                 lease_until: None,
                 last_run_at: None,
                 last_error: None,

@@ -49,8 +49,8 @@ use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::{
-    resolve_active_topic_binding, ReminderJobRecord, ReminderScheduleKind, ReminderThreadKind,
-    StorageProvider,
+    compute_next_reminder_run_at, resolve_active_topic_binding, ReminderJobRecord,
+    ReminderThreadKind, StorageProvider,
 };
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
@@ -3446,79 +3446,154 @@ async fn finalize_reminder_execution(
     let now = current_timestamp_unix_secs();
 
     match result {
-        Ok(()) if reminder.schedule_kind == ReminderScheduleKind::Interval => {
-            let interval_secs = reminder.interval_secs.unwrap_or_default();
-            let next_run_at = now.saturating_add(i64::try_from(interval_secs).unwrap_or(i64::MAX));
-            let _ = storage
-                .reschedule_reminder_job(
-                    reminder.user_id,
-                    reminder.reminder_id.clone(),
-                    next_run_at,
-                    Some(now),
-                    None,
-                    true,
-                )
-                .await;
-            let _ = append_reminder_audit_event(
-                storage,
-                reminder,
-                "reminder_job_completed",
-                serde_json::json!({
-                    "next_run_at": next_run_at,
-                    "recurring": true,
-                }),
-            )
-            .await;
+        Ok(()) if reminder.is_recurring() => {
+            finalize_recurring_reminder_success(storage, reminder, now).await;
         }
-        Ok(()) => {
+        Ok(()) => finalize_one_shot_reminder_success(storage, reminder, now).await,
+        Err(error) if reminder.is_recurring() => {
+            finalize_recurring_reminder_failure(storage, reminder, now, &error.to_string()).await;
+        }
+        Err(error) => {
+            finalize_one_shot_reminder_failure(storage, reminder, now, &error.to_string()).await;
+        }
+    }
+}
+
+async fn finalize_recurring_reminder_success(
+    storage: &Arc<dyn StorageProvider>,
+    reminder: &ReminderJobRecord,
+    now: i64,
+) {
+    let Some(next_run_at) = resolve_recurring_next_run(storage, reminder, now, None).await else {
+        return;
+    };
+    let _ = storage
+        .reschedule_reminder_job(
+            reminder.user_id,
+            reminder.reminder_id.clone(),
+            next_run_at,
+            Some(now),
+            None,
+            true,
+        )
+        .await;
+    let _ = append_reminder_audit_event(
+        storage,
+        reminder,
+        "reminder_job_completed",
+        serde_json::json!({
+            "next_run_at": next_run_at,
+            "recurring": true,
+        }),
+    )
+    .await;
+}
+
+async fn finalize_one_shot_reminder_success(
+    storage: &Arc<dyn StorageProvider>,
+    reminder: &ReminderJobRecord,
+    now: i64,
+) {
+    let _ = storage
+        .complete_reminder_job(reminder.user_id, reminder.reminder_id.clone(), now)
+        .await;
+    let _ = append_reminder_audit_event(
+        storage,
+        reminder,
+        "reminder_job_completed",
+        serde_json::json!({
+            "completed_at": now,
+            "recurring": false,
+        }),
+    )
+    .await;
+}
+
+async fn finalize_recurring_reminder_failure(
+    storage: &Arc<dyn StorageProvider>,
+    reminder: &ReminderJobRecord,
+    now: i64,
+    error_text: &str,
+) {
+    let Some(next_run_at) =
+        resolve_recurring_next_run(storage, reminder, now, Some(error_text.to_string())).await
+    else {
+        return;
+    };
+    let _ = storage
+        .reschedule_reminder_job(
+            reminder.user_id,
+            reminder.reminder_id.clone(),
+            next_run_at,
+            Some(now),
+            Some(error_text.to_string()),
+            false,
+        )
+        .await;
+    let _ = append_reminder_audit_event(
+        storage,
+        reminder,
+        "reminder_job_failed",
+        serde_json::json!({
+            "error": error_text,
+            "next_run_at": next_run_at,
+            "recurring": true,
+        }),
+    )
+    .await;
+}
+
+async fn finalize_one_shot_reminder_failure(
+    storage: &Arc<dyn StorageProvider>,
+    reminder: &ReminderJobRecord,
+    now: i64,
+    error_text: &str,
+) {
+    let _ = storage
+        .fail_reminder_job(
+            reminder.user_id,
+            reminder.reminder_id.clone(),
+            now,
+            error_text.to_string(),
+        )
+        .await;
+    let _ = append_reminder_audit_event(
+        storage,
+        reminder,
+        "reminder_job_failed",
+        serde_json::json!({
+            "error": error_text,
+            "recurring": false,
+        }),
+    )
+    .await;
+}
+
+async fn resolve_recurring_next_run(
+    storage: &Arc<dyn StorageProvider>,
+    reminder: &ReminderJobRecord,
+    now: i64,
+    error_text: Option<String>,
+) -> Option<i64> {
+    match compute_next_reminder_run_at(reminder, now) {
+        Ok(Some(next_run_at)) => Some(next_run_at),
+        Ok(None) => {
             let _ = storage
                 .complete_reminder_job(reminder.user_id, reminder.reminder_id.clone(), now)
                 .await;
-            let _ = append_reminder_audit_event(
-                storage,
-                reminder,
-                "reminder_job_completed",
-                serde_json::json!({
-                    "completed_at": now,
-                    "recurring": false,
-                }),
-            )
-            .await;
+            None
         }
-        Err(error) if reminder.schedule_kind == ReminderScheduleKind::Interval => {
-            let interval_secs = reminder.interval_secs.unwrap_or_default();
-            let next_run_at = now.saturating_add(i64::try_from(interval_secs).unwrap_or(i64::MAX));
-            let error_text = error.to_string();
-            let _ = storage
-                .reschedule_reminder_job(
-                    reminder.user_id,
-                    reminder.reminder_id.clone(),
-                    next_run_at,
-                    Some(now),
-                    Some(error_text.clone()),
-                    false,
-                )
-                .await;
-            let _ = append_reminder_audit_event(
-                storage,
-                reminder,
-                "reminder_job_failed",
-                serde_json::json!({
-                    "error": error_text,
-                    "next_run_at": next_run_at,
-                    "recurring": true,
-                }),
-            )
-            .await;
-        }
-        Err(error) => {
-            let error_text = error.to_string();
+        Err(schedule_error) => {
+            let combined_error = match error_text {
+                Some(error_text) => format!("{error_text}; reschedule failed: {schedule_error}"),
+                None => schedule_error.to_string(),
+            };
             let _ = storage
                 .fail_reminder_job(
                     reminder.user_id,
                     reminder.reminder_id.clone(),
                     now,
-                    error_text.clone(),
+                    combined_error.clone(),
                 )
                 .await;
             let _ = append_reminder_audit_event(
@@ -3526,11 +3601,12 @@ async fn finalize_reminder_execution(
                 reminder,
                 "reminder_job_failed",
                 serde_json::json!({
-                    "error": error_text,
-                    "recurring": false,
+                    "error": combined_error,
+                    "recurring": true,
                 }),
             )
             .await;
+            None
         }
     }
 }
