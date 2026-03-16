@@ -155,7 +155,7 @@ Task lifecycle tracking with timeout control, cancellation support, and sandbox 
 
 ## 👥 Sub-Agent Architecture
 
-**EphemeralSession**: Isolated context for sub-agent tasks, automatic cleanup, blocked tools (`delegate_to_sub_agent`, `send_file_to_user`), session-scoped storage and memory.
+**EphemeralSession**: Isolated context for sub-agent tasks, automatic cleanup, blocked tools (`delegate_to_sub_agent`, `send_file_to_user`, all reminder tools), session-scoped storage and memory.
 
 **Delegation Flow**: `Main Agent → DelegationGuardHook → EphemeralSession → Sub-Agent → Result → Main Agent`
 
@@ -181,7 +181,7 @@ S3-backed system prompts per topic with manager CRUD operations.
 
 **Components**: `TopicAgentsMdRecord`, storage API (`upsert_topic_agents_md`, `get_topic_agents_md`, `delete_topic_agents_md`), `composer.rs` injection logic.
 
-**Features**: Per-topic system prompt storage (300-line limit), pinned message injection on flow creation, preservation during memory compaction, manager tools (`topic_agents_md_upsert/get/delete/rollback`) with audit trail.
+**Features**: Per-topic system prompt storage (300-line limit, 40-line limit for topic_context), strict validation with duplicate content detection, pinned message injection on flow creation, preservation during memory compaction, manager tools (`topic_agents_md_upsert/get/delete/rollback`) with audit trail.
 
 **Breaking Change**: `skills/AGENT.md` no longer used as default prompt source.
 
@@ -231,7 +231,7 @@ CRUD operations for forum topics, agent profiles, topic contexts, infrastructure
 
 **Components**: `ManagerControlPlaneProvider`, `manager_control_plane.rs`, `AuditEventRecord`, `TopicBindingRecord`, `TopicBindingKind`, `TopicAgentsMdRecord`.
 
-**Features**: Forum topic lifecycle, topic binding management, agent profile CRUD, topic context CRUD, topic AGENTS.md CRUD, infrastructure config CRUD, tool/hook control for topic agents, atomic topic provisioning, complete audit trail, RBAC via `manager_allowed_users`.
+**Features**: Forum topic lifecycle, topic binding management, agent profile CRUD, topic context CRUD, topic AGENTS.md CRUD, infrastructure config CRUD, tool/hook control for topic agents, atomic topic provisioning, complete audit trail, RBAC via `manager_allowed_users`, reminder provider in topic agent catalog with aliases "reminder"/"wakeups".
 
 **Forum Topic Catalog**: `forum_topic_list` tool for memory-independent topic discovery. Catalog entries persist topic metadata (name, icon, closed status) in S3 with automatic cleanup on topic deletion.
 
@@ -279,12 +279,26 @@ Short-lived approval gating for sensitive SSH operations with transport integrat
 
 **Features**: 600s TTL, topic-scoped, single-use tokens, automatic task retry after approval.
 
+## ⏰ Reminder System
+
+Scheduled wake-up tasks with background scheduler for deferred agent execution.
+
+**Components**: `ReminderProvider`, `ReminderJobRecord`, `spawn_reminder_scheduler`.
+
+**Schedule Types**: `Once` (timestamp/delay), `Interval` (recurring), `Cron` (timezone-aware expression).
+
+**Tools**: `reminder_schedule`, `reminder_list`, `reminder_cancel`, `reminder_pause`, `reminder_resume`, `reminder_retry`.
+
+**Storage**: `users/{user_id}/control_plane/reminders/{reminder_id}.json` with lease-based claiming.
+
+**Scheduler**: 5s polling, 16 batch limit, 300s lease, wakes agent in original topic/flow.
+
 ---
 
 ## 🔌 Provider Ecosystem
 
 ### Tool Providers
-`sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane.rs`, `ssh_mcp.rs`, `ytdlp.rs`.
+`sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane.rs`, `ssh_mcp.rs`, `ytdlp.rs`, `reminder.rs`.
 
 ### Sandbox Stack
 `sandbox/manager.rs` - facade and Docker backend, `sandbox/broker.rs` - Unix socket protocol/client/server, `sandbox/scope.rs` - stable sandbox naming/labels, `oxide-agent-sandboxd` - standalone broker binary.
