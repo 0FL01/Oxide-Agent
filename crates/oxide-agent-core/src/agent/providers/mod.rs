@@ -27,10 +27,10 @@ pub use manager_control_plane::{
 };
 pub use sandbox::SandboxProvider;
 pub use ssh_mcp::{
-    inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
-    inspect_topic_infra_config, probe_secret_ref, SecretProbeKind, SecretProbeReport,
-    SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
-    TopicInfraPreflightReport,
+    cleanup_stale_private_key_tempfiles, inject_ssh_approval_system_message,
+    inject_topic_infra_preflight_system_message, inspect_topic_infra_config, probe_secret_ref,
+    SecretProbeKind, SecretProbeReport, SshApprovalGrant, SshApprovalRegistry,
+    SshApprovalRequestView, SshMcpProvider, TopicInfraPreflightReport,
 };
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use ytdlp::YtdlpProvider;

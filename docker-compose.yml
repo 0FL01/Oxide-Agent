@@ -41,6 +41,7 @@ services:
     image: oxide-agent:latest
     container_name: oxide_agent_sandboxd
     restart: unless-stopped
+    user: "0"
     command: ["./oxide-agent-sandboxd"]
     environment:
       - RUST_LOG=oxide_agent_core=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn

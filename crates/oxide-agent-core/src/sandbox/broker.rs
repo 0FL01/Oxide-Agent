@@ -2,6 +2,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -462,6 +463,14 @@ impl SandboxBrokerServer {
                 socket_path.display()
             )
         })?;
+        fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o666))
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to set sandbox broker socket permissions for {}",
+                    socket_path.display()
+                )
+            })?;
 
         Ok(Self {
             listener,

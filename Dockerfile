@@ -46,15 +46,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd --system --gid 10001 oxide \
+    && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/oxide oxide
+
 WORKDIR /app
 COPY --from=builder /app/target/release/oxide-agent-telegram-bot /app/oxide-agent-telegram-bot
 COPY --from=builder /app/target/release/oxide-agent-sandboxd /app/oxide-agent-sandboxd
 COPY --from=ssh-mcp-binary /usr/local/bin/ssh-mcp /usr/local/bin/ssh-mcp
 COPY skills/ /app/skills/
 
+RUN chown -R oxide:oxide /app /home/oxide
+
 
 # Set environment variables
 ENV RUST_LOG=oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
 ENV DEBUG_MODE=false
+
+USER oxide
 
 CMD ["./oxide-agent-telegram-bot"]
