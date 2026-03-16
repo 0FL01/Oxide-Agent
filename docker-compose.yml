@@ -24,8 +24,7 @@ services:
     volumes:
       - ./config:/app/config
       - sandboxd-run:/run/sandboxd
-    networks:
-      - oxide_network
+    network_mode: host
     # depends_on:
     #   crawl4ai:
     #     condition: service_healthy
@@ -51,8 +50,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - sandboxd-run:/run/sandboxd
-    networks:
-      - oxide_network
+    network_mode: host
     logging:
       driver: json-file
       options:
@@ -84,9 +82,6 @@ services:
   #       max-size: "1m"
   #       max-file: "3"
 
-networks:
-  oxide_network:
-    driver: host
-
 volumes:
   sandboxd-run:
+
