@@ -346,6 +346,8 @@ pub enum ReminderScheduleKind {
 pub enum ReminderJobStatus {
     /// Reminder is scheduled and may be claimed by a worker.
     Scheduled,
+    /// Reminder is temporarily paused and should not be executed.
+    Paused,
     /// Reminder completed successfully and will not run again.
     Completed,
     /// Reminder was cancelled by the user.
@@ -1082,6 +1084,46 @@ pub trait StorageProvider: Send + Sync {
         let _ = user_id;
         let _ = reminder_id;
         let _ = cancelled_at;
+        Ok(None)
+    }
+    /// Pause an active reminder job.
+    async fn pause_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        paused_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        let _ = paused_at;
+        Ok(None)
+    }
+    /// Resume a paused reminder job with a new next execution timestamp.
+    async fn resume_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        resumed_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        let _ = next_run_at;
+        let _ = resumed_at;
+        Ok(None)
+    }
+    /// Retry a failed reminder job by scheduling it again.
+    async fn retry_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        retried_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let _ = user_id;
+        let _ = reminder_id;
+        let _ = next_run_at;
+        let _ = retried_at;
         Ok(None)
     }
 }
@@ -2499,6 +2541,77 @@ impl StorageProvider for R2Storage {
                 status: ReminderJobStatus::Cancelled,
                 lease_until: None,
                 last_run_at: record.last_run_at.or(Some(cancelled_at)),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn pause_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        paused_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Paused,
+                lease_until: None,
+                last_run_at: record.last_run_at.or(Some(paused_at)),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn resume_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        resumed_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Paused {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Scheduled,
+                next_run_at,
+                lease_until: None,
+                last_run_at: record.last_run_at.or(Some(resumed_at)),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn retry_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        retried_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Failed {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Scheduled,
+                next_run_at,
+                lease_until: None,
+                last_run_at: record.last_run_at.or(Some(retried_at)),
+                last_error: None,
                 updated_at: mutation_now,
                 ..record
             })
