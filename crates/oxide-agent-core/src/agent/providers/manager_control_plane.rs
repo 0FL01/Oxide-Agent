@@ -160,6 +160,12 @@ fn default_ssh_agent_allowed_tools() -> Vec<String> {
         "ssh_read_file".to_string(),
         "ssh_apply_file_edit".to_string(),
         "ssh_check_process".to_string(),
+        "reminder_schedule".to_string(),
+        "reminder_list".to_string(),
+        "reminder_cancel".to_string(),
+        "reminder_pause".to_string(),
+        "reminder_resume".to_string(),
+        "reminder_retry".to_string(),
     ]
 }
 
@@ -7989,6 +7995,14 @@ mod tests {
             parsed["profile"]["profile"]["blockedTools"],
             json!(topic_agent_default_blocked_tools())
         );
+        let allowed_tools = parsed["profile"]["profile"]["allowedTools"]
+            .as_array()
+            .expect("allowedTools must be present");
+        assert!(TOPIC_AGENT_REMINDER_TOOLS.iter().all(|tool| {
+            allowed_tools
+                .iter()
+                .any(|value| value.as_str() == Some(*tool))
+        }));
         assert_eq!(parsed["preflight"]["provider_enabled"], true);
 
         let calls = lifecycle.calls();
