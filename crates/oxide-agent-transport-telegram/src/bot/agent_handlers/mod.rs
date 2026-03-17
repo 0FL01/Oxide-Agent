@@ -3,28 +3,25 @@
 //! Provides handlers for activating agent mode, processing messages,
 //! and managing agent sessions.
 
-use crate::bot::agent_transport::TelegramAgentTransport;
 use crate::bot::context::{
     ensure_current_agent_flow_id, reset_current_agent_flow_id, sandbox_scope,
     set_current_agent_flow_id, set_current_context_state, storage_context_key,
 };
-use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
-use crate::bot::progress_render::render_progress_html;
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::topic_route::{
     resolve_topic_route, touch_dynamic_binding_activity_if_needed, TopicRouteDecision,
 };
 use crate::bot::views::{
     agent_control_markup, agent_flow_inline_keyboard, cancel_task_confirmation_inline_keyboard,
-    confirmation_markup, empty_inline_keyboard, get_agent_inline_keyboard_with_exit,
-    progress_inline_keyboard, ssh_approval_inline_keyboard, AgentView, DefaultAgentView,
-    AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY,
-    AGENT_CALLBACK_CONFIRM_CANCEL_NO, AGENT_CALLBACK_CONFIRM_CANCEL_YES,
-    AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL, AGENT_CALLBACK_CONFIRM_CLEAR_YES,
-    AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL, AGENT_CALLBACK_CONFIRM_RECREATE_YES,
-    AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT, AGENT_CALLBACK_RECREATE_CONTAINER,
-    AGENT_CALLBACK_SSH_APPROVE_PREFIX, AGENT_CALLBACK_SSH_REJECT_PREFIX, LOOP_CALLBACK_CANCEL,
-    LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
+    confirmation_markup, empty_inline_keyboard, get_agent_inline_keyboard_with_exit, AgentView,
+    DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK,
+    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
+    AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
+    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT,
+    AGENT_CALLBACK_RECREATE_CONTAINER, AGENT_CALLBACK_SSH_APPROVE_PREFIX,
+    AGENT_CALLBACK_SSH_REJECT_PREFIX, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET,
+    LOOP_CALLBACK_RETRY,
 };
 use crate::bot::{
     build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec,
@@ -32,18 +29,13 @@ use crate::bot::{
 };
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
-use oxide_agent_core::agent::{
-    progress::{AgentEvent, ProgressState},
-    SessionId,
-};
-use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
+use oxide_agent_core::agent::SessionId;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::{
     compute_next_reminder_run_at, resolve_active_topic_binding, ReminderJobRecord,
     ReminderThreadKind, StorageProvider,
 };
-use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -54,32 +46,20 @@ use teloxide::types::{
 };
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{Duration, MissedTickBehavior};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 mod execution_config;
 mod input;
 mod session;
+mod task_runner;
 
 pub(crate) use execution_config::*;
 pub(crate) use input::*;
 pub(crate) use session::*;
+pub(crate) use task_runner::*;
 
 /// Type alias for dialogue
 pub type AgentDialogue = Dialogue<State, InMemStorage<State>>;
-
-/// Context for running an agent task without blocking the update handler
-struct AgentTaskContext {
-    bot: Bot,
-    msg: Message,
-    storage: Arc<dyn StorageProvider>,
-    llm: Arc<LlmClient>,
-    context_key: String,
-    agent_flow_id: String,
-    sandbox_scope: SandboxScope,
-    message_thread_id: Option<ThreadId>,
-    use_inline_progress_controls: bool,
-    session_id: SessionId,
-}
 
 enum AgentWipeError {
     Recreate(Error),
@@ -857,23 +837,6 @@ async fn handle_agent_control_command(
         AgentControlCommand::ExitAgentMode => exit_agent_mode(bot, msg, dialogue, storage).await,
         AgentControlCommand::ShowControls => show_agent_controls(bot, msg, storage).await,
     }
-}
-
-fn spawn_agent_task(ctx: AgentTaskContext) {
-    tokio::spawn(async move {
-        let task_bot = ctx.bot.clone();
-        let task_msg = ctx.msg.clone();
-        let message_thread_id = ctx.message_thread_id;
-
-        if let Err(e) = run_agent_task(ctx).await {
-            let mut req = task_bot.send_message(task_msg.chat.id, format!("❌ Error: {e}"));
-            if let Some(thread_id) = message_thread_id {
-                req = req.message_thread_id(thread_id);
-            }
-
-            let _ = req.await;
-        }
-    });
 }
 
 #[cfg(test)]
@@ -2283,465 +2246,6 @@ mod tests {
     }
 }
 
-async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
-    let user_id = ctx.msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    let chat_id = ctx.msg.chat.id;
-    let progress_reply_markup = ctx
-        .use_inline_progress_controls
-        .then_some(progress_inline_keyboard());
-
-    // Preprocess input
-    let task_text = match preprocess_agent_message_input(
-        &ctx.bot,
-        &ctx.msg,
-        &ctx.llm,
-        &ctx.sandbox_scope,
-    )
-    .await
-    {
-        Ok(text) => text,
-        Err(err) => {
-            if err.to_string() == "MULTIMODAL_DISABLED" {
-                send_multimodal_unavailable_message(&ctx.bot, chat_id, ctx.message_thread_id)
-                    .await?;
-                return Ok(());
-            }
-            return Err(err);
-        }
-    };
-    info!(
-        user_id = user_id,
-        chat_id = chat_id.0,
-        "Input preprocessed, task text extracted"
-    );
-
-    // Send initial progress message with retry on network failures
-    let progress_msg = super::resilient::send_message_resilient_with_thread_and_markup(
-        &ctx.bot,
-        chat_id,
-        "⏳ Processing task...",
-        Some(ParseMode::Html),
-        ctx.message_thread_id,
-        progress_reply_markup.clone().map(Into::into),
-    )
-    .await?;
-
-    // Create progress tracking channel
-    let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-    let transport = TelegramAgentTransport::new(
-        ctx.bot.clone(),
-        chat_id,
-        progress_msg.id,
-        ctx.message_thread_id,
-        ctx.use_inline_progress_controls,
-    );
-    let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
-    let progress_handle = spawn_progress_runtime(transport, rx, cfg);
-
-    // Execute the task
-    let result = execute_agent_task(ctx.session_id, &task_text, Some(tx)).await;
-    let state = match progress_handle.await {
-        Ok(state) => state,
-        Err(err) => {
-            warn!(error = %err, "Progress runtime task failed");
-            ProgressState::new(AGENT_MAX_ITERATIONS)
-        }
-    };
-    let progress_text = render_progress_html(&state);
-
-    // Save agent memory after task execution
-    save_memory_after_task(
-        ctx.session_id,
-        user_id,
-        &ctx.context_key,
-        &ctx.agent_flow_id,
-        &ctx.storage,
-    )
-    .await;
-
-    deliver_agent_task_result(
-        &ctx,
-        result,
-        &progress_text,
-        progress_msg.id,
-        progress_reply_markup,
-    )
-    .await?;
-
-    Ok(())
-}
-
-async fn deliver_agent_task_result(
-    ctx: &AgentTaskContext,
-    result: Result<oxide_agent_core::agent::AgentExecutionOutcome>,
-    progress_text: &str,
-    progress_message_id: teloxide::types::MessageId,
-    progress_reply_markup: Option<teloxide::types::InlineKeyboardMarkup>,
-) -> Result<()> {
-    let terminal_progress_reply_markup = progress_reply_markup
-        .as_ref()
-        .map(|_| empty_inline_keyboard());
-    let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
-    let pending_ssh_approvals = take_pending_ssh_approvals(ctx.session_id).await;
-
-    match result {
-        Ok(oxide_agent_core::agent::AgentExecutionOutcome::Completed(response)) => {
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.msg.chat.id,
-                progress_message_id,
-                progress_text,
-                terminal_progress_reply_markup.clone(),
-            )
-            .await;
-            let final_markup = ctx
-                .use_inline_progress_controls
-                .then(|| agent_flow_inline_keyboard(&ctx.agent_flow_id));
-            send_long_message_in_thread_with_final_markup(
-                &ctx.bot,
-                ctx.msg.chat.id,
-                &response,
-                ctx.message_thread_id,
-                final_markup,
-            )
-            .await?;
-            send_pending_ssh_approval_messages(
-                &ctx.bot,
-                ctx.msg.chat.id,
-                ctx.message_thread_id,
-                &pending_ssh_approvals,
-            )
-            .await?;
-        }
-        Ok(oxide_agent_core::agent::AgentExecutionOutcome::WaitingForApproval) => {
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.msg.chat.id,
-                progress_message_id,
-                progress_text,
-                terminal_progress_reply_markup.clone(),
-            )
-            .await;
-            send_pending_ssh_approval_messages(
-                &ctx.bot,
-                ctx.msg.chat.id,
-                ctx.message_thread_id,
-                &pending_ssh_approvals,
-            )
-            .await?;
-        }
-        Err(e) => {
-            let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
-            let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.msg.chat.id,
-                progress_message_id,
-                &error_text,
-                terminal_progress_reply_markup,
-            )
-            .await;
-        }
-    }
-
-    finalize_cancel_status_if_needed(
-        &ctx.bot,
-        ctx.session_id,
-        ctx.msg.chat.id,
-        cancelled,
-        cancel_status_inline_markup(ctx.use_inline_progress_controls, &ctx.agent_flow_id),
-    )
-    .await;
-
-    Ok(())
-}
-
-struct RunAgentTaskTextContext {
-    bot: Bot,
-    chat_id: ChatId,
-    session_id: SessionId,
-    user_id: i64,
-    task_text: String,
-    storage: Arc<dyn StorageProvider>,
-    context_key: String,
-    agent_flow_id: String,
-    message_thread_id: Option<ThreadId>,
-    use_inline_progress_controls: bool,
-}
-
-struct RunApprovedSshResumeContext {
-    bot: Bot,
-    chat_id: ChatId,
-    session_id: SessionId,
-    user_id: i64,
-    request_id: String,
-    storage: Arc<dyn StorageProvider>,
-    context_key: String,
-    agent_flow_id: String,
-    message_thread_id: Option<ThreadId>,
-    use_inline_progress_controls: bool,
-}
-
-async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
-    let progress_reply_markup = ctx
-        .use_inline_progress_controls
-        .then_some(progress_inline_keyboard());
-
-    let progress_msg = super::resilient::send_message_resilient_with_thread_and_markup(
-        &ctx.bot,
-        ctx.chat_id,
-        "⏳ Processing task...",
-        Some(ParseMode::Html),
-        ctx.message_thread_id,
-        progress_reply_markup.clone().map(Into::into),
-    )
-    .await?;
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-    let transport = TelegramAgentTransport::new(
-        ctx.bot.clone(),
-        ctx.chat_id,
-        progress_msg.id,
-        ctx.message_thread_id,
-        ctx.use_inline_progress_controls,
-    );
-    let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
-    let progress_handle = spawn_progress_runtime(transport, rx, cfg);
-
-    let result = execute_agent_task(ctx.session_id, &ctx.task_text, Some(tx)).await;
-    let state = match progress_handle.await {
-        Ok(state) => state,
-        Err(err) => {
-            warn!(error = %err, "Progress runtime task failed");
-            ProgressState::new(AGENT_MAX_ITERATIONS)
-        }
-    };
-    let progress_text = render_progress_html(&state);
-    let pending_ssh_approvals = take_pending_ssh_approvals(ctx.session_id).await;
-
-    save_memory_after_task(
-        ctx.session_id,
-        ctx.user_id,
-        &ctx.context_key,
-        &ctx.agent_flow_id,
-        &ctx.storage,
-    )
-    .await;
-
-    let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
-
-    match result {
-        Ok(oxide_agent_core::agent::AgentExecutionOutcome::Completed(response)) => {
-            let terminal_progress_reply_markup = progress_reply_markup
-                .as_ref()
-                .map(|_| empty_inline_keyboard());
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_msg.id,
-                &progress_text,
-                terminal_progress_reply_markup.clone(),
-            )
-            .await;
-            // Use send_long_message to properly split response if it exceeds Telegram limit
-            let final_markup = ctx
-                .use_inline_progress_controls
-                .then(|| agent_flow_inline_keyboard(&ctx.agent_flow_id));
-            send_long_message_in_thread_with_final_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                &response,
-                ctx.message_thread_id,
-                final_markup,
-            )
-            .await?;
-            send_pending_ssh_approval_messages(
-                &ctx.bot,
-                ctx.chat_id,
-                ctx.message_thread_id,
-                &pending_ssh_approvals,
-            )
-            .await?;
-        }
-        Ok(oxide_agent_core::agent::AgentExecutionOutcome::WaitingForApproval) => {
-            let terminal_progress_reply_markup = progress_reply_markup
-                .as_ref()
-                .map(|_| empty_inline_keyboard());
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_msg.id,
-                &progress_text,
-                terminal_progress_reply_markup,
-            )
-            .await;
-            send_pending_ssh_approval_messages(
-                &ctx.bot,
-                ctx.chat_id,
-                ctx.message_thread_id,
-                &pending_ssh_approvals,
-            )
-            .await?;
-        }
-        Err(e) => {
-            // Sanitize error text to prevent Telegram HTML parse errors
-            let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
-            let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
-            let terminal_progress_reply_markup = progress_reply_markup
-                .as_ref()
-                .map(|_| empty_inline_keyboard());
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_msg.id,
-                &error_text,
-                terminal_progress_reply_markup,
-            )
-            .await;
-        }
-    }
-
-    finalize_cancel_status_if_needed(
-        &ctx.bot,
-        ctx.session_id,
-        ctx.chat_id,
-        cancelled,
-        cancel_status_inline_markup(ctx.use_inline_progress_controls, &ctx.agent_flow_id),
-    )
-    .await;
-
-    Ok(())
-}
-
-async fn run_approved_ssh_resume(ctx: RunApprovedSshResumeContext) -> Result<()> {
-    let progress_reply_markup = ctx
-        .use_inline_progress_controls
-        .then_some(progress_inline_keyboard());
-
-    let progress_msg = super::resilient::send_message_resilient_with_thread_and_markup(
-        &ctx.bot,
-        ctx.chat_id,
-        "⏳ Processing task...",
-        Some(ParseMode::Html),
-        ctx.message_thread_id,
-        progress_reply_markup.clone().map(Into::into),
-    )
-    .await?;
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-    let transport = TelegramAgentTransport::new(
-        ctx.bot.clone(),
-        ctx.chat_id,
-        progress_msg.id,
-        ctx.message_thread_id,
-        ctx.use_inline_progress_controls,
-    );
-    let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
-    let progress_handle = spawn_progress_runtime(transport, rx, cfg);
-
-    let result = execute_ssh_approval_resume(ctx.session_id, &ctx.request_id, Some(tx)).await;
-    let state = match progress_handle.await {
-        Ok(state) => state,
-        Err(err) => {
-            warn!(error = %err, "Progress runtime task failed");
-            ProgressState::new(AGENT_MAX_ITERATIONS)
-        }
-    };
-    let progress_text = render_progress_html(&state);
-    let pending_ssh_approvals = take_pending_ssh_approvals(ctx.session_id).await;
-
-    save_memory_after_task(
-        ctx.session_id,
-        ctx.user_id,
-        &ctx.context_key,
-        &ctx.agent_flow_id,
-        &ctx.storage,
-    )
-    .await;
-
-    let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
-
-    match result {
-        Ok(oxide_agent_core::agent::AgentExecutionOutcome::Completed(response)) => {
-            let terminal_progress_reply_markup = progress_reply_markup
-                .as_ref()
-                .map(|_| empty_inline_keyboard());
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_msg.id,
-                &progress_text,
-                terminal_progress_reply_markup.clone(),
-            )
-            .await;
-            let final_markup = ctx
-                .use_inline_progress_controls
-                .then(|| agent_flow_inline_keyboard(&ctx.agent_flow_id));
-            send_long_message_in_thread_with_final_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                &response,
-                ctx.message_thread_id,
-                final_markup,
-            )
-            .await?;
-            send_pending_ssh_approval_messages(
-                &ctx.bot,
-                ctx.chat_id,
-                ctx.message_thread_id,
-                &pending_ssh_approvals,
-            )
-            .await?;
-        }
-        Ok(oxide_agent_core::agent::AgentExecutionOutcome::WaitingForApproval) => {
-            let terminal_progress_reply_markup = progress_reply_markup
-                .as_ref()
-                .map(|_| empty_inline_keyboard());
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_msg.id,
-                &progress_text,
-                terminal_progress_reply_markup,
-            )
-            .await;
-            send_pending_ssh_approval_messages(
-                &ctx.bot,
-                ctx.chat_id,
-                ctx.message_thread_id,
-                &pending_ssh_approvals,
-            )
-            .await?;
-        }
-        Err(e) => {
-            let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&e.to_string());
-            let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
-            let terminal_progress_reply_markup = progress_reply_markup
-                .as_ref()
-                .map(|_| empty_inline_keyboard());
-            super::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_msg.id,
-                &error_text,
-                terminal_progress_reply_markup,
-            )
-            .await;
-        }
-    }
-
-    finalize_cancel_status_if_needed(
-        &ctx.bot,
-        ctx.session_id,
-        ctx.chat_id,
-        cancelled,
-        cancel_status_inline_markup(ctx.use_inline_progress_controls, &ctx.agent_flow_id),
-    )
-    .await;
-
-    Ok(())
-}
-
 pub(crate) fn spawn_reminder_scheduler(
     bot: Bot,
     storage: Arc<dyn StorageProvider>,
@@ -3181,110 +2685,6 @@ fn current_timestamp_unix_secs() -> i64 {
         Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
         Err(_) => 0,
     }
-}
-
-/// Execute an agent task and return the result
-async fn execute_agent_task(
-    session_id: SessionId,
-    task: &str,
-    progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-) -> Result<oxide_agent_core::agent::AgentExecutionOutcome> {
-    // Get executor from registry
-    let executor_arc = SESSION_REGISTRY
-        .get(&session_id)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No agent session found"))?;
-
-    // Get the cancellation token for this task
-    let cancellation_token = SESSION_REGISTRY
-        .get_cancellation_token(&session_id)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No cancellation token found"))?;
-
-    // Acquire write lock on the executor
-    let mut executor = executor_arc.write().await;
-
-    debug!(
-        session_id = %session_id,
-        memory_messages = executor.session().memory.get_messages().len(),
-        "Executor accessed for task execution"
-    );
-
-    // Check timeout
-    if executor.is_timed_out() {
-        executor.reset();
-        return Err(anyhow::anyhow!(
-            "Previous session timed out. Starting a new session."
-        ));
-    }
-
-    // IMPORTANT: Set the external cancellation token into session
-    executor.session_mut().cancellation_token = (*cancellation_token).clone();
-
-    // Execute the task (now uses external token that can be cancelled lock-free)
-    executor.execute(task, progress_tx).await
-}
-
-async fn execute_ssh_approval_resume(
-    session_id: SessionId,
-    request_id: &str,
-    progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-) -> Result<oxide_agent_core::agent::AgentExecutionOutcome> {
-    let executor_arc = SESSION_REGISTRY
-        .get(&session_id)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No agent session found"))?;
-
-    let cancellation_token = SESSION_REGISTRY
-        .get_cancellation_token(&session_id)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No cancellation token found"))?;
-
-    let mut executor = executor_arc.write().await;
-
-    if executor.is_timed_out() {
-        executor.reset();
-        return Err(anyhow::anyhow!(
-            "Previous session timed out. Starting a new session."
-        ));
-    }
-
-    executor.session_mut().cancellation_token = (*cancellation_token).clone();
-    executor.resume_ssh_approval(request_id, progress_tx).await
-}
-
-async fn take_pending_ssh_approvals(
-    session_id: SessionId,
-) -> Vec<oxide_agent_core::agent::SshApprovalRequestView> {
-    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
-        return Vec::new();
-    };
-    let executor = executor_arc.read().await;
-    executor.take_pending_ssh_approvals().await
-}
-
-async fn send_pending_ssh_approval_messages(
-    bot: &Bot,
-    chat_id: ChatId,
-    message_thread_id: Option<ThreadId>,
-    requests: &[oxide_agent_core::agent::SshApprovalRequestView],
-) -> Result<()> {
-    for request in requests {
-        let text = format!(
-            "⚠️ <b>SSH approval required</b>\n\nTarget: <b>{}</b>\nTool: <code>{}</code>\n\n{}",
-            html_escape::encode_text(&request.target_name),
-            html_escape::encode_text(&request.tool_name),
-            html_escape::encode_text(&request.summary),
-        );
-        let mut req = bot.send_message(chat_id, text).parse_mode(ParseMode::Html);
-        if let Some(thread_id) = message_thread_id {
-            req = req.message_thread_id(thread_id);
-        }
-        req.reply_markup(ssh_approval_inline_keyboard(&request.request_id))
-            .await?;
-    }
-
-    Ok(())
 }
 
 #[derive(Clone)]
