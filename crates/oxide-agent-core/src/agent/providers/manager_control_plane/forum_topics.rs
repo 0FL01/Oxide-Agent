@@ -1,5 +1,144 @@
 use super::*;
 
+pub(super) const TELEGRAM_FORUM_ICON_COLORS: [u32; 6] = [
+    7_322_096, 16_766_590, 13_338_331, 9_367_192, 16_749_490, 16_478_047,
+];
+
+fn default_ssh_agent_allowed_tools() -> Vec<String> {
+    vec![
+        "write_todos".to_string(),
+        "ssh_exec".to_string(),
+        "ssh_sudo_exec".to_string(),
+        "ssh_read_file".to_string(),
+        "ssh_apply_file_edit".to_string(),
+        "ssh_check_process".to_string(),
+        "reminder_schedule".to_string(),
+        "reminder_list".to_string(),
+        "reminder_cancel".to_string(),
+        "reminder_pause".to_string(),
+        "reminder_resume".to_string(),
+        "reminder_retry".to_string(),
+    ]
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicProvisionSshAgentArgs {
+    name: String,
+    #[serde(default)]
+    chat_id: Option<i64>,
+    #[serde(default)]
+    icon_color: Option<u32>,
+    #[serde(default)]
+    icon_custom_emoji_id: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    system_prompt: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    topic_context: Option<String>,
+    #[serde(default)]
+    target_name: Option<String>,
+    host: String,
+    #[serde(default = "super::default_ssh_port")]
+    port: u16,
+    remote_user: String,
+    auth_mode: TopicInfraAuthMode,
+    #[serde(default)]
+    secret_ref: Option<String>,
+    #[serde(default)]
+    sudo_secret_ref: Option<String>,
+    #[serde(default)]
+    environment: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default = "super::default_infra_allowed_tool_modes")]
+    allowed_tool_modes: Vec<TopicInfraToolMode>,
+    #[serde(default = "super::default_infra_approval_required_modes")]
+    approval_required_modes: Vec<TopicInfraToolMode>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+pub(super) struct ForumTopicProvisionSshAgentPlan {
+    pub(super) request: ForumTopicCreateRequest,
+    pub(super) agent_id: String,
+    pub(super) profile: serde_json::Value,
+    pub(super) topic_context: Option<String>,
+    pub(super) target_name: String,
+    pub(super) host: String,
+    pub(super) port: u16,
+    pub(super) remote_user: String,
+    pub(super) auth_mode: TopicInfraAuthMode,
+    pub(super) secret_ref: Option<String>,
+    pub(super) sudo_secret_ref: Option<String>,
+    pub(super) environment: Option<String>,
+    pub(super) tags: Vec<String>,
+    pub(super) allowed_tool_modes: Vec<TopicInfraToolMode>,
+    pub(super) approval_required_modes: Vec<TopicInfraToolMode>,
+    pub(super) dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicCreateArgs {
+    #[serde(default)]
+    chat_id: Option<i64>,
+    name: String,
+    #[serde(default)]
+    icon_color: Option<u32>,
+    #[serde(default)]
+    icon_custom_emoji_id: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicEditArgs {
+    #[serde(default)]
+    chat_id: Option<i64>,
+    thread_id: i64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    icon_custom_emoji_id: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicThreadArgs {
+    #[serde(default)]
+    chat_id: Option<i64>,
+    thread_id: i64,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForumTopicListArgs {
+    #[serde(default)]
+    chat_id: Option<i64>,
+    #[serde(default)]
+    include_closed: bool,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub(super) struct ForumTopicCatalogEntry {
+    pub(super) topic_id: String,
+    pub(super) chat_id: i64,
+    pub(super) thread_id: i64,
+    pub(super) name: Option<String>,
+    pub(super) icon_color: Option<u32>,
+    pub(super) icon_custom_emoji_id: Option<String>,
+    pub(super) closed: bool,
+}
+
 impl ManagerControlPlaneProvider {
     async fn persist_forum_topic_catalog_entry(
         &self,

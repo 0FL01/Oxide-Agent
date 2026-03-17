@@ -1,5 +1,92 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TopicSandboxPruneReason {
+    TopicMissing,
+    BindingMissing,
+    SandboxDisabled,
+    #[default]
+    All,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxListArgs {
+    #[serde(default)]
+    orphaned_only: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxGetArgs {
+    #[serde(default)]
+    topic_id: Option<String>,
+    #[serde(default)]
+    container_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxCreateArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxRecreateArgs {
+    topic_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxDeleteArgs {
+    #[serde(default)]
+    topic_id: Option<String>,
+    #[serde(default)]
+    container_name: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicSandboxPruneArgs {
+    #[serde(default)]
+    reason: TopicSandboxPruneReason,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct TopicSandboxInventoryRecord {
+    container_id: String,
+    container_name: String,
+    image: Option<String>,
+    created_at: Option<i64>,
+    state: Option<String>,
+    status: Option<String>,
+    running: bool,
+    topic_id: Option<String>,
+    chat_id: Option<i64>,
+    thread_id: Option<i64>,
+    labels: std::collections::HashMap<String, String>,
+    bound_topic_exists: bool,
+    binding_found: bool,
+    sandbox_tools_enabled: Option<bool>,
+    orphan_reason: Option<String>,
+}
+
+#[derive(Debug)]
+enum TopicSandboxTarget {
+    TopicId(String),
+    ContainerName(String),
+}
+
 impl ManagerControlPlaneProvider {
     pub(super) fn topic_sandbox_tools_definitions() -> Vec<ToolDefinition> {
         vec![
