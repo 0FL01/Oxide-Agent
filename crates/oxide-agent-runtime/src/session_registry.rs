@@ -2,7 +2,9 @@
 //!
 //! Manages global agent sessions and cancellation tokens.
 
-use oxide_agent_core::agent::{AgentExecutor, SessionId};
+use oxide_agent_core::agent::{
+    AgentExecutor, RuntimeContextInbox, RuntimeContextInjection, SessionId,
+};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -15,6 +17,7 @@ use tracing::{info, warn};
 pub struct SessionRegistry {
     sessions: RwLock<HashMap<SessionId, Arc<RwLock<AgentExecutor>>>>,
     cancellation_tokens: RwLock<HashMap<SessionId, Arc<CancellationToken>>>,
+    runtime_context_inboxes: RwLock<HashMap<SessionId, RuntimeContextInbox>>,
 }
 
 impl Default for SessionRegistry {
@@ -30,6 +33,7 @@ impl SessionRegistry {
         Self {
             sessions: RwLock::new(HashMap::new()),
             cancellation_tokens: RwLock::new(HashMap::new()),
+            runtime_context_inboxes: RwLock::new(HashMap::new()),
         }
     }
 
@@ -47,7 +51,9 @@ impl SessionRegistry {
         }
 
         // Create new session
-        let executor = Arc::new(RwLock::new(factory()));
+        let built_executor = factory();
+        let inbox = built_executor.runtime_context_inbox();
+        let executor = Arc::new(RwLock::new(built_executor));
         let token = Arc::new(CancellationToken::new());
 
         {
@@ -58,6 +64,11 @@ impl SessionRegistry {
         {
             let mut tokens = self.cancellation_tokens.write().await;
             tokens.insert(id, token);
+        }
+
+        {
+            let mut inboxes = self.runtime_context_inboxes.write().await;
+            inboxes.insert(id, inbox);
         }
 
         executor
@@ -77,6 +88,7 @@ impl SessionRegistry {
 
     /// Insert a session directly
     pub async fn insert(&self, id: SessionId, executor: AgentExecutor) {
+        let inbox = executor.runtime_context_inbox();
         let executor_arc = Arc::new(RwLock::new(executor));
         let token = Arc::new(CancellationToken::new());
 
@@ -89,6 +101,22 @@ impl SessionRegistry {
             let mut tokens = self.cancellation_tokens.write().await;
             tokens.insert(id, token);
         }
+
+        {
+            let mut inboxes = self.runtime_context_inboxes.write().await;
+            inboxes.insert(id, inbox);
+        }
+    }
+
+    /// Queue additional user context for the next safe iteration boundary.
+    pub async fn enqueue_runtime_context(&self, id: &SessionId, content: String) -> bool {
+        let inboxes = self.runtime_context_inboxes.read().await;
+        if let Some(inbox) = inboxes.get(id) {
+            inbox.push(RuntimeContextInjection { content });
+            return true;
+        }
+
+        false
     }
 
     /// Check if a task is currently running for this session
@@ -189,6 +217,11 @@ impl SessionRegistry {
             let mut tokens = self.cancellation_tokens.write().await;
             tokens.remove(id);
         }
+
+        {
+            let mut inboxes = self.runtime_context_inboxes.write().await;
+            inboxes.remove(id);
+        }
     }
 
     /// Remove a session only if it is currently idle.
@@ -197,6 +230,7 @@ impl SessionRegistry {
     pub async fn remove_if_idle(&self, id: &SessionId) -> bool {
         let mut sessions = self.sessions.write().await;
         let mut tokens = self.cancellation_tokens.write().await;
+        let mut inboxes = self.runtime_context_inboxes.write().await;
 
         let Some(executor_arc) = sessions.get(id).cloned() else {
             return false;
@@ -213,6 +247,7 @@ impl SessionRegistry {
 
         sessions.remove(id);
         tokens.remove(id);
+        inboxes.remove(id);
         true
     }
 
@@ -302,5 +337,30 @@ mod tests {
         assert!(!removed);
         assert!(registry.contains(&session_id).await);
         assert!(registry.get_cancellation_token(&session_id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn enqueue_runtime_context_updates_session_inbox() {
+        let registry = SessionRegistry::new();
+        let session_id = SessionId::from(303_i64);
+        registry
+            .insert(session_id, build_executor(session_id))
+            .await;
+
+        assert!(
+            registry
+                .enqueue_runtime_context(&session_id, "extra context".to_string())
+                .await
+        );
+
+        let executor_arc = registry
+            .get(&session_id)
+            .await
+            .expect("session must exist for runtime context test");
+        let mut executor = executor_arc.write().await;
+        let pending = executor.session_mut().drain_runtime_context();
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].content, "extra context");
     }
 }

@@ -10,10 +10,55 @@ use crate::config::{AGENT_MAX_TOKENS, AGENT_TIMEOUT_SECS};
 use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
+
+/// Additional user context that can be injected into a running agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeContextInjection {
+    /// User-visible text payload to append on the next safe iteration boundary.
+    pub content: String,
+}
+
+/// Thread-safe inbox for runtime context injections.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeContextInbox {
+    inner: Arc<Mutex<VecDeque<RuntimeContextInjection>>>,
+}
+
+impl RuntimeContextInbox {
+    /// Create a new empty inbox.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Queue a new runtime context payload.
+    pub fn push(&self, injection: RuntimeContextInjection) {
+        if let Ok(mut pending) = self.inner.lock() {
+            pending.push_back(injection);
+        }
+    }
+
+    /// Drain all pending runtime context payloads in FIFO order.
+    #[must_use]
+    pub fn drain(&self) -> Vec<RuntimeContextInjection> {
+        if let Ok(mut pending) = self.inner.lock() {
+            return pending.drain(..).collect();
+        }
+
+        Vec::new()
+    }
+
+    /// Returns true when there is at least one pending runtime context payload.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        self.inner.lock().is_ok_and(|pending| !pending.is_empty())
+    }
+}
 
 /// Status of an agent session
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -62,6 +107,8 @@ pub struct AgentSession {
     loaded_skills: HashSet<String>,
     /// Token count for loaded skills.
     skill_token_count: usize,
+    /// Additional user context waiting for the next safe iteration boundary.
+    runtime_context_inbox: RuntimeContextInbox,
 }
 
 impl AgentSession {
@@ -86,7 +133,31 @@ impl AgentSession {
             last_task: None,
             loaded_skills: HashSet::new(),
             skill_token_count: 0,
+            runtime_context_inbox: RuntimeContextInbox::new(),
         }
+    }
+
+    /// Clone the runtime context inbox handle for concurrent transport writes.
+    #[must_use]
+    pub fn runtime_context_inbox(&self) -> RuntimeContextInbox {
+        self.runtime_context_inbox.clone()
+    }
+
+    /// Queue additional runtime context for the next safe iteration boundary.
+    pub fn push_runtime_context(&self, injection: RuntimeContextInjection) {
+        self.runtime_context_inbox.push(injection);
+    }
+
+    /// Drain pending runtime context payloads in FIFO order.
+    #[must_use]
+    pub fn drain_runtime_context(&self) -> Vec<RuntimeContextInjection> {
+        self.runtime_context_inbox.drain()
+    }
+
+    /// Returns true when new runtime context is waiting to be applied.
+    #[must_use]
+    pub fn has_pending_runtime_context(&self) -> bool {
+        self.runtime_context_inbox.has_pending()
     }
 
     /// Stable sandbox scope for this session.
@@ -160,6 +231,7 @@ impl AgentSession {
         self.last_task = None;
         self.loaded_skills.clear();
         self.skill_token_count = 0;
+        let _ = self.runtime_context_inbox.drain();
 
         // Sandbox is persistent, do NOT destroy it here
         // if let Some(mut sandbox) = self.sandbox.take() { ... }

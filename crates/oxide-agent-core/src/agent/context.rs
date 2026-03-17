@@ -4,7 +4,7 @@
 //! decouples the runner from session-specific infrastructure.
 
 use super::memory::AgentMemory;
-use super::session::AgentSession;
+use super::session::{AgentSession, RuntimeContextInjection};
 use crate::config::AGENT_MAX_TOKENS;
 use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
@@ -23,6 +23,14 @@ pub trait AgentContext: Send {
     fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool;
     /// Get elapsed time in seconds since task start.
     fn elapsed_secs(&self) -> u64;
+    /// Drain any additional user context queued while the agent was running.
+    fn drain_runtime_context(&mut self) -> Vec<RuntimeContextInjection> {
+        Vec::new()
+    }
+    /// Returns true when new runtime context is waiting to be applied.
+    fn has_pending_runtime_context(&self) -> bool {
+        false
+    }
 }
 
 /// Ephemeral session used for isolated sub-agent execution.
@@ -103,6 +111,14 @@ impl AgentContext for AgentSession {
 
     fn elapsed_secs(&self) -> u64 {
         self.elapsed_secs()
+    }
+
+    fn drain_runtime_context(&mut self) -> Vec<RuntimeContextInjection> {
+        AgentSession::drain_runtime_context(self)
+    }
+
+    fn has_pending_runtime_context(&self) -> bool {
+        AgentSession::has_pending_runtime_context(self)
     }
 }
 
