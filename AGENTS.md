@@ -31,6 +31,19 @@ crates/
 │   │   │   │   └── tool_access.rs   # Tool policy enforcement
 │   │   │   ├── loop_detection/      # Детектор зацикливания
 │   │   │   ├── providers/           # Tool providers (sandbox, todos, manager, search, ssh_mcp)
+│   │   │   │   └── manager_control_plane/
+│   │   │   │       ├── mod.rs       # Public surface, provider wiring, dispatch
+│   │   │   │       ├── audit.rs     # Audit persistence and rollback lookup helpers
+│   │   │   │       ├── bindings.rs  # Topic binding CRUD + rollback
+│   │   │   │       ├── contexts.rs  # Topic context CRUD + rollback
+│   │   │   │       ├── agents_md.rs # Topic AGENTS.md CRUD + rollback
+│   │   │   │       ├── infra.rs     # Topic infra CRUD, preview, preflight
+│   │   │   │       ├── profiles.rs  # Agent profile CRUD + rollback
+│   │   │   │       ├── agent_controls.rs # Topic agent tools/hooks controls
+│   │   │   │       ├── forum_topics.rs   # Forum lifecycle, catalog, SSH provisioning
+│   │   │   │       ├── sandboxes.rs # Topic sandbox inventory and lifecycle
+│   │   │   │       ├── shared.rs    # Generic validation and serialization helpers
+│   │   │   │       └── tests/mod.rs # Manager control-plane test suite
 │   │   │   ├── skills/              # Реестр и поиск навыков (embeddings)
 │   │   │   ├── profile.rs           # Agent profiles & policies
 │   │   │   └── recovery.rs          # Восстановление XML/JSON
@@ -39,6 +52,7 @@ crates/
 │   │   │   ├── common.rs            # Common utilities
 │   │   │   ├── embeddings.rs        # Embedding provider
 │   │   │   └── providers/           # Groq, Mistral, Gemini, OpenRouter, ZAI
+│   │   │       └── zai/             # ZAI SDK internals (messages, stream transport)
 │   │   ├── sandbox/                 # Sandbox facade, Docker backend, Unix-socket broker
 │   │   │   ├── manager.rs           # SandboxManager facade + Docker backend implementation
 │   │   │   ├── broker.rs            # Sandbox broker protocol/client/server over Unix socket
@@ -81,6 +95,7 @@ docs/                                # Комплексная документа
 ├── opencode-int/                    # OpenCode sandbox integration
 │   └── opencode-sandbox-integration/ # architecture, configuration, deployment, examples, testing
 ├── AGENT-TOPICS-BLUEPRINT.md
+├── KOKORO-voice.md                  # Local Kokoro TTS API reference and ffmpeg usage
 └── sdk-third-party-api-examples.md
 sandbox/
 └── Dockerfile.sandbox
@@ -229,7 +244,7 @@ Centralized hook system for agent behavior modification.
 
 CRUD operations for forum topics, agent profiles, topic contexts, infrastructure configs, AGENTS.md storage, and bindings with full audit trail.
 
-**Components**: `ManagerControlPlaneProvider`, `manager_control_plane.rs`, `AuditEventRecord`, `TopicBindingRecord`, `TopicBindingKind`, `TopicAgentsMdRecord`.
+**Components**: `ManagerControlPlaneProvider`, `manager_control_plane/mod.rs`, `audit.rs`, `bindings.rs`, `contexts.rs`, `agents_md.rs`, `infra.rs`, `profiles.rs`, `agent_controls.rs`, `forum_topics.rs`, `sandboxes.rs`, `shared.rs`, `AuditEventRecord`, `TopicBindingRecord`, `TopicBindingKind`, `TopicAgentsMdRecord`.
 
 **Features**: Forum topic lifecycle, topic binding management, agent profile CRUD, topic context CRUD, topic AGENTS.md CRUD, infrastructure config CRUD, tool/hook control for topic agents, atomic topic provisioning, complete audit trail, RBAC via `manager_allowed_users`, reminder provider in topic agent catalog with aliases "reminder"/"wakeups".
 
@@ -298,7 +313,7 @@ Scheduled wake-up tasks with background scheduler for deferred agent execution.
 ## 🔌 Provider Ecosystem
 
 ### Tool Providers
-`sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane.rs`, `ssh_mcp.rs`, `ytdlp.rs`, `reminder.rs`.
+`sandbox.rs`, `todos.rs`, `tavily.rs`, `crawl4ai/`, `filehoster.rs`, `delegation.rs`, `manager_control_plane/`, `ssh_mcp.rs`, `ytdlp.rs`, `reminder.rs`.
 
 ### Sandbox Stack
 `sandbox/manager.rs` - facade and Docker backend, `sandbox/broker.rs` - Unix socket protocol/client/server, `sandbox/scope.rs` - stable sandbox naming/labels, `oxide-agent-sandboxd` - standalone broker binary.
@@ -327,6 +342,7 @@ Scheduled wake-up tasks with background scheduler for deferred agent execution.
 - `docs/hooks/sub-agents/` - Sub-agent delegation lifecycle
 - `docs/opencode-int/` - OpenCode sandbox integration
 - `docs/AGENT-TOPICS-BLUEPRINT.md` - Topic-based routing design
+- `docs/KOKORO-voice.md` - Local Kokoro TTS API reference
 - `docs/sdk-third-party-api-examples.md` - API examples
 - `skills/` - Skill documentation (9 skills)
 
