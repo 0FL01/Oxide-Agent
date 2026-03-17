@@ -5,6 +5,7 @@ use super::ZaiProvider;
 use crate::llm::{ChatResponse, LlmError, Message, ToolDefinition};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
+use tracing::warn;
 use zai_rs::model::chat::ChatCompletion;
 use zai_rs::model::chat_base_response::ChatCompletionResponse;
 use zai_rs::model::chat_message_types::{TextMessage, VisionMessage, VisionRichContent};
@@ -234,8 +235,60 @@ fn map_zai_error(error: ZaiError) -> LlmError {
             wait_secs: None,
             message,
         },
+        ZaiError::Unknown { code: 0, message } if is_stream_transport_error(&message) => {
+            warn!(
+                error = %message,
+                "Retryable ZAI SSE transport failure detected"
+            );
+            LlmError::NetworkError(message)
+        }
         ZaiError::NetworkError(err) => LlmError::NetworkError(err.to_string()),
         ZaiError::JsonError(err) => LlmError::JsonError(err.to_string()),
         other => LlmError::ApiError(other.to_string()),
+    }
+}
+
+fn is_stream_transport_error(message: &str) -> bool {
+    message
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("stream error:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_stream_transport_error, map_zai_error};
+    use crate::llm::LlmError;
+    use zai_rs::ZaiError;
+
+    #[test]
+    fn maps_stream_decode_failure_to_network_error() {
+        let error = ZaiError::Unknown {
+            code: 0,
+            message: "Stream error: error decoding response body".to_string(),
+        };
+
+        let mapped = map_zai_error(error);
+
+        assert!(matches!(mapped, LlmError::NetworkError(message) if message == "Stream error: error decoding response body"));
+    }
+
+    #[test]
+    fn keeps_non_stream_unknown_errors_as_api_errors() {
+        let error = ZaiError::Unknown {
+            code: 0,
+            message: "unexpected upstream payload".to_string(),
+        };
+
+        let mapped = map_zai_error(error);
+
+        assert!(matches!(mapped, LlmError::ApiError(message) if message == "Unknown error [0]: unexpected upstream payload"));
+    }
+
+    #[test]
+    fn detects_stream_transport_errors_case_insensitively() {
+        assert!(is_stream_transport_error(" Stream error: connection reset"));
+        assert!(is_stream_transport_error("stream error: error decoding response body"));
+        assert!(!is_stream_transport_error("unknown error"));
     }
 }
