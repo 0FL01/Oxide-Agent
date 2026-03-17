@@ -124,6 +124,23 @@ impl AgentRunner {
             return Ok(None);
         }
 
+        if ctx.agent.has_pending_runtime_context() {
+            state.continuation_count += 1;
+            if let Some(tx) = ctx.progress_tx {
+                let _ = tx
+                    .send(AgentEvent::Continuation {
+                        reason: "New user context received, continuing the task.".to_string(),
+                        count: state.continuation_count,
+                    })
+                    .await;
+            }
+
+            ctx.messages
+                .push(crate::llm::Message::assistant(&input.raw_json));
+            self.save_final_response(ctx, &input.raw_json, input.reasoning);
+            return Ok(None);
+        }
+
         self.save_final_response(ctx, &input.raw_json, input.reasoning);
 
         if let Some(tx) = ctx.progress_tx {

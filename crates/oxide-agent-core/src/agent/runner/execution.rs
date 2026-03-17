@@ -2,6 +2,7 @@
 
 use super::types::{AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure};
 use super::AgentRunner;
+use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
@@ -32,6 +33,8 @@ impl AgentRunner {
                     return Ok(res);
                 }
             }
+
+            self.apply_pending_runtime_context(ctx, &mut state).await;
 
             self.apply_before_iteration_hooks(ctx, &state)?;
 
@@ -189,6 +192,35 @@ impl AgentRunner {
             return Ok(Some(res));
         }
         Ok(None)
+    }
+
+    async fn apply_pending_runtime_context(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+    ) {
+        let pending_context = ctx.agent.drain_runtime_context();
+        if pending_context.is_empty() {
+            return;
+        }
+
+        state.continuation_count += 1;
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::Continuation {
+                    reason: "New user context received, adapting the plan.".to_string(),
+                    count: state.continuation_count,
+                })
+                .await;
+        }
+
+        for injection in pending_context {
+            ctx.messages
+                .push(crate::llm::Message::user(&injection.content));
+            ctx.agent
+                .memory_mut()
+                .add_message(AgentMessage::user(injection.content));
+        }
     }
 
     async fn handle_tool_calls_response(

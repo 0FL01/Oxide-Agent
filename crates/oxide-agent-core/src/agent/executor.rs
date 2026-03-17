@@ -18,7 +18,7 @@ use super::providers::{
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
-use super::session::AgentSession;
+use super::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
 use super::skills::SkillRegistry;
 use crate::agent::progress::AgentEvent;
 use crate::config::{get_agent_search_limit, AGENT_TIMEOUT_SECS};
@@ -313,6 +313,18 @@ impl AgentExecutor {
     #[must_use]
     pub fn last_task(&self) -> Option<&str> {
         self.session.last_task.as_deref()
+    }
+
+    /// Clone the runtime context inbox handle for concurrent transport writes.
+    #[must_use]
+    pub fn runtime_context_inbox(&self) -> RuntimeContextInbox {
+        self.session.runtime_context_inbox()
+    }
+
+    /// Queue additional user context for the next safe iteration boundary.
+    pub fn enqueue_runtime_context(&self, content: String) {
+        self.session
+            .push_runtime_context(RuntimeContextInjection { content });
     }
 
     fn build_tool_registry(

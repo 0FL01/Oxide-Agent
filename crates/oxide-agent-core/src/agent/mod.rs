@@ -71,5 +71,5 @@ pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
-pub use session::{AgentSession, AgentStatus};
+pub use session::{AgentSession, AgentStatus, RuntimeContextInbox, RuntimeContextInjection};
 pub use skills::SkillRegistry;
