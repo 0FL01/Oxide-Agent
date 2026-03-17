@@ -16,6 +16,7 @@ services:
       - .env
     environment:
       # - CRAWL4AI_URL=http://crawl4ai:11235
+      - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
