@@ -270,7 +270,9 @@ mod tests {
 
         let mapped = map_zai_error(error);
 
-        assert!(matches!(mapped, LlmError::NetworkError(message) if message == "Stream error: error decoding response body"));
+        assert!(
+            matches!(mapped, LlmError::NetworkError(message) if message == "Stream error: error decoding response body")
+        );
     }
 
     #[test]
@@ -282,13 +284,17 @@ mod tests {
 
         let mapped = map_zai_error(error);
 
-        assert!(matches!(mapped, LlmError::ApiError(message) if message == "Unknown error [0]: unexpected upstream payload"));
+        assert!(
+            matches!(mapped, LlmError::ApiError(message) if message == "Unknown error [0]: unexpected upstream payload")
+        );
     }
 
     #[test]
     fn detects_stream_transport_errors_case_insensitively() {
         assert!(is_stream_transport_error(" Stream error: connection reset"));
-        assert!(is_stream_transport_error("stream error: error decoding response body"));
+        assert!(is_stream_transport_error(
+            "stream error: error decoding response body"
+        ));
         assert!(!is_stream_transport_error("unknown error"));
     }
 }
