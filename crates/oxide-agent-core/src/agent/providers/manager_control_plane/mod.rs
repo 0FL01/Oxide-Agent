@@ -37,9 +37,7 @@ mod sandboxes;
 mod shared;
 
 use self::audit::AuditStatus;
-use self::forum_topics::{
-    ForumTopicCatalogEntry, ForumTopicProvisionSshAgentPlan, TELEGRAM_FORUM_ICON_COLORS,
-};
+use self::forum_topics::ForumTopicProvisionSshAgentPlan;
 
 const TOOL_TOPIC_BINDING_SET: &str = "topic_binding_set";
 const TOOL_TOPIC_BINDING_GET: &str = "topic_binding_get";
