@@ -2,12 +2,14 @@
 //!
 //! Handles tool execution with timeout, cancellation support, and progress events.
 
+use super::context::AgentContext;
 use super::memory::AgentMemory;
 use super::memory::AgentMessage;
 use super::progress::AgentEvent;
 use super::providers::TodoList;
 use super::recovery::sanitize_xml_tags;
 use super::registry::ToolRegistry;
+use super::PendingSshReplay;
 use crate::config::AGENT_TOOL_TIMEOUT_SECS;
 use crate::llm::{Message, ToolCall};
 use anyhow::Result;
@@ -27,8 +29,8 @@ pub struct ToolExecutionContext<'a> {
     pub todos_arc: &'a Arc<Mutex<TodoList>>,
     /// Messages for the LLM conversation
     pub messages: &'a mut Vec<Message>,
-    /// Mutable access to agent memory
-    pub memory: &'a mut AgentMemory,
+    /// Mutable access to agent state
+    pub agent: &'a mut dyn AgentContext,
     /// Cancellation token for the current task
     pub cancellation_token: tokio_util::sync::CancellationToken,
 }
@@ -137,17 +139,23 @@ pub async fn execute_single_tool_call(
 
     // Sync todos if write_todos was called
     if name == "write_todos" {
-        sync_todos_from_arc(ctx.memory, ctx.todos_arc).await;
+        sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::TodosUpdated {
-                    todos: ctx.memory.todos.clone(),
+                    todos: ctx.agent.memory().todos.clone(),
                 })
                 .await;
         }
     }
 
     if let Some(approval) = parse_pending_ssh_approval(&result) {
+        ctx.agent.store_pending_ssh_replay(PendingSshReplay {
+            request_id: approval.request_id.clone(),
+            tool_call_id: id.clone(),
+            tool_name: name.clone(),
+            arguments: args.clone(),
+        });
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::WaitingForApproval {
@@ -174,7 +182,7 @@ pub async fn execute_single_tool_call(
     // Add result to messages
     ctx.messages.push(Message::tool(&id, &name, &result));
     let tool_msg = AgentMessage::tool(&id, &name, &result);
-    ctx.memory.add_message(tool_msg);
+    ctx.agent.memory_mut().add_message(tool_msg);
 
     Ok(ToolExecutionResult::Completed {
         tool_name: name,
@@ -199,6 +207,7 @@ fn extract_command_preview(args: &str) -> Option<String> {
 struct PendingSshApprovalPayload {
     #[serde(default)]
     approval_required: bool,
+    request_id: String,
     target_name: String,
     summary: String,
 }
@@ -211,7 +220,7 @@ fn parse_pending_ssh_approval(output: &str) -> Option<PendingSshApprovalPayload>
 #[cfg(test)]
 mod tests {
     use super::{execute_single_tool_call, parse_pending_ssh_approval, ToolExecutionContext};
-    use crate::agent::memory::AgentMemory;
+    use crate::agent::session::AgentSession;
     use crate::agent::provider::ToolProvider;
     use crate::agent::providers::TodoList;
     use crate::agent::registry::ToolRegistry;
@@ -272,7 +281,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(PendingApprovalProvider));
 
-        let mut memory = AgentMemory::new(1024);
+        let mut session = AgentSession::new(1_i64.into());
         let todos_arc = Arc::new(Mutex::new(TodoList::new()));
         let mut messages = Vec::new();
         let cancellation_token = tokio_util::sync::CancellationToken::new();
@@ -291,7 +300,7 @@ mod tests {
             progress_tx: None,
             todos_arc: &todos_arc,
             messages: &mut messages,
-            memory: &mut memory,
+            agent: &mut session,
             cancellation_token,
         };
 
@@ -305,8 +314,15 @@ mod tests {
         ));
         assert!(messages.is_empty(), "tool response must not be appended");
         assert!(
-            memory.get_messages().is_empty(),
+            session.memory.get_messages().is_empty(),
             "agent memory must not record a fake tool result"
+        );
+        assert_eq!(
+            session
+                .pending_ssh_replay("req-1")
+                .expect("pending replay must be stored")
+                .tool_call_id,
+            "call-1"
         );
     }
 }

@@ -4,7 +4,7 @@
 //! decouples the runner from session-specific infrastructure.
 
 use super::memory::AgentMemory;
-use super::session::{AgentSession, RuntimeContextInjection};
+use super::session::{AgentSession, PendingSshReplay, RuntimeContextInjection};
 use crate::config::AGENT_MAX_TOKENS;
 use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
@@ -31,6 +31,8 @@ pub trait AgentContext: Send {
     fn has_pending_runtime_context(&self) -> bool {
         false
     }
+    /// Store an exact SSH tool replay for deterministic post-approval resume.
+    fn store_pending_ssh_replay(&mut self, _replay: PendingSshReplay) {}
 }
 
 /// Ephemeral session used for isolated sub-agent execution.
@@ -119,6 +121,10 @@ impl AgentContext for AgentSession {
 
     fn has_pending_runtime_context(&self) -> bool {
         AgentSession::has_pending_runtime_context(self)
+    }
+
+    fn store_pending_ssh_replay(&mut self, replay: PendingSshReplay) {
+        AgentSession::store_pending_ssh_replay(self, replay);
     }
 }
 
