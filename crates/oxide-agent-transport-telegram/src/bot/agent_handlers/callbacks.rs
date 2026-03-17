@@ -2,25 +2,25 @@ use super::{
     agent_mode_session_keys, automatic_agent_control_markup, build_outbound_thread_params,
     cancel_and_clear_with_compat, cancel_status_inline_markup, cancel_status_reply_markup,
     cleanup_abandoned_empty_flow, clear_cancel_confirmation_message, clear_pending_cancel_message,
-    ensure_session_exists, handle_clear_memory_confirmation,
-    handle_recreate_container_confirmation, is_agent_task_running, manager_default_chat_id,
-    outbound_thread_from_callback, remove_sessions_with_compat, renew_cancellation_token,
-    reset_sessions_with_compat, resolve_existing_session_id, run_agent_task_with_text,
-    run_approved_ssh_resume, save_memory_after_task, send_agent_message,
+    confirm_destructive_action, ensure_session_exists, exit_agent_mode,
+    handle_clear_memory_confirmation, handle_recreate_container_confirmation,
+    is_agent_task_running, manager_default_chat_id, outbound_thread_from_callback,
+    renew_cancellation_token, reset_sessions_with_compat, resolve_existing_session_id,
+    run_agent_task_with_text, run_approved_ssh_resume, save_memory_after_task, send_agent_message,
     send_agent_message_with_optional_keyboard, send_or_update_cancel_confirmation,
     send_or_update_pending_cancel_message, should_create_fresh_flow_on_detach,
     use_inline_topic_controls, AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx,
-    EnsureSessionContext, OutboundThreadParams, ResetSessionOutcome, RunAgentTaskTextContext,
+    EnsureSessionContext, ResetSessionOutcome, RunAgentTaskTextContext,
     RunApprovedSshResumeContext, SessionTransportContext, SESSION_REGISTRY,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, reset_current_agent_flow_id, set_current_agent_flow_id,
-    set_current_context_state, storage_context_key,
+    storage_context_key,
 };
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
-    confirmation_markup, AgentView, DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX,
-    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    AgentView, DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK,
+    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
     AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
     AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT,
@@ -28,7 +28,7 @@ use crate::bot::views::{
     AGENT_CALLBACK_SSH_REJECT_PREFIX, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET,
     LOOP_CALLBACK_RETRY,
 };
-use crate::bot::{resolve_thread_spec, TelegramThreadSpec};
+use crate::bot::{resolve_thread_spec, OutboundThreadParams, TelegramThreadSpec};
 use crate::config::BotSettings;
 use anyhow::Result;
 use oxide_agent_core::llm::LlmClient;
@@ -36,7 +36,7 @@ use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQuery, ChatId, Message, ParseMode, ThreadId};
+use teloxide::types::{CallbackQuery, ChatId, Message, ThreadId};
 use tracing::info;
 
 #[derive(Clone)]
@@ -872,163 +872,6 @@ async fn cancel_agent_task_by_id(
             outbound_thread,
         )
         .await?;
-    }
-
-    Ok(())
-}
-
-pub async fn exit_agent_mode(
-    bot: Bot,
-    msg: Message,
-    dialogue: AgentDialogue,
-    storage: Arc<dyn StorageProvider>,
-) -> Result<()> {
-    let thread_spec = resolve_thread_spec(&msg);
-    let outbound_thread = build_outbound_thread_params(thread_spec);
-    let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    let context_key = storage_context_key(msg.chat.id, thread_spec);
-    let (agent_flow_id, _) =
-        ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-    let session_keys =
-        agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
-
-    let session_id = resolve_existing_session_id(session_keys)
-        .await
-        .unwrap_or(session_keys.primary);
-    save_memory_after_task(session_id, user_id, &context_key, &agent_flow_id, &storage).await;
-    remove_sessions_with_compat(session_keys).await;
-
-    let _ = set_current_context_state(
-        &storage,
-        user_id,
-        msg.chat.id,
-        thread_spec,
-        Some("chat_mode"),
-    )
-    .await;
-    dialogue.update(State::Start).await?;
-
-    let mut req = bot.send_message(msg.chat.id, "👋 Exited agent mode. Select a working mode:");
-    if let Some(thread_id) = outbound_thread.message_thread_id {
-        req = req.message_thread_id(thread_id);
-    }
-
-    req.reply_markup(crate::bot::handlers::main_menu_markup(thread_spec))
-        .await?;
-    Ok(())
-}
-
-pub async fn confirm_destructive_action(
-    action: ConfirmationType,
-    bot: Bot,
-    msg: Message,
-    dialogue: AgentDialogue,
-) -> Result<()> {
-    let thread_spec = resolve_thread_spec(&msg);
-    let outbound_thread = build_outbound_thread_params(thread_spec);
-    dialogue
-        .update(State::AgentConfirmation(action.clone()))
-        .await?;
-
-    let message_text = match action {
-        ConfirmationType::ClearMemory => DefaultAgentView::memory_clear_confirmation(),
-        ConfirmationType::RecreateContainer => DefaultAgentView::container_wipe_confirmation(),
-    };
-
-    let mut req = bot
-        .send_message(msg.chat.id, message_text)
-        .parse_mode(ParseMode::Html);
-    if let Some(thread_id) = outbound_thread.message_thread_id {
-        req = req.message_thread_id(thread_id);
-    }
-
-    req.reply_markup(confirmation_markup(
-        use_inline_topic_controls(thread_spec),
-        action,
-    ))
-    .await?;
-    Ok(())
-}
-
-pub async fn handle_agent_confirmation(
-    bot: Bot,
-    msg: Message,
-    dialogue: AgentDialogue,
-    action: ConfirmationType,
-    storage: Arc<dyn StorageProvider>,
-    llm: Arc<LlmClient>,
-    settings: Arc<BotSettings>,
-) -> Result<()> {
-    let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
-    let thread_spec = resolve_thread_spec(&msg);
-    let (agent_flow_id, _) =
-        ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-    let session_keys =
-        agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
-    let text = msg.text().unwrap_or("");
-    let chat_id = msg.chat.id;
-    let outbound_thread = build_outbound_thread_params(thread_spec);
-
-    if text != "✅ Yes" && text != "❌ Cancel" {
-        send_agent_message(
-            &bot,
-            chat_id,
-            DefaultAgentView::select_keyboard_option(),
-            outbound_thread,
-        )
-        .await?;
-        return Ok(());
-    }
-
-    dialogue.update(State::AgentMode).await?;
-    let reply_markup = automatic_agent_control_markup(thread_spec);
-    let context_key = storage_context_key(chat_id, thread_spec);
-    let send_ctx = ConfirmationSendCtx {
-        bot: &bot,
-        chat_id,
-        context_key: &context_key,
-        agent_flow_id: &agent_flow_id,
-        reply_markup,
-        manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
-        outbound_thread,
-    };
-
-    match text {
-        "✅ Yes" => match action {
-            ConfirmationType::ClearMemory => {
-                handle_clear_memory_confirmation(
-                    user_id,
-                    session_keys,
-                    &storage,
-                    thread_spec,
-                    &send_ctx,
-                )
-                .await?;
-            }
-            ConfirmationType::RecreateContainer => {
-                handle_recreate_container_confirmation(
-                    user_id,
-                    session_keys,
-                    &storage,
-                    &llm,
-                    &settings,
-                    &send_ctx,
-                )
-                .await?;
-            }
-        },
-        "❌ Cancel" => {
-            info!(user_id = user_id, action = ?action, "User cancelled destructive action");
-            send_agent_message_with_optional_keyboard(
-                &bot,
-                chat_id,
-                DefaultAgentView::operation_cancelled(),
-                send_ctx.reply_markup.as_ref(),
-                outbound_thread,
-            )
-            .await?;
-        }
-        _ => unreachable!(),
     }
 
     Ok(())
