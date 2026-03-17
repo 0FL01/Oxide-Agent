@@ -11,13 +11,18 @@ use super::memory::AgentMessage;
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
-    DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
-    ReminderContext, ReminderProvider, SandboxProvider, SshApprovalGrant,
-    SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider, TodosProvider,
-    TopicInfraPreflightReport, YtdlpProvider, inject_approval_credentials,
+    inject_approval_credentials, DelegationProvider, FileHosterProvider,
+    ManagerControlPlaneProvider, ManagerTopicLifecycle, ReminderContext, ReminderProvider,
+    SandboxProvider, SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
+    TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
 };
-use super::tool_bridge::{execute_single_tool_call, ToolExecutionContext, ToolExecutionResult};
+use super::registry::ToolRegistry;
 use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
+use super::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
+use super::skills::SkillRegistry;
+use super::tool_bridge::{execute_single_tool_call, ToolExecutionContext, ToolExecutionResult};
+use crate::agent::progress::AgentEvent;
+use crate::config::{get_agent_search_limit, AGENT_TIMEOUT_SECS};
 use crate::llm::{LlmClient, ToolCall, ToolCallFunction};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::{anyhow, Result};
@@ -26,11 +31,6 @@ use std::sync::RwLock;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::info;
-use super::registry::ToolRegistry;
-use super::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
-use super::skills::SkillRegistry;
-use crate::agent::progress::AgentEvent;
-use crate::config::{get_agent_search_limit, AGENT_TIMEOUT_SECS};
 
 #[cfg(feature = "crawl4ai")]
 use super::providers::Crawl4aiProvider;
@@ -257,7 +257,10 @@ impl AgentExecutor {
     }
 
     /// Reject a pending SSH approval request.
-    pub async fn reject_ssh_approval(&mut self, request_id: &str) -> Option<SshApprovalRequestView> {
+    pub async fn reject_ssh_approval(
+        &mut self,
+        request_id: &str,
+    ) -> Option<SshApprovalRequestView> {
         let topic_infra = self.topic_infra.as_ref()?;
         let rejected = topic_infra.approvals.reject(request_id).await;
         if rejected.is_some() {
@@ -558,7 +561,8 @@ impl AgentExecutor {
         task: &str,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        self.run_execution(task, progress_tx, true, None, None).await
+        self.run_execution(task, progress_tx, true, None, None)
+            .await
     }
 
     /// Deterministically resume a paused SSH tool call after operator approval.
@@ -593,14 +597,8 @@ impl AgentExecutor {
             is_recovered: false,
         };
 
-        self.run_execution(
-            &task,
-            progress_tx,
-            false,
-            Some(tool_call),
-            Some(request_id),
-        )
-        .await
+        self.run_execution(&task, progress_tx, false, Some(tool_call), Some(request_id))
+            .await
     }
 
     /// Check if the task has been cancelled
