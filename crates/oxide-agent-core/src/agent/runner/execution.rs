@@ -68,9 +68,9 @@ impl AgentRunner {
             }
 
             let response = self.call_llm_with_tools(ctx).await?;
-                if let Some(result) = self.handle_llm_response(response, ctx, &mut state).await? {
-                    return Ok(result);
-                }
+            if let Some(result) = self.handle_llm_response(response, ctx, &mut state).await? {
+                return Ok(result);
+            }
         }
 
         Err(anyhow!(
@@ -247,7 +247,7 @@ impl AgentRunner {
                     state,
                     crate::agent::loop_detection::LoopType::ToolCallLoop,
                 )
-                    .await);
+                .await);
         }
 
         self.record_assistant_tool_call(ctx, raw_json, &tool_calls);

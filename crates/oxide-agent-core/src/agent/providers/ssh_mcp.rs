@@ -1891,9 +1891,9 @@ mod tests {
         cleanup_stale_private_key_tempfiles_in, decode_hex, fingerprint_for_request,
         inject_approval_credentials, inject_ssh_approval_system_message,
         inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
-        parse_ssh_keygen_listing,
-        parse_wrapped_remote_output, write_private_key_tempfile_in, SecretProbeKind,
-        SecretProbeReport, SshApprovalRegistry, TopicInfraPreflightReport, WrappedCommandMarkers,
+        parse_ssh_keygen_listing, parse_wrapped_remote_output, write_private_key_tempfile_in,
+        SecretProbeKind, SecretProbeReport, SshApprovalRegistry, TopicInfraPreflightReport,
+        WrappedCommandMarkers,
     };
     use crate::storage::TopicInfraAuthMode;
     use std::{fs, path::Path};
@@ -1942,8 +1942,8 @@ mod tests {
 
         let original_fingerprint =
             fingerprint_for_request("ssh_exec", original).expect("fingerprint must succeed");
-        let replay_fingerprint = fingerprint_for_request("ssh_exec", &replay)
-            .expect("fingerprint must succeed");
+        let replay_fingerprint =
+            fingerprint_for_request("ssh_exec", &replay).expect("fingerprint must succeed");
 
         assert_eq!(original_fingerprint, replay_fingerprint);
         assert!(replay.contains("approval_request_id"));

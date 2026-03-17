@@ -220,10 +220,10 @@ fn parse_pending_ssh_approval(output: &str) -> Option<PendingSshApprovalPayload>
 #[cfg(test)]
 mod tests {
     use super::{execute_single_tool_call, parse_pending_ssh_approval, ToolExecutionContext};
-    use crate::agent::session::AgentSession;
     use crate::agent::provider::ToolProvider;
     use crate::agent::providers::TodoList;
     use crate::agent::registry::ToolRegistry;
+    use crate::agent::session::AgentSession;
     use crate::llm::{ToolCall, ToolCallFunction, ToolDefinition};
     use async_trait::async_trait;
     use std::sync::Arc;
