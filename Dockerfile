@@ -44,7 +44,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
     openssh-client \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+RUN ln -snf /usr/share/zoneinfo/Europe/Moscow /etc/localtime && \
+    echo "Europe/Moscow" > /etc/timezone
 
 RUN groupadd --system --gid 10001 oxide \
     && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/oxide oxide
@@ -59,6 +63,7 @@ RUN chown -R oxide:oxide /app /home/oxide
 
 
 # Set environment variables
+ENV TZ=Europe/Moscow
 ENV RUST_LOG=oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
 ENV DEBUG_MODE=false
 
