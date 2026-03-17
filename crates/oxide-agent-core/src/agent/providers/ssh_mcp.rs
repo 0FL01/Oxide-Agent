@@ -1710,6 +1710,28 @@ fn fingerprint_for_request(tool_name: &str, arguments: &str) -> Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
+/// Inject approval replay credentials into the original SSH tool arguments.
+pub fn inject_approval_credentials(
+    arguments: &str,
+    request_id: &str,
+    approval_token: &str,
+) -> Result<String> {
+    let mut value = serde_json::from_str::<serde_json::Value>(arguments)
+        .map_err(|err| anyhow!("invalid approval replay payload: {err}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("approval replay payload must be a JSON object"))?;
+    object.insert(
+        "approval_request_id".to_string(),
+        serde_json::Value::String(request_id.to_string()),
+    );
+    object.insert(
+        "approval_token".to_string(),
+        serde_json::Value::String(approval_token.to_string()),
+    );
+    serde_json::to_string(&value).map_err(Into::into)
+}
+
 fn validate_non_empty(value: String, field_name: &str) -> Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1867,8 +1889,9 @@ pub fn inject_topic_infra_preflight_system_message(
 mod tests {
     use super::{
         cleanup_stale_private_key_tempfiles_in, decode_hex, fingerprint_for_request,
-        inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
-        is_dangerous_command, is_sensitive_path, parse_ssh_keygen_listing,
+        inject_approval_credentials, inject_ssh_approval_system_message,
+        inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
+        parse_ssh_keygen_listing,
         parse_wrapped_remote_output, write_private_key_tempfile_in, SecretProbeKind,
         SecretProbeReport, SshApprovalRegistry, TopicInfraPreflightReport, WrappedCommandMarkers,
     };
@@ -1909,6 +1932,22 @@ mod tests {
         let second = fingerprint_for_request("ssh_exec", r#"{"command":"uname -a"}"#)
             .expect("fingerprint must succeed");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn inject_approval_credentials_preserves_original_fingerprint() {
+        let original = r#"{"command":"uname -a","timeout_secs":30}"#;
+        let replay = inject_approval_credentials(original, "req-1", "token-1")
+            .expect("approval credentials must inject");
+
+        let original_fingerprint =
+            fingerprint_for_request("ssh_exec", original).expect("fingerprint must succeed");
+        let replay_fingerprint = fingerprint_for_request("ssh_exec", &replay)
+            .expect("fingerprint must succeed");
+
+        assert_eq!(original_fingerprint, replay_fingerprint);
+        assert!(replay.contains("approval_request_id"));
+        assert!(replay.contains("approval_token"));
     }
 
     #[test]

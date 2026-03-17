@@ -29,7 +29,8 @@ pub use manager_control_plane::{
 pub use reminder::{reminder_tool_names, ReminderContext, ReminderProvider};
 pub use sandbox::SandboxProvider;
 pub use ssh_mcp::{
-    cleanup_stale_private_key_tempfiles, inject_ssh_approval_system_message,
+    cleanup_stale_private_key_tempfiles, inject_approval_credentials,
+    inject_ssh_approval_system_message,
     inject_topic_infra_preflight_system_message, inspect_topic_infra_config, probe_secret_ref,
     SecretProbeKind, SecretProbeReport, SshApprovalGrant, SshApprovalRegistry,
     SshApprovalRequestView, SshMcpProvider, TopicInfraPreflightReport,

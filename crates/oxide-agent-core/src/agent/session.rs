@@ -23,6 +23,19 @@ pub struct RuntimeContextInjection {
     pub content: String,
 }
 
+/// Exact SSH tool call that is paused pending operator approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSshReplay {
+    /// Approval request identifier returned by the SSH provider.
+    pub request_id: String,
+    /// Original tool call id emitted by the LLM.
+    pub tool_call_id: String,
+    /// Original tool name.
+    pub tool_name: String,
+    /// Original JSON arguments before approval credentials were injected.
+    pub arguments: String,
+}
+
 /// Thread-safe inbox for runtime context injections.
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeContextInbox {
@@ -109,6 +122,8 @@ pub struct AgentSession {
     skill_token_count: usize,
     /// Additional user context waiting for the next safe iteration boundary.
     runtime_context_inbox: RuntimeContextInbox,
+    /// Exact SSH tool calls paused pending operator approval.
+    pending_ssh_replays: Vec<PendingSshReplay>,
 }
 
 impl AgentSession {
@@ -134,6 +149,7 @@ impl AgentSession {
             loaded_skills: HashSet::new(),
             skill_token_count: 0,
             runtime_context_inbox: RuntimeContextInbox::new(),
+            pending_ssh_replays: Vec::new(),
         }
     }
 
@@ -158,6 +174,31 @@ impl AgentSession {
     #[must_use]
     pub fn has_pending_runtime_context(&self) -> bool {
         self.runtime_context_inbox.has_pending()
+    }
+
+    /// Store or replace a pending SSH replay payload.
+    pub fn store_pending_ssh_replay(&mut self, replay: PendingSshReplay) {
+        self.pending_ssh_replays
+            .retain(|entry| entry.request_id != replay.request_id);
+        self.pending_ssh_replays.push(replay);
+    }
+
+    /// Return a pending SSH replay payload by request id.
+    #[must_use]
+    pub fn pending_ssh_replay(&self, request_id: &str) -> Option<PendingSshReplay> {
+        self.pending_ssh_replays
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+            .cloned()
+    }
+
+    /// Remove and return a pending SSH replay payload by request id.
+    pub fn take_pending_ssh_replay(&mut self, request_id: &str) -> Option<PendingSshReplay> {
+        let index = self
+            .pending_ssh_replays
+            .iter()
+            .position(|entry| entry.request_id == request_id)?;
+        Some(self.pending_ssh_replays.remove(index))
     }
 
     /// Stable sandbox scope for this session.
@@ -232,6 +273,7 @@ impl AgentSession {
         self.loaded_skills.clear();
         self.skill_token_count = 0;
         let _ = self.runtime_context_inbox.drain();
+        self.pending_ssh_replays.clear();
 
         // Sandbox is persistent, do NOT destroy it here
         // if let Some(mut sandbox) = self.sandbox.take() { ... }
@@ -351,5 +393,27 @@ impl AgentSession {
             info!(session_id = %self.session_id, "Sandbox destroyed");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentSession, PendingSshReplay};
+
+    #[test]
+    fn reset_clears_pending_ssh_replays() {
+        let mut session = AgentSession::new(42_i64.into());
+        session.store_pending_ssh_replay(PendingSshReplay {
+            request_id: "req-1".to_string(),
+            tool_call_id: "call-1".to_string(),
+            tool_name: "ssh_sudo_exec".to_string(),
+            arguments: r#"{"command":"journalctl"}"#.to_string(),
+        });
+
+        assert!(session.pending_ssh_replay("req-1").is_some());
+
+        session.reset();
+
+        assert!(session.pending_ssh_replay("req-1").is_none());
     }
 }
