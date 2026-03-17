@@ -1,12 +1,12 @@
 use super::{
     automatic_agent_control_markup, renew_cancellation_token, run_agent_task_with_text,
-    use_inline_topic_controls, ActiveSessionConfig, RunAgentTaskTextContext, TelegramThreadSpec,
+    use_inline_topic_controls, ActiveSessionConfig, RunAgentTaskTextContext,
     PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
 };
 use crate::bot::agent::extract_agent_input;
 use crate::bot::context::{current_context_state, ensure_current_agent_flow_id};
 use crate::bot::topic_route::{touch_dynamic_binding_activity_if_needed, TopicRouteDecision};
-use crate::bot::OutboundThreadParams;
+use crate::bot::{OutboundThreadParams, TelegramThreadSpec};
 use anyhow::Result;
 use oxide_agent_core::agent::{preprocessor::Preprocessor, SessionId};
 use oxide_agent_core::llm::LlmClient;
