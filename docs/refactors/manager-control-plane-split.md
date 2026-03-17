@@ -13,7 +13,7 @@
 
 ## Current High-Level Layout
 - `mod.rs`: module root, public forum/sandbox surface, provider construction, private-secret tool, dispatch wiring.
-- `shared.rs`: validation, normalization, topic-id resolution, JSON serialization helpers.
+- `shared.rs`: generic validation, normalization, metadata, and JSON serialization helpers.
 - `audit.rs`: audit status, audit writes, applied-mutation lookup, rollback snapshot lookup.
 - `bindings.rs`: topic binding args, tool schema, execute methods, rollback flow.
 - `contexts.rs`: topic context args, tool schema, execute methods, rollback flow.
@@ -35,7 +35,7 @@
 ## Remaining Root Contents
 - Public forum topic request/result types and sandbox traits that must stay easy to discover.
 - Provider construction, tool-name constants, private-secret handling, base dispatch wiring, and shared provider state.
-- Cross-domain helpers already extracted into `shared.rs` and `audit.rs`.
+- Cross-domain helpers already extracted into `shared.rs` and `audit.rs`; forum-specific topic helpers now live with `forum_topics.rs`.
 
 ## Verification Rule Per Iteration
 - Run `cargo check` after every move.
