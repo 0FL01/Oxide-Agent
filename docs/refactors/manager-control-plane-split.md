@@ -12,7 +12,7 @@
 - Keep `crates/oxide-agent-core/src/agent/providers/mod.rs` exports unchanged during the split.
 
 ## Current High-Level Layout
-- `mod.rs`: module root, public types, provider struct, remaining tool definitions, dispatch wiring.
+- `mod.rs`: module root, public forum/sandbox surface, provider construction, private-secret tool, dispatch wiring.
 - `shared.rs`: validation, normalization, topic-id resolution, JSON serialization helpers.
 - `audit.rs`: audit status, audit writes, applied-mutation lookup, rollback snapshot lookup.
 - `bindings.rs`: topic binding args, tool schema, execute methods, rollback flow.
@@ -34,7 +34,7 @@
 
 ## Remaining Root Contents
 - Public forum topic request/result types and sandbox traits that must stay easy to discover.
-- Provider construction, tool-name constants, base dispatch wiring, and shared provider state.
+- Provider construction, tool-name constants, private-secret handling, base dispatch wiring, and shared provider state.
 - Cross-domain helpers already extracted into `shared.rs` and `audit.rs`.
 
 ## Verification Rule Per Iteration

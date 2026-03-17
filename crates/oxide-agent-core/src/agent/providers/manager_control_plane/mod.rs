@@ -37,6 +37,9 @@ mod sandboxes;
 mod shared;
 
 use self::audit::AuditStatus;
+use self::forum_topics::{
+    ForumTopicCatalogEntry, ForumTopicProvisionSshAgentPlan, TELEGRAM_FORUM_ICON_COLORS,
+};
 
 const TOOL_TOPIC_BINDING_SET: &str = "topic_binding_set";
 const TOOL_TOPIC_BINDING_GET: &str = "topic_binding_get";
@@ -136,10 +139,6 @@ pub fn manager_control_plane_tool_names() -> Vec<String> {
         .map(|tool| (*tool).to_string())
         .collect()
 }
-const TELEGRAM_FORUM_ICON_COLORS: [u32; 6] = [
-    7_322_096, 16_766_590, 13_338_331, 9_367_192, 16_749_490, 16_478_047,
-];
-
 const fn default_ssh_port() -> u16 {
     22
 }
@@ -163,83 +162,6 @@ fn default_infra_approval_required_modes() -> Vec<TopicInfraToolMode> {
         TopicInfraToolMode::SudoExec,
         TopicInfraToolMode::ApplyFileEdit,
     ]
-}
-
-fn default_ssh_agent_allowed_tools() -> Vec<String> {
-    vec![
-        "write_todos".to_string(),
-        "ssh_exec".to_string(),
-        "ssh_sudo_exec".to_string(),
-        "ssh_read_file".to_string(),
-        "ssh_apply_file_edit".to_string(),
-        "ssh_check_process".to_string(),
-        "reminder_schedule".to_string(),
-        "reminder_list".to_string(),
-        "reminder_cancel".to_string(),
-        "reminder_pause".to_string(),
-        "reminder_resume".to_string(),
-        "reminder_retry".to_string(),
-    ]
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ForumTopicProvisionSshAgentArgs {
-    name: String,
-    #[serde(default)]
-    chat_id: Option<i64>,
-    #[serde(default)]
-    icon_color: Option<u32>,
-    #[serde(default)]
-    icon_custom_emoji_id: Option<String>,
-    #[serde(default)]
-    agent_id: Option<String>,
-    #[serde(default)]
-    system_prompt: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    topic_context: Option<String>,
-    #[serde(default)]
-    target_name: Option<String>,
-    host: String,
-    #[serde(default = "default_ssh_port")]
-    port: u16,
-    remote_user: String,
-    auth_mode: TopicInfraAuthMode,
-    #[serde(default)]
-    secret_ref: Option<String>,
-    #[serde(default)]
-    sudo_secret_ref: Option<String>,
-    #[serde(default)]
-    environment: Option<String>,
-    #[serde(default)]
-    tags: Vec<String>,
-    #[serde(default = "default_infra_allowed_tool_modes")]
-    allowed_tool_modes: Vec<TopicInfraToolMode>,
-    #[serde(default = "default_infra_approval_required_modes")]
-    approval_required_modes: Vec<TopicInfraToolMode>,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-struct ForumTopicProvisionSshAgentPlan {
-    request: ForumTopicCreateRequest,
-    agent_id: String,
-    profile: serde_json::Value,
-    topic_context: Option<String>,
-    target_name: String,
-    host: String,
-    port: u16,
-    remote_user: String,
-    auth_mode: TopicInfraAuthMode,
-    secret_ref: Option<String>,
-    sudo_secret_ref: Option<String>,
-    environment: Option<String>,
-    tags: Vec<String>,
-    allowed_tool_modes: Vec<TopicInfraToolMode>,
-    approval_required_modes: Vec<TopicInfraToolMode>,
-    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -495,151 +417,6 @@ impl ManagerTopicSandboxControl for DockerTopicSandboxControl {
     ) -> Result<bool> {
         SandboxManager::delete_sandbox_by_name(user_id, container_name).await
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ForumTopicCreateArgs {
-    #[serde(default)]
-    chat_id: Option<i64>,
-    name: String,
-    #[serde(default)]
-    icon_color: Option<u32>,
-    #[serde(default)]
-    icon_custom_emoji_id: Option<String>,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ForumTopicEditArgs {
-    #[serde(default)]
-    chat_id: Option<i64>,
-    thread_id: i64,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    icon_custom_emoji_id: Option<String>,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ForumTopicThreadArgs {
-    #[serde(default)]
-    chat_id: Option<i64>,
-    thread_id: i64,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ForumTopicListArgs {
-    #[serde(default)]
-    chat_id: Option<i64>,
-    #[serde(default)]
-    include_closed: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum TopicSandboxPruneReason {
-    TopicMissing,
-    BindingMissing,
-    SandboxDisabled,
-    #[default]
-    All,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TopicSandboxListArgs {
-    #[serde(default)]
-    orphaned_only: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TopicSandboxGetArgs {
-    #[serde(default)]
-    topic_id: Option<String>,
-    #[serde(default)]
-    container_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TopicSandboxCreateArgs {
-    topic_id: String,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TopicSandboxRecreateArgs {
-    topic_id: String,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TopicSandboxDeleteArgs {
-    #[serde(default)]
-    topic_id: Option<String>,
-    #[serde(default)]
-    container_name: Option<String>,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TopicSandboxPruneArgs {
-    #[serde(default)]
-    reason: TopicSandboxPruneReason,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-struct TopicSandboxInventoryRecord {
-    container_id: String,
-    container_name: String,
-    image: Option<String>,
-    created_at: Option<i64>,
-    state: Option<String>,
-    status: Option<String>,
-    running: bool,
-    topic_id: Option<String>,
-    chat_id: Option<i64>,
-    thread_id: Option<i64>,
-    labels: std::collections::HashMap<String, String>,
-    bound_topic_exists: bool,
-    binding_found: bool,
-    sandbox_tools_enabled: Option<bool>,
-    orphan_reason: Option<String>,
-}
-
-#[derive(Debug)]
-enum TopicSandboxTarget {
-    TopicId(String),
-    ContainerName(String),
-}
-
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
-struct ForumTopicCatalogEntry {
-    topic_id: String,
-    chat_id: i64,
-    thread_id: i64,
-    name: Option<String>,
-    icon_color: Option<u32>,
-    icon_custom_emoji_id: Option<String>,
-    closed: bool,
 }
 
 /// Tool provider that manages user-scoped control-plane records.
