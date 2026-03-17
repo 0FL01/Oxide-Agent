@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: sandbox/Dockerfile.sandbox
     image: ${SANDBOX_IMAGE:-agent-sandbox:latest}
+    environment:
+      - TZ=Europe/Moscow
 
   oxide_agent:
     build:
