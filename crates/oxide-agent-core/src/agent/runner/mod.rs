@@ -17,7 +17,7 @@ use crate::llm::{LlmClient, Message};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-pub use types::{AgentRunnerConfig, AgentRunnerContext};
+pub use types::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
 
 /// Agent runner that executes the core loop.
 pub struct AgentRunner {

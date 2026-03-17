@@ -126,6 +126,12 @@ impl AgentRunner {
         state: &RunState,
         tool_result: &crate::agent::tool_bridge::ToolExecutionResult,
     ) {
+        let crate::agent::tool_bridge::ToolExecutionResult::Completed { tool_name, output } =
+            tool_result
+        else {
+            return;
+        };
+
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
             ctx.agent.memory(),
@@ -142,8 +148,8 @@ impl AgentRunner {
 
         let result = self.hook_registry.execute(
             &HookEvent::AfterTool {
-                tool_name: tool_result.tool_name.clone(),
-                result: tool_result.output.clone(),
+                tool_name: tool_name.clone(),
+                result: output.clone(),
             },
             &hook_context,
         );

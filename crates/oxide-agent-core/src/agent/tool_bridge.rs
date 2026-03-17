@@ -11,6 +11,7 @@ use super::registry::ToolRegistry;
 use crate::config::AGENT_TOOL_TIMEOUT_SECS;
 use crate::llm::{Message, ToolCall};
 use anyhow::Result;
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
@@ -33,11 +34,19 @@ pub struct ToolExecutionContext<'a> {
 }
 
 /// Result of executing a tool call.
-pub struct ToolExecutionResult {
-    /// Name of the tool that was executed.
-    pub tool_name: String,
-    /// Output produced by the tool.
-    pub output: String,
+pub enum ToolExecutionResult {
+    /// Tool execution completed normally.
+    Completed {
+        /// Name of the tool that was executed.
+        tool_name: String,
+        /// Output produced by the tool.
+        output: String,
+    },
+    /// Tool execution is paused pending operator approval.
+    WaitingForApproval {
+        /// Name of the tool awaiting approval.
+        tool_name: String,
+    },
 }
 
 /// Execute a list of tool calls
@@ -138,6 +147,20 @@ pub async fn execute_single_tool_call(
         }
     }
 
+    if let Some(approval) = parse_pending_ssh_approval(&result) {
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::WaitingForApproval {
+                    tool_name: sanitize_xml_tags(&name),
+                    target_name: sanitize_xml_tags(&approval.target_name),
+                    summary: sanitize_xml_tags(&approval.summary),
+                })
+                .await;
+        }
+
+        return Ok(ToolExecutionResult::WaitingForApproval { tool_name: name });
+    }
+
     // Send tool result event
     if let Some(tx) = ctx.progress_tx {
         let _ = tx
@@ -153,7 +176,7 @@ pub async fn execute_single_tool_call(
     let tool_msg = AgentMessage::tool(&id, &name, &result);
     ctx.memory.add_message(tool_msg);
 
-    Ok(ToolExecutionResult {
+    Ok(ToolExecutionResult::Completed {
         tool_name: name,
         output: result,
     })
@@ -170,4 +193,120 @@ fn extract_command_preview(args: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(args)
         .ok()
         .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+}
+
+#[derive(Debug, Deserialize)]
+struct PendingSshApprovalPayload {
+    #[serde(default)]
+    approval_required: bool,
+    target_name: String,
+    summary: String,
+}
+
+fn parse_pending_ssh_approval(output: &str) -> Option<PendingSshApprovalPayload> {
+    let payload: PendingSshApprovalPayload = serde_json::from_str(output).ok()?;
+    payload.approval_required.then_some(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{execute_single_tool_call, parse_pending_ssh_approval, ToolExecutionContext};
+    use crate::agent::memory::AgentMemory;
+    use crate::agent::provider::ToolProvider;
+    use crate::agent::providers::TodoList;
+    use crate::agent::registry::ToolRegistry;
+    use crate::llm::{ToolCall, ToolCallFunction, ToolDefinition};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    struct PendingApprovalProvider;
+
+    #[async_trait]
+    impl ToolProvider for PendingApprovalProvider {
+        fn name(&self) -> &'static str {
+            "pending_approval_provider"
+        }
+
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: "ssh_sudo_exec".to_string(),
+                description: "test".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }]
+        }
+
+        fn can_handle(&self, tool_name: &str) -> bool {
+            tool_name == "ssh_sudo_exec"
+        }
+
+        async fn execute(
+            &self,
+            _tool_name: &str,
+            _arguments: &str,
+            _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
+            _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        ) -> anyhow::Result<String> {
+            Ok(r#"{"ok":false,"approval_required":true,"request_id":"req-1","tool_name":"ssh_sudo_exec","topic_id":"topic-a","target_name":"n-de1","summary":"sudo exec on n-de1: journalctl","expires_at":123}"#.to_string())
+        }
+    }
+
+    #[test]
+    fn parses_pending_ssh_approval_payload() {
+        let payload = parse_pending_ssh_approval(
+            r#"{"ok":false,"approval_required":true,"request_id":"req-1","tool_name":"ssh_sudo_exec","topic_id":"topic-a","target_name":"n-de1","summary":"sudo exec on n-de1: journalctl","expires_at":123}"#,
+        )
+        .expect("payload must parse");
+
+        assert_eq!(payload.target_name, "n-de1");
+        assert_eq!(payload.summary, "sudo exec on n-de1: journalctl");
+    }
+
+    #[test]
+    fn ignores_non_approval_payloads() {
+        assert!(parse_pending_ssh_approval(r#"{"ok":true}"#).is_none());
+    }
+
+    #[tokio::test]
+    async fn waiting_for_approval_does_not_append_tool_result_to_memory() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(PendingApprovalProvider));
+
+        let mut memory = AgentMemory::new(1024);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let mut messages = Vec::new();
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            function: ToolCallFunction {
+                name: "ssh_sudo_exec".to_string(),
+                arguments: r#"{"command":"journalctl -p err -n 10 --no-pager"}"#.to_string(),
+            },
+            is_recovered: false,
+        };
+
+        let mut ctx = ToolExecutionContext {
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            messages: &mut messages,
+            memory: &mut memory,
+            cancellation_token,
+        };
+
+        let result = execute_single_tool_call(tool_call, &mut ctx)
+            .await
+            .expect("tool call must succeed");
+
+        assert!(matches!(
+            result,
+            super::ToolExecutionResult::WaitingForApproval { .. }
+        ));
+        assert!(messages.is_empty(), "tool response must not be appended");
+        assert!(
+            memory.get_messages().is_empty(),
+            "agent memory must not record a fake tool result"
+        );
+    }
 }

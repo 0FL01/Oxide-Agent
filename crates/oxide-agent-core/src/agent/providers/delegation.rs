@@ -355,7 +355,19 @@ If the sub-agent doesn't finish, a partial report will be returned."
         let timeout_secs = self.settings.get_sub_agent_timeout_secs();
         let timeout_duration = Duration::from_secs(timeout_secs + 30);
         match timeout(timeout_duration, runner.run(&mut ctx)).await {
-            Ok(Ok(result)) => Ok(result),
+            Ok(Ok(crate::agent::runner::AgentRunResult::Final(result))) => Ok(result),
+            Ok(Ok(crate::agent::runner::AgentRunResult::WaitingForApproval)) => {
+                warn!(task_id = %task_id, "Sub-agent paused waiting for unsupported approval");
+                Ok(build_sub_agent_report(SubAgentReportContext {
+                    task_id: &task_id,
+                    status: SubAgentReportStatus::Error,
+                    error: Some(
+                        "sub-agent paused waiting for unsupported external approval".to_string(),
+                    ),
+                    memory: sub_session.memory(),
+                    timeout_secs: self.settings.get_sub_agent_timeout_secs(),
+                }))
+            }
             Ok(Err(err)) => {
                 warn!(task_id = %task_id, error = %err, "Sub-agent failed");
                 Ok(build_sub_agent_report(SubAgentReportContext {

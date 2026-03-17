@@ -1,6 +1,8 @@
 //! Core execution loop for the agent runner.
 
-use super::types::{AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure};
+use super::types::{
+    AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
+};
 use super::AgentRunner;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
@@ -12,13 +14,13 @@ use tracing::{debug, warn};
 
 impl AgentRunner {
     /// Execute the agent loop until completion or error.
-    pub async fn run(&mut self, ctx: &mut AgentRunnerContext<'_>) -> Result<String> {
+    pub async fn run(&mut self, ctx: &mut AgentRunnerContext<'_>) -> Result<AgentRunResult> {
         self.reset_loop_detector(ctx).await;
         self.apply_before_agent_hooks(ctx)?;
         self.run_loop(ctx).await
     }
 
-    async fn run_loop(&mut self, ctx: &mut AgentRunnerContext<'_>) -> Result<String> {
+    async fn run_loop(&mut self, ctx: &mut AgentRunnerContext<'_>) -> Result<AgentRunResult> {
         let mut state = RunState::new();
 
         for iteration in 0..ctx.config.max_iterations {
@@ -30,7 +32,7 @@ impl AgentRunner {
 
             if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs {
                 if let Some(res) = self.apply_timeout_hook(ctx, &state)? {
-                    return Ok(res);
+                    return Ok(AgentRunResult::Final(res));
                 }
             }
 
@@ -66,9 +68,9 @@ impl AgentRunner {
             }
 
             let response = self.call_llm_with_tools(ctx).await?;
-            if let Some(result) = self.handle_llm_response(response, ctx, &mut state).await? {
-                return Ok(result);
-            }
+                if let Some(result) = self.handle_llm_response(response, ctx, &mut state).await? {
+                    return Ok(result);
+                }
         }
 
         Err(anyhow!(
@@ -106,7 +108,7 @@ impl AgentRunner {
         mut response: ChatResponse,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<AgentRunResult>> {
         self.preprocess_llm_response(&mut response, ctx).await;
 
         let raw_json = response
@@ -229,7 +231,7 @@ impl AgentRunner {
         raw_json: &str,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<AgentRunResult>> {
         let tool_calls = sanitize_tool_calls(std::mem::take(&mut response.tool_calls));
 
         self.spawn_narrative_task(
@@ -245,7 +247,7 @@ impl AgentRunner {
                     state,
                     crate::agent::loop_detection::LoopType::ToolCallLoop,
                 )
-                .await);
+                    .await);
         }
 
         self.record_assistant_tool_call(ctx, raw_json, &tool_calls);
@@ -261,7 +263,7 @@ impl AgentRunner {
         raw_output: String,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<AgentRunResult>> {
         self.spawn_narrative_task(reasoning.as_deref(), &[], ctx.progress_tx);
 
         let final_answer = if raw_output.trim().is_empty() {

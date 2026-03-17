@@ -1,7 +1,7 @@
 //! Tool execution helpers for the agent runner.
 
 use super::hooks::ToolHookDecision;
-use super::types::{AgentRunnerContext, RunState};
+use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use super::AgentRunner;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
@@ -53,7 +53,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &RunState,
         tool_calls: Vec<ToolCall>,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<Option<AgentRunResult>> {
         for tool_call in &tool_calls {
             self.load_skill_context_for_tool(ctx, &tool_call.function.name)
                 .await?;
@@ -65,7 +65,7 @@ impl AgentRunner {
                     continue;
                 }
                 ToolHookDecision::Finish { report } => {
-                    return Ok(Some(report));
+                    return Ok(Some(AgentRunResult::Final(report)));
                 }
             }
             let cancellation_token = ctx.agent.cancellation_token().clone();
@@ -79,6 +79,12 @@ impl AgentRunner {
                 cancellation_token,
             };
             let tool_result = execute_single_tool_call(tool_call.clone(), &mut tool_ctx).await?;
+            if matches!(
+                tool_result,
+                crate::agent::tool_bridge::ToolExecutionResult::WaitingForApproval { .. }
+            ) {
+                return Ok(Some(AgentRunResult::WaitingForApproval));
+            }
             self.apply_after_tool_hooks(ctx, state, &tool_result);
         }
         Ok(None)
