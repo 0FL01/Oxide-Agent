@@ -21,6 +21,8 @@
 - `infra.rs`: topic infra args, tool schema, preflight helpers, execute methods, rollback flow.
 - `profiles.rs`: agent profile args, tool schema, execute methods, rollback flow.
 - `agent_controls.rs`: topic agent tool/hook args, catalogs, snapshots, execute methods.
+- `forum_topics.rs`: forum lifecycle CRUD, topic cleanup flows, SSH provisioning flow.
+- `sandboxes.rs`: sandbox inventory, lookup, create/recreate/delete/prune flows.
 - `tests/mod.rs`: manager control-plane test suite moved out of production code.
 
 ## Attention Budget Rules
@@ -30,9 +32,10 @@
 - Do not change `ToolProvider` dispatch names while moving code.
 - Update this document after each split step so future LLM agents do not need to rescan the monolith.
 
-## Planned Next Splits
-1. `forum_topics.rs` for forum lifecycle and SSH provisioning.
-2. `sandboxes.rs` for sandbox inventory and mutation flows.
+## Remaining Root Contents
+- Public forum topic request/result types and sandbox traits that must stay easy to discover.
+- Provider construction, tool-name constants, base dispatch wiring, and shared provider state.
+- Cross-domain helpers already extracted into `shared.rs` and `audit.rs`.
 
 ## Verification Rule Per Iteration
 - Run `cargo check` after every move.
