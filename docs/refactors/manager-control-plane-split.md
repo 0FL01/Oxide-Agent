@@ -12,8 +12,10 @@
 - Keep `crates/oxide-agent-core/src/agent/providers/mod.rs` exports unchanged during the split.
 
 ## Current High-Level Layout
-- `mod.rs`: module root, public types, provider struct, tool definitions, execute methods, dispatch wiring.
+- `mod.rs`: module root, public types, provider struct, remaining tool definitions, dispatch wiring.
 - `shared.rs`: validation, normalization, topic-id resolution, JSON serialization helpers.
+- `audit.rs`: audit status, audit writes, applied-mutation lookup, rollback snapshot lookup.
+- `bindings.rs`: topic binding args, tool schema, execute methods, rollback flow.
 - `tests/mod.rs`: manager control-plane test suite moved out of production code.
 
 ## Attention Budget Rules
@@ -24,15 +26,13 @@
 - Update this document after each split step so future LLM agents do not need to rescan the monolith.
 
 ## Planned Next Splits
-1. `audit.rs` for audit and rollback helpers.
-2. `bindings.rs` for topic binding args, definitions, and execute methods.
-3. `contexts.rs` for topic context CRUD.
-4. `agents_md.rs` for topic AGENTS.md CRUD.
-5. `infra.rs` for topic infra CRUD and preflight helpers.
-6. `profiles.rs` for agent profile CRUD.
-7. `agent_controls.rs` for topic agent tools/hooks control.
-8. `forum_topics.rs` for forum lifecycle and SSH provisioning.
-9. `sandboxes.rs` for sandbox inventory and mutation flows.
+1. `contexts.rs` for topic context CRUD.
+2. `agents_md.rs` for topic AGENTS.md CRUD.
+3. `infra.rs` for topic infra CRUD and preflight helpers.
+4. `profiles.rs` for agent profile CRUD.
+5. `agent_controls.rs` for topic agent tools/hooks control.
+6. `forum_topics.rs` for forum lifecycle and SSH provisioning.
+7. `sandboxes.rs` for sandbox inventory and mutation flows.
 
 ## Verification Rule Per Iteration
 - Run `cargo check` after every move.
