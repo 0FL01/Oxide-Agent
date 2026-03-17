@@ -15,7 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
     python3-pip \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+# Set timezone to Europe/Moscow
+RUN ln -snf /usr/share/zoneinfo/Europe/Moscow /etc/localtime && \
+    echo "Europe/Moscow" > /etc/timezone
 
 # Install yt-dlp (latest version via pip)
 RUN pip install --no-cache-dir --break-system-packages yt-dlp
