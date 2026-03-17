@@ -28,6 +28,15 @@ pub enum AgentEvent {
         /// Tool execution output
         output: String,
     },
+    /// Agent is waiting for operator approval before continuing a tool call.
+    WaitingForApproval {
+        /// Tool name awaiting approval.
+        tool_name: String,
+        /// Infra target name shown to the operator.
+        target_name: String,
+        /// Human-readable approval summary.
+        summary: String,
+    },
     /// Agent is continuing work due to incomplete todos
     Continuation {
         /// Reason for continuation
@@ -162,6 +171,11 @@ impl ProgressState {
                 command_preview,
             } => self.handle_tool_call(name, input, command_preview),
             AgentEvent::ToolResult { .. } => self.complete_last_step(),
+            AgentEvent::WaitingForApproval {
+                tool_name,
+                target_name,
+                summary,
+            } => self.handle_waiting_for_approval(tool_name, target_name, summary),
             AgentEvent::Continuation { reason, count } => self.handle_continuation(reason, count),
             AgentEvent::TodosUpdated { todos } => self.handle_todos_update(todos),
             AgentEvent::FileToSend { file_name, .. } => self.handle_file_send(file_name),
@@ -247,6 +261,26 @@ impl ProgressState {
                 count,
                 crate::config::AGENT_CONTINUATION_LIMIT,
                 crate::utils::truncate_str(reason, 50)
+            ),
+            status: StepStatus::InProgress,
+            tokens: None,
+            tool_name: None,
+        });
+    }
+
+    fn handle_waiting_for_approval(
+        &mut self,
+        tool_name: String,
+        target_name: String,
+        summary: String,
+    ) {
+        self.complete_last_step();
+        self.current_thought = Some(format!("Waiting for SSH approval for {tool_name}"));
+        self.steps.push(Step {
+            description: format!(
+                "SSH approval pending for {}: {}",
+                target_name,
+                crate::utils::truncate_str(&summary, 80)
             ),
             status: StepStatus::InProgress,
             tokens: None,

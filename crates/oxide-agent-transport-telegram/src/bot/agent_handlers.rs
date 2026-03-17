@@ -3613,7 +3613,7 @@ async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
 
 async fn deliver_agent_task_result(
     ctx: &AgentTaskContext,
-    result: Result<String>,
+    result: Result<oxide_agent_core::agent::AgentExecutionOutcome>,
     progress_text: &str,
     progress_message_id: teloxide::types::MessageId,
     progress_reply_markup: Option<teloxide::types::InlineKeyboardMarkup>,
@@ -3622,9 +3622,10 @@ async fn deliver_agent_task_result(
         .as_ref()
         .map(|_| empty_inline_keyboard());
     let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
+    let pending_ssh_approvals = take_pending_ssh_approvals(ctx.session_id).await;
 
     match result {
-        Ok(response) => {
+        Ok(oxide_agent_core::agent::AgentExecutionOutcome::Completed(response)) => {
             super::resilient::edit_message_safe_resilient_with_markup(
                 &ctx.bot,
                 ctx.msg.chat.id,
@@ -3642,6 +3643,30 @@ async fn deliver_agent_task_result(
                 &response,
                 ctx.message_thread_id,
                 final_markup,
+            )
+            .await?;
+            send_pending_ssh_approval_messages(
+                &ctx.bot,
+                ctx.msg.chat.id,
+                ctx.message_thread_id,
+                &pending_ssh_approvals,
+            )
+            .await?;
+        }
+        Ok(oxide_agent_core::agent::AgentExecutionOutcome::WaitingForApproval) => {
+            super::resilient::edit_message_safe_resilient_with_markup(
+                &ctx.bot,
+                ctx.msg.chat.id,
+                progress_message_id,
+                progress_text,
+                terminal_progress_reply_markup.clone(),
+            )
+            .await;
+            send_pending_ssh_approval_messages(
+                &ctx.bot,
+                ctx.msg.chat.id,
+                ctx.message_thread_id,
+                &pending_ssh_approvals,
             )
             .await?;
         }
@@ -3733,7 +3758,7 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
     let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
 
     match result {
-        Ok(response) => {
+        Ok(oxide_agent_core::agent::AgentExecutionOutcome::Completed(response)) => {
             let terminal_progress_reply_markup = progress_reply_markup
                 .as_ref()
                 .map(|_| empty_inline_keyboard());
@@ -3757,6 +3782,26 @@ async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
                 final_markup,
             )
             .await?;
+            send_pending_ssh_approval_messages(
+                &ctx.bot,
+                ctx.chat_id,
+                ctx.message_thread_id,
+                &pending_ssh_approvals,
+            )
+            .await?;
+        }
+        Ok(oxide_agent_core::agent::AgentExecutionOutcome::WaitingForApproval) => {
+            let terminal_progress_reply_markup = progress_reply_markup
+                .as_ref()
+                .map(|_| empty_inline_keyboard());
+            super::resilient::edit_message_safe_resilient_with_markup(
+                &ctx.bot,
+                ctx.chat_id,
+                progress_msg.id,
+                &progress_text,
+                terminal_progress_reply_markup,
+            )
+            .await;
             send_pending_ssh_approval_messages(
                 &ctx.bot,
                 ctx.chat_id,
@@ -4241,7 +4286,7 @@ async fn execute_agent_task(
     session_id: SessionId,
     task: &str,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-) -> Result<String> {
+) -> Result<oxide_agent_core::agent::AgentExecutionOutcome> {
     // Get executor from registry
     let executor_arc = SESSION_REGISTRY
         .get(&session_id)

@@ -54,6 +54,14 @@ pub struct AgentExecutor {
     last_topic_infra_preflight_summary: Option<String>,
 }
 
+/// Terminal outcome of an agent execution request.
+pub enum AgentExecutionOutcome {
+    /// Agent finished and produced a final response.
+    Completed(String),
+    /// Agent paused because it is waiting for an external approval.
+    WaitingForApproval,
+}
+
 #[derive(Clone)]
 struct ManagerControlPlaneContext {
     storage: Arc<dyn StorageProvider>,
@@ -424,7 +432,7 @@ impl AgentExecutor {
         &mut self,
         task: &str,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Result<String> {
+    ) -> Result<AgentExecutionOutcome> {
         self.session.start_task();
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
         self.session.remember_task(task);
@@ -485,9 +493,13 @@ impl AgentExecutor {
         let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);
         match timeout(timeout_duration, self.runner.run(&mut ctx)).await {
             Ok(inner) => match inner {
-                Ok(res) => {
+                Ok(super::runner::AgentRunResult::Final(res)) => {
                     self.session.complete();
-                    Ok(res)
+                    Ok(AgentExecutionOutcome::Completed(res))
+                }
+                Ok(super::runner::AgentRunResult::WaitingForApproval) => {
+                    self.session.complete();
+                    Ok(AgentExecutionOutcome::WaitingForApproval)
                 }
                 Err(e) => {
                     self.session.fail(e.to_string());

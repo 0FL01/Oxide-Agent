@@ -88,6 +88,14 @@ pub struct AgentRunnerContext<'a> {
     pub config: AgentRunnerConfig,
 }
 
+/// Terminal outcome of a runner execution.
+pub enum AgentRunResult {
+    /// The agent produced a final response for the user.
+    Final(String),
+    /// The agent paused because an external approval is required.
+    WaitingForApproval,
+}
+
 /// Internal run state for the current loop execution.
 pub(super) struct RunState {
     /// Current iteration index.

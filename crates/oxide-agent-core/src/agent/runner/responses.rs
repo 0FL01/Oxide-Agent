@@ -1,6 +1,8 @@
 //! Response handling for the agent runner.
 
-use super::types::{AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure};
+use super::types::{
+    AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
+};
 use super::AgentRunner;
 use crate::agent::progress::AgentEvent;
 use crate::agent::tool_bridge::sync_todos_from_arc;
@@ -13,7 +15,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
         failure: StructuredOutputFailure,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<Option<AgentRunResult>> {
         warn!(
             error = %failure.error,
             raw_preview = %crate::utils::truncate_str(&failure.raw_json, 200),
@@ -95,7 +97,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
         input: FinalResponseInput,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<Option<AgentRunResult>> {
         if ctx.agent.cancellation_token().is_cancelled() {
             return Err(self.cancelled_error(ctx).await);
         }
@@ -148,6 +150,6 @@ impl AgentRunner {
                 let _ = tx.send(AgentEvent::Finished).await;
             }
         }
-        Ok(Some(final_response))
+        Ok(Some(AgentRunResult::Final(final_response)))
     }
 }

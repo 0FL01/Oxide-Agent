@@ -54,7 +54,7 @@ pub mod loop_detection;
 pub mod progress;
 
 pub use context::{AgentContext, EphemeralSession};
-pub use executor::AgentExecutor;
+pub use executor::{AgentExecutionOutcome, AgentExecutor};
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
 pub use identity::SessionId;
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
