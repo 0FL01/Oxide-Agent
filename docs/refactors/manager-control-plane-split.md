@@ -16,6 +16,8 @@
 - `shared.rs`: validation, normalization, topic-id resolution, JSON serialization helpers.
 - `audit.rs`: audit status, audit writes, applied-mutation lookup, rollback snapshot lookup.
 - `bindings.rs`: topic binding args, tool schema, execute methods, rollback flow.
+- `contexts.rs`: topic context args, tool schema, execute methods, rollback flow.
+- `agents_md.rs`: topic AGENTS.md args, tool schema, execute methods, rollback flow.
 - `tests/mod.rs`: manager control-plane test suite moved out of production code.
 
 ## Attention Budget Rules
@@ -26,13 +28,11 @@
 - Update this document after each split step so future LLM agents do not need to rescan the monolith.
 
 ## Planned Next Splits
-1. `contexts.rs` for topic context CRUD.
-2. `agents_md.rs` for topic AGENTS.md CRUD.
-3. `infra.rs` for topic infra CRUD and preflight helpers.
-4. `profiles.rs` for agent profile CRUD.
-5. `agent_controls.rs` for topic agent tools/hooks control.
-6. `forum_topics.rs` for forum lifecycle and SSH provisioning.
-7. `sandboxes.rs` for sandbox inventory and mutation flows.
+1. `infra.rs` for topic infra CRUD and preflight helpers.
+2. `profiles.rs` for agent profile CRUD.
+3. `agent_controls.rs` for topic agent tools/hooks control.
+4. `forum_topics.rs` for forum lifecycle and SSH provisioning.
+5. `sandboxes.rs` for sandbox inventory and mutation flows.
 
 ## Verification Rule Per Iteration
 - Run `cargo check` after every move.
