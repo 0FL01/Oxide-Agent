@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub const GROQ_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for Mistral chat completions.
 pub const MISTRAL_CHAT_TEMPERATURE: f32 = 0.9;
+/// Temperature used for Mistral reasoning chat requests.
+pub const MISTRAL_REASONING_TEMPERATURE: f32 = 0.7;
 /// Temperature used when Mistral runs tool-enabled chat requests.
 pub const MISTRAL_TOOL_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for ZAI chat completions.
