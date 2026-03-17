@@ -1,17 +1,17 @@
 use super::{
-    agent_mode_session_keys, automatic_agent_control_markup, build_outbound_thread_params,
-    cancel_and_clear_with_compat, cancel_status_inline_markup, cancel_status_reply_markup,
-    cleanup_abandoned_empty_flow, clear_cancel_confirmation_message, clear_pending_cancel_message,
-    confirm_destructive_action, ensure_session_exists, exit_agent_mode,
-    handle_clear_memory_confirmation, handle_recreate_container_confirmation,
-    is_agent_task_running, manager_default_chat_id, outbound_thread_from_callback,
-    renew_cancellation_token, reset_sessions_with_compat, resolve_existing_session_id,
-    run_agent_task_with_text, run_approved_ssh_resume, save_memory_after_task, send_agent_message,
-    send_agent_message_with_optional_keyboard, send_or_update_cancel_confirmation,
-    send_or_update_pending_cancel_message, should_create_fresh_flow_on_detach,
-    use_inline_topic_controls, AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx,
-    EnsureSessionContext, ResetSessionOutcome, RunAgentTaskTextContext,
-    RunApprovedSshResumeContext, SessionTransportContext, SESSION_REGISTRY,
+    agent_mode_session_keys, automatic_agent_control_markup, cancel_and_clear_with_compat,
+    cancel_status_inline_markup, cancel_status_reply_markup, cleanup_abandoned_empty_flow,
+    clear_cancel_confirmation_message, clear_pending_cancel_message, confirm_destructive_action,
+    ensure_session_exists, exit_agent_mode, handle_clear_memory_confirmation,
+    handle_recreate_container_confirmation, is_agent_task_running, manager_default_chat_id,
+    outbound_thread_from_callback, renew_cancellation_token, reset_sessions_with_compat,
+    resolve_existing_session_id, run_agent_task_with_text, run_approved_ssh_resume,
+    save_memory_after_task, send_agent_message, send_agent_message_with_optional_keyboard,
+    send_or_update_cancel_confirmation, send_or_update_pending_cancel_message,
+    should_create_fresh_flow_on_detach, use_inline_topic_controls, AgentDialogue,
+    AgentModeSessionKeys, ConfirmationSendCtx, EnsureSessionContext, ResetSessionOutcome,
+    RunAgentTaskTextContext, RunApprovedSshResumeContext, SessionTransportContext,
+    SESSION_REGISTRY,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, reset_current_agent_flow_id, set_current_agent_flow_id,
@@ -28,7 +28,9 @@ use crate::bot::views::{
     AGENT_CALLBACK_SSH_REJECT_PREFIX, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET,
     LOOP_CALLBACK_RETRY,
 };
-use crate::bot::{resolve_thread_spec, OutboundThreadParams, TelegramThreadSpec};
+use crate::bot::{
+    build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams, TelegramThreadSpec,
+};
 use crate::config::BotSettings;
 use anyhow::Result;
 use oxide_agent_core::llm::LlmClient;
