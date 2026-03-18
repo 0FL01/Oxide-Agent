@@ -5,6 +5,7 @@ use super::budget::estimate_request_budget;
 use super::classifier::classify_hot_memory;
 use super::externalize::{externalize_hot_memory, NoopPayloadSink, PayloadSink};
 use super::prune::prune_hot_memory;
+use super::summarizer::CompactionSummarizer;
 use super::types::{CompactionOutcome, CompactionPolicy, CompactionRequest};
 use crate::agent::context::AgentContext;
 use anyhow::Result;
@@ -17,6 +18,7 @@ pub struct CompactionService {
     policy: CompactionPolicy,
     archive_sink: Arc<dyn ArchiveSink>,
     payload_sink: Arc<dyn PayloadSink>,
+    summarizer: Option<CompactionSummarizer>,
 }
 
 impl Default for CompactionService {
@@ -33,6 +35,7 @@ impl CompactionService {
             policy,
             archive_sink: Arc::new(NoopArchiveSink),
             payload_sink: Arc::new(NoopPayloadSink),
+            summarizer: None,
         }
     }
 
@@ -47,6 +50,13 @@ impl CompactionService {
     #[must_use]
     pub fn with_payload_sink(mut self, payload_sink: Arc<dyn PayloadSink>) -> Self {
         self.payload_sink = payload_sink;
+        self
+    }
+
+    /// Attach a structured-history summarizer for Stage 7 compaction summaries.
+    #[must_use]
+    pub fn with_summarizer(mut self, summarizer: CompactionSummarizer) -> Self {
+        self.summarizer = Some(summarizer);
         self
     }
 
@@ -91,6 +101,18 @@ impl CompactionService {
 
         let budget = estimate_request_budget(&self.policy, request, agent);
         let snapshot = classify_hot_memory(agent.memory().get_messages());
+        let summary_generation = if let Some(summarizer) = &self.summarizer {
+            summarizer
+                .summarize_if_needed(
+                    request,
+                    budget.state,
+                    &snapshot,
+                    agent.memory().get_messages(),
+                )
+                .await
+        } else {
+            Default::default()
+        };
         let hot_messages = agent.memory().get_messages().len();
 
         debug!(
@@ -114,6 +136,8 @@ impl CompactionService {
             externalized_reclaimed_tokens = externalization.reclaimed_tokens,
             pruned_messages = pruning.pruned_count,
             pruned_reclaimed_tokens = pruning.reclaimed_tokens,
+            summary_attempted = summary_generation.attempted,
+            summary_used_fallback = summary_generation.used_fallback,
             pinned_messages = snapshot.pinned.message_count,
             protected_live_messages = snapshot.protected_live.message_count,
             prunable_artifact_messages = snapshot.prunable_artifacts.message_count,
@@ -121,19 +145,20 @@ impl CompactionService {
             "Compaction checkpoint reached"
         );
 
-        if !externalization.applied && !pruning.applied {
+        if !externalization.applied && !pruning.applied && !summary_generation.attempted {
             return Ok(CompactionOutcome::noop(request.trigger, budget, snapshot));
         }
 
         Ok(CompactionOutcome {
             trigger: request.trigger,
-            applied: true,
+            applied: externalization.applied || pruning.applied,
             token_count_before: budget_before.hot_memory.total_tokens,
             token_count_after: budget.hot_memory.total_tokens,
             budget,
             snapshot,
             externalization,
             pruning,
+            summary_generation,
         })
     }
 }
@@ -141,9 +166,11 @@ impl CompactionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::compaction::BudgetState;
+    use crate::agent::compaction::{BudgetState, CompactionSummarizer, CompactionSummarizerConfig};
     use crate::agent::memory::AgentMessage;
     use crate::agent::{AgentContext, EphemeralSession};
+    use crate::llm::LlmClient;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn prepare_for_run_is_noop_before_prune_and_compaction() {
@@ -254,6 +281,53 @@ mod tests {
         assert!(session.memory().get_messages()[0]
             .content
             .contains("[pruned tool result]"));
+    }
+
+    #[tokio::test]
+    async fn prepare_for_run_generates_fallback_summary_when_needed() {
+        let mut session = EphemeralSession::new(20_000);
+        session.memory_mut().add_message(AgentMessage::user(
+            "We must preserve AGENTS.md during compaction.",
+        ));
+        session.memory_mut().add_message(AgentMessage::assistant(
+            "I found `crates/oxide-agent-core/src/agent/compaction/service.rs`.",
+        ));
+
+        let llm_client = Arc::new(LlmClient::new(&crate::config::AgentSettings::default()));
+        let service = CompactionService::default().with_summarizer(CompactionSummarizer::new(
+            llm_client,
+            CompactionSummarizerConfig {
+                model_name: String::new(),
+                provider_name: String::new(),
+                timeout_secs: 1,
+            },
+        ));
+        let request = CompactionRequest::new(
+            crate::agent::compaction::CompactionTrigger::Manual,
+            "Ship stage 7",
+            "system prompt",
+            &[],
+            "demo-model",
+            512,
+            false,
+        );
+
+        let outcome = service
+            .prepare_for_run(&request, &mut session)
+            .await
+            .expect("stage 7 summary checkpoint should succeed");
+
+        assert!(!outcome.applied);
+        assert!(outcome.summary_generation.attempted);
+        assert!(outcome.summary_generation.used_fallback);
+        assert!(outcome
+            .summary_generation
+            .summary
+            .as_ref()
+            .expect("fallback summary")
+            .relevant_files_entities
+            .iter()
+            .any(|item| item.contains("crates/oxide-agent-core/src/agent/compaction/service.rs")));
     }
 
     #[test]

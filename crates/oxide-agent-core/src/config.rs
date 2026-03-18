@@ -127,6 +127,15 @@ pub struct AgentSettings {
     /// Narrator model provider override
     pub narrator_model_provider: Option<String>,
 
+    /// Compaction summary model ID override
+    pub compaction_model_id: Option<String>,
+    /// Compaction summary model provider override
+    pub compaction_model_provider: Option<String>,
+    /// Compaction summary model max tokens override
+    pub compaction_model_max_tokens: Option<u32>,
+    /// Compaction summary model timeout override in seconds
+    pub compaction_model_timeout_secs: Option<u64>,
+
     /// Embedding provider name (mistral, openrouter, openai)
     pub embedding_provider: Option<String>,
     /// Embedding model ID
@@ -363,6 +372,23 @@ impl AgentSettings {
         ))
     }
 
+    fn compaction_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.compaction_model_id.as_ref()?;
+        let provider = self.compaction_model_provider.as_ref()?;
+        let max_tokens = self
+            .compaction_model_max_tokens
+            .unwrap_or(COMPACTION_MAX_TOKENS);
+
+        Some((
+            id.clone(),
+            ModelInfo {
+                id: id.clone(),
+                max_tokens,
+                provider: provider.clone(),
+            },
+        ))
+    }
+
     fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
@@ -410,6 +436,10 @@ impl AgentSettings {
         }
 
         if let Some((name, info)) = self.narrator_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
+        if let Some((name, info)) = self.compaction_model_spec() {
             Self::upsert_model(&mut models, name, info);
         }
 
@@ -481,6 +511,23 @@ impl AgentSettings {
             return (info.id, info.provider);
         }
         (String::new(), String::new())
+    }
+
+    /// Returns the configured compaction summary model (id, provider, max_tokens, timeout_secs).
+    pub fn get_configured_compaction_model(&self) -> (String, String, u32, u64) {
+        if let (Some(id), Some(provider)) =
+            (&self.compaction_model_id, &self.compaction_model_provider)
+        {
+            return (
+                id.clone(),
+                provider.clone(),
+                self.compaction_model_max_tokens
+                    .unwrap_or(COMPACTION_MAX_TOKENS),
+                self.compaction_model_timeout_secs
+                    .unwrap_or(COMPACTION_TIMEOUT_SECS),
+            );
+        }
+        (String::new(), String::new(), 0, COMPACTION_TIMEOUT_SECS)
     }
 
     /// Returns model info by its display name
@@ -609,6 +656,10 @@ pub const AGENT_SEARCH_LIMIT: usize = 10;
 // Narrator system configuration
 /// Maximum tokens for narrator response (concise output)
 pub const NARRATOR_MAX_TOKENS: u32 = 256;
+/// Maximum tokens for compaction summary response.
+pub const COMPACTION_MAX_TOKENS: u32 = 512;
+/// Default timeout for compaction summary model requests.
+pub const COMPACTION_TIMEOUT_SECS: u64 = 20;
 
 // Skill system configuration
 /// Skills directory (contains modular prompt files)
