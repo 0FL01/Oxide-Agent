@@ -18,16 +18,16 @@ use super::providers::{
     inject_approval_credentials, DelegationProvider, FileHosterProvider,
     ManagerControlPlaneProvider, ManagerTopicLifecycle, ReminderContext, ReminderProvider,
     SandboxProvider, SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
-    TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
+    TodoList, TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
-use super::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
+use super::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use super::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
 use super::skills::SkillRegistry;
 use super::tool_bridge::{execute_single_tool_call, ToolExecutionContext, ToolExecutionResult};
 use crate::agent::progress::AgentEvent;
 use crate::config::{get_agent_max_iterations, get_agent_search_limit};
-use crate::llm::{LlmClient, ToolCall, ToolCallFunction};
+use crate::llm::{LlmClient, Message, ToolCall, ToolCallFunction, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
@@ -82,6 +82,22 @@ struct TopicInfraContext {
     topic_id: String,
     config: TopicInfraConfigRecord,
     approvals: SshApprovalRegistry,
+}
+
+struct PreparedExecution {
+    todos_arc: Arc<Mutex<TodoList>>,
+    registry: ToolRegistry,
+    tools: Vec<ToolDefinition>,
+    system_prompt: String,
+    messages: Vec<Message>,
+    runner_config: AgentRunnerConfig,
+}
+
+enum TimedRunResult {
+    Final(String),
+    WaitingForApproval,
+    Failed(anyhow::Error),
+    TimedOut,
 }
 
 struct PolicyControlledHook {
@@ -476,10 +492,61 @@ impl AgentExecutor {
                 .add_message(AgentMessage::user_task(task));
         }
 
+        let mut prepared = self.prepare_execution(task, progress_tx.as_ref()).await;
+
+        if self
+            .replay_initial_tool_call(
+                initial_tool_call,
+                clear_pending_request_id,
+                &mut prepared,
+                progress_tx.as_ref(),
+            )
+            .await?
+        {
+            self.session.complete();
+            return Ok(AgentExecutionOutcome::WaitingForApproval);
+        }
+
+        let timeout_duration = self.agent_timeout_duration();
+        let timeout_error_message = self.agent_timeout_error_message();
+
+        let mut ctx = Self::prepare_runner_context(
+            task,
+            &task_id,
+            &mut prepared,
+            progress_tx.as_ref(),
+            &mut self.session,
+            self.skill_registry.as_mut(),
+            &self.compaction_service,
+        );
+
+        match Self::run_with_outer_timeout(&mut self.runner, &mut ctx, timeout_duration).await {
+            TimedRunResult::Final(res) => {
+                self.session.complete();
+                Ok(AgentExecutionOutcome::Completed(res))
+            }
+            TimedRunResult::WaitingForApproval => {
+                self.session.complete();
+                Ok(AgentExecutionOutcome::WaitingForApproval)
+            }
+            TimedRunResult::Failed(error) => {
+                self.session.fail(error.to_string());
+                Err(error)
+            }
+            TimedRunResult::TimedOut => {
+                self.session.timeout();
+                Err(anyhow!(timeout_error_message))
+            }
+        }
+    }
+
+    async fn prepare_execution(
+        &mut self,
+        task: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> PreparedExecution {
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-
-        let registry = self.build_tool_registry(Arc::clone(&todos_arc), progress_tx.as_ref());
-
+        let registry = self.build_tool_registry(Arc::clone(&todos_arc), progress_tx);
         let tools = self
             .execution_profile
             .tool_policy()
@@ -496,78 +563,92 @@ impl AgentExecutor {
             self.execution_profile.prompt_instructions(),
         )
         .await;
-        let mut messages =
-            AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
 
-        if let Some(tool_call) = initial_tool_call {
-            let cancellation_token = self.session.cancellation_token.clone();
-            let tool_result = {
-                let mut tool_ctx = ToolExecutionContext {
-                    registry: &registry,
-                    progress_tx: progress_tx.as_ref(),
-                    todos_arc: &todos_arc,
-                    messages: &mut messages,
-                    agent: &mut self.session,
-                    cancellation_token,
-                };
-                execute_single_tool_call(tool_call, &mut tool_ctx).await?
-            };
-
-            if let Some(request_id) = clear_pending_request_id {
-                let _ = self.session.take_pending_ssh_replay(request_id);
-            }
-
-            if matches!(tool_result, ToolExecutionResult::WaitingForApproval { .. }) {
-                self.session.complete();
-                return Ok(AgentExecutionOutcome::WaitingForApproval);
-            }
+        PreparedExecution {
+            todos_arc,
+            registry,
+            tools,
+            system_prompt,
+            messages: AgentRunner::convert_memory_to_messages(self.session.memory.get_messages()),
+            runner_config: AgentRunnerConfig::new(
+                model_id,
+                get_agent_max_iterations(),
+                crate::config::AGENT_CONTINUATION_LIMIT,
+                self.settings.get_agent_timeout_secs(),
+                model_max_output_tokens,
+            ),
         }
+    }
 
-        let timeout_duration = self.agent_timeout_duration();
-        let timeout_error_message = self.agent_timeout_error_message();
-
-        let mut ctx = AgentRunnerContext {
-            task,
-            system_prompt: &system_prompt,
-            tools: &tools,
-            registry: &registry,
-            progress_tx: progress_tx.as_ref(),
-            todos_arc: &todos_arc,
-            task_id: &task_id,
-            messages: &mut messages,
-            agent: &mut self.session,
-            skill_registry: self.skill_registry.as_mut(),
-            compaction_service: Some(&self.compaction_service),
-            config: {
-                AgentRunnerConfig::new(
-                    model_id,
-                    get_agent_max_iterations(),
-                    crate::config::AGENT_CONTINUATION_LIMIT,
-                    self.settings.get_agent_timeout_secs(),
-                    model_max_output_tokens,
-                )
-            },
+    async fn replay_initial_tool_call(
+        &mut self,
+        initial_tool_call: Option<ToolCall>,
+        clear_pending_request_id: Option<&str>,
+        prepared: &mut PreparedExecution,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Result<bool> {
+        let Some(tool_call) = initial_tool_call else {
+            return Ok(false);
         };
 
-        match timeout(timeout_duration, self.runner.run(&mut ctx)).await {
-            Ok(inner) => match inner {
-                Ok(super::runner::AgentRunResult::Final(res)) => {
-                    self.session.complete();
-                    Ok(AgentExecutionOutcome::Completed(res))
-                }
-                Ok(super::runner::AgentRunResult::WaitingForApproval) => {
-                    self.session.complete();
-                    Ok(AgentExecutionOutcome::WaitingForApproval)
-                }
-                Err(e) => {
-                    self.session.fail(e.to_string());
-                    Err(e)
-                }
-            },
-            Err(_) => {
-                self.session.timeout();
-                Err(anyhow!(timeout_error_message))
-            }
+        let cancellation_token = self.session.cancellation_token.clone();
+        let tool_result = {
+            let mut tool_ctx = ToolExecutionContext {
+                registry: &prepared.registry,
+                progress_tx,
+                todos_arc: &prepared.todos_arc,
+                messages: &mut prepared.messages,
+                agent: &mut self.session,
+                cancellation_token,
+            };
+            execute_single_tool_call(tool_call, &mut tool_ctx).await?
+        };
+
+        if let Some(request_id) = clear_pending_request_id {
+            let _ = self.session.take_pending_ssh_replay(request_id);
+        }
+
+        Ok(matches!(
+            tool_result,
+            ToolExecutionResult::WaitingForApproval { .. }
+        ))
+    }
+
+    fn prepare_runner_context<'a>(
+        task: &'a str,
+        task_id: &'a str,
+        prepared: &'a mut PreparedExecution,
+        progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
+        session: &'a mut AgentSession,
+        skill_registry: Option<&'a mut SkillRegistry>,
+        compaction_service: &'a CompactionService,
+    ) -> AgentRunnerContext<'a> {
+        AgentRunnerContext {
+            task,
+            system_prompt: &prepared.system_prompt,
+            tools: &prepared.tools,
+            registry: &prepared.registry,
+            progress_tx,
+            todos_arc: &prepared.todos_arc,
+            task_id,
+            messages: &mut prepared.messages,
+            agent: session,
+            skill_registry,
+            compaction_service: Some(compaction_service),
+            config: prepared.runner_config.clone(),
+        }
+    }
+
+    async fn run_with_outer_timeout(
+        runner: &mut AgentRunner,
+        ctx: &mut AgentRunnerContext<'_>,
+        timeout_duration: Duration,
+    ) -> TimedRunResult {
+        match timeout(timeout_duration, runner.run(ctx)).await {
+            Ok(Ok(AgentRunResult::Final(res))) => TimedRunResult::Final(res),
+            Ok(Ok(AgentRunResult::WaitingForApproval)) => TimedRunResult::WaitingForApproval,
+            Ok(Err(error)) => TimedRunResult::Failed(error),
+            Err(_) => TimedRunResult::TimedOut,
         }
     }
 
