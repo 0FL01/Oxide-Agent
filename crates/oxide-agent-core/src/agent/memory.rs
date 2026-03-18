@@ -440,9 +440,10 @@ pub struct AgentMemory {
     messages: Vec<AgentMessage>,
     /// Task list for the agent
     pub todos: TodoList,
+    /// Estimated tokens currently represented by hot memory messages.
     token_count: usize,
     max_tokens: usize,
-    /// Last synchronized token count from API
+    /// Last request-scoped token usage reported by the LLM API.
     #[serde(default)]
     last_api_token_count: Option<usize>,
 }
@@ -485,7 +486,7 @@ impl AgentMemory {
         &self.messages
     }
 
-    /// Get current token count
+    /// Get the estimated hot-memory token count.
     #[must_use]
     pub const fn token_count(&self) -> usize {
         self.token_count
@@ -497,16 +498,16 @@ impl AgentMemory {
         self.max_tokens
     }
 
-    /// Get the last synchronized API token count
+    /// Get the last request-scoped token count reported by the API.
     #[must_use]
     pub const fn api_token_count(&self) -> Option<usize> {
         self.last_api_token_count
     }
 
-    /// Synchronize token count with actual API usage data
+    /// Record request-scoped token usage from the API for diagnostics.
     ///
-    /// This replaces the local heuristic estimate with the authoritative
-    /// count from the API response.
+    /// This does NOT overwrite the hot-memory estimate because provider usage
+    /// counts represent a single rendered request, not the current memory size.
     pub fn sync_token_count(&mut self, real_total_tokens: usize) {
         let diff = real_total_tokens as i64 - self.token_count as i64;
 
@@ -524,7 +525,6 @@ impl AgentMemory {
                 "Token sync: significant drift detected"
             );
         }
-        self.token_count = real_total_tokens;
         self.last_api_token_count = Some(real_total_tokens);
     }
 
@@ -560,7 +560,7 @@ impl AgentMemory {
         })
     }
 
-    /// Get percentage of memory used
+    /// Get percentage of memory used based on the hot-memory estimate.
     #[must_use]
     pub fn usage_percent(&self) -> u8 {
         if self.max_tokens == 0 {
@@ -631,22 +631,38 @@ mod tests {
     fn test_sync_token_count() {
         let mut memory = AgentMemory::new(100_000);
         memory.add_message(AgentMessage::user("Hello"));
+        let estimated_before_sync = memory.token_count();
 
         // Initial state
         assert_eq!(memory.api_token_count(), None);
 
-        // Sync
+        // Sync request-scoped API usage without overwriting the hot-memory estimate.
         memory.sync_token_count(1234);
         assert_eq!(memory.api_token_count(), Some(1234));
-        assert_eq!(memory.token_count(), 1234);
+        assert_eq!(memory.token_count(), estimated_before_sync);
 
-        // Add more messages (local count increases, api count stays same)
+        // Add more messages (memory estimate increases, last API request stays same)
         memory.add_message(AgentMessage::user("More text"));
-        assert!(memory.token_count() > 1234);
+        assert!(memory.token_count() > estimated_before_sync);
         assert_eq!(memory.api_token_count(), Some(1234));
 
         // Clear
         memory.clear();
+        assert_eq!(memory.api_token_count(), None);
+    }
+
+    #[test]
+    fn test_replace_messages_recalculates_memory_tokens_and_clears_last_api_usage() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user("Hello"));
+        memory.sync_token_count(2048);
+
+        memory.replace_messages(vec![
+            AgentMessage::user_task("Ship stage 3"),
+            AgentMessage::assistant("Recent response"),
+        ]);
+
+        assert!(memory.token_count() > 0);
         assert_eq!(memory.api_token_count(), None);
     }
 
