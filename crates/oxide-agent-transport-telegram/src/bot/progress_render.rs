@@ -22,7 +22,7 @@ pub fn render_progress_html(state: &ProgressState) -> String {
 
     if let Some(warning) = &state.repeated_compaction_warning {
         lines.push(format!(
-            "⚠️ {}",
+            "🗜 {}",
             html_escape::encode_text(&oxide_agent_core::utils::truncate_str(warning, 180))
         ));
     }
@@ -350,6 +350,6 @@ mod tests {
 
         assert!(output.contains("<b>Context:</b>"));
         assert!(output.contains("Compaction: refreshed summary and rebuilt active context"));
-        assert!(output.contains("History was compacted 2 times"));
+        assert!(output.contains("🗜 History compaction: 2x"));
     }
 }
