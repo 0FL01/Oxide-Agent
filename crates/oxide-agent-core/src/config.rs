@@ -646,8 +646,6 @@ pub const AGENT_TOOL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 pub const AGENT_MAX_TOKENS: usize = 200_000;
 /// Sub-agent memory token limit (lighter context)
 pub const SUB_AGENT_MAX_TOKENS: usize = 64_000;
-/// Threshold to trigger memory compaction
-pub const AGENT_COMPACT_THRESHOLD: usize = 180_000; // 90% of max, triggers auto-compact
 /// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when todos incomplete
 /// Default limit for search tool calls per agent session

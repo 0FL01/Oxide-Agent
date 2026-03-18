@@ -7,11 +7,9 @@ use crate::agent::compaction::{
     AgentMessageKind, ArchiveRef, CompactionRetention, CompactionSummary,
 };
 use crate::agent::providers::TodoList;
-use crate::config::AGENT_COMPACT_THRESHOLD;
 use crate::llm::ToolCall;
 use serde::{Deserialize, Serialize};
 use tiktoken_rs::cl100k_base;
-use tracing::info;
 
 const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
 
@@ -444,7 +442,6 @@ pub struct AgentMemory {
     pub todos: TodoList,
     token_count: usize,
     max_tokens: usize,
-    compact_threshold: usize,
     /// Last synchronized token count from API
     #[serde(default)]
     last_api_token_count: Option<usize>,
@@ -459,7 +456,6 @@ impl AgentMemory {
             todos: TodoList::new(),
             token_count: 0,
             max_tokens,
-            compact_threshold: AGENT_COMPACT_THRESHOLD,
             last_api_token_count: None,
         }
     }
@@ -499,12 +495,6 @@ impl AgentMemory {
     #[must_use]
     pub const fn max_tokens(&self) -> usize {
         self.max_tokens
-    }
-
-    /// Get the legacy compaction threshold retained during the migration.
-    #[must_use]
-    pub const fn compact_threshold(&self) -> usize {
-        self.compact_threshold
     }
 
     /// Get the last synchronized API token count
@@ -568,150 +558,6 @@ impl AgentMemory {
         cl100k_base().map_or(text.len() / 4, |bpe| {
             bpe.encode_with_special_tokens(text).len()
         })
-    }
-
-    /// Apply the legacy local compaction strategy explicitly.
-    ///
-    /// This method remains available as a temporary migration fallback while the
-    /// new orchestration-based compaction pipeline is introduced.
-    #[allow(dead_code)]
-    pub(crate) fn apply_legacy_local_compaction(&mut self) {
-        if self.messages.len() < 5 {
-            return; // Not enough messages to compact
-        }
-
-        let mut pinned_messages = Vec::new();
-        let mut regular_messages = Vec::new();
-        for message in self.messages.drain(..) {
-            if matches!(
-                message.retention(),
-                CompactionRetention::Pinned | CompactionRetention::ProtectedLive
-            ) {
-                pinned_messages.push(message);
-            } else {
-                regular_messages.push(message);
-            }
-        }
-
-        if regular_messages.len() < 5 {
-            self.messages = pinned_messages;
-            self.messages.extend(regular_messages);
-            return;
-        }
-
-        info!(
-            "Compacting agent memory: {} tokens, {} messages",
-            self.token_count,
-            pinned_messages.len() + regular_messages.len()
-        );
-
-        // Calculate split point (keep last 20%)
-        let keep_count = (regular_messages.len() * 2).div_ceil(10);
-        let split_at = regular_messages.len().saturating_sub(keep_count);
-
-        if split_at == 0 {
-            self.messages = pinned_messages;
-            self.messages.extend(regular_messages);
-            return;
-        }
-
-        // Extract messages to summarize
-        let to_summarize: Vec<_> = regular_messages.drain(..split_at).collect();
-
-        // Create a summary of the old messages (simple version)
-        let summary = Self::create_simple_summary(&to_summarize);
-        let summary_msg =
-            AgentMessage::summary(format!("[Previous context compressed]\n{summary}"));
-
-        self.messages = pinned_messages;
-        self.messages.push(summary_msg);
-        self.messages.extend(regular_messages);
-
-        // Recalculate token count
-        self.token_count = self
-            .messages
-            .iter()
-            .map(|m| {
-                let mut tokens = Self::count_tokens(&m.content);
-                // Also count reasoning tokens (GLM-4.7 thinking process)
-                if let Some(ref reasoning) = m.reasoning {
-                    tokens += Self::count_tokens(reasoning);
-                }
-                tokens
-            })
-            .sum();
-
-        info!(
-            "Memory compacted: {} tokens, {} messages remaining",
-            self.token_count,
-            self.messages.len()
-        );
-
-        // Reset API token count since we compacted and lost the 1:1 mapping
-        self.last_api_token_count = None;
-    }
-
-    /// Create a simple summary of messages (no LLM, just extraction of key points)
-    #[allow(dead_code)]
-    fn create_simple_summary(messages: &[AgentMessage]) -> String {
-        let mut summary_parts = Vec::new();
-
-        // Extract user requests and assistant conclusions
-        for msg in messages {
-            match msg.role {
-                MessageRole::User => {
-                    let truncated = if msg.content.len() > 200 {
-                        format!("{}...", &msg.content.chars().take(200).collect::<String>())
-                    } else {
-                        msg.content.clone()
-                    };
-                    summary_parts.push(format!("• Request: {truncated}"));
-                }
-                MessageRole::Assistant => {
-                    // Extract first sentence or first 150 chars
-                    let first_part = msg
-                        .content
-                        .split('.')
-                        .next()
-                        .unwrap_or(&msg.content)
-                        .chars()
-                        .take(150)
-                        .collect::<String>();
-                    if !first_part.is_empty() {
-                        summary_parts.push(format!("• Answer: {first_part}..."));
-                    }
-                }
-                MessageRole::System => {
-                    // Skip system messages in summary
-                }
-                MessageRole::Tool => {
-                    // Include tool results in summary
-                    if let Some(ref name) = msg.tool_name {
-                        let truncated = if msg.content.len() > 150 {
-                            format!("{}...", &msg.content.chars().take(150).collect::<String>())
-                        } else {
-                            msg.content.clone()
-                        };
-                        summary_parts.push(format!("• Tool {name}: {truncated}"));
-                    }
-                }
-            }
-        }
-
-        // Limit summary to last 10 items
-        summary_parts
-            .into_iter()
-            .rev()
-            .take(10)
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Check if memory needs compaction soon
-    #[must_use]
-    pub const fn needs_compaction(&self) -> bool {
-        self.token_count > self.compact_threshold
     }
 
     /// Get percentage of memory used
@@ -920,66 +766,5 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content.starts_with("[Previous context compressed]")));
-    }
-
-    #[test]
-    fn test_explicit_legacy_compaction_preserves_topic_agents_md_message() {
-        let mut memory = AgentMemory::new(300);
-        memory.add_message(AgentMessage::topic_agents_md(
-            "# Topic AGENTS\nAlways respect deployment windows.",
-        ));
-
-        for idx in 0..12 {
-            memory.add_message(AgentMessage::user(format!(
-                "Message {idx}: {}",
-                "x".repeat(80)
-            )));
-        }
-
-        memory.apply_legacy_local_compaction();
-
-        assert!(memory.has_topic_agents_md());
-        assert!(memory
-            .get_messages()
-            .iter()
-            .any(|message| message.content.starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX)));
-        assert!(memory
-            .get_messages()
-            .iter()
-            .any(|message| message.content.starts_with("[Previous context compressed]")));
-    }
-
-    #[test]
-    fn test_explicit_legacy_compaction_preserves_protected_live_entries() {
-        let mut memory = AgentMemory::new(320);
-        memory.add_message(AgentMessage::user_task("Ship Stage 2 compaction typing"));
-        memory.add_message(AgentMessage::runtime_context(
-            "The user clarified that tool schemas must stay untouched.",
-        ));
-        memory.add_message(AgentMessage::skill_context(
-            "[Loaded skill: release]\nPrefer safe rollouts.",
-        ));
-
-        for idx in 0..12 {
-            memory.add_message(AgentMessage::assistant(format!(
-                "Response {idx}: {}",
-                "y".repeat(70)
-            )));
-        }
-
-        memory.apply_legacy_local_compaction();
-
-        assert!(memory
-            .get_messages()
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::UserTask));
-        assert!(memory
-            .get_messages()
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::RuntimeContext));
-        assert!(memory
-            .get_messages()
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::SkillContext));
     }
 }

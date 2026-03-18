@@ -1,7 +1,6 @@
 //! Shared types for Agent Mode context compaction.
 
 use super::archive::ArchiveRef;
-use crate::config::AGENT_COMPACT_THRESHOLD;
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -92,14 +91,14 @@ pub enum CompactionTrigger {
 /// Static policy knobs for the compaction subsystem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactionPolicy {
-    /// Legacy token threshold kept for the Stage 1 transition period.
-    pub legacy_compact_threshold: usize,
     /// Percent of the window where warning-level telemetry should start.
     pub warning_threshold_percent: u8,
     /// Percent of the window where pruning becomes desirable.
     pub prune_threshold_percent: u8,
     /// Percent of the window where compaction becomes desirable.
     pub compact_threshold_percent: u8,
+    /// Percent of the window treated as an over-limit safety cap.
+    pub over_limit_threshold_percent: u8,
     /// Reserved buffer kept free beyond the response budget.
     pub hard_reserve_tokens: usize,
     /// Minimum approximate token size before a tool payload is externalized.
@@ -119,10 +118,10 @@ pub struct CompactionPolicy {
 impl Default for CompactionPolicy {
     fn default() -> Self {
         Self {
-            legacy_compact_threshold: AGENT_COMPACT_THRESHOLD,
-            warning_threshold_percent: 70,
-            prune_threshold_percent: 80,
-            compact_threshold_percent: 90,
+            warning_threshold_percent: 65,
+            prune_threshold_percent: 75,
+            compact_threshold_percent: 85,
+            over_limit_threshold_percent: 95,
             hard_reserve_tokens: 8_192,
             externalize_threshold_tokens: 512,
             externalize_threshold_chars: 2_048,
@@ -260,6 +259,8 @@ pub struct BudgetEstimate {
     pub prune_threshold_tokens: usize,
     /// Compact threshold derived from policy and window size.
     pub compact_threshold_tokens: usize,
+    /// Over-limit threshold derived from policy and window size.
+    pub over_limit_threshold_tokens: usize,
     /// High-level budget state.
     pub state: BudgetState,
 }
@@ -521,6 +522,7 @@ mod tests {
         let policy = CompactionPolicy::default();
         assert!(policy.warning_threshold_percent < policy.prune_threshold_percent);
         assert!(policy.prune_threshold_percent < policy.compact_threshold_percent);
+        assert!(policy.compact_threshold_percent < policy.over_limit_threshold_percent);
         assert!(policy.hard_reserve_tokens > 0);
     }
 }
