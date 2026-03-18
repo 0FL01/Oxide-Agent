@@ -119,6 +119,10 @@ fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
             "   {}",
             html_escape::encode_text(&format_snapshot_summary(snapshot))
         ));
+        lines.push(format!(
+            "   {}",
+            html_escape::encode_text(&format_budget_status(snapshot))
+        ));
         if let Some(api_usage) = &snapshot.last_api_usage {
             lines.push(format!(
                 "   {}",
@@ -171,7 +175,7 @@ fn current_step(state: &ProgressState) -> Option<&Step> {
 
 fn format_header_tokens(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "projected {}/{}",
+        "ctx {}/{}",
         oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.context_window_tokens)
     )
@@ -179,18 +183,21 @@ fn format_header_tokens(snapshot: &oxide_agent_core::agent::progress::TokenSnaps
 
 fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "Usage: hot {}, projected {} / {}, headroom {}, status {}.",
+        "hot {} | input {} | reserve {} | headroom {}",
         oxide_agent_core::utils::format_tokens(snapshot.hot_memory_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.context_window_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.total_input_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.reserved_output_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.headroom_tokens),
-        budget_state_label(snapshot.budget_state)
     )
+}
+
+fn format_budget_status(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
+    format!("Status: {}", budget_state_label(snapshot.budget_state))
 }
 
 fn format_api_usage(api_usage: &oxide_agent_core::llm::TokenUsage) -> String {
     format!(
-        "Last API usage: prompt {}, completion {}, total {}.",
+        "Last API usage: prompt {} | completion {} | total {}",
         oxide_agent_core::utils::format_tokens(api_usage.prompt_tokens as usize),
         oxide_agent_core::utils::format_tokens(api_usage.completion_tokens as usize),
         oxide_agent_core::utils::format_tokens(api_usage.total_tokens as usize)
@@ -201,9 +208,9 @@ fn budget_state_label(state: oxide_agent_core::agent::compaction::BudgetState) -
     match state {
         oxide_agent_core::agent::compaction::BudgetState::Healthy => "healthy",
         oxide_agent_core::agent::compaction::BudgetState::Warning => "warning",
-        oxide_agent_core::agent::compaction::BudgetState::ShouldPrune => "prune",
-        oxide_agent_core::agent::compaction::BudgetState::ShouldCompact => "compact",
-        oxide_agent_core::agent::compaction::BudgetState::OverLimit => "over-limit",
+        oxide_agent_core::agent::compaction::BudgetState::ShouldPrune => "prune soon",
+        oxide_agent_core::agent::compaction::BudgetState::ShouldCompact => "compact soon",
+        oxide_agent_core::agent::compaction::BudgetState::OverLimit => "over limit",
     }
 }
 
@@ -257,10 +264,10 @@ mod tests {
         let output = render_progress_html(&state);
 
         assert!(output.contains("Iteration 1/5"));
-        assert!(output.contains("projected 16k/200k"));
-        assert!(output
-            .contains("Usage: hot 5.7k, projected 16k / 200k, headroom 184k, status healthy."));
-        assert!(output.contains("Last API usage: prompt 15k, completion 800, total 16k."));
+        assert!(output.contains("ctx 16k/200k"));
+        assert!(output.contains("hot 5.7k | input 8k | reserve 8k | headroom 184k"));
+        assert!(output.contains("Status: healthy"));
+        assert!(output.contains("Last API usage: prompt 15k | completion 800 | total 16k"));
     }
 
     #[test]

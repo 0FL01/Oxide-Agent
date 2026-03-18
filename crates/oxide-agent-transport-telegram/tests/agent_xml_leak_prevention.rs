@@ -236,7 +236,7 @@ mod progress_integration_tests {
         // Check header format
         assert!(output.contains("🤖 <b>Oxide Agent</b>"));
         assert!(output.contains("Iteration 1/200"));
-        assert!(output.contains("projected 16k/200k"));
+        assert!(output.contains("ctx 16k/200k"));
     }
 }
 // BUGFIX AGENT-2026-001: Integration tests for malformed tool call bug fix
