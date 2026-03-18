@@ -3,6 +3,7 @@
 //! Provides conversation memory for the agent and lightweight token
 //! accounting utilities. Compaction orchestration lives outside this module.
 
+use crate::agent::compaction::{AgentMessageKind, CompactionRetention};
 use crate::agent::providers::TodoList;
 use crate::config::AGENT_COMPACT_THRESHOLD;
 use crate::llm::ToolCall;
@@ -15,6 +16,9 @@ const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
 /// A message in the agent's conversation memory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMessage {
+    /// Semantic kind used by compaction policies.
+    #[serde(default)]
+    pub kind: AgentMessageKind,
     /// Role of the message sender
     pub role: MessageRole,
     /// Text content of the message
@@ -46,7 +50,13 @@ pub enum MessageRole {
 impl AgentMessage {
     /// Create a new system message
     pub fn system(content: impl Into<String>) -> Self {
+        Self::system_context(content)
+    }
+
+    /// Create a generic system-context message.
+    pub fn system_context(content: impl Into<String>) -> Self {
         Self {
+            kind: AgentMessageKind::SystemContext,
             role: MessageRole::System,
             content: content.into(),
             reasoning: None,
@@ -58,15 +68,52 @@ impl AgentMessage {
 
     /// Create a pinned system message carrying topic-scoped `AGENTS.md` content.
     pub fn topic_agents_md(content: impl AsRef<str>) -> Self {
-        Self::system(format!(
-            "{TOPIC_AGENTS_MD_SYSTEM_PREFIX}{}",
-            content.as_ref().trim()
-        ))
+        Self {
+            kind: AgentMessageKind::TopicAgentsMd,
+            role: MessageRole::System,
+            content: format!("{TOPIC_AGENTS_MD_SYSTEM_PREFIX}{}", content.as_ref().trim()),
+            reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }
     }
 
     /// Create a new user message
     pub fn user(content: impl Into<String>) -> Self {
+        Self::user_turn(content)
+    }
+
+    /// Create the primary task message for an agent run.
+    pub fn user_task(content: impl Into<String>) -> Self {
         Self {
+            kind: AgentMessageKind::UserTask,
+            role: MessageRole::User,
+            content: content.into(),
+            reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Create a user runtime-context injection message.
+    pub fn runtime_context(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::RuntimeContext,
+            role: MessageRole::User,
+            content: content.into(),
+            reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Create a generic user turn.
+    pub fn user_turn(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::UserTurn,
             role: MessageRole::User,
             content: content.into(),
             reasoning: None,
@@ -79,6 +126,7 @@ impl AgentMessage {
     /// Create a new assistant message
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
+            kind: AgentMessageKind::AssistantResponse,
             role: MessageRole::Assistant,
             content: content.into(),
             reasoning: None,
@@ -94,6 +142,7 @@ impl AgentMessage {
         reasoning: impl Into<String>,
     ) -> Self {
         Self {
+            kind: AgentMessageKind::AssistantReasoning,
             role: MessageRole::Assistant,
             content: content.into(),
             reasoning: Some(reasoning.into()),
@@ -106,6 +155,7 @@ impl AgentMessage {
     /// Create a new tool response message
     pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
         Self {
+            kind: AgentMessageKind::ToolResult,
             role: MessageRole::Tool,
             content: content.into(),
             reasoning: None,
@@ -118,6 +168,7 @@ impl AgentMessage {
     /// Create a new assistant message with tool calls
     pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
+            kind: AgentMessageKind::AssistantToolCall,
             role: MessageRole::Assistant,
             content: content.into(),
             reasoning: None,
@@ -125,6 +176,77 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: Some(tool_calls),
         }
+    }
+
+    /// Create a message carrying dynamically loaded skill instructions.
+    pub fn skill_context(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::SkillContext,
+            ..Self::system_context(content)
+        }
+    }
+
+    /// Create a system message instructing the agent to replay an approved action.
+    pub fn approval_replay(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::ApprovalReplay,
+            ..Self::system_context(content)
+        }
+    }
+
+    /// Create a protected infra status message.
+    pub fn infra_status(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::InfraStatus,
+            ..Self::system_context(content)
+        }
+    }
+
+    /// Create a summary message generated by the compaction pipeline.
+    pub fn summary(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::Summary,
+            ..Self::system_context(content)
+        }
+    }
+
+    /// Create a lightweight reference to archived context.
+    pub fn archive_reference(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::ArchiveReference,
+            ..Self::system_context(content)
+        }
+    }
+
+    /// Resolve the semantic kind for this message, including legacy fallbacks.
+    #[must_use]
+    pub fn resolved_kind(&self) -> AgentMessageKind {
+        if self.kind != AgentMessageKind::Legacy {
+            return self.kind;
+        }
+
+        if self.is_topic_agents_md() {
+            return AgentMessageKind::TopicAgentsMd;
+        }
+
+        match self.role {
+            MessageRole::System => AgentMessageKind::SystemContext,
+            MessageRole::User => AgentMessageKind::UserTurn,
+            MessageRole::Assistant if self.tool_calls.is_some() => {
+                AgentMessageKind::AssistantToolCall
+            }
+            MessageRole::Assistant if self.reasoning.is_some() => {
+                AgentMessageKind::AssistantReasoning
+            }
+            MessageRole::Assistant => AgentMessageKind::AssistantResponse,
+            MessageRole::Tool => AgentMessageKind::ToolResult,
+        }
+    }
+
+    /// Retention class used by compaction policies.
+    #[must_use]
+    pub fn retention(&self) -> CompactionRetention {
+        self.resolved_kind().retention()
     }
 }
 
@@ -258,7 +380,10 @@ impl AgentMemory {
         let mut pinned_messages = Vec::new();
         let mut regular_messages = Vec::new();
         for message in self.messages.drain(..) {
-            if message.is_topic_agents_md() {
+            if matches!(
+                message.retention(),
+                CompactionRetention::Pinned | CompactionRetention::ProtectedLive
+            ) {
                 pinned_messages.push(message);
             } else {
                 regular_messages.push(message);
@@ -292,7 +417,8 @@ impl AgentMemory {
 
         // Create a summary of the old messages (simple version)
         let summary = Self::create_simple_summary(&to_summarize);
-        let summary_msg = AgentMessage::system(format!("[Previous context compressed]\n{summary}"));
+        let summary_msg =
+            AgentMessage::summary(format!("[Previous context compressed]\n{summary}"));
 
         self.messages = pinned_messages;
         self.messages.push(summary_msg);
@@ -461,6 +587,65 @@ mod tests {
     }
 
     #[test]
+    fn test_message_kinds_capture_compaction_intent() {
+        let topic_agents_md = AgentMessage::topic_agents_md("# Topic AGENTS");
+        let task = AgentMessage::user_task("Investigate failure");
+        let runtime = AgentMessage::runtime_context("User added a new constraint");
+        let skill = AgentMessage::skill_context("[Loaded skill: deploy]\nUse checklist");
+        let tool = AgentMessage::tool("call-1", "execute_command", "cargo check");
+        let summary = AgentMessage::summary("[Previous context compressed]\n...");
+
+        assert_eq!(
+            topic_agents_md.resolved_kind(),
+            AgentMessageKind::TopicAgentsMd
+        );
+        assert_eq!(topic_agents_md.retention(), CompactionRetention::Pinned);
+
+        assert_eq!(task.resolved_kind(), AgentMessageKind::UserTask);
+        assert_eq!(task.retention(), CompactionRetention::ProtectedLive);
+
+        assert_eq!(runtime.resolved_kind(), AgentMessageKind::RuntimeContext);
+        assert_eq!(runtime.retention(), CompactionRetention::ProtectedLive);
+
+        assert_eq!(skill.resolved_kind(), AgentMessageKind::SkillContext);
+        assert_eq!(skill.retention(), CompactionRetention::ProtectedLive);
+
+        assert_eq!(tool.resolved_kind(), AgentMessageKind::ToolResult);
+        assert_eq!(tool.retention(), CompactionRetention::PrunableArtifact);
+
+        assert_eq!(summary.resolved_kind(), AgentMessageKind::Summary);
+        assert_eq!(summary.retention(), CompactionRetention::Pinned);
+    }
+
+    #[test]
+    fn test_legacy_messages_resolve_to_role_based_kinds() {
+        let legacy_assistant = AgentMessage {
+            kind: AgentMessageKind::Legacy,
+            role: MessageRole::Assistant,
+            content: "Done".to_string(),
+            reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        };
+        let legacy_tool = AgentMessage {
+            kind: AgentMessageKind::Legacy,
+            role: MessageRole::Tool,
+            content: "stdout".to_string(),
+            reasoning: None,
+            tool_call_id: Some("call-1".to_string()),
+            tool_name: Some("execute_command".to_string()),
+            tool_calls: None,
+        };
+
+        assert_eq!(
+            legacy_assistant.resolved_kind(),
+            AgentMessageKind::AssistantResponse
+        );
+        assert_eq!(legacy_tool.resolved_kind(), AgentMessageKind::ToolResult);
+    }
+
+    #[test]
     fn test_memory_does_not_auto_compact() {
         let mut memory = AgentMemory::new(300);
         memory.add_message(AgentMessage::topic_agents_md(
@@ -507,5 +692,39 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content.starts_with("[Previous context compressed]")));
+    }
+
+    #[test]
+    fn test_explicit_legacy_compaction_preserves_protected_live_entries() {
+        let mut memory = AgentMemory::new(320);
+        memory.add_message(AgentMessage::user_task("Ship Stage 2 compaction typing"));
+        memory.add_message(AgentMessage::runtime_context(
+            "The user clarified that tool schemas must stay untouched.",
+        ));
+        memory.add_message(AgentMessage::skill_context(
+            "[Loaded skill: release]\nPrefer safe rollouts.",
+        ));
+
+        for idx in 0..12 {
+            memory.add_message(AgentMessage::assistant(format!(
+                "Response {idx}: {}",
+                "y".repeat(70)
+            )));
+        }
+
+        memory.apply_legacy_local_compaction();
+
+        assert!(memory
+            .get_messages()
+            .iter()
+            .any(|message| message.resolved_kind() == AgentMessageKind::UserTask));
+        assert!(memory
+            .get_messages()
+            .iter()
+            .any(|message| message.resolved_kind() == AgentMessageKind::RuntimeContext));
+        assert!(memory
+            .get_messages()
+            .iter()
+            .any(|message| message.resolved_kind() == AgentMessageKind::SkillContext));
     }
 }

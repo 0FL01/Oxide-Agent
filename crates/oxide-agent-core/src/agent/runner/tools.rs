@@ -170,7 +170,7 @@ impl AgentRunner {
 
         ctx.agent
             .memory_mut()
-            .add_message(AgentMessage::system(context_message.clone()));
+            .add_message(AgentMessage::skill_context(context_message.clone()));
         ctx.messages.push(Message::system(&context_message));
 
         if ctx

@@ -299,7 +299,7 @@ If the sub-agent doesn't finish, a partial report will be returned."
         };
         sub_session
             .memory_mut()
-            .add_message(AgentMessage::user(task.as_str()));
+            .add_message(AgentMessage::user_task(task.as_str()));
 
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
         let providers = self.build_sub_agent_providers(Arc::clone(&todos_arc), progress_tx);

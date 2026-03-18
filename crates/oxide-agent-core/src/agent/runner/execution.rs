@@ -221,7 +221,7 @@ impl AgentRunner {
                 .push(crate::llm::Message::user(&injection.content));
             ctx.agent
                 .memory_mut()
-                .add_message(AgentMessage::user(injection.content));
+                .add_message(AgentMessage::runtime_context(injection.content));
         }
     }
 
