@@ -4,6 +4,7 @@ use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
 use super::AgentRunner;
+use crate::agent::compaction::CompactionTrigger;
 use crate::agent::progress::AgentEvent;
 use crate::agent::tool_bridge::sync_todos_from_arc;
 use tracing::warn;
@@ -133,6 +134,8 @@ impl AgentRunner {
                 .add_message(crate::agent::memory::AgentMessage::system_context(
                     retry_message,
                 ));
+            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+            Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
             return Ok(None);
         }
 
@@ -150,10 +153,14 @@ impl AgentRunner {
             ctx.messages
                 .push(crate::llm::Message::assistant(&input.raw_json));
             self.save_final_response(ctx, &input.raw_json, input.reasoning);
+            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+            Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
             return Ok(None);
         }
 
         self.save_final_response(ctx, &input.raw_json, input.reasoning);
+        let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+        Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
         if let Some(tx) = ctx.progress_tx {
             if !ctx.config.is_sub_agent {

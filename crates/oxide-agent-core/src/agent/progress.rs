@@ -1,8 +1,36 @@
 use super::loop_detection::LoopType;
 use super::providers::TodoList;
 use super::thoughts;
-use crate::agent::compaction::CompactionTrigger;
+use crate::agent::compaction::{BudgetState, CompactionTrigger};
+use crate::llm::TokenUsage;
 use serde::{Deserialize, Serialize};
+
+/// Snapshot of the agent's current request-side token budget.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenSnapshot {
+    /// Estimated tokens represented by the current hot memory only.
+    pub hot_memory_tokens: usize,
+    /// Estimated tokens represented by the rendered system prompt.
+    pub system_prompt_tokens: usize,
+    /// Estimated tokens represented by serialized tool schemas.
+    pub tool_schema_tokens: usize,
+    /// Estimated tokens represented by loaded skill context outside hot memory.
+    pub loaded_skill_tokens: usize,
+    /// Total estimated input tokens for the next request.
+    pub total_input_tokens: usize,
+    /// Reserved output tokens for the active model.
+    pub reserved_output_tokens: usize,
+    /// Estimated full request size including reserves.
+    pub projected_total_tokens: usize,
+    /// Effective model context window configured for the session.
+    pub context_window_tokens: usize,
+    /// Remaining headroom in the configured context window.
+    pub headroom_tokens: usize,
+    /// High-level request budget state.
+    pub budget_state: BudgetState,
+    /// Last request-scoped token usage reported by the API.
+    pub last_api_usage: Option<TokenUsage>,
+}
 
 /// Events that can occur during agent execution
 #[derive(Debug, Serialize, Deserialize)]
@@ -10,8 +38,13 @@ use serde::{Deserialize, Serialize};
 pub enum AgentEvent {
     /// Agent is thinking about the next step
     Thinking {
-        /// Current token count in memory
-        tokens: usize,
+        /// Current request-side token snapshot
+        snapshot: TokenSnapshot,
+    },
+    /// Token snapshot was refreshed without starting a new iteration.
+    TokenSnapshotUpdated {
+        /// Current request-side token snapshot.
+        snapshot: TokenSnapshot,
     },
     /// Agent is calling a tool
     ToolCall {
@@ -181,6 +214,8 @@ pub struct ProgressState {
     pub last_compaction_status: Option<String>,
     /// Warning shown when the same run keeps compacting repeatedly.
     pub repeated_compaction_warning: Option<String>,
+    /// Latest request-side token budget snapshot.
+    pub latest_token_snapshot: Option<TokenSnapshot>,
 }
 
 /// A single step in the agent's execution process
@@ -232,7 +267,10 @@ impl ProgressState {
     /// Updates the progress state based on an agent event
     pub fn update(&mut self, event: AgentEvent) {
         match event {
-            AgentEvent::Thinking { tokens } => self.handle_thinking(tokens),
+            AgentEvent::Thinking { snapshot } => self.handle_thinking(snapshot),
+            AgentEvent::TokenSnapshotUpdated { snapshot } => {
+                self.handle_token_snapshot_updated(snapshot)
+            }
             AgentEvent::ToolCall {
                 name,
                 input,
@@ -309,18 +347,26 @@ impl ProgressState {
         }
     }
 
-    fn handle_thinking(&mut self, tokens: usize) {
+    fn handle_thinking(&mut self, snapshot: TokenSnapshot) {
         self.current_iteration += 1;
         self.complete_last_step();
+        self.latest_token_snapshot = Some(snapshot.clone());
         self.steps.push(Step {
             description: format!(
                 "Task analysis (iteration {}/{})",
                 self.current_iteration, self.max_iterations
             ),
             status: StepStatus::InProgress,
-            tokens: Some(tokens),
+            tokens: Some(snapshot.hot_memory_tokens),
             tool_name: None,
         });
+    }
+
+    fn handle_token_snapshot_updated(&mut self, snapshot: TokenSnapshot) {
+        self.latest_token_snapshot = Some(snapshot.clone());
+        if let Some(last) = self.steps.last_mut() {
+            last.tokens = Some(snapshot.hot_memory_tokens);
+        }
     }
 
     fn handle_tool_call(&mut self, name: String, input: String, command_preview: Option<String>) {

@@ -7,7 +7,7 @@ use crate::agent::compaction::{
     AgentMessageKind, ArchiveRef, CompactionRetention, CompactionSummary,
 };
 use crate::agent::providers::TodoList;
-use crate::llm::ToolCall;
+use crate::llm::{TokenUsage, ToolCall};
 use serde::{Deserialize, Serialize};
 use tiktoken_rs::cl100k_base;
 
@@ -445,7 +445,7 @@ pub struct AgentMemory {
     max_tokens: usize,
     /// Last request-scoped token usage reported by the LLM API.
     #[serde(default)]
-    last_api_token_count: Option<usize>,
+    last_api_usage: Option<TokenUsage>,
 }
 
 impl AgentMemory {
@@ -457,7 +457,7 @@ impl AgentMemory {
             todos: TodoList::new(),
             token_count: 0,
             max_tokens,
-            last_api_token_count: None,
+            last_api_usage: None,
         }
     }
 
@@ -500,19 +500,30 @@ impl AgentMemory {
 
     /// Get the last request-scoped token count reported by the API.
     #[must_use]
-    pub const fn api_token_count(&self) -> Option<usize> {
-        self.last_api_token_count
+    pub fn api_token_count(&self) -> Option<usize> {
+        self.last_api_usage
+            .as_ref()
+            .map(|usage| usage.total_tokens as usize)
+    }
+
+    /// Get the last request-scoped token usage reported by the API.
+    #[must_use]
+    pub const fn api_usage(&self) -> Option<&TokenUsage> {
+        self.last_api_usage.as_ref()
     }
 
     /// Record request-scoped token usage from the API for diagnostics.
     ///
     /// This does NOT overwrite the hot-memory estimate because provider usage
     /// counts represent a single rendered request, not the current memory size.
-    pub fn sync_token_count(&mut self, real_total_tokens: usize) {
+    pub fn sync_api_usage(&mut self, usage: TokenUsage) {
+        let real_total_tokens = usage.total_tokens as usize;
         let diff = real_total_tokens as i64 - self.token_count as i64;
 
         tracing::info!(
-            total = real_total_tokens,
+            prompt_tokens = usage.prompt_tokens,
+            completion_tokens = usage.completion_tokens,
+            total_tokens = usage.total_tokens,
             diff = diff,
             "METRIC: Token usage synchronized from API"
         );
@@ -525,7 +536,7 @@ impl AgentMemory {
                 "Token sync: significant drift detected"
             );
         }
-        self.last_api_token_count = Some(real_total_tokens);
+        self.last_api_usage = Some(usage);
     }
 
     /// Clear all messages from memory
@@ -533,7 +544,7 @@ impl AgentMemory {
         self.messages.clear();
         self.todos.clear();
         self.token_count = 0;
-        self.last_api_token_count = None;
+        self.last_api_usage = None;
     }
 
     /// Replace hot memory messages and recalculate token accounting.
@@ -550,7 +561,7 @@ impl AgentMemory {
                 tokens
             })
             .sum();
-        self.last_api_token_count = None;
+        self.last_api_usage = None;
     }
 
     /// Count tokens in a string using cl100k tokenizer (GPT-4/Claude compatible)
@@ -637,7 +648,11 @@ mod tests {
         assert_eq!(memory.api_token_count(), None);
 
         // Sync request-scoped API usage without overwriting the hot-memory estimate.
-        memory.sync_token_count(1234);
+        memory.sync_api_usage(TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 234,
+            total_tokens: 1234,
+        });
         assert_eq!(memory.api_token_count(), Some(1234));
         assert_eq!(memory.token_count(), estimated_before_sync);
 
@@ -655,7 +670,11 @@ mod tests {
     fn test_replace_messages_recalculates_memory_tokens_and_clears_last_api_usage() {
         let mut memory = AgentMemory::new(100_000);
         memory.add_message(AgentMessage::user("Hello"));
-        memory.sync_token_count(2048);
+        memory.sync_api_usage(TokenUsage {
+            prompt_tokens: 1024,
+            completion_tokens: 1024,
+            total_tokens: 2048,
+        });
 
         memory.replace_messages(vec![
             AgentMessage::user_task("Ship stage 3"),

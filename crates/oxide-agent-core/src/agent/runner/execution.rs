@@ -4,14 +4,14 @@ use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
 use super::AgentRunner;
-use crate::agent::compaction::{CompactionRequest, CompactionTrigger};
+use crate::agent::compaction::{estimate_request_budget, CompactionRequest, CompactionTrigger};
 use crate::agent::memory::AgentMessage;
-use crate::agent::progress::{AgentEvent, RepeatedCompactionKind};
+use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::{ChatResponse, LlmError};
 use anyhow::{anyhow, Result};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 impl AgentRunner {
     /// Execute the agent loop until completion or error.
@@ -45,14 +45,15 @@ impl AgentRunner {
 
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
+            let snapshot_trigger = if iteration == 0 {
+                CompactionTrigger::PreRun
+            } else {
+                CompactionTrigger::PreIteration
+            };
+            let snapshot = Self::build_token_snapshot(ctx, snapshot_trigger);
+            Self::log_token_snapshot(ctx, iteration, "before_llm_call", &snapshot);
             if let Some(tx) = ctx.progress_tx {
-                let display_tokens = ctx.agent.memory().token_count();
-
-                let _ = tx
-                    .send(AgentEvent::Thinking {
-                        tokens: display_tokens,
-                    })
-                    .await;
+                let _ = tx.send(AgentEvent::Thinking { snapshot }).await;
             }
 
             if self.llm_loop_detected(ctx, &state).await {
@@ -513,9 +514,9 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
     ) {
         if let Some(u) = &response.usage {
-            ctx.agent
-                .memory_mut()
-                .sync_token_count(u.total_tokens as usize);
+            ctx.agent.memory_mut().sync_api_usage(u.clone());
+            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+            Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
         }
 
         if let Some(ref reasoning) = response.reasoning_content {
@@ -617,6 +618,78 @@ impl AgentRunner {
                 .send(AgentEvent::RepeatedCompactionWarning { kind, count })
                 .await;
         }
+    }
+
+    pub(super) fn build_token_snapshot(
+        ctx: &AgentRunnerContext<'_>,
+        trigger: CompactionTrigger,
+    ) -> TokenSnapshot {
+        let request = CompactionRequest::new(
+            trigger,
+            ctx.task,
+            ctx.system_prompt,
+            ctx.tools,
+            &ctx.config.model_name,
+            ctx.config.model_max_output_tokens,
+            ctx.config.is_sub_agent,
+        );
+        let policy = ctx
+            .compaction_service
+            .map(|service| service.policy().clone())
+            .unwrap_or_default();
+        let budget = estimate_request_budget(&policy, &request, ctx.agent);
+
+        TokenSnapshot {
+            hot_memory_tokens: budget.hot_memory.total_tokens,
+            system_prompt_tokens: budget.system_prompt_tokens,
+            tool_schema_tokens: budget.tool_schema_tokens,
+            loaded_skill_tokens: budget.loaded_skill_tokens,
+            total_input_tokens: budget.total_input_tokens,
+            reserved_output_tokens: budget.reserved_output_tokens,
+            projected_total_tokens: budget.projected_total_tokens,
+            context_window_tokens: budget.context_window_tokens,
+            headroom_tokens: budget.headroom_tokens,
+            budget_state: budget.state,
+            last_api_usage: ctx.agent.memory().api_usage().cloned(),
+        }
+    }
+
+    pub(super) async fn emit_token_snapshot_update(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        snapshot: TokenSnapshot,
+    ) {
+        let Some(tx) = progress_tx else { return };
+        let _ = tx.send(AgentEvent::TokenSnapshotUpdated { snapshot }).await;
+    }
+
+    fn log_token_snapshot(
+        ctx: &AgentRunnerContext<'_>,
+        iteration: usize,
+        phase: &str,
+        snapshot: &TokenSnapshot,
+    ) {
+        info!(
+            task_id = %ctx.task_id,
+            iteration,
+            phase,
+            hot_memory_tokens = snapshot.hot_memory_tokens,
+            system_prompt_tokens = snapshot.system_prompt_tokens,
+            tool_schema_tokens = snapshot.tool_schema_tokens,
+            loaded_skill_tokens = snapshot.loaded_skill_tokens,
+            total_input_tokens = snapshot.total_input_tokens,
+            reserved_output_tokens = snapshot.reserved_output_tokens,
+            projected_total_tokens = snapshot.projected_total_tokens,
+            context_window_tokens = snapshot.context_window_tokens,
+            headroom_tokens = snapshot.headroom_tokens,
+            budget_state = ?snapshot.budget_state,
+            last_api_prompt_tokens = snapshot.last_api_usage.as_ref().map(|usage| usage.prompt_tokens),
+            last_api_completion_tokens = snapshot
+                .last_api_usage
+                .as_ref()
+                .map(|usage| usage.completion_tokens),
+            last_api_total_tokens = snapshot.last_api_usage.as_ref().map(|usage| usage.total_tokens),
+            "Agent request token snapshot"
+        );
     }
 
     fn llm_error_suggests_context_overflow(error: &LlmError) -> bool {
@@ -1607,15 +1680,13 @@ mod tests {
         session
     }
 
-    fn collect_progress_events(
+    async fn collect_progress_events(
         progress_rx: &mut tokio::sync::mpsc::Receiver<AgentEvent>,
-    ) -> impl std::future::Future<Output = Vec<AgentEvent>> + '_ {
-        async move {
-            let mut events = Vec::new();
-            while let Some(event) = progress_rx.recv().await {
-                events.push(event);
-            }
-            events
+    ) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        while let Some(event) = progress_rx.recv().await {
+            events.push(event);
         }
+        events
     }
 }

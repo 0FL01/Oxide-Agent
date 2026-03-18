@@ -156,8 +156,31 @@ pub async fn run_progress_loop<T: AgentTransport>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_agent_core::agent::compaction::BudgetState;
+    use oxide_agent_core::agent::progress::TokenSnapshot;
+    use oxide_agent_core::llm::TokenUsage;
     use std::sync::Arc;
     use tokio::sync::{mpsc, oneshot, Mutex};
+
+    fn sample_snapshot() -> TokenSnapshot {
+        TokenSnapshot {
+            hot_memory_tokens: 1,
+            system_prompt_tokens: 2,
+            tool_schema_tokens: 3,
+            loaded_skill_tokens: 0,
+            total_input_tokens: 6,
+            reserved_output_tokens: 4,
+            projected_total_tokens: 10,
+            context_window_tokens: 100,
+            headroom_tokens: 90,
+            budget_state: BudgetState::Healthy,
+            last_api_usage: Some(TokenUsage {
+                prompt_tokens: 6,
+                completion_tokens: 4,
+                total_tokens: 10,
+            }),
+        }
+    }
 
     #[derive(Clone, Default)]
     struct DummyTransport {
@@ -198,7 +221,11 @@ mod tests {
         let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(0));
         let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
 
-        let send_result = tx.send(AgentEvent::Thinking { tokens: 1 }).await;
+        let send_result = tx
+            .send(AgentEvent::Thinking {
+                snapshot: sample_snapshot(),
+            })
+            .await;
         assert!(
             send_result.is_ok(),
             "failed to send event to runtime channel"

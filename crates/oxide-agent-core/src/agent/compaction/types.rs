@@ -195,7 +195,7 @@ impl<'a> CompactionRequest<'a> {
 }
 
 /// Health state derived from the estimated full request budget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BudgetState {
     /// Plenty of room remains in the request budget.
     Healthy,

@@ -158,7 +158,7 @@ pub struct ToolCallFunction {
 }
 
 /// Token usage statistics from API response
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct TokenUsage {
     /// Input tokens (system prompt + history + files)
     pub prompt_tokens: u32,
