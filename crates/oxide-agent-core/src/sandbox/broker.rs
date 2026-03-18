@@ -550,6 +550,10 @@ async fn handle_write_file(
         Err(error) => return SandboxBrokerResponse::Error(error.to_string()),
     };
 
+    if let Err(error) = manager.attach_existing_container().await {
+        return SandboxBrokerResponse::Error(error.to_string());
+    }
+
     response_from_result(manager.write_file(&path, &content).await, |_| {
         SandboxBrokerResponse::Unit
     })
@@ -579,6 +583,10 @@ async fn handle_upload_file(
         Err(error) => return SandboxBrokerResponse::Error(error.to_string()),
     };
 
+    if let Err(error) = manager.attach_existing_container().await {
+        return SandboxBrokerResponse::Error(error.to_string());
+    }
+
     response_from_result(manager.upload_file(&container_path, &content).await, |_| {
         SandboxBrokerResponse::Unit
     })
@@ -593,6 +601,10 @@ async fn handle_download_file(
         Ok(manager) => manager,
         Err(error) => return SandboxBrokerResponse::Error(error.to_string()),
     };
+
+    if let Err(error) = manager.attach_existing_container().await {
+        return SandboxBrokerResponse::Error(error.to_string());
+    }
 
     response_from_result(
         manager.download_file(&container_path).await,
@@ -822,4 +834,194 @@ async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
         .await
         .context("Failed to read sandbox broker frame payload")?;
     bincode::deserialize(&payload).context("Failed to decode sandbox broker payload")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SandboxBrokerClient, SandboxBrokerServer};
+    use crate::config::get_sandbox_image;
+    use crate::sandbox::scope::SandboxScope;
+    use anyhow::{bail, Context, Result};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_socket_path(test_name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("oxide-agent-{test_name}-{nonce}.sock"))
+    }
+
+    fn unique_scope(test_name: &str) -> SandboxScope {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        SandboxScope::new(991_337, format!("test:{test_name}:{nonce}"))
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn broker_download_file_roundtrip_reads_existing_container_file() -> Result<()> {
+        let socket_path = unique_socket_path("broker-download-roundtrip");
+        let server = SandboxBrokerServer::bind(&socket_path)
+            .await
+            .context("bind sandbox broker test server")?;
+        let server_task = tokio::spawn(server.serve());
+
+        let client = SandboxBrokerClient::new(&socket_path);
+        let scope = unique_scope("broker-download-roundtrip");
+        let image_name = get_sandbox_image();
+        let file_path = "/workspace/audit_raw/AUDIT_REPORT.md";
+        let container_name = scope.container_name();
+
+        let exec_result = client
+            .exec_command(
+                scope.clone(),
+                image_name.clone(),
+                "mkdir -p /workspace/audit_raw && printf 'audit ok' > /workspace/audit_raw/AUDIT_REPORT.md",
+                None,
+            )
+            .await;
+
+        let download_result = client
+            .download_file(scope.clone(), image_name.clone(), file_path)
+            .await;
+
+        let cleanup_result = client
+            .delete_sandbox_by_name(scope.owner_id(), &container_name)
+            .await;
+        server_task.abort();
+        let _ = server_task.await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+
+        exec_result.context("create file in broker-backed sandbox")?;
+        cleanup_result.context("cleanup broker-backed sandbox after test")?;
+
+        let content = download_result.context(
+            "broker should download a file created by a previous request for the same sandbox scope",
+        )?;
+
+        if content != b"audit ok" {
+            bail!(
+                "unexpected file content from broker download: {:?}",
+                String::from_utf8_lossy(&content)
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn broker_write_file_roundtrip_persists_to_existing_container() -> Result<()> {
+        let socket_path = unique_socket_path("broker-write-roundtrip");
+        let server = SandboxBrokerServer::bind(&socket_path)
+            .await
+            .context("bind sandbox broker test server")?;
+        let server_task = tokio::spawn(server.serve());
+
+        let client = SandboxBrokerClient::new(&socket_path);
+        let scope = unique_scope("broker-write-roundtrip");
+        let image_name = get_sandbox_image();
+        let file_path = "/workspace/audit_raw/WRITE_REPORT.md";
+        let container_name = scope.container_name();
+
+        let exec_result = client
+            .exec_command(
+                scope.clone(),
+                image_name.clone(),
+                "mkdir -p /workspace/audit_raw",
+                None,
+            )
+            .await;
+
+        let write_result = client
+            .write_file(scope.clone(), image_name.clone(), file_path, b"write ok")
+            .await;
+
+        let read_result = client
+            .read_file(scope.clone(), image_name.clone(), file_path)
+            .await;
+
+        let cleanup_result = client
+            .delete_sandbox_by_name(scope.owner_id(), &container_name)
+            .await;
+        server_task.abort();
+        let _ = server_task.await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+
+        exec_result.context("prepare directory in broker-backed sandbox")?;
+        write_result.context(
+            "broker should write into a sandbox created by a previous request for the same scope",
+        )?;
+        cleanup_result.context("cleanup broker-backed sandbox after test")?;
+
+        let content = read_result.context("read file written through broker")?;
+        if content != b"write ok" {
+            bail!(
+                "unexpected file content from broker write roundtrip: {:?}",
+                String::from_utf8_lossy(&content)
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn broker_upload_file_roundtrip_persists_to_existing_container() -> Result<()> {
+        let socket_path = unique_socket_path("broker-upload-roundtrip");
+        let server = SandboxBrokerServer::bind(&socket_path)
+            .await
+            .context("bind sandbox broker test server")?;
+        let server_task = tokio::spawn(server.serve());
+
+        let client = SandboxBrokerClient::new(&socket_path);
+        let scope = unique_scope("broker-upload-roundtrip");
+        let image_name = get_sandbox_image();
+        let file_path = "/workspace/audit_raw/UPLOAD_REPORT.md";
+        let container_name = scope.container_name();
+
+        let exec_result = client
+            .exec_command(
+                scope.clone(),
+                image_name.clone(),
+                "mkdir -p /workspace/audit_raw",
+                None,
+            )
+            .await;
+
+        let upload_result = client
+            .upload_file(scope.clone(), image_name.clone(), file_path, b"upload ok")
+            .await;
+
+        let download_result = client
+            .download_file(scope.clone(), image_name.clone(), file_path)
+            .await;
+
+        let cleanup_result = client
+            .delete_sandbox_by_name(scope.owner_id(), &container_name)
+            .await;
+        server_task.abort();
+        let _ = server_task.await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+
+        exec_result.context("prepare upload directory in broker-backed sandbox")?;
+        upload_result.context(
+            "broker should upload into a sandbox created by a previous request for the same scope",
+        )?;
+        cleanup_result.context("cleanup broker-backed sandbox after test")?;
+
+        let content = download_result.context("download file uploaded through broker")?;
+        if content != b"upload ok" {
+            bail!(
+                "unexpected file content from broker upload roundtrip: {:?}",
+                String::from_utf8_lossy(&content)
+            );
+        }
+
+        Ok(())
+    }
 }
