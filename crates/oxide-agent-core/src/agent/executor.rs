@@ -26,7 +26,7 @@ use super::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection}
 use super::skills::SkillRegistry;
 use super::tool_bridge::{execute_single_tool_call, ToolExecutionContext, ToolExecutionResult};
 use crate::agent::progress::AgentEvent;
-use crate::config::{get_agent_search_limit, AGENT_TIMEOUT_SECS};
+use crate::config::{get_agent_max_iterations, get_agent_search_limit, AGENT_TIMEOUT_SECS};
 use crate::llm::{LlmClient, ToolCall, ToolCallFunction};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::{anyhow, Result};
@@ -538,7 +538,7 @@ impl AgentExecutor {
             config: {
                 AgentRunnerConfig::new(
                     model_id,
-                    crate::config::AGENT_MAX_ITERATIONS,
+                    get_agent_max_iterations(),
                     crate::config::AGENT_CONTINUATION_LIMIT,
                     self.settings.get_agent_timeout_secs(),
                     model_max_output_tokens,

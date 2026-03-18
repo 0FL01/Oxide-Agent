@@ -19,7 +19,7 @@ use crate::agent::providers::{FileHosterProvider, SandboxProvider, TodosProvider
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use crate::config::{
-    get_agent_search_limit, AGENT_CONTINUATION_LIMIT, SUB_AGENT_MAX_ITERATIONS,
+    get_agent_search_limit, get_sub_agent_max_iterations, AGENT_CONTINUATION_LIMIT,
     SUB_AGENT_MAX_TOKENS,
 };
 use crate::llm::ToolDefinition;
@@ -212,10 +212,11 @@ impl DelegationProvider {
     }
 
     fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
+        let max_iterations = get_sub_agent_max_iterations();
         let mut runner = AgentRunner::new(self.llm_client.clone());
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
-            max_iterations: SUB_AGENT_MAX_ITERATIONS,
+            max_iterations,
             max_tokens: SUB_AGENT_MAX_TOKENS,
             blocked_tools: blocked,
         })));
@@ -359,9 +360,10 @@ If the sub-agent doesn't finish, a partial report will be returned."
             config: {
                 let (model_id, _, model_max_output_tokens) =
                     self.settings.get_configured_sub_agent_model();
+                let max_iterations = get_sub_agent_max_iterations();
                 AgentRunnerConfig::new(
                     model_id,
-                    SUB_AGENT_MAX_ITERATIONS,
+                    max_iterations,
                     AGENT_CONTINUATION_LIMIT,
                     self.settings.get_sub_agent_timeout_secs(),
                     model_max_output_tokens,

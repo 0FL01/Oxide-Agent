@@ -138,7 +138,7 @@ apply_timeout_hook(&mut ctx, &RunState) -> Result<Option<String>>
 | DelegationGuardHook | ✅ Да | ❌ Нет |
 | SubAgentSafetyHook | ❌ Нет | ✅ Да |
 | Может делегировать | ✅ Да | ❌ Нет |
-| Макс. итераций | 1000 | 60 |
+| Макс. итераций | 200 | 60 |
 | Макс. токены | 200,000 | 64,000 |
 | Тип работы | Анализ данных | Получение данных |
 

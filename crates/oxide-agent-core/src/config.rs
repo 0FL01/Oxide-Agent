@@ -753,6 +753,24 @@ pub fn get_agent_search_limit() -> usize {
         .unwrap_or(AGENT_SEARCH_LIMIT)
 }
 
+/// Get agent max iterations from env or default.
+#[must_use]
+pub fn get_agent_max_iterations() -> usize {
+    std::env::var("AGENT_MAX_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(AGENT_MAX_ITERATIONS)
+}
+
+/// Get sub-agent max iterations from env or default.
+#[must_use]
+pub fn get_sub_agent_max_iterations() -> usize {
+    std::env::var("SUB_AGENT_MAX_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SUB_AGENT_MAX_ITERATIONS)
+}
+
 // Sandbox configuration
 /// Docker image for the sandbox
 pub const SANDBOX_IMAGE: &str = "agent-sandbox:latest";
