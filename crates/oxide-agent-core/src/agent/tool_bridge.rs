@@ -19,6 +19,12 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 
+struct ParsedToolCall {
+    id: String,
+    name: String,
+    args: String,
+}
+
 /// Context for tool execution
 pub struct ToolExecutionContext<'a> {
     /// Tool registry for executing tools
@@ -68,126 +74,14 @@ pub async fn execute_single_tool_call(
     tool_call: ToolCall,
     ctx: &mut ToolExecutionContext<'_>,
 ) -> Result<ToolExecutionResult> {
-    // Check for cancellation before execution
-    if ctx.cancellation_token.is_cancelled() {
-        return Err(anyhow::anyhow!("Task cancelled by user"));
-    }
+    ensure_tool_execution_not_cancelled(&ctx.cancellation_token)?;
+    let parsed = parse_tool_call(tool_call);
 
-    let ToolCall { id, function, .. } = tool_call;
-    let name = function.name;
-    let args = function.arguments;
+    log_tool_call(&parsed);
+    emit_tool_call_event(&parsed, ctx.progress_tx).await;
 
-    info!(
-        tool_name = %name,
-        tool_args = %crate::utils::truncate_str(&args, 200),
-        "Executing tool call"
-    );
-
-    if let Some(tx) = ctx.progress_tx {
-        // Extract command preview for execute_command tool
-        let command_preview = if name == "execute_command" {
-            extract_command_preview(&args)
-        } else {
-            None
-        };
-
-        // Sanitize XML tags from tool name and input to prevent UI corruption
-        // This protects against malformed LLM responses that leak XML syntax
-        let _ = tx
-            .send(AgentEvent::ToolCall {
-                name: sanitize_xml_tags(&name),
-                input: sanitize_xml_tags(&args),
-                command_preview,
-            })
-            .await;
-    }
-
-    // Execute tool with timeout and cancellation support
-    let tool_timeout = Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS);
-    let result = {
-        use tokio::select;
-        select! {
-            biased;
-            _ = ctx.cancellation_token.cancelled() => {
-                warn!(tool_name = %name, "Tool execution cancelled by user");
-                if let Some(tx) = ctx.progress_tx {
-                    let _ = tx.send(AgentEvent::Cancelling { tool_name: name.clone() }).await;
-                    // Give UI time to show cancelling status (2 sec cleanup timeout)
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-                return Err(anyhow::anyhow!("Task cancelled by user"));
-            },
-            res = timeout(tool_timeout, ctx.registry.execute(&name, &args, ctx.progress_tx, Some(&ctx.cancellation_token))) => {
-                match res {
-                    Ok(Ok(r)) => r,
-                    Ok(Err(e)) => format!("Tool execution error: {e}"),
-                    Err(_) => {
-                        warn!(
-                            tool_name = %name,
-                            timeout_secs = AGENT_TOOL_TIMEOUT_SECS,
-                            "Tool execution timed out"
-                        );
-                        format!(
-                            "Tool '{name}' timed out ({} seconds)",
-                            AGENT_TOOL_TIMEOUT_SECS
-                        )
-                    }
-                }
-            },
-        }
-    };
-
-    // Sync todos if write_todos was called
-    if name == "write_todos" {
-        sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
-        if let Some(tx) = ctx.progress_tx {
-            let _ = tx
-                .send(AgentEvent::TodosUpdated {
-                    todos: ctx.agent.memory().todos.clone(),
-                })
-                .await;
-        }
-    }
-
-    if let Some(approval) = parse_pending_ssh_approval(&result) {
-        ctx.agent.store_pending_ssh_replay(PendingSshReplay {
-            request_id: approval.request_id.clone(),
-            tool_call_id: id.clone(),
-            tool_name: name.clone(),
-            arguments: args.clone(),
-        });
-        if let Some(tx) = ctx.progress_tx {
-            let _ = tx
-                .send(AgentEvent::WaitingForApproval {
-                    tool_name: sanitize_xml_tags(&name),
-                    target_name: sanitize_xml_tags(&approval.target_name),
-                    summary: sanitize_xml_tags(&approval.summary),
-                })
-                .await;
-        }
-
-        return Ok(ToolExecutionResult::WaitingForApproval { tool_name: name });
-    }
-
-    // Send tool result event
-    if let Some(tx) = ctx.progress_tx {
-        let _ = tx
-            .send(AgentEvent::ToolResult {
-                name: name.clone(),
-                output: result.clone(),
-            })
-            .await;
-    }
-
-    // Add result to messages
-    ctx.messages.push(Message::tool(&id, &name, &result));
-    let tool_msg = AgentMessage::tool(&id, &name, &result);
-    ctx.agent.memory_mut().add_message(tool_msg);
-
-    Ok(ToolExecutionResult::Completed {
-        tool_name: name,
-        output: result,
-    })
+    let result = execute_tool_with_timeout(&parsed, ctx).await?;
+    normalize_tool_result(parsed, result, ctx).await
 }
 
 /// Synchronize todos from the shared Arc to the session memory
@@ -201,6 +95,202 @@ fn extract_command_preview(args: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(args)
         .ok()
         .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+}
+
+fn ensure_tool_execution_not_cancelled(
+    cancellation_token: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    if cancellation_token.is_cancelled() {
+        return Err(anyhow::anyhow!("Task cancelled by user"));
+    }
+    Ok(())
+}
+
+fn parse_tool_call(tool_call: ToolCall) -> ParsedToolCall {
+    let ToolCall { id, function, .. } = tool_call;
+    ParsedToolCall {
+        id,
+        name: function.name,
+        args: function.arguments,
+    }
+}
+
+fn log_tool_call(tool_call: &ParsedToolCall) {
+    info!(
+        tool_name = %tool_call.name,
+        tool_args = %crate::utils::truncate_str(&tool_call.args, 200),
+        "Executing tool call"
+    );
+}
+
+async fn emit_tool_call_event(
+    tool_call: &ParsedToolCall,
+    progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+) {
+    let Some(tx) = progress_tx else {
+        return;
+    };
+
+    let command_preview = if tool_call.name == "execute_command" {
+        extract_command_preview(&tool_call.args)
+    } else {
+        None
+    };
+
+    let _ = tx
+        .send(AgentEvent::ToolCall {
+            name: sanitize_xml_tags(&tool_call.name),
+            input: sanitize_xml_tags(&tool_call.args),
+            command_preview,
+        })
+        .await;
+}
+
+async fn execute_tool_with_timeout(
+    tool_call: &ParsedToolCall,
+    ctx: &mut ToolExecutionContext<'_>,
+) -> Result<String> {
+    let tool_timeout = Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS);
+
+    use tokio::select;
+    select! {
+        biased;
+        _ = ctx.cancellation_token.cancelled() => {
+            handle_tool_cancellation(&tool_call.name, ctx.progress_tx).await;
+            Err(anyhow::anyhow!("Task cancelled by user"))
+        },
+        res = timeout(
+            tool_timeout,
+            ctx.registry.execute(
+                &tool_call.name,
+                &tool_call.args,
+                ctx.progress_tx,
+                Some(&ctx.cancellation_token),
+            ),
+        ) => Ok(map_tool_execution_result(&tool_call.name, res)),
+    }
+}
+
+async fn handle_tool_cancellation(
+    tool_name: &str,
+    progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+) {
+    warn!(tool_name = %tool_name, "Tool execution cancelled by user");
+    if let Some(tx) = progress_tx {
+        let _ = tx
+            .send(AgentEvent::Cancelling {
+                tool_name: tool_name.to_string(),
+            })
+            .await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+}
+
+fn map_tool_execution_result(
+    tool_name: &str,
+    result: Result<Result<String, anyhow::Error>, tokio::time::error::Elapsed>,
+) -> String {
+    match result {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => format!("Tool execution error: {error}"),
+        Err(_) => {
+            warn!(
+                tool_name = %tool_name,
+                timeout_secs = AGENT_TOOL_TIMEOUT_SECS,
+                "Tool execution timed out"
+            );
+            format!(
+                "Tool '{tool_name}' timed out ({} seconds)",
+                AGENT_TOOL_TIMEOUT_SECS
+            )
+        }
+    }
+}
+
+async fn normalize_tool_result(
+    tool_call: ParsedToolCall,
+    result: String,
+    ctx: &mut ToolExecutionContext<'_>,
+) -> Result<ToolExecutionResult> {
+    sync_todos_if_needed(&tool_call.name, ctx).await;
+
+    if let Some(approval) = parse_pending_ssh_approval(&result) {
+        store_pending_ssh_approval(&tool_call, &approval, ctx).await;
+        return Ok(ToolExecutionResult::WaitingForApproval {
+            tool_name: tool_call.name,
+        });
+    }
+
+    emit_tool_result_event(&tool_call.name, &result, ctx.progress_tx).await;
+    append_tool_result_to_memory(&tool_call, &result, ctx);
+    Ok(ToolExecutionResult::Completed {
+        tool_name: tool_call.name,
+        output: result,
+    })
+}
+
+async fn sync_todos_if_needed(tool_name: &str, ctx: &mut ToolExecutionContext<'_>) {
+    if tool_name != "write_todos" {
+        return;
+    }
+
+    sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
+    if let Some(tx) = ctx.progress_tx {
+        let _ = tx
+            .send(AgentEvent::TodosUpdated {
+                todos: ctx.agent.memory().todos.clone(),
+            })
+            .await;
+    }
+}
+
+async fn store_pending_ssh_approval(
+    tool_call: &ParsedToolCall,
+    approval: &PendingSshApprovalPayload,
+    ctx: &mut ToolExecutionContext<'_>,
+) {
+    ctx.agent.store_pending_ssh_replay(PendingSshReplay {
+        request_id: approval.request_id.clone(),
+        tool_call_id: tool_call.id.clone(),
+        tool_name: tool_call.name.clone(),
+        arguments: tool_call.args.clone(),
+    });
+
+    if let Some(tx) = ctx.progress_tx {
+        let _ = tx
+            .send(AgentEvent::WaitingForApproval {
+                tool_name: sanitize_xml_tags(&tool_call.name),
+                target_name: sanitize_xml_tags(&approval.target_name),
+                summary: sanitize_xml_tags(&approval.summary),
+            })
+            .await;
+    }
+}
+
+async fn emit_tool_result_event(
+    tool_name: &str,
+    result: &str,
+    progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+) {
+    if let Some(tx) = progress_tx {
+        let _ = tx
+            .send(AgentEvent::ToolResult {
+                name: tool_name.to_string(),
+                output: result.to_string(),
+            })
+            .await;
+    }
+}
+
+fn append_tool_result_to_memory(
+    tool_call: &ParsedToolCall,
+    result: &str,
+    ctx: &mut ToolExecutionContext<'_>,
+) {
+    ctx.messages
+        .push(Message::tool(&tool_call.id, &tool_call.name, result));
+    let tool_msg = AgentMessage::tool(&tool_call.id, &tool_call.name, result);
+    ctx.agent.memory_mut().add_message(tool_msg);
 }
 
 #[derive(Debug, Deserialize)]
