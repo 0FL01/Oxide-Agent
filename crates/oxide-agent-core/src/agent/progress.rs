@@ -596,12 +596,8 @@ impl ProgressState {
 
     fn handle_repeated_compaction_warning(&mut self, kind: RepeatedCompactionKind, count: usize) {
         self.repeated_compaction_warning = Some(match kind {
-            RepeatedCompactionKind::Cleanup => format!(
-                "Large tool outputs triggered cleanup {count} times in this run. Consider narrowing raw data collection."
-            ),
-            RepeatedCompactionKind::Compaction => format!(
-                "History was compacted {count} times in this run. Consider finishing or splitting the task."
-            ),
+            RepeatedCompactionKind::Cleanup => format!("Cleanup repeated: {count}x"),
+            RepeatedCompactionKind::Compaction => format!("History compaction: {count}x"),
         });
     }
 
@@ -708,6 +704,6 @@ mod tests {
         assert!(state
             .repeated_compaction_warning
             .as_deref()
-            .is_some_and(|warning| warning.contains("cleanup 3 times")));
+            .is_some_and(|warning| warning == "Cleanup repeated: 3x"));
     }
 }
