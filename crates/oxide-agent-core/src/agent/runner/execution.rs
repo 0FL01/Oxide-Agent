@@ -46,12 +46,7 @@ impl AgentRunner {
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
             if let Some(tx) = ctx.progress_tx {
-                let current_tokens = ctx.agent.memory().token_count();
-                let display_tokens = ctx
-                    .agent
-                    .memory()
-                    .api_token_count()
-                    .unwrap_or(current_tokens);
+                let display_tokens = ctx.agent.memory().token_count();
 
                 let _ = tx
                     .send(AgentEvent::Thinking {
@@ -704,7 +699,8 @@ mod tests {
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
     use crate::config::AgentSettings;
     use crate::llm::{
-        ChatResponse, LlmClient, MockLlmProvider, ToolCall, ToolCallFunction, ToolDefinition,
+        ChatResponse, LlmClient, MockLlmProvider, TokenUsage, ToolCall, ToolCallFunction,
+        ToolDefinition,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -1022,6 +1018,57 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.summary_payload().is_some()));
+    }
+
+    #[tokio::test]
+    async fn preprocess_llm_response_keeps_memory_tokens_separate_from_api_usage() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Inspect token metrics"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response"));
+
+        let estimated_tokens = session.memory().token_count();
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Inspect token metrics",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-token-metrics",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
+        };
+        let mut response = ChatResponse {
+            content: Some("done".to_string()),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: None,
+            usage: Some(TokenUsage {
+                prompt_tokens: 9_000,
+                completion_tokens: 512,
+                total_tokens: 9_512,
+            }),
+        };
+
+        runner
+            .preprocess_llm_response(&mut response, &mut ctx)
+            .await;
+
+        assert_eq!(ctx.agent.memory().token_count(), estimated_tokens);
+        assert_eq!(ctx.agent.memory().api_token_count(), Some(9_512));
     }
 
     fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {
