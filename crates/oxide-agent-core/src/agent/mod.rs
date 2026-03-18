@@ -57,17 +57,19 @@ pub mod loop_detection;
 pub mod progress;
 
 pub use compaction::{
-    classify_hot_memory, estimate_request_budget, AgentMessageKind, ArchiveRecord, ArchiveRef,
-    ArchiveSink, BudgetEstimate, BudgetState, ClassifiedMemoryEntry, CompactionClassSummary,
-    CompactionOutcome, CompactionPolicy, CompactionRequest, CompactionRetention, CompactionService,
-    CompactionSnapshot, CompactionTrigger, HotMemoryBudget, NoopArchiveSink, RecentRawWindow,
+    classify_hot_memory, estimate_request_budget, externalize_hot_memory, AgentMessageKind,
+    ArchiveRecord, ArchiveRef, ArchiveSink, BudgetEstimate, BudgetState, ClassifiedMemoryEntry,
+    CompactionClassSummary, CompactionOutcome, CompactionPolicy, CompactionRequest,
+    CompactionRetention, CompactionScope, CompactionService, CompactionSnapshot, CompactionTrigger,
+    ExternalizationOutcome, ExternalizedPayloadRecord, HotMemoryBudget, NoopArchiveSink,
+    NoopPayloadSink, PayloadSink, RecentRawWindow,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
 pub use identity::SessionId;
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
-pub use memory::AgentMemory;
+pub use memory::{AgentMemory, ExternalizedPayload};
 pub use profile::{
     manager_default_blocked_tools, parse_agent_profile, topic_agent_all_hooks,
     topic_agent_default_blocked_tools, topic_agent_manageable_hooks, topic_agent_protected_hooks,

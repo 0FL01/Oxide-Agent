@@ -3,6 +3,7 @@
 //! Provides a lightweight context trait for agent execution that
 //! decouples the runner from session-specific infrastructure.
 
+use super::compaction::CompactionScope;
 use super::memory::AgentMemory;
 use super::session::{AgentSession, PendingSshReplay, RuntimeContextInjection};
 use crate::config::AGENT_MAX_TOKENS;
@@ -24,6 +25,10 @@ pub trait AgentContext: Send {
     /// Report total tokens currently attributed to loaded skills.
     fn skill_token_count(&self) -> usize {
         0
+    }
+    /// Return scope metadata used by compaction persistence layers.
+    fn compaction_scope(&self) -> CompactionScope {
+        CompactionScope::default()
     }
     /// Get elapsed time in seconds since task start.
     fn elapsed_secs(&self) -> u64;
@@ -119,6 +124,13 @@ impl AgentContext for AgentSession {
         self.elapsed_secs()
     }
 
+    fn compaction_scope(&self) -> CompactionScope {
+        CompactionScope {
+            context_key: format!("session:{}", self.session_id),
+            flow_id: "agent-mode".to_string(),
+        }
+    }
+
     fn skill_token_count(&self) -> usize {
         AgentSession::skill_token_count(self)
     }
@@ -168,5 +180,12 @@ impl AgentContext for EphemeralSession {
 
     fn skill_token_count(&self) -> usize {
         self.skill_token_count
+    }
+
+    fn compaction_scope(&self) -> CompactionScope {
+        CompactionScope {
+            context_key: "ephemeral-sub-agent".to_string(),
+            flow_id: "sub-agent".to_string(),
+        }
     }
 }

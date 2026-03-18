@@ -3,7 +3,7 @@
 //! Provides conversation memory for the agent and lightweight token
 //! accounting utilities. Compaction orchestration lives outside this module.
 
-use crate::agent::compaction::{AgentMessageKind, CompactionRetention};
+use crate::agent::compaction::{AgentMessageKind, ArchiveRef, CompactionRetention};
 use crate::agent::providers::TodoList;
 use crate::config::AGENT_COMPACT_THRESHOLD;
 use crate::llm::ToolCall;
@@ -32,6 +32,25 @@ pub struct AgentMessage {
     pub tool_name: Option<String>,
     /// Tool calls made by assistant
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// Metadata for payloads that were externalized outside hot memory.
+    #[serde(default)]
+    pub externalized_payload: Option<ExternalizedPayload>,
+}
+
+/// Metadata describing a tool payload externalized out of hot memory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalizedPayload {
+    /// Reference to the persisted artifact.
+    pub archive_ref: ArchiveRef,
+    /// Approximate original token count before replacement.
+    pub estimated_tokens: usize,
+    /// Original visible character count before replacement.
+    pub original_chars: usize,
+    /// Inline preview retained in hot memory.
+    pub preview: String,
+    /// Hidden fallback payload retained when no external sink is configured.
+    #[serde(default)]
+    pub inline_fallback: Option<String>,
 }
 
 /// Role of a message sender in agent memory
@@ -63,6 +82,7 @@ impl AgentMessage {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            externalized_payload: None,
         }
     }
 
@@ -76,6 +96,7 @@ impl AgentMessage {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            externalized_payload: None,
         }
     }
 
@@ -94,6 +115,7 @@ impl AgentMessage {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            externalized_payload: None,
         }
     }
 
@@ -107,6 +129,7 @@ impl AgentMessage {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            externalized_payload: None,
         }
     }
 
@@ -120,6 +143,7 @@ impl AgentMessage {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            externalized_payload: None,
         }
     }
 
@@ -133,6 +157,7 @@ impl AgentMessage {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            externalized_payload: None,
         }
     }
 
@@ -149,6 +174,7 @@ impl AgentMessage {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            externalized_payload: None,
         }
     }
 
@@ -162,6 +188,26 @@ impl AgentMessage {
             tool_call_id: Some(tool_call_id.to_string()),
             tool_name: Some(name.to_string()),
             tool_calls: None,
+            externalized_payload: None,
+        }
+    }
+
+    /// Create a tool result placeholder that points at an externalized artifact.
+    pub fn externalized_tool(
+        tool_call_id: &str,
+        name: &str,
+        content: impl Into<String>,
+        externalized_payload: ExternalizedPayload,
+    ) -> Self {
+        Self {
+            kind: AgentMessageKind::ToolResult,
+            role: MessageRole::Tool,
+            content: content.into(),
+            reasoning: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(name.to_string()),
+            tool_calls: None,
+            externalized_payload: Some(externalized_payload),
         }
     }
 
@@ -175,6 +221,7 @@ impl AgentMessage {
             tool_call_id: None,
             tool_name: None,
             tool_calls: Some(tool_calls),
+            externalized_payload: None,
         }
     }
 
@@ -247,6 +294,12 @@ impl AgentMessage {
     #[must_use]
     pub fn retention(&self) -> CompactionRetention {
         self.resolved_kind().retention()
+    }
+
+    /// Returns true when the large payload was externalized out of hot memory.
+    #[must_use]
+    pub fn is_externalized(&self) -> bool {
+        self.externalized_payload.is_some()
     }
 }
 
@@ -357,6 +410,23 @@ impl AgentMemory {
         self.messages.clear();
         self.todos.clear();
         self.token_count = 0;
+        self.last_api_token_count = None;
+    }
+
+    /// Replace hot memory messages and recalculate token accounting.
+    pub fn replace_messages(&mut self, messages: Vec<AgentMessage>) {
+        self.messages = messages;
+        self.token_count = self
+            .messages
+            .iter()
+            .map(|m| {
+                let mut tokens = Self::count_tokens(&m.content);
+                if let Some(ref reasoning) = m.reasoning {
+                    tokens += Self::count_tokens(reasoning);
+                }
+                tokens
+            })
+            .sum();
         self.last_api_token_count = None;
     }
 
@@ -627,6 +697,7 @@ mod tests {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            externalized_payload: None,
         };
         let legacy_tool = AgentMessage {
             kind: AgentMessageKind::Legacy,
@@ -636,6 +707,7 @@ mod tests {
             tool_call_id: Some("call-1".to_string()),
             tool_name: Some("execute_command".to_string()),
             tool_calls: None,
+            externalized_payload: None,
         };
 
         assert_eq!(
