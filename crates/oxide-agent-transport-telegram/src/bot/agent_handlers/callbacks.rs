@@ -8,10 +8,10 @@ use super::{
     resolve_existing_session_id, run_agent_task_with_text, run_approved_ssh_resume,
     save_memory_after_task, send_agent_message, send_agent_message_with_optional_keyboard,
     send_or_update_cancel_confirmation, send_or_update_pending_cancel_message,
-    should_create_fresh_flow_on_detach, use_inline_topic_controls, AgentDialogue,
-    AgentModeSessionKeys, ConfirmationSendCtx, EnsureSessionContext, ResetSessionOutcome,
-    RunAgentTaskTextContext, RunApprovedSshResumeContext, SessionTransportContext,
-    SESSION_REGISTRY,
+    should_create_fresh_flow_on_detach, use_inline_flow_controls, use_inline_topic_controls,
+    AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx, EnsureSessionContext,
+    ResetSessionOutcome, RunAgentTaskTextContext, RunApprovedSshResumeContext,
+    SessionTransportContext, SESSION_REGISTRY,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, reset_current_agent_flow_id, set_current_agent_flow_id,
@@ -241,6 +241,7 @@ async fn handle_loop_retry(
             agent_flow_id: retry_ctx.agent_flow_id,
             message_thread_id: retry_ctx.outbound_thread.message_thread_id,
             use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
+            use_inline_flow_controls: use_inline_flow_controls(retry_ctx.thread_spec),
         })
         .await
         {
@@ -375,6 +376,7 @@ async fn handle_ssh_approval_callback(
             agent_flow_id: retry_ctx.agent_flow_id,
             message_thread_id: retry_ctx.outbound_thread.message_thread_id,
             use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
+            use_inline_flow_controls: use_inline_flow_controls(retry_ctx.thread_spec),
         })
         .await
         {
@@ -829,7 +831,7 @@ pub async fn cancel_agent_task(
             msg.chat.id,
             DefaultAgentView::task_cancelling(cleared_todos),
             cancel_status_reply_markup(thread_spec, &agent_flow_id),
-            cancel_status_inline_markup(use_inline_topic_controls(thread_spec), &agent_flow_id),
+            cancel_status_inline_markup(use_inline_flow_controls(thread_spec), &agent_flow_id),
             outbound_thread,
         )
         .await?;
@@ -870,7 +872,7 @@ async fn cancel_agent_task_by_id(
             chat_id,
             DefaultAgentView::task_cancelling(cleared_todos),
             cancel_status_reply_markup(thread_spec, agent_flow_id),
-            cancel_status_inline_markup(use_inline_topic_controls(thread_spec), agent_flow_id),
+            cancel_status_inline_markup(use_inline_flow_controls(thread_spec), agent_flow_id),
             outbound_thread,
         )
         .await?;

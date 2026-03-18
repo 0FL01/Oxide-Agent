@@ -8,8 +8,8 @@ use super::{
     remove_sessions_with_compat, resolve_execution_profile, select_existing_session_id,
     session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
     should_merge_text_batch, take_pending_cancel_confirmation, take_pending_cancel_message,
-    AgentCallbackAction, AgentControlCommand, BatchedTextTaskContext, EnsureSessionContext,
-    PendingTextInputBatch, PendingTextInputPart, SessionTransportContext,
+    use_inline_flow_controls, AgentCallbackAction, AgentControlCommand, BatchedTextTaskContext,
+    EnsureSessionContext, PendingTextInputBatch, PendingTextInputPart, SessionTransportContext,
     AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, SESSION_REGISTRY,
 };
 use crate::bot::views::{
@@ -45,6 +45,7 @@ fn test_batch() -> PendingTextInputBatch {
             agent_flow_id: "flow".to_string(),
             message_thread_id: None,
             use_inline_progress_controls: false,
+            use_inline_flow_controls: false,
         },
         MessageId(10),
         "x".repeat(AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS),
@@ -635,6 +636,34 @@ fn cancel_status_reply_markup_uses_flow_controls_in_topics() {
 
     assert_eq!(keyboard.inline_keyboard.len(), 1);
     assert_eq!(keyboard.inline_keyboard[0].len(), 2);
+}
+
+#[test]
+fn cancel_status_reply_markup_uses_flow_controls_in_private_chats() {
+    let markup = cancel_status_reply_markup(
+        resolve_thread_spec_from_context(false, false, None),
+        "flow-a",
+    );
+
+    let ReplyMarkup::InlineKeyboard(keyboard) = markup else {
+        panic!("private chat cancel status should use inline keyboard");
+    };
+
+    assert_eq!(keyboard.inline_keyboard.len(), 1);
+    assert_eq!(keyboard.inline_keyboard[0].len(), 2);
+}
+
+#[test]
+fn inline_flow_controls_cover_forums_and_private_chats_only() {
+    assert!(use_inline_flow_controls(resolve_thread_spec_from_context(
+        false, false, None
+    )));
+    assert!(use_inline_flow_controls(resolve_thread_spec_from_context(
+        true, true, None
+    )));
+    assert!(!use_inline_flow_controls(resolve_thread_spec_from_context(
+        true, false, None
+    )));
 }
 
 #[tokio::test]

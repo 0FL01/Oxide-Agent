@@ -32,6 +32,7 @@ pub(crate) struct AgentTaskContext {
     pub(crate) sandbox_scope: SandboxScope,
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
+    pub(crate) use_inline_flow_controls: bool,
     pub(crate) session_id: SessionId,
 }
 
@@ -47,6 +48,7 @@ pub(crate) struct RunAgentTaskTextContext {
     pub(crate) agent_flow_id: String,
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
+    pub(crate) use_inline_flow_controls: bool,
 }
 
 #[derive(Clone)]
@@ -61,6 +63,7 @@ pub(crate) struct RunApprovedSshResumeContext {
     pub(crate) agent_flow_id: String,
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
+    pub(crate) use_inline_flow_controls: bool,
 }
 
 #[derive(Clone)]
@@ -74,6 +77,7 @@ struct TaskDeliveryContext {
     agent_flow_id: String,
     message_thread_id: Option<ThreadId>,
     use_inline_progress_controls: bool,
+    use_inline_flow_controls: bool,
 }
 
 struct TaskProgressRuntime {
@@ -95,6 +99,7 @@ impl From<&RunAgentTaskTextContext> for TaskDeliveryContext {
             agent_flow_id: value.agent_flow_id.clone(),
             message_thread_id: value.message_thread_id,
             use_inline_progress_controls: value.use_inline_progress_controls,
+            use_inline_flow_controls: value.use_inline_flow_controls,
         }
     }
 }
@@ -111,6 +116,7 @@ impl From<&RunApprovedSshResumeContext> for TaskDeliveryContext {
             agent_flow_id: value.agent_flow_id.clone(),
             message_thread_id: value.message_thread_id,
             use_inline_progress_controls: value.use_inline_progress_controls,
+            use_inline_flow_controls: value.use_inline_flow_controls,
         }
     }
 }
@@ -170,6 +176,7 @@ pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         agent_flow_id: ctx.agent_flow_id,
         message_thread_id: ctx.message_thread_id,
         use_inline_progress_controls: ctx.use_inline_progress_controls,
+        use_inline_flow_controls: ctx.use_inline_flow_controls,
     })
     .await
 }
@@ -298,7 +305,7 @@ async fn deliver_task_result(
             )
             .await;
             let final_markup = ctx
-                .use_inline_progress_controls
+                .use_inline_flow_controls
                 .then(|| crate::bot::views::agent_flow_inline_keyboard(&ctx.agent_flow_id));
             send_long_message_in_thread_with_final_markup(
                 &ctx.bot,
@@ -352,7 +359,7 @@ async fn deliver_task_result(
         ctx.session_id,
         ctx.chat_id,
         cancelled,
-        cancel_status_inline_markup(ctx.use_inline_progress_controls, &ctx.agent_flow_id),
+        cancel_status_inline_markup(ctx.use_inline_flow_controls, &ctx.agent_flow_id),
     )
     .await;
 

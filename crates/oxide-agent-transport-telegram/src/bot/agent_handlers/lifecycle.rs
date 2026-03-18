@@ -5,7 +5,7 @@ use super::{
     handle_batched_text_input_if_needed, handle_running_agent_message_if_needed,
     is_agent_mode_context, manager_control_plane_enabled, manager_default_chat_id,
     parse_agent_control_command, resolve_execution_profile, resolve_topic_infra_config,
-    route_allows_agent_processing, show_agent_controls, spawn_agent_task,
+    route_allows_agent_processing, show_agent_controls, spawn_agent_task, use_inline_flow_controls,
     use_inline_topic_controls, ActiveSessionConfig, AgentControlCommand, AgentDialogue,
     AgentTaskContext, BatchedTextInputCheck, EnsureSessionContext, RunningAgentMessageContext,
     SessionTransportContext,
@@ -239,6 +239,7 @@ pub async fn handle_agent_message(
         sandbox_scope,
         message_thread_id: outbound_thread.message_thread_id,
         use_inline_progress_controls: use_inline_topic_controls(thread_spec),
+        use_inline_flow_controls: use_inline_flow_controls(thread_spec),
         session_id,
     });
 
