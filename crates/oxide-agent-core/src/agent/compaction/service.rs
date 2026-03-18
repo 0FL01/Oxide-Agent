@@ -4,6 +4,7 @@ use super::archive::{ArchiveSink, NoopArchiveSink};
 use super::budget::estimate_request_budget;
 use super::classifier::classify_hot_memory;
 use super::externalize::{externalize_hot_memory, NoopPayloadSink, PayloadSink};
+use super::prune::prune_hot_memory;
 use super::types::{CompactionOutcome, CompactionPolicy, CompactionRequest};
 use crate::agent::context::AgentContext;
 use anyhow::Result;
@@ -55,11 +56,10 @@ impl CompactionService {
         &self.policy
     }
 
-    /// Stage 4 checkpoint hook.
+    /// Stage 6 checkpoint hook.
     ///
-    /// The service still does not mutate hot memory yet, but it now collects a
-    /// full request budget and a deterministic hot-memory classification
-    /// snapshot so later stages can prune and compact from orchestration.
+    /// The service currently runs deterministic externalization and pruning,
+    /// then returns an updated budget and hot-memory classification snapshot.
     pub async fn prepare_for_run(
         &self,
         request: &CompactionRequest<'_>,
@@ -77,6 +77,16 @@ impl CompactionService {
         );
         if externalization.applied {
             agent.memory_mut().replace_messages(rewritten_messages);
+        }
+
+        let snapshot_after_externalization = classify_hot_memory(agent.memory().get_messages());
+        let (pruned_messages, pruning) = prune_hot_memory(
+            &self.policy,
+            &snapshot_after_externalization,
+            agent.memory().get_messages(),
+        );
+        if pruning.applied {
+            agent.memory_mut().replace_messages(pruned_messages);
         }
 
         let budget = estimate_request_budget(&self.policy, request, agent);
@@ -101,7 +111,9 @@ impl CompactionService {
             headroom_tokens = budget.headroom_tokens,
             budget_state = ?budget.state,
             externalized_messages = externalization.externalized_count,
-            reclaimed_tokens = externalization.reclaimed_tokens,
+            externalized_reclaimed_tokens = externalization.reclaimed_tokens,
+            pruned_messages = pruning.pruned_count,
+            pruned_reclaimed_tokens = pruning.reclaimed_tokens,
             pinned_messages = snapshot.pinned.message_count,
             protected_live_messages = snapshot.protected_live.message_count,
             prunable_artifact_messages = snapshot.prunable_artifacts.message_count,
@@ -109,7 +121,7 @@ impl CompactionService {
             "Compaction checkpoint reached"
         );
 
-        if !externalization.applied {
+        if !externalization.applied && !pruning.applied {
             return Ok(CompactionOutcome::noop(request.trigger, budget, snapshot));
         }
 
@@ -121,6 +133,7 @@ impl CompactionService {
             budget,
             snapshot,
             externalization,
+            pruning,
         })
     }
 }
@@ -162,6 +175,7 @@ mod tests {
         assert_eq!(outcome.snapshot.protected_live.message_count, 0);
         assert_eq!(outcome.snapshot.compactable_history.message_count, 1);
         assert_eq!(outcome.externalization.externalized_count, 0);
+        assert_eq!(outcome.pruning.pruned_count, 0);
     }
 
     #[tokio::test]
@@ -196,6 +210,50 @@ mod tests {
         assert!(session.memory().get_messages()[0]
             .content
             .contains("[externalized tool result]"));
+        assert_eq!(outcome.pruning.pruned_count, 0);
+    }
+
+    #[tokio::test]
+    async fn prepare_for_run_prunes_old_tool_payloads_outside_recent_window() {
+        let mut session = EphemeralSession::new(20_000);
+        for index in 0..5 {
+            session.memory_mut().add_message(AgentMessage::tool(
+                &format!("call-{index}"),
+                "search",
+                &format!("result-{index}-{}", "B".repeat(80)),
+            ));
+        }
+
+        let service = CompactionService::new(CompactionPolicy {
+            externalize_threshold_tokens: usize::MAX,
+            externalize_threshold_chars: usize::MAX,
+            prune_min_tokens: 1,
+            prune_min_chars: 16,
+            ..CompactionPolicy::default()
+        });
+        let request = CompactionRequest::new(
+            crate::agent::compaction::CompactionTrigger::PreRun,
+            "Review search results",
+            "system prompt",
+            &[],
+            "demo-model",
+            512,
+            false,
+        );
+
+        let outcome = service
+            .prepare_for_run(&request, &mut session)
+            .await
+            .expect("stage 6 pruning checkpoint should succeed");
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.externalization.externalized_count, 0);
+        assert_eq!(outcome.pruning.pruned_indices, vec![0]);
+        assert!(session.memory().get_messages()[0].is_pruned());
+        assert!(!session.memory().get_messages()[1].is_pruned());
+        assert!(session.memory().get_messages()[0]
+            .content
+            .contains("[pruned tool result]"));
     }
 
     #[test]

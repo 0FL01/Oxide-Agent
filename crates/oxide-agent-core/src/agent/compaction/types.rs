@@ -108,6 +108,12 @@ pub struct CompactionPolicy {
     pub externalize_threshold_chars: usize,
     /// Maximum preview size kept inline after externalization.
     pub externalize_preview_chars: usize,
+    /// Minimum approximate token size before an old tool payload is pruned.
+    pub prune_min_tokens: usize,
+    /// Minimum character size before an old tool payload is pruned.
+    pub prune_min_chars: usize,
+    /// Maximum preview size kept inline after pruning.
+    pub prune_preview_chars: usize,
 }
 
 impl Default for CompactionPolicy {
@@ -121,6 +127,9 @@ impl Default for CompactionPolicy {
             externalize_threshold_tokens: 512,
             externalize_threshold_chars: 2_048,
             externalize_preview_chars: 280,
+            prune_min_tokens: 128,
+            prune_min_chars: 512,
+            prune_preview_chars: 160,
         }
     }
 }
@@ -276,6 +285,8 @@ pub struct ClassifiedMemoryEntry {
     pub is_externalized: bool,
     /// Artifact reference when the payload has been externalized.
     pub archive_ref: Option<ArchiveRef>,
+    /// Whether the artifact was already pruned to a placeholder.
+    pub is_pruned: bool,
     /// Whether this entry belongs to the recent raw working window.
     pub preserve_in_raw_window: bool,
 }
@@ -293,6 +304,21 @@ pub struct ExternalizationOutcome {
     pub reclaimed_chars: usize,
     /// Artifact refs created during this checkpoint.
     pub archive_refs: Vec<ArchiveRef>,
+}
+
+/// Result of pruning older tool artifacts after protecting the live raw window.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PruneOutcome {
+    /// Whether any hot-memory entries were rewritten.
+    pub applied: bool,
+    /// Number of messages pruned during this checkpoint.
+    pub pruned_count: usize,
+    /// Hot-memory token estimate removed from raw payloads.
+    pub reclaimed_tokens: usize,
+    /// Total visible characters removed from hot memory.
+    pub reclaimed_chars: usize,
+    /// Indices of pruned messages in hot memory order before rebuild.
+    pub pruned_indices: Vec<usize>,
 }
 
 /// Aggregate stats for one classifier bucket.
@@ -361,6 +387,8 @@ pub struct CompactionOutcome {
     pub snapshot: CompactionSnapshot,
     /// Result of payload externalization applied before later stages.
     pub externalization: ExternalizationOutcome,
+    /// Result of old artifact pruning applied before summary compaction.
+    pub pruning: PruneOutcome,
 }
 
 impl CompactionOutcome {
@@ -380,6 +408,7 @@ impl CompactionOutcome {
             budget,
             snapshot,
             externalization: ExternalizationOutcome::default(),
+            pruning: PruneOutcome::default(),
         }
     }
 }
