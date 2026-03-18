@@ -93,12 +93,24 @@ pub enum CompactionTrigger {
 pub struct CompactionPolicy {
     /// Legacy token threshold kept for the Stage 1 transition period.
     pub legacy_compact_threshold: usize,
+    /// Percent of the window where warning-level telemetry should start.
+    pub warning_threshold_percent: u8,
+    /// Percent of the window where pruning becomes desirable.
+    pub prune_threshold_percent: u8,
+    /// Percent of the window where compaction becomes desirable.
+    pub compact_threshold_percent: u8,
+    /// Reserved buffer kept free beyond the response budget.
+    pub hard_reserve_tokens: usize,
 }
 
 impl Default for CompactionPolicy {
     fn default() -> Self {
         Self {
             legacy_compact_threshold: AGENT_COMPACT_THRESHOLD,
+            warning_threshold_percent: 70,
+            prune_threshold_percent: 80,
+            compact_threshold_percent: 90,
+            hard_reserve_tokens: 8_192,
         }
     }
 }
@@ -116,6 +128,8 @@ pub struct CompactionRequest<'a> {
     pub tools: &'a [ToolDefinition],
     /// Active model name for the main agent request.
     pub model_name: &'a str,
+    /// Configured response token budget for the active model.
+    pub model_max_output_tokens: u32,
     /// Whether the current execution is a sub-agent.
     pub is_sub_agent: bool,
 }
@@ -129,6 +143,7 @@ impl<'a> CompactionRequest<'a> {
         system_prompt: &'a str,
         tools: &'a [ToolDefinition],
         model_name: &'a str,
+        model_max_output_tokens: u32,
         is_sub_agent: bool,
     ) -> Self {
         Self {
@@ -137,9 +152,79 @@ impl<'a> CompactionRequest<'a> {
             system_prompt,
             tools,
             model_name,
+            model_max_output_tokens,
             is_sub_agent,
         }
     }
+}
+
+/// Health state derived from the estimated full request budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetState {
+    /// Plenty of room remains in the request budget.
+    Healthy,
+    /// Context is growing and should be surfaced to telemetry.
+    Warning,
+    /// Pruning bulky artifacts would likely help.
+    ShouldPrune,
+    /// History compaction should run before the next model call.
+    ShouldCompact,
+    /// The projected request would exceed the configured window.
+    OverLimit,
+}
+
+/// Token accounting grouped by hot-memory retention class.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotMemoryBudget {
+    /// Total estimated tokens represented by the current hot memory.
+    pub total_tokens: usize,
+    /// Total messages represented in hot memory.
+    pub total_messages: usize,
+    /// Tokens belonging to pinned messages.
+    pub pinned_tokens: usize,
+    /// Tokens belonging to protected live messages.
+    pub protected_live_tokens: usize,
+    /// Tokens belonging to prunable artifact messages.
+    pub prunable_artifact_tokens: usize,
+    /// Tokens belonging to compactable history messages.
+    pub compactable_history_tokens: usize,
+    /// Tokens specifically attributed to skill context messages.
+    pub skill_context_tokens: usize,
+    /// Tokens specifically attributed to runtime context messages.
+    pub runtime_context_tokens: usize,
+}
+
+/// Full request budget estimate for a compaction checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetEstimate {
+    /// Configured effective context window for Agent Mode.
+    pub context_window_tokens: usize,
+    /// Estimated token count of the rendered system prompt.
+    pub system_prompt_tokens: usize,
+    /// Estimated token count of serialized tool schemas.
+    pub tool_schema_tokens: usize,
+    /// Estimated token count of the active hot memory.
+    pub hot_memory: HotMemoryBudget,
+    /// Total tokens currently attributed to loaded skills.
+    pub loaded_skill_tokens: usize,
+    /// Configured response token reserve for the active model.
+    pub reserved_output_tokens: usize,
+    /// Additional hard safety buffer kept free.
+    pub hard_reserve_tokens: usize,
+    /// Estimated input-side request size before model completion tokens.
+    pub total_input_tokens: usize,
+    /// Estimated full request size including completion reserve and hard reserve.
+    pub projected_total_tokens: usize,
+    /// Remaining headroom in the configured context window.
+    pub headroom_tokens: usize,
+    /// Warning threshold derived from policy and window size.
+    pub warning_threshold_tokens: usize,
+    /// Prune threshold derived from policy and window size.
+    pub prune_threshold_tokens: usize,
+    /// Compact threshold derived from policy and window size.
+    pub compact_threshold_tokens: usize,
+    /// High-level budget state.
+    pub state: BudgetState,
 }
 
 /// Observable result of a compaction checkpoint.
@@ -153,24 +238,28 @@ pub struct CompactionOutcome {
     pub token_count_before: usize,
     /// Token count after the pipeline ran.
     pub token_count_after: usize,
+    /// Full budget estimate collected at this checkpoint.
+    pub budget: BudgetEstimate,
 }
 
 impl CompactionOutcome {
     /// Build a no-op outcome.
     #[must_use]
-    pub const fn noop(trigger: CompactionTrigger, token_count: usize) -> Self {
+    pub fn noop(trigger: CompactionTrigger, budget: BudgetEstimate) -> Self {
+        let token_count = budget.hot_memory.total_tokens;
         Self {
             trigger,
             applied: false,
             token_count_before: token_count,
             token_count_after: token_count,
+            budget,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentMessageKind, CompactionRetention};
+    use super::{AgentMessageKind, CompactionPolicy, CompactionRetention};
 
     #[test]
     fn topic_agents_md_is_pinned() {
@@ -198,5 +287,13 @@ mod tests {
             AgentMessageKind::SkillContext.retention(),
             CompactionRetention::ProtectedLive
         );
+    }
+
+    #[test]
+    fn default_policy_keeps_thresholds_ordered() {
+        let policy = CompactionPolicy::default();
+        assert!(policy.warning_threshold_percent < policy.prune_threshold_percent);
+        assert!(policy.prune_threshold_percent < policy.compact_threshold_percent);
+        assert!(policy.hard_reserve_tokens > 0);
     }
 }

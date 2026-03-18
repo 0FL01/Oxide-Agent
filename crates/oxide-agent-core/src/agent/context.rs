@@ -21,6 +21,10 @@ pub trait AgentContext: Send {
     fn is_skill_loaded(&self, name: &str) -> bool;
     /// Register a skill as loaded and update token accounting.
     fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool;
+    /// Report total tokens currently attributed to loaded skills.
+    fn skill_token_count(&self) -> usize {
+        0
+    }
     /// Get elapsed time in seconds since task start.
     fn elapsed_secs(&self) -> u64;
     /// Drain any additional user context queued while the agent was running.
@@ -115,6 +119,10 @@ impl AgentContext for AgentSession {
         self.elapsed_secs()
     }
 
+    fn skill_token_count(&self) -> usize {
+        AgentSession::skill_token_count(self)
+    }
+
     fn drain_runtime_context(&mut self) -> Vec<RuntimeContextInjection> {
         AgentSession::drain_runtime_context(self)
     }
@@ -156,5 +164,9 @@ impl AgentContext for EphemeralSession {
 
     fn elapsed_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
+    }
+
+    fn skill_token_count(&self) -> usize {
+        self.skill_token_count
     }
 }
