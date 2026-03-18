@@ -5,7 +5,7 @@ use super::types::{
     BudgetState, CompactionRequest, CompactionSnapshot, CompactionSummary, SummaryGenerationOutcome,
 };
 use crate::agent::memory::{AgentMessage, MessageRole};
-use crate::llm::{LlmClient, LlmError, Message};
+use crate::llm::{LlmClient, LlmError};
 use lazy_regex::lazy_regex;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
@@ -101,10 +101,12 @@ impl CompactionSummarizer {
 
     async fn call_llm(&self, user_message: &str) -> Result<String, LlmError> {
         let system_prompt = compaction_system_prompt();
-        let messages = [Message::user(user_message)];
-        let llm_call =
-            self.llm_client
-                .chat_completion(system_prompt, &messages, "", &self.config.model_name);
+        let llm_call = self.llm_client.chat_completion(
+            system_prompt,
+            &[],
+            user_message,
+            &self.config.model_name,
+        );
 
         timeout(Duration::from_secs(self.config.timeout_secs), llm_call)
             .await
@@ -355,7 +357,7 @@ mod tests {
         classify_hot_memory, BudgetState, CompactionRequest, CompactionTrigger,
     };
     use crate::agent::memory::AgentMessage;
-    use crate::llm::LlmClient;
+    use crate::llm::{LlmClient, MockLlmProvider};
     use crate::testing::mock_llm_simple;
     use std::sync::Arc;
 
@@ -562,5 +564,78 @@ mod tests {
             .constraints
             .iter()
             .any(|item| item.contains("preserve AGENTS.md")));
+    }
+
+    #[tokio::test]
+    async fn summarize_if_needed_sends_payload_as_user_message() {
+        let settings = Arc::new(crate::config::AgentSettings {
+            compaction_model_id: Some("compact-model".to_string()),
+            compaction_model_provider: Some("mock".to_string()),
+            compaction_model_max_tokens: Some(256),
+            compaction_model_timeout_secs: Some(5),
+            ..crate::config::AgentSettings::default()
+        });
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_chat_completion()
+            .withf(|system_prompt, history, user_message, model_name, max_tokens| {
+                system_prompt.contains("Return ONLY valid JSON")
+                    && history.is_empty()
+                    && user_message.contains("## Entry")
+                    && !user_message.trim().is_empty()
+                    && user_message.contains("Older request")
+                    && model_name == "compact-model"
+                    && *max_tokens == 256
+            })
+            .return_once(|_, _, _, _, _| {
+                Ok(r#"{"goal":"Ship stage 7","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":[],"risks":[]}"#.to_string())
+            });
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        provider.expect_analyze_image().returning(|_, _, _, _| {
+            Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
+        });
+        provider
+            .expect_chat_with_tools()
+            .returning(|_| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+
+        let mut llm_client = LlmClient::new(settings.as_ref());
+        llm_client.register_provider("mock".to_string(), Arc::new(provider));
+        let summarizer = CompactionSummarizer::new(
+            Arc::new(llm_client),
+            CompactionSummarizerConfig {
+                model_name: "compact-model".to_string(),
+                provider_name: "mock".to_string(),
+                timeout_secs: 5,
+            },
+        );
+        let messages = vec![
+            AgentMessage::user("Older request"),
+            AgentMessage::assistant("Older response"),
+            AgentMessage::user("Recent request 1"),
+            AgentMessage::assistant("Recent response 1"),
+            AgentMessage::user("Recent request 2"),
+            AgentMessage::assistant("Recent response 2"),
+        ];
+        let snapshot = classify_hot_memory(&messages);
+        let request = CompactionRequest::new(
+            CompactionTrigger::Manual,
+            "Ship stage 7",
+            "system prompt",
+            &[],
+            "agent-model",
+            512,
+            false,
+        );
+
+        let outcome = summarizer
+            .summarize_if_needed(&request, BudgetState::ShouldCompact, &snapshot, &messages)
+            .await;
+
+        assert!(outcome.attempted);
+        assert!(!outcome.used_fallback);
+        assert_eq!(outcome.model_name.as_deref(), Some("compact-model"));
+        assert_eq!(outcome.summary.expect("summary").goal, "Ship stage 7");
     }
 }

@@ -44,7 +44,7 @@ pub(super) fn convert_to_text_messages(
         messages.push(sdk_msg);
     }
 
-    if let Some(user) = user_message {
+    if let Some(user) = user_message.filter(|user| !user.trim().is_empty()) {
         messages.push(TextMessage::user(user));
     }
 
@@ -68,7 +68,7 @@ pub(super) fn convert_to_vision_messages(
         messages.push(sdk_msg);
     }
 
-    if let Some(user) = user_message {
+    if let Some(user) = user_message.filter(|user| !user.trim().is_empty()) {
         messages
             .push(VisionMessage::new_user().add_user(VisionRichContent::text(user.to_string())));
     }
@@ -130,4 +130,44 @@ fn convert_assistant_tool_calls(tool_calls: &[ToolCall]) -> Vec<ZaiToolCall> {
             ZaiToolCall::new_function(call.id.clone(), params)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::convert_to_text_messages;
+    use crate::llm::Message;
+    use serde_json::json;
+
+    #[test]
+    fn convert_to_text_messages_skips_empty_final_user_message() {
+        let history = [Message::user("older request")];
+
+        let messages = convert_to_text_messages("system prompt", &history, Some("   "));
+
+        let serialized = serde_json::to_value(&messages).expect("serialize messages");
+        assert_eq!(
+            serialized,
+            json!([
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "older request"}
+            ])
+        );
+    }
+
+    #[test]
+    fn convert_to_text_messages_appends_non_empty_final_user_message() {
+        let history = [Message::assistant("older response")];
+
+        let messages = convert_to_text_messages("system prompt", &history, Some("new request"));
+
+        let serialized = serde_json::to_value(&messages).expect("serialize messages");
+        assert_eq!(
+            serialized,
+            json!([
+                {"role": "system", "content": "system prompt"},
+                {"role": "assistant", "content": "older response"},
+                {"role": "user", "content": "new request"}
+            ])
+        );
+    }
 }
