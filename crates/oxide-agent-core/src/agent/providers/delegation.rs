@@ -3,6 +3,9 @@
 //! Exposes `delegate_to_sub_agent` tool that runs an isolated agent loop
 //! with a lightweight model and restricted toolset.
 
+use crate::agent::compaction::{
+    CompactionService, CompactionSummarizer, CompactionSummarizerConfig,
+};
 use crate::agent::context::{AgentContext, EphemeralSession};
 use crate::agent::hooks::{
     CompletionCheckHook, SearchBudgetHook, SubAgentSafetyConfig, SubAgentSafetyHook,
@@ -220,6 +223,19 @@ impl DelegationProvider {
         runner.register_hook(Box::new(TimeoutReportHook::new()));
         runner
     }
+
+    fn create_sub_agent_compaction_service(&self) -> CompactionService {
+        let (model_name, provider_name, _, timeout_secs) =
+            self.settings.get_configured_compaction_model();
+        CompactionService::default().with_summarizer(CompactionSummarizer::new(
+            Arc::clone(&self.llm_client),
+            CompactionSummarizerConfig {
+                model_name,
+                provider_name,
+                timeout_secs,
+            },
+        ))
+    }
 }
 
 #[async_trait]
@@ -326,6 +342,7 @@ If the sub-agent doesn't finish, a partial report will be returned."
         );
 
         let mut runner = self.create_sub_agent_runner(Self::blocked_tool_set());
+        let compaction_service = self.create_sub_agent_compaction_service();
 
         let mut ctx = AgentRunnerContext {
             task: task.as_str(),
@@ -338,13 +355,16 @@ If the sub-agent doesn't finish, a partial report will be returned."
             messages: &mut messages,
             agent: &mut sub_session,
             skill_registry: None,
+            compaction_service: Some(&compaction_service),
             config: {
-                let (model_id, _, _) = self.settings.get_configured_sub_agent_model();
+                let (model_id, _, model_max_output_tokens) =
+                    self.settings.get_configured_sub_agent_model();
                 AgentRunnerConfig::new(
                     model_id,
                     SUB_AGENT_MAX_ITERATIONS,
                     AGENT_CONTINUATION_LIMIT,
                     self.settings.get_sub_agent_timeout_secs(),
+                    model_max_output_tokens,
                 )
                 .with_sub_agent(true)
             },

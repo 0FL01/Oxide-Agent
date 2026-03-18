@@ -67,6 +67,11 @@ impl AgentRunner {
         );
         ctx.messages
             .push(crate::llm::Message::system(&system_message));
+        ctx.agent
+            .memory_mut()
+            .add_message(crate::agent::memory::AgentMessage::system_context(
+                system_message,
+            ));
 
         Ok(None)
     }
@@ -117,12 +122,17 @@ impl AgentRunner {
                     })
                     .await;
             }
+            let retry_message = format!("[SYSTEM: {reason}]\n\n{}", context.unwrap_or_default());
             ctx.messages
                 .push(crate::llm::Message::assistant(&input.raw_json));
-            ctx.messages.push(crate::llm::Message::system(&format!(
-                "[SYSTEM: {reason}]\n\n{}",
-                context.unwrap_or_default()
-            )));
+            self.save_final_response(ctx, &input.raw_json, input.reasoning);
+            ctx.messages
+                .push(crate::llm::Message::system(&retry_message));
+            ctx.agent
+                .memory_mut()
+                .add_message(crate::agent::memory::AgentMessage::system_context(
+                    retry_message,
+                ));
             return Ok(None);
         }
 

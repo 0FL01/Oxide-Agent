@@ -1,5 +1,6 @@
 //! Runner configuration and context types.
 
+use crate::agent::compaction::CompactionService;
 use crate::agent::context::AgentContext;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
@@ -23,6 +24,8 @@ pub struct AgentRunnerConfig {
     pub is_sub_agent: bool,
     /// Soft timeout in seconds.
     pub timeout_secs: u64,
+    /// Reserved output token budget for the active model.
+    pub model_max_output_tokens: u32,
 }
 
 impl AgentRunnerConfig {
@@ -33,6 +36,7 @@ impl AgentRunnerConfig {
         max_iterations: usize,
         continuation_limit: usize,
         timeout_secs: u64,
+        model_max_output_tokens: u32,
     ) -> Self {
         Self {
             model_name,
@@ -40,6 +44,7 @@ impl AgentRunnerConfig {
             continuation_limit,
             is_sub_agent: false,
             timeout_secs,
+            model_max_output_tokens,
         }
     }
 
@@ -58,6 +63,7 @@ impl Default for AgentRunnerConfig {
             AGENT_MAX_ITERATIONS,
             AGENT_CONTINUATION_LIMIT,
             crate::config::AGENT_TIMEOUT_SECS,
+            0,
         )
     }
 }
@@ -84,6 +90,8 @@ pub struct AgentRunnerContext<'a> {
     pub agent: &'a mut dyn AgentContext,
     /// Optional skill registry for dynamic skill injection.
     pub skill_registry: Option<&'a mut SkillRegistry>,
+    /// Optional compaction service for pre-turn context maintenance.
+    pub compaction_service: Option<&'a CompactionService>,
     /// Runner configuration.
     pub config: AgentRunnerConfig,
 }

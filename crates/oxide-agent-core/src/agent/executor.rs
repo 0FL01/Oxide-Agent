@@ -3,10 +3,7 @@
 //! Handles orchestration around the core agent runner, including
 //! session lifecycle, skill prompts, and tool registry setup.
 
-use super::compaction::{
-    CompactionRequest, CompactionService, CompactionSummarizer, CompactionSummarizerConfig,
-    CompactionTrigger,
-};
+use super::compaction::{CompactionService, CompactionSummarizer, CompactionSummarizerConfig};
 use super::hooks::{
     CompletionCheckHook, DelegationGuardHook, Hook, HookContext, HookEvent, HookResult,
     SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook, WorkloadDistributorHook,
@@ -496,19 +493,6 @@ impl AgentExecutor {
             self.execution_profile.prompt_instructions(),
         )
         .await;
-        let compaction_request = CompactionRequest::new(
-            CompactionTrigger::PreRun,
-            task,
-            &system_prompt,
-            &tools,
-            &model_id,
-            model_max_output_tokens,
-            false,
-        );
-        let _ = self
-            .compaction_service
-            .prepare_for_run(&compaction_request, &mut self.session)
-            .await?;
         let mut messages =
             AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
 
@@ -547,12 +531,14 @@ impl AgentExecutor {
             messages: &mut messages,
             agent: &mut self.session,
             skill_registry: self.skill_registry.as_mut(),
+            compaction_service: Some(&self.compaction_service),
             config: {
                 AgentRunnerConfig::new(
                     model_id,
                     crate::config::AGENT_MAX_ITERATIONS,
                     crate::config::AGENT_CONTINUATION_LIMIT,
                     self.settings.get_agent_timeout_secs(),
+                    model_max_output_tokens,
                 )
             },
         };
