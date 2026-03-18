@@ -26,6 +26,7 @@ pub fn estimate_request_budget(
     let hard_reserve_tokens = policy.hard_reserve_tokens;
     let total_input_tokens = system_prompt_tokens
         .saturating_add(tool_schema_tokens)
+        .saturating_add(loaded_skill_tokens)
         .saturating_add(hot_memory.total_tokens);
     let projected_total_tokens = total_input_tokens
         .saturating_add(reserved_output_tokens)
@@ -208,6 +209,7 @@ mod tests {
             estimate.total_input_tokens,
             estimate.system_prompt_tokens
                 + estimate.tool_schema_tokens
+                + estimate.loaded_skill_tokens
                 + estimate.hot_memory.total_tokens
         );
     }
