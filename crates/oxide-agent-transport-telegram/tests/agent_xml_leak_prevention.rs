@@ -215,14 +215,28 @@ mod progress_integration_tests {
         let mut state = ProgressState::new(200);
 
         // Simulate thinking event
-        state.update(AgentEvent::Thinking { tokens: 5700 });
+        state.update(AgentEvent::Thinking {
+            snapshot: oxide_agent_core::agent::progress::TokenSnapshot {
+                hot_memory_tokens: 5_700,
+                system_prompt_tokens: 1_200,
+                tool_schema_tokens: 1_100,
+                loaded_skill_tokens: 0,
+                total_input_tokens: 8_000,
+                reserved_output_tokens: 8_000,
+                projected_total_tokens: 16_000,
+                context_window_tokens: 200_000,
+                headroom_tokens: 184_000,
+                budget_state: oxide_agent_core::agent::compaction::BudgetState::Healthy,
+                last_api_usage: None,
+            },
+        });
 
         let output = render_progress_html(&state);
 
         // Check header format
         assert!(output.contains("🤖 <b>Oxide Agent</b>"));
         assert!(output.contains("Iteration 1/200"));
-        assert!(output.contains("5.7k")); // Token format
+        assert!(output.contains("projected 16k/200k"));
     }
 }
 // BUGFIX AGENT-2026-001: Integration tests for malformed tool call bug fix

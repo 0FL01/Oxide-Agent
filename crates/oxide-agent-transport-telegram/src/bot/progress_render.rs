@@ -4,8 +4,10 @@ use oxide_agent_core::agent::progress::{ProgressState, Step, StepStatus};
 pub fn render_progress_html(state: &ProgressState) -> String {
     let mut lines = Vec::new();
 
-    let tokens_str = last_token_count(state)
-        .map(oxide_agent_core::utils::format_tokens)
+    let tokens_str = state
+        .latest_token_snapshot
+        .as_ref()
+        .map(format_header_tokens)
         .unwrap_or_else(|| "...".to_string());
 
     lines.push(format!(
@@ -14,58 +16,9 @@ pub fn render_progress_html(state: &ProgressState) -> String {
     ));
     lines.push(String::new());
 
-    if let (Some(ref headline), Some(ref content)) =
-        (&state.narrative_headline, &state.narrative_content)
-    {
-        lines.push(format!(
-            "🧠 <b>{}</b>",
-            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(headline, 50))
-        ));
-        lines.push(format!(
-            "   {}",
-            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(content, 150))
-        ));
-        lines.push(String::new());
-    } else if let Some(ref thought) = state.current_thought {
-        lines.push("💭 <i>Agent thoughts:</i>".to_string());
-        lines.push(format!(
-            "   {}",
-            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(thought, 120))
-        ));
-        lines.push(String::new());
-    }
-
-    if let Some(ref todos) = state.current_todos {
-        if !todos.items.is_empty() {
-            lines.push(format!(
-                "📋 <b>Tasks [{}/{}]:</b>",
-                todos.completed_count(),
-                todos.items.len()
-            ));
-            for (i, item) in todos.items.iter().enumerate() {
-                let status_icon = match item.status {
-                    oxide_agent_core::agent::providers::TodoStatus::Completed => "✅",
-                    oxide_agent_core::agent::providers::TodoStatus::InProgress => "🔄",
-                    oxide_agent_core::agent::providers::TodoStatus::Pending => "⏳",
-                    oxide_agent_core::agent::providers::TodoStatus::Cancelled => "❌",
-                };
-                let truncated = oxide_agent_core::utils::truncate_str(&item.description, 45);
-                let desc = html_escape::encode_text(&truncated);
-                lines.push(format!("  {} {}. {}", status_icon, i + 1, desc));
-            }
-        }
-    }
-
-    if let Some(status) = &state.last_compaction_status {
-        if !lines.last().is_some_and(String::is_empty) {
-            lines.push(String::new());
-        }
-        lines.push("🗜 <b>Context:</b>".to_string());
-        lines.push(format!(
-            "   {}",
-            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(status, 160))
-        ));
-    }
+    push_narrative_or_thought(&mut lines, state);
+    push_todos(&mut lines, state);
+    push_context(&mut lines, state);
 
     if let Some(warning) = &state.repeated_compaction_warning {
         lines.push(format!(
@@ -103,6 +56,84 @@ pub fn render_progress_html(state: &ProgressState) -> String {
     lines.join("\n")
 }
 
+fn push_narrative_or_thought(lines: &mut Vec<String>, state: &ProgressState) {
+    if let (Some(ref headline), Some(ref content)) =
+        (&state.narrative_headline, &state.narrative_content)
+    {
+        lines.push(format!(
+            "🧠 <b>{}</b>",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(headline, 50))
+        ));
+        lines.push(format!(
+            "   {}",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(content, 150))
+        ));
+        lines.push(String::new());
+    } else if let Some(ref thought) = state.current_thought {
+        lines.push("💭 <i>Agent thoughts:</i>".to_string());
+        lines.push(format!(
+            "   {}",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(thought, 120))
+        ));
+        lines.push(String::new());
+    }
+}
+
+fn push_todos(lines: &mut Vec<String>, state: &ProgressState) {
+    let Some(ref todos) = state.current_todos else {
+        return;
+    };
+    if todos.items.is_empty() {
+        return;
+    }
+
+    lines.push(format!(
+        "📋 <b>Tasks [{}/{}]:</b>",
+        todos.completed_count(),
+        todos.items.len()
+    ));
+    for (i, item) in todos.items.iter().enumerate() {
+        let status_icon = match item.status {
+            oxide_agent_core::agent::providers::TodoStatus::Completed => "✅",
+            oxide_agent_core::agent::providers::TodoStatus::InProgress => "🔄",
+            oxide_agent_core::agent::providers::TodoStatus::Pending => "⏳",
+            oxide_agent_core::agent::providers::TodoStatus::Cancelled => "❌",
+        };
+        let truncated = oxide_agent_core::utils::truncate_str(&item.description, 45);
+        let desc = html_escape::encode_text(&truncated);
+        lines.push(format!("  {} {}. {}", status_icon, i + 1, desc));
+    }
+}
+
+fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
+    if state.latest_token_snapshot.is_none() && state.last_compaction_status.is_none() {
+        return;
+    }
+    if !lines.last().is_some_and(String::is_empty) {
+        lines.push(String::new());
+    }
+
+    lines.push("🗜 <b>Context:</b>".to_string());
+    if let Some(snapshot) = &state.latest_token_snapshot {
+        lines.push(format!(
+            "   {}",
+            html_escape::encode_text(&format_snapshot_summary(snapshot))
+        ));
+        if let Some(api_usage) = &snapshot.last_api_usage {
+            lines.push(format!(
+                "   {}",
+                html_escape::encode_text(&format_api_usage(api_usage))
+            ));
+        }
+    }
+    if let Some(status) = &state.last_compaction_status {
+        lines.push(format!(
+            "   {}",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(status, 160))
+        ));
+    }
+}
+
 fn format_grouped_steps(state: &ProgressState) -> Vec<String> {
     use std::collections::HashMap;
 
@@ -138,16 +169,72 @@ fn current_step(state: &ProgressState) -> Option<&Step> {
         .rfind(|s| s.status == StepStatus::InProgress)
 }
 
-fn last_token_count(state: &ProgressState) -> Option<usize> {
-    state.steps.iter().rev().find_map(|s| s.tokens)
+fn format_header_tokens(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
+    format!(
+        "projected {}/{}",
+        oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.context_window_tokens)
+    )
+}
+
+fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
+    format!(
+        "Usage: hot {}, projected {} / {}, headroom {}, status {}.",
+        oxide_agent_core::utils::format_tokens(snapshot.hot_memory_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.context_window_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.headroom_tokens),
+        budget_state_label(snapshot.budget_state)
+    )
+}
+
+fn format_api_usage(api_usage: &oxide_agent_core::llm::TokenUsage) -> String {
+    format!(
+        "Last API usage: prompt {}, completion {}, total {}.",
+        oxide_agent_core::utils::format_tokens(api_usage.prompt_tokens as usize),
+        oxide_agent_core::utils::format_tokens(api_usage.completion_tokens as usize),
+        oxide_agent_core::utils::format_tokens(api_usage.total_tokens as usize)
+    )
+}
+
+fn budget_state_label(state: oxide_agent_core::agent::compaction::BudgetState) -> &'static str {
+    match state {
+        oxide_agent_core::agent::compaction::BudgetState::Healthy => "healthy",
+        oxide_agent_core::agent::compaction::BudgetState::Warning => "warning",
+        oxide_agent_core::agent::compaction::BudgetState::ShouldPrune => "prune",
+        oxide_agent_core::agent::compaction::BudgetState::ShouldCompact => "compact",
+        oxide_agent_core::agent::compaction::BudgetState::OverLimit => "over-limit",
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use oxide_agent_core::agent::compaction::BudgetState;
     use oxide_agent_core::agent::loop_detection::LoopType;
-    use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
+    use oxide_agent_core::agent::progress::{AgentEvent, ProgressState, TokenSnapshot};
+    use oxide_agent_core::llm::TokenUsage;
 
     use super::render_progress_html;
+
+    fn sample_snapshot() -> TokenSnapshot {
+        TokenSnapshot {
+            hot_memory_tokens: 5_700,
+            system_prompt_tokens: 1_200,
+            tool_schema_tokens: 1_100,
+            loaded_skill_tokens: 0,
+            total_input_tokens: 8_000,
+            reserved_output_tokens: 8_000,
+            projected_total_tokens: 16_000,
+            context_window_tokens: 200_000,
+            headroom_tokens: 184_000,
+            budget_state: BudgetState::Healthy,
+            last_api_usage: Some(TokenUsage {
+                prompt_tokens: 15_200,
+                completion_tokens: 800,
+                total_tokens: 16_000,
+            }),
+        }
+    }
 
     #[test]
     fn renders_minimal_state_header() {
@@ -158,6 +245,22 @@ mod tests {
         assert!(output.contains("Iteration 0/5"));
         assert!(!output.contains("Task completed"));
         assert!(!output.contains("<b>Error:</b>"));
+    }
+
+    #[test]
+    fn renders_projected_budget_and_api_usage() {
+        let mut state = ProgressState::new(5);
+        state.update(AgentEvent::Thinking {
+            snapshot: sample_snapshot(),
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("Iteration 1/5"));
+        assert!(output.contains("projected 16k/200k"));
+        assert!(output
+            .contains("Usage: hot 5.7k, projected 16k / 200k, headroom 184k, status healthy."));
+        assert!(output.contains("Last API usage: prompt 15k, completion 800, total 16k."));
     }
 
     #[test]

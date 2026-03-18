@@ -3,6 +3,7 @@
 use super::hooks::ToolHookDecision;
 use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use super::AgentRunner;
+use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_xml_tags;
@@ -62,6 +63,8 @@ impl AgentRunner {
                 ToolHookDecision::Blocked { reason } => {
                     self.record_blocked_tool_result(ctx, tool_call, &reason)
                         .await;
+                    let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+                    Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
                     continue;
                 }
                 ToolHookDecision::Finish { report } => {
@@ -85,6 +88,8 @@ impl AgentRunner {
                 return Ok(Some(AgentRunResult::WaitingForApproval));
             }
             self.apply_after_tool_hooks(ctx, state, &tool_result);
+            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+            Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
         }
         Ok(None)
     }
