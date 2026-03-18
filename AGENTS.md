@@ -346,16 +346,5 @@ Scheduled wake-up tasks with background scheduler for deferred agent execution.
 ### Telegram Settings
 `topic_configs`, `manager_allowed_users_str`, cooldown constants for unauthorized access protection.
 
-## 📚 Documentation
-
-### Core Documentation
-- `docs/hooks/` - Complete hook system documentation
-- `docs/hooks/sub-agents/` - Sub-agent delegation lifecycle
-- `docs/opencode-int/` - OpenCode sandbox integration
-- `docs/AGENT-TOPICS-BLUEPRINT.md` - Topic-based routing design
-- `docs/KOKORO-voice.md` - Local Kokoro TTS API reference
-- `docs/sdk-third-party-api-examples.md` - API examples
-- `skills/` - Skill documentation (9 skills)
-
 ### Testing Documentation
 Hermetic testing patterns (`tests/hermetic_agent.rs`), snapshot testing with insta (`tests/snapshot_prompts.rs`), property-based testing with proptest (`tests/proptest_recovery.rs`).
