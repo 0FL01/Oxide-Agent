@@ -78,7 +78,7 @@ pub use profile::{
     topic_agent_default_blocked_tools, topic_agent_manageable_hooks, topic_agent_protected_hooks,
     AgentExecutionProfile, HookAccessPolicy, ParsedAgentProfile, ToolAccessPolicy,
 };
-pub use progress::{AgentEvent, ProgressState};
+pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
 pub use provider::ToolProvider;
 pub use providers::{SshApprovalGrant, SshApprovalRequestView};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};

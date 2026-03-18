@@ -6,7 +6,7 @@ use super::types::{
 use super::AgentRunner;
 use crate::agent::compaction::{CompactionRequest, CompactionTrigger};
 use crate::agent::memory::AgentMessage;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, RepeatedCompactionKind};
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::{ChatResponse, LlmError};
@@ -309,10 +309,26 @@ impl AgentRunner {
             Self::emit_compaction_completed(ctx.progress_tx, trigger, &outcome).await;
         }
         if outcome.applied {
-            state.compaction_count = state.compaction_count.saturating_add(1);
-            if state.compaction_count > 1 {
-                Self::emit_repeated_compaction_warning(ctx.progress_tx, state.compaction_count)
+            if outcome.rebuild.inserted_summary {
+                state.compaction_count = state.compaction_count.saturating_add(1);
+                if state.compaction_count > 1 {
+                    Self::emit_repeated_compaction_warning(
+                        ctx.progress_tx,
+                        RepeatedCompactionKind::Compaction,
+                        state.compaction_count,
+                    )
                     .await;
+                }
+            } else if outcome.externalization.applied || outcome.pruning.applied {
+                state.cleanup_count = state.cleanup_count.saturating_add(1);
+                if state.cleanup_count > 1 {
+                    Self::emit_repeated_compaction_warning(
+                        ctx.progress_tx,
+                        RepeatedCompactionKind::Cleanup,
+                        state.cleanup_count,
+                    )
+                    .await;
+                }
             }
             Self::refresh_messages_from_memory(ctx);
         }
@@ -502,11 +518,12 @@ impl AgentRunner {
 
     async fn emit_repeated_compaction_warning(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        kind: RepeatedCompactionKind,
         count: usize,
     ) {
         if let Some(tx) = progress_tx {
             let _ = tx
-                .send(AgentEvent::RepeatedCompactionWarning { count })
+                .send(AgentEvent::RepeatedCompactionWarning { kind, count })
                 .await;
         }
     }
@@ -744,7 +761,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_emits_repeated_compaction_warning_after_multiple_applied_passes() {
+    async fn run_does_not_warn_when_cleanup_follows_single_summary_compaction() {
         let llm_client = build_llm_client(tool_then_final_provider());
         let summarizer = CompactionSummarizer::new(
             Arc::clone(&llm_client),
@@ -824,22 +841,22 @@ mod tests {
         drop(ctx);
         drop(progress_tx);
 
-        let mut repeated_warning_count = None;
+        let mut repeated_warning = None;
         let mut completion_events = 0usize;
         while let Some(event) = progress_rx.recv().await {
             match event {
                 AgentEvent::CompactionCompleted { .. } => {
                     completion_events = completion_events.saturating_add(1);
                 }
-                AgentEvent::RepeatedCompactionWarning { count } => {
-                    repeated_warning_count = Some(count);
+                AgentEvent::RepeatedCompactionWarning { kind, count } => {
+                    repeated_warning = Some((kind, count));
                 }
                 _ => {}
             }
         }
 
         assert!(completion_events >= 2);
-        assert_eq!(repeated_warning_count, Some(2));
+        assert_eq!(repeated_warning, None);
     }
 
     #[tokio::test]

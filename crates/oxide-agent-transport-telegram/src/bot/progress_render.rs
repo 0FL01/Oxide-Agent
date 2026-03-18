@@ -246,12 +246,15 @@ mod tests {
             archived_chunk_count: 1,
             summary_updated: true,
         });
-        state.update(AgentEvent::RepeatedCompactionWarning { count: 2 });
+        state.update(AgentEvent::RepeatedCompactionWarning {
+            kind: oxide_agent_core::agent::RepeatedCompactionKind::Compaction,
+            count: 2,
+        });
 
         let output = render_progress_html(&state);
 
         assert!(output.contains("<b>Context:</b>"));
-        assert!(output.contains("Compaction completed (manual)"));
-        assert!(output.contains("already been compacted 2 times"));
+        assert!(output.contains("Compaction: refreshed summary and rebuilt active context"));
+        assert!(output.contains("History was compacted 2 times"));
     }
 }
