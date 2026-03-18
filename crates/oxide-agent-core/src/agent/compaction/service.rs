@@ -3,6 +3,7 @@
 use super::archive::{ArchiveSink, NoopArchiveSink};
 use super::budget::estimate_request_budget;
 use super::classifier::classify_hot_memory;
+use super::externalize::{externalize_hot_memory, NoopPayloadSink, PayloadSink};
 use super::types::{CompactionOutcome, CompactionPolicy, CompactionRequest};
 use crate::agent::context::AgentContext;
 use anyhow::Result;
@@ -14,6 +15,7 @@ use tracing::debug;
 pub struct CompactionService {
     policy: CompactionPolicy,
     archive_sink: Arc<dyn ArchiveSink>,
+    payload_sink: Arc<dyn PayloadSink>,
 }
 
 impl Default for CompactionService {
@@ -29,6 +31,7 @@ impl CompactionService {
         Self {
             policy,
             archive_sink: Arc::new(NoopArchiveSink),
+            payload_sink: Arc::new(NoopPayloadSink),
         }
     }
 
@@ -36,6 +39,13 @@ impl CompactionService {
     #[must_use]
     pub fn with_archive_sink(mut self, archive_sink: Arc<dyn ArchiveSink>) -> Self {
         self.archive_sink = archive_sink;
+        self
+    }
+
+    /// Replace the payload sink used for large tool outputs.
+    #[must_use]
+    pub fn with_payload_sink(mut self, payload_sink: Arc<dyn PayloadSink>) -> Self {
+        self.payload_sink = payload_sink;
         self
     }
 
@@ -55,6 +65,20 @@ impl CompactionService {
         request: &CompactionRequest<'_>,
         agent: &mut dyn AgentContext,
     ) -> Result<CompactionOutcome> {
+        let budget_before = estimate_request_budget(&self.policy, request, agent);
+        let snapshot_before = classify_hot_memory(agent.memory().get_messages());
+        let (rewritten_messages, externalization) = externalize_hot_memory(
+            &self.policy,
+            &agent.compaction_scope(),
+            &snapshot_before,
+            agent.memory().get_messages(),
+            self.payload_sink.as_ref(),
+            self.archive_sink.as_ref(),
+        );
+        if externalization.applied {
+            agent.memory_mut().replace_messages(rewritten_messages);
+        }
+
         let budget = estimate_request_budget(&self.policy, request, agent);
         let snapshot = classify_hot_memory(agent.memory().get_messages());
         let hot_messages = agent.memory().get_messages().len();
@@ -76,6 +100,8 @@ impl CompactionService {
             reserved_output_tokens = budget.reserved_output_tokens,
             headroom_tokens = budget.headroom_tokens,
             budget_state = ?budget.state,
+            externalized_messages = externalization.externalized_count,
+            reclaimed_tokens = externalization.reclaimed_tokens,
             pinned_messages = snapshot.pinned.message_count,
             protected_live_messages = snapshot.protected_live.message_count,
             prunable_artifact_messages = snapshot.prunable_artifacts.message_count,
@@ -83,9 +109,19 @@ impl CompactionService {
             "Compaction checkpoint reached"
         );
 
-        let _ = &self.archive_sink;
+        if !externalization.applied {
+            return Ok(CompactionOutcome::noop(request.trigger, budget, snapshot));
+        }
 
-        Ok(CompactionOutcome::noop(request.trigger, budget, snapshot))
+        Ok(CompactionOutcome {
+            trigger: request.trigger,
+            applied: true,
+            token_count_before: budget_before.hot_memory.total_tokens,
+            token_count_after: budget.hot_memory.total_tokens,
+            budget,
+            snapshot,
+            externalization,
+        })
     }
 }
 
@@ -125,6 +161,41 @@ mod tests {
         assert_eq!(outcome.budget.state, BudgetState::Healthy);
         assert_eq!(outcome.snapshot.protected_live.message_count, 0);
         assert_eq!(outcome.snapshot.compactable_history.message_count, 1);
+        assert_eq!(outcome.externalization.externalized_count, 0);
+    }
+
+    #[tokio::test]
+    async fn prepare_for_run_externalizes_large_tool_payloads() {
+        let mut session = EphemeralSession::new(20_000);
+        session.memory_mut().add_message(AgentMessage::tool(
+            "call-1",
+            "read_file",
+            &"A".repeat(5_000),
+        ));
+
+        let service = CompactionService::default();
+        let request = CompactionRequest::new(
+            crate::agent::compaction::CompactionTrigger::PreRun,
+            "Inspect the file",
+            "system prompt",
+            &[],
+            "demo-model",
+            512,
+            false,
+        );
+
+        let outcome = service
+            .prepare_for_run(&request, &mut session)
+            .await
+            .expect("stage 5 externalization checkpoint should succeed");
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.externalization.externalized_count, 1);
+        assert!(outcome.token_count_after < outcome.token_count_before);
+        assert!(session.memory().get_messages()[0].is_externalized());
+        assert!(session.memory().get_messages()[0]
+            .content
+            .contains("[externalized tool result]"));
     }
 
     #[test]

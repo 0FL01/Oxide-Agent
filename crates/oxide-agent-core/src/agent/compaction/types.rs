@@ -1,5 +1,6 @@
 //! Shared types for Agent Mode context compaction.
 
+use super::archive::ArchiveRef;
 use crate::config::AGENT_COMPACT_THRESHOLD;
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
@@ -101,6 +102,12 @@ pub struct CompactionPolicy {
     pub compact_threshold_percent: u8,
     /// Reserved buffer kept free beyond the response budget.
     pub hard_reserve_tokens: usize,
+    /// Minimum approximate token size before a tool payload is externalized.
+    pub externalize_threshold_tokens: usize,
+    /// Minimum character size before a tool payload is externalized.
+    pub externalize_threshold_chars: usize,
+    /// Maximum preview size kept inline after externalization.
+    pub externalize_preview_chars: usize,
 }
 
 impl Default for CompactionPolicy {
@@ -111,6 +118,27 @@ impl Default for CompactionPolicy {
             prune_threshold_percent: 80,
             compact_threshold_percent: 90,
             hard_reserve_tokens: 8_192,
+            externalize_threshold_tokens: 512,
+            externalize_threshold_chars: 2_048,
+            externalize_preview_chars: 280,
+        }
+    }
+}
+
+/// Agent/session scope metadata used for archive and payload keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionScope {
+    /// Stable context key for topic/thread/session scope.
+    pub context_key: String,
+    /// Stable flow identifier within the context.
+    pub flow_id: String,
+}
+
+impl Default for CompactionScope {
+    fn default() -> Self {
+        Self {
+            context_key: "unknown-context".to_string(),
+            flow_id: "hot-memory".to_string(),
         }
     }
 }
@@ -244,8 +272,27 @@ pub struct ClassifiedMemoryEntry {
     pub has_reasoning: bool,
     /// Tool name for tool-related entries when available.
     pub tool_name: Option<String>,
+    /// Whether the payload already lives outside hot memory.
+    pub is_externalized: bool,
+    /// Artifact reference when the payload has been externalized.
+    pub archive_ref: Option<ArchiveRef>,
     /// Whether this entry belongs to the recent raw working window.
     pub preserve_in_raw_window: bool,
+}
+
+/// Result of replacing large inline payloads with lightweight artifact references.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExternalizationOutcome {
+    /// Whether any hot-memory entries were rewritten.
+    pub applied: bool,
+    /// Number of messages externalized during this checkpoint.
+    pub externalized_count: usize,
+    /// Hot-memory token estimate removed from raw payloads.
+    pub reclaimed_tokens: usize,
+    /// Total visible characters removed from hot memory.
+    pub reclaimed_chars: usize,
+    /// Artifact refs created during this checkpoint.
+    pub archive_refs: Vec<ArchiveRef>,
 }
 
 /// Aggregate stats for one classifier bucket.
@@ -312,6 +359,8 @@ pub struct CompactionOutcome {
     pub budget: BudgetEstimate,
     /// Classified view of the current hot memory.
     pub snapshot: CompactionSnapshot,
+    /// Result of payload externalization applied before later stages.
+    pub externalization: ExternalizationOutcome,
 }
 
 impl CompactionOutcome {
@@ -330,6 +379,7 @@ impl CompactionOutcome {
             token_count_after: token_count,
             budget,
             snapshot,
+            externalization: ExternalizationOutcome::default(),
         }
     }
 }

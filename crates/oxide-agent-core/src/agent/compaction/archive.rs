@@ -12,6 +12,8 @@ pub struct ArchiveRef {
     pub created_at: i64,
     /// Short human-readable title used for future discovery.
     pub title: String,
+    /// Storage key or object path holding the archived payload.
+    pub storage_key: String,
 }
 
 /// Persisted archive metadata for future retrieval-oriented features.
@@ -33,6 +35,18 @@ pub struct ArchiveRecord {
     pub title: String,
     /// Short summary for future lookup.
     pub short_summary: String,
+    /// Logical archive record kind.
+    #[serde(default)]
+    pub kind: String,
+    /// Tool names associated with this archived chunk.
+    #[serde(default)]
+    pub tool_names: Vec<String>,
+    /// File paths associated with this archived chunk.
+    #[serde(default)]
+    pub file_paths: Vec<String>,
+    /// Storage key or payload reference for the archived content.
+    #[serde(default)]
+    pub payload_ref: String,
 }
 
 /// Persistence sink for future compaction archive chunks.
