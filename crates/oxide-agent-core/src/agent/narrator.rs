@@ -3,7 +3,7 @@
 //! Uses a lightweight sidecar LLM to interpret the primary agent's reasoning
 //! and tool calls into concise narrative updates.
 
-use crate::llm::{LlmClient, LlmError, Message, ToolCall};
+use crate::llm::{LlmClient, LlmError, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -95,11 +95,10 @@ impl Narrator {
     /// Call the narrator LLM with retry logic
     async fn call_llm(&self, user_message: &str, model: &str) -> Result<String, LlmError> {
         let system_prompt = Self::system_prompt();
-        let messages = [Message::user(user_message)];
 
         // Use chat_completion which has retry logic built-in
         self.llm_client
-            .chat_completion(&system_prompt, &messages, "", model)
+            .chat_completion(&system_prompt, &[], user_message, model)
             .await
     }
 
@@ -162,6 +161,9 @@ Example:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentSettings;
+    use crate::llm::{LlmClient, MockLlmProvider};
+    use std::sync::Arc;
 
     #[test]
     fn test_extract_json_plain() {
@@ -188,5 +190,62 @@ mod tests {
         let narrative = parsed.expect("Failed to parse valid JSON in test");
         assert_eq!(narrative.headline, "Test");
         assert_eq!(narrative.content, "Content");
+    }
+
+    #[tokio::test]
+    async fn generate_sends_narration_payload_as_user_message() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-model".to_string()),
+            chat_model_provider: Some("mock".to_string()),
+            narrator_model_id: Some("narrator-model".to_string()),
+            narrator_model_provider: Some("mock".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_chat_completion()
+            .withf(|system_prompt, history, user_message, model_name, _| {
+                system_prompt.contains("technical narrator")
+                    && history.is_empty()
+                    && user_message.contains("## Agent Reasoning")
+                    && user_message.contains("## Tool Calls")
+                    && user_message.contains("execute_command")
+                    && model_name == "narrator-model"
+            })
+            .return_once(|_, _, _, _, _| {
+                Ok(r#"{"headline":"Inspecting Files","content":"Agent reads files and tracks command progress."}"#.to_string())
+            });
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        provider.expect_analyze_image().returning(|_, _, _, _| {
+            Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
+        });
+        provider
+            .expect_chat_with_tools()
+            .returning(|_| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("mock".to_string(), Arc::new(provider));
+        let narrator = Narrator::new(Arc::new(llm_client));
+        let tool_calls = vec![crate::llm::ToolCall {
+            id: "call-1".to_string(),
+            function: crate::llm::ToolCallFunction {
+                name: "execute_command".to_string(),
+                arguments: "{\"command\":\"ls\"}".to_string(),
+            },
+            is_recovered: false,
+        }];
+
+        let narrative = narrator
+            .generate(Some("Inspect files and summarize findings"), &tool_calls)
+            .await
+            .expect("narrative response");
+
+        assert_eq!(narrative.headline, "Inspecting Files");
+        assert_eq!(
+            narrative.content,
+            "Agent reads files and tracks command progress."
+        );
     }
 }
