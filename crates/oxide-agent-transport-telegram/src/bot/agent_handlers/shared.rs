@@ -24,9 +24,9 @@ pub(crate) fn reminder_thread_kind(thread_spec: TelegramThreadSpec) -> ReminderT
     }
 }
 
-pub(crate) fn is_created_forum_topic(thread_spec: TelegramThreadSpec) -> bool {
+pub(crate) fn is_general_forum_topic(thread_spec: TelegramThreadSpec) -> bool {
     matches!(thread_spec.kind, TelegramThreadKind::Forum)
-        && thread_spec.thread_id != Some(general_forum_topic_id())
+        && thread_spec.thread_id == Some(general_forum_topic_id())
 }
 
 pub(crate) fn manager_control_plane_enabled(
@@ -35,7 +35,7 @@ pub(crate) fn manager_control_plane_enabled(
     thread_spec: TelegramThreadSpec,
 ) -> bool {
     settings.telegram.manager_allowed_users().contains(&user_id)
-        && !is_created_forum_topic(thread_spec)
+        && is_general_forum_topic(thread_spec)
 }
 
 pub(crate) static PENDING_CANCEL_MESSAGES: LazyLock<RwLock<HashMap<SessionId, MessageId>>> =
