@@ -71,18 +71,29 @@ crates/
 │   ├── src/
 │   │   ├── runner.rs                # Инициализация бота
 │   │   ├── bot/
-│   │   │   ├── handlers.rs
-│   │   │   ├── agent_handlers.rs
-│   │   │   ├── agent_transport.rs
-│   │   │   ├── context.rs
-│   │   │   ├── topic_route.rs
-│   │   │   ├── thread.rs
-│   │   │   ├── manager_topic_lifecycle.rs
-│   │   │   ├── messaging.rs
-│   │   │   ├── resilient.rs
-│   │   │   ├── progress_render.rs
-│   │   │   ├── unauthorized_cache.rs
-│   │   │   ├── state.rs
+│   │   │   ├── handlers.rs          # Top-level Telegram handlers and menus
+│   │   │   ├── agent_handlers/      # Agent Mode facade + modularized handler slices
+│   │   │   │   ├── mod.rs           # Thin facade and re-exports
+│   │   │   │   ├── lifecycle.rs     # Agent mode activation/message orchestration
+│   │   │   │   ├── controls.rs      # Control commands, confirmations, exit flow
+│   │   │   │   ├── callbacks.rs     # Inline callback routing and approvals
+│   │   │   │   ├── input.rs         # Batched text and multimodal input handling
+│   │   │   │   ├── task_runner.rs   # Task execution, progress, result delivery
+│   │   │   │   ├── session.rs       # Session lifecycle, compat keys, registry helpers
+│   │   │   │   ├── execution_config.rs # Execution profile, infra, reminder context wiring
+│   │   │   │   ├── reminders.rs     # Reminder scheduler wake-up handling
+│   │   │   │   ├── shared.rs        # Shared helpers and pending state maps
+│   │   │   │   └── tests.rs         # Agent handler unit tests
+│   │   │   ├── agent_transport.rs   # Transport adapter for progress/task updates
+│   │   │   ├── context.rs           # Context-scoped transport state
+│   │   │   ├── topic_route.rs       # Topic routing and dynamic binding resolution
+│   │   │   ├── thread.rs            # Telegram thread/topic helpers
+│   │   │   ├── manager_topic_lifecycle.rs # Manager topic provisioning helpers
+│   │   │   ├── messaging.rs         # Long-message delivery helpers
+│   │   │   ├── resilient.rs         # Resilient Telegram send/edit wrappers
+│   │   │   ├── progress_render.rs   # HTML progress rendering
+│   │   │   ├── unauthorized_cache.rs # Unauthorized access cooldown cache
+│   │   │   ├── state.rs             # Dialogue state machine
 │   │   │   └── views/               # UI component views
 │   │   │       └── agent.rs         # Agent Mode UI components
 │   │   └── tests/
@@ -105,7 +116,7 @@ sandbox/
 - `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов и context-scoped storage API, embeddings support, hook system с manageable/protected hooks, `AgentExecutionProfile` с `ToolAccessPolicy`, `TopicContextRecord`, `TopicInfraConfigRecord`, `TopicAgentsMdRecord` для topic-scoped системных промптов, SSH MCP provider с approval flow.
 - `oxide-agent-runtime`: оркестрация сессий, прогресс-рендеринг, session registry с thread-aware session keys.
 - `oxide-agent-sandboxd`: отдельный broker daemon для sandbox. Слушает Unix socket (`SANDBOXD_SOCKET`), владеет `docker.sock`, принимает узкий sandbox protocol и выполняет Docker operations от имени основного агента.
-- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, resilient messaging, progress rendering, unauthorized access protection, телеметрия доставки. Включает `context.rs` для context-scoped state management с legacy fallback для DM-чатов и views module для UI компонентов.
+- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, resilient messaging, progress rendering, unauthorized access protection, телеметрия доставки. Включает модульный `bot/agent_handlers/` (facade + lifecycle/controls/callbacks/input/task_runner/session/execution_config/reminders/shared/tests), `context.rs` для context-scoped state management с legacy fallback для DM-чатов и views module для UI компонентов.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
 ## 🧪 Testing Infrastructure
