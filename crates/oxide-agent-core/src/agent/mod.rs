@@ -4,8 +4,11 @@
 //! - Accept tasks from users (text, voice, images)
 //! - Decompose and execute tasks iteratively
 //! - Report progress via transport adapters
-//! - Manage conversation memory with auto-compaction
+//! - Manage conversation memory for long-running agent tasks
 
+/// Context abstractions for runner execution
+/// Context compaction orchestration and extension points
+pub mod compaction;
 /// Context abstractions for runner execution
 pub mod context;
 /// Executor for iterative task processing
@@ -14,7 +17,7 @@ pub mod executor;
 pub mod hooks;
 /// Transport-agnostic agent identity types
 pub mod identity;
-/// Memory management with auto-compaction
+/// Memory management for agent conversation history
 pub mod memory;
 /// Preprocessor for different input types (voice, photo, etc)
 pub mod preprocessor;
@@ -53,6 +56,10 @@ pub mod loop_detection;
 /// Progress tracking and runtime events
 pub mod progress;
 
+pub use compaction::{
+    ArchiveRecord, ArchiveRef, ArchiveSink, CompactionOutcome, CompactionPolicy, CompactionRequest,
+    CompactionService, CompactionTrigger, NoopArchiveSink,
+};
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};

@@ -1,7 +1,7 @@
-//! Agent memory management with auto-compaction
+//! Agent memory management for Agent Mode sessions.
 //!
-//! Provides conversation memory for the agent with automatic compaction
-//! when token count approaches the limit. Uses tiktoken for token counting.
+//! Provides conversation memory for the agent and lightweight token
+//! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::providers::TodoList;
 use crate::config::AGENT_COMPACT_THRESHOLD;
@@ -128,7 +128,7 @@ impl AgentMessage {
     }
 }
 
-/// Agent memory with auto-compaction support
+/// Agent memory for the active hot context window
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMemory {
     messages: Vec<AgentMessage>,
@@ -156,7 +156,7 @@ impl AgentMemory {
         }
     }
 
-    /// Add a message to memory, triggering compaction if needed
+    /// Add a message to memory and update token accounting.
     pub fn add_message(&mut self, msg: AgentMessage) {
         let mut msg_tokens = Self::count_tokens(&msg.content);
 
@@ -167,11 +167,6 @@ impl AgentMemory {
 
         self.token_count += msg_tokens;
         self.messages.push(msg);
-
-        // Check if we need to compact
-        if self.token_count > self.compact_threshold {
-            self.compact();
-        }
     }
 
     /// Returns true when memory already contains a pinned topic `AGENTS.md` message.
@@ -196,6 +191,12 @@ impl AgentMemory {
     #[must_use]
     pub const fn max_tokens(&self) -> usize {
         self.max_tokens
+    }
+
+    /// Get the legacy compaction threshold retained during the migration.
+    #[must_use]
+    pub const fn compact_threshold(&self) -> usize {
+        self.compact_threshold
     }
 
     /// Get the last synchronized API token count
@@ -244,15 +245,12 @@ impl AgentMemory {
         })
     }
 
-    /// Compact memory by summarizing older messages
+    /// Apply the legacy local compaction strategy explicitly.
     ///
-    /// Strategy:
-    /// 1. Keep the last 20% of messages intact (recent context)
-    /// 2. Summarize the first 80% into a single system message
-    ///
-    /// Note: In this iteration, we use a simple truncation strategy.
-    /// Full LLM-based summarization will be added when MCP tools are integrated.
-    fn compact(&mut self) {
+    /// This method remains available as a temporary migration fallback while the
+    /// new orchestration-based compaction pipeline is introduced.
+    #[allow(dead_code)]
+    pub(crate) fn apply_legacy_local_compaction(&mut self) {
         if self.messages.len() < 5 {
             return; // Not enough messages to compact
         }
@@ -325,6 +323,7 @@ impl AgentMemory {
     }
 
     /// Create a simple summary of messages (no LLM, just extraction of key points)
+    #[allow(dead_code)]
     fn create_simple_summary(messages: &[AgentMessage]) -> String {
         let mut summary_parts = Vec::new();
 
@@ -462,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compaction_preserves_topic_agents_md_message() {
+    fn test_memory_does_not_auto_compact() {
         let mut memory = AgentMemory::new(300);
         memory.add_message(AgentMessage::topic_agents_md(
             "# Topic AGENTS\nAlways respect deployment windows.",
@@ -476,9 +475,37 @@ mod tests {
         }
 
         assert!(memory.has_topic_agents_md());
+        assert_eq!(memory.get_messages().len(), 13);
+        assert!(!memory
+            .get_messages()
+            .iter()
+            .any(|message| message.content.starts_with("[Previous context compressed]")));
+    }
+
+    #[test]
+    fn test_explicit_legacy_compaction_preserves_topic_agents_md_message() {
+        let mut memory = AgentMemory::new(300);
+        memory.add_message(AgentMessage::topic_agents_md(
+            "# Topic AGENTS\nAlways respect deployment windows.",
+        ));
+
+        for idx in 0..12 {
+            memory.add_message(AgentMessage::user(format!(
+                "Message {idx}: {}",
+                "x".repeat(80)
+            )));
+        }
+
+        memory.apply_legacy_local_compaction();
+
+        assert!(memory.has_topic_agents_md());
         assert!(memory
             .get_messages()
             .iter()
             .any(|message| message.content.starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX)));
+        assert!(memory
+            .get_messages()
+            .iter()
+            .any(|message| message.content.starts_with("[Previous context compressed]")));
     }
 }
