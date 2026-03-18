@@ -232,6 +232,7 @@ mod tests {
                 tool_calls: None,
                 externalized_payload: None,
                 pruned_artifact: None,
+                structured_summary: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::Legacy,
@@ -243,6 +244,7 @@ mod tests {
                 tool_calls: None,
                 externalized_payload: None,
                 pruned_artifact: None,
+                structured_summary: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::Legacy,
@@ -254,6 +256,7 @@ mod tests {
                 tool_calls: None,
                 externalized_payload: None,
                 pruned_artifact: None,
+                structured_summary: None,
             },
         ];
 

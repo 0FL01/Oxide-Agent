@@ -40,7 +40,9 @@ pub fn build_compaction_user_message(
     let mut sections = Vec::new();
 
     for entry in &snapshot.entries {
-        if entry.retention != CompactionRetention::CompactableHistory {
+        if entry.retention != CompactionRetention::CompactableHistory
+            || entry.preserve_in_raw_window
+        {
             continue;
         }
 
@@ -91,20 +93,26 @@ mod tests {
     use crate::agent::memory::AgentMessage;
 
     #[test]
-    fn build_compaction_user_message_only_includes_compactable_history() {
+    fn build_compaction_user_message_only_includes_old_compactable_history() {
         let messages = vec![
             AgentMessage::user_task("Pinned task"),
-            AgentMessage::user("First request"),
-            AgentMessage::assistant("Working on it"),
+            AgentMessage::user("Older request"),
+            AgentMessage::assistant("Older response"),
+            AgentMessage::user("Recent request 1"),
+            AgentMessage::assistant("Recent response 1"),
+            AgentMessage::user("Recent request 2"),
+            AgentMessage::assistant("Recent response 2"),
             AgentMessage::tool("call-1", "search", "tool output"),
         ];
 
         let snapshot = classify_hot_memory(&messages);
         let prompt = build_compaction_user_message(&snapshot, &messages);
 
-        assert!(prompt.contains("First request"));
-        assert!(prompt.contains("Working on it"));
+        assert!(prompt.contains("Older request"));
+        assert!(prompt.contains("Older response"));
         assert!(!prompt.contains("Pinned task"));
+        assert!(!prompt.contains("Recent request 1"));
+        assert!(!prompt.contains("Recent response 2"));
         assert!(!prompt.contains("tool output"));
     }
 }
