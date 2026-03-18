@@ -234,6 +234,6 @@ impl AgentRunner {
         ctx.messages.push(Message::system(&context));
         ctx.agent
             .memory_mut()
-            .add_message(AgentMessage::system(context));
+            .add_message(AgentMessage::system_context(context));
     }
 }

@@ -9,4 +9,7 @@ pub mod types;
 
 pub use archive::{ArchiveRecord, ArchiveRef, ArchiveSink, NoopArchiveSink};
 pub use service::CompactionService;
-pub use types::{CompactionOutcome, CompactionPolicy, CompactionRequest, CompactionTrigger};
+pub use types::{
+    AgentMessageKind, CompactionOutcome, CompactionPolicy, CompactionRequest, CompactionRetention,
+    CompactionTrigger,
+};

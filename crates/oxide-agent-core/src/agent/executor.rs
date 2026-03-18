@@ -276,7 +276,7 @@ impl AgentExecutor {
     pub fn inject_system_message(&mut self, content: String) {
         self.session
             .memory
-            .add_message(AgentMessage::system(content.clone()));
+            .add_message(AgentMessage::system_context(content.clone()));
     }
 
     /// Attach user-scoped storage for manager control-plane tools.
@@ -455,7 +455,9 @@ impl AgentExecutor {
         );
 
         if append_user_message {
-            self.session.memory.add_message(AgentMessage::user(task));
+            self.session
+                .memory
+                .add_message(AgentMessage::user_task(task));
         }
 
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));

@@ -1869,7 +1869,7 @@ fn write_private_key_tempfile_in(temp_dir: &Path, private_key: &str) -> Result<N
 
 /// Build a system message instructing the agent to replay an approved SSH tool call.
 pub fn inject_ssh_approval_system_message(grant: &SshApprovalGrant) -> AgentMessage {
-    AgentMessage::system(format!(
+    AgentMessage::approval_replay(format!(
         "A human operator approved the pending SSH action for target '{}' in topic '{}'. Retry the exact same SSH tool call and include approval_request_id='{}' and approval_token='{}'. Do not change any other tool arguments.",
         grant.target_name, grant.topic_id, grant.request_id, grant.approval_token
     ))
@@ -1879,7 +1879,7 @@ pub fn inject_ssh_approval_system_message(grant: &SshApprovalGrant) -> AgentMess
 pub fn inject_topic_infra_preflight_system_message(
     report: &TopicInfraPreflightReport,
 ) -> AgentMessage {
-    AgentMessage::system(format!(
+    AgentMessage::infra_status(format!(
         "Topic-scoped SSH preflight status: {} Never request, reveal, or print the underlying secret material.",
         report.summary
     ))
