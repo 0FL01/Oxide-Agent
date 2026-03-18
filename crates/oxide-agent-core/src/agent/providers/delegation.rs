@@ -15,14 +15,16 @@ use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
 use crate::agent::provider::ToolProvider;
-use crate::agent::providers::{FileHosterProvider, SandboxProvider, TodosProvider, YtdlpProvider};
+use crate::agent::providers::{
+    FileHosterProvider, SandboxProvider, TodoList, TodosProvider, YtdlpProvider,
+};
 use crate::agent::registry::ToolRegistry;
-use crate::agent::runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
+use crate::agent::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use crate::config::{
     get_agent_search_limit, get_sub_agent_max_iterations, AGENT_CONTINUATION_LIMIT,
     SUB_AGENT_MAX_TOKENS,
 };
-use crate::llm::ToolDefinition;
+use crate::llm::{Message, ToolDefinition};
 use crate::sandbox::SandboxScope;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -86,6 +88,26 @@ pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
+}
+
+struct PreparedSubAgentExecution {
+    task_id: String,
+    task: String,
+    registry: ToolRegistry,
+    tools: Vec<ToolDefinition>,
+    system_prompt: String,
+    todos_arc: Arc<Mutex<TodoList>>,
+    messages: Vec<Message>,
+    sub_session: EphemeralSession,
+    runner_config: AgentRunnerConfig,
+    compaction_service: CompactionService,
+}
+
+enum SubAgentRunOutcome {
+    Final(String),
+    WaitingForApproval,
+    Failed(anyhow::Error),
+    TimedOut,
 }
 
 impl DelegationProvider {
@@ -237,6 +259,158 @@ impl DelegationProvider {
             },
         ))
     }
+
+    fn parse_delegate_args(arguments: &str) -> Result<DelegateToSubAgentArgs> {
+        let args: DelegateToSubAgentArgs = serde_json::from_str(arguments)?;
+        if args.task.trim().is_empty() {
+            return Err(anyhow!("Sub-agent task cannot be empty"));
+        }
+        if args.tools.is_empty() {
+            return Err(anyhow!("Sub-agent tools whitelist cannot be empty"));
+        }
+        Ok(args)
+    }
+
+    fn build_sub_agent_session(
+        task: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> EphemeralSession {
+        let mut sub_session = match cancellation_token {
+            Some(parent_token) => {
+                EphemeralSession::with_parent_token(SUB_AGENT_MAX_TOKENS, parent_token)
+            }
+            None => EphemeralSession::new(SUB_AGENT_MAX_TOKENS),
+        };
+        sub_session
+            .memory_mut()
+            .add_message(AgentMessage::user_task(task));
+        sub_session
+    }
+
+    fn build_sub_agent_runner_config(&self) -> AgentRunnerConfig {
+        let (model_id, _, model_max_output_tokens) = self.settings.get_configured_sub_agent_model();
+        AgentRunnerConfig::new(
+            model_id,
+            get_sub_agent_max_iterations(),
+            AGENT_CONTINUATION_LIMIT,
+            self.settings.get_sub_agent_timeout_secs(),
+            model_max_output_tokens,
+        )
+        .with_sub_agent(true)
+    }
+
+    fn prepare_sub_agent_execution(
+        &self,
+        arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<PreparedSubAgentExecution> {
+        let DelegateToSubAgentArgs {
+            task,
+            tools: requested_tools,
+            context,
+        } = Self::parse_delegate_args(arguments)?;
+
+        let task_id = format!("sub-{}", Uuid::new_v4());
+        let sub_session = Self::build_sub_agent_session(task.as_str(), cancellation_token);
+        let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
+        let providers = self.build_sub_agent_providers(Arc::clone(&todos_arc), progress_tx);
+        let available_tools: HashSet<String> = providers
+            .iter()
+            .flat_map(|provider| provider.tools())
+            .map(|tool| tool.name)
+            .collect();
+        let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
+        let registry = self.build_registry(&allowed, providers);
+        let tools = registry.all_tools();
+        let (_, provider, _) = self.settings.get_configured_sub_agent_model();
+        let structured_output = !provider.eq_ignore_ascii_case("zai");
+        let system_prompt = create_sub_agent_system_prompt(
+            task.as_str(),
+            &tools,
+            structured_output,
+            context.as_deref(),
+        );
+
+        Ok(PreparedSubAgentExecution {
+            task_id,
+            task,
+            registry,
+            tools,
+            system_prompt,
+            todos_arc,
+            messages: AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages()),
+            sub_session,
+            runner_config: self.build_sub_agent_runner_config(),
+            compaction_service: self.create_sub_agent_compaction_service(),
+        })
+    }
+
+    fn build_sub_agent_runner_context<'a>(
+        prepared: &'a mut PreparedSubAgentExecution,
+        progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> AgentRunnerContext<'a> {
+        AgentRunnerContext {
+            task: prepared.task.as_str(),
+            system_prompt: &prepared.system_prompt,
+            tools: &prepared.tools,
+            registry: &prepared.registry,
+            progress_tx,
+            todos_arc: &prepared.todos_arc,
+            task_id: &prepared.task_id,
+            messages: &mut prepared.messages,
+            agent: &mut prepared.sub_session,
+            skill_registry: None,
+            compaction_service: Some(&prepared.compaction_service),
+            config: prepared.runner_config.clone(),
+        }
+    }
+
+    async fn run_sub_agent_with_timeout(
+        &self,
+        runner: &mut AgentRunner,
+        ctx: &mut AgentRunnerContext<'_>,
+    ) -> SubAgentRunOutcome {
+        match timeout(self.sub_agent_timeout_duration(), runner.run(ctx)).await {
+            Ok(Ok(AgentRunResult::Final(result))) => SubAgentRunOutcome::Final(result),
+            Ok(Ok(AgentRunResult::WaitingForApproval)) => SubAgentRunOutcome::WaitingForApproval,
+            Ok(Err(error)) => SubAgentRunOutcome::Failed(error),
+            Err(_) => SubAgentRunOutcome::TimedOut,
+        }
+    }
+
+    fn sub_agent_timeout_duration(&self) -> Duration {
+        Duration::from_secs(self.settings.get_sub_agent_timeout_secs() + 30)
+    }
+
+    fn build_sub_agent_error_report(
+        &self,
+        task_id: &str,
+        memory: &AgentMemory,
+        error: String,
+    ) -> String {
+        build_sub_agent_report(SubAgentReportContext {
+            task_id,
+            status: SubAgentReportStatus::Error,
+            error: Some(error),
+            memory,
+            timeout_secs: self.settings.get_sub_agent_timeout_secs(),
+        })
+    }
+
+    fn build_sub_agent_timeout_report(&self, task_id: &str, memory: &AgentMemory) -> String {
+        let limit = self.settings.get_sub_agent_timeout_secs();
+        build_sub_agent_report(SubAgentReportContext {
+            task_id,
+            status: SubAgentReportStatus::Timeout,
+            error: Some(format!(
+                "Sub-agent hard timed out after {} seconds",
+                limit + 30
+            )),
+            memory,
+            timeout_secs: limit,
+        })
+    }
 }
 
 #[async_trait]
@@ -290,129 +464,40 @@ If the sub-agent doesn't finish, a partial report will be returned."
             return Err(anyhow!("Unknown delegation tool: {tool_name}"));
         }
 
-        let args: DelegateToSubAgentArgs = serde_json::from_str(arguments)?;
-        if args.task.trim().is_empty() {
-            return Err(anyhow!("Sub-agent task cannot be empty"));
-        }
-        if args.tools.is_empty() {
-            return Err(anyhow!("Sub-agent tools whitelist cannot be empty"));
-        }
-
-        let DelegateToSubAgentArgs {
-            task,
-            tools: requested_tools,
-            context,
-        } = args;
-
-        let task_id = format!("sub-{}", Uuid::new_v4());
-
-        // Create sub-session linked to parent's cancellation token.
-        // When parent is cancelled (including on loop detection), sub-agent stops too.
-        let mut sub_session = match cancellation_token {
-            Some(parent_token) => {
-                EphemeralSession::with_parent_token(SUB_AGENT_MAX_TOKENS, parent_token)
-            }
-            None => EphemeralSession::new(SUB_AGENT_MAX_TOKENS),
-        };
-        sub_session
-            .memory_mut()
-            .add_message(AgentMessage::user_task(task.as_str()));
-
-        let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
-        let providers = self.build_sub_agent_providers(Arc::clone(&todos_arc), progress_tx);
-        let available_tools: HashSet<String> = providers
-            .iter()
-            .flat_map(|provider| provider.tools())
-            .map(|tool| tool.name)
-            .collect();
-
-        let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
-        let registry = self.build_registry(&allowed, providers);
-        let tools = registry.all_tools();
-
-        let mut messages =
-            AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages());
-
-        let (_, provider, _) = self.settings.get_configured_sub_agent_model();
-        let structured_output = !provider.eq_ignore_ascii_case("zai");
-        let system_prompt = create_sub_agent_system_prompt(
-            task.as_str(),
-            &tools,
-            structured_output,
-            context.as_deref(),
-        );
-
+        let mut prepared =
+            self.prepare_sub_agent_execution(arguments, progress_tx, cancellation_token)?;
         let mut runner = self.create_sub_agent_runner(Self::blocked_tool_set());
-        let compaction_service = self.create_sub_agent_compaction_service();
+        info!(task_id = %prepared.task_id, "Running sub-agent delegation");
 
-        let mut ctx = AgentRunnerContext {
-            task: task.as_str(),
-            system_prompt: &system_prompt,
-            tools: &tools,
-            registry: &registry,
-            progress_tx,
-            todos_arc: &todos_arc,
-            task_id: &task_id,
-            messages: &mut messages,
-            agent: &mut sub_session,
-            skill_registry: None,
-            compaction_service: Some(&compaction_service),
-            config: {
-                let (model_id, _, model_max_output_tokens) =
-                    self.settings.get_configured_sub_agent_model();
-                let max_iterations = get_sub_agent_max_iterations();
-                AgentRunnerConfig::new(
-                    model_id,
-                    max_iterations,
-                    AGENT_CONTINUATION_LIMIT,
-                    self.settings.get_sub_agent_timeout_secs(),
-                    model_max_output_tokens,
-                )
-                .with_sub_agent(true)
-            },
+        let outcome = {
+            let mut ctx = Self::build_sub_agent_runner_context(&mut prepared, progress_tx);
+            self.run_sub_agent_with_timeout(&mut runner, &mut ctx).await
         };
 
-        info!(task_id = %task_id, "Running sub-agent delegation");
-
-        let timeout_secs = self.settings.get_sub_agent_timeout_secs();
-        let timeout_duration = Duration::from_secs(timeout_secs + 30);
-        match timeout(timeout_duration, runner.run(&mut ctx)).await {
-            Ok(Ok(crate::agent::runner::AgentRunResult::Final(result))) => Ok(result),
-            Ok(Ok(crate::agent::runner::AgentRunResult::WaitingForApproval)) => {
-                warn!(task_id = %task_id, "Sub-agent paused waiting for unsupported approval");
-                Ok(build_sub_agent_report(SubAgentReportContext {
-                    task_id: &task_id,
-                    status: SubAgentReportStatus::Error,
-                    error: Some(
-                        "sub-agent paused waiting for unsupported external approval".to_string(),
-                    ),
-                    memory: sub_session.memory(),
-                    timeout_secs: self.settings.get_sub_agent_timeout_secs(),
-                }))
+        match outcome {
+            SubAgentRunOutcome::Final(result) => Ok(result),
+            SubAgentRunOutcome::WaitingForApproval => {
+                warn!(task_id = %prepared.task_id, "Sub-agent paused waiting for unsupported approval");
+                Ok(self.build_sub_agent_error_report(
+                    &prepared.task_id,
+                    prepared.sub_session.memory(),
+                    "sub-agent paused waiting for unsupported external approval".to_string(),
+                ))
             }
-            Ok(Err(err)) => {
-                warn!(task_id = %task_id, error = %err, "Sub-agent failed");
-                Ok(build_sub_agent_report(SubAgentReportContext {
-                    task_id: &task_id,
-                    status: SubAgentReportStatus::Error,
-                    error: Some(err.to_string()),
-                    memory: sub_session.memory(),
-                    timeout_secs: self.settings.get_sub_agent_timeout_secs(),
-                }))
+            SubAgentRunOutcome::Failed(err) => {
+                warn!(task_id = %prepared.task_id, error = %err, "Sub-agent failed");
+                Ok(self.build_sub_agent_error_report(
+                    &prepared.task_id,
+                    prepared.sub_session.memory(),
+                    err.to_string(),
+                ))
             }
-            Err(_) => {
-                warn!(task_id = %task_id, "Sub-agent hard timed out");
-                let limit = self.settings.get_sub_agent_timeout_secs();
-                Ok(build_sub_agent_report(SubAgentReportContext {
-                    task_id: &task_id,
-                    status: SubAgentReportStatus::Timeout,
-                    error: Some(format!(
-                        "Sub-agent hard timed out after {} seconds",
-                        limit + 30
-                    )),
-                    memory: sub_session.memory(),
-                    timeout_secs: limit,
-                }))
+            SubAgentRunOutcome::TimedOut => {
+                warn!(task_id = %prepared.task_id, "Sub-agent hard timed out");
+                Ok(self.build_sub_agent_timeout_report(
+                    &prepared.task_id,
+                    prepared.sub_session.memory(),
+                ))
             }
         }
     }
