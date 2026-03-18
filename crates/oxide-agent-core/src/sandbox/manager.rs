@@ -601,6 +601,43 @@ impl DockerSandboxManager {
         })
     }
 
+    #[instrument(skip(self), fields(owner_id = self.scope.owner_id(), scope = %self.scope.namespace()))]
+    pub(crate) async fn attach_existing_container(&mut self) -> Result<bool> {
+        if self.refresh_container_liveness().await {
+            return Ok(true);
+        }
+
+        let container_name = self.scope.container_name();
+        let Some(container_id) = self.get_container_id_by_name(&container_name).await? else {
+            return Ok(false);
+        };
+
+        self.container_id = Some(container_id.clone());
+
+        if let Err(error) = self
+            .docker
+            .start_container(&container_id, None::<StartContainerOptions>)
+            .await
+        {
+            debug!(
+                owner_id = self.scope.owner_id(),
+                scope = %self.scope.namespace(),
+                container_id = %container_id,
+                error = %error,
+                "Tried to start existing sandbox container while reattaching (might already be running)"
+            );
+        }
+
+        info!(
+            owner_id = self.scope.owner_id(),
+            scope = %self.scope.namespace(),
+            container_id = %container_id,
+            "Reattached sandbox manager to existing container"
+        );
+
+        Ok(true)
+    }
+
     /// List all sandbox containers owned by a user.
     pub async fn list_user_sandboxes(user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
         let docker = Self::connect_and_ping().await?;
