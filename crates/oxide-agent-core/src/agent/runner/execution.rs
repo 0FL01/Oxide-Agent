@@ -40,7 +40,8 @@ impl AgentRunner {
             self.apply_pending_runtime_context(ctx, &mut state).await;
 
             self.apply_before_iteration_hooks(ctx, &state)?;
-            self.run_iteration_compaction(ctx, iteration).await?;
+            self.run_iteration_compaction(ctx, &mut state, iteration)
+                .await?;
 
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
@@ -69,7 +70,7 @@ impl AgentRunner {
                     .await);
             }
 
-            let response = self.call_llm_with_tools(ctx).await?;
+            let response = self.call_llm_with_tools(ctx, &mut state).await?;
             if let Some(result) = self.handle_llm_response(response, ctx, &mut state).await? {
                 return Ok(result);
             }
@@ -84,12 +85,13 @@ impl AgentRunner {
     async fn call_llm_with_tools(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
     ) -> Result<ChatResponse> {
         match self.chat_with_tools_once(ctx).await {
             Ok(response) => Ok(response),
             Err(error) if Self::llm_error_suggests_context_overflow(&error) => {
                 let retried = self
-                    .run_compaction_checkpoint(ctx, CompactionTrigger::Manual)
+                    .run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual)
                     .await?;
                 if retried {
                     match self.chat_with_tools_once(ctx).await {
@@ -254,6 +256,7 @@ impl AgentRunner {
     async fn run_iteration_compaction(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
         iteration: usize,
     ) -> Result<()> {
         let trigger = if iteration == 0 {
@@ -261,13 +264,14 @@ impl AgentRunner {
         } else {
             CompactionTrigger::PreIteration
         };
-        let _ = self.run_compaction_checkpoint(ctx, trigger).await?;
+        let _ = self.run_compaction_checkpoint(ctx, state, trigger).await?;
         Ok(())
     }
 
     async fn run_compaction_checkpoint(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
         trigger: CompactionTrigger,
     ) -> Result<bool> {
         let Some(compaction_service) = ctx.compaction_service else {
@@ -283,10 +287,33 @@ impl AgentRunner {
             ctx.config.model_max_output_tokens,
             ctx.config.is_sub_agent,
         );
-        let outcome = compaction_service
+        let outcome = match compaction_service
             .prepare_for_run(&request, ctx.agent)
-            .await?;
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                Self::emit_compaction_failed(ctx.progress_tx, trigger, error.to_string()).await;
+                return Err(error);
+            }
+        };
+        let should_emit_progress = matches!(trigger, CompactionTrigger::Manual)
+            || outcome.applied
+            || outcome.summary_generation.attempted
+            || outcome.archive_persistence.attempted;
+        if should_emit_progress {
+            Self::emit_compaction_started(ctx.progress_tx, trigger).await;
+            if outcome.pruning.applied {
+                Self::emit_pruning_applied(ctx.progress_tx, &outcome).await;
+            }
+            Self::emit_compaction_completed(ctx.progress_tx, trigger, &outcome).await;
+        }
         if outcome.applied {
+            state.compaction_count = state.compaction_count.saturating_add(1);
+            if state.compaction_count > 1 {
+                Self::emit_repeated_compaction_warning(ctx.progress_tx, state.compaction_count)
+                    .await;
+            }
             Self::refresh_messages_from_memory(ctx);
         }
 
@@ -411,6 +438,75 @@ impl AgentRunner {
         if let Some(tx) = progress_tx {
             let _ = tx
                 .send(AgentEvent::Error(format!("LLM call failed: {error}")))
+                .await;
+        }
+    }
+
+    async fn emit_compaction_started(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        trigger: CompactionTrigger,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx.send(AgentEvent::CompactionStarted { trigger }).await;
+        }
+    }
+
+    async fn emit_pruning_applied(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        outcome: &crate::agent::CompactionOutcome,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::PruningApplied {
+                    pruned_count: outcome.pruning.pruned_count,
+                    reclaimed_tokens: outcome.pruning.reclaimed_tokens,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_compaction_completed(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        trigger: CompactionTrigger,
+        outcome: &crate::agent::CompactionOutcome,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::CompactionCompleted {
+                    trigger,
+                    applied: outcome.applied,
+                    externalized_count: outcome.externalization.externalized_count,
+                    pruned_count: outcome.pruning.pruned_count,
+                    reclaimed_tokens: outcome
+                        .externalization
+                        .reclaimed_tokens
+                        .saturating_add(outcome.pruning.reclaimed_tokens),
+                    archived_chunk_count: outcome.archive_persistence.archived_chunk_count,
+                    summary_updated: outcome.rebuild.inserted_summary,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_compaction_failed(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        trigger: CompactionTrigger,
+        error: String,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::CompactionFailed { trigger, error })
+                .await;
+        }
+    }
+
+    async fn emit_repeated_compaction_warning(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        count: usize,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::RepeatedCompactionWarning { count })
                 .await;
         }
     }

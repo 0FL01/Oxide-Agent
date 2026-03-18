@@ -500,6 +500,10 @@ fn control_commands_are_recognized_for_topic_gate_bypass() {
         Some(AgentControlCommand::ClearMemory)
     );
     assert_eq!(
+        parse_agent_control_command(Some("🗜 Compact Context")),
+        Some(AgentControlCommand::CompactContext)
+    );
+    assert_eq!(
         parse_agent_control_command(Some("🔄 Recreate Container")),
         Some(AgentControlCommand::RecreateContainer)
     );
@@ -525,6 +529,10 @@ fn inline_cancel_callbacks_are_recognized() {
     assert_eq!(
         parse_agent_callback_action(AGENT_CALLBACK_CANCEL_TASK),
         Some(AgentCallbackAction::StartCancelTaskConfirmation)
+    );
+    assert_eq!(
+        parse_agent_callback_action(crate::bot::views::AGENT_CALLBACK_COMPACT_CONTEXT),
+        Some(AgentCallbackAction::ManualCompact)
     );
     assert_eq!(
         parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_CANCEL_YES),

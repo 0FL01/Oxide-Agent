@@ -112,6 +112,8 @@ pub(super) struct RunState {
     pub continuation_count: usize,
     /// Number of consecutive structured output failures.
     pub structured_output_failures: usize,
+    /// Number of applied compaction passes in this run.
+    pub compaction_count: usize,
 }
 
 impl RunState {
@@ -121,6 +123,7 @@ impl RunState {
             iteration: 0,
             continuation_count: 0,
             structured_output_failures: 0,
+            compaction_count: 0,
         }
     }
 }

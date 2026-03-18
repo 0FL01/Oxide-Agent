@@ -56,6 +56,24 @@ pub fn render_progress_html(state: &ProgressState) -> String {
         }
     }
 
+    if let Some(status) = &state.last_compaction_status {
+        if !lines.last().is_some_and(String::is_empty) {
+            lines.push(String::new());
+        }
+        lines.push("🗜 <b>Context:</b>".to_string());
+        lines.push(format!(
+            "   {}",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(status, 160))
+        ));
+    }
+
+    if let Some(warning) = &state.repeated_compaction_warning {
+        lines.push(format!(
+            "⚠️ {}",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(warning, 180))
+        ));
+    }
+
     let grouped = format_grouped_steps(state);
     if !grouped.is_empty() {
         lines.push(String::new());
@@ -210,5 +228,30 @@ mod tests {
 
         assert!(output.contains("SSH approval pending for n-de1"));
         assert!(!output.contains("Execution: ssh_sudo_exec"));
+    }
+
+    #[test]
+    fn renders_compaction_status_and_warning() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::CompactionStarted {
+            trigger: oxide_agent_core::agent::CompactionTrigger::Manual,
+        });
+        state.update(AgentEvent::CompactionCompleted {
+            trigger: oxide_agent_core::agent::CompactionTrigger::Manual,
+            applied: true,
+            externalized_count: 1,
+            pruned_count: 2,
+            reclaimed_tokens: 1800,
+            archived_chunk_count: 1,
+            summary_updated: true,
+        });
+        state.update(AgentEvent::RepeatedCompactionWarning { count: 2 });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("<b>Context:</b>"));
+        assert!(output.contains("Compaction completed (manual)"));
+        assert!(output.contains("already been compacted 2 times"));
     }
 }

@@ -8,10 +8,10 @@ use super::{
     resolve_existing_session_id, run_agent_task_with_text, run_approved_ssh_resume,
     save_memory_after_task, send_agent_message, send_agent_message_with_optional_keyboard,
     send_or_update_cancel_confirmation, send_or_update_pending_cancel_message,
-    should_create_fresh_flow_on_detach, use_inline_flow_controls, use_inline_topic_controls,
-    AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx, EnsureSessionContext,
-    ResetSessionOutcome, RunAgentTaskTextContext, RunApprovedSshResumeContext,
-    SessionTransportContext, SESSION_REGISTRY,
+    should_create_fresh_flow_on_detach, start_manual_compaction, use_inline_flow_controls,
+    use_inline_topic_controls, AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx,
+    EnsureSessionContext, ResetSessionOutcome, RunAgentTaskTextContext,
+    RunApprovedSshResumeContext, SessionTransportContext, SESSION_REGISTRY,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, reset_current_agent_flow_id, set_current_agent_flow_id,
@@ -20,7 +20,7 @@ use crate::bot::context::{
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
     AgentView, DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK,
-    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_COMPACT_CONTEXT, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
     AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
     AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT,
@@ -63,6 +63,7 @@ pub(crate) enum AgentCallbackAction {
     Detach,
     ApproveSsh(String),
     RejectSsh(String),
+    ManualCompact,
     StartCancelTaskConfirmation,
     ResolveCancelTaskConfirmation(bool),
     StartConfirmation(ConfirmationType),
@@ -99,6 +100,7 @@ pub(crate) fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAct
         LOOP_CALLBACK_RESET => Some(AgentCallbackAction::LoopReset),
         LOOP_CALLBACK_CANCEL => Some(AgentCallbackAction::LoopCancel),
         AGENT_CALLBACK_CANCEL_TASK => Some(AgentCallbackAction::StartCancelTaskConfirmation),
+        AGENT_CALLBACK_COMPACT_CONTEXT => Some(AgentCallbackAction::ManualCompact),
         AGENT_CALLBACK_CONFIRM_CANCEL_YES => {
             Some(AgentCallbackAction::ResolveCancelTaskConfirmation(true))
         }
@@ -714,6 +716,22 @@ async fn dispatch_agent_callback(
                 ctx.loop_ctx.thread_spec,
                 ctx.loop_ctx.outbound_thread.message_thread_id,
                 &ctx.loop_ctx.agent_flow_id,
+            )
+            .await
+        }
+        AgentCallbackAction::ManualCompact => {
+            answer_agent_callback(
+                &ctx.loop_ctx.bot,
+                ctx.callback_id.clone(),
+                Some("Context compaction started"),
+            )
+            .await;
+            start_manual_compaction(
+                ctx.loop_ctx.bot.clone(),
+                ctx.msg,
+                ctx.storage,
+                ctx.llm,
+                ctx.settings,
             )
             .await
         }

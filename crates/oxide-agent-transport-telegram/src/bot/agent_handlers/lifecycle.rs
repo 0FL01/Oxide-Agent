@@ -5,10 +5,10 @@ use super::{
     handle_batched_text_input_if_needed, handle_running_agent_message_if_needed,
     is_agent_mode_context, manager_control_plane_enabled, manager_default_chat_id,
     parse_agent_control_command, resolve_execution_profile, resolve_topic_infra_config,
-    route_allows_agent_processing, show_agent_controls, spawn_agent_task, use_inline_flow_controls,
-    use_inline_topic_controls, ActiveSessionConfig, AgentControlCommand, AgentDialogue,
-    AgentTaskContext, BatchedTextInputCheck, EnsureSessionContext, RunningAgentMessageContext,
-    SessionTransportContext,
+    route_allows_agent_processing, show_agent_controls, spawn_agent_task, start_manual_compaction,
+    use_inline_flow_controls, use_inline_topic_controls, ActiveSessionConfig, AgentControlCommand,
+    AgentDialogue, AgentTaskContext, BatchedTextInputCheck, EnsureSessionContext,
+    RunningAgentMessageContext, SessionTransportContext,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, sandbox_scope, set_current_context_state, storage_context_key,
@@ -152,7 +152,8 @@ pub async fn handle_agent_message(
         ensure_agent_flow_session_keys(&storage, user_id, chat_id, thread_spec).await?;
 
     if let Some(command) = parse_agent_control_command(msg.text()) {
-        return handle_agent_control_command(command, bot, msg, dialogue, storage).await;
+        return handle_agent_control_command(command, bot, msg, dialogue, storage, llm, settings)
+            .await;
     }
 
     let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
@@ -253,11 +254,16 @@ async fn handle_agent_control_command(
     msg: Message,
     dialogue: AgentDialogue,
     storage: Arc<dyn StorageProvider>,
+    llm: Arc<LlmClient>,
+    settings: Arc<BotSettings>,
 ) -> Result<()> {
     match command {
         AgentControlCommand::CancelTask => cancel_agent_task(bot, msg, dialogue, storage).await,
         AgentControlCommand::ClearMemory => {
             confirm_destructive_action(ConfirmationType::ClearMemory, bot, msg, dialogue).await
+        }
+        AgentControlCommand::CompactContext => {
+            start_manual_compaction(bot, msg, storage, llm, settings).await
         }
         AgentControlCommand::RecreateContainer => {
             confirm_destructive_action(ConfirmationType::RecreateContainer, bot, msg, dialogue)

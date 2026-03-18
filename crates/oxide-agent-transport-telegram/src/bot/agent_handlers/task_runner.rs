@@ -1,6 +1,6 @@
 use super::{
     cancel_status_inline_markup, finalize_cancel_status_if_needed, is_task_cancelled_error,
-    save_memory_after_task, SESSION_REGISTRY,
+    save_memory_after_task, send_agent_message, SESSION_REGISTRY,
 };
 use crate::bot::agent_handlers::{
     preprocess_agent_message_input, send_multimodal_unavailable_message,
@@ -8,8 +8,11 @@ use crate::bot::agent_handlers::{
 use crate::bot::agent_transport::TelegramAgentTransport;
 use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
+use crate::bot::views::{AgentView, DefaultAgentView};
 use anyhow::{anyhow, Result};
-use oxide_agent_core::agent::{progress::AgentEvent, AgentExecutionOutcome, SessionId};
+use oxide_agent_core::agent::{
+    progress::AgentEvent, AgentExecutionOutcome, CompactionOutcome, SessionId,
+};
 use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
@@ -67,6 +70,20 @@ pub(crate) struct RunApprovedSshResumeContext {
 }
 
 #[derive(Clone)]
+pub(crate) struct RunManualCompactionContext {
+    pub(crate) bot: Bot,
+    pub(crate) chat_id: ChatId,
+    pub(crate) session_id: SessionId,
+    pub(crate) user_id: i64,
+    pub(crate) storage: Arc<dyn StorageProvider>,
+    pub(crate) context_key: String,
+    pub(crate) agent_flow_id: String,
+    pub(crate) message_thread_id: Option<ThreadId>,
+    pub(crate) use_inline_progress_controls: bool,
+    pub(crate) use_inline_flow_controls: bool,
+}
+
+#[derive(Clone)]
 struct TaskDeliveryContext {
     bot: Bot,
     chat_id: ChatId,
@@ -106,6 +123,23 @@ impl From<&RunAgentTaskTextContext> for TaskDeliveryContext {
 
 impl From<&RunApprovedSshResumeContext> for TaskDeliveryContext {
     fn from(value: &RunApprovedSshResumeContext) -> Self {
+        Self {
+            bot: value.bot.clone(),
+            chat_id: value.chat_id,
+            session_id: value.session_id,
+            user_id: value.user_id,
+            storage: value.storage.clone(),
+            context_key: value.context_key.clone(),
+            agent_flow_id: value.agent_flow_id.clone(),
+            message_thread_id: value.message_thread_id,
+            use_inline_progress_controls: value.use_inline_progress_controls,
+            use_inline_flow_controls: value.use_inline_flow_controls,
+        }
+    }
+}
+
+impl From<&RunManualCompactionContext> for TaskDeliveryContext {
+    fn from(value: &RunManualCompactionContext) -> Self {
         Self {
             bot: value.bot.clone(),
             chat_id: value.chat_id,
@@ -201,6 +235,57 @@ pub(crate) async fn run_approved_ssh_resume(ctx: RunApprovedSshResumeContext) ->
     .await
 }
 
+pub(crate) fn spawn_manual_compaction_task(ctx: RunManualCompactionContext) {
+    tokio::spawn(async move {
+        let error_bot = ctx.bot.clone();
+        let chat_id = ctx.chat_id;
+        let message_thread_id = ctx.message_thread_id;
+        if let Err(error) = run_manual_compaction(ctx).await {
+            let mut req = error_bot
+                .send_message(chat_id, DefaultAgentView::error_message(&error.to_string()));
+            if let Some(thread_id) = message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+            let _ = req.await;
+        }
+    });
+}
+
+pub(crate) async fn run_manual_compaction(ctx: RunManualCompactionContext) -> Result<()> {
+    let delivery_ctx = TaskDeliveryContext::from(&ctx);
+    let runtime = start_task_progress_runtime_with_text(
+        &delivery_ctx,
+        DefaultAgentView::context_compacting(),
+    )
+    .await?;
+    let TaskProgressRuntime {
+        progress_message_id,
+        progress_reply_markup,
+        progress_handle,
+        tx,
+    } = runtime;
+    let result = execute_manual_compaction(ctx.session_id, Some(tx)).await;
+    let progress_text = finish_task_progress_runtime(progress_handle).await;
+
+    save_memory_after_task(
+        ctx.session_id,
+        ctx.user_id,
+        &ctx.context_key,
+        &ctx.agent_flow_id,
+        &ctx.storage,
+    )
+    .await;
+
+    deliver_manual_compaction_result(
+        &delivery_ctx,
+        result,
+        &progress_text,
+        progress_message_id,
+        progress_reply_markup,
+    )
+    .await
+}
+
 async fn run_task_execution<Exec, Fut>(ctx: TaskDeliveryContext, execute: Exec) -> Result<()>
 where
     Exec: FnOnce(tokio::sync::mpsc::Sender<AgentEvent>) -> Fut,
@@ -236,13 +321,20 @@ where
 }
 
 async fn start_task_progress_runtime(ctx: &TaskDeliveryContext) -> Result<TaskProgressRuntime> {
+    start_task_progress_runtime_with_text(ctx, DefaultAgentView::task_processing()).await
+}
+
+async fn start_task_progress_runtime_with_text(
+    ctx: &TaskDeliveryContext,
+    initial_text: &str,
+) -> Result<TaskProgressRuntime> {
     let progress_reply_markup = ctx
         .use_inline_progress_controls
         .then_some(crate::bot::views::progress_inline_keyboard());
     let progress_msg = crate::bot::resilient::send_message_resilient_with_thread_and_markup(
         &ctx.bot,
         ctx.chat_id,
-        "⏳ Processing task...",
+        initial_text,
         Some(ParseMode::Html),
         ctx.message_thread_id,
         progress_reply_markup.clone().map(Into::into),
@@ -266,6 +358,51 @@ async fn start_task_progress_runtime(ctx: &TaskDeliveryContext) -> Result<TaskPr
         progress_handle,
         tx,
     })
+}
+
+async fn deliver_manual_compaction_result(
+    ctx: &TaskDeliveryContext,
+    result: Result<CompactionOutcome>,
+    progress_text: &str,
+    progress_message_id: MessageId,
+    progress_reply_markup: Option<InlineKeyboardMarkup>,
+) -> Result<()> {
+    let terminal_progress_reply_markup = progress_reply_markup
+        .as_ref()
+        .map(|_| crate::bot::views::empty_inline_keyboard());
+    crate::bot::resilient::edit_message_safe_resilient_with_markup(
+        &ctx.bot,
+        ctx.chat_id,
+        progress_message_id,
+        progress_text,
+        terminal_progress_reply_markup,
+    )
+    .await;
+
+    match result {
+        Ok(outcome) => {
+            send_agent_message(
+                &ctx.bot,
+                ctx.chat_id,
+                DefaultAgentView::context_compacted(outcome.applied),
+                crate::bot::OutboundThreadParams {
+                    message_thread_id: ctx.message_thread_id,
+                },
+            )
+            .await
+        }
+        Err(error) => {
+            send_agent_message(
+                &ctx.bot,
+                ctx.chat_id,
+                DefaultAgentView::error_message(&error.to_string()),
+                crate::bot::OutboundThreadParams {
+                    message_thread_id: ctx.message_thread_id,
+                },
+            )
+            .await
+        }
+    }
 }
 
 async fn finish_task_progress_runtime(
@@ -422,6 +559,31 @@ pub(crate) async fn execute_ssh_approval_resume(
 
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
     executor.resume_ssh_approval(request_id, progress_tx).await
+}
+
+pub(crate) async fn execute_manual_compaction(
+    session_id: SessionId,
+    progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+) -> Result<CompactionOutcome> {
+    let executor_arc = SESSION_REGISTRY
+        .get(&session_id)
+        .await
+        .ok_or_else(|| anyhow!("No agent session found"))?;
+    let cancellation_token = SESSION_REGISTRY
+        .get_cancellation_token(&session_id)
+        .await
+        .ok_or_else(|| anyhow!("No cancellation token found"))?;
+
+    let mut executor = executor_arc.write().await;
+    if executor.is_timed_out() {
+        executor.reset();
+        return Err(anyhow!(
+            "Previous session timed out. Starting a new session."
+        ));
+    }
+
+    executor.session_mut().cancellation_token = (*cancellation_token).clone();
+    executor.compact_current_context(progress_tx).await
 }
 
 pub(crate) async fn take_pending_ssh_approvals(

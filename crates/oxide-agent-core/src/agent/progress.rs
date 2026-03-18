@@ -1,6 +1,7 @@
 use super::loop_detection::LoopType;
 use super::providers::TodoList;
 use super::thoughts;
+use crate::agent::compaction::CompactionTrigger;
 use serde::{Deserialize, Serialize};
 
 /// Events that can occur during agent execution
@@ -100,6 +101,47 @@ pub enum AgentEvent {
         /// Detailed context explanation
         content: String,
     },
+    /// Compaction pipeline started for the current context.
+    CompactionStarted {
+        /// Trigger that invoked compaction.
+        trigger: CompactionTrigger,
+    },
+    /// Deterministic pruning removed stale artifacts before summary compaction.
+    PruningApplied {
+        /// Number of pruned hot-memory artifacts.
+        pruned_count: usize,
+        /// Estimated reclaimed tokens.
+        reclaimed_tokens: usize,
+    },
+    /// Compaction pipeline completed.
+    CompactionCompleted {
+        /// Trigger that invoked compaction.
+        trigger: CompactionTrigger,
+        /// Whether hot memory changed.
+        applied: bool,
+        /// Number of newly externalized artifacts.
+        externalized_count: usize,
+        /// Number of newly pruned artifacts.
+        pruned_count: usize,
+        /// Total reclaimed tokens from deterministic stages.
+        reclaimed_tokens: usize,
+        /// Number of archived cold-context chunks.
+        archived_chunk_count: usize,
+        /// Whether a structured summary entry was refreshed.
+        summary_updated: bool,
+    },
+    /// Compaction failed before the run could continue.
+    CompactionFailed {
+        /// Trigger that invoked compaction.
+        trigger: CompactionTrigger,
+        /// Human-readable failure message.
+        error: String,
+    },
+    /// Warning that the same run needed multiple compaction passes.
+    RepeatedCompactionWarning {
+        /// Number of applied compaction passes in the current run.
+        count: usize,
+    },
 }
 
 /// Current state of the agent's progress
@@ -123,6 +165,10 @@ pub struct ProgressState {
     pub narrative_headline: Option<String>,
     /// Narrative content from sidecar LLM
     pub narrative_content: Option<String>,
+    /// Latest compaction status shown to the operator.
+    pub last_compaction_status: Option<String>,
+    /// Warning shown when the same run keeps compacting repeatedly.
+    pub repeated_compaction_warning: Option<String>,
 }
 
 /// A single step in the agent's execution process
@@ -149,6 +195,16 @@ pub enum StepStatus {
     Completed,
     /// Step failed
     Failed,
+}
+
+struct CompactionCompletionDetails {
+    trigger: CompactionTrigger,
+    applied: bool,
+    externalized_count: usize,
+    pruned_count: usize,
+    reclaimed_tokens: usize,
+    archived_chunk_count: usize,
+    summary_updated: bool,
 }
 
 impl ProgressState {
@@ -192,6 +248,34 @@ impl ProgressState {
                 iteration,
             } => self.handle_loop_detected(loop_type, iteration),
             AgentEvent::Narrative { headline, content } => self.handle_narrative(headline, content),
+            AgentEvent::CompactionStarted { trigger } => self.handle_compaction_started(trigger),
+            AgentEvent::PruningApplied {
+                pruned_count,
+                reclaimed_tokens,
+            } => self.handle_pruning_applied(pruned_count, reclaimed_tokens),
+            AgentEvent::CompactionCompleted {
+                trigger,
+                applied,
+                externalized_count,
+                pruned_count,
+                reclaimed_tokens,
+                archived_chunk_count,
+                summary_updated,
+            } => self.handle_compaction_completed(CompactionCompletionDetails {
+                trigger,
+                applied,
+                externalized_count,
+                pruned_count,
+                reclaimed_tokens,
+                archived_chunk_count,
+                summary_updated,
+            }),
+            AgentEvent::CompactionFailed { trigger, error } => {
+                self.handle_compaction_failed(trigger, error)
+            }
+            AgentEvent::RepeatedCompactionWarning { count } => {
+                self.handle_repeated_compaction_warning(count)
+            }
         }
     }
 
@@ -373,5 +457,129 @@ impl ProgressState {
         self.narrative_content = Some(content);
     }
 
+    fn handle_compaction_started(&mut self, trigger: CompactionTrigger) {
+        self.complete_last_step();
+        self.current_thought = Some("Compressing context to preserve task continuity.".to_string());
+        self.steps.push(Step {
+            description: format!(
+                "🗜 Compacting context ({})",
+                compaction_trigger_label(trigger)
+            ),
+            status: StepStatus::InProgress,
+            tokens: None,
+            tool_name: None,
+        });
+    }
+
+    fn handle_pruning_applied(&mut self, pruned_count: usize, reclaimed_tokens: usize) {
+        self.last_compaction_status = Some(format!(
+            "Pruned {pruned_count} stale artifacts and reclaimed ~{}.",
+            crate::utils::format_tokens(reclaimed_tokens)
+        ));
+    }
+
+    fn handle_compaction_completed(&mut self, details: CompactionCompletionDetails) {
+        self.complete_last_step();
+        self.last_compaction_status = Some(if details.applied {
+            let mut parts = Vec::new();
+            if details.externalized_count > 0 {
+                parts.push(format!("externalized {}", details.externalized_count));
+            }
+            if details.pruned_count > 0 {
+                parts.push(format!("pruned {}", details.pruned_count));
+            }
+            if details.summary_updated {
+                parts.push("refreshed summary".to_string());
+            }
+            if details.archived_chunk_count > 0 {
+                parts.push(format!("archived {}", details.archived_chunk_count));
+            }
+            if parts.is_empty() {
+                parts.push("updated hot context".to_string());
+            }
+            format!(
+                "Compaction completed ({}) - {} - reclaimed ~{}.",
+                compaction_trigger_label(details.trigger),
+                parts.join(", "),
+                crate::utils::format_tokens(details.reclaimed_tokens)
+            )
+        } else {
+            format!(
+                "Compaction checked context ({}) - no changes were needed.",
+                compaction_trigger_label(details.trigger)
+            )
+        });
+    }
+
+    fn handle_compaction_failed(&mut self, trigger: CompactionTrigger, error: String) {
+        self.last_compaction_status = Some(format!(
+            "Compaction failed ({}) - {}",
+            compaction_trigger_label(trigger),
+            error
+        ));
+        self.error = Some(format!("Compaction failed: {error}"));
+        self.fail_last_step();
+    }
+
+    fn handle_repeated_compaction_warning(&mut self, count: usize) {
+        self.repeated_compaction_warning = Some(format!(
+            "Context has already been compacted {count} times in this run. Consider finishing or narrowing the working set."
+        ));
+    }
+
     // Formatting is handled in the UI layer.
+}
+
+fn compaction_trigger_label(trigger: CompactionTrigger) -> &'static str {
+    match trigger {
+        CompactionTrigger::PreRun => "pre-run",
+        CompactionTrigger::PreIteration => "pre-iteration",
+        CompactionTrigger::Manual => "manual",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentEvent, ProgressState};
+    use crate::agent::compaction::CompactionTrigger;
+
+    #[test]
+    fn compaction_events_update_progress_state() {
+        let mut state = ProgressState::new(5);
+
+        state.update(AgentEvent::CompactionStarted {
+            trigger: CompactionTrigger::PreRun,
+        });
+        state.update(AgentEvent::PruningApplied {
+            pruned_count: 2,
+            reclaimed_tokens: 1200,
+        });
+        state.update(AgentEvent::CompactionCompleted {
+            trigger: CompactionTrigger::PreRun,
+            applied: true,
+            externalized_count: 1,
+            pruned_count: 2,
+            reclaimed_tokens: 1800,
+            archived_chunk_count: 1,
+            summary_updated: true,
+        });
+
+        assert_eq!(state.steps.len(), 1);
+        assert_eq!(state.steps[0].status, super::StepStatus::Completed);
+        assert!(state
+            .last_compaction_status
+            .as_deref()
+            .is_some_and(|status| status.contains("refreshed summary")));
+    }
+
+    #[test]
+    fn repeated_compaction_warning_is_preserved() {
+        let mut state = ProgressState::new(5);
+        state.update(AgentEvent::RepeatedCompactionWarning { count: 3 });
+
+        assert!(state
+            .repeated_compaction_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("3 times")));
+    }
 }

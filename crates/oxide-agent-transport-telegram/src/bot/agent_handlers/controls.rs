@@ -1,6 +1,7 @@
 use super::{
-    ensure_session_exists, remove_sessions_with_compat, save_memory_after_task, AgentDialogue,
-    AgentModeSessionKeys, EnsureSessionContext, SessionTransportContext, SESSION_REGISTRY,
+    ensure_session_exists, remove_sessions_with_compat, save_memory_after_task,
+    spawn_manual_compaction_task, AgentDialogue, AgentModeSessionKeys, EnsureSessionContext,
+    RunManualCompactionContext, SessionTransportContext, SESSION_REGISTRY,
 };
 use crate::bot::context::{ensure_current_agent_flow_id, reset_current_agent_flow_id};
 use crate::bot::resilient;
@@ -34,6 +35,7 @@ enum AgentWipeError {
 pub(crate) enum AgentControlCommand {
     CancelTask,
     ClearMemory,
+    CompactContext,
     RecreateContainer,
     ExitAgentMode,
     ShowControls,
@@ -53,6 +55,7 @@ pub(crate) fn parse_agent_control_command(text: Option<&str>) -> Option<AgentCon
     match text {
         Some("❌ Cancel Task") => Some(AgentControlCommand::CancelTask),
         Some("🗑 Clear Memory") => Some(AgentControlCommand::ClearMemory),
+        Some("🗜 Compact Context") => Some(AgentControlCommand::CompactContext),
         Some("🔄 Recreate Container") => Some(AgentControlCommand::RecreateContainer),
         Some("⬅️ Exit Agent Mode") => Some(AgentControlCommand::ExitAgentMode),
         Some("/c") => Some(AgentControlCommand::ShowControls),
@@ -154,6 +157,67 @@ pub(crate) fn automatic_agent_control_markup(
     thread_spec: TelegramThreadSpec,
 ) -> Option<ReplyMarkup> {
     (!use_inline_topic_controls(thread_spec)).then(|| agent_control_markup(false))
+}
+
+pub(crate) async fn start_manual_compaction(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<dyn StorageProvider>,
+    llm: Arc<LlmClient>,
+    settings: Arc<BotSettings>,
+) -> Result<()> {
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
+    let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
+    let context_key = crate::bot::context::storage_context_key(msg.chat.id, thread_spec);
+    let reply_markup = automatic_agent_control_markup(thread_spec);
+    let (agent_flow_id, agent_flow_created) =
+        ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
+    let session_keys =
+        super::agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
+    let session_id = ensure_session_exists(EnsureSessionContext {
+        session_keys,
+        context_key: context_key.clone(),
+        agent_flow_id: agent_flow_id.clone(),
+        agent_flow_created,
+        sandbox_scope: SandboxScope::new(user_id, context_key.clone()),
+        user_id,
+        bot: &bot,
+        transport_ctx: SessionTransportContext {
+            manager_default_chat_id: super::manager_default_chat_id(msg.chat.id, thread_spec),
+            thread_spec,
+        },
+        llm: &llm,
+        storage: &storage,
+        settings: &settings,
+    })
+    .await;
+
+    if super::is_agent_task_running(session_id).await {
+        send_agent_message_with_optional_keyboard(
+            &bot,
+            msg.chat.id,
+            DefaultAgentView::compact_blocked_by_task(),
+            reply_markup.as_ref(),
+            outbound_thread,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    spawn_manual_compaction_task(RunManualCompactionContext {
+        bot,
+        chat_id: msg.chat.id,
+        session_id,
+        user_id,
+        storage,
+        context_key,
+        agent_flow_id,
+        message_thread_id: outbound_thread.message_thread_id,
+        use_inline_progress_controls: false,
+        use_inline_flow_controls: use_inline_flow_controls(thread_spec),
+    });
+    Ok(())
 }
 
 pub(crate) fn cancel_status_reply_markup(
