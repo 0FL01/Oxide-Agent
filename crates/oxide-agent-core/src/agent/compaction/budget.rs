@@ -36,7 +36,9 @@ pub fn estimate_request_budget(
     let prune_threshold_tokens = percent_of(context_window_tokens, policy.prune_threshold_percent);
     let compact_threshold_tokens =
         percent_of(context_window_tokens, policy.compact_threshold_percent);
-    let state = if projected_total_tokens >= context_window_tokens {
+    let over_limit_threshold_tokens =
+        percent_of(context_window_tokens, policy.over_limit_threshold_percent);
+    let state = if projected_total_tokens >= over_limit_threshold_tokens {
         BudgetState::OverLimit
     } else if projected_total_tokens >= compact_threshold_tokens {
         BudgetState::ShouldCompact
@@ -62,6 +64,7 @@ pub fn estimate_request_budget(
         warning_threshold_tokens,
         prune_threshold_tokens,
         compact_threshold_tokens,
+        over_limit_threshold_tokens,
         state,
     }
 }
@@ -197,6 +200,10 @@ mod tests {
         assert!(estimate.hot_memory.prunable_artifact_tokens > 0);
         assert_eq!(estimate.loaded_skill_tokens, 321);
         assert_eq!(estimate.reserved_output_tokens, 512);
+        assert_eq!(estimate.warning_threshold_tokens, 2_600);
+        assert_eq!(estimate.prune_threshold_tokens, 3_000);
+        assert_eq!(estimate.compact_threshold_tokens, 3_400);
+        assert_eq!(estimate.over_limit_threshold_tokens, 3_800);
         assert_eq!(
             estimate.total_input_tokens,
             estimate.system_prompt_tokens

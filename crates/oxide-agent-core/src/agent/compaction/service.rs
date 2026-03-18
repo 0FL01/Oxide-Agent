@@ -239,13 +239,16 @@ impl CompactionService {
             model_max_output_tokens = request.model_max_output_tokens,
             is_sub_agent = request.is_sub_agent,
             hot_messages = agent.memory().get_messages().len(),
-            memory_threshold = agent.memory().compact_threshold(),
             hot_memory_tokens = metrics.budget.hot_memory.total_tokens,
             system_prompt_tokens = metrics.budget.system_prompt_tokens,
             tool_schema_tokens = metrics.budget.tool_schema_tokens,
             projected_total_tokens = metrics.budget.projected_total_tokens,
             reserved_output_tokens = metrics.budget.reserved_output_tokens,
             headroom_tokens = metrics.budget.headroom_tokens,
+            warning_threshold_tokens = metrics.budget.warning_threshold_tokens,
+            prune_threshold_tokens = metrics.budget.prune_threshold_tokens,
+            compact_threshold_tokens = metrics.budget.compact_threshold_tokens,
+            over_limit_threshold_tokens = metrics.budget.over_limit_threshold_tokens,
             budget_state = ?metrics.budget.state,
             externalized_messages = metrics.externalization.externalized_count,
             externalized_reclaimed_tokens = metrics.externalization.reclaimed_tokens,
@@ -571,8 +574,11 @@ mod tests {
     }
 
     #[test]
-    fn default_policy_uses_legacy_threshold() {
+    fn default_policy_uses_threshold_ladder() {
         let service = CompactionService::default();
-        assert!(service.policy().legacy_compact_threshold > 0);
+        assert!(service.policy().warning_threshold_percent > 0);
+        assert!(
+            service.policy().warning_threshold_percent < service.policy().prune_threshold_percent
+        );
     }
 }
