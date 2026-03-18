@@ -16,109 +16,208 @@ crates/
 │   ├── src/
 │   │   ├── agent/                   # Логика агента
 │   │   │   ├── compaction/          # Staged Agent Mode compaction pipeline
-│   │   │   ├── executor.rs          # Core agent execution logic
-│   │   │   ├── narrator.rs          # Dialogue management
-│   │   │   ├── preprocessor.rs      # Input processing (voice/images)
-│   │   │   ├── tool_bridge.rs       # Tool execution bridge
-│   │   │   ├── structured_output.rs # Structured output parsing
-│   │   │   ├── thoughts.rs          # Agent thought inference
-│   │   │   ├── memory.rs            # Memory storage model and typed messages
-│   │   │   ├── progress.rs          # Agent events
-│   │   │   ├── session.rs           # AgentSession lifecycle management
-│   │   │   ├── provider.rs          # Tool Provider trait
-│   │   │   ├── registry.rs          # Tool Registry
-│   │   │   ├── runner/              # Цикл исполнения
+│   │   │   │   ├── mod.rs           # Public exports and orchestration
+│   │   │   │   ├── budget.rs        # Budget estimation and token counting
+│   │   │   │   ├── classifier.rs    # Message classification stage
+│   │   │   │   ├── externalize.rs   # Externalize large messages to storage
+│   │   │   │   ├── prune.rs         # Prune redundant/compacted content
+│   │   │   │   ├── prompt.rs        # Summarization prompt building
+│   │   │   │   ├── summarizer.rs    # LLM-based summarization stage
+│   │   │   │   ├── rebuild.rs       # Rebuild hot context from summary
+│   │   │   │   ├── archive.rs       # Archive old conversation segments
+│   │   │   │   ├── service.rs       # Main compaction service orchestrator
+│   │   │   │   ├── types.rs         # Compaction types and data structures
+│   │   │   │   └── tests/           # Compaction test suite
+│   │   │   │       ├── mod.rs
+│   │   │   │       ├── fixtures.rs
+│   │   │   │       ├── budget_boundaries.rs
+│   │   │   │       ├── cleanup_stages.rs
+│   │   │   │       ├── recent_window.rs
+│   │   │   │       ├── rebuild_archive.rs
+│   │   │   │       └── summary_paths.rs
 │   │   │   ├── hooks/               # Hook system (9 hooks)
-│   │   │   │   └── tool_access.rs   # Tool policy enforcement
+│   │   │   │   ├── mod.rs           # Hook runner and public exports
+│   │   │   │   ├── registry.rs      # Hook registration and management
+│   │   │   │   ├── types.rs         # Hook trait definitions and types
+│   │   │   │   ├── completion.rs    # CompletionCheckHook
+│   │   │   │   ├── delegation_guard.rs  # DelegationGuardHook
+│   │   │   │   ├── search_budget.rs # SearchBudgetHook
+│   │   │   │   ├── sub_agent_safety.rs  # SubAgentSafetyHook
+│   │   │   │   ├── timeout_report.rs    # TimeoutReportHook
+│   │   │   │   ├── tool_access.rs   # ToolAccessPolicyHook
+│   │   │   │   └── workload.rs      # WorkloadDistributorHook
 │   │   │   ├── loop_detection/      # Детектор зацикливания
-│   │   │   ├── providers/           # Tool providers (sandbox, todos, manager, search, ssh_mcp)
-│   │   │   │   └── manager_control_plane/
-│   │   │   │       ├── mod.rs       # Public surface, provider wiring, dispatch
-│   │   │   │       ├── audit.rs     # Audit persistence and rollback lookup helpers
+│   │   │   │   ├── mod.rs           # Public exports
+│   │   │   │   ├── config.rs        # Loop detection configuration
+│   │   │   │   ├── service.rs       # Main loop detection service
+│   │   │   │   ├── types.rs         # Loop detection types
+│   │   │   │   ├── content_detector.rs  # Content pattern detection
+│   │   │   │   ├── tool_detector.rs # Repetitive tool sequence detection
+│   │   │   │   └── llm_detector.rs  # LLM-based loop detection
+│   │   │   ├── providers/           # Tool providers (sandbox, todos, search, etc)
+│   │   │   │   ├── mod.rs           # Provider module exports
+│   │   │   │   ├── sandbox.rs       # Sandbox execution provider
+│   │   │   │   ├── todos.rs         # Todo/task management provider
+│   │   │   │   ├── tavily.rs        # Tavily search provider
+│   │   │   │   ├── ytdlp.rs         # yt-dlp media download provider
+│   │   │   │   ├── filehoster.rs    # File hosting operations
+│   │   │   │   ├── path.rs          # Path utilities for sandbox
+│   │   │   │   ├── ssh_mcp.rs       # SSH MCP provider with approval flow
+│   │   │   │   ├── delegation.rs    # Sub-agent delegation provider
+│   │   │   │   ├── reminder.rs      # Reminder scheduling provider
+│   │   │   │   ├── crawl4ai/        # Crawl4AI web scraping
+│   │   │   │   │   ├── mod.rs
+│   │   │   │   │   ├── response.rs
+│   │   │   │   │   └── tests.rs
+│   │   │   │   └── manager_control_plane/  # Manager CRUD operations
+│   │   │   │       ├── mod.rs       # Public surface and dispatch
+│   │   │   │       ├── audit.rs     # Audit persistence and rollback
 │   │   │   │       ├── bindings.rs  # Topic binding CRUD + rollback
 │   │   │   │       ├── contexts.rs  # Topic context CRUD + rollback
 │   │   │   │       ├── agents_md.rs # Topic AGENTS.md CRUD + rollback
-│   │   │   │       ├── infra.rs     # Topic infra CRUD, preview, preflight
+│   │   │   │       ├── infra.rs     # Topic infrastructure CRUD
 │   │   │   │       ├── profiles.rs  # Agent profile CRUD + rollback
-│   │   │   │       ├── agent_controls.rs # Topic agent tools/hooks controls
-│   │   │   │       ├── forum_topics.rs   # Forum lifecycle, catalog, SSH provisioning
-│   │   │   │       ├── sandboxes.rs # Topic sandbox inventory and lifecycle
-│   │   │   │       ├── shared.rs    # Generic validation and serialization helpers
-│   │   │   │       └── tests/mod.rs # Manager control-plane test suite
-│   │   │   ├── skills/              # Реестр и поиск навыков (embeddings)
+│   │   │   │       ├── agent_controls.rs   # Topic agent tools/hooks controls
+│   │   │   │       ├── forum_topics.rs     # Forum lifecycle and catalog
+│   │   │   │       ├── sandboxes.rs # Topic sandbox inventory
+│   │   │   │       ├── shared.rs    # Validation and serialization helpers
+│   │   │   │       └── tests/mod.rs # Manager control-plane tests
+│   │   │   ├── runner/              # Цикл исполнения агента
+│   │   │   │   ├── mod.rs           # Runner public exports
+│   │   │   │   ├── execution.rs     # Core execution loop logic
+│   │   │   │   ├── tools.rs         # Tool call handling and dispatch
+│   │   │   │   ├── responses.rs     # Response processing and parsing
+│   │   │   │   ├── hooks.rs         # Hook integration in runner
+│   │   │   │   ├── loop_detection.rs    # Loop detection integration
+│   │   │   │   └── types.rs         # Runner types and state
+│   │   │   ├── skills/              # Реестр и поиск навыков
+│   │   │   │   ├── mod.rs           # Skills module exports
+│   │   │   │   ├── registry.rs      # Skill registry management
+│   │   │   │   ├── embeddings.rs    # Embedding generation and matching
+│   │   │   │   ├── matcher.rs       # Skill matching logic
+│   │   │   │   ├── cache.rs         # Embedding cache
+│   │   │   │   ├── loader.rs        # Skill loading from files
+│   │   │   │   └── types.rs         # Skill type definitions
+│   │   │   ├── prompt/              # Prompt building and composition
+│   │   │   │   ├── mod.rs           # Prompt module exports
+│   │   │   │   └── composer.rs      # Prompt composer with AGENTS.md injection
+│   │   │   ├── executor.rs          # Core agent execution logic
+│   │   │   ├── session.rs           # AgentSession lifecycle management
+│   │   │   ├── memory.rs            # Memory storage model and typed messages
+│   │   │   ├── context.rs           # Agent context and state
+│   │   │   ├── identity.rs          # Agent identity and persona
+│   │   │   ├── progress.rs          # Agent progress events
+│   │   │   ├── provider.rs          # Tool Provider trait
+│   │   │   ├── registry.rs          # Tool Registry
+│   │   │   ├── tool_bridge.rs       # Tool execution bridge
+│   │   │   ├── structured_output.rs # Structured output parsing
+│   │   │   ├── thoughts.rs          # Agent thought inference
+│   │   │   ├── narrator.rs          # Narrator for thought summarization
+│   │   │   ├── preprocessor.rs      # Input processing (voice/images)
 │   │   │   ├── profile.rs           # Agent profiles & policies
 │   │   │   └── recovery.rs          # Восстановление XML/JSON
 │   │   ├── llm/                     # Интеграции с AI
-│   │   │   ├── mod.rs               # LlmClient struct
+│   │   │   ├── mod.rs               # LlmClient and public exports
 │   │   │   ├── common.rs            # Common utilities
-│   │   │   ├── embeddings.rs        # Embedding provider
-│   │   │   └── providers/           # Groq, Mistral, Gemini, OpenRouter, ZAI
-│   │   │       └── zai/             # ZAI SDK internals (messages, stream transport)
-│   │   ├── sandbox/                 # Sandbox facade, Docker backend, Unix-socket broker
-│   │   │   ├── manager.rs           # SandboxManager facade + Docker backend implementation
-│   │   │   ├── broker.rs            # Sandbox broker protocol/client/server over Unix socket
-│   │   │   └── scope.rs             # SandboxScope stable container identity
-│   │   ├── config.rs
-│   │   ├── storage.rs
-│   │   └── testing.rs               # TestKit: моки и хелперы
+│   │   │   ├── embeddings.rs        # Embedding provider interface
+│   │   │   ├── http_utils.rs        # HTTP utilities for LLM calls
+│   │   │   ├── openai_compat.rs     # OpenAI-compatible API format
+│   │   │   └── providers/           # LLM provider implementations
+│   │   │       ├── mod.rs           # Provider module exports
+│   │   │       ├── gemini.rs        # Google Gemini provider
+│   │   │       ├── groq.rs          # Groq provider
+│   │   │       ├── mistral.rs       # Mistral AI provider
+│   │   │       ├── openrouter.rs    # OpenRouter provider
+│   │   │       ├── openrouter/      # OpenRouter helpers
+│   │   │       │   └── helpers.rs
+│   │   │       ├── zai.rs           # ZAI/Zhipu AI provider
+│   │   │       └── zai/             # ZAI SDK internals
+│   │   │           ├── sdk.rs       # ZAI SDK client
+│   │   │           └── sdk/
+│   │   │               ├── messages.rs  # Message handling
+│   │   │               └── stream.rs    # Streaming support
+│   │   ├── sandbox/                 # Sandbox facade and backends
+│   │   │   ├── mod.rs               # Sandbox module exports
+│   │   │   ├── manager.rs           # SandboxManager facade + Docker backend
+│   │   │   ├── broker.rs            # Unix socket broker protocol
+│   │   │   └── scope.rs             # SandboxScope stable identity
+│   │   ├── config.rs                # Configuration structures
+│   │   ├── storage.rs               # Storage interface
+│   │   ├── testing.rs               # TestKit: моки и хелперы
+│   │   ├── utils.rs                 # General utilities
+│   │   └── lib.rs                   # Core library exports
 │   └── tests/                       # Интеграционные и lifecycle тесты
 ├── oxide-agent-runtime/             # Runtime: сессии и оркестрация
 │   └── src/
+│       ├── agent/
+│       │   ├── mod.rs               # Runtime agent module
+│       │   └── runtime/
+│       │       ├── mod.rs           # Progress runtime exports
+│       │       └── progress.rs      # Progress runtime implementation
 │       ├── session_registry.rs      # Управление сессиями
-│       └── agent/runtime/           # Progress runtime
+│       └── lib.rs                   # Runtime library exports
 ├── oxide-agent-sandboxd/            # Sandbox broker daemon with Docker access
-│   └── src/main.rs                  # Unix socket broker entry point
+│   └── src/
+│       └── main.rs                  # Unix socket broker entry point
 ├── oxide-agent-transport-telegram/  # Транспорт: Telegram Bot API
 │   ├── src/
-│   │   ├── runner.rs                # Инициализация бота
 │   │   ├── bot/
-│   │   │   ├── handlers.rs          # Top-level Telegram handlers and menus
-│   │   │   ├── agent_handlers/      # Agent Mode facade + modularized handler slices
+│   │   │   ├── agent_handlers/      # Agent Mode handlers (modularized)
 │   │   │   │   ├── mod.rs           # Thin facade and re-exports
-│   │   │   │   ├── lifecycle.rs     # Agent mode activation/message orchestration
-│   │   │   │   ├── controls.rs      # Control commands, confirmations, exit flow
-│   │   │   │   ├── callbacks.rs     # Inline callback routing and approvals
-│   │   │   │   ├── input.rs         # Batched text and multimodal input handling
-│   │   │   │   ├── task_runner.rs   # Task execution, progress, result delivery
-│   │   │   │   ├── session.rs       # Session lifecycle, compat keys, registry helpers
-│   │   │   │   ├── execution_config.rs # Execution profile, infra, reminder context wiring
-│   │   │   │   ├── reminders.rs     # Reminder scheduler wake-up handling
-│   │   │   │   ├── shared.rs        # Shared helpers and pending state maps
+│   │   │   │   ├── lifecycle.rs     # Agent mode activation/orchestration
+│   │   │   │   ├── controls.rs      # Control commands and exit flow
+│   │   │   │   ├── callbacks.rs     # Inline callback routing
+│   │   │   │   ├── input.rs         # Text and multimodal input handling
+│   │   │   │   ├── task_runner.rs   # Task execution and result delivery
+│   │   │   │   ├── session.rs       # Session lifecycle and registry
+│   │   │   │   ├── execution_config.rs  # Execution profile wiring
+│   │   │   │   ├── reminders.rs     # Reminder scheduler handling
+│   │   │   │   ├── shared.rs        # Shared helpers and state maps
 │   │   │   │   └── tests.rs         # Agent handler unit tests
-│   │   │   ├── agent_transport.rs   # Transport adapter for progress/task updates
+│   │   │   ├── agent/               # Agent-specific utilities
+│   │   │   │   ├── mod.rs           # Agent utilities exports
+│   │   │   │   └── media.rs         # Media handling for agents
+│   │   │   ├── views/               # UI component views
+│   │   │   │   ├── mod.rs           # Views module exports
+│   │   │   │   └── agent.rs         # Agent Mode UI components
+│   │   │   ├── handlers.rs          # Top-level Telegram handlers
+│   │   │   ├── agent_transport.rs   # Transport adapter for progress
 │   │   │   ├── context.rs           # Context-scoped transport state
-│   │   │   ├── topic_route.rs       # Topic routing and dynamic binding resolution
+│   │   │   ├── topic_route.rs       # Topic routing and binding resolution
 │   │   │   ├── thread.rs            # Telegram thread/topic helpers
-│   │   │   ├── manager_topic_lifecycle.rs # Manager topic provisioning helpers
+│   │   │   ├── manager_topic_lifecycle.rs  # Manager topic provisioning
 │   │   │   ├── messaging.rs         # Long-message delivery helpers
-│   │   │   ├── resilient.rs         # Resilient Telegram send/edit wrappers
+│   │   │   ├── resilient.rs         # Resilient send/edit wrappers
 │   │   │   ├── progress_render.rs   # HTML progress rendering
-│   │   │   ├── unauthorized_cache.rs # Unauthorized access cooldown cache
+│   │   │   ├── unauthorized_cache.rs    # Unauthorized access cache
 │   │   │   ├── state.rs             # Dialogue state machine
-│   │   │   └── views/               # UI component views
-│   │   │       └── agent.rs         # Agent Mode UI components
-│   │   └── tests/
+│   │   │   └── mod.rs               # Bot module exports
+│   │   ├── runner.rs                # Bot initialization
+│   │   ├── config.rs                # Telegram-specific config
+│   │   └── lib.rs                   # Telegram transport exports
+│   └── tests/
 └── oxide-agent-telegram-bot/        # Application Entry Point
-    └── src/main.rs
+    └── src/
+        └── main.rs                  # Binary entry point
 skills/                              # Документация навыков агента (9 skills)
 docs/                                # Комплексная документация
 ├── HANDOVER-NOTE.txt                # Текущий handover по compaction rollout
 ├── hooks/                           # Hook system documentation
 │   └── sub-agents/                  # Sub-agent delegation lifecycle
 ├── opencode-int/                    # OpenCode sandbox integration
-│   └── opencode-sandbox-integration/ # architecture, configuration, deployment, examples, testing
+│   └── opencode-sandbox-integration/
 ├── AGENT-TOPICS-BLUEPRINT.md
-├── KOKORO-voice.md                  # Local Kokoro TTS API reference and ffmpeg usage
+├── KOKORO-voice.md                  # Local Kokoro TTS API reference
 └── sdk-third-party-api-examples.md
 sandbox/
 └── Dockerfile.sandbox
 ```
 
 ### Workspace crates
-- `oxide-agent-core`: доменная логика агента, staged compaction pipeline для Agent Mode, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов, context-scoped storage API, `AgentExecutionProfile` с `ToolAccessPolicy`, topic-scoped prompts/configs и SSH MCP provider с approval flow.
+- `oxide-agent-core`: доменная логика агента, staged compaction pipeline для Agent Mode, LLM-интеграции (включая `http_utils.rs`, `openai_compat.rs`), хуки (9 hooks с `registry.rs`, `types.rs`), навыки (с `cache.rs`, `loader.rs`, `matcher.rs`, `types.rs`), runner (с `execution.rs`, `tools.rs`, `responses.rs`, `hooks.rs`, `types.rs`), storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов, context-scoped storage API, `AgentExecutionProfile` с `ToolAccessPolicy`, `context.rs`, `identity.rs` для агентского контекста и персон, topic-scoped prompts/configs, `utils.rs` для общих утилит и SSH MCP provider с approval flow.
 - `oxide-agent-runtime`: оркестрация сессий, прогресс-рендеринг, session registry с thread-aware session keys.
 - `oxide-agent-sandboxd`: отдельный broker daemon для sandbox. Слушает Unix socket (`SANDBOXD_SOCKET`), владеет `docker.sock`, принимает узкий sandbox protocol и выполняет Docker operations от имени основного агента.
-- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, resilient messaging, progress rendering, unauthorized access protection, телеметрия доставки. Включает модульный `bot/agent_handlers/` (facade + lifecycle/controls/callbacks/input/task_runner/session/execution_config/reminders/shared/tests), `context.rs` для context-scoped state management с legacy fallback для DM-чатов и views module для UI компонентов.
+- `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, resilient messaging, progress rendering, unauthorized access protection, телеметрия доставки. Включает модульный `bot/agent_handlers/` (facade + lifecycle/controls/callbacks/input/task_runner/session/execution_config/reminders/shared/tests), `context.rs` для context-scoped state management с legacy fallback для DM-чатов, `agent/media.rs` для обработки медиа и views module для UI компонентов.
 - `oxide-agent-telegram-bot`: бинарь с конфигурацией и запуском Telegram транспорта.
 
 ## 🧪 Testing Infrastructure
@@ -165,7 +264,7 @@ sandbox/
 
 Three levels of protection against infinite loops: Content Detector (pattern matching), Tool Detector (repetitive sequences), LLM Detector (AI-based recognition).
 
-**Components**: `LoopDetectionConfig`, `LoopDetectionService`, `content_detector.rs`, `tool_detector.rs`, `llm_detector.rs`, `types.rs`.
+**Components**: `LoopDetectionConfig`, `LoopDetectionService`, `content_detector.rs`, `tool_detector.rs`, `llm_detector.rs`, `config.rs`, `service.rs`, `types.rs`.
 
 Integration via `LoopDetectionHook` in agent execution loop.
 
@@ -283,7 +382,7 @@ CRUD operations for forum topics, agent profiles, topic contexts, infrastructure
 
 Embedding-based skill matching and retrieval.
 
-**Components**: `SkillRegistry`, `embeddings.rs`, `matcher.rs`, `cache.rs`, `loader.rs`.
+**Components**: `SkillRegistry`, `embeddings.rs`, `matcher.rs`, `cache.rs`, `loader.rs`, `types.rs`.
 
 **Available Skills** (9 skills in `skills/`): core, delegation_manager, ffmpeg-conversion, file-hosting, file-management, html-report, task-planning, video-processing, web-search.
 
