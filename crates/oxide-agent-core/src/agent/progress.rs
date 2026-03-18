@@ -139,9 +139,21 @@ pub enum AgentEvent {
     },
     /// Warning that the same run needed multiple compaction passes.
     RepeatedCompactionWarning {
+        /// Which kind of repeated maintenance triggered the warning.
+        kind: RepeatedCompactionKind,
         /// Number of applied compaction passes in the current run.
         count: usize,
     },
+}
+
+/// User-facing class of repeated context maintenance activity.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatedCompactionKind {
+    /// Repeated deterministic cleanup of bulky artifacts.
+    Cleanup,
+    /// Repeated summary/rebuild passes over older history.
+    Compaction,
 }
 
 /// Current state of the agent's progress
@@ -273,8 +285,8 @@ impl ProgressState {
             AgentEvent::CompactionFailed { trigger, error } => {
                 self.handle_compaction_failed(trigger, error)
             }
-            AgentEvent::RepeatedCompactionWarning { count } => {
-                self.handle_repeated_compaction_warning(count)
+            AgentEvent::RepeatedCompactionWarning { kind, count } => {
+                self.handle_repeated_compaction_warning(kind, count)
             }
         }
     }
@@ -473,7 +485,8 @@ impl ProgressState {
 
     fn handle_pruning_applied(&mut self, pruned_count: usize, reclaimed_tokens: usize) {
         self.last_compaction_status = Some(format!(
-            "Pruned {pruned_count} stale artifacts and reclaimed ~{}.",
+            "Cleanup: pruned {pruned_count} {} - reclaimed ~{}.",
+            pluralize(pruned_count, "old artifact", "old artifacts"),
             crate::utils::format_tokens(reclaimed_tokens)
         ));
     }
@@ -481,28 +494,42 @@ impl ProgressState {
     fn handle_compaction_completed(&mut self, details: CompactionCompletionDetails) {
         self.complete_last_step();
         self.last_compaction_status = Some(if details.applied {
-            let mut parts = Vec::new();
-            if details.externalized_count > 0 {
-                parts.push(format!("externalized {}", details.externalized_count));
-            }
-            if details.pruned_count > 0 {
-                parts.push(format!("pruned {}", details.pruned_count));
-            }
             if details.summary_updated {
-                parts.push("refreshed summary".to_string());
+                format!(
+                    "Compaction: refreshed summary and rebuilt active context - reclaimed ~{}.",
+                    crate::utils::format_tokens(details.reclaimed_tokens)
+                )
+            } else {
+                let cleanup_label = match (details.externalized_count, details.pruned_count) {
+                    (externalized, 0) if externalized > 0 => format!(
+                        "externalized {externalized} {}",
+                        pluralize(externalized, "large tool result", "large tool results")
+                    ),
+                    (0, pruned) if pruned > 0 => format!(
+                        "pruned {pruned} {}",
+                        pluralize(pruned, "old artifact", "old artifacts")
+                    ),
+                    (externalized, pruned) if externalized > 0 && pruned > 0 => format!(
+                        "externalized {externalized} {} and pruned {pruned} {}",
+                        pluralize(externalized, "large tool result", "large tool results"),
+                        pluralize(pruned, "old artifact", "old artifacts")
+                    ),
+                    _ if details.archived_chunk_count > 0 => format!(
+                        "archived {} {}",
+                        details.archived_chunk_count,
+                        pluralize(
+                            details.archived_chunk_count,
+                            "context chunk",
+                            "context chunks"
+                        )
+                    ),
+                    _ => "updated hot context".to_string(),
+                };
+                format!(
+                    "Cleanup: {cleanup_label} - reclaimed ~{}.",
+                    crate::utils::format_tokens(details.reclaimed_tokens)
+                )
             }
-            if details.archived_chunk_count > 0 {
-                parts.push(format!("archived {}", details.archived_chunk_count));
-            }
-            if parts.is_empty() {
-                parts.push("updated hot context".to_string());
-            }
-            format!(
-                "Compaction completed ({}) - {} - reclaimed ~{}.",
-                compaction_trigger_label(details.trigger),
-                parts.join(", "),
-                crate::utils::format_tokens(details.reclaimed_tokens)
-            )
         } else {
             format!(
                 "Compaction checked context ({}) - no changes were needed.",
@@ -521,10 +548,15 @@ impl ProgressState {
         self.fail_last_step();
     }
 
-    fn handle_repeated_compaction_warning(&mut self, count: usize) {
-        self.repeated_compaction_warning = Some(format!(
-            "Context has already been compacted {count} times in this run. Consider finishing or narrowing the working set."
-        ));
+    fn handle_repeated_compaction_warning(&mut self, kind: RepeatedCompactionKind, count: usize) {
+        self.repeated_compaction_warning = Some(match kind {
+            RepeatedCompactionKind::Cleanup => format!(
+                "Large tool outputs triggered cleanup {count} times in this run. Consider narrowing raw data collection."
+            ),
+            RepeatedCompactionKind::Compaction => format!(
+                "History was compacted {count} times in this run. Consider finishing or splitting the task."
+            ),
+        });
     }
 
     // Formatting is handled in the UI layer.
@@ -538,9 +570,17 @@ fn compaction_trigger_label(trigger: CompactionTrigger) -> &'static str {
     }
 }
 
+fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+    if count == 1 {
+        singular
+    } else {
+        plural
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AgentEvent, ProgressState};
+    use super::{AgentEvent, ProgressState, RepeatedCompactionKind};
     use crate::agent::compaction::CompactionTrigger;
 
     #[test]
@@ -569,17 +609,59 @@ mod tests {
         assert!(state
             .last_compaction_status
             .as_deref()
-            .is_some_and(|status| status.contains("refreshed summary")));
+            .is_some_and(|status| status
+                .contains("Compaction: refreshed summary and rebuilt active context")));
+    }
+
+    #[test]
+    fn cleanup_events_render_cleanup_labels() {
+        let mut state = ProgressState::new(5);
+
+        state.update(AgentEvent::CompactionStarted {
+            trigger: CompactionTrigger::PreIteration,
+        });
+        state.update(AgentEvent::CompactionCompleted {
+            trigger: CompactionTrigger::PreIteration,
+            applied: true,
+            externalized_count: 1,
+            pruned_count: 0,
+            reclaimed_tokens: 797,
+            archived_chunk_count: 0,
+            summary_updated: false,
+        });
+
+        assert_eq!(
+            state.last_compaction_status.as_deref(),
+            Some("Cleanup: externalized 1 large tool result - reclaimed ~797.")
+        );
+    }
+
+    #[test]
+    fn pruning_events_render_cleanup_labels() {
+        let mut state = ProgressState::new(5);
+
+        state.update(AgentEvent::PruningApplied {
+            pruned_count: 3,
+            reclaimed_tokens: 2100,
+        });
+
+        assert_eq!(
+            state.last_compaction_status.as_deref(),
+            Some("Cleanup: pruned 3 old artifacts - reclaimed ~2.1k.")
+        );
     }
 
     #[test]
     fn repeated_compaction_warning_is_preserved() {
         let mut state = ProgressState::new(5);
-        state.update(AgentEvent::RepeatedCompactionWarning { count: 3 });
+        state.update(AgentEvent::RepeatedCompactionWarning {
+            kind: RepeatedCompactionKind::Cleanup,
+            count: 3,
+        });
 
         assert!(state
             .repeated_compaction_warning
             .as_deref()
-            .is_some_and(|warning| warning.contains("3 times")));
+            .is_some_and(|warning| warning.contains("cleanup 3 times")));
     }
 }
