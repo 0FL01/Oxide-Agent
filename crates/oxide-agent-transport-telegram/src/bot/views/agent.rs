@@ -37,6 +37,10 @@ pub const AGENT_CALLBACK_EXIT: &str = "agent:exit";
 pub const AGENT_CALLBACK_CONFIRM_CLEAR_YES: &str = "agent:confirm:clear:yes";
 /// Callback data for cancelling memory clear from topic controls
 pub const AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL: &str = "agent:confirm:clear:cancel";
+/// Callback data for confirming context compaction from topic controls
+pub const AGENT_CALLBACK_CONFIRM_COMPACT_YES: &str = "agent:confirm:compact:yes";
+/// Callback data for cancelling context compaction from topic controls
+pub const AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL: &str = "agent:confirm:compact:cancel";
 /// Callback data for confirming task cancellation from inline controls
 pub const AGENT_CALLBACK_CONFIRM_CANCEL_YES: &str = "agent:confirm:cancel:yes";
 /// Callback data for aborting task cancellation from inline controls
@@ -133,6 +137,9 @@ pub trait AgentView {
 
     /// Memory clear confirmation message
     fn memory_clear_confirmation() -> &'static str;
+
+    /// Context compaction confirmation message
+    fn context_compaction_confirmation() -> &'static str;
 
     /// Format container recreation error
     fn container_error(error: &str) -> String;
@@ -273,6 +280,10 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
 
     fn memory_clear_confirmation() -> &'static str {
         "⚠️ <b>Warning!</b>\n\nThis action will start a fresh agent flow for this topic. Previous flows will be preserved and can be attached later. The container and files will remain intact.\n\nAre you sure?"
+    }
+
+    fn context_compaction_confirmation() -> &'static str {
+        "⚠️ <b>Warning!</b>\n\nThis action will compact the current agent context for this flow. The agent may summarize older working history, but the current flow will remain active.\n\nAre you sure?"
     }
 
     fn container_error(error: &str) -> String {
@@ -450,6 +461,10 @@ pub fn confirmation_inline_keyboard(action: ConfirmationType) -> InlineKeyboardM
         ConfirmationType::ClearMemory => (
             AGENT_CALLBACK_CONFIRM_CLEAR_YES,
             AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
+        ),
+        ConfirmationType::CompactContext => (
+            AGENT_CALLBACK_CONFIRM_COMPACT_YES,
+            AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL,
         ),
         ConfirmationType::RecreateContainer => (
             AGENT_CALLBACK_CONFIRM_RECREATE_YES,

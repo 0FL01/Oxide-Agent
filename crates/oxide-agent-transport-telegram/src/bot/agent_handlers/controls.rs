@@ -662,6 +662,7 @@ pub(crate) async fn confirm_destructive_action(
 
     let message_text = match action {
         ConfirmationType::ClearMemory => DefaultAgentView::memory_clear_confirmation(),
+        ConfirmationType::CompactContext => DefaultAgentView::context_compaction_confirmation(),
         ConfirmationType::RecreateContainer => DefaultAgentView::container_wipe_confirmation(),
     };
 
@@ -734,6 +735,9 @@ pub(crate) async fn handle_agent_confirmation(
                     &send_ctx,
                 )
                 .await?;
+            }
+            ConfirmationType::CompactContext => {
+                start_manual_compaction(bot.clone(), msg, storage, llm, settings).await?;
             }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(

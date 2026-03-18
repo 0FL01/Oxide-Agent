@@ -13,7 +13,9 @@ use super::{
     AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, SESSION_REGISTRY,
 };
 use crate::bot::views::{
-    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO, AGENT_CALLBACK_CONFIRM_CANCEL_YES,
+    AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL,
+    AGENT_CALLBACK_CONFIRM_COMPACT_YES,
 };
 use crate::bot::{general_forum_topic_id, resolve_thread_spec_from_context};
 use crate::config::{BotSettings, TelegramSettings};
@@ -532,7 +534,9 @@ fn inline_cancel_callbacks_are_recognized() {
     );
     assert_eq!(
         parse_agent_callback_action(crate::bot::views::AGENT_CALLBACK_COMPACT_CONTEXT),
-        Some(AgentCallbackAction::ManualCompact)
+        Some(AgentCallbackAction::StartConfirmation(
+            crate::bot::state::ConfirmationType::CompactContext
+        ))
     );
     assert_eq!(
         parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_CANCEL_YES),
@@ -541,6 +545,20 @@ fn inline_cancel_callbacks_are_recognized() {
     assert_eq!(
         parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_CANCEL_NO),
         Some(AgentCallbackAction::ResolveCancelTaskConfirmation(false))
+    );
+    assert_eq!(
+        parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_COMPACT_YES),
+        Some(AgentCallbackAction::ResolveConfirmation(
+            crate::bot::state::ConfirmationType::CompactContext,
+            true,
+        ))
+    );
+    assert_eq!(
+        parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL),
+        Some(AgentCallbackAction::ResolveConfirmation(
+            crate::bot::state::ConfirmationType::CompactContext,
+            false,
+        ))
     );
 }
 
