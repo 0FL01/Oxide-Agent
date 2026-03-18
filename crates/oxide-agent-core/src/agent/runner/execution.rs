@@ -4,11 +4,12 @@ use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
 use super::AgentRunner;
+use crate::agent::compaction::{CompactionRequest, CompactionTrigger};
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
-use crate::llm::ChatResponse;
+use crate::llm::{ChatResponse, LlmError};
 use anyhow::{anyhow, Result};
 use tracing::{debug, warn};
 
@@ -39,6 +40,7 @@ impl AgentRunner {
             self.apply_pending_runtime_context(ctx, &mut state).await;
 
             self.apply_before_iteration_hooks(ctx, &state)?;
+            self.run_iteration_compaction(ctx, iteration).await?;
 
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
@@ -79,10 +81,44 @@ impl AgentRunner {
         ))
     }
 
-    async fn call_llm_with_tools(&self, ctx: &mut AgentRunnerContext<'_>) -> Result<ChatResponse> {
+    async fn call_llm_with_tools(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+    ) -> Result<ChatResponse> {
+        match self.chat_with_tools_once(ctx).await {
+            Ok(response) => Ok(response),
+            Err(error) if Self::llm_error_suggests_context_overflow(&error) => {
+                let retried = self
+                    .run_compaction_checkpoint(ctx, CompactionTrigger::Manual)
+                    .await?;
+                if retried {
+                    match self.chat_with_tools_once(ctx).await {
+                        Ok(response) => return Ok(response),
+                        Err(retry_error) => {
+                            Self::emit_llm_error(ctx.progress_tx, &retry_error).await;
+                            return Err(anyhow!(
+                                "LLM call failed after compaction retry: {retry_error}"
+                            ));
+                        }
+                    }
+                }
+
+                Self::emit_llm_error(ctx.progress_tx, &error).await;
+                Err(anyhow!("LLM call failed: {error}"))
+            }
+            Err(error) => {
+                Self::emit_llm_error(ctx.progress_tx, &error).await;
+                Err(anyhow!("LLM call failed: {error}"))
+            }
+        }
+    }
+
+    async fn chat_with_tools_once(
+        &self,
+        ctx: &mut AgentRunnerContext<'_>,
+    ) -> Result<ChatResponse, LlmError> {
         let json_mode = self.requires_structured_output(&ctx.config.model_name);
-        let response = self
-            .llm_client
+        self.llm_client
             .chat_with_tools(
                 ctx.system_prompt,
                 ctx.messages,
@@ -90,17 +126,7 @@ impl AgentRunner {
                 &ctx.config.model_name,
                 json_mode,
             )
-            .await;
-
-        if let Err(ref e) = response {
-            if let Some(tx) = ctx.progress_tx {
-                let _ = tx
-                    .send(AgentEvent::Error(format!("LLM call failed: {e}")))
-                    .await;
-            }
-        }
-
-        response.map_err(|e| anyhow!("LLM call failed: {e}"))
+            .await
     }
 
     async fn handle_llm_response(
@@ -225,6 +251,48 @@ impl AgentRunner {
         }
     }
 
+    async fn run_iteration_compaction(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        iteration: usize,
+    ) -> Result<()> {
+        let trigger = if iteration == 0 {
+            CompactionTrigger::PreRun
+        } else {
+            CompactionTrigger::PreIteration
+        };
+        let _ = self.run_compaction_checkpoint(ctx, trigger).await?;
+        Ok(())
+    }
+
+    async fn run_compaction_checkpoint(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        trigger: CompactionTrigger,
+    ) -> Result<bool> {
+        let Some(compaction_service) = ctx.compaction_service else {
+            return Ok(false);
+        };
+
+        let request = CompactionRequest::new(
+            trigger,
+            ctx.task,
+            ctx.system_prompt,
+            ctx.tools,
+            &ctx.config.model_name,
+            ctx.config.model_max_output_tokens,
+            ctx.config.is_sub_agent,
+        );
+        let outcome = compaction_service
+            .prepare_for_run(&request, ctx.agent)
+            .await?;
+        if outcome.applied {
+            Self::refresh_messages_from_memory(ctx);
+        }
+
+        Ok(outcome.applied)
+    }
+
     async fn handle_tool_calls_response(
         &mut self,
         response: &mut ChatResponse,
@@ -336,6 +404,36 @@ impl AgentRunner {
         }
     }
 
+    async fn emit_llm_error(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        error: &LlmError,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::Error(format!("LLM call failed: {error}")))
+                .await;
+        }
+    }
+
+    fn llm_error_suggests_context_overflow(error: &LlmError) -> bool {
+        let message = error.to_string().to_ascii_lowercase();
+        [
+            "context length",
+            "context window",
+            "too many tokens",
+            "token limit",
+            "maximum context",
+            "prompt is too long",
+            "context overflow",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
+    }
+
+    fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
+        *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
+    }
+
     fn spawn_narrative_task(
         &self,
         reasoning: Option<&str>,
@@ -383,4 +481,358 @@ impl AgentRunner {
     }
 
     // Response helpers live in responses.rs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::compaction::{
+        CompactionService, CompactionSummarizer, CompactionSummarizerConfig,
+    };
+    use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::provider::ToolProvider;
+    use crate::agent::registry::ToolRegistry;
+    use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
+    use crate::config::AgentSettings;
+    use crate::llm::{
+        ChatResponse, LlmClient, MockLlmProvider, ToolCall, ToolCallFunction, ToolDefinition,
+    };
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
+
+    struct LargeOutputToolProvider;
+
+    #[async_trait]
+    impl ToolProvider for LargeOutputToolProvider {
+        fn name(&self) -> &'static str {
+            "large-output"
+        }
+
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: "fake_large_tool".to_string(),
+                description: "Return a large payload".to_string(),
+                parameters: json!({"type": "object", "properties": {}}),
+            }]
+        }
+
+        fn can_handle(&self, tool_name: &str) -> bool {
+            tool_name == "fake_large_tool"
+        }
+
+        async fn execute(
+            &self,
+            _tool_name: &str,
+            _arguments: &str,
+            _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+            _cancellation_token: Option<&CancellationToken>,
+        ) -> anyhow::Result<String> {
+            Ok("Z".repeat(5_000))
+        }
+    }
+
+    #[tokio::test]
+    async fn run_applies_pre_run_compaction_before_first_llm_call() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let summarizer = CompactionSummarizer::new(
+            Arc::clone(&llm_client),
+            CompactionSummarizerConfig {
+                model_name: String::new(),
+                provider_name: String::new(),
+                timeout_secs: 1,
+            },
+        );
+        let compaction_service = CompactionService::default().with_summarizer(summarizer);
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(256);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Ship stage 9"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Older request about compaction."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Older response with findings."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 2."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 2."));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Ship stage 9",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-pre-run",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: Some(&compaction_service),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        assert!(ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .any(|message| message.summary_payload().is_some()));
+        assert!(!ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .any(|message| message.content == "Older request about compaction."));
+    }
+
+    #[tokio::test]
+    async fn run_applies_pre_iteration_compaction_after_tool_growth() {
+        let llm_client = build_llm_client(tool_then_final_provider());
+        let compaction_service = CompactionService::default();
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Inspect large tool payloads"));
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(LargeOutputToolProvider));
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Inspect large tool payloads",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-pre-iteration",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: Some(&compaction_service),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        assert!(ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .any(AgentMessage::is_externalized));
+    }
+
+    #[tokio::test]
+    async fn run_retries_after_context_overflow_with_manual_compaction() {
+        let llm_client = build_llm_client(context_overflow_then_final_provider());
+        let summarizer = CompactionSummarizer::new(
+            Arc::clone(&llm_client),
+            CompactionSummarizerConfig {
+                model_name: String::new(),
+                provider_name: String::new(),
+                timeout_secs: 1,
+            },
+        );
+        let compaction_service = CompactionService::default().with_summarizer(summarizer);
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Retry after overflow"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Older request about compaction."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Older response with findings."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 2."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 2."));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Retry after overflow",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-overflow-retry",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: Some(&compaction_service),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
+        };
+
+        let result = runner
+            .run(&mut ctx)
+            .await
+            .expect("runner succeeds after retry");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        assert!(ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .any(|message| message.summary_payload().is_some()));
+    }
+
+    fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {
+        let settings = AgentSettings {
+            agent_model_id: Some("mock-model".to_string()),
+            agent_model_provider: Some("mock".to_string()),
+            agent_model_max_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("mock".to_string(), Arc::new(provider));
+        Arc::new(llm_client)
+    }
+
+    fn single_final_response_provider() -> MockLlmProvider {
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().return_once(|_| {
+            Ok(ChatResponse {
+                content: Some(r#"{"thought":"done","final_answer":"done"}"#.to_string()),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+                usage: None,
+            })
+        });
+        provider
+            .expect_chat_completion()
+            .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_analyze_image()
+            .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+    }
+
+    fn tool_then_final_provider() -> MockLlmProvider {
+        let mut provider = MockLlmProvider::new();
+        let mut sequence = mockall::Sequence::new();
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Ok(ChatResponse {
+                    content: Some(String::new()),
+                    tool_calls: vec![ToolCall {
+                        id: "call-1".to_string(),
+                        function: ToolCallFunction {
+                            name: "fake_large_tool".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        is_recovered: false,
+                    }],
+                    finish_reason: "tool_calls".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            });
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Ok(ChatResponse {
+                    content: Some(r#"{"thought":"done","final_answer":"done"}"#.to_string()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            });
+        provider
+            .expect_chat_completion()
+            .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_analyze_image()
+            .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+    }
+
+    fn context_overflow_then_final_provider() -> MockLlmProvider {
+        let mut provider = MockLlmProvider::new();
+        let mut sequence = mockall::Sequence::new();
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Err(LlmError::ApiError(
+                    "maximum context length exceeded".to_string(),
+                ))
+            });
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Ok(ChatResponse {
+                    content: Some(r#"{"thought":"done","final_answer":"done"}"#.to_string()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            });
+        provider
+            .expect_chat_completion()
+            .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_analyze_image()
+            .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+    }
 }
