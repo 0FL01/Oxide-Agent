@@ -57,8 +57,9 @@ pub mod loop_detection;
 pub mod progress;
 
 pub use compaction::{
-    AgentMessageKind, ArchiveRecord, ArchiveRef, ArchiveSink, CompactionOutcome, CompactionPolicy,
-    CompactionRequest, CompactionRetention, CompactionService, CompactionTrigger, NoopArchiveSink,
+    estimate_request_budget, AgentMessageKind, ArchiveRecord, ArchiveRef, ArchiveSink,
+    BudgetEstimate, BudgetState, CompactionOutcome, CompactionPolicy, CompactionRequest,
+    CompactionRetention, CompactionService, CompactionTrigger, HotMemoryBudget, NoopArchiveSink,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};

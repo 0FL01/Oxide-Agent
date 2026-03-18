@@ -1,6 +1,7 @@
 //! Stage 1 compaction orchestration facade.
 
 use super::archive::{ArchiveSink, NoopArchiveSink};
+use super::budget::estimate_request_budget;
 use super::types::{CompactionOutcome, CompactionPolicy, CompactionRequest};
 use crate::agent::context::AgentContext;
 use anyhow::Result;
@@ -45,15 +46,15 @@ impl CompactionService {
 
     /// Stage 1 checkpoint hook.
     ///
-    /// The service is intentionally a no-op for now; it exists to move future
-    /// compaction orchestration out of `AgentMemory` and into the execution
-    /// pipeline without changing behavior in a hidden side effect.
+    /// The service remains a no-op mutation-wise for now, but Stage 3 collects
+    /// a full request budget so later stages can make pruning/compaction
+    /// decisions from orchestration instead of hidden memory side effects.
     pub async fn prepare_for_run(
         &self,
         request: &CompactionRequest<'_>,
         agent: &mut dyn AgentContext,
     ) -> Result<CompactionOutcome> {
-        let token_count = agent.memory().token_count();
+        let budget = estimate_request_budget(&self.policy, request, agent);
         let hot_messages = agent.memory().get_messages().len();
 
         debug!(
@@ -62,29 +63,36 @@ impl CompactionService {
             system_prompt_len = request.system_prompt.len(),
             tool_count = request.tools.len(),
             model = request.model_name,
+            model_max_output_tokens = request.model_max_output_tokens,
             is_sub_agent = request.is_sub_agent,
             hot_messages,
-            token_count,
             memory_threshold = agent.memory().compact_threshold(),
-            legacy_threshold = self.policy.legacy_compact_threshold,
+            hot_memory_tokens = budget.hot_memory.total_tokens,
+            system_prompt_tokens = budget.system_prompt_tokens,
+            tool_schema_tokens = budget.tool_schema_tokens,
+            projected_total_tokens = budget.projected_total_tokens,
+            reserved_output_tokens = budget.reserved_output_tokens,
+            headroom_tokens = budget.headroom_tokens,
+            budget_state = ?budget.state,
             "Compaction checkpoint reached"
         );
 
         let _ = &self.archive_sink;
 
-        Ok(CompactionOutcome::noop(request.trigger, token_count))
+        Ok(CompactionOutcome::noop(request.trigger, budget))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::compaction::BudgetState;
     use crate::agent::memory::AgentMessage;
     use crate::agent::{AgentContext, EphemeralSession};
 
     #[tokio::test]
     async fn prepare_for_run_is_noop_in_stage_one() {
-        let mut session = EphemeralSession::new(1_000);
+        let mut session = EphemeralSession::new(20_000);
         session
             .memory_mut()
             .add_message(AgentMessage::user("Investigate compaction migration"));
@@ -96,6 +104,7 @@ mod tests {
             "system prompt",
             &[],
             "demo-model",
+            512,
             false,
         );
 
@@ -107,6 +116,7 @@ mod tests {
         assert_eq!(outcome.token_count_before, outcome.token_count_after);
         assert!(!outcome.applied);
         assert_eq!(session.memory().get_messages().len(), 1);
+        assert_eq!(outcome.budget.state, BudgetState::Healthy);
     }
 
     #[test]

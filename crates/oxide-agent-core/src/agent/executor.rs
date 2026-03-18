@@ -468,7 +468,8 @@ impl AgentExecutor {
             .execution_profile
             .tool_policy()
             .filter_definitions(registry.all_tools());
-        let (model_id, provider, _) = self.settings.get_configured_agent_model();
+        let (model_id, provider, model_max_output_tokens) =
+            self.settings.get_configured_agent_model();
         let structured_output = !provider.eq_ignore_ascii_case("zai");
         let system_prompt = create_agent_system_prompt(
             task,
@@ -485,6 +486,7 @@ impl AgentExecutor {
             &system_prompt,
             &tools,
             &model_id,
+            model_max_output_tokens,
             false,
         );
         let _ = self
