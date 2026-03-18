@@ -505,6 +505,21 @@ impl CompactionOutcome {
             || self.summary_generation.used_fallback
             || self.archive_persistence.attempted
     }
+
+    /// Returns the actual hot-memory token delta reclaimed by the checkpoint.
+    #[must_use]
+    pub fn reclaimed_hot_memory_tokens(&self) -> usize {
+        self.token_count_before
+            .saturating_sub(self.token_count_after)
+    }
+
+    /// Returns the estimated reclaimed tokens from deterministic cleanup stages only.
+    #[must_use]
+    pub fn reclaimed_cleanup_tokens(&self) -> usize {
+        self.externalization
+            .reclaimed_tokens
+            .saturating_add(self.pruning.reclaimed_tokens)
+    }
 }
 
 #[cfg(test)]

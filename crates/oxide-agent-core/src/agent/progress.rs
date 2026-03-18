@@ -156,7 +156,7 @@ pub enum AgentEvent {
         externalized_count: usize,
         /// Number of newly pruned artifacts.
         pruned_count: usize,
-        /// Total reclaimed tokens from deterministic stages.
+        /// Total hot-memory tokens reclaimed by the full checkpoint.
         reclaimed_tokens: usize,
         /// Number of archived cold-context chunks.
         archived_chunk_count: usize,
