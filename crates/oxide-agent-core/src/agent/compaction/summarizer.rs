@@ -139,13 +139,26 @@ fn should_attempt_summary(
 fn parse_summary_response(response: &str) -> Option<CompactionSummary> {
     let json = extract_json(response);
     match serde_json::from_str::<CompactionSummary>(json) {
-        Ok(summary) if summary_has_signal(&summary) => Some(summary),
-        Ok(_) => None,
+        Ok(summary) => normalize_summary(summary),
         Err(error) => {
             warn!(error = %error, response = %response, "Failed to parse compaction summary JSON");
             None
         }
     }
+}
+
+fn normalize_summary(summary: CompactionSummary) -> Option<CompactionSummary> {
+    let normalized = CompactionSummary {
+        goal: normalize_scalar(summary.goal, 240),
+        constraints: normalize_items(summary.constraints, 8, 240),
+        decisions: normalize_items(summary.decisions, 8, 240),
+        discoveries: normalize_items(summary.discoveries, 8, 240),
+        relevant_files_entities: normalize_items(summary.relevant_files_entities, 10, 240),
+        remaining_work: normalize_items(summary.remaining_work, 8, 240),
+        risks: normalize_items(summary.risks, 8, 240),
+    };
+
+    summary_has_signal(&normalized).then_some(normalized)
 }
 
 fn summary_has_signal(summary: &CompactionSummary) -> bool {
@@ -300,13 +313,38 @@ fn dedupe_limit(items: Vec<String>, limit: usize) -> Vec<String> {
     deduped
 }
 
+fn normalize_items(items: Vec<String>, limit: usize, max_chars: usize) -> Vec<String> {
+    dedupe_limit(
+        items
+            .into_iter()
+            .map(|item| normalize_scalar(item, max_chars))
+            .collect(),
+        limit,
+    )
+}
+
+fn normalize_scalar(value: String, max_chars: usize) -> String {
+    value.trim().chars().take(max_chars).collect()
+}
+
 fn first_sentence(text: &str) -> String {
     let trimmed = text.trim();
-    let sentence = trimmed
-        .split(['\n', '.', '!', '?'])
-        .find(|part| !part.trim().is_empty())
-        .unwrap_or(trimmed)
-        .trim();
+    let mut boundary = trimmed.len();
+    let mut chars = trimmed.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        if ch == '\n' {
+            boundary = index;
+            break;
+        }
+        if matches!(ch, '.' | '!' | '?')
+            && chars.peek().is_none_or(|(_, next)| next.is_whitespace())
+        {
+            boundary = index;
+            break;
+        }
+    }
+
+    let sentence = trimmed[..boundary].trim();
     sentence.chars().take(200).collect()
 }
 
@@ -329,6 +367,40 @@ mod tests {
 
         assert!(parsed.is_some());
         assert_eq!(parsed.expect("summary").goal, "Ship stage 7");
+    }
+
+    #[test]
+    fn parse_summary_response_normalizes_duplicate_and_whitespace_entries() {
+        let parsed = parse_summary_response(
+            r#"{
+                "goal":"  Ship stage 12 safely  ",
+                "constraints":[" Keep AGENTS.md pinned ","Keep AGENTS.md pinned",""],
+                "decisions":["Use fallback on invalid JSON","Use fallback on invalid JSON"],
+                "discoveries":[],
+                "relevant_files_entities":["  crates/oxide-agent-core/src/agent/compaction/service.rs  ","crates/oxide-agent-core/src/agent/compaction/service.rs"],
+                "remaining_work":[" Add hardening tests "],
+                "risks":[" Timeout risk ","Timeout risk"]
+            }"#,
+        )
+        .expect("normalized summary");
+
+        assert_eq!(parsed.goal, "Ship stage 12 safely");
+        assert_eq!(parsed.constraints, vec!["Keep AGENTS.md pinned"]);
+        assert_eq!(parsed.decisions, vec!["Use fallback on invalid JSON"]);
+        assert_eq!(
+            parsed.relevant_files_entities,
+            vec!["crates/oxide-agent-core/src/agent/compaction/service.rs"]
+        );
+        assert_eq!(parsed.remaining_work, vec!["Add hardening tests"]);
+        assert_eq!(parsed.risks, vec!["Timeout risk"]);
+    }
+
+    #[test]
+    fn first_sentence_preserves_file_like_tokens() {
+        assert_eq!(
+            super::first_sentence("Preserve AGENTS.md during compaction. Keep going."),
+            "Preserve AGENTS.md during compaction"
+        );
     }
 
     #[tokio::test]
@@ -434,5 +506,61 @@ mod tests {
             .relevant_files_entities
             .iter()
             .any(|item| item.contains("crates/oxide-agent-core/src/agent/compaction/service.rs")));
+    }
+
+    #[tokio::test]
+    async fn summarize_if_needed_falls_back_on_invalid_json() {
+        let settings = Arc::new(crate::config::AgentSettings {
+            compaction_model_id: Some("compact-model".to_string()),
+            compaction_model_provider: Some("mock".to_string()),
+            compaction_model_max_tokens: Some(256),
+            compaction_model_timeout_secs: Some(5),
+            ..crate::config::AgentSettings::default()
+        });
+        let mut llm_client = LlmClient::new(settings.as_ref());
+        llm_client.register_provider(
+            "mock".to_string(),
+            Arc::new(mock_llm_simple("```json\n{\"goal\":123}\n```")),
+        );
+        let summarizer = CompactionSummarizer::new(
+            Arc::new(llm_client),
+            CompactionSummarizerConfig {
+                model_name: "compact-model".to_string(),
+                provider_name: "mock".to_string(),
+                timeout_secs: 5,
+            },
+        );
+        let messages = vec![
+            AgentMessage::user("We must preserve AGENTS.md and tool schemas."),
+            AgentMessage::assistant("Older response with findings."),
+            AgentMessage::user("Keep the current task and todos intact."),
+            AgentMessage::assistant("Recent response 1."),
+            AgentMessage::user("Recent response 2 input."),
+            AgentMessage::assistant("Recent response 2 output."),
+        ];
+        let snapshot = classify_hot_memory(&messages);
+        let request = CompactionRequest::new(
+            CompactionTrigger::Manual,
+            "Ship stage 12",
+            "system prompt",
+            &[],
+            "agent-model",
+            512,
+            false,
+        );
+
+        let outcome = summarizer
+            .summarize_if_needed(&request, BudgetState::ShouldCompact, &snapshot, &messages)
+            .await;
+
+        assert!(outcome.attempted);
+        assert!(outcome.used_fallback);
+        assert_eq!(outcome.model_name.as_deref(), Some("compact-model"));
+        assert!(outcome
+            .summary
+            .expect("fallback summary")
+            .constraints
+            .iter()
+            .any(|item| item.contains("preserve AGENTS.md")));
     }
 }

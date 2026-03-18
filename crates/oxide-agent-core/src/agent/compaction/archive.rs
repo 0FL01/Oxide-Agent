@@ -414,6 +414,58 @@ mod tests {
         assert!(outcome.archive_refs.is_empty());
     }
 
+    #[test]
+    fn persist_compacted_history_chunk_returns_serializable_archive_ref_with_noop_sink() {
+        let messages = vec![
+            AgentMessage::topic_agents_md("# Topic AGENTS\nStay safe."),
+            AgentMessage::user_task("Ship stage 12"),
+            AgentMessage::user("Older request"),
+            AgentMessage::assistant("Older response"),
+            AgentMessage::user("Recent request 1"),
+            AgentMessage::assistant("Recent response 1"),
+            AgentMessage::user("Recent request 2"),
+            AgentMessage::assistant("Recent response 2"),
+        ];
+        let summary = CompactionSummary {
+            goal: "Ship stage 12".to_string(),
+            remaining_work: vec!["Validate archive ref serialization.".to_string()],
+            ..CompactionSummary::default()
+        };
+        let snapshot = classify_hot_memory(&messages);
+
+        let outcome = persist_compacted_history_chunk(
+            &CompactionScope {
+                context_key: "topic-2".to_string(),
+                flow_id: "flow-b".to_string(),
+            },
+            CompactionTrigger::PreRun,
+            &snapshot,
+            &messages,
+            &summary,
+            &super::NoopArchiveSink,
+        );
+
+        assert!(outcome.attempted);
+        let archive_ref = outcome
+            .archive_refs
+            .first()
+            .cloned()
+            .expect("archive ref fallback");
+        assert!(archive_ref
+            .storage_key
+            .contains("archive/topic-2/flow-b/history-"));
+
+        let message = AgentMessage::archive_reference_with_ref(
+            "[archived context chunk]",
+            Some(archive_ref.clone()),
+        );
+        let serialized = serde_json::to_string(&message).expect("serialize archive reference");
+        let roundtrip: AgentMessage =
+            serde_json::from_str(&serialized).expect("deserialize archive reference");
+
+        assert_eq!(roundtrip.archive_ref_payload(), Some(&archive_ref));
+    }
+
     #[derive(Debug, Default)]
     struct RecordingArchiveSink {
         chunks: Mutex<Vec<ArchiveChunk>>,
