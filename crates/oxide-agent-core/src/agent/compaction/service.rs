@@ -275,7 +275,8 @@ mod tests {
         AgentMessageKind, BudgetState, CompactionSummarizer, CompactionSummarizerConfig,
     };
     use crate::agent::memory::AgentMessage;
-    use crate::agent::{AgentContext, EphemeralSession};
+    use crate::agent::providers::{TodoItem, TodoStatus};
+    use crate::agent::EphemeralSession;
     use crate::llm::LlmClient;
     use std::sync::Arc;
 
@@ -414,15 +415,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::assistant("Recent response 2 output."));
 
-        let llm_client = Arc::new(LlmClient::new(&crate::config::AgentSettings::default()));
-        let service = CompactionService::default().with_summarizer(CompactionSummarizer::new(
-            llm_client,
-            CompactionSummarizerConfig {
-                model_name: String::new(),
-                provider_name: String::new(),
-                timeout_secs: 1,
-            },
-        ));
+        let service = fallback_summarizer_service();
         let request = CompactionRequest::new(
             crate::agent::compaction::CompactionTrigger::Manual,
             "Ship stage 7",
@@ -470,6 +463,111 @@ mod tests {
             .relevant_files_entities
             .iter()
             .any(|item| item.contains("crates/oxide-agent-core/src/agent/compaction/service.rs")));
+    }
+
+    #[tokio::test]
+    async fn prepare_for_run_preserves_pinned_live_context_and_todos() {
+        let mut session = preservation_session();
+        let expected_todos = session.memory().todos.clone();
+        let service = fallback_summarizer_service();
+        let request = CompactionRequest::new(
+            crate::agent::compaction::CompactionTrigger::Manual,
+            "Ship stage 12",
+            "system prompt",
+            &[],
+            "demo-model",
+            256,
+            false,
+        );
+
+        let outcome = service
+            .prepare_for_run(&request, &mut session)
+            .await
+            .expect("stage 12 hardening checkpoint should succeed");
+
+        assert!(outcome.applied);
+        assert_eq!(session.memory().todos.items.len(), 2);
+        assert_eq!(
+            session
+                .memory()
+                .todos
+                .current_task()
+                .map(|item| item.description.as_str()),
+            Some("Keep current task preserved")
+        );
+        assert_eq!(
+            session.memory().todos.items[1].description,
+            "Add hardening coverage"
+        );
+        assert_eq!(
+            session.memory().todos.pending_count(),
+            expected_todos.pending_count()
+        );
+
+        let messages = session.memory().get_messages();
+        assert_eq!(messages[0].resolved_kind(), AgentMessageKind::TopicAgentsMd);
+        assert_eq!(messages[1].resolved_kind(), AgentMessageKind::SystemContext);
+        assert_eq!(messages[2].resolved_kind(), AgentMessageKind::UserTask);
+        assert_eq!(
+            messages[3].resolved_kind(),
+            AgentMessageKind::RuntimeContext
+        );
+        assert_eq!(
+            messages[4].resolved_kind(),
+            AgentMessageKind::ApprovalReplay
+        );
+        assert_eq!(messages[5].resolved_kind(), AgentMessageKind::Summary);
+        assert_eq!(
+            messages[6].resolved_kind(),
+            AgentMessageKind::ArchiveReference
+        );
+        assert_eq!(messages[7].content, "Recent request 1.");
+        assert_eq!(messages[10].content, "Recent response 2.");
+        assert!(messages.iter().all(|message| !message
+            .content
+            .contains("Older request about compaction hardening.")));
+    }
+
+    fn fallback_summarizer_service() -> CompactionService {
+        let llm_client = Arc::new(LlmClient::new(&crate::config::AgentSettings::default()));
+        CompactionService::default().with_summarizer(CompactionSummarizer::new(
+            llm_client,
+            CompactionSummarizerConfig {
+                model_name: String::new(),
+                provider_name: String::new(),
+                timeout_secs: 1,
+            },
+        ))
+    }
+
+    fn preservation_session() -> EphemeralSession {
+        let mut session = EphemeralSession::new(256);
+        session.memory_mut().todos.update(vec![
+            TodoItem {
+                description: "Keep current task preserved".to_string(),
+                status: TodoStatus::InProgress,
+            },
+            TodoItem {
+                description: "Add hardening coverage".to_string(),
+                status: TodoStatus::Pending,
+            },
+        ]);
+        for message in [
+            AgentMessage::topic_agents_md("# Topic AGENTS\nPreserve operator instructions."),
+            AgentMessage::system_context("Base execution policy"),
+            AgentMessage::user_task("Ship stage 12"),
+            AgentMessage::runtime_context("User asked to keep the active task."),
+            AgentMessage::approval_replay("Replay the approved SSH action exactly once."),
+            AgentMessage::user("Older request about compaction hardening."),
+            AgentMessage::assistant("Older response with findings."),
+            AgentMessage::user("Recent request 1."),
+            AgentMessage::assistant("Recent response 1."),
+            AgentMessage::user("Recent request 2."),
+            AgentMessage::assistant("Recent response 2."),
+        ] {
+            session.memory_mut().add_message(message);
+        }
+        session
     }
 
     #[test]

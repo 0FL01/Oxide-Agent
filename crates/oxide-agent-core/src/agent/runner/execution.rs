@@ -744,6 +744,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_emits_repeated_compaction_warning_after_multiple_applied_passes() {
+        let llm_client = build_llm_client(tool_then_final_provider());
+        let summarizer = CompactionSummarizer::new(
+            Arc::clone(&llm_client),
+            CompactionSummarizerConfig {
+                model_name: String::new(),
+                provider_name: String::new(),
+                timeout_secs: 1,
+            },
+        );
+        let compaction_service = CompactionService::default().with_summarizer(summarizer);
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(256);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::topic_agents_md(
+                "# Topic AGENTS\nPreserve operator instructions.",
+            ));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Ship stage 12"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Older request about compaction."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Older response with findings."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 2."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 2."));
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(LargeOutputToolProvider));
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = AgentRunnerContext {
+            task: "Ship stage 12",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-repeated-compaction",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: Some(&compaction_service),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        assert!(ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .any(|message| message.summary_payload().is_some()));
+        assert!(ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .any(AgentMessage::is_externalized));
+
+        drop(ctx);
+        drop(progress_tx);
+
+        let mut repeated_warning_count = None;
+        let mut completion_events = 0usize;
+        while let Some(event) = progress_rx.recv().await {
+            match event {
+                AgentEvent::CompactionCompleted { .. } => {
+                    completion_events = completion_events.saturating_add(1);
+                }
+                AgentEvent::RepeatedCompactionWarning { count } => {
+                    repeated_warning_count = Some(count);
+                }
+                _ => {}
+            }
+        }
+
+        assert!(completion_events >= 2);
+        assert_eq!(repeated_warning_count, Some(2));
+    }
+
+    #[tokio::test]
     async fn run_retries_after_context_overflow_with_manual_compaction() {
         let llm_client = build_llm_client(context_overflow_then_final_provider());
         let summarizer = CompactionSummarizer::new(
