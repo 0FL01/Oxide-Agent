@@ -6,7 +6,7 @@
 use super::identity::SessionId;
 use super::memory::AgentMemory;
 // use super::providers::TodoList;
-use crate::config::{AGENT_MAX_TOKENS, AGENT_TIMEOUT_SECS};
+use crate::config::AGENT_MAX_TOKENS;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,7 @@ pub enum AgentStatus {
     },
     /// Agent has completed the task
     Completed,
-    /// Agent timed out (30 minute limit)
+    /// Agent timed out
     TimedOut,
     /// Agent encountered an error
     Error(String),
@@ -221,13 +221,6 @@ impl AgentSession {
             step: "Initializing...".to_string(),
             progress_percent: 0,
         };
-    }
-
-    /// Check if the session has exceeded the timeout limit
-    #[must_use]
-    pub fn is_timed_out(&self) -> bool {
-        self.started_at
-            .is_some_and(|start| start.elapsed().as_secs() > AGENT_TIMEOUT_SECS)
     }
 
     /// Get elapsed time in seconds since task start
