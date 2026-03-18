@@ -14,17 +14,32 @@ use crate::bot::context::{
     ensure_current_agent_flow_id, sandbox_scope, set_current_context_state, storage_context_key,
 };
 use crate::bot::state::{ConfirmationType, State};
-use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
+use crate::bot::thread::OutboundThreadParams;
+use crate::bot::topic_route::{
+    resolve_topic_route, touch_dynamic_binding_activity_if_needed, TopicRouteDecision,
+};
 use crate::bot::views::{AgentView, DefaultAgentView};
 use crate::bot::{build_outbound_thread_params, resolve_thread_spec};
 use crate::config::BotSettings;
 use anyhow::Result;
 use oxide_agent_core::llm::LlmClient;
+use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
 use tracing::info;
+
+struct PreSpawnAgentMessageContext<'a> {
+    msg: &'a Message,
+    bot: &'a Bot,
+    storage: &'a Arc<dyn StorageProvider>,
+    llm: &'a Arc<LlmClient>,
+    route: &'a TopicRouteDecision,
+    sandbox_scope: &'a SandboxScope,
+    active_session: &'a ActiveSessionConfig,
+    outbound_thread: OutboundThreadParams,
+}
 
 /// Activate agent mode for a user
 ///
@@ -180,9 +195,6 @@ pub async fn handle_agent_message(
     })
     .await;
 
-    let execution_profile =
-        resolve_execution_profile(&storage, user_id, &context_key, &route, manager_enabled).await;
-    let topic_infra_config = resolve_topic_infra_config(&storage, user_id, &context_key).await;
     let active_session = ActiveSessionConfig {
         session_id,
         storage: storage.clone(),
@@ -193,36 +205,25 @@ pub async fn handle_agent_message(
         thread_spec,
     };
 
-    configure_active_session(&active_session, execution_profile, topic_infra_config).await;
+    configure_message_active_session(
+        &storage,
+        user_id,
+        &context_key,
+        &route,
+        manager_enabled,
+        &active_session,
+    )
+    .await;
 
-    let dispatch_ctx = build_batched_text_task_context(&bot, &active_session, outbound_thread);
-    if handle_batched_text_input_if_needed(BatchedTextInputCheck {
+    if handle_pre_spawn_agent_message(PreSpawnAgentMessageContext {
         msg: &msg,
         bot: &bot,
         storage: &storage,
-        route: &route,
-        thread_spec,
-        outbound_thread,
-        session_id,
-        user_id,
-        chat_id,
-        context_key: &context_key,
-        agent_flow_id: &agent_flow_id,
-    })
-    .await?
-    {
-        return Ok(());
-    }
-
-    if handle_running_agent_message_if_needed(RunningAgentMessageContext {
-        msg: &msg,
-        bot: &bot,
+        llm: &llm,
         route: &route,
         sandbox_scope: &sandbox_scope,
-        dispatch: dispatch_ctx.clone(),
-        thread_spec,
+        active_session: &active_session,
         outbound_thread,
-        llm: &llm,
     })
     .await?
     {
@@ -246,6 +247,54 @@ pub async fn handle_agent_message(
 
     touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
     Ok(())
+}
+
+async fn handle_pre_spawn_agent_message(ctx: PreSpawnAgentMessageContext<'_>) -> Result<bool> {
+    let dispatch_ctx =
+        build_batched_text_task_context(ctx.bot, ctx.active_session, ctx.outbound_thread);
+    if handle_batched_text_input_if_needed(BatchedTextInputCheck {
+        msg: ctx.msg,
+        bot: ctx.bot,
+        storage: ctx.storage,
+        route: ctx.route,
+        thread_spec: ctx.active_session.thread_spec,
+        outbound_thread: ctx.outbound_thread,
+        session_id: ctx.active_session.session_id,
+        user_id: ctx.active_session.user_id,
+        chat_id: ctx.active_session.chat_id,
+        context_key: &ctx.active_session.context_key,
+        agent_flow_id: &ctx.active_session.agent_flow_id,
+    })
+    .await?
+    {
+        return Ok(true);
+    }
+
+    handle_running_agent_message_if_needed(RunningAgentMessageContext {
+        msg: ctx.msg,
+        bot: ctx.bot,
+        route: ctx.route,
+        sandbox_scope: ctx.sandbox_scope,
+        dispatch: dispatch_ctx,
+        thread_spec: ctx.active_session.thread_spec,
+        outbound_thread: ctx.outbound_thread,
+        llm: ctx.llm,
+    })
+    .await
+}
+
+async fn configure_message_active_session(
+    storage: &Arc<dyn StorageProvider>,
+    user_id: i64,
+    context_key: &str,
+    route: &TopicRouteDecision,
+    manager_enabled: bool,
+    active_session: &ActiveSessionConfig,
+) {
+    let execution_profile =
+        resolve_execution_profile(storage, user_id, context_key, route, manager_enabled).await;
+    let topic_infra_config = resolve_topic_infra_config(storage, user_id, context_key).await;
+    configure_active_session(active_session, execution_profile, topic_infra_config).await;
 }
 
 async fn handle_agent_control_command(
