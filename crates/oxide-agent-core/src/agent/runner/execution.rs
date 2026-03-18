@@ -349,10 +349,8 @@ impl AgentRunner {
             hot_memory_tokens_after = outcome.token_count_after,
             externalized_count = outcome.externalization.externalized_count,
             pruned_count = outcome.pruning.pruned_count,
-            reclaimed_tokens = outcome
-                .externalization
-                .reclaimed_tokens
-                .saturating_add(outcome.pruning.reclaimed_tokens),
+            reclaimed_tokens = outcome.reclaimed_hot_memory_tokens(),
+            cleanup_reclaimed_tokens = outcome.reclaimed_cleanup_tokens(),
             summary_attempted = outcome.summary_generation.attempted,
             summary_used_fallback = outcome.summary_generation.used_fallback,
             archived_chunk_count = outcome.archive_persistence.archived_chunk_count,
@@ -585,10 +583,7 @@ impl AgentRunner {
                     applied: outcome.applied,
                     externalized_count: outcome.externalization.externalized_count,
                     pruned_count: outcome.pruning.pruned_count,
-                    reclaimed_tokens: outcome
-                        .externalization
-                        .reclaimed_tokens
-                        .saturating_add(outcome.pruning.reclaimed_tokens),
+                    reclaimed_tokens: outcome.reclaimed_hot_memory_tokens(),
                     archived_chunk_count: outcome.archive_persistence.archived_chunk_count,
                     summary_updated: outcome.rebuild.inserted_summary,
                 })

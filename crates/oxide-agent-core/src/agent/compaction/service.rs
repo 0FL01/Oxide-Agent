@@ -277,6 +277,10 @@ impl CompactionService {
             archived_messages = metrics.archive_persistence.archived_message_count,
             pruned_messages = metrics.pruning.pruned_count,
             pruned_reclaimed_tokens = metrics.pruning.reclaimed_tokens,
+            total_reclaimed_tokens = budget_before
+                .hot_memory
+                .total_tokens
+                .saturating_sub(metrics.budget.hot_memory.total_tokens),
             summary_attempted = metrics.summary_generation.attempted,
             summary_used_fallback = metrics.summary_generation.used_fallback,
             rebuild_applied = metrics.rebuild.applied,
@@ -324,7 +328,11 @@ impl CompactionService {
             headroom_tokens_after = metrics.budget.headroom_tokens,
             externalized_count = metrics.externalization.externalized_count,
             pruned_count = metrics.pruning.pruned_count,
-            reclaimed_tokens = metrics
+            reclaimed_tokens = budget_before
+                .hot_memory
+                .total_tokens
+                .saturating_sub(metrics.budget.hot_memory.total_tokens),
+            cleanup_reclaimed_tokens = metrics
                 .externalization
                 .reclaimed_tokens
                 .saturating_add(metrics.pruning.reclaimed_tokens),
