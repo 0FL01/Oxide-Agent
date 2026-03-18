@@ -32,3 +32,6 @@ pub use types::{
     CompactionTrigger, ExternalizationOutcome, HotMemoryBudget, PruneOutcome, RebuildOutcome,
     RecentRawWindow, SummaryGenerationOutcome,
 };
+
+#[cfg(test)]
+mod tests;
