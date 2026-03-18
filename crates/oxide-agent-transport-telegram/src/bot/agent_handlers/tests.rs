@@ -737,6 +737,42 @@ fn manager_control_plane_access_requires_dedicated_allowlist_entry() {
 }
 
 #[test]
+fn manager_control_plane_access_is_disabled_in_direct_messages() {
+    let settings = BotSettings::new(
+        AgentSettings::default(),
+        TelegramSettings {
+            telegram_token: "dummy".to_string(),
+            allowed_users_str: None,
+            agent_allowed_users_str: Some("88".to_string()),
+            manager_allowed_users_str: Some("88".to_string()),
+            topic_configs: Vec::new(),
+        },
+    );
+
+    let dm_spec = resolve_thread_spec_from_context(false, false, None);
+
+    assert!(!manager_control_plane_enabled(&settings, 88, dm_spec));
+}
+
+#[test]
+fn manager_control_plane_access_is_disabled_in_non_forum_groups() {
+    let settings = BotSettings::new(
+        AgentSettings::default(),
+        TelegramSettings {
+            telegram_token: "dummy".to_string(),
+            allowed_users_str: None,
+            agent_allowed_users_str: Some("88".to_string()),
+            manager_allowed_users_str: Some("88".to_string()),
+            topic_configs: Vec::new(),
+        },
+    );
+
+    let group_spec = resolve_thread_spec_from_context(true, false, None);
+
+    assert!(!manager_control_plane_enabled(&settings, 88, group_spec));
+}
+
+#[test]
 fn manager_control_plane_access_disabled_when_allowlist_is_empty() {
     let settings = BotSettings::new(
         AgentSettings::default(),
