@@ -5,6 +5,7 @@ use super::types::{
     AgentMessageKind, CompactionRetention, CompactionSnapshot, CompactionSummary, RebuildOutcome,
 };
 use crate::agent::memory::AgentMessage;
+use tracing::warn;
 
 /// Rebuild hot memory into pinned, live, structured-summary, and recent-raw slices.
 #[must_use]
@@ -96,6 +97,18 @@ pub fn rebuild_hot_context(
         .collect();
     outcome.dropped_message_count = outcome.dropped_indices.len();
     outcome.applied = outcome.dropped_message_count > 0 || has_existing_structured_summary;
+
+    if outcome.applied {
+        warn!(
+            inserted_summary = outcome.inserted_summary,
+            inserted_archive_reference = outcome.inserted_archive_reference,
+            dropped_message_count = outcome.dropped_message_count,
+            dropped_indices = ?outcome.dropped_indices,
+            preserved_recent_count = outcome.preserved_recent_indices.len(),
+            preserved_recent_indices = ?outcome.preserved_recent_indices,
+            "Compaction rebuilt hot context"
+        );
+    }
 
     (rebuilt, outcome)
 }

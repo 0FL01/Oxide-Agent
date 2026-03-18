@@ -94,6 +94,16 @@ pub fn externalize_hot_memory(
         outcome.archive_refs.push(externalized.archive_ref);
     }
 
+    if outcome.applied {
+        warn!(
+            externalized_count = outcome.externalized_count,
+            reclaimed_tokens = outcome.reclaimed_tokens,
+            reclaimed_chars = outcome.reclaimed_chars,
+            archive_ref_count = outcome.archive_refs.len(),
+            "Compaction externalized oversized tool payloads"
+        );
+    }
+
     (rewritten, outcome)
 }
 
@@ -132,6 +142,19 @@ fn externalize_entry(
         &artifact.archive_ref,
         &artifact.preview,
     );
+    let reclaimed_tokens = entry.estimated_tokens;
+    let reclaimed_chars = entry.content_chars;
+    let persisted_externally = artifact.inline_fallback.is_none();
+    warn!(
+        tool_name,
+        message_index = entry.index,
+        estimated_tokens = entry.estimated_tokens,
+        original_chars = entry.content_chars,
+        persisted_externally,
+        archive_id = %artifact.archive_ref.archive_id,
+        storage_key = %artifact.archive_ref.storage_key,
+        "Compaction externalized tool payload"
+    );
 
     Some(ExternalizedMessage {
         message: AgentMessage::externalized_tool(
@@ -147,8 +170,8 @@ fn externalize_entry(
             },
         ),
         archive_ref: artifact.archive_ref,
-        reclaimed_tokens: entry.estimated_tokens,
-        reclaimed_chars: entry.content_chars,
+        reclaimed_tokens,
+        reclaimed_chars,
     })
 }
 

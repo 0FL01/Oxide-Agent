@@ -293,10 +293,12 @@ impl AgentRunner {
         {
             Ok(outcome) => outcome,
             Err(error) => {
+                Self::log_compaction_failure(ctx.task_id, state.iteration, trigger, &error);
                 Self::emit_compaction_failed(ctx.progress_tx, trigger, error.to_string()).await;
                 return Err(error);
             }
         };
+        Self::log_compaction_success(ctx.task_id, state.iteration, trigger, &outcome);
         let should_emit_progress = matches!(trigger, CompactionTrigger::Manual)
             || outcome.applied
             || outcome.summary_generation.attempted
@@ -309,31 +311,125 @@ impl AgentRunner {
             Self::emit_compaction_completed(ctx.progress_tx, trigger, &outcome).await;
         }
         if outcome.applied {
-            if outcome.rebuild.inserted_summary {
-                state.compaction_count = state.compaction_count.saturating_add(1);
-                if state.compaction_count > 1 {
-                    Self::emit_repeated_compaction_warning(
-                        ctx.progress_tx,
-                        RepeatedCompactionKind::Compaction,
-                        state.compaction_count,
-                    )
-                    .await;
-                }
-            } else if outcome.externalization.applied || outcome.pruning.applied {
-                state.cleanup_count = state.cleanup_count.saturating_add(1);
-                if state.cleanup_count > 1 {
-                    Self::emit_repeated_compaction_warning(
-                        ctx.progress_tx,
-                        RepeatedCompactionKind::Cleanup,
-                        state.cleanup_count,
-                    )
-                    .await;
-                }
-            }
             Self::refresh_messages_from_memory(ctx);
+            Self::track_repeated_compaction(ctx, state, trigger, &outcome).await;
         }
 
         Ok(outcome.applied)
+    }
+
+    fn log_compaction_failure(
+        task_id: &str,
+        iteration: usize,
+        trigger: CompactionTrigger,
+        error: &anyhow::Error,
+    ) {
+        warn!(
+            task_id = %task_id,
+            iteration,
+            trigger = ?trigger,
+            error = %error,
+            "Compaction checkpoint failed in agent runner"
+        );
+    }
+
+    fn log_compaction_success(
+        task_id: &str,
+        iteration: usize,
+        trigger: CompactionTrigger,
+        outcome: &crate::agent::CompactionOutcome,
+    ) {
+        if !outcome.requires_warn_log() {
+            return;
+        }
+
+        warn!(
+            task_id = %task_id,
+            iteration,
+            trigger = ?trigger,
+            applied = outcome.applied,
+            budget_state = ?outcome.budget.state,
+            hot_memory_tokens_before = outcome.token_count_before,
+            hot_memory_tokens_after = outcome.token_count_after,
+            externalized_count = outcome.externalization.externalized_count,
+            pruned_count = outcome.pruning.pruned_count,
+            reclaimed_tokens = outcome
+                .externalization
+                .reclaimed_tokens
+                .saturating_add(outcome.pruning.reclaimed_tokens),
+            summary_attempted = outcome.summary_generation.attempted,
+            summary_used_fallback = outcome.summary_generation.used_fallback,
+            archived_chunk_count = outcome.archive_persistence.archived_chunk_count,
+            summary_updated = outcome.rebuild.inserted_summary,
+            "Agent runner completed compaction checkpoint"
+        );
+    }
+
+    async fn track_repeated_compaction(
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+        trigger: CompactionTrigger,
+        outcome: &crate::agent::CompactionOutcome,
+    ) {
+        if outcome.rebuild.inserted_summary {
+            state.compaction_count = state.compaction_count.saturating_add(1);
+            if state.compaction_count > 1 {
+                Self::log_repeated_compaction(
+                    ctx.task_id,
+                    state.iteration,
+                    trigger,
+                    RepeatedCompactionKind::Compaction,
+                    state.compaction_count,
+                );
+                Self::emit_repeated_compaction_warning(
+                    ctx.progress_tx,
+                    RepeatedCompactionKind::Compaction,
+                    state.compaction_count,
+                )
+                .await;
+            }
+            return;
+        }
+
+        if outcome.externalization.applied || outcome.pruning.applied {
+            state.cleanup_count = state.cleanup_count.saturating_add(1);
+            if state.cleanup_count > 1 {
+                Self::log_repeated_compaction(
+                    ctx.task_id,
+                    state.iteration,
+                    trigger,
+                    RepeatedCompactionKind::Cleanup,
+                    state.cleanup_count,
+                );
+                Self::emit_repeated_compaction_warning(
+                    ctx.progress_tx,
+                    RepeatedCompactionKind::Cleanup,
+                    state.cleanup_count,
+                )
+                .await;
+            }
+        }
+    }
+
+    fn log_repeated_compaction(
+        task_id: &str,
+        iteration: usize,
+        trigger: CompactionTrigger,
+        kind: RepeatedCompactionKind,
+        count: usize,
+    ) {
+        let message = match kind {
+            RepeatedCompactionKind::Cleanup => "Agent run required repeated deterministic cleanup",
+            RepeatedCompactionKind::Compaction => "Agent run required repeated summary compaction",
+        };
+        warn!(
+            task_id = %task_id,
+            iteration,
+            trigger = ?trigger,
+            kind = ?kind,
+            count,
+            "{message}"
+        );
     }
 
     async fn handle_tool_calls_response(
