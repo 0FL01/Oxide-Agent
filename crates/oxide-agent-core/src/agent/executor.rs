@@ -26,7 +26,7 @@ use super::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection}
 use super::skills::SkillRegistry;
 use super::tool_bridge::{execute_single_tool_call, ToolExecutionContext, ToolExecutionResult};
 use crate::agent::progress::AgentEvent;
-use crate::config::{get_agent_max_iterations, get_agent_search_limit, AGENT_TIMEOUT_SECS};
+use crate::config::{get_agent_max_iterations, get_agent_search_limit};
 use crate::llm::{LlmClient, ToolCall, ToolCallFunction};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::{anyhow, Result};
@@ -523,6 +523,9 @@ impl AgentExecutor {
             }
         }
 
+        let timeout_duration = self.agent_timeout_duration();
+        let timeout_error_message = self.agent_timeout_error_message();
+
         let mut ctx = AgentRunnerContext {
             task,
             system_prompt: &system_prompt,
@@ -546,7 +549,6 @@ impl AgentExecutor {
             },
         };
 
-        let timeout_duration = Duration::from_secs(AGENT_TIMEOUT_SECS);
         match timeout(timeout_duration, self.runner.run(&mut ctx)).await {
             Ok(inner) => match inner {
                 Ok(super::runner::AgentRunResult::Final(res)) => {
@@ -564,11 +566,7 @@ impl AgentExecutor {
             },
             Err(_) => {
                 self.session.timeout();
-                let limit_mins = self.settings.get_agent_timeout_secs() / 60;
-                Err(anyhow!(
-                    "Task exceeded timeout limit ({} minutes)",
-                    limit_mins
-                ))
+                Err(anyhow!(timeout_error_message))
             }
         }
     }
@@ -686,6 +684,15 @@ impl AgentExecutor {
         self.session.cancellation_token.is_cancelled()
     }
 
+    fn agent_timeout_duration(&self) -> Duration {
+        Duration::from_secs(self.settings.get_agent_timeout_secs())
+    }
+
+    fn agent_timeout_error_message(&self) -> String {
+        let limit_mins = self.settings.get_agent_timeout_secs() / 60;
+        format!("Task exceeded timeout limit ({limit_mins} minutes)")
+    }
+
     /// Reset the executor and session
     pub fn reset(&mut self) {
         self.session.reset();
@@ -695,7 +702,8 @@ impl AgentExecutor {
     /// Check if the session is timed out
     #[must_use]
     pub fn is_timed_out(&self) -> bool {
-        self.session.elapsed_secs() >= self.settings.get_agent_timeout_secs()
+        self.session.is_processing()
+            && self.session.elapsed_secs() >= self.settings.get_agent_timeout_secs()
     }
 
     async fn emit_manual_compaction_started(
@@ -773,6 +781,7 @@ mod tests {
         ManagerTopicLifecycle,
     };
     use crate::agent::session::AgentSession;
+    use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use crate::storage::{
         AppendAuditEventOptions, AuditEventRecord, MockStorageProvider, TopicBindingKind,
@@ -857,6 +866,16 @@ mod tests {
         AgentExecutor::new(llm, session, settings)
     }
 
+    fn build_executor_with_timeout(agent_timeout_secs: u64) -> AgentExecutor {
+        let settings = Arc::new(AgentSettings {
+            agent_timeout_secs: Some(agent_timeout_secs),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let session = AgentSession::new(9_i64.into());
+        AgentExecutor::new(llm, session, settings)
+    }
+
     fn build_audit_record(options: AppendAuditEventOptions) -> AuditEventRecord {
         AuditEventRecord {
             schema_version: 1,
@@ -904,6 +923,31 @@ mod tests {
         );
 
         assert!(matches!(result, HookResult::Continue));
+    }
+
+    #[test]
+    fn hard_timeout_uses_configured_duration_and_message() {
+        let executor = build_executor_with_timeout(36_000);
+
+        assert_eq!(
+            executor.agent_timeout_duration(),
+            std::time::Duration::from_secs(36_000)
+        );
+        assert_eq!(
+            executor.agent_timeout_error_message(),
+            "Task exceeded timeout limit (600 minutes)"
+        );
+    }
+
+    #[test]
+    fn executor_timeout_check_uses_configured_value_and_ignores_idle_sessions() {
+        let mut executor = build_executor_with_timeout(0);
+
+        executor.session_mut().start_task();
+        assert!(executor.is_timed_out());
+
+        executor.reset();
+        assert!(!executor.is_timed_out());
     }
 
     #[tokio::test]
