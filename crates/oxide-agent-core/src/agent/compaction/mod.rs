@@ -11,7 +11,10 @@ pub mod service;
 pub mod summarizer;
 pub mod types;
 
-pub use archive::{ArchiveRecord, ArchiveRef, ArchiveSink, NoopArchiveSink};
+pub use archive::{
+    persist_compacted_history_chunk, ArchiveChunk, ArchiveRecord, ArchiveRef, ArchiveSink,
+    NoopArchiveSink,
+};
 pub use budget::estimate_request_budget;
 pub use classifier::classify_hot_memory;
 pub use externalize::{
@@ -23,8 +26,9 @@ pub use rebuild::rebuild_hot_context;
 pub use service::CompactionService;
 pub use summarizer::{CompactionSummarizer, CompactionSummarizerConfig};
 pub use types::{
-    AgentMessageKind, BudgetEstimate, BudgetState, ClassifiedMemoryEntry, CompactionClassSummary,
-    CompactionOutcome, CompactionPolicy, CompactionRequest, CompactionRetention, CompactionScope,
-    CompactionSnapshot, CompactionSummary, CompactionTrigger, ExternalizationOutcome,
-    HotMemoryBudget, PruneOutcome, RebuildOutcome, RecentRawWindow, SummaryGenerationOutcome,
+    AgentMessageKind, ArchivePersistenceOutcome, BudgetEstimate, BudgetState,
+    ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome, CompactionPolicy,
+    CompactionRequest, CompactionRetention, CompactionScope, CompactionSnapshot, CompactionSummary,
+    CompactionTrigger, ExternalizationOutcome, HotMemoryBudget, PruneOutcome, RebuildOutcome,
+    RecentRawWindow, SummaryGenerationOutcome,
 };

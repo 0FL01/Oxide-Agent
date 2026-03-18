@@ -1,6 +1,6 @@
 //! Stage 1 compaction orchestration facade.
 
-use super::archive::{ArchiveSink, NoopArchiveSink};
+use super::archive::{persist_compacted_history_chunk, ArchiveSink, NoopArchiveSink};
 use super::budget::estimate_request_budget;
 use super::classifier::classify_hot_memory;
 use super::externalize::{externalize_hot_memory, NoopPayloadSink, PayloadSink};
@@ -8,8 +8,9 @@ use super::prune::prune_hot_memory;
 use super::rebuild::rebuild_hot_context;
 use super::summarizer::CompactionSummarizer;
 use super::types::{
-    BudgetEstimate, CompactionOutcome, CompactionPolicy, CompactionRequest, CompactionSnapshot,
-    ExternalizationOutcome, PruneOutcome, RebuildOutcome, SummaryGenerationOutcome,
+    ArchivePersistenceOutcome, BudgetEstimate, CompactionOutcome, CompactionPolicy,
+    CompactionRequest, CompactionSnapshot, ExternalizationOutcome, PruneOutcome, RebuildOutcome,
+    SummaryGenerationOutcome,
 };
 use crate::agent::context::AgentContext;
 use anyhow::Result;
@@ -20,6 +21,7 @@ struct CheckpointMetrics<'a> {
     budget: &'a BudgetEstimate,
     snapshot: &'a CompactionSnapshot,
     externalization: &'a ExternalizationOutcome,
+    archive_persistence: &'a ArchivePersistenceOutcome,
     pruning: &'a PruneOutcome,
     summary_generation: &'a SummaryGenerationOutcome,
     rebuild: &'a RebuildOutcome,
@@ -91,7 +93,8 @@ impl CompactionService {
     ) -> Result<CompactionOutcome> {
         let budget_before = estimate_request_budget(&self.policy, request, agent);
         let (externalization, pruning) = self.apply_deterministic_stages(agent);
-        let (summary_generation, rebuild) = self.summarize_and_rebuild(request, agent).await;
+        let (archive_persistence, summary_generation, rebuild) =
+            self.summarize_and_rebuild(request, agent).await;
 
         let budget = estimate_request_budget(&self.policy, request, agent);
         let snapshot = classify_hot_memory(agent.memory().get_messages());
@@ -102,6 +105,7 @@ impl CompactionService {
                 budget: &budget,
                 snapshot: &snapshot,
                 externalization: &externalization,
+                archive_persistence: &archive_persistence,
                 pruning: &pruning,
                 summary_generation: &summary_generation,
                 rebuild: &rebuild,
@@ -111,6 +115,7 @@ impl CompactionService {
         if !externalization.applied
             && !pruning.applied
             && !summary_generation.attempted
+            && !archive_persistence.attempted
             && !rebuild.applied
         {
             return Ok(CompactionOutcome::noop(request.trigger, budget, snapshot));
@@ -124,6 +129,7 @@ impl CompactionService {
             budget,
             snapshot,
             externalization,
+            archive_persistence,
             pruning,
             summary_generation,
             rebuild,
@@ -164,7 +170,11 @@ impl CompactionService {
         &self,
         request: &CompactionRequest<'_>,
         agent: &mut dyn AgentContext,
-    ) -> (SummaryGenerationOutcome, RebuildOutcome) {
+    ) -> (
+        ArchivePersistenceOutcome,
+        SummaryGenerationOutcome,
+        RebuildOutcome,
+    ) {
         let budget_before_summary = estimate_request_budget(&self.policy, request, agent);
         let snapshot_before_summary = classify_hot_memory(agent.memory().get_messages());
         let summary_generation = if let Some(summarizer) = &self.summarizer {
@@ -179,12 +189,27 @@ impl CompactionService {
         } else {
             Default::default()
         };
+        let archive_persistence = summary_generation
+            .summary
+            .as_ref()
+            .map(|summary| {
+                persist_compacted_history_chunk(
+                    &agent.compaction_scope(),
+                    request.trigger,
+                    &snapshot_before_summary,
+                    agent.memory().get_messages(),
+                    summary,
+                    self.archive_sink.as_ref(),
+                )
+            })
+            .unwrap_or_default();
         let (rebuilt_messages, rebuild) = if let Some(summary) = summary_generation.summary.clone()
         {
             rebuild_hot_context(
                 &snapshot_before_summary,
                 agent.memory().get_messages(),
                 Some(summary),
+                archive_persistence.archive_refs.first().cloned(),
             )
         } else {
             (
@@ -196,7 +221,7 @@ impl CompactionService {
             agent.memory_mut().replace_messages(rebuilt_messages);
         }
 
-        (summary_generation, rebuild)
+        (archive_persistence, summary_generation, rebuild)
     }
 
     fn log_checkpoint(
@@ -224,12 +249,15 @@ impl CompactionService {
             budget_state = ?metrics.budget.state,
             externalized_messages = metrics.externalization.externalized_count,
             externalized_reclaimed_tokens = metrics.externalization.reclaimed_tokens,
+            archived_chunks = metrics.archive_persistence.archived_chunk_count,
+            archived_messages = metrics.archive_persistence.archived_message_count,
             pruned_messages = metrics.pruning.pruned_count,
             pruned_reclaimed_tokens = metrics.pruning.reclaimed_tokens,
             summary_attempted = metrics.summary_generation.attempted,
             summary_used_fallback = metrics.summary_generation.used_fallback,
             rebuild_applied = metrics.rebuild.applied,
             rebuild_inserted_summary = metrics.rebuild.inserted_summary,
+            rebuild_inserted_archive_reference = metrics.rebuild.inserted_archive_reference,
             rebuild_dropped_messages = metrics.rebuild.dropped_message_count,
             pinned_messages = metrics.snapshot.pinned.message_count,
             protected_live_messages = metrics.snapshot.protected_live.message_count,
@@ -281,6 +309,7 @@ mod tests {
         assert_eq!(outcome.snapshot.protected_live.message_count, 0);
         assert_eq!(outcome.snapshot.compactable_history.message_count, 1);
         assert_eq!(outcome.externalization.externalized_count, 0);
+        assert_eq!(outcome.archive_persistence.archived_chunk_count, 0);
         assert_eq!(outcome.pruning.pruned_count, 0);
         assert!(!outcome.rebuild.applied);
     }
@@ -412,19 +441,25 @@ mod tests {
         assert!(outcome.applied);
         assert!(outcome.summary_generation.attempted);
         assert!(outcome.summary_generation.used_fallback);
+        assert_eq!(outcome.archive_persistence.archived_chunk_count, 1);
         assert!(outcome.rebuild.applied);
         assert!(outcome.rebuild.inserted_summary);
+        assert!(outcome.rebuild.inserted_archive_reference);
         assert_eq!(outcome.rebuild.dropped_indices, vec![0, 1]);
-        assert_eq!(session.memory().get_messages().len(), 5);
+        assert_eq!(session.memory().get_messages().len(), 6);
         assert_eq!(
             session.memory().get_messages()[0].resolved_kind(),
             AgentMessageKind::Summary
+        );
+        assert_eq!(
+            session.memory().get_messages()[1].resolved_kind(),
+            AgentMessageKind::ArchiveReference
         );
         assert!(session.memory().get_messages()[0]
             .summary_payload()
             .is_some());
         assert_eq!(
-            session.memory().get_messages()[1].content,
+            session.memory().get_messages()[2].content,
             "Keep the latest turns raw."
         );
         assert!(outcome

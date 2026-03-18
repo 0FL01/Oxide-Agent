@@ -43,6 +43,9 @@ pub struct AgentMessage {
     /// Structured summary metadata for compaction-generated summary entries.
     #[serde(default)]
     pub structured_summary: Option<CompactionSummary>,
+    /// Lightweight archive ref for displaced context chunks.
+    #[serde(default)]
+    pub archive_ref: Option<ArchiveRef>,
 }
 
 /// Metadata describing a tool payload externalized out of hot memory.
@@ -107,6 +110,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -123,6 +127,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -144,6 +149,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -160,6 +166,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -176,6 +183,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -192,6 +200,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -211,6 +220,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -227,6 +237,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -248,6 +259,7 @@ impl AgentMessage {
             externalized_payload: Some(externalized_payload),
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -270,6 +282,7 @@ impl AgentMessage {
             externalized_payload,
             pruned_artifact: Some(pruned_artifact),
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -286,6 +299,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         }
     }
 
@@ -334,6 +348,7 @@ impl AgentMessage {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: Some(summary),
+            archive_ref: None,
         }
     }
 
@@ -341,7 +356,27 @@ impl AgentMessage {
     pub fn archive_reference(content: impl Into<String>) -> Self {
         Self {
             kind: AgentMessageKind::ArchiveReference,
-            ..Self::system_context(content)
+            ..Self::archive_reference_with_ref(content, None)
+        }
+    }
+
+    /// Create a lightweight archive reference entry backed by structured metadata.
+    pub fn archive_reference_with_ref(
+        content: impl Into<String>,
+        archive_ref: Option<ArchiveRef>,
+    ) -> Self {
+        Self {
+            kind: AgentMessageKind::ArchiveReference,
+            role: MessageRole::System,
+            content: content.into(),
+            reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+            externalized_payload: None,
+            pruned_artifact: None,
+            structured_summary: None,
+            archive_ref,
         }
     }
 
@@ -392,6 +427,12 @@ impl AgentMessage {
     #[must_use]
     pub fn summary_payload(&self) -> Option<&CompactionSummary> {
         self.structured_summary.as_ref()
+    }
+
+    /// Returns structured archive ref metadata when available.
+    #[must_use]
+    pub fn archive_ref_payload(&self) -> Option<&ArchiveRef> {
+        self.archive_ref.as_ref()
     }
 }
 
@@ -836,6 +877,7 @@ mod tests {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         };
         let legacy_tool = AgentMessage {
             kind: AgentMessageKind::Legacy,
@@ -848,6 +890,7 @@ mod tests {
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
+            archive_ref: None,
         };
 
         assert_eq!(

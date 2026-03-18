@@ -1,6 +1,8 @@
 //! Large payload externalization for Agent Mode hot memory.
 
-use super::archive::{ArchiveRecord, ArchiveRef, ArchiveSink};
+use super::archive::{
+    ArchiveChunk, ArchiveRecord, ArchiveRef, ArchiveSink, ARCHIVE_KIND_TOOL_OUTPUT,
+};
 use super::types::{
     CompactionPolicy, CompactionRetention, CompactionScope, CompactionSnapshot,
     ExternalizationOutcome,
@@ -198,7 +200,7 @@ fn build_artifact(
         persist_payload(payload_sink, &payload_record, entry.index, tool_name)?;
     let archive_ref = persist_archive_metadata(
         archive_sink,
-        ArchiveRecord {
+        ArchiveChunk::metadata_only(ArchiveRecord {
             archive_id,
             context_key: scope.context_key.clone(),
             flow_id: scope.flow_id.clone(),
@@ -207,11 +209,11 @@ fn build_artifact(
             time_range_end: created_at,
             title,
             short_summary,
-            kind: "tool_output".to_string(),
+            kind: ARCHIVE_KIND_TOOL_OUTPUT.to_string(),
             tool_names: vec![tool_name.to_string()],
             file_paths: Vec::new(),
             payload_ref: storage_key.clone(),
-        },
+        }),
         storage_key,
         entry.index,
         tool_name,
@@ -246,17 +248,17 @@ fn persist_payload(
 
 fn persist_archive_metadata(
     archive_sink: &dyn ArchiveSink,
-    archive_record: ArchiveRecord,
+    archive_chunk: ArchiveChunk,
     storage_key: String,
     message_index: usize,
     tool_name: &str,
 ) -> ArchiveRef {
-    match archive_sink.persist(&archive_record) {
+    match archive_sink.persist(&archive_chunk) {
         Ok(Some(reference)) => reference,
         Ok(None) => ArchiveRef {
-            archive_id: archive_record.archive_id,
-            created_at: archive_record.created_at,
-            title: archive_record.title,
+            archive_id: archive_chunk.record.archive_id,
+            created_at: archive_chunk.record.created_at,
+            title: archive_chunk.record.title,
             storage_key,
         },
         Err(error) => {
@@ -267,9 +269,9 @@ fn persist_archive_metadata(
                 "Archive metadata persistence failed, using local artifact ref"
             );
             ArchiveRef {
-                archive_id: archive_record.archive_id,
-                created_at: archive_record.created_at,
-                title: archive_record.title,
+                archive_id: archive_chunk.record.archive_id,
+                created_at: archive_chunk.record.created_at,
+                title: archive_chunk.record.title,
                 storage_key,
             }
         }
@@ -330,7 +332,7 @@ fn current_unix_timestamp() -> i64 {
 mod tests {
     use super::{externalize_hot_memory, ExternalizedPayloadRecord, PayloadSink};
     use crate::agent::compaction::{
-        classify_hot_memory, ArchiveRecord, ArchiveRef, ArchiveSink, CompactionPolicy,
+        classify_hot_memory, ArchiveChunk, ArchiveRef, ArchiveSink, CompactionPolicy,
         CompactionScope, NoopArchiveSink, NoopPayloadSink,
     };
     use crate::agent::memory::AgentMessage;
@@ -435,26 +437,26 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct RecordingArchiveSink {
-        records: Mutex<Vec<ArchiveRecord>>,
+        records: Mutex<Vec<ArchiveChunk>>,
     }
 
     impl RecordingArchiveSink {
-        fn records(&self) -> Vec<ArchiveRecord> {
+        fn records(&self) -> Vec<ArchiveChunk> {
             self.records.lock().expect("archive records lock").clone()
         }
     }
 
     impl ArchiveSink for RecordingArchiveSink {
-        fn persist(&self, record: &ArchiveRecord) -> Result<Option<ArchiveRef>> {
+        fn persist(&self, chunk: &ArchiveChunk) -> Result<Option<ArchiveRef>> {
             self.records
                 .lock()
                 .expect("archive records lock")
-                .push(record.clone());
+                .push(chunk.clone());
             Ok(Some(ArchiveRef {
-                archive_id: record.archive_id.clone(),
-                created_at: record.created_at,
-                title: record.title.clone(),
-                storage_key: record.payload_ref.clone(),
+                archive_id: chunk.record.archive_id.clone(),
+                created_at: chunk.record.created_at,
+                title: chunk.record.title.clone(),
+                storage_key: chunk.record.payload_ref.clone(),
             }))
         }
     }

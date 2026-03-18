@@ -1,5 +1,6 @@
 //! Hot-context rebuild after pruning and summary compaction.
 
+use super::archive::ArchiveRef;
 use super::types::{
     AgentMessageKind, CompactionRetention, CompactionSnapshot, CompactionSummary, RebuildOutcome,
 };
@@ -11,6 +12,7 @@ pub fn rebuild_hot_context(
     snapshot: &CompactionSnapshot,
     messages: &[AgentMessage],
     new_summary: Option<CompactionSummary>,
+    archive_ref: Option<ArchiveRef>,
 ) -> (Vec<AgentMessage>, RebuildOutcome) {
     let existing_structured_summaries: Vec<CompactionSummary> = snapshot
         .entries
@@ -72,6 +74,13 @@ pub fn rebuild_hot_context(
     rebuilt.push(AgentMessage::from_compaction_summary(
         summary.expect("summary presence already checked"),
     ));
+    if let Some(archive_ref) = archive_ref {
+        outcome.inserted_archive_reference = true;
+        rebuilt.push(AgentMessage::archive_reference_with_ref(
+            format_archive_reference(&archive_ref),
+            Some(archive_ref),
+        ));
+    }
     append_matching_messages(
         &mut rebuilt,
         &mut preserved,
@@ -89,6 +98,13 @@ pub fn rebuild_hot_context(
     outcome.applied = outcome.dropped_message_count > 0 || has_existing_structured_summary;
 
     (rebuilt, outcome)
+}
+
+fn format_archive_reference(archive_ref: &ArchiveRef) -> String {
+    format!(
+        "[archived context chunk]\narchive_id: {}\ntitle: {}\nstorage_key: {}",
+        archive_ref.archive_id, archive_ref.title, archive_ref.storage_key
+    )
 }
 
 fn append_matching_messages(
@@ -200,7 +216,8 @@ mod tests {
             ..CompactionSummary::default()
         };
 
-        let (rebuilt, outcome) = rebuild_hot_context(&snapshot, &messages, Some(summary.clone()));
+        let (rebuilt, outcome) =
+            rebuild_hot_context(&snapshot, &messages, Some(summary.clone()), None);
 
         assert!(outcome.applied);
         assert!(outcome.inserted_summary);
@@ -251,7 +268,7 @@ mod tests {
         };
 
         let (rebuilt, outcome) =
-            rebuild_hot_context(&snapshot, &messages, Some(new_summary.clone()));
+            rebuild_hot_context(&snapshot, &messages, Some(new_summary.clone()), None);
 
         assert!(outcome.applied);
         assert_eq!(outcome.dropped_indices, vec![0, 2, 3]);
@@ -288,11 +305,51 @@ mod tests {
                 goal: "Ship stage 8".to_string(),
                 ..CompactionSummary::default()
             }),
+            None,
         );
 
         assert!(!outcome.applied);
         assert_eq!(rebuilt.len(), messages.len());
         assert_eq!(rebuilt[0].content, messages[0].content);
         assert_eq!(rebuilt[3].content, messages[3].content);
+    }
+
+    #[test]
+    fn rebuild_hot_context_inserts_archive_reference_after_summary() {
+        let messages = vec![
+            AgentMessage::user_task("Ship stage 10"),
+            AgentMessage::user("Older request"),
+            AgentMessage::assistant("Older response"),
+            AgentMessage::user("Recent request 1"),
+            AgentMessage::assistant("Recent response 1"),
+            AgentMessage::user("Recent request 2"),
+            AgentMessage::assistant("Recent response 2"),
+        ];
+        let snapshot = classify_hot_memory(&messages);
+        let archive_ref = crate::agent::ArchiveRef {
+            archive_id: "archive-1".to_string(),
+            created_at: 1,
+            title: "Compacted history: Ship stage 10".to_string(),
+            storage_key: "archive/topic/flow/history-archive-1.json".to_string(),
+        };
+
+        let (rebuilt, outcome) = rebuild_hot_context(
+            &snapshot,
+            &messages,
+            Some(CompactionSummary {
+                goal: "Ship stage 10".to_string(),
+                ..CompactionSummary::default()
+            }),
+            Some(archive_ref.clone()),
+        );
+
+        assert!(outcome.applied);
+        assert!(outcome.inserted_archive_reference);
+        assert_eq!(
+            rebuilt[1].resolved_kind(),
+            crate::agent::AgentMessageKind::Summary
+        );
+        assert_eq!(rebuilt[2].archive_ref_payload(), Some(&archive_ref));
+        assert!(rebuilt[2].content.contains("[archived context chunk]"));
     }
 }
