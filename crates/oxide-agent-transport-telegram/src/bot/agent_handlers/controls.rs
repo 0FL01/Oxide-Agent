@@ -143,6 +143,13 @@ pub(crate) fn use_inline_topic_controls(thread_spec: TelegramThreadSpec) -> bool
     matches!(thread_spec.kind, TelegramThreadKind::Forum)
 }
 
+pub(crate) fn use_inline_flow_controls(thread_spec: TelegramThreadSpec) -> bool {
+    matches!(
+        thread_spec.kind,
+        TelegramThreadKind::Forum | TelegramThreadKind::Dm
+    )
+}
+
 pub(crate) fn automatic_agent_control_markup(
     thread_spec: TelegramThreadSpec,
 ) -> Option<ReplyMarkup> {
@@ -153,7 +160,7 @@ pub(crate) fn cancel_status_reply_markup(
     thread_spec: TelegramThreadSpec,
     agent_flow_id: &str,
 ) -> ReplyMarkup {
-    if use_inline_topic_controls(thread_spec) {
+    if use_inline_flow_controls(thread_spec) {
         agent_flow_inline_keyboard(agent_flow_id).into()
     } else {
         agent_control_markup(false)
@@ -161,10 +168,27 @@ pub(crate) fn cancel_status_reply_markup(
 }
 
 pub(crate) fn cancel_status_inline_markup(
-    use_inline_controls: bool,
+    use_inline_flow_controls: bool,
     agent_flow_id: &str,
 ) -> Option<InlineKeyboardMarkup> {
-    use_inline_controls.then(|| agent_flow_inline_keyboard(agent_flow_id))
+    use_inline_flow_controls.then(|| agent_flow_inline_keyboard(agent_flow_id))
+}
+
+pub(crate) async fn send_agent_flow_controls_message(
+    bot: &Bot,
+    chat_id: ChatId,
+    agent_flow_id: &str,
+    outbound_thread: OutboundThreadParams,
+) -> Result<()> {
+    let reply_markup: ReplyMarkup = agent_flow_inline_keyboard(agent_flow_id).into();
+    send_agent_message_with_keyboard(
+        bot,
+        chat_id,
+        "Flow controls:",
+        &reply_markup,
+        outbound_thread,
+    )
+    .await
 }
 
 pub(crate) fn is_task_cancelled_error(error: &anyhow::Error) -> bool {
@@ -368,7 +392,16 @@ pub(crate) async fn show_agent_controls(
         &reply_markup,
         outbound_thread,
     )
-    .await
+    .await?;
+
+    if matches!(thread_spec.kind, TelegramThreadKind::Dm) {
+        let (agent_flow_id, _) =
+            ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
+        send_agent_flow_controls_message(&bot, msg.chat.id, &agent_flow_id, outbound_thread)
+            .await?;
+    }
+
+    Ok(())
 }
 
 pub(crate) async fn handle_clear_memory_confirmation(

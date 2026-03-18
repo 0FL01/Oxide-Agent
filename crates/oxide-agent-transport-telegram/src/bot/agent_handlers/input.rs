@@ -1,7 +1,7 @@
 use super::{
     automatic_agent_control_markup, renew_cancellation_token, run_agent_task_with_text,
-    use_inline_topic_controls, ActiveSessionConfig, RunAgentTaskTextContext,
-    PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
+    use_inline_flow_controls, use_inline_topic_controls, ActiveSessionConfig,
+    RunAgentTaskTextContext, PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
 };
 use crate::bot::agent::extract_agent_input;
 use crate::bot::context::{current_context_state, ensure_current_agent_flow_id};
@@ -33,6 +33,7 @@ pub(crate) struct BatchedTextTaskContext {
     pub(crate) agent_flow_id: String,
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
+    pub(crate) use_inline_flow_controls: bool,
 }
 
 #[derive(Clone)]
@@ -112,6 +113,7 @@ pub(crate) fn build_batched_text_task_context(
         agent_flow_id: active_session.agent_flow_id.clone(),
         message_thread_id: outbound_thread.message_thread_id,
         use_inline_progress_controls: use_inline_topic_controls(active_session.thread_spec),
+        use_inline_flow_controls: use_inline_flow_controls(active_session.thread_spec),
     }
 }
 
@@ -160,6 +162,7 @@ pub(crate) async fn handle_batched_text_input_if_needed(
             agent_flow_id: ctx.agent_flow_id.to_string(),
             message_thread_id: ctx.outbound_thread.message_thread_id,
             use_inline_progress_controls: use_inline_topic_controls(ctx.thread_spec),
+            use_inline_flow_controls: use_inline_flow_controls(ctx.thread_spec),
         },
         ctx.msg.id,
         text,
@@ -352,6 +355,7 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         agent_flow_id: ctx.agent_flow_id,
         message_thread_id: ctx.message_thread_id,
         use_inline_progress_controls: ctx.use_inline_progress_controls,
+        use_inline_flow_controls: ctx.use_inline_flow_controls,
     })
     .await
 }

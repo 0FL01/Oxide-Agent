@@ -3,8 +3,8 @@ use super::{
     apply_topic_infra_config, ensure_session_exists, is_agent_task_running,
     manager_control_plane_enabled, manager_default_chat_id, renew_cancellation_token,
     resolve_execution_profile, resolve_topic_infra_config, run_agent_task_with_text,
-    use_inline_topic_controls, EnsureSessionContext, RunAgentTaskTextContext,
-    SessionTransportContext,
+    use_inline_flow_controls, use_inline_topic_controls, EnsureSessionContext,
+    RunAgentTaskTextContext, SessionTransportContext,
 };
 use crate::bot::context::sandbox_scope;
 use crate::bot::topic_route::{touch_dynamic_binding_activity_if_needed, TopicRouteDecision};
@@ -197,6 +197,7 @@ async fn process_due_reminder(
         agent_flow_id: reminder.flow_id.clone(),
         message_thread_id: build_outbound_thread_params(thread_spec).message_thread_id,
         use_inline_progress_controls: use_inline_topic_controls(thread_spec),
+        use_inline_flow_controls: use_inline_flow_controls(thread_spec),
     })
     .await;
 
