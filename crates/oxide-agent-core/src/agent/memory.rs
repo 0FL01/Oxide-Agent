@@ -35,6 +35,9 @@ pub struct AgentMessage {
     /// Metadata for payloads that were externalized outside hot memory.
     #[serde(default)]
     pub externalized_payload: Option<ExternalizedPayload>,
+    /// Metadata for tool payloads already pruned down to a placeholder.
+    #[serde(default)]
+    pub pruned_artifact: Option<PrunedArtifact>,
 }
 
 /// Metadata describing a tool payload externalized out of hot memory.
@@ -51,6 +54,20 @@ pub struct ExternalizedPayload {
     /// Hidden fallback payload retained when no external sink is configured.
     #[serde(default)]
     pub inline_fallback: Option<String>,
+}
+
+/// Metadata describing a tool payload that was pruned down to a placeholder.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrunedArtifact {
+    /// Approximate original token count before replacement.
+    pub estimated_tokens: usize,
+    /// Original visible character count before replacement.
+    pub original_chars: usize,
+    /// Inline preview retained in the pruned placeholder.
+    pub preview: String,
+    /// Optional archive reference when the payload was also externalized.
+    #[serde(default)]
+    pub archive_ref: Option<ArchiveRef>,
 }
 
 /// Role of a message sender in agent memory
@@ -83,6 +100,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -97,6 +115,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -116,6 +135,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -130,6 +150,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -144,6 +165,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -158,6 +180,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -175,6 +198,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -189,6 +213,7 @@ impl AgentMessage {
             tool_name: Some(name.to_string()),
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -208,6 +233,28 @@ impl AgentMessage {
             tool_name: Some(name.to_string()),
             tool_calls: None,
             externalized_payload: Some(externalized_payload),
+            pruned_artifact: None,
+        }
+    }
+
+    /// Create a pruned tool result placeholder.
+    pub fn pruned_tool(
+        tool_call_id: &str,
+        name: &str,
+        content: impl Into<String>,
+        pruned_artifact: PrunedArtifact,
+        externalized_payload: Option<ExternalizedPayload>,
+    ) -> Self {
+        Self {
+            kind: AgentMessageKind::ToolResult,
+            role: MessageRole::Tool,
+            content: content.into(),
+            reasoning: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(name.to_string()),
+            tool_calls: None,
+            externalized_payload,
+            pruned_artifact: Some(pruned_artifact),
         }
     }
 
@@ -222,6 +269,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: Some(tool_calls),
             externalized_payload: None,
+            pruned_artifact: None,
         }
     }
 
@@ -300,6 +348,12 @@ impl AgentMessage {
     #[must_use]
     pub fn is_externalized(&self) -> bool {
         self.externalized_payload.is_some()
+    }
+
+    /// Returns true when the tool payload has already been pruned.
+    #[must_use]
+    pub fn is_pruned(&self) -> bool {
+        self.pruned_artifact.is_some()
     }
 }
 
@@ -698,6 +752,7 @@ mod tests {
             tool_name: None,
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         };
         let legacy_tool = AgentMessage {
             kind: AgentMessageKind::Legacy,
@@ -708,6 +763,7 @@ mod tests {
             tool_name: Some("execute_command".to_string()),
             tool_calls: None,
             externalized_payload: None,
+            pruned_artifact: None,
         };
 
         assert_eq!(
