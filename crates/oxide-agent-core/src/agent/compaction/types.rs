@@ -209,6 +209,17 @@ pub enum BudgetState {
     OverLimit,
 }
 
+impl BudgetState {
+    /// Returns true when the checkpoint should emit warning-level telemetry.
+    #[must_use]
+    pub const fn requires_warn_telemetry(self) -> bool {
+        matches!(
+            self,
+            Self::ShouldPrune | Self::ShouldCompact | Self::OverLimit
+        )
+    }
+}
+
 /// Token accounting grouped by hot-memory retention class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotMemoryBudget {
@@ -483,11 +494,25 @@ impl CompactionOutcome {
             rebuild: RebuildOutcome::default(),
         }
     }
+
+    /// Returns true when this checkpoint deserves warning-level runtime logs.
+    #[must_use]
+    pub fn requires_warn_log(&self) -> bool {
+        matches!(self.trigger, CompactionTrigger::Manual)
+            || self.budget.state.requires_warn_telemetry()
+            || self.applied
+            || self.summary_generation.attempted
+            || self.summary_generation.used_fallback
+            || self.archive_persistence.attempted
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentMessageKind, CompactionPolicy, CompactionRetention};
+    use super::{
+        AgentMessageKind, BudgetEstimate, BudgetState, CompactionOutcome, CompactionPolicy,
+        CompactionRetention, CompactionSnapshot, CompactionTrigger, HotMemoryBudget,
+    };
 
     #[test]
     fn topic_agents_md_is_pinned() {
@@ -524,5 +549,76 @@ mod tests {
         assert!(policy.prune_threshold_percent < policy.compact_threshold_percent);
         assert!(policy.compact_threshold_percent < policy.over_limit_threshold_percent);
         assert!(policy.hard_reserve_tokens > 0);
+    }
+
+    #[test]
+    fn budget_state_warn_telemetry_starts_at_should_prune() {
+        assert!(!BudgetState::Healthy.requires_warn_telemetry());
+        assert!(!BudgetState::Warning.requires_warn_telemetry());
+        assert!(BudgetState::ShouldPrune.requires_warn_telemetry());
+        assert!(BudgetState::ShouldCompact.requires_warn_telemetry());
+        assert!(BudgetState::OverLimit.requires_warn_telemetry());
+    }
+
+    #[test]
+    fn compaction_outcome_warn_log_ignores_healthy_noop() {
+        let outcome = CompactionOutcome::noop(
+            CompactionTrigger::PreRun,
+            budget_with_state(BudgetState::Healthy),
+            CompactionSnapshot::default(),
+        );
+
+        assert!(!outcome.requires_warn_log());
+    }
+
+    #[test]
+    fn compaction_outcome_warn_log_keeps_manual_checkpoints_visible() {
+        let outcome = CompactionOutcome::noop(
+            CompactionTrigger::Manual,
+            budget_with_state(BudgetState::Healthy),
+            CompactionSnapshot::default(),
+        );
+
+        assert!(outcome.requires_warn_log());
+    }
+
+    #[test]
+    fn compaction_outcome_warn_log_surfaces_budget_pressure() {
+        let outcome = CompactionOutcome::noop(
+            CompactionTrigger::PreIteration,
+            budget_with_state(BudgetState::ShouldPrune),
+            CompactionSnapshot::default(),
+        );
+
+        assert!(outcome.requires_warn_log());
+    }
+
+    fn budget_with_state(state: BudgetState) -> BudgetEstimate {
+        BudgetEstimate {
+            context_window_tokens: 8_000,
+            system_prompt_tokens: 100,
+            tool_schema_tokens: 50,
+            hot_memory: HotMemoryBudget {
+                total_tokens: 200,
+                total_messages: 4,
+                pinned_tokens: 25,
+                protected_live_tokens: 25,
+                prunable_artifact_tokens: 75,
+                compactable_history_tokens: 75,
+                skill_context_tokens: 0,
+                runtime_context_tokens: 0,
+            },
+            loaded_skill_tokens: 0,
+            reserved_output_tokens: 512,
+            hard_reserve_tokens: 256,
+            total_input_tokens: 350,
+            projected_total_tokens: 1_118,
+            headroom_tokens: 6_882,
+            warning_threshold_tokens: 5_200,
+            prune_threshold_tokens: 6_000,
+            compact_threshold_tokens: 6_800,
+            over_limit_threshold_tokens: 7_600,
+            state,
+        }
     }
 }

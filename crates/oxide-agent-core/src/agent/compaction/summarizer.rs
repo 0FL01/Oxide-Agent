@@ -8,6 +8,7 @@ use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::llm::{LlmClient, LlmError};
 use lazy_regex::lazy_regex;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
@@ -50,6 +51,7 @@ impl CompactionSummarizer {
 
         let user_message = build_compaction_user_message(snapshot, messages);
         let fallback = deterministic_fallback_summary(request, snapshot, messages);
+        let compactable_entries = snapshot.compactable_history.message_count;
 
         if self.config.model_name.is_empty()
             || self.config.provider_name.is_empty()
@@ -57,6 +59,14 @@ impl CompactionSummarizer {
                 .llm_client
                 .is_provider_available(&self.config.provider_name)
         {
+            warn!(
+                trigger = ?request.trigger,
+                model = %self.config.model_name,
+                provider = %self.config.provider_name,
+                compactable_entries,
+                budget_state = ?budget_state,
+                "Compaction summary model unavailable, using deterministic fallback"
+            );
             return SummaryGenerationOutcome {
                 attempted: true,
                 used_fallback: true,
@@ -68,27 +78,59 @@ impl CompactionSummarizer {
         debug!(
             model = %self.config.model_name,
             provider = %self.config.provider_name,
-            compactable_entries = snapshot.compactable_history.message_count,
+            compactable_entries,
             "Generating compaction summary"
         );
 
+        let llm_started_at = Instant::now();
         match self.call_llm(&user_message).await {
             Ok(response) => match parse_summary_response(&response) {
-                Some(summary) => SummaryGenerationOutcome {
-                    attempted: true,
-                    used_fallback: false,
-                    model_name: Some(self.config.model_name.clone()),
-                    summary: Some(summary),
-                },
-                None => SummaryGenerationOutcome {
-                    attempted: true,
-                    used_fallback: true,
-                    model_name: Some(self.config.model_name.clone()),
-                    summary: Some(fallback),
-                },
+                Some(summary) => {
+                    warn!(
+                        trigger = ?request.trigger,
+                        model = %self.config.model_name,
+                        provider = %self.config.provider_name,
+                        compactable_entries,
+                        budget_state = ?budget_state,
+                        elapsed_ms = llm_started_at.elapsed().as_millis(),
+                        "Compaction generated structured summary"
+                    );
+                    SummaryGenerationOutcome {
+                        attempted: true,
+                        used_fallback: false,
+                        model_name: Some(self.config.model_name.clone()),
+                        summary: Some(summary),
+                    }
+                }
+                None => {
+                    warn!(
+                        trigger = ?request.trigger,
+                        model = %self.config.model_name,
+                        provider = %self.config.provider_name,
+                        compactable_entries,
+                        budget_state = ?budget_state,
+                        elapsed_ms = llm_started_at.elapsed().as_millis(),
+                        "Compaction summary response invalid, using deterministic fallback"
+                    );
+                    SummaryGenerationOutcome {
+                        attempted: true,
+                        used_fallback: true,
+                        model_name: Some(self.config.model_name.clone()),
+                        summary: Some(fallback),
+                    }
+                }
             },
             Err(error) => {
-                warn!(error = %error, "Compaction LLM call failed, using fallback summary");
+                warn!(
+                    trigger = ?request.trigger,
+                    model = %self.config.model_name,
+                    provider = %self.config.provider_name,
+                    compactable_entries,
+                    budget_state = ?budget_state,
+                    elapsed_ms = llm_started_at.elapsed().as_millis(),
+                    error = %error,
+                    "Compaction LLM call failed, using fallback summary"
+                );
                 SummaryGenerationOutcome {
                     attempted: true,
                     used_fallback: true,

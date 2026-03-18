@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
-use tracing::info;
+use tracing::{info, warn};
 
 #[cfg(feature = "crawl4ai")]
 use super::providers::Crawl4aiProvider;
@@ -740,6 +740,13 @@ impl AgentExecutor {
             false,
         );
 
+        warn!(
+            model = %model_id,
+            tool_count = tools.len(),
+            task_len = task.len(),
+            system_prompt_len = system_prompt.len(),
+            "Manual compaction requested"
+        );
         Self::emit_manual_compaction_started(progress_tx.as_ref()).await;
         let outcome = match self
             .compaction_service
@@ -748,10 +755,28 @@ impl AgentExecutor {
         {
             Ok(outcome) => outcome,
             Err(error) => {
+                warn!(error = %error, "Manual compaction failed");
                 Self::emit_manual_compaction_failed(progress_tx.as_ref(), error.to_string()).await;
                 return Err(error);
             }
         };
+        warn!(
+            applied = outcome.applied,
+            budget_state = ?outcome.budget.state,
+            hot_memory_tokens_before = outcome.token_count_before,
+            hot_memory_tokens_after = outcome.token_count_after,
+            externalized_count = outcome.externalization.externalized_count,
+            pruned_count = outcome.pruning.pruned_count,
+            reclaimed_tokens = outcome
+                .externalization
+                .reclaimed_tokens
+                .saturating_add(outcome.pruning.reclaimed_tokens),
+            summary_attempted = outcome.summary_generation.attempted,
+            summary_used_fallback = outcome.summary_generation.used_fallback,
+            archived_chunk_count = outcome.archive_persistence.archived_chunk_count,
+            summary_updated = outcome.rebuild.inserted_summary,
+            "Manual compaction completed"
+        );
         if outcome.pruning.applied {
             Self::emit_manual_pruning_applied(progress_tx.as_ref(), &outcome).await;
         }

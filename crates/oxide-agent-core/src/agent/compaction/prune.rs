@@ -5,6 +5,7 @@ use super::types::{
     ClassifiedMemoryEntry, CompactionPolicy, CompactionRetention, CompactionSnapshot, PruneOutcome,
 };
 use crate::agent::memory::{AgentMessage, PrunedArtifact};
+use tracing::warn;
 
 /// Prune old tool artifacts while preserving the recent working set.
 #[must_use]
@@ -31,6 +32,16 @@ pub fn prune_hot_memory(
             .reclaimed_chars
             .saturating_add(pruned.reclaimed_chars);
         outcome.pruned_indices.push(entry.index);
+    }
+
+    if outcome.applied {
+        warn!(
+            pruned_count = outcome.pruned_count,
+            reclaimed_tokens = outcome.reclaimed_tokens,
+            reclaimed_chars = outcome.reclaimed_chars,
+            pruned_indices = ?outcome.pruned_indices,
+            "Compaction pruned stale tool payloads"
+        );
     }
 
     (rewritten, outcome)
@@ -84,6 +95,7 @@ fn prune_entry(
         archive_ref.as_ref(),
         &preview,
     );
+    let has_archive_ref = archive_ref.is_some();
     let replacement = AgentMessage::pruned_tool(
         tool_call_id,
         tool_name,
@@ -102,6 +114,16 @@ fn prune_entry(
     let reclaimed_chars = entry
         .content_chars
         .saturating_sub(replacement.content.chars().count());
+    warn!(
+        tool_name,
+        message_index = entry.index,
+        estimated_tokens = entry.estimated_tokens,
+        original_chars = entry.content_chars,
+        reclaimed_tokens,
+        reclaimed_chars,
+        has_archive_ref,
+        "Compaction pruned stale tool payload"
+    );
 
     Some(PrunedMessage {
         message: replacement,

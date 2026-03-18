@@ -15,7 +15,7 @@ use super::types::{
 use crate::agent::context::AgentContext;
 use anyhow::Result;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 struct CheckpointMetrics<'a> {
     budget: &'a BudgetEstimate,
@@ -101,6 +101,21 @@ impl CompactionService {
         self.log_checkpoint(
             request,
             agent,
+            &budget_before,
+            &CheckpointMetrics {
+                budget: &budget,
+                snapshot: &snapshot,
+                externalization: &externalization,
+                archive_persistence: &archive_persistence,
+                pruning: &pruning,
+                summary_generation: &summary_generation,
+                rebuild: &rebuild,
+            },
+        );
+        self.warn_checkpoint_if_needed(
+            request,
+            agent,
+            &budget_before,
             &CheckpointMetrics {
                 budget: &budget,
                 snapshot: &snapshot,
@@ -228,6 +243,7 @@ impl CompactionService {
         &self,
         request: &CompactionRequest<'_>,
         agent: &dyn AgentContext,
+        budget_before: &BudgetEstimate,
         metrics: &CheckpointMetrics<'_>,
     ) {
         debug!(
@@ -239,17 +255,22 @@ impl CompactionService {
             model_max_output_tokens = request.model_max_output_tokens,
             is_sub_agent = request.is_sub_agent,
             hot_messages = agent.memory().get_messages().len(),
+            hot_messages_before = budget_before.hot_memory.total_messages,
             hot_memory_tokens = metrics.budget.hot_memory.total_tokens,
+            hot_memory_tokens_before = budget_before.hot_memory.total_tokens,
             system_prompt_tokens = metrics.budget.system_prompt_tokens,
             tool_schema_tokens = metrics.budget.tool_schema_tokens,
             projected_total_tokens = metrics.budget.projected_total_tokens,
+            projected_total_tokens_before = budget_before.projected_total_tokens,
             reserved_output_tokens = metrics.budget.reserved_output_tokens,
             headroom_tokens = metrics.budget.headroom_tokens,
+            headroom_tokens_before = budget_before.headroom_tokens,
             warning_threshold_tokens = metrics.budget.warning_threshold_tokens,
             prune_threshold_tokens = metrics.budget.prune_threshold_tokens,
             compact_threshold_tokens = metrics.budget.compact_threshold_tokens,
             over_limit_threshold_tokens = metrics.budget.over_limit_threshold_tokens,
             budget_state = ?metrics.budget.state,
+            budget_state_before = ?budget_before.state,
             externalized_messages = metrics.externalization.externalized_count,
             externalized_reclaimed_tokens = metrics.externalization.reclaimed_tokens,
             archived_chunks = metrics.archive_persistence.archived_chunk_count,
@@ -269,6 +290,76 @@ impl CompactionService {
             "Compaction checkpoint reached"
         );
     }
+
+    fn warn_checkpoint_if_needed(
+        &self,
+        request: &CompactionRequest<'_>,
+        agent: &dyn AgentContext,
+        budget_before: &BudgetEstimate,
+        metrics: &CheckpointMetrics<'_>,
+    ) {
+        if !should_warn_checkpoint(request, budget_before, metrics) {
+            return;
+        }
+
+        let scope = agent.compaction_scope();
+        warn!(
+            trigger = ?request.trigger,
+            context_key = %scope.context_key,
+            flow_id = %scope.flow_id,
+            model = request.model_name,
+            is_sub_agent = request.is_sub_agent,
+            tool_count = request.tools.len(),
+            task_len = request.task.len(),
+            system_prompt_len = request.system_prompt.len(),
+            budget_state_before = ?budget_before.state,
+            budget_state_after = ?metrics.budget.state,
+            hot_messages_before = budget_before.hot_memory.total_messages,
+            hot_messages_after = metrics.budget.hot_memory.total_messages,
+            hot_memory_tokens_before = budget_before.hot_memory.total_tokens,
+            hot_memory_tokens_after = metrics.budget.hot_memory.total_tokens,
+            projected_total_tokens_before = budget_before.projected_total_tokens,
+            projected_total_tokens_after = metrics.budget.projected_total_tokens,
+            headroom_tokens_before = budget_before.headroom_tokens,
+            headroom_tokens_after = metrics.budget.headroom_tokens,
+            externalized_count = metrics.externalization.externalized_count,
+            pruned_count = metrics.pruning.pruned_count,
+            reclaimed_tokens = metrics
+                .externalization
+                .reclaimed_tokens
+                .saturating_add(metrics.pruning.reclaimed_tokens),
+            archived_chunk_count = metrics.archive_persistence.archived_chunk_count,
+            archived_message_count = metrics.archive_persistence.archived_message_count,
+            summary_attempted = metrics.summary_generation.attempted,
+            summary_used_fallback = metrics.summary_generation.used_fallback,
+            summary_model = metrics.summary_generation.model_name.as_deref().unwrap_or(""),
+            rebuild_applied = metrics.rebuild.applied,
+            rebuild_inserted_summary = metrics.rebuild.inserted_summary,
+            rebuild_inserted_archive_reference = metrics.rebuild.inserted_archive_reference,
+            rebuild_dropped_messages = metrics.rebuild.dropped_message_count,
+            pinned_messages = metrics.snapshot.pinned.message_count,
+            protected_live_messages = metrics.snapshot.protected_live.message_count,
+            prunable_artifact_messages = metrics.snapshot.prunable_artifacts.message_count,
+            compactable_history_messages = metrics.snapshot.compactable_history.message_count,
+            "Compaction checkpoint executed"
+        );
+    }
+}
+
+fn should_warn_checkpoint(
+    request: &CompactionRequest<'_>,
+    budget_before: &BudgetEstimate,
+    metrics: &CheckpointMetrics<'_>,
+) -> bool {
+    matches!(request.trigger, super::CompactionTrigger::Manual)
+        || budget_before.state.requires_warn_telemetry()
+        || metrics.budget.state.requires_warn_telemetry()
+        || metrics.externalization.applied
+        || metrics.pruning.applied
+        || metrics.summary_generation.attempted
+        || metrics.summary_generation.used_fallback
+        || metrics.archive_persistence.attempted
+        || metrics.rebuild.applied
 }
 
 #[cfg(test)]

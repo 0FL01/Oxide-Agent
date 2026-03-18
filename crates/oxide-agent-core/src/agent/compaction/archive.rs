@@ -160,6 +160,16 @@ pub fn persist_compacted_history_chunk(
         content,
     };
     let archive_ref = persist_archive_chunk(archive_sink, &chunk, &storage_key);
+    warn!(
+        trigger = ?trigger,
+        archive_id = %archive_ref.archive_id,
+        storage_key = %archive_ref.storage_key,
+        archived_chunk_count = 1,
+        archived_message_count = payload.messages.len(),
+        tool_name_count = record.tool_names.len(),
+        file_path_count = record.file_paths.len(),
+        "Compaction archived displaced history chunk"
+    );
 
     ArchivePersistenceOutcome {
         attempted: true,
