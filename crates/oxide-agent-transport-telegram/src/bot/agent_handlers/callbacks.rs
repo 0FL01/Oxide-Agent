@@ -22,7 +22,8 @@ use crate::bot::views::{
     AgentView, DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK,
     AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_COMPACT_CONTEXT, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
-    AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
+    AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL,
+    AGENT_CALLBACK_CONFIRM_COMPACT_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
     AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT,
     AGENT_CALLBACK_RECREATE_CONTAINER, AGENT_CALLBACK_SSH_APPROVE_PREFIX,
     AGENT_CALLBACK_SSH_REJECT_PREFIX, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET,
@@ -63,7 +64,6 @@ pub(crate) enum AgentCallbackAction {
     Detach,
     ApproveSsh(String),
     RejectSsh(String),
-    ManualCompact,
     StartCancelTaskConfirmation,
     ResolveCancelTaskConfirmation(bool),
     StartConfirmation(ConfirmationType),
@@ -100,7 +100,9 @@ pub(crate) fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAct
         LOOP_CALLBACK_RESET => Some(AgentCallbackAction::LoopReset),
         LOOP_CALLBACK_CANCEL => Some(AgentCallbackAction::LoopCancel),
         AGENT_CALLBACK_CANCEL_TASK => Some(AgentCallbackAction::StartCancelTaskConfirmation),
-        AGENT_CALLBACK_COMPACT_CONTEXT => Some(AgentCallbackAction::ManualCompact),
+        AGENT_CALLBACK_COMPACT_CONTEXT => Some(AgentCallbackAction::StartConfirmation(
+            ConfirmationType::CompactContext,
+        )),
         AGENT_CALLBACK_CONFIRM_CANCEL_YES => {
             Some(AgentCallbackAction::ResolveCancelTaskConfirmation(true))
         }
@@ -120,6 +122,14 @@ pub(crate) fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAct
         )),
         AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL => Some(AgentCallbackAction::ResolveConfirmation(
             ConfirmationType::ClearMemory,
+            false,
+        )),
+        AGENT_CALLBACK_CONFIRM_COMPACT_YES => Some(AgentCallbackAction::ResolveConfirmation(
+            ConfirmationType::CompactContext,
+            true,
+        )),
+        AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL => Some(AgentCallbackAction::ResolveConfirmation(
+            ConfirmationType::CompactContext,
             false,
         )),
         AGENT_CALLBACK_CONFIRM_RECREATE_YES => Some(AgentCallbackAction::ResolveConfirmation(
@@ -471,6 +481,16 @@ async fn handle_agent_confirmation_callback(
                 )
                 .await?;
             }
+            ConfirmationType::CompactContext => {
+                start_manual_compaction(
+                    loop_ctx.bot.clone(),
+                    ctx.msg.clone(),
+                    ctx.storage.clone(),
+                    ctx.llm.clone(),
+                    ctx.settings.clone(),
+                )
+                .await?;
+            }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(
                     loop_ctx.user_id,
@@ -716,22 +736,6 @@ async fn dispatch_agent_callback(
                 ctx.loop_ctx.thread_spec,
                 ctx.loop_ctx.outbound_thread.message_thread_id,
                 &ctx.loop_ctx.agent_flow_id,
-            )
-            .await
-        }
-        AgentCallbackAction::ManualCompact => {
-            answer_agent_callback(
-                &ctx.loop_ctx.bot,
-                ctx.callback_id.clone(),
-                Some("Context compaction started"),
-            )
-            .await;
-            start_manual_compaction(
-                ctx.loop_ctx.bot.clone(),
-                ctx.msg,
-                ctx.storage,
-                ctx.llm,
-                ctx.settings,
             )
             .await
         }

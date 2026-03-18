@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub enum ConfirmationType {
     /// Clear agent memory (history)
     ClearMemory,
+    /// Compact agent context
+    CompactContext,
     /// Recreate agent container
     RecreateContainer,
 }
