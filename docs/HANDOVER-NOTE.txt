@@ -1,0 +1,83 @@
+Handover Note
+
+Date: 2026-03-18
+Repo: /home/stfu/ai/Oxide-Agent
+Branch: agent-topics
+
+Topic
+Agent Mode memory compaction refactor and rollout.
+
+Goal
+Replace the old local memory auto-compaction with an orchestration-layer staged compaction pipeline for Agent Mode only.
+Chat mode is intentionally out of scope.
+
+Status
+Stages 1 through 12 are complete.
+The agreed scope is implemented.
+
+Latest commit
+29b84aa - test(agent): harden compaction lifecycle regressions
+
+What is implemented
+- Compaction moved out of memory.rs into crates/oxide-agent-core/src/agent/compaction/
+- Layered pipeline: budget estimation, classifier, externalization, pruning, summary compaction, rebuild, archive extension points, runner integration, transport UX, hardening/tests
+- Separate compaction model with deterministic fallback
+- Archive extension points with noop sink and archive refs
+- Manual compact action for Agent Mode transport
+- Progress lifecycle events and repeated compaction warning
+
+Key guarantees now covered
+- Pinned context is preserved
+- topic AGENTS.md is preserved
+- current task is preserved
+- todos remain intact
+- runtime injections and approval replay context are preserved
+- recent raw user/assistant/tool window is preserved
+- archive refs serialize even when archive sink is noop
+- repeated compaction warning is emitted when multiple applied passes happen in one run
+- invalid compaction-model JSON falls back safely
+
+Main files
+- crates/oxide-agent-core/src/agent/compaction/mod.rs
+- crates/oxide-agent-core/src/agent/compaction/types.rs
+- crates/oxide-agent-core/src/agent/compaction/budget.rs
+- crates/oxide-agent-core/src/agent/compaction/classifier.rs
+- crates/oxide-agent-core/src/agent/compaction/externalize.rs
+- crates/oxide-agent-core/src/agent/compaction/prune.rs
+- crates/oxide-agent-core/src/agent/compaction/prompt.rs
+- crates/oxide-agent-core/src/agent/compaction/summarizer.rs
+- crates/oxide-agent-core/src/agent/compaction/rebuild.rs
+- crates/oxide-agent-core/src/agent/compaction/archive.rs
+- crates/oxide-agent-core/src/agent/compaction/service.rs
+- crates/oxide-agent-core/src/agent/runner/execution.rs
+- crates/oxide-agent-core/src/agent/executor.rs
+- crates/oxide-agent-transport-telegram/src/bot/progress_render.rs
+
+Tests added or expanded
+- compaction service hardening tests in crates/oxide-agent-core/src/agent/compaction/service.rs
+- summarizer parsing/fallback tests in crates/oxide-agent-core/src/agent/compaction/summarizer.rs
+- archive ref serialization test in crates/oxide-agent-core/src/agent/compaction/archive.rs
+- repeated compaction runner test in crates/oxide-agent-core/src/agent/runner/execution.rs
+- public lifecycle integration test in crates/oxide-agent-core/tests/compaction_lifecycle.rs
+
+Validation performed
+- cargo fmt
+- cargo test -p oxide-agent-core compaction --lib --tests
+
+Known remaining issues
+These are pre-existing and unrelated to the compaction rollout scope:
+- cargo clippy -p oxide-agent-core --lib --tests fails on clippy::too_many_lines in:
+  - crates/oxide-agent-core/src/agent/executor.rs:452
+  - crates/oxide-agent-core/src/agent/providers/delegation.rs:241
+  - crates/oxide-agent-core/src/agent/tool_bridge.rs:67
+
+Out of scope by design
+- archive retrieval tool
+- archive embeddings or semantic search
+- automatic reload from archive into hot context
+- chat mode migration
+
+Recommended next steps
+1. Run a broader workspace test sweep if the compaction rollout is about to be merged widely.
+2. If desired, follow up with cleanup/refactor work for the long functions that keep clippy red.
+3. If product scope expands, the next logical feature is archive retrieval, not more hot-context compaction changes.

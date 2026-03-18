@@ -15,13 +15,14 @@ crates/
 ├── oxide-agent-core/                # Ядро: домен, LLM, storage, тесты
 │   ├── src/
 │   │   ├── agent/                   # Логика агента
+│   │   │   ├── compaction/          # Staged Agent Mode compaction pipeline
 │   │   │   ├── executor.rs          # Core agent execution logic
 │   │   │   ├── narrator.rs          # Dialogue management
 │   │   │   ├── preprocessor.rs      # Input processing (voice/images)
 │   │   │   ├── tool_bridge.rs       # Tool execution bridge
 │   │   │   ├── structured_output.rs # Structured output parsing
 │   │   │   ├── thoughts.rs          # Agent thought inference
-│   │   │   ├── memory.rs            # Memory management with auto-compaction
+│   │   │   ├── memory.rs            # Memory storage model and typed messages
 │   │   │   ├── progress.rs          # Agent events
 │   │   │   ├── session.rs           # AgentSession lifecycle management
 │   │   │   ├── provider.rs          # Tool Provider trait
@@ -60,7 +61,7 @@ crates/
 │   │   ├── config.rs
 │   │   ├── storage.rs
 │   │   └── testing.rs               # TestKit: моки и хелперы
-│   └── tests/                       # Интеграционные тесты
+│   └── tests/                       # Интеграционные и lifecycle тесты
 ├── oxide-agent-runtime/             # Runtime: сессии и оркестрация
 │   └── src/
 │       ├── session_registry.rs      # Управление сессиями
@@ -101,6 +102,7 @@ crates/
     └── src/main.rs
 skills/                              # Документация навыков агента (9 skills)
 docs/                                # Комплексная документация
+├── HANDOVER-NOTE.txt                # Текущий handover по compaction rollout
 ├── hooks/                           # Hook system documentation
 │   └── sub-agents/                  # Sub-agent delegation lifecycle
 ├── opencode-int/                    # OpenCode sandbox integration
@@ -113,7 +115,7 @@ sandbox/
 ```
 
 ### Workspace crates
-- `oxide-agent-core`: доменная логика агента, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов и context-scoped storage API, embeddings support, hook system с manageable/protected hooks, `AgentExecutionProfile` с `ToolAccessPolicy`, `TopicContextRecord`, `TopicInfraConfigRecord`, `TopicAgentsMdRecord` для topic-scoped системных промптов, SSH MCP provider с approval flow.
+- `oxide-agent-core`: доменная логика агента, staged compaction pipeline для Agent Mode, LLM-интеграции, хуки, навыки, storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов, context-scoped storage API, `AgentExecutionProfile` с `ToolAccessPolicy`, topic-scoped prompts/configs и SSH MCP provider с approval flow.
 - `oxide-agent-runtime`: оркестрация сессий, прогресс-рендеринг, session registry с thread-aware session keys.
 - `oxide-agent-sandboxd`: отдельный broker daemon для sandbox. Слушает Unix socket (`SANDBOXD_SOCKET`), владеет `docker.sock`, принимает узкий sandbox protocol и выполняет Docker operations от имени основного агента.
 - `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, resilient messaging, progress rendering, unauthorized access protection, телеметрия доставки. Включает модульный `bot/agent_handlers/` (facade + lifecycle/controls/callbacks/input/task_runner/session/execution_config/reminders/shared/tests), `context.rs` для context-scoped state management с legacy fallback для DM-чатов и views module для UI компонентов.
@@ -173,7 +175,17 @@ Task lifecycle tracking with timeout control, cancellation support, and sandbox 
 
 **Components**: `AgentSession`, `AgentStatus`, `session.rs`
 
-**Features**: Task lifecycle tracking, 30-minute timeout, cancellation tokens, loaded skills tracking, memory management with auto-compaction.
+**Features**: Task lifecycle tracking, 30-minute timeout, cancellation tokens, loaded skills tracking, typed hot-memory storage. Compaction запускается orchestration layer через `agent/compaction/`, а не как side effect `AgentMemory`.
+
+## 🗜 Agent Mode Compaction
+
+Staged compaction pipeline only for Agent Mode.
+
+**Components**: `agent/compaction/{budget,classifier,externalize,prune,prompt,summarizer,rebuild,archive,service,types}.rs`
+
+**Flow**: budget estimation → classify → externalize → prune → summarize with separate model → rebuild hot context → optional archive refs.
+
+**Guarantees**: сохраняет base system context, topic `AGENTS.md`, current task, todos, runtime injections, approvals и recent raw working set; крупные tool outputs выносятся или pruning-ятся до LLM compaction.
 
 **SandboxScope**: Stable container identity via FNV-1a hashing for persistent Docker containers across sessions.
 
