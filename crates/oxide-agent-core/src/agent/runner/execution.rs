@@ -710,6 +710,8 @@ mod tests {
 
     struct LargeOutputToolProvider;
 
+    struct SmallOutputToolProvider;
+
     #[async_trait]
     impl ToolProvider for LargeOutputToolProvider {
         fn name(&self) -> &'static str {
@@ -736,6 +738,35 @@ mod tests {
             _cancellation_token: Option<&CancellationToken>,
         ) -> anyhow::Result<String> {
             Ok("Z".repeat(5_000))
+        }
+    }
+
+    #[async_trait]
+    impl ToolProvider for SmallOutputToolProvider {
+        fn name(&self) -> &'static str {
+            "small-output"
+        }
+
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: "fake_small_tool".to_string(),
+                description: "Return a small payload".to_string(),
+                parameters: json!({"type": "object", "properties": {}}),
+            }]
+        }
+
+        fn can_handle(&self, tool_name: &str) -> bool {
+            tool_name == "fake_small_tool"
+        }
+
+        async fn execute(
+            &self,
+            _tool_name: &str,
+            _arguments: &str,
+            _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+            _cancellation_token: Option<&CancellationToken>,
+        ) -> anyhow::Result<String> {
+            Ok("ok".to_string())
         }
     }
 
@@ -949,6 +980,260 @@ mod tests {
 
         assert!(completion_events >= 2);
         assert_eq!(repeated_warning, None);
+    }
+
+    #[tokio::test]
+    async fn run_emits_repeated_cleanup_warning_on_second_cleanup_pass() {
+        let llm_client = build_llm_client(repeated_cleanup_provider());
+        let compaction_service = CompactionService::default();
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Inspect repeated cleanup"));
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(LargeOutputToolProvider));
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let mut ctx = AgentRunnerContext {
+            task: "Inspect repeated cleanup",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-repeated-cleanup",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: Some(&compaction_service),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        drop(ctx);
+        drop(progress_tx);
+
+        let events = collect_progress_events(&mut progress_rx).await;
+        let repeated_cleanup = events.iter().find_map(|event| match event {
+            AgentEvent::RepeatedCompactionWarning { kind, count } => Some((*kind, *count)),
+            _ => None,
+        });
+        let cleanup_completions = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentEvent::CompactionCompleted {
+                        externalized_count,
+                        summary_updated,
+                        ..
+                    } if *externalized_count > 0 && !summary_updated
+                )
+            })
+            .count();
+        let second_cleanup_completion_index = events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| {
+                matches!(
+                    event,
+                    AgentEvent::CompactionCompleted {
+                        externalized_count,
+                        summary_updated,
+                        ..
+                    } if *externalized_count > 0 && !summary_updated
+                )
+            })
+            .nth(1)
+            .map(|(index, _)| index)
+            .expect("second cleanup completion event");
+        let warning_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::RepeatedCompactionWarning {
+                        kind: RepeatedCompactionKind::Cleanup,
+                        count: 2,
+                    }
+                )
+            })
+            .expect("cleanup warning event");
+
+        assert_eq!(repeated_cleanup, Some((RepeatedCompactionKind::Cleanup, 2)));
+        assert_eq!(cleanup_completions, 2);
+        assert!(warning_index > second_cleanup_completion_index);
+    }
+
+    #[tokio::test]
+    async fn run_emits_repeated_summary_warning_on_second_summary_pass() {
+        let llm_client = build_llm_client(repeated_summary_provider());
+        let summarizer = CompactionSummarizer::new(
+            Arc::clone(&llm_client),
+            CompactionSummarizerConfig {
+                model_name: String::new(),
+                provider_name: String::new(),
+                timeout_secs: 1,
+            },
+        );
+        let compaction_service = CompactionService::default().with_summarizer(summarizer);
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = base_summary_session("Inspect repeated summary compaction");
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SmallOutputToolProvider));
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let mut ctx = AgentRunnerContext {
+            task: "Inspect repeated summary compaction",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-repeated-summary",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: Some(&compaction_service),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 5, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        drop(ctx);
+        drop(progress_tx);
+
+        let events = collect_progress_events(&mut progress_rx).await;
+        let summary_completions: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| match event {
+                AgentEvent::CompactionCompleted {
+                    summary_updated: true,
+                    ..
+                } => Some(index),
+                _ => None,
+            })
+            .collect();
+        let warning_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::RepeatedCompactionWarning {
+                        kind: RepeatedCompactionKind::Compaction,
+                        count: 2,
+                    }
+                )
+            })
+            .expect("summary warning event");
+
+        assert!(summary_completions.len() >= 2);
+        assert!(warning_index > summary_completions[1]);
+    }
+
+    #[tokio::test]
+    async fn run_overflow_retry_emits_manual_compaction_progress_in_order() {
+        let llm_client = build_llm_client(context_overflow_then_final_provider());
+        let summarizer = CompactionSummarizer::new(
+            Arc::clone(&llm_client),
+            CompactionSummarizerConfig {
+                model_name: String::new(),
+                provider_name: String::new(),
+                timeout_secs: 1,
+            },
+        );
+        let compaction_service = CompactionService::default().with_summarizer(summarizer);
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session.memory_mut().add_message(AgentMessage::user_task(
+            "Retry after overflow with progress",
+        ));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Older request about compaction."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Older response with findings."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 2."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 2."));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let mut ctx = AgentRunnerContext {
+            task: "Retry after overflow with progress",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-overflow-progress",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: Some(&compaction_service),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
+        };
+
+        let result = runner
+            .run(&mut ctx)
+            .await
+            .expect("runner succeeds after retry");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        drop(ctx);
+        drop(progress_tx);
+
+        let events = collect_progress_events(&mut progress_rx).await;
+        let manual_started = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::CompactionStarted {
+                        trigger: CompactionTrigger::Manual,
+                    }
+                )
+            })
+            .expect("manual compaction started event");
+        let manual_completed = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::CompactionCompleted {
+                        trigger: CompactionTrigger::Manual,
+                        summary_updated: true,
+                        ..
+                    }
+                )
+            })
+            .expect("manual compaction completed event");
+
+        assert!(manual_started < manual_completed);
     }
 
     #[tokio::test]
@@ -1189,5 +1474,148 @@ mod tests {
             .expect_analyze_image()
             .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
         provider
+    }
+
+    fn repeated_cleanup_provider() -> MockLlmProvider {
+        let mut provider = MockLlmProvider::new();
+        let mut sequence = mockall::Sequence::new();
+        for call_id in ["call-1", "call-2"] {
+            provider
+                .expect_chat_with_tools()
+                .times(1)
+                .in_sequence(&mut sequence)
+                .return_once(move |_| {
+                    Ok(ChatResponse {
+                        content: Some(String::new()),
+                        tool_calls: vec![ToolCall {
+                            id: call_id.to_string(),
+                            function: ToolCallFunction {
+                                name: "fake_large_tool".to_string(),
+                                arguments: "{}".to_string(),
+                            },
+                            is_recovered: false,
+                        }],
+                        finish_reason: "tool_calls".to_string(),
+                        reasoning_content: None,
+                        usage: None,
+                    })
+                });
+        }
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Ok(ChatResponse {
+                    content: Some(r#"{"thought":"done","final_answer":"done"}"#.to_string()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            });
+        provider
+            .expect_chat_completion()
+            .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_analyze_image()
+            .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+    }
+
+    fn repeated_summary_provider() -> MockLlmProvider {
+        let mut provider = MockLlmProvider::new();
+        let mut sequence = mockall::Sequence::new();
+        for call_id in ["call-1", "call-2", "call-3"] {
+            provider
+                .expect_chat_with_tools()
+                .times(1)
+                .in_sequence(&mut sequence)
+                .return_once(move |_| {
+                    Ok(ChatResponse {
+                        content: Some(String::new()),
+                        tool_calls: vec![ToolCall {
+                            id: call_id.to_string(),
+                            function: ToolCallFunction {
+                                name: "fake_small_tool".to_string(),
+                                arguments: "{}".to_string(),
+                            },
+                            is_recovered: false,
+                        }],
+                        finish_reason: "tool_calls".to_string(),
+                        reasoning_content: None,
+                        usage: None,
+                    })
+                });
+        }
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Ok(ChatResponse {
+                    content: Some(r#"{"thought":"done","final_answer":"done"}"#.to_string()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            });
+        provider
+            .expect_chat_completion()
+            .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_analyze_image()
+            .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+    }
+
+    fn base_summary_session(task: &str) -> EphemeralSession {
+        let mut session = EphemeralSession::new(256);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::topic_agents_md(
+                "# Topic AGENTS\nPreserve operator instructions.",
+            ));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task(task));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Older request about compaction."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Older response with findings."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 1."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request 2."));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response 2."));
+        session
+    }
+
+    fn collect_progress_events(
+        progress_rx: &mut tokio::sync::mpsc::Receiver<AgentEvent>,
+    ) -> impl std::future::Future<Output = Vec<AgentEvent>> + '_ {
+        async move {
+            let mut events = Vec::new();
+            while let Some(event) = progress_rx.recv().await {
+                events.push(event);
+            }
+            events
+        }
     }
 }
