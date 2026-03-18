@@ -123,12 +123,6 @@ fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
             "   {}",
             html_escape::encode_text(&format_budget_status(snapshot))
         ));
-        if let Some(api_usage) = &snapshot.last_api_usage {
-            lines.push(format!(
-                "   {}",
-                html_escape::encode_text(&format_api_usage(api_usage))
-            ));
-        }
     }
     if let Some(status) = &state.last_compaction_status {
         lines.push(format!(
@@ -195,15 +189,6 @@ fn format_budget_status(snapshot: &oxide_agent_core::agent::progress::TokenSnaps
     format!("Status: {}", budget_state_label(snapshot.budget_state))
 }
 
-fn format_api_usage(api_usage: &oxide_agent_core::llm::TokenUsage) -> String {
-    format!(
-        "Last API usage: prompt {} | completion {} | total {}",
-        oxide_agent_core::utils::format_tokens(api_usage.prompt_tokens as usize),
-        oxide_agent_core::utils::format_tokens(api_usage.completion_tokens as usize),
-        oxide_agent_core::utils::format_tokens(api_usage.total_tokens as usize)
-    )
-}
-
 fn budget_state_label(state: oxide_agent_core::agent::compaction::BudgetState) -> &'static str {
     match state {
         oxide_agent_core::agent::compaction::BudgetState::Healthy => "healthy",
@@ -255,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_projected_budget_and_api_usage() {
+    fn renders_projected_budget_without_api_usage() {
         let mut state = ProgressState::new(5);
         state.update(AgentEvent::Thinking {
             snapshot: sample_snapshot(),
@@ -267,7 +252,7 @@ mod tests {
         assert!(output.contains("ctx 16k/200k"));
         assert!(output.contains("hot 5.7k | input 8k | reserve 8k | headroom 184k"));
         assert!(output.contains("Status: healthy"));
-        assert!(output.contains("Last API usage: prompt 15k | completion 800 | total 16k"));
+        assert!(!output.contains("Last API usage:"));
     }
 
     #[test]

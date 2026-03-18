@@ -32,7 +32,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -101,6 +102,8 @@ struct PreparedSubAgentExecution {
     sub_session: EphemeralSession,
     runner_config: AgentRunnerConfig,
     compaction_service: CompactionService,
+    progress_tx: Option<mpsc::Sender<AgentEvent>>,
+    progress_relay_task: Option<JoinHandle<()>>,
 }
 
 enum SubAgentRunOutcome {
@@ -314,7 +317,10 @@ impl DelegationProvider {
         let task_id = format!("sub-{}", Uuid::new_v4());
         let sub_session = Self::build_sub_agent_session(task.as_str(), cancellation_token);
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
-        let providers = self.build_sub_agent_providers(Arc::clone(&todos_arc), progress_tx);
+        let (sub_agent_progress_tx, progress_relay_task) =
+            spawn_sub_agent_progress_relay(progress_tx);
+        let providers =
+            self.build_sub_agent_providers(Arc::clone(&todos_arc), sub_agent_progress_tx.as_ref());
         let available_tools: HashSet<String> = providers
             .iter()
             .flat_map(|provider| provider.tools())
@@ -343,19 +349,20 @@ impl DelegationProvider {
             sub_session,
             runner_config: self.build_sub_agent_runner_config(),
             compaction_service: self.create_sub_agent_compaction_service(),
+            progress_tx: sub_agent_progress_tx,
+            progress_relay_task,
         })
     }
 
     fn build_sub_agent_runner_context<'a>(
         prepared: &'a mut PreparedSubAgentExecution,
-        progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> AgentRunnerContext<'a> {
         AgentRunnerContext {
             task: prepared.task.as_str(),
             system_prompt: &prepared.system_prompt,
             tools: &prepared.tools,
             registry: &prepared.registry,
-            progress_tx,
+            progress_tx: prepared.progress_tx.as_ref(),
             todos_arc: &prepared.todos_arc,
             task_id: &prepared.task_id,
             messages: &mut prepared.messages,
@@ -410,6 +417,14 @@ impl DelegationProvider {
             memory,
             timeout_secs: limit,
         })
+    }
+
+    async fn finish_sub_agent_progress_relay(prepared: &mut PreparedSubAgentExecution) {
+        drop(prepared.progress_tx.take());
+
+        if let Some(task) = prepared.progress_relay_task.take() {
+            let _ = task.await;
+        }
     }
 }
 
@@ -470,9 +485,10 @@ If the sub-agent doesn't finish, a partial report will be returned."
         info!(task_id = %prepared.task_id, "Running sub-agent delegation");
 
         let outcome = {
-            let mut ctx = Self::build_sub_agent_runner_context(&mut prepared, progress_tx);
+            let mut ctx = Self::build_sub_agent_runner_context(&mut prepared);
             self.run_sub_agent_with_timeout(&mut runner, &mut ctx).await
         };
+        Self::finish_sub_agent_progress_relay(&mut prepared).await;
 
         match outcome {
             SubAgentRunOutcome::Final(result) => Ok(result),
@@ -501,6 +517,36 @@ If the sub-agent doesn't finish, a partial report will be returned."
             }
         }
     }
+}
+
+fn spawn_sub_agent_progress_relay(
+    parent_tx: Option<&mpsc::Sender<AgentEvent>>,
+) -> (Option<mpsc::Sender<AgentEvent>>, Option<JoinHandle<()>>) {
+    let Some(parent_tx) = parent_tx.cloned() else {
+        return (None, None);
+    };
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let relay = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if !should_forward_sub_agent_progress_event(&event) {
+                continue;
+            }
+
+            if parent_tx.send(event).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    (Some(tx), Some(relay))
+}
+
+fn should_forward_sub_agent_progress_event(event: &AgentEvent) -> bool {
+    !matches!(
+        event,
+        AgentEvent::Thinking { .. } | AgentEvent::TokenSnapshotUpdated { .. }
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -640,11 +686,16 @@ fn role_label(role: &MessageRole) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::DelegationProvider;
+    use super::{
+        should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay, DelegationProvider,
+    };
+    use crate::agent::compaction::BudgetState;
+    use crate::agent::progress::{AgentEvent, TokenSnapshot};
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use std::collections::HashSet;
     use std::sync::Arc;
+    use tokio::sync::mpsc;
 
     #[test]
     fn sub_agent_blocklist_includes_manager_control_plane_tools() {
@@ -710,5 +761,74 @@ mod tests {
             .expect("non-manager tool should survive filtering");
 
         assert_eq!(allowed, HashSet::from(["write_todos".to_string()]));
+    }
+
+    #[test]
+    fn sub_agent_progress_filter_drops_token_snapshots() {
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Thinking {
+                snapshot: sample_snapshot(64_000),
+            }
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::TokenSnapshotUpdated {
+                snapshot: sample_snapshot(64_000),
+            }
+        ));
+        assert!(should_forward_sub_agent_progress_event(
+            &AgentEvent::ToolCall {
+                name: "execute_command".to_string(),
+                input: "{\"command\":\"pwd\"}".to_string(),
+                command_preview: Some("pwd".to_string()),
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn sub_agent_progress_relay_filters_snapshot_events() {
+        let (parent_tx, mut parent_rx) = mpsc::channel(8);
+        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let sub_tx = sub_tx.expect("relay tx");
+
+        sub_tx
+            .send(AgentEvent::Thinking {
+                snapshot: sample_snapshot(64_000),
+            })
+            .await
+            .expect("thinking send");
+        sub_tx
+            .send(AgentEvent::ToolCall {
+                name: "execute_command".to_string(),
+                input: "{\"command\":\"pwd\"}".to_string(),
+                command_preview: Some("pwd".to_string()),
+            })
+            .await
+            .expect("tool call send");
+
+        drop(sub_tx);
+        if let Some(task) = relay_task {
+            task.await.expect("relay task join");
+        }
+        drop(parent_tx);
+
+        let forwarded = parent_rx.recv().await.expect("forwarded event");
+        assert!(matches!(forwarded, AgentEvent::ToolCall { .. }));
+        assert!(parent_rx.recv().await.is_none());
+    }
+
+    fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {
+        TokenSnapshot {
+            hot_memory_tokens: 777,
+            system_prompt_tokens: 500,
+            tool_schema_tokens: 600,
+            loaded_skill_tokens: 0,
+            total_input_tokens: 2_900,
+            reserved_output_tokens: 64_000,
+            projected_total_tokens: 73_000,
+            context_window_tokens,
+            headroom_tokens: context_window_tokens.saturating_sub(73_000),
+            budget_state: BudgetState::Warning,
+            last_api_usage: None,
+        }
     }
 }
