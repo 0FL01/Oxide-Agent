@@ -3,7 +3,10 @@
 //! Handles orchestration around the core agent runner, including
 //! session lifecycle, skill prompts, and tool registry setup.
 
-use super::compaction::{CompactionRequest, CompactionService, CompactionTrigger};
+use super::compaction::{
+    CompactionRequest, CompactionService, CompactionSummarizer, CompactionSummarizerConfig,
+    CompactionTrigger,
+};
 use super::hooks::{
     CompletionCheckHook, DelegationGuardHook, Hook, HookContext, HookEvent, HookResult,
     SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook, WorkloadDistributorHook,
@@ -155,6 +158,19 @@ impl AgentExecutor {
 
         let skill_registry = None;
 
+        let compaction_service = {
+            let (model_name, provider_name, _, timeout_secs) =
+                settings.get_configured_compaction_model();
+            CompactionService::default().with_summarizer(CompactionSummarizer::new(
+                llm_client,
+                CompactionSummarizerConfig {
+                    model_name,
+                    provider_name,
+                    timeout_secs,
+                },
+            ))
+        };
+
         Self {
             runner,
             session,
@@ -166,7 +182,7 @@ impl AgentExecutor {
             execution_profile: AgentExecutionProfile::default(),
             tool_policy_state,
             hook_policy_state,
-            compaction_service: CompactionService::default(),
+            compaction_service,
             last_topic_infra_preflight_summary: None,
         }
     }

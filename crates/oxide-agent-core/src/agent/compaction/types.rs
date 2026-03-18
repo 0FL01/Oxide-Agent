@@ -321,6 +321,38 @@ pub struct PruneOutcome {
     pub pruned_indices: Vec<usize>,
 }
 
+/// Structured summary generated for compactable history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CompactionSummary {
+    /// Overall goal inferred from the compacted history.
+    pub goal: String,
+    /// Constraints that must stay true while work continues.
+    pub constraints: Vec<String>,
+    /// Decisions already made in the compacted history.
+    pub decisions: Vec<String>,
+    /// Discoveries from exploration and prior execution.
+    pub discoveries: Vec<String>,
+    /// Relevant files, entities, commands, or identifiers.
+    pub relevant_files_entities: Vec<String>,
+    /// Remaining work handed forward after compaction.
+    pub remaining_work: Vec<String>,
+    /// Risks, warnings, or open questions.
+    pub risks: Vec<String>,
+}
+
+/// Result of generating a structured summary from compactable history.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SummaryGenerationOutcome {
+    /// Whether the summarizer ran for this checkpoint.
+    pub attempted: bool,
+    /// Whether the deterministic fallback path was used.
+    pub used_fallback: bool,
+    /// Model name used when the LLM path succeeded.
+    pub model_name: Option<String>,
+    /// Structured summary returned by the summarizer.
+    pub summary: Option<CompactionSummary>,
+}
+
 /// Aggregate stats for one classifier bucket.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompactionClassSummary {
@@ -389,6 +421,8 @@ pub struct CompactionOutcome {
     pub externalization: ExternalizationOutcome,
     /// Result of old artifact pruning applied before summary compaction.
     pub pruning: PruneOutcome,
+    /// Structured summary prepared for future rebuild stages.
+    pub summary_generation: SummaryGenerationOutcome,
 }
 
 impl CompactionOutcome {
@@ -409,6 +443,7 @@ impl CompactionOutcome {
             snapshot,
             externalization: ExternalizationOutcome::default(),
             pruning: PruneOutcome::default(),
+            summary_generation: SummaryGenerationOutcome::default(),
         }
     }
 }

@@ -357,6 +357,9 @@ impl LlmClient {
     /// Returns true if requested provider is configured.
     #[must_use]
     pub fn is_provider_available(&self, name: &str) -> bool {
+        if self.custom_providers.contains_key(name) {
+            return true;
+        }
         if name.eq_ignore_ascii_case("groq") {
             return self.groq.is_some();
         }

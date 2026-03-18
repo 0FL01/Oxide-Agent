@@ -61,8 +61,9 @@ pub use compaction::{
     AgentMessageKind, ArchiveRecord, ArchiveRef, ArchiveSink, BudgetEstimate, BudgetState,
     ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome, CompactionPolicy,
     CompactionRequest, CompactionRetention, CompactionScope, CompactionService, CompactionSnapshot,
-    CompactionTrigger, ExternalizationOutcome, ExternalizedPayloadRecord, HotMemoryBudget,
-    NoopArchiveSink, NoopPayloadSink, PayloadSink, PruneOutcome, RecentRawWindow,
+    CompactionSummarizer, CompactionSummarizerConfig, CompactionSummary, CompactionTrigger,
+    ExternalizationOutcome, ExternalizedPayloadRecord, HotMemoryBudget, NoopArchiveSink,
+    NoopPayloadSink, PayloadSink, PruneOutcome, RecentRawWindow, SummaryGenerationOutcome,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};
