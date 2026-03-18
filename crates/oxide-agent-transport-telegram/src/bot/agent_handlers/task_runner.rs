@@ -13,7 +13,7 @@ use anyhow::{anyhow, Result};
 use oxide_agent_core::agent::{
     progress::AgentEvent, AgentExecutionOutcome, CompactionOutcome, SessionId,
 };
-use oxide_agent_core::config::AGENT_MAX_ITERATIONS;
+use oxide_agent_core::config::get_agent_max_iterations;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
@@ -101,6 +101,7 @@ struct TaskProgressRuntime {
     progress_message_id: MessageId,
     progress_reply_markup: Option<InlineKeyboardMarkup>,
     progress_handle: tokio::task::JoinHandle<oxide_agent_core::agent::progress::ProgressState>,
+    max_iterations: usize,
     tx: tokio::sync::mpsc::Sender<AgentEvent>,
 }
 
@@ -262,10 +263,11 @@ pub(crate) async fn run_manual_compaction(ctx: RunManualCompactionContext) -> Re
         progress_message_id,
         progress_reply_markup,
         progress_handle,
+        max_iterations,
         tx,
     } = runtime;
     let result = execute_manual_compaction(ctx.session_id, Some(tx)).await;
-    let progress_text = finish_task_progress_runtime(progress_handle).await;
+    let progress_text = finish_task_progress_runtime(progress_handle, max_iterations).await;
 
     save_memory_after_task(
         ctx.session_id,
@@ -296,10 +298,11 @@ where
         progress_message_id,
         progress_reply_markup,
         progress_handle,
+        max_iterations,
         tx,
     } = runtime;
     let result = execute(tx).await;
-    let progress_text = finish_task_progress_runtime(progress_handle).await;
+    let progress_text = finish_task_progress_runtime(progress_handle, max_iterations).await;
 
     save_memory_after_task(
         ctx.session_id,
@@ -328,6 +331,7 @@ async fn start_task_progress_runtime_with_text(
     ctx: &TaskDeliveryContext,
     initial_text: &str,
 ) -> Result<TaskProgressRuntime> {
+    let max_iterations = get_agent_max_iterations();
     let progress_reply_markup = ctx
         .use_inline_progress_controls
         .then_some(crate::bot::views::progress_inline_keyboard());
@@ -349,13 +353,14 @@ async fn start_task_progress_runtime_with_text(
         ctx.message_thread_id,
         ctx.use_inline_progress_controls,
     );
-    let cfg = ProgressRuntimeConfig::new(AGENT_MAX_ITERATIONS);
+    let cfg = ProgressRuntimeConfig::new(max_iterations);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
     Ok(TaskProgressRuntime {
         progress_message_id: progress_msg.id,
         progress_reply_markup,
         progress_handle,
+        max_iterations,
         tx,
     })
 }
@@ -407,12 +412,13 @@ async fn deliver_manual_compaction_result(
 
 async fn finish_task_progress_runtime(
     progress_handle: tokio::task::JoinHandle<oxide_agent_core::agent::progress::ProgressState>,
+    max_iterations: usize,
 ) -> String {
     let state = match progress_handle.await {
         Ok(state) => state,
         Err(err) => {
             warn!(error = %err, "Progress runtime task failed");
-            oxide_agent_core::agent::progress::ProgressState::new(AGENT_MAX_ITERATIONS)
+            oxide_agent_core::agent::progress::ProgressState::new(max_iterations)
         }
     };
     render_progress_html(&state)

@@ -204,7 +204,7 @@ impl SubAgentSafetyHook {
 
 | Параметр | Main Agent | Sub-Agent |
 |-----------|-------------|-----------|
-| `max_iterations` | 1000 | 60 |
+| `max_iterations` | 200 | 60 |
 | `max_tokens` | 200,000 | 64,000 |
 | `SubAgentSafetyHook` | ❌ Нет | ✅ Да |
 | Может делегировать | ✅ Да | ❌ Нет |

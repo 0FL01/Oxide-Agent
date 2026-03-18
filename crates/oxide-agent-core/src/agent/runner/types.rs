@@ -6,7 +6,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
 use crate::agent::skills::SkillRegistry;
-use crate::config::{get_agent_model, AGENT_CONTINUATION_LIMIT, AGENT_MAX_ITERATIONS};
+use crate::config::{get_agent_max_iterations, get_agent_model, AGENT_CONTINUATION_LIMIT};
 use crate::llm::{Message, ToolDefinition};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -60,7 +60,7 @@ impl Default for AgentRunnerConfig {
     fn default() -> Self {
         Self::new(
             get_agent_model(),
-            AGENT_MAX_ITERATIONS,
+            get_agent_max_iterations(),
             AGENT_CONTINUATION_LIMIT,
             crate::config::AGENT_TIMEOUT_SECS,
             0,

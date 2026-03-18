@@ -36,9 +36,9 @@
 | `AGENT_CONTINUATION_LIMIT` | 10 | Макс. принудительных продолжений |
 | `AGENT_SEARCH_LIMIT` | 10 | Лимит поисковых запросов |
 | `AGENT_MAX_TOKENS` | 200,000 | Макс. токенов в памяти (main agent) |
-| `AGENT_MAX_ITERATIONS` | 1000 | Макс. итераций (main agent) |
+| `AGENT_MAX_ITERATIONS` | 200 | Макс. итераций (main agent, env override) |
 | `AGENT_TIMEOUT_SECS` | 600 | Тайм-аут агента (10 минут) |
-| `SUB_AGENT_MAX_ITERATIONS` | 60 | Макс. итераций (sub-agent) |
+| `SUB_AGENT_MAX_ITERATIONS` | 60 | Макс. итераций (sub-agent, env override) |
 | `SUB_AGENT_MAX_TOKENS` | 64,000 | Макс. токенов (sub-agent) |
 
 ## Карта хуков по агентам
