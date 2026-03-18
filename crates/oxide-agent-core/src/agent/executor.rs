@@ -3,6 +3,7 @@
 //! Handles orchestration around the core agent runner, including
 //! session lifecycle, skill prompts, and tool registry setup.
 
+use super::compaction::{CompactionRequest, CompactionService, CompactionTrigger};
 use super::hooks::{
     CompletionCheckHook, DelegationGuardHook, Hook, HookContext, HookEvent, HookResult,
     SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook, WorkloadDistributorHook,
@@ -52,6 +53,7 @@ pub struct AgentExecutor {
     execution_profile: AgentExecutionProfile,
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
     hook_policy_state: Arc<RwLock<HookAccessPolicy>>,
+    compaction_service: CompactionService,
     last_topic_infra_preflight_summary: Option<String>,
 }
 
@@ -164,6 +166,7 @@ impl AgentExecutor {
             execution_profile: AgentExecutionProfile::default(),
             tool_policy_state,
             hook_policy_state,
+            compaction_service: CompactionService::default(),
             last_topic_infra_preflight_summary: None,
         }
     }
@@ -463,7 +466,7 @@ impl AgentExecutor {
             .execution_profile
             .tool_policy()
             .filter_definitions(registry.all_tools());
-        let (_, provider, _) = self.settings.get_configured_agent_model();
+        let (model_id, provider, _) = self.settings.get_configured_agent_model();
         let structured_output = !provider.eq_ignore_ascii_case("zai");
         let system_prompt = create_agent_system_prompt(
             task,
@@ -474,6 +477,18 @@ impl AgentExecutor {
             self.execution_profile.prompt_instructions(),
         )
         .await;
+        let compaction_request = CompactionRequest::new(
+            CompactionTrigger::PreRun,
+            task,
+            &system_prompt,
+            &tools,
+            &model_id,
+            false,
+        );
+        let _ = self
+            .compaction_service
+            .prepare_for_run(&compaction_request, &mut self.session)
+            .await?;
         let mut messages =
             AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
 
@@ -513,7 +528,6 @@ impl AgentExecutor {
             agent: &mut self.session,
             skill_registry: self.skill_registry.as_mut(),
             config: {
-                let (model_id, _, _) = self.settings.get_configured_agent_model();
                 AgentRunnerConfig::new(
                     model_id,
                     crate::config::AGENT_MAX_ITERATIONS,

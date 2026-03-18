@@ -98,7 +98,7 @@ pub enum AgentStatus {
 pub struct AgentSession {
     /// Transport-agnostic session ID
     pub session_id: SessionId,
-    /// Conversation memory with auto-compaction
+    /// Conversation memory for the active agent hot context
     pub memory: AgentMemory,
     /// Docker sandbox for code execution (lazily initialized)
     sandbox: Option<SandboxManager>,
