@@ -56,10 +56,12 @@ pub fn classify_hot_memory(messages: &[AgentMessage]) -> CompactionSnapshot {
             has_reasoning: message.reasoning.is_some(),
             tool_name: message.tool_name.clone(),
             is_externalized: message.is_externalized(),
-            archive_ref: message
-                .externalized_payload
-                .as_ref()
-                .map(|payload| payload.archive_ref.clone()),
+            archive_ref: message.archive_ref_payload().cloned().or_else(|| {
+                message
+                    .externalized_payload
+                    .as_ref()
+                    .map(|payload| payload.archive_ref.clone())
+            }),
             is_pruned: message.is_pruned(),
             preserve_in_raw_window: snapshot.recent_raw_window.contains(index),
         };
@@ -233,6 +235,7 @@ mod tests {
                 externalized_payload: None,
                 pruned_artifact: None,
                 structured_summary: None,
+                archive_ref: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::Legacy,
@@ -245,6 +248,7 @@ mod tests {
                 externalized_payload: None,
                 pruned_artifact: None,
                 structured_summary: None,
+                archive_ref: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::Legacy,
@@ -257,6 +261,7 @@ mod tests {
                 externalized_payload: None,
                 pruned_artifact: None,
                 structured_summary: None,
+                archive_ref: None,
             },
         ];
 

@@ -57,9 +57,10 @@ pub mod loop_detection;
 pub mod progress;
 
 pub use compaction::{
-    classify_hot_memory, estimate_request_budget, externalize_hot_memory, prune_hot_memory,
-    rebuild_hot_context, AgentMessageKind, ArchiveRecord, ArchiveRef, ArchiveSink, BudgetEstimate,
-    BudgetState, ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome,
+    classify_hot_memory, estimate_request_budget, externalize_hot_memory,
+    persist_compacted_history_chunk, prune_hot_memory, rebuild_hot_context, AgentMessageKind,
+    ArchiveChunk, ArchivePersistenceOutcome, ArchiveRecord, ArchiveRef, ArchiveSink,
+    BudgetEstimate, BudgetState, ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome,
     CompactionPolicy, CompactionRequest, CompactionRetention, CompactionScope, CompactionService,
     CompactionSnapshot, CompactionSummarizer, CompactionSummarizerConfig, CompactionSummary,
     CompactionTrigger, ExternalizationOutcome, ExternalizedPayloadRecord, HotMemoryBudget,

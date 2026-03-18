@@ -79,7 +79,7 @@ impl AgentMessageKind {
 }
 
 /// Trigger point for a compaction pipeline invocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CompactionTrigger {
     /// Compaction check before the first model request of a run.
     PreRun,
@@ -306,6 +306,19 @@ pub struct ExternalizationOutcome {
     pub archive_refs: Vec<ArchiveRef>,
 }
 
+/// Result of archiving displaced hot-memory chunks for future retrieval features.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ArchivePersistenceOutcome {
+    /// Whether archive persistence was attempted for this checkpoint.
+    pub attempted: bool,
+    /// Number of archived chunks written or prepared.
+    pub archived_chunk_count: usize,
+    /// Number of original hot-memory messages represented in archived chunks.
+    pub archived_message_count: usize,
+    /// Archive refs created for displaced chunks.
+    pub archive_refs: Vec<ArchiveRef>,
+}
+
 /// Result of pruning older tool artifacts after protecting the live raw window.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PruneOutcome {
@@ -360,6 +373,8 @@ pub struct RebuildOutcome {
     pub applied: bool,
     /// Whether a structured summary entry was inserted or refreshed.
     pub inserted_summary: bool,
+    /// Whether an archive reference entry was inserted.
+    pub inserted_archive_reference: bool,
     /// Number of original hot-memory messages removed during rebuild.
     pub dropped_message_count: usize,
     /// Stable indices dropped from the pre-rebuild memory ordering.
@@ -434,6 +449,8 @@ pub struct CompactionOutcome {
     pub snapshot: CompactionSnapshot,
     /// Result of payload externalization applied before later stages.
     pub externalization: ExternalizationOutcome,
+    /// Result of archive persistence for displaced compacted history chunks.
+    pub archive_persistence: ArchivePersistenceOutcome,
     /// Result of old artifact pruning applied before summary compaction.
     pub pruning: PruneOutcome,
     /// Structured summary prepared for future rebuild stages.
@@ -459,6 +476,7 @@ impl CompactionOutcome {
             budget,
             snapshot,
             externalization: ExternalizationOutcome::default(),
+            archive_persistence: ArchivePersistenceOutcome::default(),
             pruning: PruneOutcome::default(),
             summary_generation: SummaryGenerationOutcome::default(),
             rebuild: RebuildOutcome::default(),
