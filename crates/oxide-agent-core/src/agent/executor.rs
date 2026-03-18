@@ -3,7 +3,10 @@
 //! Handles orchestration around the core agent runner, including
 //! session lifecycle, skill prompts, and tool registry setup.
 
-use super::compaction::{CompactionService, CompactionSummarizer, CompactionSummarizerConfig};
+use super::compaction::{
+    CompactionOutcome, CompactionRequest, CompactionService, CompactionSummarizer,
+    CompactionSummarizerConfig, CompactionTrigger,
+};
 use super::hooks::{
     CompletionCheckHook, DelegationGuardHook, Hook, HookContext, HookEvent, HookResult,
     SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook, WorkloadDistributorHook,
@@ -621,6 +624,62 @@ impl AgentExecutor {
             .await
     }
 
+    /// Manually compact the current Agent Mode hot context without running a task iteration.
+    pub async fn compact_current_context(
+        &mut self,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Result<CompactionOutcome> {
+        let task = self
+            .last_task()
+            .map(str::to_string)
+            .unwrap_or_else(|| "Continue the current Agent Mode session".to_string());
+        let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
+        let registry = self.build_tool_registry(Arc::clone(&todos_arc), progress_tx.as_ref());
+        let tools = self
+            .execution_profile
+            .tool_policy()
+            .filter_definitions(registry.all_tools());
+        let (model_id, provider, model_max_output_tokens) =
+            self.settings.get_configured_agent_model();
+        let structured_output = !provider.eq_ignore_ascii_case("zai");
+        let system_prompt = create_agent_system_prompt(
+            &task,
+            &tools,
+            structured_output,
+            self.skill_registry.as_mut(),
+            &mut self.session,
+            self.execution_profile.prompt_instructions(),
+        )
+        .await;
+        let request = CompactionRequest::new(
+            CompactionTrigger::Manual,
+            &task,
+            &system_prompt,
+            &tools,
+            &model_id,
+            model_max_output_tokens,
+            false,
+        );
+
+        Self::emit_manual_compaction_started(progress_tx.as_ref()).await;
+        let outcome = match self
+            .compaction_service
+            .prepare_for_run(&request, &mut self.session)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                Self::emit_manual_compaction_failed(progress_tx.as_ref(), error.to_string()).await;
+                return Err(error);
+            }
+        };
+        if outcome.pruning.applied {
+            Self::emit_manual_pruning_applied(progress_tx.as_ref(), &outcome).await;
+        }
+        Self::emit_manual_compaction_completed(progress_tx.as_ref(), &outcome).await;
+        Ok(outcome)
+    }
+
     /// Check if the task has been cancelled
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
@@ -637,6 +696,68 @@ impl AgentExecutor {
     #[must_use]
     pub fn is_timed_out(&self) -> bool {
         self.session.elapsed_secs() >= self.settings.get_agent_timeout_secs()
+    }
+
+    async fn emit_manual_compaction_started(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::CompactionStarted {
+                    trigger: CompactionTrigger::Manual,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_manual_pruning_applied(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        outcome: &CompactionOutcome,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::PruningApplied {
+                    pruned_count: outcome.pruning.pruned_count,
+                    reclaimed_tokens: outcome.pruning.reclaimed_tokens,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_manual_compaction_completed(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        outcome: &CompactionOutcome,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::CompactionCompleted {
+                    trigger: CompactionTrigger::Manual,
+                    applied: outcome.applied,
+                    externalized_count: outcome.externalization.externalized_count,
+                    pruned_count: outcome.pruning.pruned_count,
+                    reclaimed_tokens: outcome
+                        .externalization
+                        .reclaimed_tokens
+                        .saturating_add(outcome.pruning.reclaimed_tokens),
+                    archived_chunk_count: outcome.archive_persistence.archived_chunk_count,
+                    summary_updated: outcome.rebuild.inserted_summary,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_manual_compaction_failed(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        error: String,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::CompactionFailed {
+                    trigger: CompactionTrigger::Manual,
+                    error,
+                })
+                .await;
+        }
     }
 }
 

@@ -23,6 +23,8 @@ pub const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
 pub const AGENT_CALLBACK_CANCEL_TASK: &str = "agent:cancel";
 /// Callback data for clearing memory from topic controls
 pub const AGENT_CALLBACK_CLEAR_MEMORY: &str = "agent:clear";
+/// Callback data for manually compacting the current agent context.
+pub const AGENT_CALLBACK_COMPACT_CONTEXT: &str = "agent:compact";
 /// Callback data for recreating the container from topic controls
 pub const AGENT_CALLBACK_RECREATE_CONTAINER: &str = "agent:recreate";
 /// Callback prefix for attaching a specific topic-scoped agent flow.
@@ -88,8 +90,16 @@ pub trait AgentView {
 
     /// Message when clearing memory while task is running
     fn clear_blocked_by_task() -> &'static str;
+    /// Cannot compact context while a task is running
+    fn compact_blocked_by_task() -> &'static str;
     /// Cannot recreate container while a task is running
     fn container_recreate_blocked_by_task() -> &'static str;
+
+    /// Message shown while manual compaction is running.
+    fn context_compacting() -> &'static str;
+
+    /// Message shown after manual compaction finishes.
+    fn context_compacted(applied: bool) -> &'static str;
 
     /// Message for container recreated successfully
     fn container_recreated() -> &'static str;
@@ -197,8 +207,24 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
         "⚠️ Cannot clear context while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
     }
 
+    fn compact_blocked_by_task() -> &'static str {
+        "⚠️ Cannot compact context while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
+    }
+
     fn container_recreate_blocked_by_task() -> &'static str {
         "⚠️ Cannot recreate container while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
+    }
+
+    fn context_compacting() -> &'static str {
+        "🗜 Compacting agent context..."
+    }
+
+    fn context_compacted(applied: bool) -> &'static str {
+        if applied {
+            "🗜 Agent context compacted. You can continue the same flow."
+        } else {
+            "🗜 Agent context is already compact enough."
+        }
     }
 
     fn container_recreated() -> &'static str {
@@ -290,6 +316,7 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
     KeyboardMarkup::new(vec![
         vec![KeyboardButton::new("❌ Cancel Task")],
         vec![KeyboardButton::new("🗑 Clear Memory")],
+        vec![KeyboardButton::new("🗜 Compact Context")],
         vec![KeyboardButton::new("🔄 Recreate Container")],
         vec![KeyboardButton::new("⬅️ Exit Agent Mode")],
     ])
@@ -316,6 +343,10 @@ pub fn get_agent_inline_keyboard_with_exit(
         vec![InlineKeyboardButton::callback(
             "🗑 Clear Memory",
             AGENT_CALLBACK_CLEAR_MEMORY,
+        )],
+        vec![InlineKeyboardButton::callback(
+            "🗜 Compact Context",
+            AGENT_CALLBACK_COMPACT_CONTEXT,
         )],
         vec![InlineKeyboardButton::callback(
             "🔄 Recreate Container",
@@ -459,7 +490,7 @@ pub fn confirmation_markup(use_inline: bool, action: ConfirmationType) -> ReplyM
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentView, DefaultAgentView};
+    use super::{get_agent_inline_keyboard, get_agent_keyboard, AgentView, DefaultAgentView};
 
     #[test]
     fn cancellation_messages_use_distinct_in_progress_and_terminal_text() {
@@ -472,5 +503,22 @@ mod tests {
             "❌ Cancelling task...\n📋 Task list cleared."
         );
         assert_eq!(DefaultAgentView::task_cancelled(), "❌ Task canceled");
+    }
+
+    #[test]
+    fn keyboards_include_manual_compaction_control() {
+        let keyboard = get_agent_keyboard();
+        assert!(keyboard
+            .keyboard
+            .iter()
+            .flatten()
+            .any(|button| button.text == "🗜 Compact Context"));
+
+        let inline = get_agent_inline_keyboard(Some("flow-1"));
+        assert!(inline
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .any(|button| button.text == "🗜 Compact Context"));
     }
 }
