@@ -3,7 +3,9 @@
 //! Provides conversation memory for the agent and lightweight token
 //! accounting utilities. Compaction orchestration lives outside this module.
 
-use crate::agent::compaction::{AgentMessageKind, ArchiveRef, CompactionRetention};
+use crate::agent::compaction::{
+    AgentMessageKind, ArchiveRef, CompactionRetention, CompactionSummary,
+};
 use crate::agent::providers::TodoList;
 use crate::config::AGENT_COMPACT_THRESHOLD;
 use crate::llm::ToolCall;
@@ -38,6 +40,9 @@ pub struct AgentMessage {
     /// Metadata for tool payloads already pruned down to a placeholder.
     #[serde(default)]
     pub pruned_artifact: Option<PrunedArtifact>,
+    /// Structured summary metadata for compaction-generated summary entries.
+    #[serde(default)]
+    pub structured_summary: Option<CompactionSummary>,
 }
 
 /// Metadata describing a tool payload externalized out of hot memory.
@@ -101,6 +106,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -116,6 +122,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -136,6 +143,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -151,6 +159,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -166,6 +175,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -181,6 +191,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -199,6 +210,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -214,6 +226,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -234,6 +247,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload: Some(externalized_payload),
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -255,6 +269,7 @@ impl AgentMessage {
             tool_calls: None,
             externalized_payload,
             pruned_artifact: Some(pruned_artifact),
+            structured_summary: None,
         }
     }
 
@@ -270,6 +285,7 @@ impl AgentMessage {
             tool_calls: Some(tool_calls),
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         }
     }
 
@@ -302,6 +318,22 @@ impl AgentMessage {
         Self {
             kind: AgentMessageKind::Summary,
             ..Self::system_context(content)
+        }
+    }
+
+    /// Create a summary entry backed by structured compaction data.
+    pub fn from_compaction_summary(summary: CompactionSummary) -> Self {
+        Self {
+            kind: AgentMessageKind::Summary,
+            role: MessageRole::System,
+            content: format_compaction_summary(&summary),
+            reasoning: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+            externalized_payload: None,
+            pruned_artifact: None,
+            structured_summary: Some(summary),
         }
     }
 
@@ -354,6 +386,12 @@ impl AgentMessage {
     #[must_use]
     pub fn is_pruned(&self) -> bool {
         self.pruned_artifact.is_some()
+    }
+
+    /// Returns structured compaction summary metadata when available.
+    #[must_use]
+    pub fn summary_payload(&self) -> Option<&CompactionSummary> {
+        self.structured_summary.as_ref()
     }
 }
 
@@ -646,6 +684,34 @@ impl AgentMemory {
     }
 }
 
+fn format_compaction_summary(summary: &CompactionSummary) -> String {
+    let mut sections = vec!["[COMPACTION_SUMMARY]".to_string()];
+
+    if !summary.goal.trim().is_empty() {
+        sections.push(format!("Goal:\n{}", summary.goal.trim()));
+    }
+    push_summary_list(&mut sections, "Constraints", &summary.constraints);
+    push_summary_list(&mut sections, "Decisions", &summary.decisions);
+    push_summary_list(&mut sections, "Discoveries", &summary.discoveries);
+    push_summary_list(
+        &mut sections,
+        "Relevant Files And Entities",
+        &summary.relevant_files_entities,
+    );
+    push_summary_list(&mut sections, "Remaining Work", &summary.remaining_work);
+    push_summary_list(&mut sections, "Risks", &summary.risks);
+
+    sections.join("\n\n")
+}
+
+fn push_summary_list(sections: &mut Vec<String>, title: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+
+    sections.push(format!("{title}:\n- {}", items.join("\n- ")));
+}
+
 impl AgentMessage {
     #[must_use]
     fn is_topic_agents_md(&self) -> bool {
@@ -742,6 +808,22 @@ mod tests {
     }
 
     #[test]
+    fn test_structured_summary_message_keeps_payload() {
+        let summary = CompactionSummary {
+            goal: "Ship stage 8".to_string(),
+            decisions: vec!["Use a first-class summary entry.".to_string()],
+            ..CompactionSummary::default()
+        };
+
+        let message = AgentMessage::from_compaction_summary(summary.clone());
+
+        assert_eq!(message.resolved_kind(), AgentMessageKind::Summary);
+        assert_eq!(message.summary_payload(), Some(&summary));
+        assert!(message.content.contains("[COMPACTION_SUMMARY]"));
+        assert!(message.content.contains("Goal:"));
+    }
+
+    #[test]
     fn test_legacy_messages_resolve_to_role_based_kinds() {
         let legacy_assistant = AgentMessage {
             kind: AgentMessageKind::Legacy,
@@ -753,6 +835,7 @@ mod tests {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         };
         let legacy_tool = AgentMessage {
             kind: AgentMessageKind::Legacy,
@@ -764,6 +847,7 @@ mod tests {
             tool_calls: None,
             externalized_payload: None,
             pruned_artifact: None,
+            structured_summary: None,
         };
 
         assert_eq!(

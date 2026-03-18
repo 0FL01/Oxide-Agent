@@ -122,7 +122,10 @@ fn should_attempt_summary(
     budget_state: BudgetState,
     snapshot: &CompactionSnapshot,
 ) -> bool {
-    if snapshot.compactable_history.message_count == 0 {
+    if !snapshot.entries.iter().any(|entry| {
+        entry.retention == super::CompactionRetention::CompactableHistory
+            && !entry.preserve_in_raw_window
+    }) {
         return false;
     }
 
@@ -174,6 +177,7 @@ fn deterministic_fallback_summary(
         .entries
         .iter()
         .filter(|entry| entry.retention == super::CompactionRetention::CompactableHistory)
+        .filter(|entry| !entry.preserve_in_raw_window)
         .filter_map(|entry| messages.get(entry.index))
         .collect();
 
@@ -354,6 +358,10 @@ mod tests {
         let messages = vec![
             AgentMessage::user("We need to ship stage 7 soon."),
             AgentMessage::assistant("I will use a sidecar model for summaries."),
+            AgentMessage::user("Keep AGENTS.md pinned while compaction runs."),
+            AgentMessage::assistant("Recent response 1."),
+            AgentMessage::user("Recent response 2 input."),
+            AgentMessage::assistant("Recent response 2 output."),
         ];
         let snapshot = classify_hot_memory(&messages);
         let request = CompactionRequest::new(
@@ -395,6 +403,10 @@ mod tests {
             AgentMessage::assistant(
                 "I found `crates/oxide-agent-core/src/agent/compaction/service.rs`.",
             ),
+            AgentMessage::user("Do not lose the active task during rebuild."),
+            AgentMessage::assistant("Recent response 1."),
+            AgentMessage::user("Recent response 2 input."),
+            AgentMessage::assistant("Recent response 2 output."),
         ];
         let snapshot = classify_hot_memory(&messages);
         let request = CompactionRequest::new(

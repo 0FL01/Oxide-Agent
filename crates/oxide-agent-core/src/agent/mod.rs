@@ -58,12 +58,13 @@ pub mod progress;
 
 pub use compaction::{
     classify_hot_memory, estimate_request_budget, externalize_hot_memory, prune_hot_memory,
-    AgentMessageKind, ArchiveRecord, ArchiveRef, ArchiveSink, BudgetEstimate, BudgetState,
-    ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome, CompactionPolicy,
-    CompactionRequest, CompactionRetention, CompactionScope, CompactionService, CompactionSnapshot,
-    CompactionSummarizer, CompactionSummarizerConfig, CompactionSummary, CompactionTrigger,
-    ExternalizationOutcome, ExternalizedPayloadRecord, HotMemoryBudget, NoopArchiveSink,
-    NoopPayloadSink, PayloadSink, PruneOutcome, RecentRawWindow, SummaryGenerationOutcome,
+    rebuild_hot_context, AgentMessageKind, ArchiveRecord, ArchiveRef, ArchiveSink, BudgetEstimate,
+    BudgetState, ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome,
+    CompactionPolicy, CompactionRequest, CompactionRetention, CompactionScope, CompactionService,
+    CompactionSnapshot, CompactionSummarizer, CompactionSummarizerConfig, CompactionSummary,
+    CompactionTrigger, ExternalizationOutcome, ExternalizedPayloadRecord, HotMemoryBudget,
+    NoopArchiveSink, NoopPayloadSink, PayloadSink, PruneOutcome, RebuildOutcome, RecentRawWindow,
+    SummaryGenerationOutcome,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};

@@ -6,6 +6,7 @@ pub mod classifier;
 pub mod externalize;
 pub mod prompt;
 pub mod prune;
+pub mod rebuild;
 pub mod service;
 pub mod summarizer;
 pub mod types;
@@ -18,11 +19,12 @@ pub use externalize::{
 };
 pub use prompt::{build_compaction_user_message, compaction_system_prompt};
 pub use prune::prune_hot_memory;
+pub use rebuild::rebuild_hot_context;
 pub use service::CompactionService;
 pub use summarizer::{CompactionSummarizer, CompactionSummarizerConfig};
 pub use types::{
     AgentMessageKind, BudgetEstimate, BudgetState, ClassifiedMemoryEntry, CompactionClassSummary,
     CompactionOutcome, CompactionPolicy, CompactionRequest, CompactionRetention, CompactionScope,
     CompactionSnapshot, CompactionSummary, CompactionTrigger, ExternalizationOutcome,
-    HotMemoryBudget, PruneOutcome, RecentRawWindow, SummaryGenerationOutcome,
+    HotMemoryBudget, PruneOutcome, RebuildOutcome, RecentRawWindow, SummaryGenerationOutcome,
 };

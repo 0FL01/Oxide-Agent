@@ -353,6 +353,21 @@ pub struct SummaryGenerationOutcome {
     pub summary: Option<CompactionSummary>,
 }
 
+/// Result of rebuilding hot memory into pinned, live, summary, and recent-raw slices.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RebuildOutcome {
+    /// Whether hot memory was rewritten into a new staged layout.
+    pub applied: bool,
+    /// Whether a structured summary entry was inserted or refreshed.
+    pub inserted_summary: bool,
+    /// Number of original hot-memory messages removed during rebuild.
+    pub dropped_message_count: usize,
+    /// Stable indices dropped from the pre-rebuild memory ordering.
+    pub dropped_indices: Vec<usize>,
+    /// Stable indices preserved as the verbatim recent raw window.
+    pub preserved_recent_indices: Vec<usize>,
+}
+
 /// Aggregate stats for one classifier bucket.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompactionClassSummary {
@@ -423,6 +438,8 @@ pub struct CompactionOutcome {
     pub pruning: PruneOutcome,
     /// Structured summary prepared for future rebuild stages.
     pub summary_generation: SummaryGenerationOutcome,
+    /// Result of rebuilding hot memory after summary compaction.
+    pub rebuild: RebuildOutcome,
 }
 
 impl CompactionOutcome {
@@ -444,6 +461,7 @@ impl CompactionOutcome {
             externalization: ExternalizationOutcome::default(),
             pruning: PruneOutcome::default(),
             summary_generation: SummaryGenerationOutcome::default(),
+            rebuild: RebuildOutcome::default(),
         }
     }
 }
