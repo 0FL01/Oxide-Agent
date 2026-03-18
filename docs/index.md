@@ -4,6 +4,9 @@
 
 ## Разделы
 
+### Agent Mode
+- [**Compaction pipeline**](./AGENT-MODE-COMPACTION.md) - текущая staged-архитектура compaction для Agent Mode, пороги, lifecycle и примеры
+
 ### Хуки (Hooks)
 - [**Система хуков**](./hooks/index.md) - система перехвата событий жизненного цикла агента
   - [Обзор архитектуры](./hooks/overview.md)
