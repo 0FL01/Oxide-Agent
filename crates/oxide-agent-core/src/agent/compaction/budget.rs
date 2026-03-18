@@ -123,7 +123,7 @@ fn estimate_tool_tokens(tools: &[ToolDefinition]) -> usize {
     })
 }
 
-fn estimate_message_tokens(message: &AgentMessage) -> usize {
+pub(crate) fn estimate_message_tokens(message: &AgentMessage) -> usize {
     let reasoning_tokens = message.reasoning.as_deref().map_or(0, estimate_text_tokens);
     estimate_text_tokens(&message.content).saturating_add(reasoning_tokens)
 }

@@ -227,6 +227,76 @@ pub struct BudgetEstimate {
     pub state: BudgetState,
 }
 
+/// Per-entry classifier result for the current hot memory snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassifiedMemoryEntry {
+    /// Stable position within hot memory.
+    pub index: usize,
+    /// Resolved semantic message kind.
+    pub kind: AgentMessageKind,
+    /// Classifier bucket assigned to this entry.
+    pub retention: CompactionRetention,
+    /// Estimated tokens represented by this entry.
+    pub estimated_tokens: usize,
+    /// Character count of the visible message content.
+    pub content_chars: usize,
+    /// Whether hidden reasoning payload is attached.
+    pub has_reasoning: bool,
+    /// Tool name for tool-related entries when available.
+    pub tool_name: Option<String>,
+    /// Whether this entry belongs to the recent raw working window.
+    pub preserve_in_raw_window: bool,
+}
+
+/// Aggregate stats for one classifier bucket.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CompactionClassSummary {
+    /// Number of entries in this bucket.
+    pub message_count: usize,
+    /// Total estimated tokens in this bucket.
+    pub token_count: usize,
+    /// Stable hot-memory indices for the bucket entries.
+    pub message_indices: Vec<usize>,
+}
+
+/// Recent raw window that should stay verbatim even when older history compacts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecentRawWindow {
+    /// Most recent user turns kept verbatim.
+    pub user_turn_indices: Vec<usize>,
+    /// Most recent assistant turns kept verbatim.
+    pub assistant_turn_indices: Vec<usize>,
+    /// Most recent tool interaction entries kept verbatim.
+    pub tool_interaction_indices: Vec<usize>,
+}
+
+impl RecentRawWindow {
+    /// Returns true when the given hot-memory index is part of the raw window.
+    #[must_use]
+    pub fn contains(&self, index: usize) -> bool {
+        self.user_turn_indices.contains(&index)
+            || self.assistant_turn_indices.contains(&index)
+            || self.tool_interaction_indices.contains(&index)
+    }
+}
+
+/// Snapshot of the current hot memory split into compaction classes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CompactionSnapshot {
+    /// Per-entry classifier results in stable memory order.
+    pub entries: Vec<ClassifiedMemoryEntry>,
+    /// Entries that must remain pinned.
+    pub pinned: CompactionClassSummary,
+    /// Entries that must remain raw while the run is active.
+    pub protected_live: CompactionClassSummary,
+    /// Bulky artifacts that should be pruned or externalized first.
+    pub prunable_artifacts: CompactionClassSummary,
+    /// Older working history that is eligible for summary compaction.
+    pub compactable_history: CompactionClassSummary,
+    /// Recent raw turns/tool interactions kept verbatim.
+    pub recent_raw_window: RecentRawWindow,
+}
+
 /// Observable result of a compaction checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactionOutcome {
@@ -240,12 +310,18 @@ pub struct CompactionOutcome {
     pub token_count_after: usize,
     /// Full budget estimate collected at this checkpoint.
     pub budget: BudgetEstimate,
+    /// Classified view of the current hot memory.
+    pub snapshot: CompactionSnapshot,
 }
 
 impl CompactionOutcome {
     /// Build a no-op outcome.
     #[must_use]
-    pub fn noop(trigger: CompactionTrigger, budget: BudgetEstimate) -> Self {
+    pub fn noop(
+        trigger: CompactionTrigger,
+        budget: BudgetEstimate,
+        snapshot: CompactionSnapshot,
+    ) -> Self {
         let token_count = budget.hot_memory.total_tokens;
         Self {
             trigger,
@@ -253,6 +329,7 @@ impl CompactionOutcome {
             token_count_before: token_count,
             token_count_after: token_count,
             budget,
+            snapshot,
         }
     }
 }

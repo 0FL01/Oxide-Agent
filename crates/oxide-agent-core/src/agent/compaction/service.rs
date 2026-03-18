@@ -2,6 +2,7 @@
 
 use super::archive::{ArchiveSink, NoopArchiveSink};
 use super::budget::estimate_request_budget;
+use super::classifier::classify_hot_memory;
 use super::types::{CompactionOutcome, CompactionPolicy, CompactionRequest};
 use crate::agent::context::AgentContext;
 use anyhow::Result;
@@ -44,17 +45,18 @@ impl CompactionService {
         &self.policy
     }
 
-    /// Stage 1 checkpoint hook.
+    /// Stage 4 checkpoint hook.
     ///
-    /// The service remains a no-op mutation-wise for now, but Stage 3 collects
-    /// a full request budget so later stages can make pruning/compaction
-    /// decisions from orchestration instead of hidden memory side effects.
+    /// The service still does not mutate hot memory yet, but it now collects a
+    /// full request budget and a deterministic hot-memory classification
+    /// snapshot so later stages can prune and compact from orchestration.
     pub async fn prepare_for_run(
         &self,
         request: &CompactionRequest<'_>,
         agent: &mut dyn AgentContext,
     ) -> Result<CompactionOutcome> {
         let budget = estimate_request_budget(&self.policy, request, agent);
+        let snapshot = classify_hot_memory(agent.memory().get_messages());
         let hot_messages = agent.memory().get_messages().len();
 
         debug!(
@@ -74,12 +76,16 @@ impl CompactionService {
             reserved_output_tokens = budget.reserved_output_tokens,
             headroom_tokens = budget.headroom_tokens,
             budget_state = ?budget.state,
+            pinned_messages = snapshot.pinned.message_count,
+            protected_live_messages = snapshot.protected_live.message_count,
+            prunable_artifact_messages = snapshot.prunable_artifacts.message_count,
+            compactable_history_messages = snapshot.compactable_history.message_count,
             "Compaction checkpoint reached"
         );
 
         let _ = &self.archive_sink;
 
-        Ok(CompactionOutcome::noop(request.trigger, budget))
+        Ok(CompactionOutcome::noop(request.trigger, budget, snapshot))
     }
 }
 
@@ -91,7 +97,7 @@ mod tests {
     use crate::agent::{AgentContext, EphemeralSession};
 
     #[tokio::test]
-    async fn prepare_for_run_is_noop_in_stage_one() {
+    async fn prepare_for_run_is_noop_before_prune_and_compaction() {
         let mut session = EphemeralSession::new(20_000);
         session
             .memory_mut()
@@ -111,12 +117,14 @@ mod tests {
         let outcome = service
             .prepare_for_run(&request, &mut session)
             .await
-            .unwrap();
+            .expect("stage 4 classifier checkpoint should succeed");
 
         assert_eq!(outcome.token_count_before, outcome.token_count_after);
         assert!(!outcome.applied);
         assert_eq!(session.memory().get_messages().len(), 1);
         assert_eq!(outcome.budget.state, BudgetState::Healthy);
+        assert_eq!(outcome.snapshot.protected_live.message_count, 0);
+        assert_eq!(outcome.snapshot.compactable_history.message_count, 1);
     }
 
     #[test]
