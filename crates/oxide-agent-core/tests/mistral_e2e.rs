@@ -130,7 +130,10 @@ async fn test_mistral_single_tool_call() -> Result<()> {
                 info!("Tool calls: {:?}", response.tool_calls);
                 for tc in &response.tool_calls {
                     anyhow::ensure!(!tc.id.is_empty(), "Tool call ID should not be empty");
-                    anyhow::ensure!(!tc.function.name.is_empty(), "Function name should not be empty");
+                    anyhow::ensure!(
+                        !tc.function.name.is_empty(),
+                        "Function name should not be empty"
+                    );
                     info!(
                         "✓ Tool '{}' called with args: {}",
                         tc.function.name, tc.function.arguments
@@ -221,20 +224,33 @@ async fn test_mistral_tool_call_with_result() -> Result<()> {
     );
 
     let tool_call = &first_response.tool_calls[0];
-    info!("First turn: called '{}' with args '{}'", tool_call.function.name, tool_call.function.arguments);
+    info!(
+        "First turn: called '{}' with args '{}'",
+        tool_call.function.name, tool_call.function.arguments
+    );
 
     // Second turn: add tool result and ask for follow-up
     let second_request_messages = vec![
         Message::user("What's the weather in Tokyo?"),
         Message::assistant_with_tools(
-            first_response.content.as_deref().unwrap_or("I'll check the weather for you."),
+            first_response
+                .content
+                .as_deref()
+                .unwrap_or("I'll check the weather for you."),
             first_response.tool_calls.clone(),
         ),
-        Message::tool(&tool_call.id, &tool_call.function.name, r#"{"temperature": 22, "condition": "sunny"}"#),
+        Message::tool(
+            &tool_call.id,
+            &tool_call.function.name,
+            r#"{"temperature": 22, "condition": "sunny"}"#,
+        ),
         Message::user("Is it a nice day?"),
     ];
 
-    info!("Second turn: sending {} messages", second_request_messages.len());
+    info!(
+        "Second turn: sending {} messages",
+        second_request_messages.len()
+    );
 
     let second_result = provider
         .chat_with_tools(ChatWithToolsRequest {
@@ -317,7 +333,9 @@ async fn test_mistral_multiple_tool_calls_parallel() -> Result<()> {
         },
     ];
 
-    let messages = vec![Message::user("What's the weather in Tokyo and what's the current time in London?")];
+    let messages = vec![Message::user(
+        "What's the weather in Tokyo and what's the current time in London?",
+    )];
 
     let result = provider
         .chat_with_tools(ChatWithToolsRequest {
@@ -400,7 +418,9 @@ async fn test_mistral_parallel_tool_results() -> Result<()> {
     ];
 
     // First turn: get parallel tool calls
-    let first_messages = vec![Message::user("What's the weather in Tokyo and what's the current time in London?")];
+    let first_messages = vec![Message::user(
+        "What's the weather in Tokyo and what's the current time in London?",
+    )];
 
     let first_result = provider
         .chat_with_tools(ChatWithToolsRequest {
@@ -435,9 +455,14 @@ async fn test_mistral_parallel_tool_results() -> Result<()> {
     }
 
     // Second turn: add ALL tool results
-    let mut second_messages = vec![Message::user("What's the weather in Tokyo and what's the current time in London?")];
+    let mut second_messages = vec![Message::user(
+        "What's the weather in Tokyo and what's the current time in London?",
+    )];
     second_messages.push(Message::assistant_with_tools(
-        first_response.content.as_deref().unwrap_or("Let me check both."),
+        first_response
+            .content
+            .as_deref()
+            .unwrap_or("Let me check both."),
         first_response.tool_calls.clone(),
     ));
 
@@ -451,8 +476,11 @@ async fn test_mistral_parallel_tool_results() -> Result<()> {
         second_messages.push(Message::tool(&tc.id, &tc.function.name, result));
     }
 
-    info!("Second turn: {} messages (including {} tool results)",
-          second_messages.len(), first_response.tool_calls.len());
+    info!(
+        "Second turn: {} messages (including {} tool results)",
+        second_messages.len(),
+        first_response.tool_calls.len()
+    );
 
     let second_result = provider
         .chat_with_tools(ChatWithToolsRequest {

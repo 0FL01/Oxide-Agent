@@ -1,0 +1,219 @@
+//! Message conversion utilities for MiniMax provider
+
+use claudius::{
+    ContentBlock, MessageParam, MessageParamContent, MessageRole, TextBlock, ToolResultBlock,
+    ToolUseBlock,
+};
+use serde_json::Value;
+
+use crate::llm::Message;
+
+/// Convert our Message to claudius MessageParam
+///
+/// Handles system, user, assistant, and tool messages with proper
+/// conversion of tool calls and tool results.
+#[must_use]
+pub fn to_claudius_message(msg: &Message) -> MessageParam {
+    let role = match msg.role.as_str() {
+        "system" => MessageRole::User, // No System role in Anthropic, send as User
+        "user" => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
+        "tool" => MessageRole::User, // Tools return as user messages in Anthropic API
+        _ => MessageRole::User,
+    };
+
+    let content = build_message_content(msg);
+
+    MessageParam { role, content }
+}
+
+/// Build message content based on message type
+fn build_message_content(msg: &Message) -> MessageParamContent {
+    match msg.role.as_str() {
+        "system" | "user" => {
+            // Simple text message
+            MessageParamContent::String(msg.content.clone())
+        }
+        "assistant" => {
+            let mut content_blocks = Vec::new();
+
+            // Add text content if present
+            if !msg.content.is_empty() {
+                content_blocks.push(ContentBlock::Text(TextBlock::new(msg.content.clone())));
+            }
+
+            // Add tool use blocks if present
+            if let Some(tool_calls) = &msg.tool_calls {
+                for tc in tool_calls {
+                    let input: Value = serde_json::from_str(&tc.function.arguments)
+                        .unwrap_or(Value::Object(serde_json::Map::new()));
+
+                    content_blocks.push(ContentBlock::ToolUse(ToolUseBlock::new(
+                        tc.id.clone(),
+                        tc.function.name.clone(),
+                        input,
+                    )));
+                }
+            }
+
+            // If no content and no tool calls, add empty text to satisfy API
+            if content_blocks.is_empty() {
+                content_blocks.push(ContentBlock::Text(TextBlock::new(String::new())));
+            }
+
+            // Wrap in Array variant
+            MessageParamContent::Array(content_blocks)
+        }
+        "tool" => {
+            // Tool result as content block
+            MessageParamContent::Array(vec![ContentBlock::ToolResult(ToolResultBlock {
+                tool_use_id: msg.tool_call_id.clone().unwrap_or_default(),
+                content: Some(msg.content.clone().into()),
+                is_error: None,
+                cache_control: None,
+            })])
+        }
+        _ => MessageParamContent::String(msg.content.clone()),
+    }
+}
+
+/// Convert a slice of messages to claudius MessageParams
+#[must_use]
+pub fn to_claudius_messages(messages: &[Message]) -> Vec<MessageParam> {
+    messages.iter().map(to_claudius_message).collect()
+}
+
+/// Create a user message param
+#[must_use]
+pub fn new_user_message(content: &str) -> MessageParam {
+    MessageParam::new(
+        MessageParamContent::String(content.to_string()),
+        MessageRole::User,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::{ToolCall, ToolCallFunction};
+
+    #[test]
+    fn converts_user_message() {
+        let msg = Message::user("Hello, world!");
+        let param = to_claudius_message(&msg);
+
+        assert!(matches!(param.role, MessageRole::User));
+        if let MessageParamContent::String(text) = &param.content {
+            assert_eq!(text, "Hello, world!");
+        } else {
+            panic!("Expected String content");
+        }
+    }
+
+    #[test]
+    fn converts_assistant_message_with_text() {
+        let msg = Message::assistant("Hello!");
+        let param = to_claudius_message(&msg);
+
+        assert!(matches!(param.role, MessageRole::Assistant));
+        if let MessageParamContent::Array(blocks) = &param.content {
+            assert!(!blocks.is_empty());
+            if let ContentBlock::Text(text_block) = &blocks[0] {
+                assert_eq!(text_block.text, "Hello!");
+            } else {
+                panic!("Expected Text content block");
+            }
+        } else {
+            panic!("Expected Array content");
+        }
+    }
+
+    #[test]
+    fn converts_assistant_message_with_tool_calls() {
+        let msg = Message::assistant_with_tools(
+            "I'll check the weather.",
+            vec![ToolCall {
+                id: "call_abc123".to_string(),
+                function: ToolCallFunction {
+                    name: "get_weather".to_string(),
+                    arguments: r#"{"city":"Moscow"}"#.to_string(),
+                },
+                is_recovered: false,
+            }],
+        );
+        let param = to_claudius_message(&msg);
+
+        assert!(matches!(param.role, MessageRole::Assistant));
+        if let MessageParamContent::Array(blocks) = &param.content {
+            // Should have both text and tool_use block
+            assert_eq!(blocks.len(), 2);
+
+            // First is text
+            if let ContentBlock::Text(text_block) = &blocks[0] {
+                assert_eq!(text_block.text, "I'll check the weather.");
+            } else {
+                panic!("Expected Text as first content block");
+            }
+
+            // Second is tool_use
+            if let ContentBlock::ToolUse(tool_use) = &blocks[1] {
+                assert_eq!(tool_use.id, "call_abc123");
+                assert_eq!(tool_use.name, "get_weather");
+            } else {
+                panic!("Expected ToolUse content block");
+            }
+        } else {
+            panic!("Expected Array content");
+        }
+    }
+
+    #[test]
+    fn converts_tool_message() {
+        let msg = Message::tool("call_abc123", "get_weather", r#"{"temperature": 20}"#);
+        let param = to_claudius_message(&msg);
+
+        // Tools are sent as user role in Anthropic API
+        assert!(matches!(param.role, MessageRole::User));
+        if let MessageParamContent::Array(blocks) = &param.content {
+            assert_eq!(blocks.len(), 1);
+            if let ContentBlock::ToolResult(result) = &blocks[0] {
+                assert_eq!(result.tool_use_id, "call_abc123");
+            } else {
+                panic!("Expected ToolResult content block");
+            }
+        } else {
+            panic!("Expected Array content");
+        }
+    }
+
+    #[test]
+    fn converts_system_message() {
+        let msg = Message::system("You are a helpful assistant.");
+        let param = to_claudius_message(&msg);
+
+        // System messages become user messages in Anthropic API
+        assert!(matches!(param.role, MessageRole::User));
+        if let MessageParamContent::String(text) = &param.content {
+            assert_eq!(text, "You are a helpful assistant.");
+        } else {
+            panic!("Expected String content");
+        }
+    }
+
+    #[test]
+    fn converts_multiple_messages() {
+        let messages = vec![
+            Message::system("You are a helpful assistant."),
+            Message::user("Hello!"),
+            Message::assistant("Hi there!"),
+        ];
+
+        let params = to_claudius_messages(&messages);
+
+        assert_eq!(params.len(), 3);
+        // System becomes User in Anthropic API
+        assert!(matches!(params[0].role, MessageRole::User));
+        assert!(matches!(params[1].role, MessageRole::User));
+        assert!(matches!(params[2].role, MessageRole::Assistant));
+    }
+}
