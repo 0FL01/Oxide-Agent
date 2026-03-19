@@ -5,9 +5,32 @@ use crate::llm::{
 };
 use async_trait::async_trait;
 use reqwest::Client as HttpClient;
+use serde::Deserialize;
 use serde_json::{json, Value};
+use tracing::{debug, instrument, warn};
 
 const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
+
+/// MiniMax API error response structure
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct MiniMaxErrorResponse {
+    #[serde(rename = "type")]
+    response_type: Option<String>,
+    error: MiniMaxErrorDetail,
+    #[serde(rename = "request_id")]
+    request_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct MiniMaxErrorDetail {
+    #[serde(rename = "type")]
+    error_type: String,
+    message: String,
+    #[serde(rename = "http_code")]
+    http_code: Option<String>,
+}
 
 /// LLM provider implementation for MiniMax AI
 pub struct MiniMaxProvider {
@@ -384,6 +407,7 @@ impl MiniMaxProvider {
             .collect()
     }
 
+    #[instrument(skip(self, body), fields(model = %body.get("model").and_then(|v| v.as_str()).unwrap_or("unknown")))]
     async fn send_chat_request(&self, body: Value) -> Result<ChatResponse, LlmError> {
         let url = format!("{}/chat/completions", MINIMAX_BASE_URL);
 
@@ -399,18 +423,47 @@ impl MiniMaxProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let headers = response.headers().clone();
+            let error_text = response.text().await.unwrap_or_default();
 
             // Handle 429 Too Many Requests with Retry-After support
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let wait_secs = parse_retry_after(response.headers());
-                let error_text = response.text().await.unwrap_or_default();
+                let wait_secs = parse_retry_after(&headers);
+                warn!(
+                    status = %status,
+                    error_text = %error_text,
+                    wait_secs = ?wait_secs,
+                    "MiniMax rate limited"
+                );
                 return Err(LlmError::RateLimit {
                     wait_secs,
                     message: error_text,
                 });
             }
 
-            let error_text = response.text().await.unwrap_or_default();
+            // Try to parse MiniMax error response for structured logging
+            if let Ok(minimax_err) = serde_json::from_str::<MiniMaxErrorResponse>(&error_text) {
+                warn!(
+                    status = %status,
+                    error_type = %minimax_err.error.error_type,
+                    message = %minimax_err.error.message,
+                    request_id = ?minimax_err.request_id,
+                    "MiniMax API error"
+                );
+            } else {
+                warn!(
+                    status = %status,
+                    error_text = %error_text,
+                    "MiniMax API error (unparsed)"
+                );
+            }
+
+            // Log request body for debugging
+            debug!(
+                request_body = %serde_json::to_string(&body).unwrap_or_default(),
+                "MiniMax failed request body"
+            );
+
             return Err(LlmError::ApiError(format!(
                 "MiniMax API error: {status} - {error_text}"
             )));
