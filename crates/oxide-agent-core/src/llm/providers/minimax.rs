@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 
@@ -371,6 +371,10 @@ impl MiniMaxProvider {
     }
 
     /// Parse tool_calls from MiniMax API response message
+    ///
+    /// Note: MiniMax sometimes returns tool calls with null/empty IDs, which causes
+    /// "tool result's tool id() not found (2013)" errors. We generate a unique ID
+    /// if the received ID is empty to work around this MiniMax bug.
     fn parse_tool_calls(message: &Value) -> Vec<crate::llm::ToolCall> {
         let Some(tool_calls_array) = message.get("tool_calls") else {
             return Vec::new();
@@ -382,9 +386,28 @@ impl MiniMaxProvider {
 
         array
             .iter()
-            .filter_map(|tc| {
-                let id = tc.get("id")?.as_str()?.to_string();
+            .enumerate()
+            .filter_map(|(index, tc)| {
                 let function = tc.get("function")?;
+
+                // MiniMax may return empty/null IDs - work around by generating one
+                let raw_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let tool_name = function
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let id = if raw_id.is_empty() {
+                    // Generate a unique ID to work around MiniMax bug
+                    debug!(
+                        tool_name = %tool_name,
+                        index = index,
+                        "MiniMax returned empty tool call ID, generating fallback"
+                    );
+                    format!("minimax_fallback_{}", index)
+                } else {
+                    raw_id.to_string()
+                };
+
                 let name = function.get("name")?.as_str()?.to_string();
                 let arguments = function
                     .get("arguments")
