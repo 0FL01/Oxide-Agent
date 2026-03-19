@@ -249,6 +249,7 @@ pub trait LlmProvider: Send + Sync {
 pub struct LlmClient {
     groq: Option<providers::GroqProvider>,
     mistral: Option<providers::MistralProvider>,
+    minimax: Option<providers::MiniMaxProvider>,
     zai: Option<providers::ZaiProvider>,
     gemini: Option<providers::GeminiProvider>,
     openrouter: Option<providers::OpenRouterProvider>,
@@ -310,6 +311,10 @@ impl LlmClient {
                 .mistral_api_key
                 .as_ref()
                 .map(|k| providers::MistralProvider::new(k.clone())),
+            minimax: settings
+                .minimax_api_key
+                .as_ref()
+                .map(|k| providers::MiniMaxProvider::new(k.clone())),
             zai: settings
                 .zai_api_key
                 .as_ref()
@@ -366,6 +371,9 @@ impl LlmClient {
         if name.eq_ignore_ascii_case("mistral") {
             return self.mistral.is_some();
         }
+        if name.eq_ignore_ascii_case("minimax") {
+            return self.minimax.is_some();
+        }
         if name.eq_ignore_ascii_case("zai") {
             return self.zai.is_some();
         }
@@ -390,6 +398,7 @@ impl LlmClient {
         match provider_name {
             "groq" => self.groq.as_ref().map(|p| p as &dyn LlmProvider),
             "mistral" => self.mistral.as_ref().map(|p| p as &dyn LlmProvider),
+            "minimax" => self.minimax.as_ref().map(|p| p as &dyn LlmProvider),
             "zai" => self.zai.as_ref().map(|p| p as &dyn LlmProvider),
             "gemini" => self.gemini.as_ref().map(|p| p as &dyn LlmProvider),
             "openrouter" => self.openrouter.as_ref().map(|p| p as &dyn LlmProvider),
