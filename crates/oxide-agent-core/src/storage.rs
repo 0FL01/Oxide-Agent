@@ -8,7 +8,9 @@ mod flows;
 mod keys;
 mod provider;
 mod r2_base;
+mod r2_control_plane;
 mod r2_memory;
+mod r2_reminder;
 mod r2_user;
 mod reminder;
 mod user;
@@ -48,22 +50,18 @@ pub use reminder::{
 };
 pub use user::{Message, UserConfig, UserContextConfig};
 
-use self::keys::topic_prompt_guard_key;
-use self::r2_base::{ControlPlaneLocks, TopicPromptStoreKind};
+use self::r2_base::ControlPlaneLocks;
 
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::put_object::PutObjectError;
 use aws_sdk_s3::Client;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use moka::future::Cache;
 use std::sync::Arc;
-use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::sleep;
-use uuid::Uuid;
 
 const AGENT_PROFILE_SCHEMA_VERSION: u32 = 1;
 const TOPIC_CONTEXT_SCHEMA_VERSION: u32 = 1;
@@ -329,45 +327,14 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         agent_id: String,
     ) -> Result<Option<AgentProfileRecord>, StorageError> {
-        self.load_json(&agent_profile_key(user_id, &agent_id)).await
+        self.get_agent_profile_inner(user_id, agent_id).await
     }
 
     async fn upsert_agent_profile(
         &self,
         options: UpsertAgentProfileOptions,
     ) -> Result<AgentProfileRecord, StorageError> {
-        let key = agent_profile_key(options.user_id, &options.agent_id);
-        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
-
-        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
-            let (existing, etag) = self.load_json_with_etag::<AgentProfileRecord>(&key).await?;
-            let now = current_timestamp_unix_secs();
-            let record = build_agent_profile_record(options.clone(), existing, now);
-
-            if self
-                .save_json_conditionally(&key, &record, etag.as_deref())
-                .await?
-            {
-                return Ok(record);
-            }
-
-            if should_retry_control_plane_rmw(attempt) {
-                warn!(
-                    key = %key,
-                    attempt,
-                    "agent profile optimistic concurrency conflict, retrying"
-                );
-                sleep(Duration::from_millis(
-                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
-                ))
-                .await;
-            }
-        }
-
-        Err(StorageError::ConcurrencyConflict {
-            key,
-            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
-        })
+        self.upsert_agent_profile_inner(options).await
     }
 
     async fn delete_agent_profile(
@@ -375,8 +342,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         agent_id: String,
     ) -> Result<(), StorageError> {
-        self.delete_object(&agent_profile_key(user_id, &agent_id))
-            .await
+        self.delete_agent_profile_inner(user_id, agent_id).await
     }
 
     async fn get_topic_context(
@@ -384,59 +350,14 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         topic_id: String,
     ) -> Result<Option<TopicContextRecord>, StorageError> {
-        self.load_json(&topic_context_key(user_id, &topic_id)).await
+        self.get_topic_context_inner(user_id, topic_id).await
     }
 
     async fn upsert_topic_context(
         &self,
         options: UpsertTopicContextOptions,
     ) -> Result<TopicContextRecord, StorageError> {
-        let context = validate_topic_context_content(&options.context)?;
-        let topic_prompt_guard_key = topic_prompt_guard_key(options.user_id, &options.topic_id);
-        let _topic_prompt_guard = self
-            .control_plane_locks
-            .acquire(topic_prompt_guard_key)
-            .await;
-        let key = topic_context_key(options.user_id, &options.topic_id);
-        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
-        self.ensure_topic_prompt_not_duplicated(
-            options.user_id,
-            &options.topic_id,
-            TopicPromptStoreKind::Context,
-            &context,
-        )
-        .await?;
-        let options = UpsertTopicContextOptions { context, ..options };
-
-        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
-            let (existing, etag) = self.load_json_with_etag::<TopicContextRecord>(&key).await?;
-            let now = current_timestamp_unix_secs();
-            let record = build_topic_context_record(options.clone(), existing, now);
-
-            if self
-                .save_json_conditionally(&key, &record, etag.as_deref())
-                .await?
-            {
-                return Ok(record);
-            }
-
-            if should_retry_control_plane_rmw(attempt) {
-                warn!(
-                    key = %key,
-                    attempt,
-                    "topic context optimistic concurrency conflict, retrying"
-                );
-                sleep(Duration::from_millis(
-                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
-                ))
-                .await;
-            }
-        }
-
-        Err(StorageError::ConcurrencyConflict {
-            key,
-            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
-        })
+        self.upsert_topic_context_inner(options).await
     }
 
     async fn delete_topic_context(
@@ -444,8 +365,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         topic_id: String,
     ) -> Result<(), StorageError> {
-        self.delete_object(&topic_context_key(user_id, &topic_id))
-            .await
+        self.delete_topic_context_inner(user_id, topic_id).await
     }
 
     async fn get_topic_agents_md(
@@ -453,65 +373,14 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         topic_id: String,
     ) -> Result<Option<TopicAgentsMdRecord>, StorageError> {
-        self.load_json(&topic_agents_md_key(user_id, &topic_id))
-            .await
+        self.get_topic_agents_md_inner(user_id, topic_id).await
     }
 
     async fn upsert_topic_agents_md(
         &self,
         options: UpsertTopicAgentsMdOptions,
     ) -> Result<TopicAgentsMdRecord, StorageError> {
-        let agents_md = validate_topic_agents_md_content(&options.agents_md)?;
-        let topic_prompt_guard_key = topic_prompt_guard_key(options.user_id, &options.topic_id);
-        let _topic_prompt_guard = self
-            .control_plane_locks
-            .acquire(topic_prompt_guard_key)
-            .await;
-        let key = topic_agents_md_key(options.user_id, &options.topic_id);
-        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
-        self.ensure_topic_prompt_not_duplicated(
-            options.user_id,
-            &options.topic_id,
-            TopicPromptStoreKind::AgentsMd,
-            &agents_md,
-        )
-        .await?;
-        let options = UpsertTopicAgentsMdOptions {
-            agents_md,
-            ..options
-        };
-
-        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
-            let (existing, etag) = self
-                .load_json_with_etag::<TopicAgentsMdRecord>(&key)
-                .await?;
-            let now = current_timestamp_unix_secs();
-            let record = build_topic_agents_md_record(options.clone(), existing, now);
-
-            if self
-                .save_json_conditionally(&key, &record, etag.as_deref())
-                .await?
-            {
-                return Ok(record);
-            }
-
-            if should_retry_control_plane_rmw(attempt) {
-                warn!(
-                    key = %key,
-                    attempt,
-                    "topic AGENTS.md optimistic concurrency conflict, retrying"
-                );
-                sleep(Duration::from_millis(
-                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
-                ))
-                .await;
-            }
-        }
-
-        Err(StorageError::ConcurrencyConflict {
-            key,
-            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
-        })
+        self.upsert_topic_agents_md_inner(options).await
     }
 
     async fn delete_topic_agents_md(
@@ -519,8 +388,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         topic_id: String,
     ) -> Result<(), StorageError> {
-        self.delete_object(&topic_agents_md_key(user_id, &topic_id))
-            .await
+        self.delete_topic_agents_md_inner(user_id, topic_id).await
     }
 
     async fn get_topic_infra_config(
@@ -528,48 +396,14 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         topic_id: String,
     ) -> Result<Option<TopicInfraConfigRecord>, StorageError> {
-        self.load_json(&topic_infra_config_key(user_id, &topic_id))
-            .await
+        self.get_topic_infra_config_inner(user_id, topic_id).await
     }
 
     async fn upsert_topic_infra_config(
         &self,
         options: UpsertTopicInfraConfigOptions,
     ) -> Result<TopicInfraConfigRecord, StorageError> {
-        let key = topic_infra_config_key(options.user_id, &options.topic_id);
-        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
-
-        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
-            let (existing, etag) = self
-                .load_json_with_etag::<TopicInfraConfigRecord>(&key)
-                .await?;
-            let now = current_timestamp_unix_secs();
-            let record = build_topic_infra_config_record(options.clone(), existing, now);
-
-            if self
-                .save_json_conditionally(&key, &record, etag.as_deref())
-                .await?
-            {
-                return Ok(record);
-            }
-
-            if should_retry_control_plane_rmw(attempt) {
-                warn!(
-                    key = %key,
-                    attempt,
-                    "topic infra config optimistic concurrency conflict, retrying"
-                );
-                sleep(Duration::from_millis(
-                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
-                ))
-                .await;
-            }
-        }
-
-        Err(StorageError::ConcurrencyConflict {
-            key,
-            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
-        })
+        self.upsert_topic_infra_config_inner(options).await
     }
 
     async fn delete_topic_infra_config(
@@ -577,7 +411,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         topic_id: String,
     ) -> Result<(), StorageError> {
-        self.delete_object(&topic_infra_config_key(user_id, &topic_id))
+        self.delete_topic_infra_config_inner(user_id, topic_id)
             .await
     }
 
@@ -586,8 +420,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         secret_ref: String,
     ) -> Result<Option<String>, StorageError> {
-        self.load_text(&private_secret_key(user_id, &secret_ref))
-            .await
+        self.get_secret_value_inner(user_id, secret_ref).await
     }
 
     async fn put_secret_value(
@@ -596,7 +429,7 @@ impl StorageProvider for R2Storage {
         secret_ref: String,
         value: String,
     ) -> Result<(), StorageError> {
-        self.save_text(&private_secret_key(user_id, &secret_ref), &value)
+        self.put_secret_value_inner(user_id, secret_ref, value)
             .await
     }
 
@@ -605,8 +438,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         secret_ref: String,
     ) -> Result<(), StorageError> {
-        self.delete_object(&private_secret_key(user_id, &secret_ref))
-            .await
+        self.delete_secret_value_inner(user_id, secret_ref).await
     }
 
     async fn get_topic_binding(
@@ -614,45 +446,14 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         topic_id: String,
     ) -> Result<Option<TopicBindingRecord>, StorageError> {
-        self.load_json(&topic_binding_key(user_id, &topic_id)).await
+        self.get_topic_binding_inner(user_id, topic_id).await
     }
 
     async fn upsert_topic_binding(
         &self,
         options: UpsertTopicBindingOptions,
     ) -> Result<TopicBindingRecord, StorageError> {
-        let key = topic_binding_key(options.user_id, &options.topic_id);
-        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
-
-        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
-            let (existing, etag) = self.load_json_with_etag::<TopicBindingRecord>(&key).await?;
-            let now = current_timestamp_unix_secs();
-            let record = build_topic_binding_record(options.clone(), existing, now);
-
-            if self
-                .save_json_conditionally(&key, &record, etag.as_deref())
-                .await?
-            {
-                return Ok(record);
-            }
-
-            if should_retry_control_plane_rmw(attempt) {
-                warn!(
-                    key = %key,
-                    attempt,
-                    "topic binding optimistic concurrency conflict, retrying"
-                );
-                sleep(Duration::from_millis(
-                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
-                ))
-                .await;
-            }
-        }
-
-        Err(StorageError::ConcurrencyConflict {
-            key,
-            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
-        })
+        self.upsert_topic_binding_inner(options).await
     }
 
     async fn delete_topic_binding(
@@ -660,55 +461,14 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         topic_id: String,
     ) -> Result<(), StorageError> {
-        self.delete_object(&topic_binding_key(user_id, &topic_id))
-            .await
+        self.delete_topic_binding_inner(user_id, topic_id).await
     }
 
     async fn append_audit_event(
         &self,
         options: AppendAuditEventOptions,
     ) -> Result<AuditEventRecord, StorageError> {
-        let key = audit_events_key(options.user_id);
-        let _lock_guard = self.control_plane_locks.acquire(key.clone()).await;
-
-        for attempt in 1..=CONTROL_PLANE_RMW_MAX_RETRIES {
-            let (current_events, etag) = self
-                .load_json_with_etag::<Vec<AuditEventRecord>>(&key)
-                .await?;
-            let mut events = current_events.unwrap_or_default();
-            let now = current_timestamp_unix_secs();
-            let record = build_audit_event_record(
-                options.clone(),
-                events.last().map(|event| event.version),
-                now,
-                Uuid::new_v4().to_string(),
-            );
-
-            events.push(record.clone());
-            if self
-                .save_json_conditionally(&key, &events, etag.as_deref())
-                .await?
-            {
-                return Ok(record);
-            }
-
-            if should_retry_control_plane_rmw(attempt) {
-                warn!(
-                    key = %key,
-                    attempt,
-                    "audit stream optimistic concurrency conflict, retrying"
-                );
-                sleep(Duration::from_millis(
-                    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS * attempt as u64,
-                ))
-                .await;
-            }
-        }
-
-        Err(StorageError::ConcurrencyConflict {
-            key,
-            attempts: CONTROL_PLANE_RMW_MAX_RETRIES,
-        })
+        self.append_audit_event_inner(options).await
     }
 
     async fn list_audit_events(
@@ -716,12 +476,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         limit: usize,
     ) -> Result<Vec<AuditEventRecord>, StorageError> {
-        let events: Vec<AuditEventRecord> = self
-            .load_json(&audit_events_key(user_id))
-            .await?
-            .unwrap_or_default();
-        let start = events.len().saturating_sub(limit);
-        Ok(events[start..].to_vec())
+        self.list_audit_events_inner(user_id, limit).await
     }
 
     async fn list_audit_events_page(
@@ -730,24 +485,15 @@ impl StorageProvider for R2Storage {
         before_version: Option<u64>,
         limit: usize,
     ) -> Result<Vec<AuditEventRecord>, StorageError> {
-        let events: Vec<AuditEventRecord> = self
-            .load_json(&audit_events_key(user_id))
-            .await?
-            .unwrap_or_default();
-
-        Ok(select_audit_events_page(events, before_version, limit))
+        self.list_audit_events_page_inner(user_id, before_version, limit)
+            .await
     }
 
     async fn create_reminder_job(
         &self,
         options: CreateReminderJobOptions,
     ) -> Result<ReminderJobRecord, StorageError> {
-        let reminder_id = Uuid::new_v4().to_string();
-        let key = reminder_job_key(options.user_id, &reminder_id);
-        let now = current_timestamp_unix_secs();
-        let record = build_reminder_job_record(options, reminder_id, now);
-        self.save_json(&key, &record).await?;
-        Ok(record)
+        self.create_reminder_job_inner(options).await
     }
 
     async fn get_reminder_job(
@@ -755,8 +501,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         reminder_id: String,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.load_json(&reminder_job_key(user_id, &reminder_id))
-            .await
+        self.get_reminder_job_inner(user_id, reminder_id).await
     }
 
     async fn list_reminder_jobs(
@@ -766,28 +511,8 @@ impl StorageProvider for R2Storage {
         statuses: Option<Vec<ReminderJobStatus>>,
         limit: usize,
     ) -> Result<Vec<ReminderJobRecord>, StorageError> {
-        let mut records = self
-            .list_json_under_prefix::<ReminderJobRecord>(&reminder_jobs_prefix(user_id))
-            .await?;
-
-        if let Some(context_key) = context_key.as_ref() {
-            records.retain(|record| record.context_key == *context_key);
-        }
-
-        if let Some(statuses) = statuses.as_ref() {
-            records.retain(|record| statuses.contains(&record.status));
-        }
-
-        records.sort_by(|left, right| {
-            right
-                .next_run_at
-                .cmp(&left.next_run_at)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-        });
-        if records.len() > limit {
-            records.truncate(limit);
-        }
-        Ok(records)
+        self.list_reminder_jobs_inner(user_id, context_key, statuses, limit)
+            .await
     }
 
     async fn list_due_reminder_jobs(
@@ -796,19 +521,7 @@ impl StorageProvider for R2Storage {
         now: i64,
         limit: usize,
     ) -> Result<Vec<ReminderJobRecord>, StorageError> {
-        let mut records = self
-            .list_json_under_prefix::<ReminderJobRecord>(&reminder_jobs_prefix(user_id))
-            .await?;
-        records.retain(|record| record.is_due(now));
-        records.sort_by(|left, right| {
-            left.next_run_at
-                .cmp(&right.next_run_at)
-                .then_with(|| left.created_at.cmp(&right.created_at))
-        });
-        if records.len() > limit {
-            records.truncate(limit);
-        }
-        Ok(records)
+        self.list_due_reminder_jobs_inner(user_id, now, limit).await
     }
 
     async fn claim_reminder_job(
@@ -818,18 +531,8 @@ impl StorageProvider for R2Storage {
         lease_until: i64,
         now: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
-            if !record.is_due(now) {
-                return None;
-            }
-            Some(ReminderJobRecord {
-                version: with_next_reminder_version(&record),
-                lease_until: Some(lease_until),
-                updated_at: mutation_now,
-                ..record
-            })
-        })
-        .await
+        self.claim_reminder_job_inner(user_id, reminder_id, lease_until, now)
+            .await
     }
 
     async fn reschedule_reminder_job(
@@ -841,27 +544,14 @@ impl StorageProvider for R2Storage {
         last_error: Option<String>,
         increment_run_count: bool,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
-            if record.status != ReminderJobStatus::Scheduled {
-                return None;
-            }
-            let run_count = if increment_run_count {
-                record.run_count.saturating_add(1)
-            } else {
-                record.run_count
-            };
-            Some(ReminderJobRecord {
-                version: with_next_reminder_version(&record),
-                status: ReminderJobStatus::Scheduled,
-                next_run_at,
-                lease_until: None,
-                last_run_at: last_run_at.or(record.last_run_at),
-                last_error: last_error.clone(),
-                run_count,
-                updated_at: mutation_now,
-                ..record
-            })
-        })
+        self.reschedule_reminder_job_inner(
+            user_id,
+            reminder_id,
+            next_run_at,
+            last_run_at,
+            last_error,
+            increment_run_count,
+        )
         .await
     }
 
@@ -871,22 +561,8 @@ impl StorageProvider for R2Storage {
         reminder_id: String,
         completed_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
-            if record.status != ReminderJobStatus::Scheduled {
-                return None;
-            }
-            Some(ReminderJobRecord {
-                version: with_next_reminder_version(&record),
-                status: ReminderJobStatus::Completed,
-                lease_until: None,
-                last_run_at: Some(completed_at),
-                last_error: None,
-                run_count: record.run_count.saturating_add(1),
-                updated_at: mutation_now,
-                ..record
-            })
-        })
-        .await
+        self.complete_reminder_job_inner(user_id, reminder_id, completed_at)
+            .await
     }
 
     async fn fail_reminder_job(
@@ -896,21 +572,8 @@ impl StorageProvider for R2Storage {
         failed_at: i64,
         error: String,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
-            if record.status != ReminderJobStatus::Scheduled {
-                return None;
-            }
-            Some(ReminderJobRecord {
-                version: with_next_reminder_version(&record),
-                status: ReminderJobStatus::Failed,
-                lease_until: None,
-                last_run_at: Some(failed_at),
-                last_error: Some(error.clone()),
-                updated_at: mutation_now,
-                ..record
-            })
-        })
-        .await
+        self.fail_reminder_job_inner(user_id, reminder_id, failed_at, error)
+            .await
     }
 
     async fn cancel_reminder_job(
@@ -919,20 +582,8 @@ impl StorageProvider for R2Storage {
         reminder_id: String,
         cancelled_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
-            if record.status != ReminderJobStatus::Scheduled {
-                return None;
-            }
-            Some(ReminderJobRecord {
-                version: with_next_reminder_version(&record),
-                status: ReminderJobStatus::Cancelled,
-                lease_until: None,
-                last_run_at: record.last_run_at.or(Some(cancelled_at)),
-                updated_at: mutation_now,
-                ..record
-            })
-        })
-        .await
+        self.cancel_reminder_job_inner(user_id, reminder_id, cancelled_at)
+            .await
     }
 
     async fn pause_reminder_job(
@@ -941,20 +592,8 @@ impl StorageProvider for R2Storage {
         reminder_id: String,
         paused_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
-            if record.status != ReminderJobStatus::Scheduled {
-                return None;
-            }
-            Some(ReminderJobRecord {
-                version: with_next_reminder_version(&record),
-                status: ReminderJobStatus::Paused,
-                lease_until: None,
-                last_run_at: record.last_run_at.or(Some(paused_at)),
-                updated_at: mutation_now,
-                ..record
-            })
-        })
-        .await
+        self.pause_reminder_job_inner(user_id, reminder_id, paused_at)
+            .await
     }
 
     async fn resume_reminder_job(
@@ -964,21 +603,8 @@ impl StorageProvider for R2Storage {
         next_run_at: i64,
         resumed_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
-            if record.status != ReminderJobStatus::Paused {
-                return None;
-            }
-            Some(ReminderJobRecord {
-                version: with_next_reminder_version(&record),
-                status: ReminderJobStatus::Scheduled,
-                next_run_at,
-                lease_until: None,
-                last_run_at: record.last_run_at.or(Some(resumed_at)),
-                updated_at: mutation_now,
-                ..record
-            })
-        })
-        .await
+        self.resume_reminder_job_inner(user_id, reminder_id, next_run_at, resumed_at)
+            .await
     }
 
     async fn retry_reminder_job(
@@ -988,22 +614,8 @@ impl StorageProvider for R2Storage {
         next_run_at: i64,
         retried_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        self.mutate_reminder_job(user_id, &reminder_id, move |record, mutation_now| {
-            if record.status != ReminderJobStatus::Failed {
-                return None;
-            }
-            Some(ReminderJobRecord {
-                version: with_next_reminder_version(&record),
-                status: ReminderJobStatus::Scheduled,
-                next_run_at,
-                lease_until: None,
-                last_run_at: record.last_run_at.or(Some(retried_at)),
-                last_error: None,
-                updated_at: mutation_now,
-                ..record
-            })
-        })
-        .await
+        self.retry_reminder_job_inner(user_id, reminder_id, next_run_at, retried_at)
+            .await
     }
 
     async fn delete_reminder_job(
@@ -1011,8 +623,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         reminder_id: String,
     ) -> Result<(), StorageError> {
-        self.delete_object(&reminder_job_key(user_id, &reminder_id))
-            .await
+        self.delete_reminder_job_inner(user_id, reminder_id).await
     }
 }
 
