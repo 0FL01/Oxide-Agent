@@ -604,6 +604,12 @@ impl LlmClient {
                 let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
                 Some(std::time::Duration::from_millis(backoff_ms))
             }
+            LlmError::JsonError(_) => {
+                // JSON parsing errors can be transient (bad proxy, network issues,
+                // malformed response). Retry with exponential backoff.
+                let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
+                Some(std::time::Duration::from_millis(backoff_ms))
+            }
             _ => None,
         }
     }
