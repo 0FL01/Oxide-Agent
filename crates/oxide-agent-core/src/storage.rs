@@ -8,6 +8,8 @@ mod flows;
 mod keys;
 mod provider;
 mod r2_base;
+mod r2_memory;
+mod r2_user;
 mod reminder;
 mod user;
 
@@ -86,10 +88,7 @@ pub struct R2Storage {
 impl StorageProvider for R2Storage {
     /// Get user configuration
     async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError> {
-        Ok(self
-            .load_json(&user_config_key(user_id))
-            .await?
-            .unwrap_or_default())
+        self.get_user_config_inner(user_id).await
     }
 
     /// Update user configuration
@@ -98,7 +97,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         config: UserConfig,
     ) -> Result<(), StorageError> {
-        self.save_json(&user_config_key(user_id), &config).await
+        self.update_user_config_inner(user_id, config).await
     }
 
     /// Update user system prompt
@@ -107,16 +106,12 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         system_prompt: String,
     ) -> Result<(), StorageError> {
-        self.modify_user_config(user_id, |config| {
-            config.system_prompt = Some(system_prompt);
-        })
-        .await
+        self.update_user_prompt_inner(user_id, system_prompt).await
     }
 
     /// Get user system prompt
     async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError> {
-        let config = self.get_user_config(user_id).await?;
-        Ok(config.system_prompt)
+        self.get_user_prompt_inner(user_id).await
     }
 
     /// Update user model
@@ -125,30 +120,22 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         model_name: String,
     ) -> Result<(), StorageError> {
-        self.modify_user_config(user_id, |config| {
-            config.model_name = Some(model_name);
-        })
-        .await
+        self.update_user_model_inner(user_id, model_name).await
     }
 
     /// Get user model
     async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError> {
-        let config = self.get_user_config(user_id).await?;
-        Ok(config.model_name)
+        self.get_user_model_inner(user_id).await
     }
 
     /// Update user state
     async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
-        self.modify_user_config(user_id, |config| {
-            config.state = Some(state);
-        })
-        .await
+        self.update_user_state_inner(user_id, state).await
     }
 
     /// Get user state
     async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
-        let config = self.get_user_config(user_id).await?;
-        Ok(config.state)
+        self.get_user_state_inner(user_id).await
     }
 
     /// Save message to chat history
@@ -158,10 +145,7 @@ impl StorageProvider for R2Storage {
         role: String,
         content: String,
     ) -> Result<(), StorageError> {
-        let key = user_history_key(user_id);
-        let mut history: Vec<Message> = self.load_json(&key).await?.unwrap_or_default();
-        history.push(Message { role, content });
-        self.save_json(&key, &history).await
+        self.save_message_inner(user_id, role, content).await
     }
 
     /// Get chat history for a user
@@ -170,17 +154,12 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         limit: usize,
     ) -> Result<Vec<Message>, StorageError> {
-        let history: Vec<Message> = self
-            .load_json(&user_history_key(user_id))
-            .await?
-            .unwrap_or_default();
-        let start = history.len().saturating_sub(limit);
-        Ok(history[start..].to_vec())
+        self.get_chat_history_inner(user_id, limit).await
     }
 
     /// Clear chat history for a user
     async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError> {
-        self.delete_object(&user_history_key(user_id)).await
+        self.clear_chat_history_inner(user_id).await
     }
 
     /// Save message to chat history for a specific chat UUID
@@ -191,10 +170,8 @@ impl StorageProvider for R2Storage {
         role: String,
         content: String,
     ) -> Result<(), StorageError> {
-        let key = user_chat_history_key(user_id, &chat_uuid);
-        let mut history: Vec<Message> = self.load_json(&key).await?.unwrap_or_default();
-        history.push(Message { role, content });
-        self.save_json(&key, &history).await
+        self.save_message_for_chat_inner(user_id, chat_uuid, role, content)
+            .await
     }
 
     /// Get chat history for a specific chat UUID
@@ -204,12 +181,8 @@ impl StorageProvider for R2Storage {
         chat_uuid: String,
         limit: usize,
     ) -> Result<Vec<Message>, StorageError> {
-        let history: Vec<Message> = self
-            .load_json(&user_chat_history_key(user_id, &chat_uuid))
-            .await?
-            .unwrap_or_default();
-        let start = history.len().saturating_sub(limit);
-        Ok(history[start..].to_vec())
+        self.get_chat_history_for_chat_inner(user_id, chat_uuid, limit)
+            .await
     }
 
     /// Clear chat history for a specific chat UUID
@@ -218,7 +191,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         chat_uuid: String,
     ) -> Result<(), StorageError> {
-        self.delete_object(&user_chat_history_key(user_id, &chat_uuid))
+        self.clear_chat_history_for_chat_inner(user_id, chat_uuid)
             .await
     }
 
@@ -227,8 +200,8 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         context_key: String,
     ) -> Result<(), StorageError> {
-        let prefix = user_context_chat_history_prefix(user_id, &context_key);
-        self.delete_prefix(&prefix).await
+        self.clear_chat_history_for_context_inner(user_id, context_key)
+            .await
     }
 
     /// Save agent memory to storage
@@ -237,8 +210,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         memory: &AgentMemory,
     ) -> Result<(), StorageError> {
-        self.save_json(&user_agent_memory_key(user_id), memory)
-            .await
+        self.save_agent_memory_inner(user_id, memory).await
     }
 
     async fn save_agent_memory_for_context(
@@ -247,16 +219,13 @@ impl StorageProvider for R2Storage {
         context_key: String,
         memory: &AgentMemory,
     ) -> Result<(), StorageError> {
-        self.save_json(
-            &user_context_agent_memory_key(user_id, &context_key),
-            memory,
-        )
-        .await
+        self.save_agent_memory_for_context_inner(user_id, context_key, memory)
+            .await
     }
 
     /// Load agent memory from storage
     async fn load_agent_memory(&self, user_id: i64) -> Result<Option<AgentMemory>, StorageError> {
-        self.load_json(&user_agent_memory_key(user_id)).await
+        self.load_agent_memory_inner(user_id).await
     }
 
     async fn load_agent_memory_for_context(
@@ -264,13 +233,13 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         context_key: String,
     ) -> Result<Option<AgentMemory>, StorageError> {
-        self.load_json(&user_context_agent_memory_key(user_id, &context_key))
+        self.load_agent_memory_for_context_inner(user_id, context_key)
             .await
     }
 
     /// Clear agent memory for a user
     async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError> {
-        self.delete_object(&user_agent_memory_key(user_id)).await
+        self.clear_agent_memory_inner(user_id).await
     }
 
     async fn clear_agent_memory_for_context(
@@ -278,9 +247,7 @@ impl StorageProvider for R2Storage {
         user_id: i64,
         context_key: String,
     ) -> Result<(), StorageError> {
-        self.delete_prefix(&user_context_agent_flows_prefix(user_id, &context_key))
-            .await?;
-        self.delete_object(&user_context_agent_memory_key(user_id, &context_key))
+        self.clear_agent_memory_for_context_inner(user_id, context_key)
             .await
     }
 
@@ -291,11 +258,8 @@ impl StorageProvider for R2Storage {
         flow_id: String,
         memory: &AgentMemory,
     ) -> Result<(), StorageError> {
-        self.save_json(
-            &user_context_agent_flow_memory_key(user_id, &context_key, &flow_id),
-            memory,
-        )
-        .await
+        self.save_agent_memory_for_flow_inner(user_id, context_key, flow_id, memory)
+            .await
     }
 
     async fn load_agent_memory_for_flow(
@@ -304,12 +268,8 @@ impl StorageProvider for R2Storage {
         context_key: String,
         flow_id: String,
     ) -> Result<Option<AgentMemory>, StorageError> {
-        self.load_json(&user_context_agent_flow_memory_key(
-            user_id,
-            &context_key,
-            &flow_id,
-        ))
-        .await
+        self.load_agent_memory_for_flow_inner(user_id, context_key, flow_id)
+            .await
     }
 
     async fn clear_agent_memory_for_flow(
@@ -318,12 +278,8 @@ impl StorageProvider for R2Storage {
         context_key: String,
         flow_id: String,
     ) -> Result<(), StorageError> {
-        self.delete_prefix(&user_context_agent_flow_prefix(
-            user_id,
-            &context_key,
-            &flow_id,
-        ))
-        .await
+        self.clear_agent_memory_for_flow_inner(user_id, context_key, flow_id)
+            .await
     }
 
     async fn get_agent_flow_record(
@@ -332,12 +288,8 @@ impl StorageProvider for R2Storage {
         context_key: String,
         flow_id: String,
     ) -> Result<Option<AgentFlowRecord>, StorageError> {
-        self.load_json(&user_context_agent_flow_key(
-            user_id,
-            &context_key,
-            &flow_id,
-        ))
-        .await
+        self.get_agent_flow_record_inner(user_id, context_key, flow_id)
+            .await
     }
 
     async fn upsert_agent_flow_record(
@@ -346,12 +298,8 @@ impl StorageProvider for R2Storage {
         context_key: String,
         flow_id: String,
     ) -> Result<AgentFlowRecord, StorageError> {
-        let key = user_context_agent_flow_key(user_id, &context_key, &flow_id);
-        let now = current_timestamp_unix_secs();
-        let existing = self.load_json::<AgentFlowRecord>(&key).await?;
-        let record = build_agent_flow_record(user_id, context_key, flow_id, existing, now);
-        self.save_json(&key, &record).await?;
-        Ok(record)
+        self.upsert_agent_flow_record_inner(user_id, context_key, flow_id)
+            .await
     }
 
     /// Clear all context (history and memory) for a user
