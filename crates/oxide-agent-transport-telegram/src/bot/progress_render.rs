@@ -183,7 +183,7 @@ fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSn
 
 fn format_budget_breakdown(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "reserve {} | hard {} | projected {} | headroom {}",
+        "📤 {} + 🛡️ {} = 📊 {} | 🟢 {} free",
         oxide_agent_core::utils::format_tokens(snapshot.reserved_output_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.hard_reserve_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
@@ -276,7 +276,7 @@ mod tests {
         assert!(output.contains("Iteration 1/5"));
         assert!(output.contains("ctx 5.7k + p1.2k + t1.1k + s0 / 200k"));
         assert!(output.contains("flow 5.7k | prompt 1.2k | tools 1.1k | skills 0"));
-        assert!(output.contains("reserve 8k | hard 8.2k | projected 24k | headroom 176k"));
+        assert!(output.contains("📤 8k + 🛡️ 8.2k = 📊 24k | 🟢 176k free"));
         assert!(output.contains("Budget: healthy"));
         assert!(!output.contains("Last API usage:"));
     }
