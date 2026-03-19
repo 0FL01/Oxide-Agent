@@ -619,7 +619,11 @@ mod tests {
 
     #[test]
     fn prepare_structured_messages_formats_tool_message() {
-        let history = vec![Message::tool("call_abc123", "get_weather", "{\"temperature\": 20}")];
+        let history = vec![Message::tool(
+            "call_abc123",
+            "get_weather",
+            "{\"temperature\": 20}",
+        )];
         let messages = MistralProvider::prepare_structured_messages("You are helpful.", &history);
 
         let tool_msg = &messages[1];
