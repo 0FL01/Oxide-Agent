@@ -223,9 +223,10 @@ mod progress_integration_tests {
                 loaded_skill_tokens: 0,
                 total_input_tokens: 8_000,
                 reserved_output_tokens: 8_000,
-                projected_total_tokens: 16_000,
+                hard_reserve_tokens: 8_192,
+                projected_total_tokens: 24_192,
                 context_window_tokens: 200_000,
-                headroom_tokens: 184_000,
+                headroom_tokens: 175_808,
                 budget_state: oxide_agent_core::agent::compaction::BudgetState::Healthy,
                 last_api_usage: None,
             },
@@ -236,7 +237,7 @@ mod progress_integration_tests {
         // Check header format
         assert!(output.contains("🤖 <b>Oxide Agent</b>"));
         assert!(output.contains("Iteration 1/200"));
-        assert!(output.contains("ctx 16k/200k"));
+        assert!(output.contains("ctx 5.7k + p1.2k + t1.1k + s0 / 200k"));
     }
 }
 // BUGFIX AGENT-2026-001: Integration tests for malformed tool call bug fix

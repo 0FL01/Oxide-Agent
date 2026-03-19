@@ -115,14 +115,7 @@ fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
 
     lines.push("🗜 <b>Context:</b>".to_string());
     if let Some(snapshot) = &state.latest_token_snapshot {
-        lines.push(format!(
-            "   {}",
-            html_escape::encode_text(&format_snapshot_summary(snapshot))
-        ));
-        lines.push(format!(
-            "   {}",
-            html_escape::encode_text(&format_budget_status(snapshot))
-        ));
+        push_budget_breakdown(lines, snapshot);
     }
     if let Some(status) = &state.last_compaction_status {
         lines.push(format!(
@@ -169,24 +162,55 @@ fn current_step(state: &ProgressState) -> Option<&Step> {
 
 fn format_header_tokens(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "ctx {}/{}",
-        oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
+        "ctx {} + p{} + t{} + s{} / {}",
+        oxide_agent_core::utils::format_tokens(snapshot.hot_memory_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.system_prompt_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.tool_schema_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.loaded_skill_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.context_window_tokens)
     )
 }
 
 fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "hot {} | input {} | reserve {} | headroom {}",
+        "flow {} | prompt {} | tools {} | skills {}",
         oxide_agent_core::utils::format_tokens(snapshot.hot_memory_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.total_input_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.system_prompt_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.tool_schema_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.loaded_skill_tokens),
+    )
+}
+
+fn format_budget_breakdown(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
+    format!(
+        "reserve {} | hard {} | projected {} | headroom {}",
         oxide_agent_core::utils::format_tokens(snapshot.reserved_output_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.hard_reserve_tokens),
+        oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.headroom_tokens),
     )
 }
 
 fn format_budget_status(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
-    format!("Status: {}", budget_state_label(snapshot.budget_state))
+    format!("Budget: {}", budget_state_label(snapshot.budget_state))
+}
+
+fn push_budget_breakdown(
+    lines: &mut Vec<String>,
+    snapshot: &oxide_agent_core::agent::progress::TokenSnapshot,
+) {
+    lines.push(format!(
+        "   {}",
+        html_escape::encode_text(&format_snapshot_summary(snapshot))
+    ));
+    lines.push(format!(
+        "   {}",
+        html_escape::encode_text(&format_budget_breakdown(snapshot))
+    ));
+    lines.push(format!(
+        "   {}",
+        html_escape::encode_text(&format_budget_status(snapshot))
+    ));
 }
 
 fn budget_state_label(state: oxide_agent_core::agent::compaction::BudgetState) -> &'static str {
@@ -216,9 +240,10 @@ mod tests {
             loaded_skill_tokens: 0,
             total_input_tokens: 8_000,
             reserved_output_tokens: 8_000,
-            projected_total_tokens: 16_000,
+            hard_reserve_tokens: 8_192,
+            projected_total_tokens: 24_192,
             context_window_tokens: 200_000,
-            headroom_tokens: 184_000,
+            headroom_tokens: 175_808,
             budget_state: BudgetState::Healthy,
             last_api_usage: Some(TokenUsage {
                 prompt_tokens: 15_200,
@@ -249,9 +274,10 @@ mod tests {
         let output = render_progress_html(&state);
 
         assert!(output.contains("Iteration 1/5"));
-        assert!(output.contains("ctx 16k/200k"));
-        assert!(output.contains("hot 5.7k | input 8k | reserve 8k | headroom 184k"));
-        assert!(output.contains("Status: healthy"));
+        assert!(output.contains("ctx 5.7k + p1.2k + t1.1k + s0 / 200k"));
+        assert!(output.contains("flow 5.7k | prompt 1.2k | tools 1.1k | skills 0"));
+        assert!(output.contains("reserve 8k | hard 8.2k | projected 24k | headroom 176k"));
+        assert!(output.contains("Budget: healthy"));
         assert!(!output.contains("Last API usage:"));
     }
 

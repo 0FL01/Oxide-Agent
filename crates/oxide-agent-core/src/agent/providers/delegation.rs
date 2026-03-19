@@ -824,9 +824,10 @@ mod tests {
             loaded_skill_tokens: 0,
             total_input_tokens: 2_900,
             reserved_output_tokens: 64_000,
-            projected_total_tokens: 73_000,
+            hard_reserve_tokens: 8_192,
+            projected_total_tokens: 75_092,
             context_window_tokens,
-            headroom_tokens: context_window_tokens.saturating_sub(73_000),
+            headroom_tokens: context_window_tokens.saturating_sub(75_092),
             budget_state: BudgetState::Warning,
             last_api_usage: None,
         }
