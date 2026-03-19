@@ -30,6 +30,7 @@ use crate::config::{get_agent_max_iterations, get_agent_search_limit};
 use crate::llm::{LlmClient, Message, ToolCall, ToolCallFunction, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::{anyhow, Result};
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::Mutex;
@@ -652,6 +653,21 @@ impl AgentExecutor {
         }
     }
 
+    async fn await_until_cancelled<T, F>(
+        cancellation_token: tokio_util::sync::CancellationToken,
+        future: F,
+    ) -> Option<Result<T>>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        tokio::pin!(future);
+
+        tokio::select! {
+            result = &mut future => Some(result),
+            _ = cancellation_token.cancelled() => None,
+        }
+    }
+
     /// Execute a task with iterative tool calling (agentic loop)
     ///
     /// # Errors
@@ -748,16 +764,25 @@ impl AgentExecutor {
             "Manual compaction requested"
         );
         Self::emit_manual_compaction_started(progress_tx.as_ref()).await;
-        let outcome = match self
-            .compaction_service
-            .prepare_for_run(&request, &mut self.session)
-            .await
+        let cancellation_token = self.session.cancellation_token.clone();
+        let outcome = match Self::await_until_cancelled(
+            cancellation_token,
+            self.compaction_service
+                .prepare_for_run(&request, &mut self.session),
+        )
+        .await
         {
-            Ok(outcome) => outcome,
-            Err(error) => {
+            Some(Ok(outcome)) => outcome,
+            Some(Err(error)) => {
                 warn!(error = %error, "Manual compaction failed");
                 Self::emit_manual_compaction_failed(progress_tx.as_ref(), error.to_string()).await;
                 return Err(error);
+            }
+            None => {
+                if let Some(tx) = progress_tx.as_ref() {
+                    let _ = tx.send(AgentEvent::Cancelled).await;
+                }
+                return Err(anyhow!("Task cancelled by user"));
             }
         };
         warn!(

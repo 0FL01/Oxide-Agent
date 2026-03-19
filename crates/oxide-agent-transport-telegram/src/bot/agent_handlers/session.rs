@@ -4,7 +4,11 @@ use super::{
 };
 use crate::bot::manager_topic_lifecycle::TelegramManagerTopicLifecycle;
 use crate::config::BotSettings;
-use oxide_agent_core::agent::{executor::AgentExecutor, AgentSession, SessionId};
+use anyhow::Result;
+use async_trait::async_trait;
+use oxide_agent_core::agent::{
+    executor::AgentExecutor, AgentMemory, AgentMemoryCheckpoint, AgentSession, SessionId,
+};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
@@ -43,6 +47,36 @@ pub(crate) struct EnsureSessionContext<'a> {
     pub(crate) llm: &'a Arc<LlmClient>,
     pub(crate) storage: &'a Arc<dyn StorageProvider>,
     pub(crate) settings: &'a Arc<BotSettings>,
+}
+
+#[derive(Clone)]
+struct FlowMemoryCheckpoint {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    context_key: String,
+    agent_flow_id: String,
+}
+
+#[async_trait]
+impl AgentMemoryCheckpoint for FlowMemoryCheckpoint {
+    async fn persist(&self, memory: &AgentMemory) -> Result<()> {
+        self.storage
+            .upsert_agent_flow_record(
+                self.user_id,
+                self.context_key.clone(),
+                self.agent_flow_id.clone(),
+            )
+            .await?;
+        self.storage
+            .save_agent_memory_for_flow(
+                self.user_id,
+                self.context_key.clone(),
+                self.agent_flow_id.clone(),
+                memory,
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 impl AgentModeSessionKeys {
@@ -174,17 +208,12 @@ pub(crate) async fn reset_sessions_with_compat(keys: AgentModeSessionKeys) -> Re
 
 pub(crate) async fn cancel_and_clear_with_compat(keys: AgentModeSessionKeys) -> (bool, bool) {
     let cancelled_primary = SESSION_REGISTRY.cancel(&keys.primary).await;
-    let cleared_primary = SESSION_REGISTRY.clear_todos(&keys.primary).await;
 
     if let Some(legacy) = keys.distinct_legacy() {
         let cancelled_legacy = SESSION_REGISTRY.cancel(&legacy).await;
-        let cleared_legacy = SESSION_REGISTRY.clear_todos(&legacy).await;
-        (
-            cancelled_primary || cancelled_legacy,
-            cleared_primary || cleared_legacy,
-        )
+        (cancelled_primary || cancelled_legacy, false)
     } else {
-        (cancelled_primary, cleared_primary)
+        (cancelled_primary, false)
     }
 }
 
@@ -265,6 +294,12 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
     }
 
     let mut session = AgentSession::new_with_sandbox_scope(session_id, ctx.sandbox_scope.clone());
+    session.set_memory_checkpoint(Arc::new(FlowMemoryCheckpoint {
+        storage: ctx.storage.clone(),
+        user_id: ctx.user_id,
+        context_key: ctx.context_key.clone(),
+        agent_flow_id: ctx.agent_flow_id.clone(),
+    }));
     load_agent_memory_into_session(&ctx, &mut session).await;
     inject_topic_agents_md_for_flow(&ctx, &mut session).await;
 
@@ -369,15 +404,27 @@ async fn inject_topic_agents_md_for_flow(
 async fn load_flow_agent_memory(
     ctx: &EnsureSessionContext<'_>,
 ) -> Option<oxide_agent_core::agent::AgentMemory> {
-    ctx.storage
+    match ctx
+        .storage
         .load_agent_memory_for_flow(
             ctx.user_id,
             ctx.context_key.clone(),
             ctx.agent_flow_id.clone(),
         )
         .await
-        .ok()
-        .flatten()
+    {
+        Ok(memory) => memory,
+        Err(error) => {
+            warn!(
+                error = %error,
+                user_id = ctx.user_id,
+                topic_id = %ctx.context_key,
+                flow_id = %ctx.agent_flow_id,
+                "Failed to load flow-scoped agent memory"
+            );
+            None
+        }
+    }
 }
 
 async fn migrate_legacy_agent_memory_into_flow(
@@ -390,7 +437,7 @@ async fn migrate_legacy_agent_memory_into_flow(
         .await
     {
         session.memory = saved_memory;
-        let _ = ctx
+        if let Err(error) = ctx
             .storage
             .save_agent_memory_for_flow(
                 ctx.user_id,
@@ -398,7 +445,16 @@ async fn migrate_legacy_agent_memory_into_flow(
                 ctx.agent_flow_id.clone(),
                 &session.memory,
             )
-            .await;
+            .await
+        {
+            warn!(
+                error = %error,
+                user_id = ctx.user_id,
+                topic_id = %ctx.context_key,
+                flow_id = %ctx.agent_flow_id,
+                "Failed to migrate legacy agent memory into flow-scoped storage"
+            );
+        }
         info!(
             user_id = ctx.user_id,
             messages_count = session.memory.get_messages().len(),
@@ -429,17 +485,35 @@ pub(crate) async fn save_memory_after_task(
 ) {
     if let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await {
         let executor = executor_arc.read().await;
-        let _ = storage
+        if let Err(error) = storage
             .upsert_agent_flow_record(user_id, context_key.to_string(), agent_flow_id.to_string())
-            .await;
-        let _ = storage
+            .await
+        {
+            warn!(
+                error = %error,
+                user_id,
+                context_key,
+                flow_id = agent_flow_id,
+                "Failed to upsert agent flow record"
+            );
+        }
+        if let Err(error) = storage
             .save_agent_memory_for_flow(
                 user_id,
                 context_key.to_string(),
                 agent_flow_id.to_string(),
                 &executor.session().memory,
             )
-            .await;
+            .await
+        {
+            warn!(
+                error = %error,
+                user_id,
+                context_key,
+                flow_id = agent_flow_id,
+                "Failed to persist agent memory after task"
+            );
+        }
     }
 }
 

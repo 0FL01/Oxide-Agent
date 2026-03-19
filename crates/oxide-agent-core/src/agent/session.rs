@@ -9,6 +9,7 @@ use super::memory::AgentMemory;
 use crate::config::AGENT_MAX_TOKENS;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -34,6 +35,13 @@ pub struct PendingSshReplay {
     pub tool_name: String,
     /// Original JSON arguments before approval credentials were injected.
     pub arguments: String,
+}
+
+#[async_trait]
+/// Persistence hook for saving in-flight agent memory snapshots.
+pub trait AgentMemoryCheckpoint: Send + Sync {
+    /// Persist the provided memory snapshot.
+    async fn persist(&self, memory: &AgentMemory) -> Result<()>;
 }
 
 /// Thread-safe inbox for runtime context injections.
@@ -124,6 +132,8 @@ pub struct AgentSession {
     runtime_context_inbox: RuntimeContextInbox,
     /// Exact SSH tool calls paused pending operator approval.
     pending_ssh_replays: Vec<PendingSshReplay>,
+    /// Optional sink used to persist memory snapshots during long-running tasks.
+    memory_checkpoint: Option<Arc<dyn AgentMemoryCheckpoint>>,
 }
 
 impl AgentSession {
@@ -150,7 +160,22 @@ impl AgentSession {
             skill_token_count: 0,
             runtime_context_inbox: RuntimeContextInbox::new(),
             pending_ssh_replays: Vec::new(),
+            memory_checkpoint: None,
         }
+    }
+
+    /// Install a transport-provided checkpoint sink for memory snapshots.
+    pub fn set_memory_checkpoint(&mut self, checkpoint: Arc<dyn AgentMemoryCheckpoint>) {
+        self.memory_checkpoint = Some(checkpoint);
+    }
+
+    /// Persist the current memory snapshot when a checkpoint sink is configured.
+    pub async fn persist_memory_checkpoint(&self) -> Result<()> {
+        let Some(checkpoint) = &self.memory_checkpoint else {
+            return Ok(());
+        };
+
+        checkpoint.persist(&self.memory).await
     }
 
     /// Clone the runtime context inbox handle for concurrent transport writes.

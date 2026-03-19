@@ -7,10 +7,13 @@ use super::compaction::CompactionScope;
 use super::memory::AgentMemory;
 use super::session::{AgentSession, PendingSshReplay, RuntimeContextInjection};
 use crate::config::AGENT_MAX_TOKENS;
+use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
 /// Minimal context interface needed by the agent runner.
+#[async_trait]
 pub trait AgentContext: Send {
     /// Access immutable agent memory.
     fn memory(&self) -> &AgentMemory;
@@ -42,6 +45,10 @@ pub trait AgentContext: Send {
     }
     /// Store an exact SSH tool replay for deterministic post-approval resume.
     fn store_pending_ssh_replay(&mut self, _replay: PendingSshReplay) {}
+    /// Persist the current memory snapshot when the transport provides a checkpoint sink.
+    async fn persist_memory_checkpoint(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Ephemeral session used for isolated sub-agent execution.
@@ -99,6 +106,7 @@ impl EphemeralSession {
     }
 }
 
+#[async_trait]
 impl AgentContext for AgentSession {
     fn memory(&self) -> &AgentMemory {
         &self.memory
@@ -146,8 +154,13 @@ impl AgentContext for AgentSession {
     fn store_pending_ssh_replay(&mut self, replay: PendingSshReplay) {
         AgentSession::store_pending_ssh_replay(self, replay);
     }
+
+    async fn persist_memory_checkpoint(&mut self) -> Result<()> {
+        AgentSession::persist_memory_checkpoint(self).await
+    }
 }
 
+#[async_trait]
 impl AgentContext for EphemeralSession {
     fn memory(&self) -> &AgentMemory {
         &self.memory
