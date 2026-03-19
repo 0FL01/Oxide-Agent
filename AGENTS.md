@@ -2,7 +2,7 @@
 
 Oxide Agent - Telegram-бот с Agent Mode поверх нескольких LLM-провайдеров. Бот умеет работать с текстом, голосом, изображениями, документами, topic-scoped памятью, sandbox-задачами и менеджерским control plane.
 
-Стек: Rust 1.94, `teloxide`, AWS SDK для Cloudflare R2, нативные интеграции с Groq, Mistral AI, Google Gemini, OpenRouter и ZAI/Zhipu AI.
+Стек: Rust 1.94, `teloxide`, AWS SDK для Cloudflare R2, нативные интеграции с Groq, Mistral AI, Google Gemini, OpenRouter, MiniMax AI (claude SDK) и ZAI/Zhipu AI.
 
 ## Branch
 
@@ -119,7 +119,7 @@ Default branch: `agent-topics`.
 
 ### LLM
 - Базовый вход: `llm/mod.rs`, `common.rs`, `embeddings.rs`, `http_utils.rs`, `openai_compat.rs`.
-- Провайдеры: `gemini`, `groq`, `mistral`, `openrouter`, `zai`.
+- Провайдеры: `gemini`, `groq`, `mistral`, `minimax/` (folder structure: client, messages, tools, response), `openrouter`, `zai`.
 
 ### Tool providers
 - Основные provider'ы: sandbox, todos, tavily, crawl4ai, filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders.
