@@ -9,7 +9,7 @@ use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
-use crate::llm::{ChatResponse, LlmError};
+use crate::llm::{ChatResponse, LlmClient, LlmError};
 use anyhow::{anyhow, Result};
 use std::future::Future;
 use tracing::{debug, info, warn};
@@ -110,32 +110,91 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<ChatResponse> {
-        match self.chat_with_tools_once(ctx).await {
-            Ok(response) => Ok(response),
-            Err(error) if Self::llm_error_suggests_context_overflow(&error) => {
-                let retried = self
-                    .run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual)
-                    .await?;
-                if retried {
-                    match self.chat_with_tools_once(ctx).await {
-                        Ok(response) => return Ok(response),
-                        Err(retry_error) => {
-                            Self::emit_llm_error(ctx.progress_tx, &retry_error).await;
-                            return Err(anyhow!(
-                                "LLM call failed after compaction retry: {retry_error}"
-                            ));
+        let max_retries = LlmClient::MAX_RETRIES;
+        let json_mode = self.requires_structured_output(&ctx.config.model_name);
+        let provider_name = self
+            .llm_client
+            .get_provider_name(&ctx.config.model_name)
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        for attempt in 1..=max_retries {
+            let result = self
+                .llm_client
+                .chat_with_tools_single_attempt(
+                    ctx.system_prompt,
+                    ctx.messages,
+                    ctx.tools,
+                    &ctx.config.model_name,
+                    json_mode,
+                )
+                .await;
+
+            match result {
+                Ok(response) => {
+                    if attempt > 1 {
+                        info!(
+                            attempt = attempt,
+                            max_attempts = max_retries,
+                            "LLM retry succeeded after rate limit"
+                        );
+                    }
+                    return Ok(response);
+                }
+                Err(error) => {
+                    // Check if this is a context overflow error
+                    if Self::llm_error_suggests_context_overflow(&error) && attempt == 1 {
+                        let retried = self
+                            .run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual)
+                            .await?;
+                        if retried {
+                            // Retry after compaction
+                            continue;
+                        }
+                        // If compaction didn't help, fall through to emit error
+                    }
+
+                    // Check if we should retry
+                    if attempt < max_retries {
+                        if let Some(backoff) = LlmClient::get_retry_delay(&error, attempt) {
+                            let wait_secs = backoff.as_secs();
+                            let wait_secs_display = if wait_secs > 0 {
+                                Some(wait_secs)
+                            } else {
+                                LlmClient::get_rate_limit_wait_secs(&error)
+                            };
+
+                            // Emit retry event
+                            Self::emit_rate_limit_retrying(
+                                ctx.progress_tx,
+                                attempt,
+                                max_retries,
+                                wait_secs_display,
+                                &provider_name,
+                            )
+                            .await;
+
+                            debug!(
+                                error = %error,
+                                attempt = attempt,
+                                max_attempts = max_retries,
+                                backoff_ms = backoff.as_millis(),
+                                "Retrying LLM request after rate limit"
+                            );
+
+                            tokio::time::sleep(backoff).await;
+                            continue;
                         }
                     }
-                }
 
-                Self::emit_llm_error(ctx.progress_tx, &error).await;
-                Err(anyhow!("LLM call failed: {error}"))
-            }
-            Err(error) => {
-                Self::emit_llm_error(ctx.progress_tx, &error).await;
-                Err(anyhow!("LLM call failed: {error}"))
+                    // No more retries or error is not retryable
+                    Self::emit_llm_error(ctx.progress_tx, &error).await;
+                    return Err(anyhow!("LLM call failed: {error}"));
+                }
             }
         }
+
+        // This should be unreachable, but just in case
+        Err(anyhow!("LLM call failed after all retries"))
     }
 
     async fn await_until_cancelled<T, F>(
@@ -153,13 +212,16 @@ impl AgentRunner {
         }
     }
 
+    #[allow(dead_code)]
     async fn chat_with_tools_once(
         &self,
         ctx: &mut AgentRunnerContext<'_>,
     ) -> Result<ChatResponse, LlmError> {
+        // This method is kept for backwards compatibility.
+        // Use call_llm_with_tools for retry handling with UI events.
         let json_mode = self.requires_structured_output(&ctx.config.model_name);
         self.llm_client
-            .chat_with_tools(
+            .chat_with_tools_single_attempt(
                 ctx.system_prompt,
                 ctx.messages,
                 ctx.tools,
@@ -586,6 +648,25 @@ impl AgentRunner {
         if let Some(tx) = progress_tx {
             let _ = tx
                 .send(AgentEvent::Error(format!("LLM call failed: {error}")))
+                .await;
+        }
+    }
+
+    async fn emit_rate_limit_retrying(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        attempt: usize,
+        max_attempts: usize,
+        wait_secs: Option<u64>,
+        provider: &str,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::RateLimitRetrying {
+                    attempt,
+                    max_attempts,
+                    wait_secs,
+                    provider: provider.to_string(),
+                })
                 .await;
         }
     }
