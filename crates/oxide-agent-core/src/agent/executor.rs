@@ -142,9 +142,10 @@ impl AgentExecutor {
     #[must_use]
     pub fn new(
         llm_client: Arc<LlmClient>,
-        session: AgentSession,
+        mut session: AgentSession,
         settings: Arc<crate::config::AgentSettings>,
     ) -> Self {
+        session.set_context_window_tokens(settings.get_agent_internal_context_budget_tokens());
         let tool_policy_state = Arc::new(RwLock::new(ToolAccessPolicy::default()));
         let hook_policy_state = Arc::new(RwLock::new(HookAccessPolicy::default()));
         let mut runner = AgentRunner::new(llm_client.clone());
@@ -552,9 +553,8 @@ impl AgentExecutor {
             .execution_profile
             .tool_policy()
             .filter_definitions(registry.all_tools());
-        let (model_id, provider, model_max_output_tokens) =
-            self.settings.get_configured_agent_model();
-        let structured_output = !provider.eq_ignore_ascii_case("zai");
+        let model = self.settings.get_configured_agent_model();
+        let structured_output = !model.provider.eq_ignore_ascii_case("zai");
         let system_prompt = create_agent_system_prompt(
             task,
             &tools,
@@ -572,11 +572,11 @@ impl AgentExecutor {
             system_prompt,
             messages: AgentRunner::convert_memory_to_messages(self.session.memory.get_messages()),
             runner_config: AgentRunnerConfig::new(
-                model_id,
+                model.id,
                 get_agent_max_iterations(),
                 crate::config::AGENT_CONTINUATION_LIMIT,
                 self.settings.get_agent_timeout_secs(),
-                model_max_output_tokens,
+                model.max_output_tokens,
             ),
         }
     }
@@ -734,9 +734,8 @@ impl AgentExecutor {
             .execution_profile
             .tool_policy()
             .filter_definitions(registry.all_tools());
-        let (model_id, provider, model_max_output_tokens) =
-            self.settings.get_configured_agent_model();
-        let structured_output = !provider.eq_ignore_ascii_case("zai");
+        let model = self.settings.get_configured_agent_model();
+        let structured_output = !model.provider.eq_ignore_ascii_case("zai");
         let system_prompt = create_agent_system_prompt(
             &task,
             &tools,
@@ -751,13 +750,13 @@ impl AgentExecutor {
             &task,
             &system_prompt,
             &tools,
-            &model_id,
-            model_max_output_tokens,
+            &model.id,
+            model.max_output_tokens,
             false,
         );
 
         warn!(
-            model = %model_id,
+            model = %model.id,
             tool_count = tools.len(),
             task_len = task.len(),
             system_prompt_len = system_prompt.len(),

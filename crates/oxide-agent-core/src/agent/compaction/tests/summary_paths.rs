@@ -101,7 +101,7 @@ fn probe_summarizer(
     let mut llm_client = LlmClient::new(&AgentSettings {
         compaction_model_id: Some("compact-model".to_string()),
         compaction_model_provider: Some("probe".to_string()),
-        compaction_model_max_tokens: Some(256),
+        compaction_model_max_output_tokens: Some(256),
         compaction_model_timeout_secs: Some(timeout_secs),
         ..AgentSettings::default()
     });

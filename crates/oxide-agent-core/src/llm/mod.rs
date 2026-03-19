@@ -434,7 +434,7 @@ impl LlmClient {
                 history,
                 user_message,
                 &model_info.id,
-                model_info.max_tokens,
+                model_info.max_output_tokens,
             )
             .await;
         let duration = start.elapsed();
@@ -501,7 +501,7 @@ impl LlmClient {
                 messages,
                 tools,
                 model_id: &model_info.id,
-                max_tokens: model_info.max_tokens,
+                max_tokens: model_info.max_output_tokens,
                 json_mode,
             };
             let result = provider.chat_with_tools(request).await;

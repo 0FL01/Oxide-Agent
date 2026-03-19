@@ -498,6 +498,11 @@ impl AgentMemory {
         self.max_tokens
     }
 
+    /// Update the configured maximum token count.
+    pub fn set_max_tokens(&mut self, max_tokens: usize) {
+        self.max_tokens = max_tokens;
+    }
+
     /// Get the last request-scoped token count reported by the API.
     #[must_use]
     pub fn api_token_count(&self) -> Option<usize> {

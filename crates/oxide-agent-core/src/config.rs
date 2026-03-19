@@ -100,22 +100,31 @@ pub struct AgentSettings {
     pub chat_model_name: Option<String>,
     /// Chat model provider override
     pub chat_model_provider: Option<String>,
-    /// Chat model max tokens override
-    pub chat_model_max_tokens: Option<u32>,
+    /// Chat model max output tokens override
+    #[serde(alias = "chat_model_max_tokens")]
+    pub chat_model_max_output_tokens: Option<u32>,
+    /// Chat model context window tokens override
+    pub chat_model_context_window_tokens: Option<u32>,
 
     /// Agent model ID override
     pub agent_model_id: Option<String>,
     /// Agent model provider override
     pub agent_model_provider: Option<String>,
-    /// Agent model max tokens override
-    pub agent_model_max_tokens: Option<u32>,
+    /// Agent model max output tokens override
+    #[serde(alias = "agent_model_max_tokens")]
+    pub agent_model_max_output_tokens: Option<u32>,
+    /// Agent model context window tokens override
+    pub agent_model_context_window_tokens: Option<u32>,
 
     /// Sub-agent model ID override
     pub sub_agent_model_id: Option<String>,
     /// Sub-agent model provider override
     pub sub_agent_model_provider: Option<String>,
-    /// Sub-agent model max tokens override
-    pub sub_agent_max_tokens: Option<u32>,
+    /// Sub-agent model max output tokens override
+    #[serde(alias = "sub_agent_max_tokens")]
+    pub sub_agent_max_output_tokens: Option<u32>,
+    /// Sub-agent model context window tokens override
+    pub sub_agent_context_window_tokens: Option<u32>,
 
     /// Media model ID override (for voice/images)
     pub media_model_id: Option<String>,
@@ -131,8 +140,9 @@ pub struct AgentSettings {
     pub compaction_model_id: Option<String>,
     /// Compaction summary model provider override
     pub compaction_model_provider: Option<String>,
-    /// Compaction summary model max tokens override
-    pub compaction_model_max_tokens: Option<u32>,
+    /// Compaction summary model max output tokens override
+    #[serde(alias = "compaction_model_max_tokens")]
+    pub compaction_model_max_output_tokens: Option<u32>,
     /// Compaction summary model timeout override in seconds
     pub compaction_model_timeout_secs: Option<u64>,
 
@@ -312,94 +322,111 @@ impl AgentSettings {
         }
     }
 
+    fn build_model_info(
+        id: &str,
+        provider: &str,
+        max_output_tokens: u32,
+        context_window_tokens: u32,
+    ) -> ModelInfo {
+        ModelInfo {
+            id: id.to_string(),
+            max_output_tokens,
+            context_window_tokens,
+            provider: provider.to_string(),
+        }
+    }
+
     fn chat_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.chat_model_id.as_ref()?;
         let provider = self.chat_model_provider.as_ref()?;
         let name = self.chat_model_name.as_deref().unwrap_or(id);
-        let max_tokens = self.chat_model_max_tokens.unwrap_or(64000);
+        let max_output_tokens = self
+            .chat_model_max_output_tokens
+            .unwrap_or(DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS);
+        let context_window_tokens = self
+            .chat_model_context_window_tokens
+            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             name.to_string(),
-            ModelInfo {
-                id: id.clone(),
-                max_tokens,
-                provider: provider.clone(),
-            },
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
         ))
     }
 
     fn agent_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.agent_model_id.as_ref()?;
         let provider = self.agent_model_provider.as_ref()?;
-        let max_tokens = self.agent_model_max_tokens.unwrap_or(128000);
+        let max_output_tokens = self
+            .agent_model_max_output_tokens
+            .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS);
+        let context_window_tokens = self
+            .agent_model_context_window_tokens
+            .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
-            ModelInfo {
-                id: id.clone(),
-                max_tokens,
-                provider: provider.clone(),
-            },
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
         ))
     }
 
     fn sub_agent_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.sub_agent_model_id.as_ref()?;
         let provider = self.sub_agent_model_provider.as_ref()?;
-        let max_tokens = self.sub_agent_max_tokens.unwrap_or(64000);
+        let max_output_tokens = self
+            .sub_agent_max_output_tokens
+            .unwrap_or(DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS);
+        let context_window_tokens = self
+            .sub_agent_context_window_tokens
+            .unwrap_or(DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
-            ModelInfo {
-                id: id.clone(),
-                max_tokens,
-                provider: provider.clone(),
-            },
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
         ))
     }
 
     fn narrator_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.narrator_model_id.as_ref()?;
         let provider = self.narrator_model_provider.as_ref()?;
+        let context_window_tokens = self
+            .chat_model_context_window_tokens
+            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
-            ModelInfo {
-                id: id.clone(),
-                max_tokens: NARRATOR_MAX_TOKENS,
-                provider: provider.clone(),
-            },
+            Self::build_model_info(id, provider, NARRATOR_MAX_TOKENS, context_window_tokens),
         ))
     }
 
     fn compaction_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.compaction_model_id.as_ref()?;
         let provider = self.compaction_model_provider.as_ref()?;
-        let max_tokens = self
-            .compaction_model_max_tokens
+        let max_output_tokens = self
+            .compaction_model_max_output_tokens
             .unwrap_or(COMPACTION_MAX_TOKENS);
+        let context_window_tokens = self
+            .agent_model_context_window_tokens
+            .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
-            ModelInfo {
-                id: id.clone(),
-                max_tokens,
-                provider: provider.clone(),
-            },
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
         ))
     }
 
     fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
+        let max_output_tokens = self
+            .chat_model_max_output_tokens
+            .unwrap_or(DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS);
+        let context_window_tokens = self
+            .chat_model_context_window_tokens
+            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
-            ModelInfo {
-                id: id.clone(),
-                max_tokens: self.chat_model_max_tokens.unwrap_or(64000),
-                provider: provider.clone(),
-            },
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
         ))
     }
 
@@ -458,39 +485,45 @@ impl AgentSettings {
             .unwrap_or_default()
     }
 
-    /// Returns the configured agent model (id, provider, max_tokens)
-    pub fn get_configured_agent_model(&self) -> (String, String, u32) {
-        if let (Some(id), Some(provider)) = (&self.agent_model_id, &self.agent_model_provider) {
-            return (
-                id.clone(),
-                provider.clone(),
-                self.agent_model_max_tokens.unwrap_or(128000),
-            );
-        }
-        if let Some((_, info)) = self.chat_model_spec() {
-            return (info.id, info.provider, info.max_tokens);
-        }
-        (String::new(), String::new(), 0)
-    }
-
-    /// Returns the configured sub-agent model (id, provider, max_tokens)
-    pub fn get_configured_sub_agent_model(&self) -> (String, String, u32) {
-        if let (Some(id), Some(provider)) =
-            (&self.sub_agent_model_id, &self.sub_agent_model_provider)
-        {
-            return (
-                id.clone(),
-                provider.clone(),
-                self.sub_agent_max_tokens.unwrap_or(64000),
-            );
+    fn resolve_execution_model(&self, prefer_sub_agent: bool) -> ModelInfo {
+        if prefer_sub_agent {
+            if let Some((_, info)) = self.sub_agent_model_spec() {
+                return info;
+            }
         }
         if let Some((_, info)) = self.agent_model_spec() {
-            return (info.id, info.provider, info.max_tokens);
+            return info;
         }
         if let Some((_, info)) = self.chat_model_spec() {
-            return (info.id, info.provider, info.max_tokens);
+            return info;
         }
-        (String::new(), String::new(), 0)
+        ModelInfo::default()
+    }
+
+    /// Returns the configured model info for the main agent.
+    pub fn get_configured_agent_model(&self) -> ModelInfo {
+        self.resolve_execution_model(false)
+    }
+
+    /// Returns the configured model info for the sub-agent.
+    pub fn get_configured_sub_agent_model(&self) -> ModelInfo {
+        self.resolve_execution_model(true)
+    }
+
+    /// Returns the internal Agent Mode context budget after applying the clamp policy.
+    pub fn get_agent_internal_context_budget_tokens(&self) -> usize {
+        clamp_internal_context_budget_tokens(
+            self.get_configured_agent_model().context_window_tokens,
+            AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS,
+        )
+    }
+
+    /// Returns the internal sub-agent context budget after applying the clamp policy.
+    pub fn get_sub_agent_internal_context_budget_tokens(&self) -> usize {
+        clamp_internal_context_budget_tokens(
+            self.get_configured_sub_agent_model().context_window_tokens,
+            SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS,
+        )
     }
 
     /// Returns the configured media model (id, provider)
@@ -521,7 +554,7 @@ impl AgentSettings {
             return (
                 id.clone(),
                 provider.clone(),
-                self.compaction_model_max_tokens
+                self.compaction_model_max_output_tokens
                     .unwrap_or(COMPACTION_MAX_TOKENS),
                 self.compaction_model_timeout_secs
                     .unwrap_or(COMPACTION_TIMEOUT_SECS),
@@ -553,6 +586,7 @@ impl AgentSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::env;
 
     // Tests run sequentially to avoid environment variable race conditions
@@ -608,17 +642,80 @@ mod tests {
         env::remove_var("ZAI_API_KEY");
         Ok(())
     }
+
+    #[test]
+    fn test_legacy_max_tokens_alias_deserializes_to_max_output_tokens() {
+        let settings: AgentSettings = serde_json::from_value(json!({
+            "agent_model_id": "agent-model",
+            "agent_model_provider": "mock",
+            "agent_model_max_tokens": 12345,
+            "agent_model_context_window_tokens": 54321
+        }))
+        .expect("legacy alias should deserialize");
+
+        assert_eq!(settings.agent_model_max_output_tokens, Some(12_345));
+        assert_eq!(settings.agent_model_context_window_tokens, Some(54_321));
+    }
+
+    #[test]
+    fn test_agent_internal_context_budget_clamps_model_window() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("mock".to_string()),
+            agent_model_context_window_tokens: Some(500_000),
+            ..AgentSettings::default()
+        };
+
+        assert_eq!(
+            settings.get_agent_internal_context_budget_tokens(),
+            AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS
+        );
+    }
+
+    #[test]
+    fn test_sub_agent_runtime_model_keeps_separate_output_and_context_windows() {
+        let settings = AgentSettings {
+            sub_agent_model_id: Some("sub-model".to_string()),
+            sub_agent_model_provider: Some("mock".to_string()),
+            sub_agent_max_output_tokens: Some(12_000),
+            sub_agent_context_window_tokens: Some(48_000),
+            ..AgentSettings::default()
+        };
+
+        let model = settings.get_configured_sub_agent_model();
+        assert_eq!(model.id, "sub-model");
+        assert_eq!(model.provider, "mock");
+        assert_eq!(model.max_output_tokens, 12_000);
+        assert_eq!(model.context_window_tokens, 48_000);
+        assert_eq!(
+            settings.get_sub_agent_internal_context_budget_tokens(),
+            48_000
+        );
+    }
 }
 
-/// Information about a supported LLM model
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Information about a supported LLM model.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// Internal model identifier
     pub id: String,
-    /// Maximum allowed output tokens
-    pub max_tokens: u32,
+    /// Maximum allowed output tokens for a single response.
+    #[serde(alias = "max_tokens")]
+    pub max_output_tokens: u32,
+    /// Maximum model context window available for the full request.
+    #[serde(default)]
+    pub context_window_tokens: u32,
     /// Provider name
     pub provider: String,
+}
+
+fn clamp_internal_context_budget_tokens(model_context_window_tokens: u32, cap: usize) -> usize {
+    let resolved_window = usize::try_from(model_context_window_tokens).unwrap_or(cap);
+    if resolved_window == 0 {
+        return cap;
+    }
+
+    resolved_window.min(cap)
 }
 
 /// Get the agent model name from environment.
@@ -642,10 +739,22 @@ pub const SUB_AGENT_TIMEOUT_SECS: u64 = 600;
 /// Maximum timeout for individual tool call (in seconds)
 /// This prevents a single tool from blocking the agent indefinitely
 pub const AGENT_TOOL_TIMEOUT_SECS: u64 = 300; // 5 minutes
-/// Agent memory token limit
-pub const AGENT_MAX_TOKENS: usize = 200_000;
-/// Sub-agent memory token limit (lighter context)
-pub const SUB_AGENT_MAX_TOKENS: usize = 64_000;
+/// Default chat model max output tokens.
+pub const DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
+/// Default chat model context window tokens.
+pub const DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
+/// Default main-agent model max output tokens.
+pub const DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 128_000;
+/// Default main-agent model context window tokens.
+pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
+/// Default sub-agent model max output tokens.
+pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
+/// Default sub-agent model context window tokens.
+pub const DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
+/// Internal main-agent context budget cap.
+pub const AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
+/// Internal sub-agent context budget cap.
+pub const SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 64_000;
 /// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when todos incomplete
 /// Default limit for search tool calls per agent session
