@@ -1,10 +1,11 @@
 use super::{
-    AgentFlowRecord, AgentMemory, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
+    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
     CreateReminderJobOptions, Message, ReminderJobRecord, ReminderJobStatus, StorageError,
     TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord, TopicInfraConfigRecord,
     UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions,
     UpsertTopicContextOptions, UpsertTopicInfraConfigOptions, UserConfig,
 };
+use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
 
 /// Interface for storage providers.
