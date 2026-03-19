@@ -4,15 +4,9 @@ use oxide_agent_core::agent::progress::{ProgressState, Step, StepStatus};
 pub fn render_progress_html(state: &ProgressState) -> String {
     let mut lines = Vec::new();
 
-    let tokens_str = state
-        .latest_token_snapshot
-        .as_ref()
-        .map(format_header_tokens)
-        .unwrap_or_else(|| "...".to_string());
-
     lines.push(format!(
-        "🤖 <b>Oxide Agent</b> │ Iteration {}/{} │ {}",
-        state.current_iteration, state.max_iterations, tokens_str
+        "🤖 <b>Oxide Agent</b> │ Iteration {}/{}",
+        state.current_iteration, state.max_iterations
     ));
     lines.push(String::new());
 
@@ -158,17 +152,6 @@ fn current_step(state: &ProgressState) -> Option<&Step> {
         .steps
         .iter()
         .rfind(|s| s.status == StepStatus::InProgress)
-}
-
-fn format_header_tokens(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
-    format!(
-        "ctx {} + p{} + t{} + s{} / {}",
-        oxide_agent_core::utils::format_tokens(snapshot.hot_memory_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.system_prompt_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.tool_schema_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.loaded_skill_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.context_window_tokens)
-    )
 }
 
 fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
