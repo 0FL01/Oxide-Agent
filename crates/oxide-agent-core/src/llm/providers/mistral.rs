@@ -103,6 +103,7 @@ impl MistralProvider {
                 }
             }
         }
+
         messages
     }
 
