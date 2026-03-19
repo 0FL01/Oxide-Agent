@@ -2,8 +2,9 @@ use super::{
     build_agent_flow_record, current_timestamp_unix_secs, user_agent_memory_key,
     user_context_agent_flow_key, user_context_agent_flow_memory_key,
     user_context_agent_flow_prefix, user_context_agent_flows_prefix, user_context_agent_memory_key,
-    AgentFlowRecord, AgentMemory, R2Storage, StorageError,
+    AgentFlowRecord, R2Storage, StorageError,
 };
+use crate::agent::memory::AgentMemory;
 
 impl R2Storage {
     pub(super) async fn save_agent_memory_inner(
