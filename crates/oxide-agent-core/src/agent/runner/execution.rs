@@ -11,6 +11,7 @@ use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::{ChatResponse, LlmError};
 use anyhow::{anyhow, Result};
+use std::future::Future;
 use tracing::{debug, info, warn};
 
 impl AgentRunner {
@@ -40,8 +41,16 @@ impl AgentRunner {
             self.apply_pending_runtime_context(ctx, &mut state).await;
 
             self.apply_before_iteration_hooks(ctx, &state)?;
-            self.run_iteration_compaction(ctx, &mut state, iteration)
-                .await?;
+            let cancellation_token = ctx.agent.cancellation_token().clone();
+            let Some(compaction_result) = Self::await_until_cancelled(
+                cancellation_token,
+                self.run_iteration_compaction(ctx, &mut state, iteration),
+            )
+            .await
+            else {
+                return Err(self.cancelled_error(ctx).await);
+            };
+            compaction_result?;
 
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
@@ -56,7 +65,16 @@ impl AgentRunner {
                 let _ = tx.send(AgentEvent::Thinking { snapshot }).await;
             }
 
-            if self.llm_loop_detected(ctx, &state).await {
+            let cancellation_token = ctx.agent.cancellation_token().clone();
+            let Some(loop_detected) = Self::await_until_cancelled(
+                cancellation_token,
+                self.llm_loop_detected(ctx, &state),
+            )
+            .await
+            else {
+                return Err(self.cancelled_error(ctx).await);
+            };
+            if loop_detected {
                 return Err(self
                     .loop_detected_error(
                         ctx,
@@ -66,7 +84,16 @@ impl AgentRunner {
                     .await);
             }
 
-            let response = self.call_llm_with_tools(ctx, &mut state).await?;
+            let cancellation_token = ctx.agent.cancellation_token().clone();
+            let Some(response) = Self::await_until_cancelled(
+                cancellation_token,
+                self.call_llm_with_tools(ctx, &mut state),
+            )
+            .await
+            else {
+                return Err(self.cancelled_error(ctx).await);
+            };
+            let response = response?;
             if let Some(result) = self.handle_llm_response(response, ctx, &mut state).await? {
                 return Ok(result);
             }
@@ -108,6 +135,21 @@ impl AgentRunner {
                 Self::emit_llm_error(ctx.progress_tx, &error).await;
                 Err(anyhow!("LLM call failed: {error}"))
             }
+        }
+    }
+
+    async fn await_until_cancelled<T, F>(
+        cancellation_token: tokio_util::sync::CancellationToken,
+        future: F,
+    ) -> Option<T>
+    where
+        F: Future<Output = T>,
+    {
+        tokio::pin!(future);
+
+        tokio::select! {
+            result = &mut future => Some(result),
+            _ = cancellation_token.cancelled() => None,
         }
     }
 
@@ -736,16 +778,7 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
     ) -> anyhow::Error {
-        ctx.agent.memory_mut().todos.clear();
-        let mut todos = ctx.todos_arc.lock().await;
-        todos.clear();
-
         if let Some(tx) = ctx.progress_tx {
-            let _ = tx
-                .send(AgentEvent::TodosUpdated {
-                    todos: crate::agent::providers::TodoList::new(),
-                })
-                .await;
             let _ = tx.send(AgentEvent::Cancelled).await;
         }
 
