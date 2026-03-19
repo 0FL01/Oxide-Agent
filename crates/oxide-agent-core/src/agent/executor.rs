@@ -673,7 +673,7 @@ impl AgentExecutor {
     /// # Errors
     ///
     /// Returns an error if the LLM call fails, tool execution fails, or the iteration/timeout limits are exceeded.
-    #[tracing::instrument(skip(self, progress_tx), fields(session_id = %self.session.session_id))]
+    #[tracing::instrument(skip(self, progress_tx, task), fields(session_id = %self.session.session_id))]
     pub async fn execute(
         &mut self,
         task: &str,
