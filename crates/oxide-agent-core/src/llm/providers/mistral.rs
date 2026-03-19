@@ -52,30 +52,48 @@ impl MistralProvider {
                     }));
                 }
                 "assistant" => {
-                    let mut content = msg.content.clone();
-                    if let Some(tool_calls) = &msg.tool_calls {
-                        if !tool_calls.is_empty() {
-                            let tool_calls_json = json!({ "tool_calls": tool_calls });
-                            let tool_calls_str =
-                                serde_json::to_string(&tool_calls_json).unwrap_or_default();
-                            if content.is_empty() {
-                                content = tool_calls_str;
-                            } else {
-                                content = format!("{content}\n\n{tool_calls_str}");
-                            }
-                        }
-                    }
-                    messages.push(json!({
+                    let content = msg.content.clone();
+                    let tool_calls = msg.tool_calls.as_ref();
+
+                    // Build message with native tool_calls if present
+                    let mut msg_obj = json!({
                         "role": "assistant",
                         "content": content
-                    }));
+                    });
+
+                    if let Some(calls) = tool_calls {
+                        if !calls.is_empty() {
+                            let mistral_tool_calls: Vec<serde_json::Value> = calls
+                                .iter()
+                                .map(|tc| {
+                                    json!({
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments
+                                        }
+                                    })
+                                })
+                                .collect();
+                            msg_obj["tool_calls"] = json!(mistral_tool_calls);
+                        }
+                    }
+                    messages.push(msg_obj);
                 }
                 "tool" => {
-                    // [Tool Output] <content>
-                    messages.push(json!({
-                        "role": "user",
-                        "content": format!("[Tool Output] {}", msg.content)
-                    }));
+                    // Native tool message format for Mistral API
+                    let mut tool_msg = json!({
+                        "role": "tool",
+                        "content": msg.content
+                    });
+                    if let Some(tool_call_id) = &msg.tool_call_id {
+                        tool_msg["tool_call_id"] = json!(tool_call_id);
+                    }
+                    if let Some(name) = &msg.name {
+                        tool_msg["name"] = json!(name);
+                    }
+                    messages.push(tool_msg);
                 }
                 _ => {
                     messages.push(json!({
@@ -166,6 +184,7 @@ impl MistralProvider {
     fn build_tool_chat_body(
         system_prompt: &str,
         history: &[Message],
+        tools: &[crate::llm::ToolDefinition],
         model_id: &str,
         max_tokens: u32,
     ) -> Value {
@@ -173,14 +192,33 @@ impl MistralProvider {
         let mut body = json!({
             "model": model_id,
             "messages": messages,
-            "response_format": { "type": "json_object" },
             "max_tokens": max_tokens,
             "temperature": if Self::is_reasoning_model(model_id) {
                 MISTRAL_REASONING_TEMPERATURE
             } else {
                 MISTRAL_TOOL_TEMPERATURE
-            }
+            },
+            "tool_choice": "auto",
+            "parallel_tool_calls": true
         });
+
+        // Add tools array if provided
+        if !tools.is_empty() {
+            let mistral_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters
+                        }
+                    })
+                })
+                .collect();
+            body["tools"] = json!(mistral_tools);
+        }
 
         if Self::is_reasoning_model(model_id) {
             body["reasoning_effort"] = json!(MISTRAL_REASONING_EFFORT);
@@ -309,17 +347,58 @@ impl MistralProvider {
         let reasoning_content =
             extracted_reasoning.or_else(|| Self::extract_reasoning_content(message));
 
-        if content.is_none() && reasoning_content.is_none() {
+        // Parse tool_calls from the response
+        let tool_calls = Self::parse_tool_calls(message);
+
+        // Allow empty content if there are tool_calls or reasoning_content
+        if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
             return Err(LlmError::ApiError("Empty response".to_string()));
         }
 
         Ok(ChatResponse {
             content,
-            tool_calls: vec![],
+            tool_calls,
             finish_reason,
             reasoning_content,
             usage: Self::parse_usage(&response),
         })
+    }
+
+    /// Parse tool_calls from Mistral API response message
+    fn parse_tool_calls(message: &Value) -> Vec<crate::llm::ToolCall> {
+        let Some(tool_calls_array) = message.get("tool_calls") else {
+            return Vec::new();
+        };
+
+        let Some(array) = tool_calls_array.as_array() else {
+            return Vec::new();
+        };
+
+        array
+            .iter()
+            .filter_map(|tc| {
+                let id = tc.get("id")?.as_str()?.to_string();
+                let function = tc.get("function")?;
+                let name = function.get("name")?.as_str()?.to_string();
+                let arguments = function
+                    .get("arguments")
+                    .and_then(|a| {
+                        if let Some(s) = a.as_str() {
+                            Some(s.to_string())
+                        } else {
+                            // If arguments is already an object, serialize to string
+                            serde_json::to_string(a).ok()
+                        }
+                    })
+                    .unwrap_or_default();
+
+                Some(crate::llm::ToolCall {
+                    id,
+                    function: crate::llm::ToolCallFunction { name, arguments },
+                    is_recovered: false,
+                })
+            })
+            .collect()
     }
 
     async fn send_chat_request(&self, body: Value) -> Result<ChatResponse, LlmError> {
@@ -430,12 +509,12 @@ impl LlmProvider for MistralProvider {
         let ChatWithToolsRequest {
             system_prompt,
             messages: history,
-            tools: _,
+            tools,
             model_id,
             max_tokens,
             json_mode: _,
         } = request;
-        let body = Self::build_tool_chat_body(system_prompt, history, model_id, max_tokens);
+        let body = Self::build_tool_chat_body(system_prompt, history, tools, model_id, max_tokens);
         self.send_chat_request(body).await
     }
 }
@@ -466,7 +545,7 @@ mod tests {
     #[test]
     fn regular_model_tool_body_keeps_existing_temperature() {
         let body =
-            MistralProvider::build_tool_chat_body("system", &[], "mistral-large-latest", 4096);
+            MistralProvider::build_tool_chat_body("system", &[], &[], "mistral-large-latest", 4096);
 
         assert!(body.get("reasoning_effort").is_none());
         assert_eq!(body["temperature"], json!(MISTRAL_TOOL_TEMPERATURE));
@@ -531,12 +610,204 @@ mod tests {
     }
 
     #[test]
-    fn prepare_chat_messages_preserves_basic_history() {
-        let history = vec![Message::assistant("hello back")];
-        let messages = MistralProvider::prepare_chat_messages("system", &history, "hello");
+    fn prepare_structured_messages_formats_tool_message() {
+        let history = vec![Message::tool("call_abc123", "get_weather", "{\"temperature\": 20}")];
+        let messages = MistralProvider::prepare_structured_messages("You are helpful.", &history);
 
-        assert_eq!(messages[0]["role"], json!("system"));
-        assert_eq!(messages[1]["role"], json!("assistant"));
-        assert_eq!(messages[2]["role"], json!("user"));
+        let tool_msg = &messages[1];
+        assert_eq!(tool_msg["role"], json!("tool"));
+        assert_eq!(tool_msg["content"], json!("{\"temperature\": 20}"));
+        assert_eq!(tool_msg["tool_call_id"], json!("call_abc123"));
+        assert_eq!(tool_msg["name"], json!("get_weather"));
+    }
+
+    #[test]
+    fn parses_tool_calls_from_response() {
+        let response = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_abc123",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{\"location\":\"Moscow\"}"
+                            }
+                        },
+                        {
+                            "id": "call_def456",
+                            "type": "function",
+                            "function": {
+                                "name": "get_time",
+                                "arguments": "{}"
+                            }
+                        }
+                    ]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 30,
+                "total_tokens": 80
+            }
+        });
+
+        let parsed = MistralProvider::parse_chat_response(response).expect("response parses");
+
+        assert!(parsed.content.is_none());
+        assert_eq!(parsed.finish_reason, "tool_calls");
+        assert_eq!(parsed.tool_calls.len(), 2);
+
+        assert_eq!(parsed.tool_calls[0].id, "call_abc123");
+        assert_eq!(parsed.tool_calls[0].function.name, "get_weather");
+        assert_eq!(
+            parsed.tool_calls[0].function.arguments,
+            "{\"location\":\"Moscow\"}"
+        );
+
+        assert_eq!(parsed.tool_calls[1].id, "call_def456");
+        assert_eq!(parsed.tool_calls[1].function.name, "get_time");
+        assert_eq!(parsed.tool_calls[1].function.arguments, "{}");
+    }
+
+    #[test]
+    fn parses_tool_calls_with_interleaved_content() {
+        let response = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": "I'll check the weather for you.",
+                    "tool_calls": [
+                        {
+                            "id": "call_xyz789",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{\"city\":\"London\"}"
+                            }
+                        }
+                    ]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 15,
+                "total_tokens": 35
+            }
+        });
+
+        let parsed = MistralProvider::parse_chat_response(response).expect("response parses");
+
+        assert_eq!(
+            parsed.content.as_deref(),
+            Some("I'll check the weather for you.")
+        );
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].id, "call_xyz789");
+    }
+
+    #[test]
+    fn builds_tool_chat_body_with_tools_array() {
+        use crate::llm::ToolDefinition;
+
+        let tools = vec![
+            ToolDefinition {
+                name: "get_weather".to_string(),
+                description: "Get weather for a city".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" }
+                    },
+                    "required": ["city"]
+                }),
+            },
+            ToolDefinition {
+                name: "get_time".to_string(),
+                description: "Get current time".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+        ];
+
+        let body = MistralProvider::build_tool_chat_body(
+            "You are a helpful assistant.",
+            &[],
+            &tools,
+            "mistral-large-latest",
+            4096,
+        );
+
+        // Verify tools array is present
+        let tools_array = body.get("tools").expect("tools array should be present");
+        let tools_vec = tools_array.as_array().expect("tools should be an array");
+        assert_eq!(tools_vec.len(), 2);
+
+        // Verify first tool structure
+        let first_tool = &tools_vec[0];
+        assert_eq!(first_tool["type"], json!("function"));
+        assert_eq!(first_tool["function"]["name"], json!("get_weather"));
+        assert_eq!(
+            first_tool["function"]["description"],
+            json!("Get weather for a city")
+        );
+
+        // Verify tool_choice and parallel_tool_calls are set
+        assert_eq!(body["tool_choice"], json!("auto"));
+        assert_eq!(body["parallel_tool_calls"], json!(true));
+
+        // Verify response_format is NOT present
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn builds_tool_chat_body_without_tools() {
+        let body = MistralProvider::build_tool_chat_body(
+            "You are a helpful assistant.",
+            &[],
+            &[],
+            "mistral-large-latest",
+            4096,
+        );
+
+        // Verify tools array is NOT present when empty
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn prepare_structured_messages_preserves_assistant_tool_calls() {
+        use crate::llm::{ToolCall, ToolCallFunction};
+
+        let history = vec![Message::assistant_with_tools(
+            "I'll get the weather.",
+            vec![ToolCall {
+                id: "call_xyz".to_string(),
+                function: ToolCallFunction {
+                    name: "get_weather".to_string(),
+                    arguments: "{\"city\":\"Paris\"}".to_string(),
+                },
+                is_recovered: false,
+            }],
+        )];
+        let messages = MistralProvider::prepare_structured_messages("You are helpful.", &history);
+
+        let assistant_msg = &messages[1];
+        assert_eq!(assistant_msg["role"], json!("assistant"));
+        assert_eq!(assistant_msg["content"], json!("I'll get the weather."));
+        assert!(assistant_msg.get("tool_calls").is_some());
+
+        let tool_calls = assistant_msg["tool_calls"].as_array().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["id"], json!("call_xyz"));
+        assert_eq!(tool_calls[0]["function"]["name"], json!("get_weather"));
+        assert_eq!(
+            tool_calls[0]["function"]["arguments"],
+            json!("{\"city\":\"Paris\"}")
+        );
     }
 }
