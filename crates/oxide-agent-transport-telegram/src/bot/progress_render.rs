@@ -1,4 +1,4 @@
-use oxide_agent_core::agent::progress::{ProgressState, Step, StepStatus};
+use oxide_agent_core::agent::progress::{ProgressState, RateLimitRetryState, Step, StepStatus};
 
 /// Render a progress state into Telegram-ready HTML.
 pub fn render_progress_html(state: &ProgressState) -> String {
@@ -36,6 +36,14 @@ pub fn render_progress_html(state: &ProgressState) -> String {
             "⏳ {}",
             html_escape::encode_text(&step.description)
         ));
+    }
+
+    // Render rate limit retry status if active
+    if let Some(retry) = &state.rate_limit_retry {
+        if !lines.last().is_some_and(String::is_empty) {
+            lines.push(String::new());
+        }
+        push_rate_limit_retry(&mut lines, retry);
     }
 
     if state.is_finished {
@@ -97,6 +105,28 @@ fn push_todos(lines: &mut Vec<String>, state: &ProgressState) {
         let desc = html_escape::encode_text(&truncated);
         lines.push(format!("  {} {}. {}", status_icon, i + 1, desc));
     }
+}
+
+fn push_rate_limit_retry(lines: &mut Vec<String>, retry: &RateLimitRetryState) {
+    // Format wait time display
+    let wait_display = if let Some(secs) = retry.wait_secs {
+        if secs >= 60 {
+            format!(" (~{}m {}s)", secs / 60, secs % 60)
+        } else {
+            format!(" (~{secs}s)")
+        }
+    } else {
+        String::new()
+    };
+
+    lines.push(format!(
+        "🔄 <b>Rate limited</b> ({})",
+        html_escape::encode_text(&retry.provider)
+    ));
+    lines.push(format!(
+        "   Attempt {}/{} - retrying{}",
+        retry.attempt, retry.max_attempts, wait_display
+    ));
 }
 
 fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
@@ -360,5 +390,43 @@ mod tests {
         assert!(output.contains("<b>Context:</b>"));
         assert!(output.contains("Compaction: refreshed summary and rebuilt active context"));
         assert!(output.contains("🗜 History compaction: 2x"));
+    }
+
+    #[test]
+    fn renders_rate_limit_retry() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::RateLimitRetrying {
+            attempt: 2,
+            max_attempts: 5,
+            wait_secs: Some(30),
+            provider: "mistral".to_string(),
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("🔄 <b>Rate limited</b>"));
+        assert!(output.contains("mistral"));
+        assert!(output.contains("Attempt 2/5"));
+        assert!(output.contains("~30s"));
+    }
+
+    #[test]
+    fn renders_rate_limit_retry_long_wait() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::RateLimitRetrying {
+            attempt: 1,
+            max_attempts: 5,
+            wait_secs: Some(125),
+            provider: "openrouter".to_string(),
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("🔄 <b>Rate limited</b>"));
+        assert!(output.contains("openrouter"));
+        assert!(output.contains("Attempt 1/5"));
+        assert!(output.contains("~2m 5s"));
     }
 }

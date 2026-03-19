@@ -180,6 +180,17 @@ pub enum AgentEvent {
         /// Number of applied compaction passes in the current run.
         count: usize,
     },
+    /// Rate limit hit, retrying with backoff.
+    RateLimitRetrying {
+        /// Current attempt number (starts at 1)
+        attempt: usize,
+        /// Maximum number of retry attempts
+        max_attempts: usize,
+        /// Wait time in seconds before next attempt (if known)
+        wait_secs: Option<u64>,
+        /// Provider name for display
+        provider: String,
+    },
 }
 
 /// User-facing class of repeated context maintenance activity.
@@ -219,6 +230,21 @@ pub struct ProgressState {
     pub repeated_compaction_warning: Option<String>,
     /// Latest request-side token budget snapshot.
     pub latest_token_snapshot: Option<TokenSnapshot>,
+    /// Current rate limit retry status (cleared on success or final error)
+    pub rate_limit_retry: Option<RateLimitRetryState>,
+}
+
+/// State for rate limit retry display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitRetryState {
+    /// Current attempt number (starts at 1)
+    pub attempt: usize,
+    /// Maximum number of retry attempts
+    pub max_attempts: usize,
+    /// Wait time in seconds before next attempt (if known)
+    pub wait_secs: Option<u64>,
+    /// Provider name for display
+    pub provider: String,
 }
 
 /// A single step in the agent's execution process
@@ -329,6 +355,12 @@ impl ProgressState {
             AgentEvent::RepeatedCompactionWarning { kind, count } => {
                 self.handle_repeated_compaction_warning(kind, count)
             }
+            AgentEvent::RateLimitRetrying {
+                attempt,
+                max_attempts,
+                wait_secs,
+                provider,
+            } => self.handle_rate_limit_retrying(attempt, max_attempts, wait_secs, provider),
         }
     }
 
@@ -602,6 +634,23 @@ impl ProgressState {
             RepeatedCompactionKind::Cleanup => format!("Cleanup repeated: {count}x"),
             RepeatedCompactionKind::Compaction => format!("History compaction: {count}x"),
         });
+    }
+
+    fn handle_rate_limit_retrying(
+        &mut self,
+        attempt: usize,
+        max_attempts: usize,
+        wait_secs: Option<u64>,
+        provider: String,
+    ) {
+        self.rate_limit_retry = Some(RateLimitRetryState {
+            attempt,
+            max_attempts,
+            wait_secs,
+            provider,
+        });
+        // Clear any previous error since we're retrying
+        self.error = None;
     }
 
     // Formatting is handled in the UI layer.

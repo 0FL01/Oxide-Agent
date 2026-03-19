@@ -458,6 +458,50 @@ impl LlmClient {
         result
     }
 
+    /// Perform a single chat completion request with tool calling (no retry).
+    ///
+    /// This is the base method used by `chat_with_tools` which handles retries internally.
+    /// For agent runner retry handling with UI events, use `chat_with_tools_once` instead.
+    #[instrument(skip(self, system_prompt, messages, tools))]
+    pub async fn chat_with_tools_single_attempt(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model_name: &str,
+        json_mode: bool,
+    ) -> Result<ChatResponse, LlmError> {
+        let model_info = self.get_model_info(model_name)?;
+
+        // Get provider and call its chat_with_tools method (via trait)
+        let provider = self.get_provider(&model_info.provider)?;
+
+        debug!(
+            model = model_name,
+            provider = model_info.provider,
+            tools_count = tools.len(),
+            messages_count = messages.len(),
+            json_mode = json_mode,
+            "Sending tool-enabled request to LLM (single attempt)"
+        );
+
+        let request = ChatWithToolsRequest {
+            system_prompt,
+            messages,
+            tools,
+            model_id: &model_info.id,
+            max_tokens: model_info.max_output_tokens,
+            json_mode,
+        };
+        provider.chat_with_tools(request).await
+    }
+
+    /// Returns the provider name for a given model name.
+    pub fn get_provider_name(&self, model_name: &str) -> Result<String, LlmError> {
+        let model_info = self.get_model_info(model_name)?;
+        Ok(model_info.provider)
+    }
+
     /// Chat completion with tool calling support (for agent mode)
     ///
     /// This method includes retry logic with exponential backoff for transient errors
@@ -564,9 +608,12 @@ impl LlmClient {
         ))
     }
 
+    /// Maximum number of retry attempts for LLM calls.
+    pub const MAX_RETRIES: usize = 5;
+
     /// Calculates the delay before the next retry attempt based on the error type.
     /// Returns `None` if the error is not retryable.
-    fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<std::time::Duration> {
+    pub fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<std::time::Duration> {
         const INITIAL_BACKOFF_MS: u64 = 1000;
 
         match error {
@@ -610,6 +657,19 @@ impl LlmClient {
                 let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
                 Some(std::time::Duration::from_millis(backoff_ms))
             }
+            _ => None,
+        }
+    }
+
+    /// Returns true if the error is retryable.
+    pub fn is_retryable_error(error: &LlmError) -> bool {
+        Self::get_retry_delay(error, 1).is_some()
+    }
+
+    /// Returns the wait time in seconds from a rate limit error, if available.
+    pub fn get_rate_limit_wait_secs(error: &LlmError) -> Option<u64> {
+        match error {
+            LlmError::RateLimit { wait_secs, .. } => *wait_secs,
             _ => None,
         }
     }
