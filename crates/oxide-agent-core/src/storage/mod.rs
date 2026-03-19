@@ -18,6 +18,7 @@ mod r2_user;
 mod reminder;
 mod schema;
 mod user;
+mod utils;
 
 #[cfg(test)]
 pub(crate) use builders::next_record_version;
@@ -61,51 +62,14 @@ pub use reminder::{
     ReminderThreadKind,
 };
 pub use user::{Message, UserConfig, UserContextConfig};
+pub(crate) use utils::{
+    current_timestamp_unix_secs, is_precondition_failed_put_error, select_audit_events_page,
+    should_retry_control_plane_rmw, CONTROL_PLANE_RMW_MAX_RETRIES,
+    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS,
+};
 
 #[cfg(test)]
 use self::r2_base::ControlPlaneLocks;
-
-use aws_sdk_s3::error::SdkError;
-use aws_sdk_s3::operation::put_object::PutObjectError;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-const CONTROL_PLANE_RMW_MAX_RETRIES: usize = 5;
-const CONTROL_PLANE_RMW_RETRY_BACKOFF_MS: u64 = 25;
-
-#[must_use]
-fn select_audit_events_page(
-    events: Vec<AuditEventRecord>,
-    before_version: Option<u64>,
-    limit: usize,
-) -> Vec<AuditEventRecord> {
-    events
-        .into_iter()
-        .rev()
-        .filter(|event| before_version.is_none_or(|cursor| event.version < cursor))
-        .take(limit)
-        .collect()
-}
-
-#[must_use]
-fn should_retry_control_plane_rmw(attempt: usize) -> bool {
-    attempt < CONTROL_PLANE_RMW_MAX_RETRIES
-}
-
-#[must_use]
-fn current_timestamp_unix_secs() -> i64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs() as i64,
-        Err(_) => 0,
-    }
-}
-
-#[must_use]
-fn is_precondition_failed_put_error(err: &SdkError<PutObjectError>) -> bool {
-    match err {
-        SdkError::ServiceError(service_err) => service_err.raw().status().as_u16() == 412,
-        _ => false,
-    }
-}
 
 #[cfg(test)]
 mod tests;
