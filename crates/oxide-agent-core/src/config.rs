@@ -27,6 +27,10 @@ pub const GEMINI_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 pub const GEMINI_IMAGE_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for OpenRouter chat completions.
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
+/// Default temperature used for MiniMax chat completions.
+pub const MINIMAX_CHAT_TEMPERATURE: f32 = 1.0;
+/// Temperature used when MiniMax runs tool-enabled chat requests.
+pub const MINIMAX_TOOL_TEMPERATURE: f32 = 1.0;
 /// Temperature for OpenRouter audio transcription requests.
 pub const OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 /// Temperature for OpenRouter image analysis requests.
@@ -55,6 +59,8 @@ pub struct AgentSettings {
     pub groq_api_key: Option<String>,
     /// Mistral API key
     pub mistral_api_key: Option<String>,
+    /// MiniMax API key
+    pub minimax_api_key: Option<String>,
     /// `ZAI` (Zhipu AI) API key
     pub zai_api_key: Option<String>,
     /// `ZAI` (Zhipu AI) API base URL
