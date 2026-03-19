@@ -21,12 +21,7 @@ mod user;
 mod utils;
 
 #[cfg(test)]
-pub(crate) use builders::next_record_version;
-pub(crate) use builders::{
-    build_agent_flow_record, build_agent_profile_record, build_audit_event_record,
-    build_reminder_job_record, build_topic_agents_md_record, build_topic_binding_record,
-    build_topic_context_record, build_topic_infra_config_record, with_next_reminder_version,
-};
+pub(crate) use control_plane::TOPIC_AGENTS_MD_MAX_LINES;
 pub use control_plane::{
     binding_is_active, resolve_active_topic_binding, AgentProfileRecord, AppendAuditEventOptions,
     AuditEventRecord, OptionalMetadataPatch, TopicAgentsMdRecord, TopicBindingKind,
@@ -35,13 +30,9 @@ pub use control_plane::{
     UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
 };
 pub(crate) use control_plane::{
-    normalize_topic_prompt_payload, validate_topic_agents_md_content,
-    validate_topic_context_content,
+    validate_topic_agents_md_content, validate_topic_context_content, TOPIC_CONTEXT_MAX_CHARS,
+    TOPIC_CONTEXT_MAX_LINES,
 };
-pub(crate) const TOPIC_CONTEXT_MAX_LINES: usize = control_plane::TOPIC_CONTEXT_MAX_LINES;
-pub(crate) const TOPIC_CONTEXT_MAX_CHARS: usize = control_plane::TOPIC_CONTEXT_MAX_CHARS;
-#[cfg(test)]
-pub(crate) const TOPIC_AGENTS_MD_MAX_LINES: usize = control_plane::TOPIC_AGENTS_MD_MAX_LINES;
 pub use error::StorageError;
 pub use flows::AgentFlowRecord;
 pub use keys::{
@@ -62,14 +53,6 @@ pub use reminder::{
     ReminderThreadKind,
 };
 pub use user::{Message, UserConfig, UserContextConfig};
-pub(crate) use utils::{
-    current_timestamp_unix_secs, is_precondition_failed_put_error, select_audit_events_page,
-    should_retry_control_plane_rmw, CONTROL_PLANE_RMW_MAX_RETRIES,
-    CONTROL_PLANE_RMW_RETRY_BACKOFF_MS,
-};
-
-#[cfg(test)]
-use self::r2_base::ControlPlaneLocks;
 
 #[cfg(test)]
 mod tests;
