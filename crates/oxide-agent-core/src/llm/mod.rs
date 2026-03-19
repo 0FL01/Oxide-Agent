@@ -4,7 +4,7 @@
 
 mod common;
 pub mod embeddings;
-mod http_utils;
+pub mod http_utils;
 mod openai_compat;
 /// Implementations of specific LLM providers
 pub mod providers;

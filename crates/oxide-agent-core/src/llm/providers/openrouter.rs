@@ -34,6 +34,42 @@ impl OpenRouterProvider {
     }
 }
 
+/// Parse OpenRouter rate limit reset time from error body.
+///
+/// OpenRouter returns rate limit info in the error body metadata:
+/// ```json
+/// {
+///   "error": {
+///     "message": "...",
+///     "code": 429,
+///     "metadata": {
+///       "headers": {
+///         "X-RateLimit-Reset": "1741305600000"  // milliseconds since epoch
+///       }
+///     }
+///   }
+/// }
+/// ```
+///
+/// Returns seconds to wait, or None if parsing fails.
+pub fn parse_openrouter_rate_limit(body: &str) -> Option<u64> {
+    let json: serde_json::Value = serde_json::from_str(body).ok()?;
+    let reset_ms = json
+        .pointer("/error/metadata/headers/X-RateLimit-Reset")?
+        .as_str()?
+        .parse::<i64>()
+        .ok()?;
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let wait_secs = (reset_ms - now_ms) / 1000;
+
+    if wait_secs > 0 {
+        Some(wait_secs as u64)
+    } else {
+        None
+    }
+}
+
 #[async_trait]
 impl LlmProvider for OpenRouterProvider {
     async fn chat_completion(
@@ -80,6 +116,17 @@ impl LlmProvider for OpenRouterProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+
+            // Handle 429 Too Many Requests
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let error_text = response.text().await.unwrap_or_default();
+                let wait_secs = parse_openrouter_rate_limit(&error_text);
+                return Err(LlmError::RateLimit {
+                    wait_secs,
+                    message: error_text,
+                });
+            }
+
             let error_text = response.text().await.unwrap_or_default();
             return Err(LlmError::ApiError(format!(
                 "OpenRouter API error: {status} - {error_text}"

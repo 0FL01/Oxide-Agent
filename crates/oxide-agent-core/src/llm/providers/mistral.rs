@@ -2,8 +2,8 @@ use crate::config::{
     MISTRAL_CHAT_TEMPERATURE, MISTRAL_REASONING_TEMPERATURE, MISTRAL_TOOL_TEMPERATURE,
 };
 use crate::llm::{
-    http_utils, openai_compat, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
-    TokenUsage,
+    http_utils::{self, parse_retry_after},
+    openai_compat, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage,
 };
 use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;
@@ -336,6 +336,17 @@ impl MistralProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+
+            // Handle 429 Too Many Requests with Retry-After support
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let wait_secs = parse_retry_after(response.headers());
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(LlmError::RateLimit {
+                    wait_secs,
+                    message: error_text,
+                });
+            }
+
             let error_text = response.text().await.unwrap_or_default();
             return Err(LlmError::ApiError(format!(
                 "Mistral API error: {status} - {error_text}"

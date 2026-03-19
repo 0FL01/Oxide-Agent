@@ -224,17 +224,17 @@ fn extract_text_from_response(response: ChatCompletionResponse) -> Result<String
 
 fn map_zai_error(error: ZaiError) -> LlmError {
     match error {
-        ZaiError::RateLimitError { message, .. } => LlmError::RateLimit {
-            wait_secs: None,
-            message,
-        },
+        ZaiError::RateLimitError { message, .. } => {
+            let wait_secs = parse_zai_flush_time(&message);
+            LlmError::RateLimit { wait_secs, message }
+        }
         ZaiError::HttpError {
             status: 429,
             message,
-        } => LlmError::RateLimit {
-            wait_secs: None,
-            message,
-        },
+        } => {
+            let wait_secs = parse_zai_flush_time(&message);
+            LlmError::RateLimit { wait_secs, message }
+        }
         ZaiError::Unknown { code: 0, message } if is_stream_transport_error(&message) => {
             warn!(
                 error = %message,
@@ -246,6 +246,61 @@ fn map_zai_error(error: ZaiError) -> LlmError {
         ZaiError::JsonError(err) => LlmError::JsonError(err.to_string()),
         other => LlmError::ApiError(other.to_string()),
     }
+}
+
+/// Parse ZAI flush time from error message.
+///
+/// ZAI returns rate limit reset time in error messages like:
+/// - "Usage limit reached. Your limit will reset at ${next_flush_time}"
+/// - The next_flush_time can be a Unix timestamp or datetime string
+///
+/// Returns seconds to wait, or None if parsing fails.
+pub fn parse_zai_flush_time(message: &str) -> Option<u64> {
+    // Try to find timestamp pattern in message
+    // ZAI may return: timestamp, ISO datetime, or placeholder ${next_flush_time}
+    let message_lower = message.to_lowercase();
+
+    // Pattern 1: Unix timestamp (digits only)
+    if let Some(caps) = regex::Regex::new(r"\b(\d{10,13})\b")
+        .ok()
+        .and_then(|r| r.captures(&message_lower))
+    {
+        if let Some(ts_str) = caps.get(1) {
+            let ts = ts_str.as_str();
+            // Determine if seconds or milliseconds
+            let ts_value: i64 = ts.parse().ok()?;
+            let ts_seconds = if ts.len() > 10 {
+                // Milliseconds
+                ts_value / 1000
+            } else {
+                ts_value
+            };
+            let now = chrono::Utc::now().timestamp();
+            let wait_secs = ts_seconds - now;
+            if wait_secs > 0 {
+                return Some(wait_secs as u64);
+            }
+        }
+    }
+
+    // Pattern 2: ISO datetime string (look for it in the message)
+    if let Some(caps) =
+        regex::Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)")
+            .ok()
+            .and_then(|r| r.captures(message))
+    {
+        if let Some(dt_str) = caps.get(1) {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str.as_str()) {
+                let now = chrono::Utc::now();
+                let duration = dt.signed_duration_since(now);
+                if duration.num_seconds() > 0 {
+                    return Some(duration.num_seconds() as u64);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn is_stream_transport_error(message: &str) -> bool {

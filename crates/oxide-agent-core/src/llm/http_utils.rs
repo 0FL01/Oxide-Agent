@@ -147,15 +147,45 @@ pub fn extract_text_content(response: &Value, path: &[&str]) -> Result<String, L
 
 /// Helper to parse Retry-After header
 /// Returns number of seconds to wait if present and valid
+///
+/// Supports two formats:
+/// - Delta seconds (e.g., "120")
+/// - HTTP-date (RFC 7231, e.g., "Wed, 21 Oct 2015 07:28:00 GMT")
 pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     if let Some(header_val) = headers.get(reqwest::header::RETRY_AFTER) {
         if let Ok(val_str) = header_val.to_str() {
-            // Try parsing as seconds
+            // Try parsing as delta seconds first (most common)
             if let Ok(secs) = val_str.parse::<u64>() {
                 return Some(secs);
             }
-            // Could implement HTTP Date parsing here if needed, but seconds is most common for APIs
+            // Try parsing as HTTP-date (RFC 7231)
+            if let Some(wait_secs) = parse_http_date(val_str) {
+                return Some(wait_secs);
+            }
         }
     }
     None
+}
+
+/// Parse HTTP-date (IMF-fixdate, RFC 7231) and return seconds until that time.
+///
+/// Examples:
+/// - "Wed, 21 Oct 2015 07:28:00 GMT"
+/// - "21 Oct 2015 07:28:00 GMT"
+/// - "Tue, 21 Oct 2015 07:28:00 +0000"
+fn parse_http_date(date_str: &str) -> Option<u64> {
+    // Try parsing with chrono (RFC 2822 is close to RFC 7231)
+    chrono::DateTime::parse_from_rfc2822(date_str)
+        .or_else(|_| chrono::DateTime::parse_from_rfc3339(date_str))
+        .ok()
+        .and_then(|dt| {
+            let now = chrono::Utc::now();
+            let duration = dt.signed_duration_since(now);
+            // Only return positive durations
+            if duration.num_seconds() > 0 {
+                Some(duration.num_seconds() as u64)
+            } else {
+                None
+            }
+        })
 }
