@@ -142,7 +142,33 @@ crates/
 │   │   │   ├── broker.rs            # Unix socket broker protocol
 │   │   │   └── scope.rs             # SandboxScope stable identity
 │   │   ├── config.rs                # Configuration structures
-│   │   ├── storage.rs               # Storage interface
+│   │   ├── storage/                 # Storage facade, contracts, R2 backend, tests
+│   │   │   ├── mod.rs               # Public storage facade and re-exports
+│   │   │   ├── error.rs             # Storage errors
+│   │   │   ├── keys.rs              # Storage key builders and prefixes
+│   │   │   ├── provider.rs          # StorageProvider trait and mock support
+│   │   │   ├── user.rs              # User config/message domain types
+│   │   │   ├── flows.rs             # Agent flow record types
+│   │   │   ├── control_plane.rs     # Control-plane records and validation helpers
+│   │   │   ├── reminder.rs          # Reminder records and schedule helpers
+│   │   │   ├── schema.rs            # Storage schema version constants
+│   │   │   ├── builders.rs          # Record construction/version helpers
+│   │   │   ├── utils.rs             # Shared retry/time/audit-page helpers
+│   │   │   ├── r2.rs                # R2Storage struct
+│   │   │   ├── r2_provider.rs       # StorageProvider impl for R2Storage
+│   │   │   ├── r2_base.rs           # Shared R2 primitives, cache, conditional writes, locks
+│   │   │   ├── r2_user.rs           # User config/history R2 operations
+│   │   │   ├── r2_memory.rs         # Agent memory and flow R2 operations
+│   │   │   ├── r2_control_plane.rs  # Control-plane and secret R2 operations
+│   │   │   ├── r2_reminder.rs       # Reminder R2 operations
+│   │   │   └── tests/               # Storage unit tests by topic
+│   │   │       ├── mod.rs
+│   │   │       ├── keys_and_user.rs
+│   │   │       ├── reminders.rs
+│   │   │       ├── prompts.rs
+│   │   │       ├── builders.rs
+│   │   │       ├── bindings.rs
+│   │   │       └── utils.rs
 │   │   ├── testing.rs               # TestKit: моки и хелперы
 │   │   ├── utils.rs                 # General utilities
 │   │   └── lib.rs                   # Core library exports
@@ -214,7 +240,7 @@ sandbox/
 ```
 
 ### Workspace crates
-- `oxide-agent-core`: доменная логика агента, staged compaction pipeline для Agent Mode, LLM-интеграции (включая `http_utils.rs`, `openai_compat.rs`), хуки (9 hooks с `registry.rs`, `types.rs`), навыки (с `cache.rs`, `loader.rs`, `matcher.rs`, `types.rs`), runner (с `execution.rs`, `tools.rs`, `responses.rs`, `hooks.rs`, `types.rs`), storage, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов, context-scoped storage API, `AgentExecutionProfile` с `ToolAccessPolicy`, `context.rs`, `identity.rs` для агентского контекста и персон, topic-scoped prompts/configs, `utils.rs` для общих утилит и SSH MCP provider с approval flow.
+- `oxide-agent-core`: доменная логика агента, staged compaction pipeline для Agent Mode, LLM-интеграции (включая `http_utils.rs`, `openai_compat.rs`), хуки (9 hooks с `registry.rs`, `types.rs`), навыки (с `cache.rs`, `loader.rs`, `matcher.rs`, `types.rs`), runner (с `execution.rs`, `tools.rs`, `responses.rs`, `hooks.rs`, `types.rs`), модульный storage facade в `storage/mod.rs` с вынесенными domain/contracts/R2 helper-модулями и тематическими storage tests, control-plane CRUD/audit для manager tools. Включает `UserContextConfig` для per-transport контекстов, context-scoped storage API, `AgentExecutionProfile` с `ToolAccessPolicy`, `context.rs`, `identity.rs` для агентского контекста и персон, topic-scoped prompts/configs, `utils.rs` для общих утилит и SSH MCP provider с approval flow.
 - `oxide-agent-runtime`: оркестрация сессий, прогресс-рендеринг, session registry с thread-aware session keys.
 - `oxide-agent-sandboxd`: отдельный broker daemon для sandbox. Слушает Unix socket (`SANDBOXD_SOCKET`), владеет `docker.sock`, принимает узкий sandbox protocol и выполняет Docker operations от имени основного агента.
 - `oxide-agent-transport-telegram`: Telegram transport, UI/handlers, topic routing, thread context management, resilient messaging, progress rendering, unauthorized access protection, телеметрия доставки. Включает модульный `bot/agent_handlers/` (facade + lifecycle/controls/callbacks/input/task_runner/session/execution_config/reminders/shared/tests), `context.rs` для context-scoped state management с legacy fallback для DM-чатов, `agent/media.rs` для обработки медиа и views module для UI компонентов.
