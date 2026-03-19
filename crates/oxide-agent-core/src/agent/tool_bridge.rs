@@ -17,7 +17,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 struct ParsedToolCall {
     id: String,
@@ -116,7 +116,7 @@ fn parse_tool_call(tool_call: ToolCall) -> ParsedToolCall {
 }
 
 fn log_tool_call(tool_call: &ParsedToolCall) {
-    info!(
+    debug!(
         tool_name = %tool_call.name,
         tool_args = %crate::utils::truncate_str(&tool_call.args, 200),
         "Executing tool call"
