@@ -38,32 +38,19 @@ impl MistralProvider {
         system_prompt: &str,
         history: &[Message],
     ) -> Vec<serde_json::Value> {
-        let mut messages = Vec::new();
-
-        // Collect all system messages from history and prepend them
-        // (Mistral doesn't allow system after tool, so we move them to the front)
-        let mut history_systems = Vec::new();
-        for msg in history {
-            if msg.role.as_str() == "system" {
-                history_systems.push(json!({
-                    "role": "system",
-                    "content": msg.content
-                }));
-            }
-        }
-
-        // Add historical system messages first
-        messages.extend(history_systems);
-
-        // Add the main system prompt
-        messages.push(json!({
+        let mut messages = vec![json!({
             "role": "system",
             "content": system_prompt
-        }));
+        })];
 
         for msg in history {
             match msg.role.as_str() {
-                "system" => continue, // Already handled above
+                "system" => {
+                    messages.push(json!({
+                        "role": "system",
+                        "content": msg.content
+                    }));
+                }
                 "assistant" => {
                     let content = msg.content.clone();
                     let tool_calls = msg.tool_calls.as_ref();
