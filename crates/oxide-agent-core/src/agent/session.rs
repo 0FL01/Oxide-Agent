@@ -6,7 +6,7 @@
 use super::identity::SessionId;
 use super::memory::AgentMemory;
 // use super::providers::TodoList;
-use crate::config::AGENT_MAX_TOKENS;
+use crate::config::AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -148,7 +148,7 @@ impl AgentSession {
     pub fn new_with_sandbox_scope(session_id: SessionId, sandbox_scope: SandboxScope) -> Self {
         Self {
             session_id,
-            memory: AgentMemory::new(AGENT_MAX_TOKENS),
+            memory: AgentMemory::new(AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS),
             sandbox: None,
             sandbox_scope,
             started_at: None,
@@ -182,6 +182,11 @@ impl AgentSession {
     #[must_use]
     pub fn runtime_context_inbox(&self) -> RuntimeContextInbox {
         self.runtime_context_inbox.clone()
+    }
+
+    /// Update the effective hot-context budget for this session.
+    pub fn set_context_window_tokens(&mut self, max_tokens: usize) {
+        self.memory.set_max_tokens(max_tokens);
     }
 
     /// Queue additional runtime context for the next safe iteration boundary.

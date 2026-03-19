@@ -374,7 +374,7 @@ pub async fn start(
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
 
-        let (model_id, _, _) = settings.agent.get_configured_agent_model();
+        let model_id = settings.agent.get_configured_agent_model().id;
         let mut req = bot
             .send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
             .parse_mode(ParseMode::Html);

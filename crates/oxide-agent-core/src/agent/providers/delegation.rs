@@ -22,7 +22,6 @@ use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use crate::config::{
     get_agent_search_limit, get_sub_agent_max_iterations, AGENT_CONTINUATION_LIMIT,
-    SUB_AGENT_MAX_TOKENS,
 };
 use crate::llm::{Message, ToolDefinition};
 use crate::sandbox::SandboxScope;
@@ -236,13 +235,13 @@ impl DelegationProvider {
         Ok(allowed)
     }
 
-    fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
+    fn create_sub_agent_runner(&self, blocked: HashSet<String>, max_tokens: usize) -> AgentRunner {
         let max_iterations = get_sub_agent_max_iterations();
         let mut runner = AgentRunner::new(self.llm_client.clone());
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
             max_iterations,
-            max_tokens: SUB_AGENT_MAX_TOKENS,
+            max_tokens,
             blocked_tools: blocked,
         })));
         runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
@@ -276,13 +275,12 @@ impl DelegationProvider {
 
     fn build_sub_agent_session(
         task: &str,
+        max_tokens: usize,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> EphemeralSession {
         let mut sub_session = match cancellation_token {
-            Some(parent_token) => {
-                EphemeralSession::with_parent_token(SUB_AGENT_MAX_TOKENS, parent_token)
-            }
-            None => EphemeralSession::new(SUB_AGENT_MAX_TOKENS),
+            Some(parent_token) => EphemeralSession::with_parent_token(max_tokens, parent_token),
+            None => EphemeralSession::new(max_tokens),
         };
         sub_session
             .memory_mut()
@@ -290,14 +288,13 @@ impl DelegationProvider {
         sub_session
     }
 
-    fn build_sub_agent_runner_config(&self) -> AgentRunnerConfig {
-        let (model_id, _, model_max_output_tokens) = self.settings.get_configured_sub_agent_model();
+    fn build_sub_agent_runner_config(&self, model: &crate::config::ModelInfo) -> AgentRunnerConfig {
         AgentRunnerConfig::new(
-            model_id,
+            model.id.clone(),
             get_sub_agent_max_iterations(),
             AGENT_CONTINUATION_LIMIT,
             self.settings.get_sub_agent_timeout_secs(),
-            model_max_output_tokens,
+            model.max_output_tokens,
         )
         .with_sub_agent(true)
     }
@@ -315,7 +312,13 @@ impl DelegationProvider {
         } = Self::parse_delegate_args(arguments)?;
 
         let task_id = format!("sub-{}", Uuid::new_v4());
-        let sub_session = Self::build_sub_agent_session(task.as_str(), cancellation_token);
+        let model = self.settings.get_configured_sub_agent_model();
+        let sub_agent_context_budget = self.settings.get_sub_agent_internal_context_budget_tokens();
+        let sub_session = Self::build_sub_agent_session(
+            task.as_str(),
+            sub_agent_context_budget,
+            cancellation_token,
+        );
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
         let (sub_agent_progress_tx, progress_relay_task) =
             spawn_sub_agent_progress_relay(progress_tx);
@@ -329,8 +332,7 @@ impl DelegationProvider {
         let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
         let registry = self.build_registry(&allowed, providers);
         let tools = registry.all_tools();
-        let (_, provider, _) = self.settings.get_configured_sub_agent_model();
-        let structured_output = !provider.eq_ignore_ascii_case("zai");
+        let structured_output = !model.provider.eq_ignore_ascii_case("zai");
         let system_prompt = create_sub_agent_system_prompt(
             task.as_str(),
             &tools,
@@ -347,7 +349,7 @@ impl DelegationProvider {
             todos_arc,
             messages: AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages()),
             sub_session,
-            runner_config: self.build_sub_agent_runner_config(),
+            runner_config: self.build_sub_agent_runner_config(&model),
             compaction_service: self.create_sub_agent_compaction_service(),
             progress_tx: sub_agent_progress_tx,
             progress_relay_task,
@@ -481,7 +483,10 @@ If the sub-agent doesn't finish, a partial report will be returned."
 
         let mut prepared =
             self.prepare_sub_agent_execution(arguments, progress_tx, cancellation_token)?;
-        let mut runner = self.create_sub_agent_runner(Self::blocked_tool_set());
+        let mut runner = self.create_sub_agent_runner(
+            Self::blocked_tool_set(),
+            prepared.sub_session.memory().max_tokens(),
+        );
         info!(task_id = %prepared.task_id, "Running sub-agent delegation");
 
         let outcome = {
@@ -690,9 +695,11 @@ mod tests {
         should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay, DelegationProvider,
     };
     use crate::agent::compaction::BudgetState;
+    use crate::agent::context::AgentContext;
     use crate::agent::progress::{AgentEvent, TokenSnapshot};
-    use crate::config::AgentSettings;
+    use crate::config::{AgentSettings, SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS};
     use crate::llm::LlmClient;
+    use serde_json::json;
     use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -814,6 +821,39 @@ mod tests {
         let forwarded = parent_rx.recv().await.expect("forwarded event");
         assert!(matches!(forwarded, AgentEvent::ToolCall { .. }));
         assert!(parent_rx.recv().await.is_none());
+    }
+
+    #[test]
+    fn prepare_sub_agent_execution_applies_sub_agent_budget_policy() {
+        let settings = Arc::new(AgentSettings {
+            sub_agent_model_id: Some("sub-model".to_string()),
+            sub_agent_model_provider: Some("mock".to_string()),
+            sub_agent_max_output_tokens: Some(12_345),
+            sub_agent_context_window_tokens: Some(96_000),
+            ..AgentSettings::default()
+        });
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+
+        let prepared = provider
+            .prepare_sub_agent_execution(
+                &json!({
+                    "task": "Inspect the workspace.",
+                    "tools": ["write_todos"],
+                    "context": "Keep notes concise."
+                })
+                .to_string(),
+                None,
+                None,
+            )
+            .expect("sub-agent preparation succeeds");
+
+        assert_eq!(prepared.runner_config.model_name, "sub-model");
+        assert_eq!(prepared.runner_config.model_max_output_tokens, 12_345);
+        assert_eq!(
+            prepared.sub_session.memory().max_tokens(),
+            SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS
+        );
     }
 
     fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {

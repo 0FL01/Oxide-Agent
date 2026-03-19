@@ -1462,7 +1462,7 @@ mod tests {
         let settings = AgentSettings {
             agent_model_id: Some("mock-model".to_string()),
             agent_model_provider: Some("mock".to_string()),
-            agent_model_max_tokens: Some(256),
+            agent_model_max_output_tokens: Some(256),
             ..AgentSettings::default()
         };
         let mut llm_client = LlmClient::new(&settings);

@@ -452,7 +452,7 @@ mod tests {
         let settings = Arc::new(crate::config::AgentSettings {
             compaction_model_id: Some("compact-model".to_string()),
             compaction_model_provider: Some("mock".to_string()),
-            compaction_model_max_tokens: Some(256),
+            compaction_model_max_output_tokens: Some(256),
             compaction_model_timeout_secs: Some(5),
             ..crate::config::AgentSettings::default()
         });
@@ -557,7 +557,7 @@ mod tests {
         let settings = Arc::new(crate::config::AgentSettings {
             compaction_model_id: Some("compact-model".to_string()),
             compaction_model_provider: Some("mock".to_string()),
-            compaction_model_max_tokens: Some(256),
+            compaction_model_max_output_tokens: Some(256),
             compaction_model_timeout_secs: Some(5),
             ..crate::config::AgentSettings::default()
         });
@@ -613,7 +613,7 @@ mod tests {
         let settings = Arc::new(crate::config::AgentSettings {
             compaction_model_id: Some("compact-model".to_string()),
             compaction_model_provider: Some("mock".to_string()),
-            compaction_model_max_tokens: Some(256),
+            compaction_model_max_output_tokens: Some(256),
             compaction_model_timeout_secs: Some(5),
             ..crate::config::AgentSettings::default()
         });
