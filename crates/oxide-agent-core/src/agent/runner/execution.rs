@@ -683,6 +683,7 @@ impl AgentRunner {
             loaded_skill_tokens: budget.loaded_skill_tokens,
             total_input_tokens: budget.total_input_tokens,
             reserved_output_tokens: budget.reserved_output_tokens,
+            hard_reserve_tokens: budget.hard_reserve_tokens,
             projected_total_tokens: budget.projected_total_tokens,
             context_window_tokens: budget.context_window_tokens,
             headroom_tokens: budget.headroom_tokens,

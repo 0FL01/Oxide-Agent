@@ -20,6 +20,9 @@ pub struct TokenSnapshot {
     pub total_input_tokens: usize,
     /// Reserved output tokens for the active model.
     pub reserved_output_tokens: usize,
+    /// Additional hard safety buffer kept free outside model completion reserve.
+    #[serde(default)]
+    pub hard_reserve_tokens: usize,
     /// Estimated full request size including reserves.
     pub projected_total_tokens: usize,
     /// Effective model context window configured for the session.

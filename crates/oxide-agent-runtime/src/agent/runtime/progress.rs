@@ -170,9 +170,10 @@ mod tests {
             loaded_skill_tokens: 0,
             total_input_tokens: 6,
             reserved_output_tokens: 4,
-            projected_total_tokens: 10,
+            hard_reserve_tokens: 2,
+            projected_total_tokens: 12,
             context_window_tokens: 100,
-            headroom_tokens: 90,
+            headroom_tokens: 88,
             budget_state: BudgetState::Healthy,
             last_api_usage: Some(TokenUsage {
                 prompt_tokens: 6,
