@@ -1,11 +1,16 @@
-mod gemini;
-mod groq;
-mod mistral;
-mod openrouter;
-mod zai;
+#[allow(missing_docs)]
+pub mod gemini;
+#[allow(missing_docs)]
+pub mod groq;
+#[allow(missing_docs)]
+pub mod mistral;
+#[allow(missing_docs)]
+pub mod openrouter;
+#[allow(missing_docs)]
+pub mod zai;
 
 pub use gemini::GeminiProvider;
 pub use groq::GroqProvider;
 pub use mistral::MistralProvider;
 pub use openrouter::OpenRouterProvider;
-pub use zai::ZaiProvider;
+pub use zai::{parse_zai_flush_time, ZaiProvider};
