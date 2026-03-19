@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tracing::{debug, instrument, warn};
+use tracing::{instrument, warn};
 
 const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 
@@ -458,14 +458,15 @@ impl MiniMaxProvider {
                 );
             }
 
-            // Log request body for debugging
-            debug!(
-                request_body = %serde_json::to_string(&body).unwrap_or_default(),
+            // Log request body for debugging (include in error message for visibility at info level)
+            let request_body_str = serde_json::to_string(&body).unwrap_or_default();
+            warn!(
+                request_body = %request_body_str,
                 "MiniMax failed request body"
             );
 
             return Err(LlmError::ApiError(format!(
-                "MiniMax API error: {status} - {error_text}"
+                "MiniMax API error: {status} - {error_text}\nRequest: {request_body_str}"
             )));
         }
 
