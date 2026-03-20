@@ -129,6 +129,18 @@ pub async fn run_progress_loop<T: AgentTransport>(
                     warn!(error = %e, "Loop detection notification failed");
                 }
             }
+            // Rate limit events must update the UI immediately regardless of throttle,
+            // so the user sees the retry status without delay. After the forced update
+            // we continue to skip the normal throttle check.
+            AgentEvent::RateLimitRetrying { .. } => {
+                state.update(event);
+                if let Err(e) = transport.update_progress(&state).await {
+                    warn!(error = %e, "Rate limit progress update failed");
+                }
+                last_update = Instant::now();
+                needs_update = false;
+                continue;
+            }
             _ => {}
         }
 
@@ -240,6 +252,67 @@ mod tests {
 
         let updates = *transport.updates.lock().await;
         assert!(updates >= 1);
+    }
+
+    /// Regression test: RateLimitRetrying must trigger an immediate UI update
+    /// even when the throttle is large (the user must see the retry banner
+    /// without delay). A subsequent Thinking event must also clear the
+    /// rate_limit_retry state from the rendered output.
+    #[tokio::test]
+    async fn rate_limit_retrying_forces_immediate_update() {
+        let (tx, rx) = mpsc::channel(8);
+        let transport = DummyTransport::default();
+
+        // Use a large throttle so the bypass is exercised.
+        let cfg = ProgressRuntimeConfig::new(10).with_throttle(Duration::from_secs(60));
+        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+
+        // 1. Send RateLimitRetrying — must trigger immediate update.
+        tx.send(AgentEvent::RateLimitRetrying {
+            attempt: 2,
+            max_attempts: 5,
+            wait_secs: Some(20),
+            provider: "minimax".to_string(),
+        })
+        .await
+        .expect("send succeeds");
+
+        // Give the runtime a moment to process the event.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let updates_after_rate_limit = *transport.updates.lock().await;
+        assert!(
+            updates_after_rate_limit >= 1,
+            "RateLimitRetrying must force at least one immediate update"
+        );
+
+        // 2. Send Thinking — must clear rate_limit_retry in state and
+        // trigger a normal throttled update.
+        tx.send(AgentEvent::Thinking {
+            snapshot: sample_snapshot(),
+        })
+        .await
+        .expect("send succeeds");
+
+        // Wait for the channel to be drained.
+        drop(tx);
+
+        let _state = match handle.await {
+            Ok(state) => state,
+            Err(err) => panic!("progress runtime join failed: {err}"),
+        };
+
+        let final_updates = *transport.updates.lock().await;
+        assert!(
+            final_updates >= 2,
+            "Expected at least 2 updates: one for RateLimitRetrying, one for Thinking"
+        );
+
+        // Verify rate_limit_retry was cleared after Thinking.
+        assert!(
+            _state.rate_limit_retry.is_none(),
+            "rate_limit_retry must be cleared after Thinking event"
+        );
     }
 
     #[tokio::test]
