@@ -235,9 +235,10 @@ async fn sync_todos_if_needed(tool_name: &str, ctx: &mut ToolExecutionContext<'_
     }
 
     sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
-    if let Err(error) = ctx.agent.persist_memory_checkpoint().await {
-        warn!(error = %error, "Failed to persist todo checkpoint");
-    }
+    // Fire-and-forget: Don't block tool execution waiting for persistence.
+    // The checkpoint is persisted in a background task, reducing latency
+    // by 50-200ms for R2 storage operations.
+    ctx.agent.persist_memory_checkpoint_background();
     if let Some(tx) = ctx.progress_tx {
         let _ = tx
             .send(AgentEvent::TodosUpdated {

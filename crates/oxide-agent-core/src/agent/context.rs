@@ -49,6 +49,11 @@ pub trait AgentContext: Send {
     async fn persist_memory_checkpoint(&mut self) -> Result<()> {
         Ok(())
     }
+    /// Persist memory checkpoint in the background (fire-and-forget).
+    ///
+    /// Default implementation does nothing. Sessions with checkpoint sinks
+    /// should override this to spawn background persistence tasks.
+    fn persist_memory_checkpoint_background(&mut self) {}
 }
 
 /// Ephemeral session used for isolated sub-agent execution.
@@ -157,6 +162,10 @@ impl AgentContext for AgentSession {
 
     async fn persist_memory_checkpoint(&mut self) -> Result<()> {
         AgentSession::persist_memory_checkpoint(self).await
+    }
+
+    fn persist_memory_checkpoint_background(&mut self) {
+        AgentSession::persist_memory_checkpoint_background(self);
     }
 }
 
