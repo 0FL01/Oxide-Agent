@@ -14,6 +14,7 @@ Default branch: `agent-topics`.
 - `crates/oxide-agent-core` - домен агента: execution loop, hooks, skills, compaction, storage facade, LLM providers, sandbox facade, reminder/SSH/manager providers.
 - `crates/oxide-agent-runtime` - runtime-оркестрация сессий и transport-agnostic progress runtime.
 - `crates/oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
+- `crates/oxide-agent-transport-web` - E2E test web transport: HTTP API (axum), in-memory storage, scripted LLM provider, SSE streaming, latency milestone tracking.
 - `crates/oxide-agent-sandboxd` - broker daemon для sandbox backend; держит доступ к Docker и слушает Unix socket.
 - `crates/oxide-agent-telegram-bot` - бинарь запуска Telegram-бота.
 
@@ -23,6 +24,7 @@ Default branch: `agent-topics`.
 - `crates/oxide-agent-core/src/llm/providers/` - реализации LLM-провайдеров.
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - lifecycle Agent Mode, controls, callbacks, task runner, reminders.
 - `crates/oxide-agent-transport-telegram/src/bot/views/agent.rs` - UI Agent Mode.
+- `crates/oxide-agent-transport-web/src/` - web transport: HTTP server, session manager, scripted LLM, event log/SSE.
 - `docs/` - подробная документация по rollout, hooks, интеграциям и blueprint'ам.
 - `skills/` - системные навыки агента.
 
@@ -133,6 +135,18 @@ Default branch: `agent-topics`.
 - `thread.rs` и `session_registry.rs` обеспечивают thread-aware session isolation.
 - `agent/media.rs`, `messaging.rs`, `resilient.rs`, `unauthorized_cache.rs` закрывают медиа, длинные сообщения, retry/edit и защиту от неавторизованного доступа.
 
+## Web transport (E2E tests)
+
+- Crate: `crates/oxide-agent-transport-web` — изолированный transport для E2E-тестирования без зависимости от реальных LLM/Telegram API.
+- HTTP API (axum): `POST /sessions`, `GET /sessions/:id`, `DELETE /sessions/:id`, `POST /sessions/:session_id/tasks`, `GET /tasks/:task_id/progress`, `GET /tasks/:task_id/events`, `GET /tasks/:task_id/stream` (SSE), `GET /tasks/:task_id/timeline`, `POST /tasks/:task_id/cancel`, `GET /health`.
+- Scripted LLM provider (`src/scripted_llm.rs`): детерминированные ответы через `ScriptedResponse::Text` и `ScriptedResponse::ToolCalls`. `chat_with_tools()` возвращает валидный JSON (важно для structured output).
+- `TaskEventLog` (`src/web_transport.rs`): буферизация событий в памяти + broadcast-канал для SSE. Методы: `push()`, `subscribe()`, `close()`, `snapshot()`, `drain()`.
+- `collect_events()`: собирает `AgentEvent` из mpsc-канала, возвращает `(ProgressState, MilestoneTimestamps)`. Отслеживает `first_thinking_at` и `finished_at`.
+- Latency milestones: `session_ready_ms` (HTTP → executor ready), `first_thinking_ms` (agent start → first Thinking), `final_response_ms` (agent start → Finished/Error/Cancelled).
+- SSE endpoint: `stream!` macro + `tokio::select!` на broadcast-канале для непрерывной доставки событий.
+- Task tracking: `AppState` хранит `task_handles: Arc<RwLock<HashMap<String, Arc<JoinHandle<()>>>>>` для abort при cancel.
+- `yield_now()` после `tokio::spawn` в HTTP-handler — чтобы runtime драйвил внутренние spawned-задачи.
+
 ## Конфигурация
 
 - Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
@@ -154,6 +168,7 @@ Default branch: `agent-topics`.
 ### Тестирование
 - Test helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`).
 - Основные категории: hermetic tests, integration tests, snapshot tests (`insta`), property/fuzz tests (`proptest`).
+- E2E tests: `crates/oxide-agent-transport-web/tests/e2e.rs` — 6 E2E тестов (session lifecycle, task execution, SSE streaming, latency milestones).
 - Полезные ориентиры: `tests/hermetic_agent.rs`, `tests/snapshot_prompts.rs`, `tests/proptest_recovery.rs`.
 
 ## Расширение системы
