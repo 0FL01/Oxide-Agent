@@ -32,6 +32,25 @@ impl OpenRouterProvider {
             site_name,
         }
     }
+
+    /// Create a new `OpenRouter` provider with a shared HTTP client
+    ///
+    /// This allows connection reuse across multiple providers,
+    /// significantly reducing latency for sequential requests.
+    #[must_use]
+    pub fn new_with_client(
+        api_key: String,
+        site_url: String,
+        site_name: String,
+        http_client: HttpClient,
+    ) -> Self {
+        Self {
+            http_client,
+            api_key,
+            site_url,
+            site_name,
+        }
+    }
 }
 
 /// Parse OpenRouter rate limit reset time from error body.
