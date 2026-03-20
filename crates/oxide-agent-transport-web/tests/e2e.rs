@@ -552,3 +552,106 @@ async fn e2e_parallel_tool_execution_latency() {
         execution_time
     );
 }
+
+/// Test: Measure HTTP connection pool latency improvement.
+///
+/// This test requires MISTRAL_API_KEY or ZAI_API_KEY environment variable.
+/// It measures the latency of two sequential LLM requests to verify that
+/// connection pooling (keep-alive) reduces the second request time.
+///
+/// Without connection pool: both requests ~200-400ms (TCP+TLS each time)
+/// With connection pool: first ~200-400ms, second ~30-80ms (connection reuse)
+///
+/// Run with: cargo test e2e_connection_pool_latency -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "Requires MISTRAL_API_KEY or ZAI_API_KEY environment variable"]
+async fn e2e_connection_pool_latency() {
+    use oxide_agent_core::llm::{LlmClient, Message};
+    use std::time::Instant;
+
+    // Determine which provider to test based on available env vars
+    let (provider_name, model_id) = if std::env::var("MISTRAL_API_KEY").is_ok() {
+        ("mistral", "mistral-tiny")
+    } else if std::env::var("ZAI_API_KEY").is_ok() {
+        ("zai", "glm-4-flash")
+    } else {
+        panic!("Neither MISTRAL_API_KEY nor ZAI_API_KEY is set");
+    };
+
+    eprintln!("Testing connection pool with provider: {}", provider_name);
+
+    let agent_settings = Arc::new({
+        let mut s = AgentSettings::default();
+        s.agent_model_id = Some(model_id.to_string());
+        s.agent_model_provider = Some(provider_name.to_string());
+        s.agent_timeout_secs = Some(30);
+        s
+    });
+
+    let llm = Arc::new(LlmClient::new(&agent_settings));
+
+    let messages = vec![Message::user("Say 'pong' and nothing else")];
+    let system_prompt = "You are a helpful assistant.";
+
+    // Request 1: Cold start (includes TCP handshake + TLS)
+    let t1 = Instant::now();
+    let resp1 = llm.chat_with_tools(
+        system_prompt,
+        &messages,
+        &[],
+        model_id,
+        false,
+    ).await;
+    let time1 = t1.elapsed();
+    assert!(resp1.is_ok(), "First request failed: {:?}", resp1.err());
+    eprintln!("[CONNECTION-POOL] First request (cold): {}ms", time1.as_millis());
+
+    // Request 2: Should reuse connection if pool is working
+    let t2 = Instant::now();
+    let resp2 = llm.chat_with_tools(
+        system_prompt,
+        &messages,
+        &[],
+        model_id,
+        false,
+    ).await;
+    let time2 = t2.elapsed();
+    assert!(resp2.is_ok(), "Second request failed: {:?}", resp2.err());
+    eprintln!("[CONNECTION-POOL] Second request (warm): {}ms", time2.as_millis());
+
+    // Calculate improvement
+    let improvement = if time1.as_millis() > 0 {
+        ((time1.as_millis() - time2.as_millis()) as f64 / time1.as_millis() as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    eprintln!("[CONNECTION-POOL] Improvement: {:.1}%", improvement);
+    eprintln!(
+        "[CONNECTION-POOL] Baseline: first={}ms, second={}ms",
+        time1.as_millis(),
+        time2.as_millis()
+    );
+
+    // With connection pooling, second request should be significantly faster
+    // Typical: first 200-400ms, second 30-80ms (70-80% improvement)
+    // Without pooling: both similar (0-20% difference)
+    assert!(
+        time2.as_millis() < time1.as_millis(),
+        "Second request should be faster than first with connection pooling. \
+         First: {}ms, Second: {}ms. If similar, connection pool may not be working.",
+        time1.as_millis(),
+        time2.as_millis()
+    );
+
+    // Heuristic: second request should be at least 30% faster
+    // This will fail without connection pool implementation
+    assert!(
+        improvement > 30.0,
+        "Connection pool should provide >30% improvement on second request. \
+         Current improvement: {:.1}%. First: {}ms, Second: {}ms",
+        improvement,
+        time1.as_millis(),
+        time2.as_millis()
+    );
+}

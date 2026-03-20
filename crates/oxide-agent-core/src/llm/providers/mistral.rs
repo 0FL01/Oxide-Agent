@@ -34,6 +34,22 @@ impl MistralProvider {
         }
     }
 
+    /// Create a new Mistral provider with a shared HTTP client
+    ///
+    /// This allows connection reuse across multiple providers,
+    /// significantly reducing latency for sequential requests.
+    #[must_use]
+    pub fn new_with_client(api_key: String, http_client: HttpClient) -> Self {
+        let config = OpenAIConfig::new()
+            .with_api_key(api_key.clone())
+            .with_api_base("https://api.mistral.ai/v1");
+        Self {
+            client: Client::with_config(config),
+            http_client,
+            api_key,
+        }
+    }
+
     fn prepare_structured_messages(
         system_prompt: &str,
         history: &[Message],

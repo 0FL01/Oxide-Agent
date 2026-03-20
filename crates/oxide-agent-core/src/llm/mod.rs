@@ -269,6 +269,10 @@ pub struct LlmClient {
     pub media_model_id: Option<String>,
     /// Optional media model provider for audio/image fallbacks
     pub media_model_provider: Option<String>,
+    /// Shared HTTP client with connection pool for all providers
+    /// Used to create providers with shared connection pool
+    #[allow(dead_code)]
+    http_client: reqwest::Client,
 }
 
 impl LlmClient {
@@ -302,6 +306,13 @@ impl LlmClient {
         };
         let media_model_name = media_model_id.clone();
 
+        // Create shared HTTP client with connection pooling
+        let http_client = reqwest::Client::builder()
+            .pool_max_idle_per_host(10)
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("Failed to create HTTP client");
+
         Self {
             groq: settings
                 .groq_api_key
@@ -310,7 +321,7 @@ impl LlmClient {
             mistral: settings
                 .mistral_api_key
                 .as_ref()
-                .map(|k| providers::MistralProvider::new(k.clone())),
+                .map(|k| providers::MistralProvider::new_with_client(k.clone(), http_client.clone())),
             minimax: settings
                 .minimax_api_key
                 .as_ref()
@@ -318,7 +329,7 @@ impl LlmClient {
             zai: settings
                 .zai_api_key
                 .as_ref()
-                .map(|k| providers::ZaiProvider::new(k.clone(), settings.zai_api_base.clone())),
+                .map(|k| providers::ZaiProvider::new_with_client(k.clone(), settings.zai_api_base.clone(), http_client.clone())),
             gemini: settings
                 .gemini_api_key
                 .as_ref()
@@ -339,6 +350,7 @@ impl LlmClient {
             media_model_id,
             media_model_provider,
             custom_providers: HashMap::new(),
+            http_client,
         }
     }
 
