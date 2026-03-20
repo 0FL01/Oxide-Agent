@@ -7,7 +7,7 @@ use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_xml_tags;
-use crate::agent::tool_bridge::{execute_single_tool_call, ToolExecutionContext};
+
 use crate::llm::{Message, ToolCall, ToolCallFunction};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -48,49 +48,151 @@ impl AgentRunner {
             ));
     }
 
-    /// Execute all tool calls in sequence.
+    /// Execute all tool calls in parallel where possible.
+    ///
+    /// Tools that pass pre-execution hooks run concurrently. Results are
+    /// processed sequentially to maintain deterministic ordering.
     pub(super) async fn execute_tools(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &RunState,
         tool_calls: Vec<ToolCall>,
     ) -> anyhow::Result<Option<AgentRunResult>> {
-        for tool_call in &tool_calls {
+        // Phase 1: Sequential pre-processing - load skills and run hooks
+        // This must be sequential because:
+        // 1. Hooks may block tools or force finish (decisions affect flow)
+        // 2. Skill loading may mutate context
+        let mut approved_tools: Vec<(usize, ToolCall)> = Vec::with_capacity(tool_calls.len());
+        let mut blocked_results: Vec<(usize, String)> = Vec::new();
+
+        for (idx, tool_call) in tool_calls.iter().enumerate() {
             self.load_skill_context_for_tool(ctx, &tool_call.function.name)
                 .await?;
+
             match self.apply_before_tool_hooks(ctx, state, tool_call)? {
-                ToolHookDecision::Continue => {}
+                ToolHookDecision::Continue => {
+                    approved_tools.push((idx, tool_call.clone()));
+                }
                 ToolHookDecision::Blocked { reason } => {
-                    self.record_blocked_tool_result(ctx, tool_call, &reason)
-                        .await;
-                    let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
-                    Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
-                    continue;
+                    blocked_results.push((idx, reason));
                 }
                 ToolHookDecision::Finish { report } => {
                     return Ok(Some(AgentRunResult::Final(report)));
                 }
             }
-            let cancellation_token = ctx.agent.cancellation_token().clone();
-            let mut tool_ctx = ToolExecutionContext {
-                registry: ctx.registry,
-                progress_tx: ctx.progress_tx,
-                todos_arc: ctx.todos_arc,
-                messages: ctx.messages,
-                agent: ctx.agent,
-                cancellation_token,
-            };
-            let tool_result = execute_single_tool_call(tool_call.clone(), &mut tool_ctx).await?;
-            if matches!(
-                tool_result,
-                crate::agent::tool_bridge::ToolExecutionResult::WaitingForApproval { .. }
-            ) {
-                return Ok(Some(AgentRunResult::WaitingForApproval));
-            }
-            self.apply_after_tool_hooks(ctx, state, &tool_result);
+        }
+
+        // Record blocked results for any tools that were blocked
+        for (idx, reason) in blocked_results {
+            let tool_call = &tool_calls[idx];
+            self.record_blocked_tool_result(ctx, tool_call, &reason)
+                .await;
             let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
             Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
         }
+
+        // If no tools approved, return early
+        if approved_tools.is_empty() {
+            return Ok(None);
+        }
+
+        // Phase 2: Parallel execution of approved tools
+        // Execute raw tool calls in parallel through the registry
+        let cancellation_token = ctx.agent.cancellation_token().clone();
+        let tool_futures: Vec<_> = approved_tools
+            .into_iter()
+            .map(|(idx, tool_call)| {
+                let registry = ctx.registry;
+                let progress_tx = ctx.progress_tx.cloned();
+                let cancellation_token = cancellation_token.clone();
+                async move {
+                    // Emit tool call event
+                    if let Some(tx) = &progress_tx {
+                        let sanitized_name = sanitize_xml_tags(&tool_call.function.name);
+                        let sanitized_args = sanitize_xml_tags(&tool_call.function.arguments);
+                        let _ = tx
+                            .send(AgentEvent::ToolCall {
+                                name: sanitized_name,
+                                input: sanitized_args,
+                                command_preview: None,
+                            })
+                            .await;
+                    }
+
+                    // Execute the tool
+                    let result = registry
+                        .execute(
+                            &tool_call.function.name,
+                            &tool_call.function.arguments,
+                            progress_tx.as_ref(),
+                            Some(&cancellation_token),
+                        )
+                        .await;
+
+                    (idx, tool_call, result)
+                }
+            })
+            .collect();
+
+        let tool_results: Vec<(usize, ToolCall, anyhow::Result<String>)> =
+            futures_util::future::join_all(tool_futures).await;
+
+        // Phase 3: Sequential post-processing - handle results in original order
+        // This ensures messages are added to context in deterministic order
+        // and after hooks run in sequence
+        let mut sorted_results = tool_results;
+        sorted_results.sort_by_key(|(idx, _, _)| *idx);
+
+        for (_idx, tool_call, result) in sorted_results {
+            let output = match result {
+                Ok(output) => output,
+                Err(e) => {
+                    warn!(tool = %tool_call.function.name, error = %e, "Tool execution failed");
+                    format!("Tool execution error: {e}")
+                }
+            };
+
+            // Check for SSH approval pending
+            if output.contains("APPROVAL_PENDING") || output.contains("Waiting for approval") {
+                return Ok(Some(AgentRunResult::WaitingForApproval));
+            }
+
+            // Emit tool result event
+            if let Some(tx) = ctx.progress_tx {
+                let sanitized_name = sanitize_xml_tags(&tool_call.function.name);
+                let _ = tx
+                    .send(AgentEvent::ToolResult {
+                        name: sanitized_name,
+                        output: output.clone(),
+                    })
+                    .await;
+            }
+
+            // Create tool result and run after hooks
+            let tool_result =
+                crate::agent::tool_bridge::ToolExecutionResult::Completed {
+                    tool_name: tool_call.function.name.clone(),
+                    output: output.clone(),
+                };
+
+            self.apply_after_tool_hooks(ctx, state, &tool_result);
+
+            // Add to messages and memory
+            ctx.messages.push(Message::tool(
+                &tool_call.id,
+                &tool_call.function.name,
+                &output,
+            ));
+            ctx.agent.memory_mut().add_message(AgentMessage::tool(
+                &tool_call.id,
+                &tool_call.function.name,
+                &output,
+            ));
+
+            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+            Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
+        }
+
         Ok(None)
     }
 
