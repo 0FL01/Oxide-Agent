@@ -495,6 +495,7 @@ impl AgentExecutor {
         }
 
         let mut prepared = self.prepare_execution(task, progress_tx.as_ref()).await;
+        Self::emit_milestone(progress_tx.as_ref(), "prepare_execution_done").await;
 
         if self
             .replay_initial_tool_call(
@@ -888,6 +889,22 @@ impl AgentExecutor {
                 .send(AgentEvent::CompactionFailed {
                     trigger: CompactionTrigger::Manual,
                     error,
+                })
+                .await;
+        }
+    }
+
+    /// Emit a milestone event for latency tracking.
+    async fn emit_milestone(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        name: &str,
+    ) {
+        if let Some(tx) = progress_tx {
+            let timestamp_ms = chrono::Utc::now().timestamp_millis();
+            let _ = tx
+                .send(AgentEvent::Milestone {
+                    name: name.to_string(),
+                    timestamp_ms,
                 })
                 .await;
         }
