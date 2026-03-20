@@ -7,7 +7,23 @@ use super::types::{
 use crate::agent::context::AgentContext;
 use crate::agent::memory::AgentMessage;
 use crate::llm::ToolDefinition;
+use std::sync::OnceLock;
 use tiktoken_rs::cl100k_base;
+
+/// Cached tokenizer to avoid repeated initialization.
+/// cl100k_base() loads the BPE encoder from bytes on each call, which is expensive.
+static TOKENIZER: OnceLock<tiktoken_rs::CoreBPE> = OnceLock::new();
+
+/// Get the cached tokenizer, initializing it on first call.
+fn get_tokenizer() -> &'static tiktoken_rs::CoreBPE {
+    TOKENIZER.get_or_init(|| cl100k_base().expect("Failed to initialize cl100k tokenizer"))
+}
+
+/// Count tokens in text using the cached cl100k tokenizer.
+/// This is a public wrapper for use by other modules (e.g., memory).
+pub fn count_tokens_cached(text: &str) -> usize {
+    get_tokenizer().encode_with_special_tokens(text).len()
+}
 
 /// Estimate the full request budget for the current checkpoint.
 #[must_use]
@@ -140,9 +156,7 @@ fn estimate_json_tokens(value: &serde_json::Value) -> usize {
 }
 
 fn estimate_text_tokens(text: &str) -> usize {
-    cl100k_base().map_or(text.len() / 4, |bpe| {
-        bpe.encode_with_special_tokens(text).len()
-    })
+    get_tokenizer().encode_with_special_tokens(text).len()
 }
 
 const fn percent_of(value: usize, percent: u8) -> usize {

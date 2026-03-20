@@ -4,12 +4,11 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    AgentMessageKind, ArchiveRef, CompactionRetention, CompactionSummary,
+    count_tokens_cached, AgentMessageKind, ArchiveRef, CompactionRetention, CompactionSummary,
 };
 use crate::agent::providers::TodoList;
 use crate::llm::{TokenUsage, ToolCall};
 use serde::{Deserialize, Serialize};
-use tiktoken_rs::cl100k_base;
 
 const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
 
@@ -569,11 +568,9 @@ impl AgentMemory {
         self.last_api_usage = None;
     }
 
-    /// Count tokens in a string using cl100k tokenizer (GPT-4/Claude compatible)
+    /// Count tokens in a string using cached cl100k tokenizer (GPT-4/Claude compatible)
     fn count_tokens(text: &str) -> usize {
-        cl100k_base().map_or(text.len() / 4, |bpe| {
-            bpe.encode_with_special_tokens(text).len()
-        })
+        count_tokens_cached(text)
     }
 
     /// Get percentage of memory used based on the hot-memory estimate.
