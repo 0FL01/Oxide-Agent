@@ -47,12 +47,15 @@ Default branch: `agent-topics`.
 - Runner собран в `agent/runner/` и отвечает за execution loop, dispatch tool calls, response parsing, hook integration и loop detection wiring.
 - `AgentSession` хранит lifecycle задачи, timeout, cancellation, loaded skills и hot-memory; compaction запускается orchestration layer'ом, а не как side effect `AgentMemory`.
 - Narrator (`narrator.rs`) использует отдельную модель для thought summarization и narrative summary.
+- **Parallel tool execution**: множественные tool calls в одном ответе LLM выполняются параллельно; результаты мержатся до следующего round trip.
+- **Fire-and-forget checkpoint**: memory checkpoint persistence асинхронна и не блокирует execution loop.
 
 ### Agent Mode compaction
 - Код: `crates/oxide-agent-core/src/agent/compaction/`.
 - Pipeline: budget estimation -> classify -> externalize -> prune -> summarize -> rebuild hot context -> optional archive refs.
 - Сохраняются base system context, topic `AGENTS.md`, текущая задача, todos, runtime injections, approvals и recent working set.
 - Крупные tool outputs сначала externalize/prune, потом попадают в LLM compaction.
+- PreRun compaction fast path оптимизирует early termination для коротких задач.
 
 ### Hooks и loop detection
 - Hook system: `agent/hooks/` + интеграция в `agent/runner/hooks.rs`.
@@ -111,6 +114,7 @@ Default branch: `agent-topics`.
 - Progress runtime живет в `oxide-agent-runtime`, transport rendering - в `oxide-agent-transport-telegram/src/bot/progress_render.rs`.
 - UI Agent Mode сосредоточен в `views/agent.rs` и `bot/agent_handlers/`.
 - Transport слой отвечает за welcome/error/progress UI, inline callbacks, topic controls, media handling и resilient send/edit wrappers.
+- Rate limit status отображается сразу в UI; автоматически сбрасывается при восстановлении.
 
 ## Storage, LLM и providers
 
@@ -122,6 +126,8 @@ Default branch: `agent-topics`.
 ### LLM
 - Базовый вход: `llm/mod.rs`, `common.rs`, `embeddings.rs`, `http_utils.rs`, `openai_compat.rs`.
 - Провайдеры: `gemini`, `groq`, `mistral`, `minimax/` (folder structure: client, messages, tools, response), `openrouter`, `zai`.
+- **HTTP connection pooling**: `http_utils.rs` реализует reuse `Client` с connection pool; OpenRouter использует явный пулинг.
+- **Tokenizer caching**: `cl100k_base` tokenizer кешируется при инициализации — устраняет ~15s startup latency.
 
 ### Tool providers
 - Основные provider'ы: sandbox, todos, tavily, crawl4ai, filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders.
@@ -145,7 +151,6 @@ Default branch: `agent-topics`.
 - Latency milestones: `session_ready_ms` (HTTP → executor ready), `first_thinking_ms` (agent start → first Thinking), `final_response_ms` (agent start → Finished/Error/Cancelled).
 - SSE endpoint: `stream!` macro + `tokio::select!` на broadcast-канале для непрерывной доставки событий.
 - Task tracking: `AppState` хранит `task_handles: Arc<RwLock<HashMap<String, Arc<JoinHandle<()>>>>>` для abort при cancel.
-- `yield_now()` после `tokio::spawn` в HTTP-handler — чтобы runtime драйвил внутренние spawned-задачи.
 
 ## Конфигурация
 
