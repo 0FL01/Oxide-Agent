@@ -20,6 +20,7 @@ tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
 async-stream = "0.3"
 lazy_static = "1.4"
+futures-util = "0.3"
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 tracing = "0.1"
@@ -33,3 +34,5 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+bytes = "1"

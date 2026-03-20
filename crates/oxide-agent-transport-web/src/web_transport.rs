@@ -8,6 +8,7 @@ use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
@@ -48,6 +49,10 @@ fn event_variant_name(event: &AgentEvent) -> String {
 pub struct TaskEventLog {
     /// Events in order of arrival.
     pub events: Arc<RwLock<Vec<TaskEventEntry>>>,
+    /// Broadcasts each new event to SSE subscribers.
+    broadcast_tx: broadcast::Sender<TaskEventEntry>,
+    /// Flag set when the task is done.
+    done: Arc<RwLock<bool>>,
 }
 
 /// A simplified event entry that stores only the event name.
@@ -63,19 +68,51 @@ impl TaskEventLog {
     /// Create a new empty event log.
     #[must_use]
     pub fn new() -> Self {
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel(100);
         Self {
             events: Arc::new(RwLock::new(Vec::new())),
+            broadcast_tx,
+            done: Arc::new(RwLock::new(false)),
         }
     }
 
-    /// Record an event with the current timestamp.
+    /// Record an event with the current timestamp and broadcast it to SSE subscribers.
     pub async fn push(&self, event: AgentEvent) {
         let event_name = event_variant_name(&event);
         let entry = TaskEventEntry {
             timestamp: chrono::Utc::now(),
             event_name,
         };
+        let broadcast_entry = entry.clone();
         self.events.write().await.push(entry);
+        // Broadcast to SSE subscribers. Ignore error if no active receivers.
+        let _ = self.broadcast_tx.send(broadcast_entry);
+    }
+
+    /// Subscribe to new events as they are pushed. The returned receiver will
+    /// receive events published after this call (not the current snapshot).
+    #[must_use]
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<TaskEventEntry> {
+        self.broadcast_tx.subscribe()
+    }
+
+    /// Mark the event log as done — SSE subscribers will stop receiving after this.
+    pub async fn close(&self) {
+        {
+            let mut d = self.done.write().await;
+            *d = true;
+        }
+        // Send a sentinel event to wake up any waiting receivers.
+        let sentinel = TaskEventEntry {
+            timestamp: chrono::Utc::now(),
+            event_name: "stream_closed".to_string(),
+        };
+        let _ = self.broadcast_tx.send(sentinel);
+    }
+
+    /// Returns `true` if `close()` has been called.
+    pub async fn is_closed(&self) -> bool {
+        *self.done.read().await
     }
 
     /// Drain all events and return them.
@@ -175,6 +212,9 @@ pub async fn collect_events(
             state.update(event);
         }
     }
+
+    // Close the event log — signals SSE subscribers to stop.
+    event_log.close().await;
 
     state
 }

@@ -127,22 +127,53 @@ impl LlmProvider for ScriptedLlmProvider {
 
     async fn chat_with_tools<'a>(
         &self,
-        _request: ChatWithToolsRequest<'a>,
+        _: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
         let response = self.responses.write().await.pop_front();
         match response {
-            Some(r) => Ok(r.into_chat_response()),
-            None => Ok(ChatResponse {
-                content: Some("No scripted response available.".to_string()),
-                tool_calls: Vec::new(),
-                finish_reason: "stop".to_string(),
-                reasoning_content: None,
-                usage: Some(TokenUsage {
-                    prompt_tokens: 10,
-                    completion_tokens: 5,
-                    total_tokens: 15,
-                }),
-            }),
+            Some(ScriptedResponse::Text(text)) => {
+                // Return valid structured JSON to avoid structured-output parsing failures.
+                let json = serde_json::json!({
+                    "thought": "Responding to user",
+                    "final_answer": text
+                });
+                Ok(ChatResponse {
+                    content: Some(json.to_string()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: Some(TokenUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        total_tokens: 15,
+                    }),
+                })
+            }
+            Some(ScriptedResponse::ToolCalls {
+                tool_calls,
+                final_text,
+            }) => Ok(ScriptedResponse::ToolCalls {
+                tool_calls,
+                final_text,
+            }
+            .into_chat_response()),
+            None => {
+                let json = serde_json::json!({
+                    "thought": "No scripted response available",
+                    "final_answer": "No scripted response available."
+                });
+                Ok(ChatResponse {
+                    content: Some(json.to_string()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: Some(TokenUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        total_tokens: 15,
+                    }),
+                })
+            }
         }
     }
 
