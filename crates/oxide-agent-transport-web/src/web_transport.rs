@@ -192,29 +192,58 @@ impl AgentTransport for WebAgentTransport {
     }
 }
 
+/// Timestamps recorded during event collection for latency milestones.
+#[derive(Debug, Clone, Default)]
+pub struct MilestoneTimestamps {
+    /// When the first `AgentEvent::Thinking` was received.
+    pub first_thinking_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the final event was received (agent finished).
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Start collecting events from a `Receiver<AgentEvent>` and drive the
 /// event log.
 ///
-/// Returns the final `ProgressState` once the channel is closed.
+/// Returns the final `ProgressState` along with milestone timestamps
+/// once the channel is closed.
 pub async fn collect_events(
     event_log: TaskEventLog,
     mut rx: mpsc::Receiver<AgentEvent>,
-) -> ProgressState {
+) -> (ProgressState, MilestoneTimestamps) {
     use oxide_agent_core::agent::progress::ProgressState;
 
     let mut state = ProgressState::new(100); // max_iterations, can be overridden
+    let mut timestamps = MilestoneTimestamps::default();
 
     while let Some(event) = rx.recv().await {
+        // Classify event type once to avoid borrow-after-move.
+        let is_thinking = matches!(&event, AgentEvent::Thinking { .. });
+        let is_file_to_send = matches!(&event, AgentEvent::FileToSend { .. });
+        let is_terminal = matches!(
+            &event,
+            AgentEvent::Finished | AgentEvent::Cancelled | AgentEvent::Error(_)
+        );
+
+        // Track first_thinking_at.
+        if timestamps.first_thinking_at.is_none() && is_thinking {
+            timestamps.first_thinking_at = Some(chrono::Utc::now());
+        }
+
         // FileToSend is already recorded by the transport; skip it here.
-        if !matches!(event, AgentEvent::FileToSend { .. }) {
-            event_log.push(event).await;
-        } else {
+        if is_file_to_send {
             state.update(event);
+        } else {
+            event_log.push(event).await;
+        }
+
+        // Track finished_at.
+        if is_terminal {
+            timestamps.finished_at = Some(chrono::Utc::now());
         }
     }
 
     // Close the event log — signals SSE subscribers to stop.
     event_log.close().await;
 
-    state
+    (state, timestamps)
 }
