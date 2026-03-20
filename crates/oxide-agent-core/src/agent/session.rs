@@ -178,6 +178,37 @@ impl AgentSession {
         checkpoint.persist(&self.memory).await
     }
 
+    /// Persist memory checkpoint in the background (fire-and-forget).
+    ///
+    /// This spawns a background task to persist the checkpoint without blocking
+    /// the caller. Useful for non-critical persistence where latency matters more
+    /// than durability guarantees.
+    pub fn persist_memory_checkpoint_background(&self) {
+        let Some(checkpoint) = self.memory_checkpoint.clone() else {
+            return;
+        };
+
+        let memory = self.memory.clone();
+        tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            match checkpoint.persist(&memory).await {
+                Ok(_) => {
+                    tracing::debug!(
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "Memory checkpoint persisted (background)"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "Failed to persist memory checkpoint (background)"
+                    );
+                }
+            }
+        });
+    }
+
     /// Clone the runtime context inbox handle for concurrent transport writes.
     #[must_use]
     pub fn runtime_context_inbox(&self) -> RuntimeContextInbox {
