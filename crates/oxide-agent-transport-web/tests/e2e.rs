@@ -346,6 +346,78 @@ async fn e2e_sse_stream() {
 
     eprintln!("SSE received {} events", event_count);
 
+    // Give collect_events a moment to finalize the timeline.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Verify milestones were recorded.
+    let timeline_url = format!(
+        "{}/sessions/{}/tasks/{}/timeline",
+        base_url, session_id, task_id
+    );
+    let timeline: serde_json::Value = client
+        .get(&timeline_url)
+        .send()
+        .await
+        .expect("failed to get timeline")
+        .json()
+        .await
+        .expect("failed to parse timeline response");
+    eprintln!(
+        "Timeline: {}",
+        serde_json::to_string_pretty(&timeline).unwrap()
+    );
+
+    let milestones = &timeline["milestones"];
+    let session_ready_ms = milestones["session_ready_ms"].as_i64();
+    let first_thinking_ms = milestones["first_thinking_ms"].as_i64();
+    let final_response_ms = milestones["final_response_ms"].as_i64();
+
+    // session_ready_ms: time from HTTP request to executor ready.
+    // Should be small (sub-second).
+    assert!(
+        session_ready_ms.is_some(),
+        "session_ready_ms should be populated"
+    );
+    assert!(
+        session_ready_ms.unwrap() < 5000,
+        "session_ready_ms should be under 5s, got {}ms",
+        session_ready_ms.unwrap()
+    );
+
+    // first_thinking_ms: time from agent start to first thinking event.
+    // Should be positive and not huge.
+    assert!(
+        first_thinking_ms.is_some(),
+        "first_thinking_ms should be populated"
+    );
+    assert!(
+        first_thinking_ms.unwrap() >= 0,
+        "first_thinking_ms should be non-negative, got {}ms",
+        first_thinking_ms.unwrap()
+    );
+
+    // final_response_ms: time from agent start to final response.
+    // Should be positive and greater than first_thinking_ms.
+    assert!(
+        final_response_ms.is_some(),
+        "final_response_ms should be populated"
+    );
+    assert!(
+        final_response_ms.unwrap() >= 0,
+        "final_response_ms should be non-negative, got {}ms",
+        final_response_ms.unwrap()
+    );
+
+    // final_response_ms should be >= first_thinking_ms (response after thinking).
+    if let (Some(first), Some(final_)) = (first_thinking_ms, final_response_ms) {
+        assert!(
+            final_ >= first,
+            "final_response_ms ({}) should be >= first_thinking_ms ({})",
+            final_,
+            first
+        );
+    }
+
     // Clean up.
     server.abort();
 }

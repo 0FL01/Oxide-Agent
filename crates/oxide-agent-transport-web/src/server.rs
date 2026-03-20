@@ -192,7 +192,7 @@ async fn create_task(
     let task_progress = state.task_progress.clone();
     let task_timeline = state.task_timeline.clone();
     let session_manager = state.session_manager.clone();
-    let started_at = Instant::now();
+    let http_received_at = Instant::now();
 
     // Initialize timeline and events entry.
     {
@@ -200,7 +200,7 @@ async fn create_task(
         tl.insert(
             task_id.clone(),
             Milestones {
-                session_ready_ms: Some(started_at.elapsed().as_millis() as i64),
+                session_ready_ms: Some(http_received_at.elapsed().as_millis() as i64),
                 first_thinking_ms: None,
                 final_response_ms: None,
             },
@@ -216,7 +216,6 @@ async fn create_task(
     let ctx = TaskExecutorCtx {
         task_progress,
         task_timeline,
-        started_at,
     };
 
     let task_handles = state.task_handles.clone();
@@ -406,7 +405,6 @@ async fn sse_task_stream(
 struct TaskExecutorCtx {
     task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     task_timeline: Arc<RwLock<StdHashMap<String, Milestones>>>,
-    started_at: Instant,
 }
 
 async fn execute_agent_task(
@@ -447,17 +445,27 @@ async fn execute_agent_task(
     let tid = task_id.to_string();
     let tid_for_progress = tid.clone();
     let tid_for_result = tid.clone();
-    let start = ctx.started_at;
+    // Record wall-clock time when agent execution starts — used as reference
+    // for all latency milestones (NOT HTTP request time).
+    let agent_started_at = chrono::Utc::now();
     tokio::spawn(async move {
-        let state = collect_events(event_log, rx).await;
+        let (state, timestamps) = collect_events(event_log, rx).await;
         let progress = SerializableProgress::from_state(&state);
         {
             let mut pm = progress_map.write().await;
             pm.insert(tid_for_progress, progress);
         }
+        // Compute latency milestones from agent start time.
+        let first_thinking_ms = timestamps
+            .first_thinking_at
+            .map(|t| (t - agent_started_at).num_milliseconds());
+        let final_response_ms = timestamps
+            .finished_at
+            .map(|t| (t - agent_started_at).num_milliseconds());
         let mut tl = tl_map.write().await;
         if let Some(m) = tl.get_mut(&tid) {
-            m.final_response_ms = Some(start.elapsed().as_millis() as i64);
+            m.first_thinking_ms = first_thinking_ms;
+            m.final_response_ms = final_response_ms;
         }
     });
 
