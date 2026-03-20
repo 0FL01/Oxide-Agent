@@ -24,7 +24,11 @@ impl ZaiProvider {
     /// so the provided http_client is not currently used. This method exists
     /// for API consistency with other providers.
     #[must_use]
-    pub fn new_with_client(api_key: String, api_base: String, _http_client: reqwest::Client) -> Self {
+    pub fn new_with_client(
+        api_key: String,
+        api_base: String,
+        _http_client: reqwest::Client,
+    ) -> Self {
         // Note: zai_rs SDK doesn't support external HTTP client
         Self::new(api_key, api_base)
     }
