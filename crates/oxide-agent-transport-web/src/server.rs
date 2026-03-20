@@ -8,18 +8,22 @@
 //! - `POST /sessions/:session_id/tasks` — submit task (plain text body), returns `{task_id}`
 //! - `GET /sessions/:session_id/tasks/:task_id/progress` — `SerializableProgress`
 //! - `GET /sessions/:session_id/tasks/:task_id/events` — event log as JSON
+//! - `GET /sessions/:session_id/tasks/:task_id/stream` — SSE event stream
 //! - `GET /sessions/:session_id/tasks/:task_id/timeline` — `TaskTimeline`
 //! - `POST /sessions/:session_id/tasks/:task_id/cancel` — cancel task
 //! - `GET /health`
 
 use crate::session::{SessionMeta, WebSessionManager};
 use crate::web_transport::collect_events;
+use async_stream::stream as async_stream;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::sse::{Event, Sse},
     routing::{delete, get, post},
     Json, Router,
 };
+use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
@@ -34,6 +38,8 @@ pub struct AppState {
     pub session_manager: Arc<WebSessionManager>,
     pub task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     pub task_timeline: Arc<RwLock<StdHashMap<String, Milestones>>>,
+    /// Tracks the JoinHandle for each running task so it can be aborted on completion.
+    pub task_handles: Arc<RwLock<StdHashMap<String, Arc<tokio::task::JoinHandle<()>>>>>,
 }
 
 impl AppState {
@@ -42,6 +48,7 @@ impl AppState {
             session_manager,
             task_progress: Arc::new(RwLock::new(StdHashMap::new())),
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
+            task_handles: Arc::new(RwLock::new(StdHashMap::new())),
         }
     }
 
@@ -115,7 +122,7 @@ pub struct TaskTimelineResponse {
 
 // Global registry of event logs per task.
 lazy_static::lazy_static! {
-    static ref EVENT_LOGS: AsyncMutex<StdHashMap<String, crate::web_transport::TaskEventLog>> =
+    pub static ref EVENT_LOGS: AsyncMutex<StdHashMap<String, crate::web_transport::TaskEventLog>> =
         AsyncMutex::new(StdHashMap::new());
 }
 
@@ -125,6 +132,12 @@ lazy_static::lazy_static! {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+/// Debug endpoint: list all task IDs currently in EVENT_LOGS.
+async fn debug_event_logs() -> Json<Vec<String>> {
+    let logs = EVENT_LOGS.lock().await;
+    Json(logs.keys().cloned().collect())
 }
 
 async fn create_session(
@@ -205,9 +218,33 @@ async fn create_task(
         task_timeline,
         started_at,
     };
-    tokio::spawn(async move {
-        execute_agent_task(&session_manager, &session_id_clone, &tid, body, ctx).await;
+
+    let task_handles = state.task_handles.clone();
+    let tid_for_cleanup = tid.clone();
+
+    // Spawn the task and store its JoinHandle so it can be aborted when done.
+    let handle = tokio::spawn(async move {
+        execute_agent_task(
+            session_manager,
+            &session_id_clone,
+            &tid_for_cleanup,
+            body,
+            ctx,
+        )
+        .await;
+        // Remove the JoinHandle from the registry when done (avoids leaking the handle).
+        let mut handles = task_handles.write().await;
+        handles.remove(&tid_for_cleanup);
     });
+
+    // Register the JoinHandle so cancel_task can abort it.
+    {
+        let mut handles = state.task_handles.write().await;
+        handles.insert(task_id.clone(), Arc::new(handle));
+    }
+
+    // Yield to let the Tokio runtime schedule the spawned task before returning.
+    tokio::task::yield_now().await;
 
     Ok(Json(CreateTaskResponse { task_id }))
 }
@@ -262,10 +299,103 @@ async fn cancel_task(
         .cancel_task(&task_id, &session_id)
         .await
     {
+        // Also abort the spawned task's JoinHandle if tracked.
+        let handle = {
+            let handles = state.task_handles.read().await;
+            handles.get(&task_id).cloned()
+        };
+        if let Some(h) = handle {
+            h.abort();
+        }
         StatusCode::ACCEPTED
     } else {
         StatusCode::NOT_FOUND
     }
+}
+
+/// SSE stream of task events.
+///
+/// Streams a snapshot of already-received events immediately, then listens for
+/// new events via the broadcast channel. The stream closes after `max_duration` or
+/// when the task completes (whichever comes first).
+async fn sse_task_stream(
+    Path((_session_id, task_id)): Path<(String, String)>,
+) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, StatusCode> {
+    let task_id_str = task_id.clone();
+
+    // Poll EVENT_LOGS briefly — the background task may not have registered yet.
+    let event_log = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let logs = EVENT_LOGS.lock().await;
+            if let Some(log) = logs.get(&task_id_str) {
+                break log.clone();
+            }
+            drop(logs);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    // Take a snapshot of events already received.
+    let initial_events = event_log.snapshot().await;
+
+    // Subscribe to new events AFTER snapshot (gets events pushed after this point).
+    let mut rx = event_log.subscribe();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+
+    // Combine snapshot + live broadcast into a single SSE stream using `stream!`.
+    let stream = async_stream! {
+        // First, emit the snapshot events.
+        for entry in initial_events {
+            yield Ok::<_, std::convert::Infallible>(
+                Event::default()
+                    .event("task_event")
+                    .data(serde_json::to_string(&entry).unwrap_or_default()),
+            );
+        }
+
+        // Then listen for new events from the broadcast channel.
+        // Keep listening until the sender is dropped (channel closed) OR the
+        // event_log is closed (task done), which sends a "stream_closed" sentinel.
+        loop {
+            tokio::select! {
+                biased; // Prefer recv over deadline
+
+                // Receive a broadcast event.
+                result = rx.recv() => {
+                    match result {
+                        Ok(entry) => {
+                            if entry.event_name == "stream_closed" {
+                                break;
+                            }
+                            let event = Event::default()
+                                .event("task_event")
+                                .data(serde_json::to_string(&entry).unwrap_or_default());
+                            yield Ok(event);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            // Channel closed — task is done.
+                            break;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let event = Event::default()
+                                .event("task_event")
+                                .data(r#"{"event_name":"lagged"}"#);
+                            yield Ok(event);
+                        }
+                    }
+                }
+
+                // Fallback: close stream after max duration.
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                    break;
+                }
+            }
+        }
+    };
+
+    Ok(Sse::new(stream))
 }
 
 // ---------------------------------------------------------------------------
@@ -280,14 +410,14 @@ struct TaskExecutorCtx {
 }
 
 async fn execute_agent_task(
-    session_manager: &WebSessionManager,
+    session_manager: Arc<WebSessionManager>,
     session_id: &str,
     task_id: &str,
     task_text: String,
     ctx: TaskExecutorCtx,
 ) {
     let registry = session_manager.session_registry();
-    let sid = derive_session_id(session_manager, session_id).await;
+    let sid = derive_session_id(&session_manager, session_id).await;
     let Some(sid) = sid else {
         session_manager.fail_task(task_id, session_id).await;
         return;
@@ -310,17 +440,20 @@ async fn execute_agent_task(
     };
 
     let (tx, rx) = mpsc::channel::<oxide_agent_core::agent::AgentEvent>(100);
+
+    // Spawn event collector.
     let progress_map = ctx.task_progress.clone();
     let tl_map = ctx.task_timeline.clone();
     let tid = task_id.to_string();
+    let tid_for_progress = tid.clone();
+    let tid_for_result = tid.clone();
     let start = ctx.started_at;
-
     tokio::spawn(async move {
         let state = collect_events(event_log, rx).await;
         let progress = SerializableProgress::from_state(&state);
         {
             let mut pm = progress_map.write().await;
-            pm.insert(tid.clone(), progress);
+            pm.insert(tid_for_progress, progress);
         }
         let mut tl = tl_map.write().await;
         if let Some(m) = tl.get_mut(&tid) {
@@ -328,27 +461,26 @@ async fn execute_agent_task(
         }
     });
 
-    let result = {
-        let mut executor = executor_arc.write().await;
-        executor.execute(&task_text, Some(tx)).await
-    };
-
-    // Cleanup event log.
-    {
-        let mut logs = EVENT_LOGS.lock().await;
-        logs.remove(task_id);
-    }
-
-    match result {
-        Ok(_) => {
-            session_manager.complete_task(task_id, session_id).await;
-            info!(task_id, "Task completed");
+    // Run executor in its own spawned task to avoid holding executor lock
+    // across the collect_events task (which also needs the executor lock).
+    let sm = session_manager;
+    let session_id2 = session_id.to_string();
+    tokio::spawn(async move {
+        let result = {
+            let mut executor = executor_arc.write().await;
+            executor.execute(&task_text, Some(tx)).await
+        };
+        match result {
+            Ok(_) => {
+                sm.complete_task(&tid_for_result, &session_id2).await;
+                info!(task_id = %tid_for_result, "Task completed");
+            }
+            Err(e) => {
+                sm.fail_task(&tid_for_result, &session_id2).await;
+                info!(task_id = %tid_for_result, error = %e, "Task failed");
+            }
         }
-        Err(e) => {
-            session_manager.fail_task(task_id, session_id).await;
-            info!(task_id, error = %e, "Task failed");
-        }
-    }
+    });
 }
 
 async fn derive_session_id(
@@ -373,6 +505,7 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/debug/event_logs", get(debug_event_logs))
         .route("/sessions", post(create_session))
         .route("/sessions/:id", get(get_session))
         .route("/sessions/:id", delete(delete_session))
@@ -384,6 +517,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/sessions/:session_id/tasks/:task_id/events",
             get(get_task_events),
+        )
+        .route(
+            "/sessions/:session_id/tasks/:task_id/stream",
+            get(sse_task_stream),
         )
         .route(
             "/sessions/:session_id/tasks/:task_id/timeline",
