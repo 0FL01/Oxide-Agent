@@ -318,18 +318,20 @@ impl LlmClient {
                 .groq_api_key
                 .as_ref()
                 .map(|k| providers::GroqProvider::new(k.clone())),
-            mistral: settings
-                .mistral_api_key
-                .as_ref()
-                .map(|k| providers::MistralProvider::new_with_client(k.clone(), http_client.clone())),
+            mistral: settings.mistral_api_key.as_ref().map(|k| {
+                providers::MistralProvider::new_with_client(k.clone(), http_client.clone())
+            }),
             minimax: settings
                 .minimax_api_key
                 .as_ref()
                 .map(|k| providers::MiniMaxProvider::new(k.clone())),
-            zai: settings
-                .zai_api_key
-                .as_ref()
-                .map(|k| providers::ZaiProvider::new_with_client(k.clone(), settings.zai_api_base.clone(), http_client.clone())),
+            zai: settings.zai_api_key.as_ref().map(|k| {
+                providers::ZaiProvider::new_with_client(
+                    k.clone(),
+                    settings.zai_api_base.clone(),
+                    http_client.clone(),
+                )
+            }),
             gemini: settings
                 .gemini_api_key
                 .as_ref()
