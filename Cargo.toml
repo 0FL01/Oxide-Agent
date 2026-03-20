@@ -3,6 +3,7 @@ members = [
     "crates/oxide-agent-core",
     "crates/oxide-agent-runtime",
     "crates/oxide-agent-transport-telegram",
+    "crates/oxide-agent-transport-web",
     "crates/oxide-agent-telegram-bot",
     "crates/oxide-agent-sandboxd",
 ]
