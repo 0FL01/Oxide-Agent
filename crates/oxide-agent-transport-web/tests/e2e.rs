@@ -585,6 +585,19 @@ async fn e2e_connection_pool_latency() {
         s.agent_model_id = Some(model_id.to_string());
         s.agent_model_provider = Some(provider_name.to_string());
         s.agent_timeout_secs = Some(30);
+        // Load API keys from environment for the selected provider
+        match provider_name {
+            "mistral" => {
+                s.mistral_api_key = std::env::var("MISTRAL_API_KEY").ok();
+            }
+            "zai" => {
+                s.zai_api_key = std::env::var("ZAI_API_KEY").ok();
+                if let Ok(base) = std::env::var("ZAI_API_BASE") {
+                    s.zai_api_base = base;
+                }
+            }
+            _ => {}
+        }
         s
     });
 
