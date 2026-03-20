@@ -169,11 +169,10 @@ impl AgentRunner {
             }
 
             // Create tool result and run after hooks
-            let tool_result =
-                crate::agent::tool_bridge::ToolExecutionResult::Completed {
-                    tool_name: tool_call.function.name.clone(),
-                    output: output.clone(),
-                };
+            let tool_result = crate::agent::tool_bridge::ToolExecutionResult::Completed {
+                tool_name: tool_call.function.name.clone(),
+                output: output.clone(),
+            };
 
             self.apply_after_tool_hooks(ctx, state, &tool_result);
 
@@ -191,9 +190,34 @@ impl AgentRunner {
 
             let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
             Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
+
+            // Sync todos if write_todos tool was executed
+            if tool_call.function.name == "write_todos" {
+                Self::sync_todos_after_tool(ctx).await;
+            }
         }
 
         Ok(None)
+    }
+
+    /// Sync todos from shared Arc to memory and emit TodosUpdated event.
+    /// Called after write_todos tool execution to update UI.
+    /// Note: Memory persistence is handled separately by tool_bridge's
+    /// original sync path; skipping persist here avoids spawn overhead.
+    async fn sync_todos_after_tool(ctx: &mut AgentRunnerContext<'_>) {
+        // Sync todos from Arc to memory
+        let current_todos = ctx.todos_arc.lock().await;
+        ctx.agent.memory_mut().todos = (*current_todos).clone();
+        drop(current_todos);
+
+        // Emit TodosUpdated event for UI
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::TodosUpdated {
+                    todos: ctx.agent.memory().todos.clone(),
+                })
+                .await;
+        }
     }
 
     async fn record_blocked_tool_result(
