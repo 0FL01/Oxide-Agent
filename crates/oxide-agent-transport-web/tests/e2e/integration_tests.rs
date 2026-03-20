@@ -26,7 +26,7 @@ async fn e2e_connection_pool_latency() {
     } else if std::env::var("MISTRAL_API_KEY").is_ok() {
         ("mistral", "labs-devstral-small-2512")
     } else if std::env::var("ZAI_API_KEY").is_ok() {
-        ("zai", "glm-4.7-flash")
+        ("zai", "glm-4.7")
     } else {
         panic!("Neither OPENROUTER_API_KEY nor MISTRAL_API_KEY nor ZAI_API_KEY is set");
     };
