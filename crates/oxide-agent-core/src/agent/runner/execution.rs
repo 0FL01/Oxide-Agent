@@ -4,7 +4,9 @@ use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
 use super::AgentRunner;
-use crate::agent::compaction::{estimate_request_budget, CompactionRequest, CompactionTrigger};
+use crate::agent::compaction::{
+    classify_hot_memory, estimate_request_budget, CompactionRequest, CompactionTrigger,
+};
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
 use crate::agent::recovery::sanitize_tool_calls;
@@ -52,6 +54,19 @@ impl AgentRunner {
             };
             compaction_result?;
 
+            // Emit milestone after pre-run compaction (only on first iteration).
+            if iteration == 0 {
+                if let Some(tx) = ctx.progress_tx {
+                    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+                    let _ = tx
+                        .send(AgentEvent::Milestone {
+                            name: "pre_run_compaction_done".to_string(),
+                            timestamp_ms,
+                        })
+                        .await;
+                }
+            }
+
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
             let snapshot_trigger = if iteration == 0 {
@@ -63,6 +78,14 @@ impl AgentRunner {
             Self::log_token_snapshot(ctx, iteration, "before_llm_call", &snapshot);
             if let Some(tx) = ctx.progress_tx {
                 let _ = tx.send(AgentEvent::Thinking { snapshot }).await;
+                // Emit milestone when Thinking event is sent (not just received).
+                let timestamp_ms = chrono::Utc::now().timestamp_millis();
+                let _ = tx
+                    .send(AgentEvent::Milestone {
+                        name: "thinking_sent".to_string(),
+                        timestamp_ms,
+                    })
+                    .await;
             }
 
             let cancellation_token = ctx.agent.cancellation_token().clone();
@@ -116,6 +139,19 @@ impl AgentRunner {
             .llm_client
             .get_provider_name(&ctx.config.model_name)
             .unwrap_or_else(|_| "unknown".to_string());
+
+        // Emit milestone on first LLM call of first iteration.
+        if state.iteration == 0 {
+            if let Some(tx) = ctx.progress_tx {
+                let timestamp_ms = chrono::Utc::now().timestamp_millis();
+                let _ = tx
+                    .send(AgentEvent::Milestone {
+                        name: "llm_call_started".to_string(),
+                        timestamp_ms,
+                    })
+                    .await;
+            }
+        }
 
         for attempt in 1..=max_retries {
             let result = self
@@ -364,6 +400,31 @@ impl AgentRunner {
         } else {
             CompactionTrigger::PreIteration
         };
+
+        // FAST PATH: Skip PreRun compaction for fresh sessions.
+        // Compaction is expensive (token estimation, classification, externalization,
+        // pruning, summarization, rebuild). For fresh sessions with minimal history
+        // and no compactable content, the entire pipeline is a no-op.
+        if iteration == 0 {
+            let msg_count = ctx.agent.memory().get_messages().len();
+            // Quick check: if <= 3 messages (typical: system, task, context),
+            // there's nothing meaningful to compact.
+            if msg_count <= 3 {
+                let snapshot = classify_hot_memory(ctx.agent.memory().get_messages());
+                // Skip only if there's no compactable or prunable content.
+                if snapshot.compactable_history.message_count == 0
+                    && snapshot.prunable_artifacts.message_count == 0
+                {
+                    tracing::debug!(
+                        task_id = %ctx.task_id,
+                        msg_count,
+                        "Fast path: skipping PreRun compaction for fresh session"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         let _ = self.run_compaction_checkpoint(ctx, state, trigger).await?;
         Ok(())
     }

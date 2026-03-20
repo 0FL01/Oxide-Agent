@@ -41,6 +41,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::CompactionFailed { .. } => "compaction_failed".to_string(),
         AgentEvent::RepeatedCompactionWarning { .. } => "repeated_compaction_warning".to_string(),
         AgentEvent::RateLimitRetrying { .. } => "rate_limit_retrying".to_string(),
+        AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
     }
 }
 
@@ -199,6 +200,8 @@ pub struct MilestoneTimestamps {
     pub first_thinking_at: Option<chrono::DateTime<chrono::Utc>>,
     /// When the final event was received (agent finished).
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Map of named milestone timestamps received via AgentEvent::Milestone
+    pub named_milestones: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
 /// Start collecting events from a `Receiver<AgentEvent>` and drive the
@@ -223,15 +226,26 @@ pub async fn collect_events(
             &event,
             AgentEvent::Finished | AgentEvent::Cancelled | AgentEvent::Error(_)
         );
+        let is_milestone = matches!(&event, AgentEvent::Milestone { .. });
 
         // Track first_thinking_at.
         if timestamps.first_thinking_at.is_none() && is_thinking {
             timestamps.first_thinking_at = Some(chrono::Utc::now());
         }
 
+        // Track named milestones from the agent core.
+        if let AgentEvent::Milestone { name, timestamp_ms } = &event {
+            if let Some(ts) = chrono::DateTime::from_timestamp_millis(*timestamp_ms) {
+                timestamps.named_milestones.insert(name.clone(), ts);
+            }
+        }
+
         // FileToSend is already recorded by the transport; skip it here.
-        if is_file_to_send {
-            state.update(event);
+        if is_file_to_send || is_milestone {
+            // Milestones are tracked separately, don't need to be in event log
+            if is_file_to_send {
+                state.update(event);
+            }
         } else {
             event_log.push(event).await;
         }

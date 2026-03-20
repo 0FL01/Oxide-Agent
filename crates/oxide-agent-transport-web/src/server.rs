@@ -86,8 +86,21 @@ impl SerializableProgress {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Milestones {
+    /// HTTP request received (legacy, kept for compatibility).
     pub session_ready_ms: Option<i64>,
+    /// When executor lock was actually acquired (real session ready).
+    pub executor_lock_acquired_ms: Option<i64>,
+    /// When prepare_execution completed.
+    pub prepare_execution_done_ms: Option<i64>,
+    /// When pre-run compaction completed.
+    pub pre_run_compaction_done_ms: Option<i64>,
+    /// When Thinking event was sent (not just received).
+    pub thinking_sent_ms: Option<i64>,
+    /// When first LLM call started.
+    pub llm_call_started_ms: Option<i64>,
+    /// When first Thinking event was received by collector.
     pub first_thinking_ms: Option<i64>,
+    /// When final response was produced.
     pub final_response_ms: Option<i64>,
 }
 
@@ -192,15 +205,21 @@ async fn create_task(
     let task_progress = state.task_progress.clone();
     let task_timeline = state.task_timeline.clone();
     let session_manager = state.session_manager.clone();
-    let http_received_at = Instant::now();
+    let _http_received_at = Instant::now();
 
     // Initialize timeline and events entry.
+    // Note: session_ready_ms is now set later, after executor lock is acquired.
     {
         let mut tl = task_timeline.write().await;
         tl.insert(
             task_id.clone(),
             Milestones {
-                session_ready_ms: Some(http_received_at.elapsed().as_millis() as i64),
+                session_ready_ms: None, // Will be set after executor lock acquisition
+                executor_lock_acquired_ms: None,
+                prepare_execution_done_ms: None,
+                pre_run_compaction_done_ms: None,
+                thinking_sent_ms: None,
+                llm_call_started_ms: None,
                 first_thinking_ms: None,
                 final_response_ms: None,
             },
@@ -421,6 +440,10 @@ async fn execute_agent_task(
         return;
     };
 
+    // Record instant when agent execution starts - used as reference
+    // for all latency milestones (NOT HTTP request time).
+    let agent_started_at = Instant::now();
+
     let executor_arc = match registry.get(&sid).await {
         Some(e) => e,
         None => {
@@ -428,6 +451,19 @@ async fn execute_agent_task(
             return;
         }
     };
+
+    // Record when executor lock was actually acquired (real session ready).
+    let executor_lock_acquired_ms = Some(agent_started_at.elapsed().as_millis() as i64);
+    // Capture chrono timestamp for calculating offsets from named milestones.
+    let agent_started_at_chrono = chrono::Utc::now().timestamp_millis();
+    {
+        let mut tl = ctx.task_timeline.write().await;
+        if let Some(m) = tl.get_mut(task_id) {
+            m.executor_lock_acquired_ms = executor_lock_acquired_ms;
+            // Keep legacy session_ready_ms in sync for backward compatibility.
+            m.session_ready_ms = executor_lock_acquired_ms;
+        }
+    }
 
     // Get event log from global registry.
     let event_log = {
@@ -445,9 +481,8 @@ async fn execute_agent_task(
     let tid = task_id.to_string();
     let tid_for_progress = tid.clone();
     let tid_for_result = tid.clone();
-    // Record wall-clock time when agent execution starts — used as reference
-    // for all latency milestones (NOT HTTP request time).
-    let agent_started_at = chrono::Utc::now();
+    // Clone agent_started_at_chrono for use in the async block.
+    let agent_started_at_chrono_spawned = agent_started_at_chrono;
     tokio::spawn(async move {
         let (state, timestamps) = collect_events(event_log, rx).await;
         let progress = SerializableProgress::from_state(&state);
@@ -456,16 +491,30 @@ async fn execute_agent_task(
             pm.insert(tid_for_progress, progress);
         }
         // Compute latency milestones from agent start time.
-        let first_thinking_ms = timestamps
-            .first_thinking_at
-            .map(|t| (t - agent_started_at).num_milliseconds());
-        let final_response_ms = timestamps
-            .finished_at
-            .map(|t| (t - agent_started_at).num_milliseconds());
+        // first_thinking_at and finished_at are chrono::DateTime<Utc>, so we use signed_duration_since.
+        let first_thinking_ms = timestamps.first_thinking_at.map(|t| {
+            t.signed_duration_since(chrono::DateTime::from_timestamp_millis(agent_started_at_chrono_spawned).unwrap_or(t)).num_milliseconds()
+        });
+        let final_response_ms = timestamps.finished_at.map(|t| {
+            t.signed_duration_since(chrono::DateTime::from_timestamp_millis(agent_started_at_chrono_spawned).unwrap_or(t)).num_milliseconds()
+        });
         let mut tl = tl_map.write().await;
         if let Some(m) = tl.get_mut(&tid) {
             m.first_thinking_ms = first_thinking_ms;
             m.final_response_ms = final_response_ms;
+            // Update with named milestones from the agent core.
+            // Named milestones are already in ms since epoch, so just subtract agent_started_at_chrono.
+            for (name, ts) in &timestamps.named_milestones {
+                let ts_ms = ts.timestamp_millis();
+                let ms = Some(ts_ms - agent_started_at_chrono_spawned);
+                match name.as_str() {
+                    "prepare_execution_done" => m.prepare_execution_done_ms = ms,
+                    "pre_run_compaction_done" => m.pre_run_compaction_done_ms = ms,
+                    "thinking_sent" => m.thinking_sent_ms = ms,
+                    "llm_call_started" => m.llm_call_started_ms = ms,
+                    _ => {} // Ignore unknown milestones
+                }
+            }
         }
     });
 

@@ -191,6 +191,13 @@ pub enum AgentEvent {
         /// Provider name for display
         provider: String,
     },
+    /// Execution milestone for latency tracking.
+    Milestone {
+        /// Milestone name (e.g., "executor_lock_acquired", "thinking_sent", "llm_call_started")
+        name: String,
+        /// Timestamp when milestone was reached (Unix timestamp in milliseconds)
+        timestamp_ms: i64,
+    },
 }
 
 /// User-facing class of repeated context maintenance activity.
@@ -361,6 +368,9 @@ impl ProgressState {
                 wait_secs,
                 provider,
             } => self.handle_rate_limit_retrying(attempt, max_attempts, wait_secs, provider),
+            AgentEvent::Milestone { name, timestamp_ms } => {
+                tracing::debug!(milestone = %name, timestamp_ms, "Execution milestone reached");
+            }
         }
     }
 
