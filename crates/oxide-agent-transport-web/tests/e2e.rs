@@ -90,21 +90,31 @@ async fn execute_task(
 /// Test: a simple text response completes successfully.
 #[tokio::test]
 async fn e2e_simple_text_response() {
+    let test_start = std::time::Instant::now();
     let app_state = setup_test().await;
     let session_manager = app_state.session_manager();
+    eprintln!("[TIMING-simple] Setup: {}ms", test_start.elapsed().as_millis());
 
+    let t0 = std::time::Instant::now();
     let session_id = session_manager.create_session(1, None, None).await;
+    eprintln!("[TIMING-simple] Create session: {}ms", t0.elapsed().as_millis());
 
+    let t1 = std::time::Instant::now();
     let task_id = session_manager
         .register_task(&session_id, "Hello".to_string())
         .await
         .expect("session not found")
         .task_id;
+    eprintln!("[TIMING-simple] Register task: {}ms", t1.elapsed().as_millis());
 
+    let t2 = std::time::Instant::now();
     execute_task(&session_manager, &session_id, &task_id, "Hello").await;
+    eprintln!("[TIMING-simple] Execute task: {}ms", t2.elapsed().as_millis());
 
     let task = session_manager.get_task(&task_id).await;
     assert!(task.is_some(), "task should exist after execution");
+    
+    eprintln!("[TIMING-simple] Total: {}ms", test_start.elapsed().as_millis());
 }
 
 /// Test: session can be created, retrieved, and deleted.
@@ -204,6 +214,8 @@ async fn e2e_latency_session_ready() {
 /// Test: SSE endpoint streams events as a task executes.
 #[tokio::test]
 async fn e2e_sse_stream() {
+    let test_start = std::time::Instant::now();
+    
     // Start the server on a random port.
     let app_state = setup_test().await;
     let router = build_router(app_state.clone());
@@ -220,6 +232,7 @@ async fn e2e_sse_stream() {
     });
 
     let client = reqwest::Client::new();
+    eprintln!("[TIMING] Setup completed: {}ms", test_start.elapsed().as_millis());
 
     // Check EVENT_LOGS is empty initially.
     let debug_before: Vec<String> = client
@@ -233,6 +246,7 @@ async fn e2e_sse_stream() {
     eprintln!("EVENT_LOGS before task: {:?}", debug_before);
 
     // Create a session.
+    let t0 = std::time::Instant::now();
     let session_resp: serde_json::Value = client
         .post(format!("{}/sessions", base_url))
         .json(&serde_json::json!({ "user_id": 1 }))
@@ -243,8 +257,10 @@ async fn e2e_sse_stream() {
         .await
         .expect("failed to parse session response");
     let session_id = session_resp["session_id"].as_str().expect("no session_id");
+    eprintln!("[TIMING] Session created: {}ms", t0.elapsed().as_millis());
 
     // Submit a task.
+    let t1 = std::time::Instant::now();
     let task_resp: serde_json::Value = client
         .post(format!("{}/sessions/{}/tasks", base_url, session_id))
         .body("Hello")
@@ -254,6 +270,9 @@ async fn e2e_sse_stream() {
         .json()
         .await
         .expect("failed to parse task response");
+    eprintln!("[TIMING] Task submitted: {}ms (since create: {}ms)", 
+        t1.elapsed().as_millis(),
+        t0.elapsed().as_millis());
     eprintln!("Task response: {}", task_resp);
     let task_id = task_resp["task_id"].as_str().expect("no task_id");
 
@@ -285,6 +304,7 @@ async fn e2e_sse_stream() {
     eprintln!("Progress endpoint status: {}", progress_status);
 
     // Now try the SSE stream.
+    let t2 = std::time::Instant::now();
     let sse_url = format!(
         "{}/sessions/{}/tasks/{}/stream",
         base_url, session_id, task_id
@@ -298,6 +318,9 @@ async fn e2e_sse_stream() {
         .expect("failed to connect to SSE");
 
     let status = response.status();
+    eprintln!("[TIMING] SSE connected: {}ms (since task submit: {}ms)", 
+        t2.elapsed().as_millis(),
+        t1.elapsed().as_millis());
     eprintln!("SSE response status: {}", status);
 
     assert!(
@@ -308,10 +331,12 @@ async fn e2e_sse_stream() {
 
     let mut stream = response.bytes_stream();
     let mut event_count = 0;
+    let mut first_event_time: Option<std::time::Duration> = None;
+    let mut received_finished = false;
 
-    // Read SSE events until the stream closes or we hit a 30s deadline.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while std::time::Instant::now() < deadline {
+    // Read SSE events until the stream closes, we receive "finished", or hit deadline.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline && !received_finished {
         let opt: Option<Result<bytes::Bytes, reqwest::Error>> = stream.next().await;
         match opt {
             Some(Ok(bytes)) => {
@@ -322,6 +347,16 @@ async fn e2e_sse_stream() {
                 for line in text.lines() {
                     if line.starts_with("event:") {
                         event_count += 1;
+                        if first_event_time.is_none() {
+                            first_event_time = Some(t2.elapsed());
+                            eprintln!("[TIMING] First SSE event received: {:?} since SSE connect", 
+                                first_event_time);
+                        }
+                        // Check if this is the "finished" event
+                        if text.contains("\"finished\"") {
+                            received_finished = true;
+                            eprintln!("[TIMING] Received 'finished' event, exiting SSE loop");
+                        }
                     }
                 }
                 eprintln!("SSE chunk: {:?}", text);
@@ -334,20 +369,18 @@ async fn e2e_sse_stream() {
                 break;
             }
         }
-        if event_count > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
     }
 
     assert!(
         event_count > 0,
         "SSE stream should have delivered at least one event"
     );
+    assert!(
+        received_finished,
+        "SSE stream should have delivered 'finished' event"
+    );
 
     eprintln!("SSE received {} events", event_count);
-
-    // Give collect_events a moment to finalize the timeline.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify milestones were recorded.
     let timeline_url = format!(
@@ -417,6 +450,12 @@ async fn e2e_sse_stream() {
             first
         );
     }
+
+    eprintln!("[TIMING] Total test time: {}ms", test_start.elapsed().as_millis());
+    eprintln!("[BREAKDOWN] Setup: ~0ms | Create session: {}ms | Submit task: {}ms | SSE wait: {}ms",
+        t0.elapsed().as_millis(),
+        t1.elapsed().as_millis(),
+        t2.elapsed().as_millis());
 
     // Clean up.
     server.abort();
