@@ -20,6 +20,11 @@
   - [TimeoutReportHook](./hooks/timeout-report.md)
   - [Практические примеры](./hooks/examples.md)
 
+### LLM Providers
+- [**MiniMax**](./minimax/index.md) - MiniMax OpenAI-compatible provider with native tool calling
+  - [SPEC](./minimax/SPEC.md) - Implementation specification
+  - [API Reference](./minimax/reference.md) - API details
+
 ### Саб-агенты (Sub-Agents)
 - [**Обзор саб-агентов**](./hooks/sub-agents/index.md)
   - [Жизненный цикл](./hooks/sub-agents/lifecycle.md)
