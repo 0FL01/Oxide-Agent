@@ -564,18 +564,20 @@ async fn e2e_parallel_tool_execution_latency() {
 ///
 /// Run with: cargo test e2e_connection_pool_latency -- --ignored --nocapture
 #[tokio::test]
-#[ignore = "Requires MISTRAL_API_KEY or ZAI_API_KEY environment variable"]
+#[ignore = "Requires OPENROUTER_API_KEY, MISTRAL_API_KEY, or ZAI_API_KEY environment variable"]
 async fn e2e_connection_pool_latency() {
     use oxide_agent_core::llm::{LlmClient, Message};
     use std::time::Instant;
 
     // Determine which provider to test based on available env vars
-    let (provider_name, model_id) = if std::env::var("MISTRAL_API_KEY").is_ok() {
+    let (provider_name, model_id) = if std::env::var("OPENROUTER_API_KEY").is_ok() {
+        ("openrouter", "meta-llama/llama-3.1-8b-instruct")
+    } else if std::env::var("MISTRAL_API_KEY").is_ok() {
         ("mistral", "mistral-tiny")
     } else if std::env::var("ZAI_API_KEY").is_ok() {
         ("zai", "glm-4-flash")
     } else {
-        panic!("Neither MISTRAL_API_KEY nor ZAI_API_KEY is set");
+        panic!("Neither OPENROUTER_API_KEY nor MISTRAL_API_KEY nor ZAI_API_KEY is set");
     };
 
     eprintln!("Testing connection pool with provider: {}", provider_name);
@@ -587,6 +589,9 @@ async fn e2e_connection_pool_latency() {
         s.agent_timeout_secs = Some(30);
         // Load API keys from environment for the selected provider
         match provider_name {
+            "openrouter" => {
+                s.openrouter_api_key = std::env::var("OPENROUTER_API_KEY").ok();
+            }
             "mistral" => {
                 s.mistral_api_key = std::env::var("MISTRAL_API_KEY").ok();
             }

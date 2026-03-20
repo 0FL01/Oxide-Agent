@@ -335,10 +335,11 @@ impl LlmClient {
                 .as_ref()
                 .map(|k| providers::GeminiProvider::new(k.clone())),
             openrouter: settings.openrouter_api_key.as_ref().map(|k| {
-                providers::OpenRouterProvider::new(
+                providers::OpenRouterProvider::new_with_client(
                     k.clone(),
                     settings.openrouter_site_url.clone(),
                     settings.openrouter_site_name.clone(),
+                    http_client.clone(),
                 )
             }),
             embedding: Self::create_embedding_provider(settings),
