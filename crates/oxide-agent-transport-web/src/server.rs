@@ -493,10 +493,18 @@ async fn execute_agent_task(
         // Compute latency milestones from agent start time.
         // first_thinking_at and finished_at are chrono::DateTime<Utc>, so we use signed_duration_since.
         let first_thinking_ms = timestamps.first_thinking_at.map(|t| {
-            t.signed_duration_since(chrono::DateTime::from_timestamp_millis(agent_started_at_chrono_spawned).unwrap_or(t)).num_milliseconds()
+            t.signed_duration_since(
+                chrono::DateTime::from_timestamp_millis(agent_started_at_chrono_spawned)
+                    .unwrap_or(t),
+            )
+            .num_milliseconds()
         });
         let final_response_ms = timestamps.finished_at.map(|t| {
-            t.signed_duration_since(chrono::DateTime::from_timestamp_millis(agent_started_at_chrono_spawned).unwrap_or(t)).num_milliseconds()
+            t.signed_duration_since(
+                chrono::DateTime::from_timestamp_millis(agent_started_at_chrono_spawned)
+                    .unwrap_or(t),
+            )
+            .num_milliseconds()
         });
         let mut tl = tl_map.write().await;
         if let Some(m) = tl.get_mut(&tid) {
