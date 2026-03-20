@@ -422,6 +422,12 @@ impl DelegationProvider {
     }
 
     async fn finish_sub_agent_progress_relay(prepared: &mut PreparedSubAgentExecution) {
+        // Drop the restricted providers before awaiting the relay task.
+        // Some providers retain cloned progress senders internally; if the
+        // registry stays alive while we await the relay, the sub-agent channel
+        // never closes and the relay task cannot finish.
+        prepared.tools.clear();
+        prepared.registry = ToolRegistry::new();
         drop(prepared.progress_tx.take());
 
         if let Some(task) = prepared.progress_relay_task.take() {
@@ -697,7 +703,7 @@ mod tests {
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::AgentContext;
     use crate::agent::progress::{AgentEvent, TokenSnapshot};
-    use crate::config::{AgentSettings, SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS};
+    use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use serde_json::json;
     use std::collections::HashSet;
@@ -850,10 +856,7 @@ mod tests {
 
         assert_eq!(prepared.runner_config.model_name, "sub-model");
         assert_eq!(prepared.runner_config.model_max_output_tokens, 12_345);
-        assert_eq!(
-            prepared.sub_session.memory().max_tokens(),
-            96_000
-        );
+        assert_eq!(prepared.sub_session.memory().max_tokens(), 96_000);
     }
 
     fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {

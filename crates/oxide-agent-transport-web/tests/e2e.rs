@@ -3,16 +3,458 @@
 //! Tests the full agent execution pipeline with a scripted LLM provider
 //! to measure application-level latency without depending on real LLM APIs.
 
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use oxide_agent_core::config::AgentSettings;
-use oxide_agent_core::llm::LlmClient;
+use oxide_agent_core::llm::{
+    ChatResponse, ChatWithToolsRequest, LlmClient, LlmError, LlmProvider, Message, TokenUsage,
+    ToolCall, ToolCallFunction,
+};
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_transport_web::{
     build_router,
     scripted_llm::{ScriptedLlmProvider, ScriptedResponse, ScriptedToolCall},
     AppState,
 };
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, Notify};
+
+#[derive(Clone)]
+struct SequencedZaiProvider {
+    responses: Arc<Mutex<VecDeque<ChatResponse>>>,
+    model_log: Arc<Mutex<Vec<String>>>,
+}
+
+impl SequencedZaiProvider {
+    fn new(responses: Vec<ChatResponse>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+            model_log: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    async fn model_log(&self) -> Vec<String> {
+        self.model_log.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl LlmProvider for SequencedZaiProvider {
+    async fn chat_completion(
+        &self,
+        _system_prompt: &str,
+        _history: &[Message],
+        _user_message: &str,
+        _model_id: &str,
+        _max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown(
+            "chat_completion is not used by this provider".to_string(),
+        ))
+    }
+
+    async fn chat_with_tools<'a>(
+        &self,
+        request: ChatWithToolsRequest<'a>,
+    ) -> Result<ChatResponse, LlmError> {
+        self.model_log
+            .lock()
+            .await
+            .push(request.model_id.to_string());
+
+        self.responses
+            .lock()
+            .await
+            .pop_front()
+            .ok_or_else(|| LlmError::ApiError("No scripted ZAI response available".to_string()))
+    }
+
+    async fn transcribe_audio(
+        &self,
+        _audio_bytes: Vec<u8>,
+        _mime_type: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown("transcribe not implemented".to_string()))
+    }
+
+    async fn analyze_image(
+        &self,
+        _image_bytes: Vec<u8>,
+        _text_prompt: &str,
+        _system_prompt: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown(
+            "analyze_image not implemented".to_string(),
+        ))
+    }
+}
+
+#[derive(Clone)]
+struct ControlledNarratorProvider {
+    hang_on_call: Option<usize>,
+    call_count: Arc<AtomicUsize>,
+    released: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl ControlledNarratorProvider {
+    fn new(hang_on_call: Option<usize>) -> Self {
+        Self {
+            hang_on_call,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            released: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.call_count.load(Ordering::SeqCst)
+    }
+
+    fn release(&self) {
+        self.released.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ControlledNarratorProvider {
+    async fn chat_completion(
+        &self,
+        _system_prompt: &str,
+        _history: &[Message],
+        _user_message: &str,
+        _model_id: &str,
+        _max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        let call_index = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.hang_on_call == Some(call_index) && !self.released.load(Ordering::SeqCst) {
+            self.notify.notified().await;
+        }
+
+        Ok(
+            r#"{"headline":"Delegating work","content":"Tracking delegated work progress."}"#
+                .to_string(),
+        )
+    }
+
+    async fn chat_with_tools<'a>(
+        &self,
+        _: ChatWithToolsRequest<'a>,
+    ) -> Result<ChatResponse, LlmError> {
+        Err(LlmError::Unknown(
+            "chat_with_tools is not used by this provider".to_string(),
+        ))
+    }
+
+    async fn transcribe_audio(
+        &self,
+        _audio_bytes: Vec<u8>,
+        _mime_type: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown("transcribe not implemented".to_string()))
+    }
+
+    async fn analyze_image(
+        &self,
+        _image_bytes: Vec<u8>,
+        _text_prompt: &str,
+        _system_prompt: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown(
+            "analyze_image not implemented".to_string(),
+        ))
+    }
+}
+
+fn tool_call_response(name: &str, arguments: serde_json::Value) -> ChatResponse {
+    ChatResponse {
+        content: None,
+        tool_calls: vec![ToolCall {
+            id: format!("call-{name}"),
+            function: ToolCallFunction {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+            is_recovered: false,
+        }],
+        finish_reason: "tool_calls".to_string(),
+        reasoning_content: None,
+        usage: Some(TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        }),
+    }
+}
+
+fn unstructured_text_response(content: &str) -> ChatResponse {
+    ChatResponse {
+        content: Some(content.to_string()),
+        tool_calls: Vec::new(),
+        finish_reason: "stop".to_string(),
+        reasoning_content: None,
+        usage: Some(TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        }),
+    }
+}
+
+fn empty_unstructured_response() -> ChatResponse {
+    ChatResponse {
+        content: Some(String::new()),
+        tool_calls: Vec::new(),
+        finish_reason: "stop".to_string(),
+        reasoning_content: None,
+        usage: Some(TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 0,
+            total_tokens: 10,
+        }),
+    }
+}
+
+fn delegated_sub_agent_empty_content_responses() -> Vec<ChatResponse> {
+    vec![
+        tool_call_response(
+            "delegate_to_sub_agent",
+            serde_json::json!({
+                "task": "Capture package status and finish.",
+                "tools": ["write_todos"],
+            }),
+        ),
+        tool_call_response(
+            "write_todos",
+            serde_json::json!({
+                "todos": [
+                    {
+                        "description": "Capture package status",
+                        "status": "completed"
+                    }
+                ]
+            }),
+        ),
+        empty_unstructured_response(),
+        unstructured_text_response("delegation complete"),
+    ]
+}
+
+fn setup_web_test_with_custom_providers(
+    zai_provider: Arc<SequencedZaiProvider>,
+    narrator_provider: Arc<ControlledNarratorProvider>,
+) -> AppState {
+    let agent_settings = Arc::new({
+        let mut s = AgentSettings::default();
+        s.agent_model_id = Some("main-model".to_string());
+        s.agent_model_provider = Some("zai".to_string());
+        s.sub_agent_model_id = Some("glm-4.7".to_string());
+        s.sub_agent_model_provider = Some("zai".to_string());
+        s.narrator_model_id = Some("narrator-model".to_string());
+        s.narrator_model_provider = Some("narrator".to_string());
+        s.agent_timeout_secs = Some(5);
+        s.sub_agent_timeout_secs = Some(5);
+        s
+    });
+
+    let llm = {
+        let mut llm = LlmClient::new(&agent_settings);
+        llm.register_provider("zai".to_string(), zai_provider);
+        llm.register_provider("narrator".to_string(), narrator_provider);
+        Arc::new(llm)
+    };
+
+    let registry = SessionRegistry::new();
+    let session_manager =
+        oxide_agent_transport_web::session::WebSessionManager::new(registry, llm, agent_settings);
+    AppState::new(Arc::new(session_manager))
+}
+
+async fn spawn_test_server(app_state: AppState) -> (tokio::task::JoinHandle<()>, String) {
+    let router = build_router(app_state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind test server");
+    let addr = listener
+        .local_addr()
+        .expect("failed to get test server addr");
+    let base_url = format!("http://{addr}");
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("test server failed");
+    });
+
+    (server, base_url)
+}
+
+async fn create_session_http(client: &reqwest::Client, base_url: &str) -> String {
+    let response: serde_json::Value = client
+        .post(format!("{base_url}/sessions"))
+        .json(&serde_json::json!({ "user_id": 1 }))
+        .send()
+        .await
+        .expect("failed to create session")
+        .json()
+        .await
+        .expect("failed to decode session response");
+
+    response["session_id"]
+        .as_str()
+        .expect("session_id missing")
+        .to_string()
+}
+
+async fn create_task_http(client: &reqwest::Client, base_url: &str, session_id: &str) -> String {
+    let response: serde_json::Value = client
+        .post(format!("{base_url}/sessions/{session_id}/tasks"))
+        .body("Investigate package status")
+        .send()
+        .await
+        .expect("failed to create task")
+        .json()
+        .await
+        .expect("failed to decode task response");
+
+    response["task_id"]
+        .as_str()
+        .expect("task_id missing")
+        .to_string()
+}
+
+async fn wait_for_narrator_calls(
+    narrator_provider: &ControlledNarratorProvider,
+    minimum_calls: usize,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
+    while narrator_provider.call_count() < minimum_calls {
+        assert!(
+            Instant::now() < deadline,
+            "narrator did not reach {minimum_calls} calls in time"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_zai_calls(
+    zai_provider: &SequencedZaiProvider,
+    minimum_calls: usize,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if zai_provider.model_log().await.len() >= minimum_calls {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "zai provider did not reach {minimum_calls} calls in time"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_task_status(
+    session_manager: &oxide_agent_transport_web::session::WebSessionManager,
+    task_id: &str,
+    expected: oxide_agent_transport_web::session::TaskStatus,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let task = session_manager
+            .get_task(task_id)
+            .await
+            .expect("task metadata should exist while polling");
+
+        match (&task.status, &expected) {
+            (
+                oxide_agent_transport_web::session::TaskStatus::Completed,
+                oxide_agent_transport_web::session::TaskStatus::Completed,
+            ) => return,
+            (
+                oxide_agent_transport_web::session::TaskStatus::Running,
+                oxide_agent_transport_web::session::TaskStatus::Running,
+            ) => return,
+            (
+                oxide_agent_transport_web::session::TaskStatus::Cancelled,
+                oxide_agent_transport_web::session::TaskStatus::Cancelled,
+            ) => return,
+            (
+                oxide_agent_transport_web::session::TaskStatus::Failed,
+                oxide_agent_transport_web::session::TaskStatus::Failed,
+            ) => return,
+            _ => {}
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "task {task_id} did not reach expected status in time"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn fetch_task_events(
+    client: &reqwest::Client,
+    base_url: &str,
+    session_id: &str,
+    task_id: &str,
+) -> Vec<serde_json::Value> {
+    client
+        .get(format!(
+            "{base_url}/sessions/{session_id}/tasks/{task_id}/events"
+        ))
+        .send()
+        .await
+        .expect("failed to fetch task events")
+        .json()
+        .await
+        .expect("failed to decode task events")
+}
+
+async fn fetch_task_progress(
+    client: &reqwest::Client,
+    base_url: &str,
+    session_id: &str,
+    task_id: &str,
+) -> reqwest::Response {
+    client
+        .get(format!(
+            "{base_url}/sessions/{session_id}/tasks/{task_id}/progress"
+        ))
+        .send()
+        .await
+        .expect("failed to fetch task progress")
+}
+
+async fn fetch_task_timeline(
+    client: &reqwest::Client,
+    base_url: &str,
+    session_id: &str,
+    task_id: &str,
+) -> serde_json::Value {
+    client
+        .get(format!(
+            "{base_url}/sessions/{session_id}/tasks/{task_id}/timeline"
+        ))
+        .send()
+        .await
+        .expect("failed to fetch task timeline")
+        .json()
+        .await
+        .expect("failed to decode task timeline")
+}
 
 /// Set up test infrastructure with a scripted LLM provider.
 async fn setup_test() -> AppState {
@@ -93,11 +535,17 @@ async fn e2e_simple_text_response() {
     let test_start = std::time::Instant::now();
     let app_state = setup_test().await;
     let session_manager = app_state.session_manager();
-    eprintln!("[TIMING-simple] Setup: {}ms", test_start.elapsed().as_millis());
+    eprintln!(
+        "[TIMING-simple] Setup: {}ms",
+        test_start.elapsed().as_millis()
+    );
 
     let t0 = std::time::Instant::now();
     let session_id = session_manager.create_session(1, None, None).await;
-    eprintln!("[TIMING-simple] Create session: {}ms", t0.elapsed().as_millis());
+    eprintln!(
+        "[TIMING-simple] Create session: {}ms",
+        t0.elapsed().as_millis()
+    );
 
     let t1 = std::time::Instant::now();
     let task_id = session_manager
@@ -105,16 +553,25 @@ async fn e2e_simple_text_response() {
         .await
         .expect("session not found")
         .task_id;
-    eprintln!("[TIMING-simple] Register task: {}ms", t1.elapsed().as_millis());
+    eprintln!(
+        "[TIMING-simple] Register task: {}ms",
+        t1.elapsed().as_millis()
+    );
 
     let t2 = std::time::Instant::now();
     execute_task(&session_manager, &session_id, &task_id, "Hello").await;
-    eprintln!("[TIMING-simple] Execute task: {}ms", t2.elapsed().as_millis());
+    eprintln!(
+        "[TIMING-simple] Execute task: {}ms",
+        t2.elapsed().as_millis()
+    );
 
     let task = session_manager.get_task(&task_id).await;
     assert!(task.is_some(), "task should exist after execution");
-    
-    eprintln!("[TIMING-simple] Total: {}ms", test_start.elapsed().as_millis());
+
+    eprintln!(
+        "[TIMING-simple] Total: {}ms",
+        test_start.elapsed().as_millis()
+    );
 }
 
 /// Test: session can be created, retrieved, and deleted.
@@ -215,7 +672,7 @@ async fn e2e_latency_session_ready() {
 #[tokio::test]
 async fn e2e_sse_stream() {
     let test_start = std::time::Instant::now();
-    
+
     // Start the server on a random port.
     let app_state = setup_test().await;
     let router = build_router(app_state.clone());
@@ -232,7 +689,10 @@ async fn e2e_sse_stream() {
     });
 
     let client = reqwest::Client::new();
-    eprintln!("[TIMING] Setup completed: {}ms", test_start.elapsed().as_millis());
+    eprintln!(
+        "[TIMING] Setup completed: {}ms",
+        test_start.elapsed().as_millis()
+    );
 
     // Check EVENT_LOGS is empty initially.
     let debug_before: Vec<String> = client
@@ -270,9 +730,11 @@ async fn e2e_sse_stream() {
         .json()
         .await
         .expect("failed to parse task response");
-    eprintln!("[TIMING] Task submitted: {}ms (since create: {}ms)", 
+    eprintln!(
+        "[TIMING] Task submitted: {}ms (since create: {}ms)",
         t1.elapsed().as_millis(),
-        t0.elapsed().as_millis());
+        t0.elapsed().as_millis()
+    );
     eprintln!("Task response: {}", task_resp);
     let task_id = task_resp["task_id"].as_str().expect("no task_id");
 
@@ -318,9 +780,11 @@ async fn e2e_sse_stream() {
         .expect("failed to connect to SSE");
 
     let status = response.status();
-    eprintln!("[TIMING] SSE connected: {}ms (since task submit: {}ms)", 
+    eprintln!(
+        "[TIMING] SSE connected: {}ms (since task submit: {}ms)",
         t2.elapsed().as_millis(),
-        t1.elapsed().as_millis());
+        t1.elapsed().as_millis()
+    );
     eprintln!("SSE response status: {}", status);
 
     assert!(
@@ -349,8 +813,10 @@ async fn e2e_sse_stream() {
                         event_count += 1;
                         if first_event_time.is_none() {
                             first_event_time = Some(t2.elapsed());
-                            eprintln!("[TIMING] First SSE event received: {:?} since SSE connect", 
-                                first_event_time);
+                            eprintln!(
+                                "[TIMING] First SSE event received: {:?} since SSE connect",
+                                first_event_time
+                            );
                         }
                         // Check if this is the "finished" event
                         if text.contains("\"finished\"") {
@@ -451,11 +917,16 @@ async fn e2e_sse_stream() {
         );
     }
 
-    eprintln!("[TIMING] Total test time: {}ms", test_start.elapsed().as_millis());
-    eprintln!("[BREAKDOWN] Setup: ~0ms | Create session: {}ms | Submit task: {}ms | SSE wait: {}ms",
+    eprintln!(
+        "[TIMING] Total test time: {}ms",
+        test_start.elapsed().as_millis()
+    );
+    eprintln!(
+        "[BREAKDOWN] Setup: ~0ms | Create session: {}ms | Submit task: {}ms | SSE wait: {}ms",
         t0.elapsed().as_millis(),
         t1.elapsed().as_millis(),
-        t2.elapsed().as_millis());
+        t2.elapsed().as_millis()
+    );
 
     // Clean up.
     server.abort();
@@ -477,17 +948,23 @@ async fn e2e_parallel_tool_execution_latency() {
                 ScriptedToolCall {
                     id: "call_1".to_string(),
                     name: "todos_write".to_string(),
-                    arguments: r#"{"todos":[{"id":"1","description":"Task 1","status":"pending"}]}"#.to_string(),
+                    arguments:
+                        r#"{"todos":[{"id":"1","description":"Task 1","status":"pending"}]}"#
+                            .to_string(),
                 },
                 ScriptedToolCall {
                     id: "call_2".to_string(),
                     name: "todos_write".to_string(),
-                    arguments: r#"{"todos":[{"id":"2","description":"Task 2","status":"pending"}]}"#.to_string(),
+                    arguments:
+                        r#"{"todos":[{"id":"2","description":"Task 2","status":"pending"}]}"#
+                            .to_string(),
                 },
                 ScriptedToolCall {
                     id: "call_3".to_string(),
                     name: "todos_write".to_string(),
-                    arguments: r#"{"todos":[{"id":"3","description":"Task 3","status":"pending"}]}"#.to_string(),
+                    arguments:
+                        r#"{"todos":[{"id":"3","description":"Task 3","status":"pending"}]}"#
+                            .to_string(),
                 },
             ],
             final_text: None,
@@ -519,7 +996,10 @@ async fn e2e_parallel_tool_execution_latency() {
 
     let t0 = std::time::Instant::now();
     let session_id = session_manager.create_session(1, None, None).await;
-    eprintln!("[TIMING-parallel] Create session: {}ms", t0.elapsed().as_millis());
+    eprintln!(
+        "[TIMING-parallel] Create session: {}ms",
+        t0.elapsed().as_millis()
+    );
 
     let t1 = std::time::Instant::now();
     let task_id = session_manager
@@ -527,20 +1007,38 @@ async fn e2e_parallel_tool_execution_latency() {
         .await
         .expect("session not found")
         .task_id;
-    eprintln!("[TIMING-parallel] Register task: {}ms", t1.elapsed().as_millis());
+    eprintln!(
+        "[TIMING-parallel] Register task: {}ms",
+        t1.elapsed().as_millis()
+    );
 
     // Execute and measure time for 3 tool calls
     let t2 = std::time::Instant::now();
-    execute_task(&session_manager, &session_id, &task_id, "Create multiple tasks").await;
+    execute_task(
+        &session_manager,
+        &session_id,
+        &task_id,
+        "Create multiple tasks",
+    )
+    .await;
     let execution_time = t2.elapsed().as_millis();
-    eprintln!("[TIMING-parallel] Execute 3 tool calls: {}ms", execution_time);
+    eprintln!(
+        "[TIMING-parallel] Execute 3 tool calls: {}ms",
+        execution_time
+    );
 
     // Verify todos were created
     let task = session_manager.get_task(&task_id).await;
     assert!(task.is_some(), "task should exist after execution");
 
-    eprintln!("[TIMING-parallel] Total test time: {}ms", test_start.elapsed().as_millis());
-    eprintln!("[RESULT] Tool execution latency baseline: {}ms for 3 sequential calls", execution_time);
+    eprintln!(
+        "[TIMING-parallel] Total test time: {}ms",
+        test_start.elapsed().as_millis()
+    );
+    eprintln!(
+        "[RESULT] Tool execution latency baseline: {}ms for 3 sequential calls",
+        execution_time
+    );
 
     // Current expectation: sequential execution
     // If tools execute sequentially: ~200ms each with overhead = ~600-700ms total
@@ -551,6 +1049,127 @@ async fn e2e_parallel_tool_execution_latency() {
         "3 tool calls should complete in under 1000ms (current sequential baseline), took {}ms. After parallel optimization, this should drop to ~300ms!",
         execution_time
     );
+}
+
+#[tokio::test]
+async fn e2e_delegated_sub_agent_empty_content_completes_after_relay_cleanup() {
+    let zai_provider = Arc::new(SequencedZaiProvider::new(
+        delegated_sub_agent_empty_content_responses(),
+    ));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
+    let app_state =
+        setup_web_test_with_custom_providers(zai_provider.clone(), narrator_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+
+    let session_id = create_session_http(&client, &base_url).await;
+    let task_id = create_task_http(&client, &base_url, &session_id).await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 4, Duration::from_secs(2)).await;
+    wait_for_narrator_calls(&narrator_provider, 2, Duration::from_secs(2)).await;
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let progress_response = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
+    assert!(progress_response.status().is_success());
+    let progress: serde_json::Value = progress_response
+        .json()
+        .await
+        .expect("failed to decode task progress");
+    let timeline = fetch_task_timeline(&client, &base_url, &session_id, &task_id).await;
+
+    let event_names: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .collect();
+    assert!(event_names.contains(&"tool_call:delegate_to_sub_agent"));
+    assert!(event_names.contains(&"tool_call:write_todos"));
+    assert!(event_names.contains(&"finished"));
+    assert!(progress.is_object());
+    assert!(timeline["milestones"]["final_response_ms"].is_number());
+    assert_eq!(
+        zai_provider.model_log().await,
+        vec!["main-model", "glm-4.7", "glm-4.7", "main-model"]
+    );
+    assert!(narrator_provider.call_count() >= 2);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn e2e_delegated_sub_agent_unblocks_after_delayed_narrator_release() {
+    let zai_provider = Arc::new(SequencedZaiProvider::new(
+        delegated_sub_agent_empty_content_responses(),
+    ));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(Some(2)));
+    let app_state =
+        setup_web_test_with_custom_providers(zai_provider.clone(), narrator_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+
+    let session_id = create_session_http(&client, &base_url).await;
+    let task_id = create_task_http(&client, &base_url, &session_id).await;
+
+    wait_for_zai_calls(&zai_provider, 3, Duration::from_secs(2)).await;
+    wait_for_narrator_calls(&narrator_provider, 2, Duration::from_secs(2)).await;
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Running,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    let progress_before_release =
+        fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
+    assert_eq!(
+        progress_before_release.status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+
+    narrator_provider.release();
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 4, Duration::from_secs(2)).await;
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let event_names: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .collect();
+    assert!(event_names.contains(&"finished"));
+
+    let progress_after_release =
+        fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
+    assert!(progress_after_release.status().is_success());
+    let progress: serde_json::Value = progress_after_release
+        .json()
+        .await
+        .expect("failed to decode task progress");
+    let timeline = fetch_task_timeline(&client, &base_url, &session_id, &task_id).await;
+    assert!(progress.is_object());
+    assert!(timeline["milestones"]["final_response_ms"].is_number());
+
+    assert_eq!(
+        zai_provider.model_log().await,
+        vec!["main-model", "glm-4.7", "glm-4.7", "main-model"]
+    );
+
+    server.abort();
 }
 
 /// Test: Measure HTTP connection pool latency improvement.
@@ -613,29 +1232,27 @@ async fn e2e_connection_pool_latency() {
 
     // Request 1: Cold start (includes TCP handshake + TLS)
     let t1 = Instant::now();
-    let resp1 = llm.chat_with_tools(
-        system_prompt,
-        &messages,
-        &[],
-        model_id,
-        false,
-    ).await;
+    let resp1 = llm
+        .chat_with_tools(system_prompt, &messages, &[], model_id, false)
+        .await;
     let time1 = t1.elapsed();
     assert!(resp1.is_ok(), "First request failed: {:?}", resp1.err());
-    eprintln!("[CONNECTION-POOL] First request (cold): {}ms", time1.as_millis());
+    eprintln!(
+        "[CONNECTION-POOL] First request (cold): {}ms",
+        time1.as_millis()
+    );
 
     // Request 2: Should reuse connection if pool is working
     let t2 = Instant::now();
-    let resp2 = llm.chat_with_tools(
-        system_prompt,
-        &messages,
-        &[],
-        model_id,
-        false,
-    ).await;
+    let resp2 = llm
+        .chat_with_tools(system_prompt, &messages, &[], model_id, false)
+        .await;
     let time2 = t2.elapsed();
     assert!(resp2.is_ok(), "Second request failed: {:?}", resp2.err());
-    eprintln!("[CONNECTION-POOL] Second request (warm): {}ms", time2.as_millis());
+    eprintln!(
+        "[CONNECTION-POOL] Second request (warm): {}ms",
+        time2.as_millis()
+    );
 
     // Calculate improvement
     let improvement = if time1.as_millis() > 0 {
