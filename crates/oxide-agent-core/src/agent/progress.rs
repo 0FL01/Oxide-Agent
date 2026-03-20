@@ -393,6 +393,9 @@ impl ProgressState {
     }
 
     fn handle_thinking(&mut self, snapshot: TokenSnapshot) {
+        // Clear any active rate-limit display: the agent is back to work,
+        // so the user should no longer see the "retrying" banner.
+        self.rate_limit_retry = None;
         self.current_iteration += 1;
         self.complete_last_step();
         self.latest_token_snapshot = Some(snapshot.clone());

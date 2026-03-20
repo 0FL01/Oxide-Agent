@@ -852,7 +852,7 @@ mod tests {
         assert_eq!(prepared.runner_config.model_max_output_tokens, 12_345);
         assert_eq!(
             prepared.sub_session.memory().max_tokens(),
-            SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS
+            96_000
         );
     }
 

@@ -760,7 +760,7 @@ pub const DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
 /// Internal main-agent context budget cap.
 pub const AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
 /// Internal sub-agent context budget cap.
-pub const SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 64_000;
+pub const SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
 /// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when todos incomplete
 /// Default limit for search tool calls per agent session
