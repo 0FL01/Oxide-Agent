@@ -4,8 +4,8 @@ use crate::bot::TelegramThreadSpec;
 use oxide_agent_core::agent::{
     manager_default_blocked_tools, parse_agent_profile,
     providers::{
-        inject_topic_infra_preflight_system_message, inspect_topic_infra_config,
-        manager_control_plane_tool_names, reminder_tool_names,
+        agents_md_tool_names, inject_topic_infra_preflight_system_message,
+        inspect_topic_infra_config, manager_control_plane_tool_names, reminder_tool_names,
     },
     AgentExecutionProfile, SessionId,
 };
@@ -116,6 +116,7 @@ pub(crate) async fn resolve_execution_profile(
     }
     parsed_profile.tool_policy = parsed_profile
         .tool_policy
+        .with_additional_allowed_tools(agents_md_tool_names())
         .with_additional_allowed_tools(reminder_tool_names());
 
     let prompt_instructions = compose_execution_prompt_instructions(

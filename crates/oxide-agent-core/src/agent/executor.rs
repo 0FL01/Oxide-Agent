@@ -15,7 +15,7 @@ use super::memory::AgentMessage;
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
-    inject_approval_credentials, DelegationProvider, FileHosterProvider,
+    inject_approval_credentials, AgentsMdProvider, DelegationProvider, FileHosterProvider,
     ManagerControlPlaneProvider, ManagerTopicLifecycle, ReminderContext, ReminderProvider,
     SandboxProvider, SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
     TodoList, TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
@@ -51,6 +51,7 @@ pub struct AgentExecutor {
     session: AgentSession,
     skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
+    agents_md: Option<AgentsMdContext>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
     topic_infra: Option<TopicInfraContext>,
     reminder_context: Option<ReminderContext>,
@@ -67,6 +68,13 @@ pub enum AgentExecutionOutcome {
     Completed(String),
     /// Agent paused because it is waiting for an external approval.
     WaitingForApproval,
+}
+
+#[derive(Clone)]
+struct AgentsMdContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_id: String,
 }
 
 #[derive(Clone)]
@@ -194,6 +202,7 @@ impl AgentExecutor {
             session,
             skill_registry,
             settings,
+            agents_md: None,
             manager_control_plane: None,
             topic_infra: None,
             reminder_context: None,
@@ -229,6 +238,20 @@ impl AgentExecutor {
             *policy = execution_profile.hook_policy().clone();
         }
         self.execution_profile = execution_profile;
+    }
+
+    /// Attach topic-scoped AGENTS.md tooling.
+    pub fn set_agents_md_context(
+        &mut self,
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+        topic_id: String,
+    ) {
+        self.agents_md = Some(AgentsMdContext {
+            storage,
+            user_id,
+            topic_id,
+        });
     }
 
     /// Attach or clear topic-scoped infrastructure tooling.
@@ -409,6 +432,14 @@ impl AgentExecutor {
             sandbox_scope,
             self.settings.clone(),
         )));
+
+        if let Some(agents_md) = &self.agents_md {
+            registry.register(Box::new(AgentsMdProvider::new(
+                Arc::clone(&agents_md.storage),
+                agents_md.user_id,
+                agents_md.topic_id.clone(),
+            )));
+        }
 
         if let Some(control_plane) = &self.manager_control_plane {
             let mut manager_provider = ManagerControlPlaneProvider::new(
@@ -1145,6 +1176,38 @@ mod tests {
             .expect_err("manager-disabled registry must reject manager tools");
 
         assert!(err.to_string().contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn agents_md_context_enables_self_editing_tools() {
+        let mut mock = MockStorageProvider::new();
+        mock.expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|user_id, topic_id| {
+                Ok(Some(crate::storage::TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 4,
+                    user_id,
+                    topic_id,
+                    agents_md: "# Topic AGENTS\nCurrent instructions".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+
+        let mut executor = build_executor();
+        executor.set_agents_md_context(Arc::new(mock), 77, "topic-a".to_string());
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        let response = registry
+            .execute("agents_md_get", "{}", None, None)
+            .await
+            .expect("agents_md_get must succeed when context is configured");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("tool response must be valid json");
+        assert_eq!(parsed["found"], true);
+        assert_eq!(parsed["topic_id"], "topic-a");
     }
 
     #[tokio::test]

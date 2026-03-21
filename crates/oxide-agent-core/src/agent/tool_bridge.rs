@@ -3,8 +3,7 @@
 //! Handles tool execution with timeout, cancellation support, and progress events.
 
 use super::context::AgentContext;
-use super::memory::AgentMemory;
-use super::memory::AgentMessage;
+use super::memory::{AgentMemory, AgentMessage, TOPIC_AGENTS_MD_SYSTEM_PREFIX};
 use super::progress::AgentEvent;
 use super::providers::TodoList;
 use super::recovery::sanitize_xml_tags;
@@ -213,6 +212,7 @@ async fn normalize_tool_result(
     ctx: &mut ToolExecutionContext<'_>,
 ) -> Result<ToolExecutionResult> {
     sync_todos_if_needed(&tool_call.name, ctx).await;
+    sync_topic_agents_md_if_needed(&tool_call.name, &result, ctx).await;
 
     if let Some(approval) = parse_pending_ssh_approval(&result) {
         store_pending_ssh_approval(&tool_call, &approval, ctx).await;
@@ -246,6 +246,77 @@ async fn sync_todos_if_needed(tool_name: &str, ctx: &mut ToolExecutionContext<'_
             })
             .await;
     }
+}
+
+pub(crate) async fn sync_topic_agents_md_if_needed(
+    tool_name: &str,
+    result: &str,
+    ctx: &mut ToolExecutionContext<'_>,
+) {
+    let Some(agents_md) = extract_updated_topic_agents_md(tool_name, result) else {
+        return;
+    };
+
+    ctx.agent.memory_mut().upsert_topic_agents_md(&agents_md);
+    upsert_topic_agents_md_messages(ctx.messages, &agents_md);
+    ctx.agent.persist_memory_checkpoint_background();
+}
+
+pub(crate) fn upsert_topic_agents_md_messages(messages: &mut Vec<Message>, agents_md: &str) {
+    let replacement = Message {
+        role: "system".to_string(),
+        content: format!("{TOPIC_AGENTS_MD_SYSTEM_PREFIX}{}", agents_md.trim()),
+        tool_call_id: None,
+        name: None,
+        tool_calls: None,
+    };
+
+    if let Some(first_idx) = messages.iter().position(|message| {
+        message.role == "system" && message.content.starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX)
+    }) {
+        messages[first_idx] = replacement;
+        let mut seen_first = false;
+        messages.retain(|message| {
+            if message.role != "system"
+                || !message.content.starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX)
+            {
+                return true;
+            }
+
+            if !seen_first {
+                seen_first = true;
+                return true;
+            }
+
+            false
+        });
+    } else {
+        messages.insert(0, replacement);
+    }
+}
+
+pub(crate) fn extract_updated_topic_agents_md(tool_name: &str, result: &str) -> Option<String> {
+    if tool_name != "agents_md_update" {
+        return None;
+    }
+
+    let payload: serde_json::Value = serde_json::from_str(result).ok()?;
+    if payload.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    if payload
+        .get("dry_run")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    payload
+        .get("topic_agents_md")
+        .and_then(|record| record.get("agents_md"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 async fn store_pending_ssh_approval(
@@ -314,6 +385,7 @@ fn parse_pending_ssh_approval(output: &str) -> Option<PendingSshApprovalPayload>
 #[cfg(test)]
 mod tests {
     use super::{execute_single_tool_call, parse_pending_ssh_approval, ToolExecutionContext};
+    use crate::agent::memory::AgentMessage;
     use crate::agent::provider::ToolProvider;
     use crate::agent::providers::TodoList;
     use crate::agent::registry::ToolRegistry;
@@ -324,6 +396,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     struct PendingApprovalProvider;
+    struct AgentsMdUpdateProvider;
 
     #[async_trait]
     impl ToolProvider for PendingApprovalProvider {
@@ -351,6 +424,41 @@ mod tests {
             _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
         ) -> anyhow::Result<String> {
             Ok(r#"{"ok":false,"approval_required":true,"request_id":"req-1","tool_name":"ssh_sudo_exec","topic_id":"topic-a","target_name":"n-de1","summary":"sudo exec on n-de1: journalctl","expires_at":123}"#.to_string())
+        }
+    }
+
+    #[async_trait]
+    impl ToolProvider for AgentsMdUpdateProvider {
+        fn name(&self) -> &'static str {
+            "agents_md_update_provider"
+        }
+
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: "agents_md_update".to_string(),
+                description: "test".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }]
+        }
+
+        fn can_handle(&self, tool_name: &str) -> bool {
+            tool_name == "agents_md_update"
+        }
+
+        async fn execute(
+            &self,
+            _tool_name: &str,
+            _arguments: &str,
+            _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
+            _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        ) -> anyhow::Result<String> {
+            Ok(serde_json::json!({
+                "ok": true,
+                "topic_agents_md": {
+                    "agents_md": "# Topic AGENTS\nUse the updated checklist.",
+                },
+            })
+            .to_string())
         }
     }
 
@@ -418,5 +526,73 @@ mod tests {
                 .tool_call_id,
             "call-1"
         );
+    }
+
+    #[tokio::test]
+    async fn agents_md_update_replaces_pinned_topic_agents_md_in_context() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(AgentsMdUpdateProvider));
+
+        let mut session = AgentSession::new(1_i64.into());
+        session.memory.add_message(AgentMessage::topic_agents_md(
+            "# Topic AGENTS\nOld guidance.",
+        ));
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let mut messages = vec![crate::llm::Message::system(
+            "[TOPIC_AGENTS_MD]\n# Topic AGENTS\nOld guidance.",
+        )];
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let arguments = serde_json::json!({
+            "agents_md": "# Topic AGENTS\nUse the updated checklist.",
+        })
+        .to_string();
+
+        let tool_call = ToolCall {
+            id: "call-2".to_string(),
+            function: ToolCallFunction {
+                name: "agents_md_update".to_string(),
+                arguments,
+            },
+            is_recovered: false,
+        };
+
+        let mut ctx = ToolExecutionContext {
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            messages: &mut messages,
+            agent: &mut session,
+            cancellation_token,
+        };
+
+        let result = execute_single_tool_call(tool_call, &mut ctx)
+            .await
+            .expect("tool call must succeed");
+
+        assert!(matches!(
+            result,
+            super::ToolExecutionResult::Completed { .. }
+        ));
+        assert!(session.memory.has_topic_agents_md());
+        assert!(session
+            .memory
+            .get_messages()
+            .iter()
+            .any(|message| { message.content.contains("Use the updated checklist.") }));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| {
+                    message.role == "system"
+                        && message
+                            .content
+                            .starts_with(crate::agent::memory::TOPIC_AGENTS_MD_SYSTEM_PREFIX)
+                })
+                .count(),
+            1
+        );
+        assert!(messages.iter().any(|message| {
+            message.role == "system" && message.content.contains("Use the updated checklist.")
+        }));
     }
 }

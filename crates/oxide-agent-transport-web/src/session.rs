@@ -8,6 +8,7 @@
 use crate::in_memory_storage::InMemoryStorage;
 use crate::web_transport::TaskEventLog;
 use chrono::{DateTime, Utc};
+use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::{AgentExecutor, AgentMemory, AgentSession, SessionId};
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
@@ -211,6 +212,13 @@ impl WebSessionManager {
         let sandbox_scope = SandboxScope::new(user_id, "web");
 
         let mut session = AgentSession::new_with_sandbox_scope(sid, sandbox_scope);
+        inject_topic_agents_md_for_session(
+            self.storage(),
+            user_id,
+            context_key.clone().unwrap_or_else(|| "default".to_string()),
+            &mut session,
+        )
+        .await;
 
         // Attach in-memory checkpoint so memory survives across tasks.
         session.set_memory_checkpoint(Arc::new(InMemoryFlowCheckpoint {
@@ -222,7 +230,13 @@ impl WebSessionManager {
                 .unwrap_or_else(|| "default".to_string()),
         }));
 
-        let executor = AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone());
+        let mut executor =
+            AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone());
+        executor.set_agents_md_context(
+            self.storage(),
+            user_id,
+            context_key.clone().unwrap_or_else(|| "default".to_string()),
+        );
 
         self.registry.insert(sid, executor).await;
 
@@ -390,6 +404,33 @@ struct InMemoryFlowCheckpoint {
     agent_flow_id: String,
 }
 
+async fn inject_topic_agents_md_for_session(
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    context_key: String,
+    session: &mut AgentSession,
+) {
+    if session.memory.has_topic_agents_md() {
+        return;
+    }
+
+    let topic_agents_md = match storage.get_topic_agents_md(user_id, context_key).await {
+        Ok(record) => record.map(|record| record.agents_md),
+        Err(_) => None,
+    };
+
+    let Some(topic_agents_md) = topic_agents_md.map(|content| content.trim().to_string()) else {
+        return;
+    };
+    if topic_agents_md.is_empty() {
+        return;
+    }
+
+    session
+        .memory
+        .add_message(AgentMessage::topic_agents_md(topic_agents_md));
+}
+
 #[async_trait::async_trait]
 impl oxide_agent_core::agent::AgentMemoryCheckpoint for InMemoryFlowCheckpoint {
     async fn persist(&self, memory: &AgentMemory) -> Result<(), anyhow::Error> {
@@ -402,5 +443,50 @@ impl oxide_agent_core::agent::AgentMemoryCheckpoint for InMemoryFlowCheckpoint {
             )
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_agent_core::storage::UpsertTopicAgentsMdOptions;
+
+    #[tokio::test]
+    async fn create_session_bootstraps_topic_agents_md_into_memory() {
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings::default());
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new(registry, llm, settings);
+        let storage = manager.storage();
+        storage
+            .upsert_topic_agents_md(UpsertTopicAgentsMdOptions {
+                user_id: 77,
+                topic_id: "topic-a".to_string(),
+                agents_md: "# Topic AGENTS\nBootstrap instructions".to_string(),
+            })
+            .await
+            .expect("topic AGENTS.md must be stored");
+
+        let session_id = manager
+            .create_session(77, Some("topic-a".to_string()), Some("flow-a".to_string()))
+            .await;
+        let sid = manager
+            .resolve_session_id(&session_id)
+            .await
+            .expect("session id must resolve");
+        let executor = manager
+            .session_registry()
+            .get(&sid)
+            .await
+            .expect("executor must exist");
+        let executor = executor.read().await;
+
+        assert!(executor.session().memory.has_topic_agents_md());
+        assert!(executor
+            .session()
+            .memory
+            .get_messages()
+            .iter()
+            .any(|message| message.content.contains("Bootstrap instructions")));
     }
 }

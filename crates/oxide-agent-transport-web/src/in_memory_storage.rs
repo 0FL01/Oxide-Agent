@@ -15,7 +15,7 @@ use oxide_agent_core::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
     CreateReminderJobOptions, Message, ReminderJobRecord, ReminderJobStatus, StorageError,
     TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
-    UpsertTopicBindingOptions, UserConfig,
+    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -326,6 +326,49 @@ impl crate::api::StorageProvider for InMemoryStorage {
     ) -> Result<Option<TopicAgentsMdRecord>, StorageError> {
         let records = self.topic_agents_md.read().await;
         Ok(records.get(&(user_id, topic_id)).cloned())
+    }
+
+    async fn upsert_topic_agents_md(
+        &self,
+        options: UpsertTopicAgentsMdOptions,
+    ) -> Result<TopicAgentsMdRecord, StorageError> {
+        let mut records = self.topic_agents_md.write().await;
+        let now = chrono::Utc::now().timestamp();
+        let key = (options.user_id, options.topic_id.clone());
+        let record = if let Some(existing) = records.get(&key) {
+            TopicAgentsMdRecord {
+                schema_version: existing.schema_version,
+                version: existing.version + 1,
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agents_md: options.agents_md,
+                created_at: existing.created_at,
+                updated_at: now,
+            }
+        } else {
+            TopicAgentsMdRecord {
+                schema_version: 1,
+                version: 1,
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agents_md: options.agents_md,
+                created_at: now,
+                updated_at: now,
+            }
+        };
+
+        records.insert(key, record.clone());
+        Ok(record)
+    }
+
+    async fn delete_topic_agents_md(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        let mut records = self.topic_agents_md.write().await;
+        records.remove(&(user_id, topic_id));
+        Ok(())
     }
 
     // --- System ---

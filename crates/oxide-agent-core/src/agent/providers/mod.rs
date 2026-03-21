@@ -2,6 +2,8 @@
 //!
 //! Contains implementations of `ToolProvider` for different tool sources.
 
+/// Topic-scoped self-editing tools for `AGENTS.md`.
+pub mod agents_md;
 pub mod delegation;
 pub mod filehoster;
 pub mod manager_control_plane;
@@ -19,6 +21,7 @@ pub mod tavily;
 #[cfg(feature = "crawl4ai")]
 pub mod crawl4ai;
 
+pub use agents_md::{agents_md_tool_names, AgentsMdProvider};
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
 pub use manager_control_plane::{
