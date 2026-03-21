@@ -2,7 +2,7 @@
 
 use super::archive::{persist_compacted_history_chunk, ArchiveSink, NoopArchiveSink};
 use super::budget::estimate_request_budget;
-use super::classifier::classify_hot_memory;
+use super::classifier::classify_hot_memory_with_policy;
 use super::externalize::{externalize_hot_memory, NoopPayloadSink, PayloadSink};
 use super::prune::prune_hot_memory;
 use super::rebuild::rebuild_hot_context;
@@ -102,7 +102,11 @@ impl CompactionService {
             self.summarize_and_rebuild(request, agent).await;
 
         let budget = estimate_request_budget(&self.policy, request, agent);
-        let snapshot = classify_hot_memory(agent.memory().get_messages());
+        let snapshot = classify_hot_memory_with_policy(
+            agent.memory().get_messages(),
+            &self.policy,
+            Some(agent.memory().max_tokens()),
+        );
         self.log_checkpoint(
             request,
             agent,
@@ -161,7 +165,11 @@ impl CompactionService {
         trigger: super::CompactionTrigger,
         agent: &mut dyn AgentContext,
     ) -> (ExternalizationOutcome, PruneOutcome) {
-        let snapshot_before = classify_hot_memory(agent.memory().get_messages());
+        let snapshot_before = classify_hot_memory_with_policy(
+            agent.memory().get_messages(),
+            &self.policy,
+            Some(agent.memory().max_tokens()),
+        );
         let (rewritten_messages, externalization) = externalize_hot_memory(
             &self.policy,
             &agent.compaction_scope(),
@@ -174,7 +182,11 @@ impl CompactionService {
             agent.memory_mut().replace_messages(rewritten_messages);
         }
 
-        let snapshot_after_externalization = classify_hot_memory(agent.memory().get_messages());
+        let snapshot_after_externalization = classify_hot_memory_with_policy(
+            agent.memory().get_messages(),
+            &self.policy,
+            Some(agent.memory().max_tokens()),
+        );
         let (pruned_messages, pruning) = prune_hot_memory(
             &self.policy,
             &snapshot_after_externalization,
@@ -213,7 +225,11 @@ impl CompactionService {
         RebuildOutcome,
     ) {
         let budget_before_summary = estimate_request_budget(&self.policy, request, agent);
-        let snapshot_before_summary = classify_hot_memory(agent.memory().get_messages());
+        let snapshot_before_summary = classify_hot_memory_with_policy(
+            agent.memory().get_messages(),
+            &self.policy,
+            Some(agent.memory().max_tokens()),
+        );
         let summary_generation = if let Some(summarizer) = &self.summarizer {
             summarizer
                 .summarize_if_needed(
@@ -493,6 +509,7 @@ mod tests {
             externalize_threshold_chars: usize::MAX,
             prune_min_tokens: 1,
             prune_min_chars: 16,
+            protected_tool_window_tokens: 1,
             ..CompactionPolicy::default()
         });
         let request = CompactionRequest::new(
@@ -523,7 +540,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_for_run_prunes_only_before_summary_boundary_under_pressure() {
-        let mut session = EphemeralSession::new(2_048);
+        let mut session = EphemeralSession::new(512);
         session.memory_mut().add_message(AgentMessage::tool(
             "call-0",
             "search",

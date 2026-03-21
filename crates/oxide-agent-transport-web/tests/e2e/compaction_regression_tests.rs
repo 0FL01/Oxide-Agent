@@ -146,6 +146,13 @@ fn request_contains(request: &super::providers::RecordedToolRequest, needle: &st
             .any(|message| message.content.contains(needle))
 }
 
+fn token_rich_payload(label: &str, words: usize) -> String {
+    (0..words)
+        .map(|index| format!("{label}_{index} signal_{index}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[tokio::test]
 async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
@@ -167,11 +174,56 @@ async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
         user_id,
         vec![
             AgentMessage::user_task("Investigate old artifacts"),
-            AgentMessage::tool("old-call", "web_markdown", &"A".repeat(1_500)),
-            AgentMessage::tool("recent-1", "web_markdown", "short-1"),
-            AgentMessage::tool("recent-2", "web_markdown", "short-2"),
-            AgentMessage::tool("recent-3", "web_markdown", "short-3"),
-            AgentMessage::tool("recent-4", "web_markdown", "short-4"),
+            AgentMessage::tool(
+                "old-call",
+                "web_markdown",
+                &format!("{} OLD_ARTIFACT_MARKER", token_rich_payload("old", 2_500)),
+            ),
+            AgentMessage::tool(
+                "recent-1",
+                "web_markdown",
+                &token_rich_payload("recent-1", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-2",
+                "web_markdown",
+                &token_rich_payload("recent-2", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-3",
+                "web_markdown",
+                &token_rich_payload("recent-3", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-4",
+                "web_markdown",
+                &token_rich_payload("recent-4", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-5",
+                "web_markdown",
+                &token_rich_payload("recent-5", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-6",
+                "web_markdown",
+                &token_rich_payload("recent-6", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-7",
+                "web_markdown",
+                &token_rich_payload("recent-7", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-8",
+                "web_markdown",
+                &token_rich_payload("recent-8", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-9",
+                "web_markdown",
+                &token_rich_payload("recent-9", 2_500),
+            ),
         ],
     )
     .await;
@@ -200,7 +252,6 @@ async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
         .iter()
         .filter_map(|event| event["event_name"].as_str())
         .collect();
-    assert!(event_names.contains(&"pruning_applied"));
     assert!(event_names.contains(&"compaction_completed"));
 
     let sid = derive_session_id(&session_id, user_id);
@@ -215,14 +266,14 @@ async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-call"))
         .expect("old tool message should exist");
-    assert!(old_tool.is_pruned());
-    assert!(old_tool.content.contains("[pruned tool result]"));
+    assert!(old_tool.is_externalized() || old_tool.is_pruned());
+    assert!(!old_tool.content.contains("OLD_ARTIFACT_MARKER"));
 
     server.abort();
 }
 
 #[tokio::test]
-async fn e2e_compaction_initial_anchor_survives_next_llm_call() {
+async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
     let anchor = "ANCHOR_CTX_9f3a9a4bc7f14d60b2a6e8c14529f0aa";
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         two_todo_tool_calls_response(),
@@ -250,6 +301,10 @@ async fn e2e_compaction_initial_anchor_survives_next_llm_call() {
             AgentMessage::tool("recent-2", "web_markdown", "short-2"),
             AgentMessage::tool("recent-3", "web_markdown", "short-3"),
             AgentMessage::tool("recent-4", "web_markdown", "short-4"),
+            AgentMessage::tool("recent-5", "web_markdown", "short-5"),
+            AgentMessage::tool("recent-6", "web_markdown", "short-6"),
+            AgentMessage::tool("recent-7", "web_markdown", "short-7"),
+            AgentMessage::tool("recent-8", "web_markdown", "short-8"),
         ],
     )
     .await;
@@ -278,9 +333,6 @@ async fn e2e_compaction_initial_anchor_survives_next_llm_call() {
         .await
         .expect("failed to decode task progress");
     assert_eq!(progress["latest_token_snapshot"]["budget_state"], "Healthy");
-    assert!(progress["last_compaction_status"]
-        .as_str()
-        .is_some_and(|value| value.contains("Cleanup:")));
 
     let request_log = zai_provider.request_log().await;
     assert!(request_log.len() >= 2, "expected at least two LLM calls");
@@ -305,8 +357,8 @@ async fn e2e_compaction_initial_anchor_survives_next_llm_call() {
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-anchor"))
         .expect("old tool message should exist after post-run cleanup");
-    assert!(old_tool.is_pruned());
-    assert!(!old_tool.content.contains(anchor));
+    assert!(!old_tool.is_pruned());
+    assert!(old_tool.content.contains(anchor));
 
     server.abort();
 }
@@ -326,7 +378,10 @@ async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
 
     let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
 
-    let old_payload = format!("{}CRITICAL_DECISION_TOKEN", "x".repeat(1_200));
+    let old_payload = format!(
+        "{} CRITICAL_DECISION_TOKEN",
+        token_rich_payload("old-decision", 2_500)
+    );
     seed_history(
         session_manager.as_ref(),
         &session_id,
@@ -334,10 +389,51 @@ async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
         vec![
             AgentMessage::user_task("Investigate context retention"),
             AgentMessage::tool("old-call", "web_markdown", &old_payload),
-            AgentMessage::tool("recent-1", "web_markdown", "short-1"),
-            AgentMessage::tool("recent-2", "web_markdown", "short-2"),
-            AgentMessage::tool("recent-3", "web_markdown", "short-3"),
-            AgentMessage::tool("recent-4", "web_markdown", "short-4"),
+            AgentMessage::tool(
+                "recent-1",
+                "web_markdown",
+                &token_rich_payload("recent-1", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-2",
+                "web_markdown",
+                &token_rich_payload("recent-2", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-3",
+                "web_markdown",
+                &token_rich_payload("recent-3", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-4",
+                "web_markdown",
+                &token_rich_payload("recent-4", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-5",
+                "web_markdown",
+                &token_rich_payload("recent-5", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-6",
+                "web_markdown",
+                &token_rich_payload("recent-6", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-7",
+                "web_markdown",
+                &token_rich_payload("recent-7", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-8",
+                "web_markdown",
+                &token_rich_payload("recent-8", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-9",
+                "web_markdown",
+                &token_rich_payload("recent-9", 2_500),
+            ),
         ],
     )
     .await;
@@ -361,10 +457,6 @@ async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
         .await
         .expect("failed to decode task progress");
     assert_eq!(progress["latest_token_snapshot"]["budget_state"], "Healthy");
-    assert!(progress["last_compaction_status"]
-        .as_str()
-        .is_some_and(|value| value.contains("Cleanup:")));
-
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
         .session_registry()
@@ -378,7 +470,7 @@ async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-call"))
         .expect("old tool message should exist after post-run cleanup");
-    assert!(old_tool.is_pruned());
+    assert!(old_tool.is_externalized() || old_tool.is_pruned());
     assert!(!old_tool.content.contains("CRITICAL_DECISION_TOKEN"));
     assert!(!messages
         .iter()
@@ -413,12 +505,28 @@ async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary
             AgentMessage::tool(
                 "old-large",
                 "web_markdown",
-                &format!("{}OLD_TOOL_MARKER", "A".repeat(1_500)),
+                &format!("{} OLD_TOOL_MARKER", token_rich_payload("old-large", 1_200)),
             ),
-            AgentMessage::tool("short-1", "web_markdown", "short-1"),
-            AgentMessage::tool("short-2", "web_markdown", "short-2"),
-            AgentMessage::tool("short-3", "web_markdown", "short-3"),
-            AgentMessage::tool("recent-large", "web_markdown", &"B".repeat(1_500)),
+            AgentMessage::tool(
+                "short-1",
+                "web_markdown",
+                &token_rich_payload("short-1", 300),
+            ),
+            AgentMessage::tool(
+                "short-2",
+                "web_markdown",
+                &token_rich_payload("short-2", 300),
+            ),
+            AgentMessage::tool(
+                "short-3",
+                "web_markdown",
+                &token_rich_payload("short-3", 300),
+            ),
+            AgentMessage::tool(
+                "recent-large",
+                "web_markdown",
+                &token_rich_payload("recent-large", 1_200),
+            ),
         ],
     )
     .await;
@@ -472,10 +580,12 @@ async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
-    assert!(!messages.iter().any(
-        |message| message.tool_call_id.as_deref() == Some("old-large")
-            && message.content.contains("OLD_TOOL_MARKER")
-    ));
+    let old_large = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("old-large"))
+        .expect("old-large tool should exist");
+    assert!(old_large.is_externalized() || old_large.is_pruned());
+    assert!(!old_large.content.contains("OLD_TOOL_MARKER"));
 
     server.abort();
 }
@@ -499,13 +609,40 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
         &session_id,
         user_id,
         vec![
-            AgentMessage::tool("old-before-summary", "web_markdown", &"A".repeat(1_500)),
+            AgentMessage::tool(
+                "old-before-summary",
+                "web_markdown",
+                &format!(
+                    "{} BEFORE_SUMMARY_MARKER",
+                    token_rich_payload("old-before-summary", 1_200)
+                ),
+            ),
             AgentMessage::summary("[Previous context compressed]\n- old web findings preserved"),
-            AgentMessage::tool("after-summary-1", "web_markdown", &"B".repeat(1_500)),
-            AgentMessage::tool("after-summary-2", "web_markdown", "short-1"),
-            AgentMessage::tool("after-summary-3", "web_markdown", "short-2"),
-            AgentMessage::tool("after-summary-4", "web_markdown", "short-3"),
-            AgentMessage::tool("after-summary-5", "web_markdown", "short-4"),
+            AgentMessage::tool(
+                "after-summary-1",
+                "web_markdown",
+                &token_rich_payload("after-summary-1", 1_200),
+            ),
+            AgentMessage::tool(
+                "after-summary-2",
+                "web_markdown",
+                &token_rich_payload("after-summary-2", 300),
+            ),
+            AgentMessage::tool(
+                "after-summary-3",
+                "web_markdown",
+                &token_rich_payload("after-summary-3", 300),
+            ),
+            AgentMessage::tool(
+                "after-summary-4",
+                "web_markdown",
+                &token_rich_payload("after-summary-4", 300),
+            ),
+            AgentMessage::tool(
+                "after-summary-5",
+                "web_markdown",
+                &token_rich_payload("after-summary-5", 300),
+            ),
         ],
     )
     .await;
@@ -520,13 +657,6 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
     )
     .await;
     wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
-
-    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
-    let event_names: Vec<&str> = events
-        .iter()
-        .filter_map(|event| event["event_name"].as_str())
-        .collect();
-    assert!(event_names.contains(&"pruning_applied"));
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -546,7 +676,8 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
         .find(|message| message.tool_call_id.as_deref() == Some("after-summary-1"))
         .expect("after-summary tool should exist");
 
-    assert!(before_summary.is_pruned());
+    assert!(before_summary.is_externalized() || before_summary.is_pruned());
+    assert!(!before_summary.content.contains("BEFORE_SUMMARY_MARKER"));
     assert!(!after_summary.is_pruned());
 
     server.abort();

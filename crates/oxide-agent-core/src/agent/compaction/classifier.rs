@@ -2,18 +2,27 @@
 
 use super::budget::estimate_message_tokens;
 use super::types::{
-    AgentMessageKind, ClassifiedMemoryEntry, CompactionClassSummary, CompactionRetention,
-    CompactionSnapshot, RecentRawWindow,
+    AgentMessageKind, ClassifiedMemoryEntry, CompactionClassSummary, CompactionPolicy,
+    CompactionRetention, CompactionSnapshot, RecentRawWindow,
 };
 use crate::agent::memory::AgentMessage;
 
 const RECENT_USER_TURN_LIMIT: usize = 2;
 const RECENT_ASSISTANT_TURN_LIMIT: usize = 2;
-const RECENT_TOOL_INTERACTION_LIMIT: usize = 4;
 
 /// Classify the current hot memory into Stage 4 compaction buckets.
 #[must_use]
 pub fn classify_hot_memory(messages: &[AgentMessage]) -> CompactionSnapshot {
+    classify_hot_memory_with_policy(messages, &CompactionPolicy::default(), None)
+}
+
+/// Classify hot memory using the provided policy and optional context window.
+#[must_use]
+pub fn classify_hot_memory_with_policy(
+    messages: &[AgentMessage],
+    policy: &CompactionPolicy,
+    context_window_tokens: Option<usize>,
+) -> CompactionSnapshot {
     let recent_raw_window = RecentRawWindow {
         user_turn_indices: collect_recent_indices(messages, RECENT_USER_TURN_LIMIT, |kind| {
             matches!(kind, AgentMessageKind::UserTurn)
@@ -28,15 +37,9 @@ pub fn classify_hot_memory(messages: &[AgentMessage]) -> CompactionSnapshot {
                 )
             },
         ),
-        tool_interaction_indices: collect_recent_indices(
+        tool_interaction_indices: collect_recent_tool_indices(
             messages,
-            RECENT_TOOL_INTERACTION_LIMIT,
-            |kind| {
-                matches!(
-                    kind,
-                    AgentMessageKind::AssistantToolCall | AgentMessageKind::ToolResult
-                )
-            },
+            resolve_protected_tool_window_tokens(policy, context_window_tokens),
         ),
     };
     let mut snapshot = CompactionSnapshot {
@@ -47,12 +50,28 @@ pub fn classify_hot_memory(messages: &[AgentMessage]) -> CompactionSnapshot {
     for (index, message) in messages.iter().enumerate() {
         let kind = message.resolved_kind();
         let retention = kind.retention();
+        let estimated_tokens = message
+            .externalized_payload
+            .as_ref()
+            .filter(|_| !message.is_pruned())
+            .map_or_else(
+                || estimate_message_tokens(message),
+                |payload| payload.estimated_tokens,
+            );
+        let content_chars = message
+            .externalized_payload
+            .as_ref()
+            .filter(|_| !message.is_pruned())
+            .map_or_else(
+                || message.content.chars().count(),
+                |payload| payload.original_chars,
+            );
         let entry = ClassifiedMemoryEntry {
             index,
             kind,
             retention,
-            estimated_tokens: estimate_message_tokens(message),
-            content_chars: message.content.chars().count(),
+            estimated_tokens,
+            content_chars,
             has_reasoning: message.reasoning.is_some(),
             tool_name: message.tool_name.clone(),
             is_externalized: message.is_externalized(),
@@ -85,6 +104,48 @@ pub fn classify_hot_memory(messages: &[AgentMessage]) -> CompactionSnapshot {
     snapshot
 }
 
+fn collect_recent_tool_indices(messages: &[AgentMessage], protected_tokens: usize) -> Vec<usize> {
+    let mut indices = Vec::new();
+    let mut protected = 0usize;
+
+    for (index, message) in messages.iter().enumerate().rev() {
+        let kind = message.resolved_kind();
+        if !matches!(
+            kind,
+            AgentMessageKind::AssistantToolCall | AgentMessageKind::ToolResult
+        ) {
+            continue;
+        }
+
+        if !indices.is_empty() && protected >= protected_tokens {
+            break;
+        }
+
+        indices.push(index);
+        protected = protected.saturating_add(estimate_message_tokens(message));
+    }
+
+    indices.sort_unstable();
+    indices
+}
+
+fn resolve_protected_tool_window_tokens(
+    policy: &CompactionPolicy,
+    context_window_tokens: Option<usize>,
+) -> usize {
+    match context_window_tokens {
+        Some(context_window_tokens) => {
+            let scaled_budget = context_window_tokens / 5;
+            if scaled_budget == 0 {
+                policy.protected_tool_window_tokens
+            } else {
+                policy.protected_tool_window_tokens.min(scaled_budget)
+            }
+        }
+        None => policy.protected_tool_window_tokens,
+    }
+}
+
 fn collect_recent_indices(
     messages: &[AgentMessage],
     limit: usize,
@@ -113,8 +174,8 @@ fn record_summary(summary: &mut CompactionClassSummary, entry: &ClassifiedMemory
 
 #[cfg(test)]
 mod tests {
-    use super::classify_hot_memory;
-    use crate::agent::compaction::{AgentMessageKind, CompactionRetention};
+    use super::{classify_hot_memory, classify_hot_memory_with_policy};
+    use crate::agent::compaction::{AgentMessageKind, CompactionPolicy, CompactionRetention};
     use crate::agent::memory::{AgentMessage, MessageRole};
     use crate::llm::{ToolCall, ToolCallFunction};
 
@@ -171,6 +232,10 @@ mod tests {
 
     #[test]
     fn classify_hot_memory_marks_recent_raw_window() {
+        let policy = CompactionPolicy {
+            protected_tool_window_tokens: 32,
+            ..CompactionPolicy::default()
+        };
         let messages = vec![
             AgentMessage::user("user-1"),
             AgentMessage::assistant("assistant-1"),
@@ -204,7 +269,7 @@ mod tests {
             AgentMessage::assistant("assistant-3"),
         ];
 
-        let snapshot = classify_hot_memory(&messages);
+        let snapshot = classify_hot_memory_with_policy(&messages, &policy, None);
 
         assert_eq!(snapshot.recent_raw_window.user_turn_indices, vec![4, 8]);
         assert_eq!(
@@ -218,6 +283,158 @@ mod tests {
         assert!(snapshot.entries[4].preserve_in_raw_window);
         assert!(snapshot.entries[7].preserve_in_raw_window);
         assert!(snapshot.entries[9].preserve_in_raw_window);
+        assert!(!snapshot.entries[0].preserve_in_raw_window);
+    }
+
+    #[test]
+    fn classify_hot_memory_protects_recent_tool_tokens_instead_of_fixed_count() {
+        let policy = CompactionPolicy {
+            protected_tool_window_tokens: 512,
+            ..CompactionPolicy::default()
+        };
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "call-1",
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            AgentMessage::tool("call-1", "search", &"A".repeat(1_200)),
+            AgentMessage::assistant_with_tools(
+                "call-2",
+                vec![ToolCall {
+                    id: "call-2".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            AgentMessage::tool("call-2", "search", "short-2"),
+            AgentMessage::assistant_with_tools(
+                "call-3",
+                vec![ToolCall {
+                    id: "call-3".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            AgentMessage::tool("call-3", "search", "short-3"),
+            AgentMessage::assistant_with_tools(
+                "call-4",
+                vec![ToolCall {
+                    id: "call-4".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            AgentMessage::tool("call-4", "search", "short-4"),
+            AgentMessage::assistant_with_tools(
+                "call-5",
+                vec![ToolCall {
+                    id: "call-5".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            AgentMessage::tool("call-5", "search", "short-5"),
+        ];
+
+        let snapshot = classify_hot_memory_with_policy(&messages, &policy, None);
+
+        assert_eq!(
+            snapshot.recent_raw_window.tool_interaction_indices,
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        );
+        assert!(snapshot.entries[0].preserve_in_raw_window);
+        assert!(snapshot.entries[1].preserve_in_raw_window);
+    }
+
+    #[test]
+    fn classify_hot_memory_caps_tool_budget_relative_to_context_window() {
+        let policy = CompactionPolicy {
+            protected_tool_window_tokens: 40_000,
+            ..CompactionPolicy::default()
+        };
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "call-1",
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            AgentMessage::tool(
+                "call-1",
+                "search",
+                &(0..1_500)
+                    .map(|index| format!("alpha_{index} beta_{index}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            AgentMessage::assistant_with_tools(
+                "call-2",
+                vec![ToolCall {
+                    id: "call-2".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            AgentMessage::tool(
+                "call-2",
+                "search",
+                &(0..1_500)
+                    .map(|index| format!("gamma_{index} delta_{index}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            AgentMessage::assistant_with_tools(
+                "call-3",
+                vec![ToolCall {
+                    id: "call-3".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            AgentMessage::tool(
+                "call-3",
+                "search",
+                &(0..1_500)
+                    .map(|index| format!("epsilon_{index} zeta_{index}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        ];
+
+        let snapshot = classify_hot_memory_with_policy(&messages, &policy, Some(4_096));
+
+        assert!(snapshot.recent_raw_window.tool_interaction_indices.len() < messages.len());
+        assert!(snapshot.entries[5].preserve_in_raw_window);
         assert!(!snapshot.entries[0].preserve_in_raw_window);
     }
 
