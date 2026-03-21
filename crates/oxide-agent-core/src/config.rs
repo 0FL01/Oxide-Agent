@@ -987,6 +987,22 @@ pub fn get_search_provider() -> String {
 /// Keeps long-running model responses alive while preventing infinite hangs
 pub const LLM_HTTP_TIMEOUT_SECS: u64 = 300;
 
+// Compaction configuration
+/// Default token budget reserved for recent tool interactions in hot memory.
+/// Only tool outputs within this budget are protected from pruning during active runs.
+pub const DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS: usize = 8_192;
+
+/// Get compaction protected tool window tokens from env or default.
+///
+/// Environment variable: `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`
+#[must_use]
+pub fn get_compaction_protected_tool_window_tokens() -> usize {
+    std::env::var("COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS)
+}
+
 /// Get LLM HTTP timeout from env or default
 ///
 /// Environment variable: `LLM_HTTP_TIMEOUT_SECS`
