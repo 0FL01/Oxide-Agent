@@ -286,4 +286,30 @@ mod tests {
         assert!(rewritten[0].is_pruned());
         assert!(!rewritten[2].is_pruned());
     }
+
+    #[test]
+    fn prune_hot_memory_skips_delegate_results_and_prunes_regular_tool_outputs() {
+        let policy = CompactionPolicy {
+            prune_min_tokens: 1,
+            prune_min_chars: 16,
+            protected_tool_window_tokens: 1,
+            ..CompactionPolicy::default()
+        };
+        let messages = vec![
+            AgentMessage::tool("delegate-call", "delegate_to_sub_agent", &"D".repeat(80)),
+            AgentMessage::tool("search-call", "web_markdown", &"W".repeat(80)),
+            AgentMessage::summary("[Earlier context compressed]\n- delegate findings retained"),
+            AgentMessage::tool("recent-1", "ssh_exec", "recent-1"),
+            AgentMessage::tool("recent-2", "ssh_exec", "recent-2"),
+            AgentMessage::tool("recent-3", "ssh_exec", "recent-3"),
+            AgentMessage::tool("recent-4", "ssh_exec", "recent-4"),
+        ];
+
+        let snapshot = classify_hot_memory_with_policy(&messages, &policy, None);
+        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
+
+        assert_eq!(outcome.pruned_indices, vec![1]);
+        assert!(!rewritten[0].is_pruned());
+        assert!(rewritten[1].is_pruned());
+    }
 }

@@ -437,6 +437,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn externalize_hot_memory_skips_delegate_results() {
+        let policy = CompactionPolicy {
+            externalize_threshold_chars: 16,
+            externalize_threshold_tokens: 1,
+            ..CompactionPolicy::default()
+        };
+
+        let messages = vec![AgentMessage::tool(
+            "delegate-call",
+            "delegate_to_sub_agent",
+            &"delegated finding ".repeat(400),
+        )];
+        let snapshot = classify_hot_memory(&messages);
+
+        let (rewritten, outcome) = externalize_hot_memory(
+            &policy,
+            &CompactionScope::default(),
+            &snapshot,
+            &messages,
+            &NoopPayloadSink,
+            &NoopArchiveSink,
+        );
+
+        assert!(!outcome.applied);
+        assert_eq!(rewritten[0].content, messages[0].content);
+        assert!(!rewritten[0].is_externalized());
+    }
+
     #[derive(Debug, Default)]
     struct RecordingPayloadSink {
         records: Mutex<Vec<ExternalizedPayloadRecord>>,

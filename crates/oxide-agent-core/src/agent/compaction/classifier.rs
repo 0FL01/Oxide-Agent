@@ -2,8 +2,8 @@
 
 use super::budget::estimate_message_tokens;
 use super::types::{
-    AgentMessageKind, ClassifiedMemoryEntry, CompactionClassSummary, CompactionPolicy,
-    CompactionRetention, CompactionSnapshot, RecentRawWindow,
+    resolve_retention, AgentMessageKind, ClassifiedMemoryEntry, CompactionClassSummary,
+    CompactionPolicy, CompactionRetention, CompactionSnapshot, RecentRawWindow,
 };
 use crate::agent::memory::AgentMessage;
 
@@ -49,7 +49,7 @@ pub fn classify_hot_memory_with_policy(
 
     for (index, message) in messages.iter().enumerate() {
         let kind = message.resolved_kind();
-        let retention = kind.retention();
+        let retention = resolve_retention(kind, message.tool_name.as_deref());
         let estimated_tokens = message
             .externalized_payload
             .as_ref()
