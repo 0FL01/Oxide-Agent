@@ -70,6 +70,7 @@ pub struct SerializableProgress {
     pub narrative_headline: Option<String>,
     pub last_compaction_status: Option<String>,
     pub repeated_compaction_warning: Option<String>,
+    pub last_history_repair_status: Option<String>,
     pub latest_token_snapshot: Option<oxide_agent_core::agent::progress::TokenSnapshot>,
 }
 
@@ -84,6 +85,7 @@ impl SerializableProgress {
             narrative_headline: state.narrative_headline.clone(),
             last_compaction_status: state.last_compaction_status.clone(),
             repeated_compaction_warning: state.repeated_compaction_warning.clone(),
+            last_history_repair_status: state.last_history_repair_status.clone(),
             latest_token_snapshot: state.latest_token_snapshot.clone(),
         }
     }

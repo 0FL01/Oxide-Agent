@@ -30,6 +30,30 @@ pub struct HistoryRepairOutcome {
 pub fn repair_agent_message_history(
     messages: &[AgentMessage],
 ) -> (Vec<AgentMessage>, HistoryRepairOutcome) {
+    repair_agent_message_history_with_policy(messages, false)
+}
+
+#[must_use]
+/// Repair history after routine memory mutations while preserving the active open tool batch.
+pub fn repair_agent_message_history_runtime(
+    messages: &[AgentMessage],
+) -> (Vec<AgentMessage>, HistoryRepairOutcome) {
+    repair_agent_message_history_with_policy(messages, true)
+}
+
+#[must_use]
+/// Repair history for a specific provider request policy.
+pub fn repair_agent_message_history_for_provider(
+    messages: &[AgentMessage],
+    strict_tool_history: bool,
+) -> (Vec<AgentMessage>, HistoryRepairOutcome) {
+    repair_agent_message_history_with_policy(messages, !strict_tool_history)
+}
+
+fn repair_agent_message_history_with_policy(
+    messages: &[AgentMessage],
+    allow_terminal_incomplete_batch: bool,
+) -> (Vec<AgentMessage>, HistoryRepairOutcome) {
     let mut repaired = Vec::with_capacity(messages.len());
     let mut outcome = HistoryRepairOutcome::default();
     let mut index = 0;
@@ -38,7 +62,7 @@ pub fn repair_agent_message_history(
         let message = &messages[index];
         if message.resolved_kind() == AgentMessageKind::AssistantToolCall {
             let (mut repaired_batch, next_index, batch_outcome) =
-                repair_assistant_tool_batch(messages, index);
+                repair_assistant_tool_batch(messages, index, allow_terminal_incomplete_batch);
             repaired.append(&mut repaired_batch);
             outcome.applied |= batch_outcome.applied;
             outcome.dropped_tool_results += batch_outcome.dropped_tool_results;
@@ -66,6 +90,7 @@ pub fn repair_agent_message_history(
 fn repair_assistant_tool_batch(
     messages: &[AgentMessage],
     assistant_index: usize,
+    allow_terminal_incomplete_batch: bool,
 ) -> (Vec<AgentMessage>, usize, HistoryRepairOutcome) {
     let assistant = messages[assistant_index].clone();
     let mut outcome = HistoryRepairOutcome::default();
@@ -116,13 +141,17 @@ fn repair_assistant_tool_batch(
         cursor += 1;
     }
 
-    let original_tool_call_count = valid_tool_calls.len();
-    valid_tool_calls.retain(|tool_call| seen_result_ids.contains(&tool_call.id));
-    if valid_tool_calls.len() != original_tool_call_count {
-        outcome.applied = true;
-        outcome.trimmed_tool_calls = outcome
-            .trimmed_tool_calls
-            .saturating_add(original_tool_call_count.saturating_sub(valid_tool_calls.len()));
+    let terminal_batch = cursor == messages.len();
+    let preserve_incomplete_batch = allow_terminal_incomplete_batch && terminal_batch;
+    if !preserve_incomplete_batch {
+        let original_tool_call_count = valid_tool_calls.len();
+        valid_tool_calls.retain(|tool_call| seen_result_ids.contains(&tool_call.id));
+        if valid_tool_calls.len() != original_tool_call_count {
+            outcome.applied = true;
+            outcome.trimmed_tool_calls = outcome
+                .trimmed_tool_calls
+                .saturating_add(original_tool_call_count.saturating_sub(valid_tool_calls.len()));
+        }
     }
 
     let mut repaired_batch = Vec::new();

@@ -7,7 +7,7 @@ use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_xml_tags;
-use crate::agent::tool_bridge::{extract_updated_topic_agents_md, upsert_topic_agents_md_messages};
+use crate::agent::tool_bridge::extract_updated_topic_agents_md;
 
 use crate::llm::{Message, ToolCall, ToolCallFunction};
 use tracing::{info, warn};
@@ -47,6 +47,7 @@ impl AgentRunner {
                 raw_json.to_string(),
                 tool_calls_vec,
             ));
+        Self::refresh_messages_from_memory(ctx);
     }
 
     /// Execute all tool calls in parallel where possible.
@@ -202,11 +203,12 @@ impl AgentRunner {
             &tool_call.function.name,
             &output,
         ));
+        Self::refresh_messages_from_memory(ctx);
 
         if let Some(agents_md) = extract_updated_topic_agents_md(&tool_call.function.name, &output)
         {
             ctx.agent.memory_mut().upsert_topic_agents_md(&agents_md);
-            upsert_topic_agents_md_messages(ctx.messages, &agents_md);
+            Self::refresh_messages_from_memory(ctx);
             ctx.agent.persist_memory_checkpoint_background();
         }
 
@@ -279,6 +281,7 @@ impl AgentRunner {
         ctx.agent
             .memory_mut()
             .add_message(AgentMessage::tool(&tool_call.id, tool_name, &output));
+        Self::refresh_messages_from_memory(ctx);
     }
 
     fn extract_command_preview(arguments: &str) -> Option<String> {
