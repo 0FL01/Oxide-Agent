@@ -6,6 +6,7 @@
 mod delegation_tests;
 mod helpers;
 mod integration_tests;
+mod live_zai_audit_tests;
 mod providers;
 mod session_tests;
 mod setup;

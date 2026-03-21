@@ -13,7 +13,7 @@
 //! - `POST /sessions/:session_id/tasks/:task_id/cancel` — cancel task
 //! - `GET /health`
 
-use crate::session::{SessionMeta, WebSessionManager};
+use crate::session::{SessionMeta, ToolCallTiming, WebSessionManager};
 use crate::web_transport::collect_events;
 use async_stream::stream as async_stream;
 use axum::{
@@ -37,7 +37,7 @@ use tracing::info;
 pub struct AppState {
     pub session_manager: Arc<WebSessionManager>,
     pub task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
-    pub task_timeline: Arc<RwLock<StdHashMap<String, Milestones>>>,
+    pub task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     /// Tracks the JoinHandle for each running task so it can be aborted on completion.
     pub task_handles: Arc<RwLock<StdHashMap<String, Arc<tokio::task::JoinHandle<()>>>>>,
 }
@@ -98,10 +98,25 @@ pub struct Milestones {
     pub thinking_sent_ms: Option<i64>,
     /// When first LLM call started.
     pub llm_call_started_ms: Option<i64>,
+    /// When the first tool call started.
+    pub first_tool_call_ms: Option<i64>,
+    /// When the last tool call started.
+    pub last_tool_call_ms: Option<i64>,
+    /// When the first tool result was received.
+    pub first_tool_result_ms: Option<i64>,
+    /// When the last tool result was received.
+    pub last_tool_result_ms: Option<i64>,
     /// When first Thinking event was received by collector.
     pub first_thinking_ms: Option<i64>,
     /// When final response was produced.
     pub final_response_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TaskTimelineRecord {
+    pub milestones: Milestones,
+    pub tool_calls: Vec<ToolCallTiming>,
 }
 
 /// Re-exported from web_transport to avoid duplication.
@@ -131,6 +146,7 @@ pub struct TaskTimelineResponse {
     pub task_id: String,
     pub session_id: String,
     pub milestones: Milestones,
+    pub tool_calls: Vec<ToolCallTiming>,
 }
 
 // Global registry of event logs per task.
@@ -213,15 +229,22 @@ async fn create_task(
         let mut tl = task_timeline.write().await;
         tl.insert(
             task_id.clone(),
-            Milestones {
-                session_ready_ms: None, // Will be set after executor lock acquisition
-                executor_lock_acquired_ms: None,
-                prepare_execution_done_ms: None,
-                pre_run_compaction_done_ms: None,
-                thinking_sent_ms: None,
-                llm_call_started_ms: None,
-                first_thinking_ms: None,
-                final_response_ms: None,
+            TaskTimelineRecord {
+                milestones: Milestones {
+                    session_ready_ms: None, // Will be set after executor lock acquisition
+                    executor_lock_acquired_ms: None,
+                    prepare_execution_done_ms: None,
+                    pre_run_compaction_done_ms: None,
+                    thinking_sent_ms: None,
+                    llm_call_started_ms: None,
+                    first_tool_call_ms: None,
+                    last_tool_call_ms: None,
+                    first_tool_result_ms: None,
+                    last_tool_result_ms: None,
+                    first_thinking_ms: None,
+                    final_response_ms: None,
+                },
+                tool_calls: Vec::new(),
             },
         );
     }
@@ -304,7 +327,8 @@ async fn get_task_timeline(
     Ok(Json(TaskTimelineResponse {
         task_id,
         session_id,
-        milestones,
+        milestones: milestones.milestones,
+        tool_calls: milestones.tool_calls,
     }))
 }
 
@@ -423,7 +447,18 @@ async fn sse_task_stream(
 /// Shared state needed by the task executor.
 struct TaskExecutorCtx {
     task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
-    task_timeline: Arc<RwLock<StdHashMap<String, Milestones>>>,
+    task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
+}
+
+struct ExecutorTaskCtx {
+    session_manager: Arc<WebSessionManager>,
+    session_id: String,
+    task_id: String,
+    task_text: String,
+    executor_arc: Arc<tokio::sync::RwLock<oxide_agent_core::agent::AgentExecutor>>,
+    tx: mpsc::Sender<oxide_agent_core::agent::AgentEvent>,
+    timeline_map: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
+    agent_started_at: Instant,
 }
 
 async fn execute_agent_task(
@@ -452,18 +487,8 @@ async fn execute_agent_task(
         }
     };
 
-    // Record when executor lock was actually acquired (real session ready).
-    let executor_lock_acquired_ms = Some(agent_started_at.elapsed().as_millis() as i64);
     // Capture chrono timestamp for calculating offsets from named milestones.
     let agent_started_at_chrono = chrono::Utc::now().timestamp_millis();
-    {
-        let mut tl = ctx.task_timeline.write().await;
-        if let Some(m) = tl.get_mut(task_id) {
-            m.executor_lock_acquired_ms = executor_lock_acquired_ms;
-            // Keep legacy session_ready_ms in sync for backward compatibility.
-            m.session_ready_ms = executor_lock_acquired_ms;
-        }
-    }
 
     // Get event log from global registry.
     let event_log = {
@@ -475,77 +500,185 @@ async fn execute_agent_task(
 
     let (tx, rx) = mpsc::channel::<oxide_agent_core::agent::AgentEvent>(100);
 
-    // Spawn event collector.
-    let progress_map = ctx.task_progress.clone();
-    let tl_map = ctx.task_timeline.clone();
     let tid = task_id.to_string();
-    let tid_for_progress = tid.clone();
-    let tid_for_result = tid.clone();
-    // Clone agent_started_at_chrono for use in the async block.
-    let agent_started_at_chrono_spawned = agent_started_at_chrono;
+    spawn_event_collector(
+        event_log,
+        rx,
+        ctx.task_progress.clone(),
+        ctx.task_timeline.clone(),
+        tid.clone(),
+        agent_started_at_chrono,
+    );
+    spawn_executor_task(ExecutorTaskCtx {
+        session_manager,
+        session_id: session_id.to_string(),
+        task_id: tid,
+        task_text,
+        executor_arc,
+        tx,
+        timeline_map: ctx.task_timeline.clone(),
+        agent_started_at,
+    });
+}
+
+fn spawn_event_collector(
+    event_log: crate::web_transport::TaskEventLog,
+    rx: mpsc::Receiver<oxide_agent_core::agent::AgentEvent>,
+    progress_map: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
+    timeline_map: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
+    task_id: String,
+    agent_started_at_ms: i64,
+) {
     tokio::spawn(async move {
-        let (state, timestamps) = collect_events(event_log, rx).await;
-        let progress = SerializableProgress::from_state(&state);
+        let collected = collect_events(event_log, rx).await;
+        let progress = SerializableProgress::from_state(&collected.state);
+
         {
             let mut pm = progress_map.write().await;
-            pm.insert(tid_for_progress, progress);
+            pm.insert(task_id.clone(), progress);
         }
-        // Compute latency milestones from agent start time.
-        // first_thinking_at and finished_at are chrono::DateTime<Utc>, so we use signed_duration_since.
-        let first_thinking_ms = timestamps.first_thinking_at.map(|t| {
-            t.signed_duration_since(
-                chrono::DateTime::from_timestamp_millis(agent_started_at_chrono_spawned)
-                    .unwrap_or(t),
-            )
-            .num_milliseconds()
-        });
-        let final_response_ms = timestamps.finished_at.map(|t| {
-            t.signed_duration_since(
-                chrono::DateTime::from_timestamp_millis(agent_started_at_chrono_spawned)
-                    .unwrap_or(t),
-            )
-            .num_milliseconds()
-        });
-        let mut tl = tl_map.write().await;
-        if let Some(m) = tl.get_mut(&tid) {
-            m.first_thinking_ms = first_thinking_ms;
-            m.final_response_ms = final_response_ms;
-            // Update with named milestones from the agent core.
-            // Named milestones are already in ms since epoch, so just subtract agent_started_at_chrono.
-            for (name, ts) in &timestamps.named_milestones {
-                let ts_ms = ts.timestamp_millis();
-                let ms = Some(ts_ms - agent_started_at_chrono_spawned);
-                match name.as_str() {
-                    "prepare_execution_done" => m.prepare_execution_done_ms = ms,
-                    "pre_run_compaction_done" => m.pre_run_compaction_done_ms = ms,
-                    "thinking_sent" => m.thinking_sent_ms = ms,
-                    "llm_call_started" => m.llm_call_started_ms = ms,
-                    _ => {} // Ignore unknown milestones
-                }
-            }
+
+        let mut tl = timeline_map.write().await;
+        if let Some(record) = tl.get_mut(&task_id) {
+            apply_event_collection(record, &collected, agent_started_at_ms);
         }
     });
+}
 
-    // Run executor in its own spawned task to avoid holding executor lock
-    // across the collect_events task (which also needs the executor lock).
-    let sm = session_manager;
-    let session_id2 = session_id.to_string();
+fn spawn_executor_task(ctx: ExecutorTaskCtx) {
     tokio::spawn(async move {
+        let ExecutorTaskCtx {
+            session_manager,
+            session_id,
+            task_id,
+            task_text,
+            executor_arc,
+            tx,
+            timeline_map,
+            agent_started_at,
+        } = ctx;
+
         let result = {
             let mut executor = executor_arc.write().await;
+            let executor_lock_acquired_ms = Some(agent_started_at.elapsed().as_millis() as i64);
+            record_executor_lock_acquired(&timeline_map, &task_id, executor_lock_acquired_ms).await;
             executor.execute(&task_text, Some(tx)).await
         };
+
         match result {
             Ok(_) => {
-                sm.complete_task(&tid_for_result, &session_id2).await;
-                info!(task_id = %tid_for_result, "Task completed");
+                session_manager.complete_task(&task_id, &session_id).await;
+                info!(task_id = %task_id, "Task completed");
             }
             Err(e) => {
-                sm.fail_task(&tid_for_result, &session_id2).await;
-                info!(task_id = %tid_for_result, error = %e, "Task failed");
+                session_manager.fail_task(&task_id, &session_id).await;
+                info!(task_id = %task_id, error = %e, "Task failed");
             }
         }
     });
+}
+
+async fn record_executor_lock_acquired(
+    timeline_map: &Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
+    task_id: &str,
+    executor_lock_acquired_ms: Option<i64>,
+) {
+    let mut tl = timeline_map.write().await;
+    if let Some(record) = tl.get_mut(task_id) {
+        record.milestones.executor_lock_acquired_ms = executor_lock_acquired_ms;
+        record.milestones.session_ready_ms = executor_lock_acquired_ms;
+    }
+}
+
+fn apply_event_collection(
+    record: &mut TaskTimelineRecord,
+    collected: &crate::web_transport::EventCollectionResult,
+    agent_started_at_ms: i64,
+) {
+    let tool_calls = collected
+        .tool_calls
+        .iter()
+        .map(|timing| ToolCallTiming {
+            name: timing.name.clone(),
+            started_at_ms: relative_timestamp_ms(agent_started_at_ms, timing.started_at),
+            finished_at_ms: timing
+                .finished_at
+                .map(|finished_at| relative_timestamp_ms(agent_started_at_ms, finished_at)),
+        })
+        .collect::<Vec<_>>();
+
+    record.tool_calls = tool_calls;
+
+    // Derive llm_call_started_ms from the collector-side clock (first Thinking or
+    // Reasoning event). This keeps it in the same time domain as first_tool_call_ms
+    // and makes monotonicity assertions meaningful.
+    let llm_started_at = earliest_of(
+        collected.timestamps.first_thinking_at,
+        collected.timestamps.first_reasoning_at,
+    );
+    record.milestones.llm_call_started_ms =
+        llm_started_at.map(|ts| relative_timestamp_ms(agent_started_at_ms, ts));
+
+    record.milestones.first_thinking_ms = collected
+        .timestamps
+        .first_thinking_at
+        .map(|ts| relative_timestamp_ms(agent_started_at_ms, ts));
+    record.milestones.final_response_ms = collected
+        .timestamps
+        .finished_at
+        .map(|ts| relative_timestamp_ms(agent_started_at_ms, ts));
+    record.milestones.first_tool_call_ms = record
+        .tool_calls
+        .iter()
+        .map(|timing| timing.started_at_ms)
+        .min();
+    record.milestones.last_tool_call_ms = record
+        .tool_calls
+        .iter()
+        .map(|timing| timing.started_at_ms)
+        .max();
+    record.milestones.first_tool_result_ms = record
+        .tool_calls
+        .iter()
+        .filter_map(|timing| timing.finished_at_ms)
+        .min();
+    record.milestones.last_tool_result_ms = record
+        .tool_calls
+        .iter()
+        .filter_map(|timing| timing.finished_at_ms)
+        .max();
+
+    // Named milestones that use the agent's own Unix timestamps.
+    // Note: "llm_call_started" is intentionally NOT applied here — it is
+    // already derived from the collector-side clock above.
+    for (name, ts) in &collected.timestamps.named_milestones {
+        let ms = Some(ts.timestamp_millis() - agent_started_at_ms);
+        match name.as_str() {
+            "prepare_execution_done" => record.milestones.prepare_execution_done_ms = ms,
+            "pre_run_compaction_done" => record.milestones.pre_run_compaction_done_ms = ms,
+            "thinking_sent" => record.milestones.thinking_sent_ms = ms,
+            _ => {}
+        }
+    }
+}
+
+fn earliest_of(
+    a: Option<chrono::DateTime<chrono::Utc>>,
+    b: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    match (a, b) {
+        (Some(ts), None) => Some(ts),
+        (None, Some(ts)) => Some(ts),
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (None, None) => None,
+    }
+}
+
+fn relative_timestamp_ms(
+    agent_started_at_ms: i64,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> i64 {
+    timestamp.timestamp_millis() - agent_started_at_ms
 }
 
 async fn derive_session_id(
