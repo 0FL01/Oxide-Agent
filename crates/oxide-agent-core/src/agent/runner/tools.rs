@@ -7,6 +7,7 @@ use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_xml_tags;
+use crate::agent::tool_bridge::{extract_updated_topic_agents_md, upsert_topic_agents_md_messages};
 
 use crate::llm::{Message, ToolCall, ToolCallFunction};
 use tracing::{info, warn};
@@ -144,60 +145,78 @@ impl AgentRunner {
         sorted_results.sort_by_key(|(idx, _, _)| *idx);
 
         for (_idx, tool_call, result) in sorted_results {
-            let output = match result {
-                Ok(output) => output,
-                Err(e) => {
-                    warn!(tool = %tool_call.function.name, error = %e, "Tool execution failed");
-                    format!("Tool execution error: {e}")
-                }
-            };
-
-            // Check for SSH approval pending
-            if output.contains("APPROVAL_PENDING") || output.contains("Waiting for approval") {
+            if self
+                .record_tool_execution_result(ctx, state, tool_call, result)
+                .await?
+            {
                 return Ok(Some(AgentRunResult::WaitingForApproval));
-            }
-
-            // Emit tool result event
-            if let Some(tx) = ctx.progress_tx {
-                let sanitized_name = sanitize_xml_tags(&tool_call.function.name);
-                let _ = tx
-                    .send(AgentEvent::ToolResult {
-                        name: sanitized_name,
-                        output: output.clone(),
-                    })
-                    .await;
-            }
-
-            // Create tool result and run after hooks
-            let tool_result = crate::agent::tool_bridge::ToolExecutionResult::Completed {
-                tool_name: tool_call.function.name.clone(),
-                output: output.clone(),
-            };
-
-            self.apply_after_tool_hooks(ctx, state, &tool_result);
-
-            // Add to messages and memory
-            ctx.messages.push(Message::tool(
-                &tool_call.id,
-                &tool_call.function.name,
-                &output,
-            ));
-            ctx.agent.memory_mut().add_message(AgentMessage::tool(
-                &tool_call.id,
-                &tool_call.function.name,
-                &output,
-            ));
-
-            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
-            Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
-
-            // Sync todos if write_todos tool was executed
-            if tool_call.function.name == "write_todos" {
-                Self::sync_todos_after_tool(ctx).await;
             }
         }
 
         Ok(None)
+    }
+
+    async fn record_tool_execution_result(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &RunState,
+        tool_call: ToolCall,
+        result: anyhow::Result<String>,
+    ) -> anyhow::Result<bool> {
+        let output = match result {
+            Ok(output) => output,
+            Err(e) => {
+                warn!(tool = %tool_call.function.name, error = %e, "Tool execution failed");
+                format!("Tool execution error: {e}")
+            }
+        };
+
+        if output.contains("APPROVAL_PENDING") || output.contains("Waiting for approval") {
+            return Ok(true);
+        }
+
+        if let Some(tx) = ctx.progress_tx {
+            let sanitized_name = sanitize_xml_tags(&tool_call.function.name);
+            let _ = tx
+                .send(AgentEvent::ToolResult {
+                    name: sanitized_name,
+                    output: output.clone(),
+                })
+                .await;
+        }
+
+        let tool_result = crate::agent::tool_bridge::ToolExecutionResult::Completed {
+            tool_name: tool_call.function.name.clone(),
+            output: output.clone(),
+        };
+
+        self.apply_after_tool_hooks(ctx, state, &tool_result);
+        ctx.messages.push(Message::tool(
+            &tool_call.id,
+            &tool_call.function.name,
+            &output,
+        ));
+        ctx.agent.memory_mut().add_message(AgentMessage::tool(
+            &tool_call.id,
+            &tool_call.function.name,
+            &output,
+        ));
+
+        if let Some(agents_md) = extract_updated_topic_agents_md(&tool_call.function.name, &output)
+        {
+            ctx.agent.memory_mut().upsert_topic_agents_md(&agents_md);
+            upsert_topic_agents_md_messages(ctx.messages, &agents_md);
+            ctx.agent.persist_memory_checkpoint_background();
+        }
+
+        let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+        Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
+
+        if tool_call.function.name == "write_todos" {
+            Self::sync_todos_after_tool(ctx).await;
+        }
+
+        Ok(false)
     }
 
     /// Sync todos from shared Arc to memory and emit TodosUpdated event.

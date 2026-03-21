@@ -277,6 +277,11 @@ impl ManagerControlPlaneProvider {
                 tools: TOPIC_AGENT_TODOS_TOOLS,
             },
             TopicAgentToolGroup {
+                provider: "agents_md",
+                aliases: &["agents_md", "prompt"],
+                tools: TOPIC_AGENT_AGENTS_MD_TOOLS,
+            },
+            TopicAgentToolGroup {
                 provider: "sandbox",
                 aliases: &["sandbox"],
                 tools: TOPIC_AGENT_SANDBOX_TOOLS,

@@ -10,7 +10,7 @@ use crate::agent::providers::TodoList;
 use crate::llm::{TokenUsage, ToolCall};
 use serde::{Deserialize, Serialize};
 
-const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
+pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
 
 /// A message in the agent's conversation memory
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,6 +479,33 @@ impl AgentMemory {
         self.messages.iter().any(AgentMessage::is_topic_agents_md)
     }
 
+    /// Insert or replace the pinned topic `AGENTS.md` message while preserving order.
+    pub fn upsert_topic_agents_md(&mut self, content: impl AsRef<str>) {
+        let replacement = AgentMessage::topic_agents_md(content);
+        let mut messages = self.messages.clone();
+
+        if let Some(first_idx) = messages.iter().position(AgentMessage::is_topic_agents_md) {
+            messages[first_idx] = replacement;
+            let mut seen_first = false;
+            messages.retain(|message| {
+                if !message.is_topic_agents_md() {
+                    return true;
+                }
+
+                if !seen_first {
+                    seen_first = true;
+                    return true;
+                }
+
+                false
+            });
+        } else {
+            messages.insert(0, replacement);
+        }
+
+        self.replace_messages(messages);
+    }
+
     /// Get all messages in memory
     #[must_use]
     pub fn get_messages(&self) -> &[AgentMessage] {
@@ -698,6 +725,26 @@ mod tests {
         assert!(memory.get_messages()[0]
             .content
             .starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX));
+    }
+
+    #[test]
+    fn upsert_topic_agents_md_replaces_existing_pinned_message() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::topic_agents_md(
+            "# Topic AGENTS\nOld guidance.",
+        ));
+        memory.add_message(AgentMessage::user("Keep going"));
+
+        memory.upsert_topic_agents_md("# Topic AGENTS\nNew guidance.");
+
+        let pinned: Vec<_> = memory
+            .get_messages()
+            .iter()
+            .filter(|message| message.is_topic_agents_md())
+            .collect();
+        assert_eq!(pinned.len(), 1);
+        assert!(pinned[0].content.contains("New guidance."));
+        assert_eq!(memory.get_messages()[1].content, "Keep going");
     }
 
     #[test]

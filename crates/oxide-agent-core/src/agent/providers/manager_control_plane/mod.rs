@@ -171,6 +171,7 @@ struct PrivateSecretProbeArgs {
 }
 
 const TOPIC_AGENT_TODOS_TOOLS: &[&str] = &["write_todos"];
+const TOPIC_AGENT_AGENTS_MD_TOOLS: &[&str] = &["agents_md_get", "agents_md_update"];
 const TOPIC_AGENT_SANDBOX_TOOLS: &[&str] = &[
     "execute_command",
     "write_file",
