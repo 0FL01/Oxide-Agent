@@ -17,7 +17,7 @@ services:
     env_file:
       - .env
     environment:
-      # - CRAWL4AI_URL=http://crawl4ai:11235
+      - CRAWL4AI_URL=http://127.0.0.1:11235
       - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
@@ -60,30 +60,28 @@ services:
         max-size: "1m"
         max-file: "3"
 
-  # crawl4ai:
-  #   image: unclecode/crawl4ai:0.8
-  #   container_name: crawl4ai
-  #   restart: unless-stopped
-  #   networks:
-  #     - oxide_network
-  #   volumes:
-  #     - /dev/shm:/dev/shm
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         memory: 6G
-  #         cpus: '4'
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-  #     start_period: 40s
-  #   logging:
-  #     driver: json-file
-  #     options:
-  #       max-size: "1m"
-  #       max-file: "3"
+  crawl4ai:
+    image: unclecode/crawl4ai:0.8
+    container_name: crawl4ai
+    restart: unless-stopped
+    volumes:
+      - /dev/shm:/dev/shm
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '4'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
 
 volumes:
   sandboxd-run:
