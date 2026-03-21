@@ -159,6 +159,9 @@ impl AgentRunner {
         }
 
         self.save_final_response(ctx, &input.raw_json, input.reasoning);
+        let _ = self
+            .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
+            .await?;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 

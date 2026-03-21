@@ -173,11 +173,13 @@ fn should_attempt_summary(
         return false;
     }
 
-    matches!(request.trigger, super::CompactionTrigger::Manual)
-        || matches!(
-            budget_state,
-            BudgetState::ShouldCompact | BudgetState::OverLimit
-        )
+    matches!(
+        request.trigger,
+        super::CompactionTrigger::Manual | super::CompactionTrigger::PostRun
+    ) || matches!(
+        budget_state,
+        BudgetState::ShouldCompact | BudgetState::OverLimit
+    )
 }
 
 fn parse_summary_response(response: &str) -> Option<CompactionSummary> {

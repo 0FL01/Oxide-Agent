@@ -147,7 +147,7 @@ fn request_contains(request: &super::providers::RecordedToolRequest, needle: &st
 }
 
 #[tokio::test]
-async fn e2e_compaction_healthy_budget_preserves_old_artifact() {
+async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
@@ -200,8 +200,8 @@ async fn e2e_compaction_healthy_budget_preserves_old_artifact() {
         .iter()
         .filter_map(|event| event["event_name"].as_str())
         .collect();
-    assert!(!event_names.contains(&"pruning_applied"));
-    assert!(!event_names.contains(&"compaction_completed"));
+    assert!(event_names.contains(&"pruning_applied"));
+    assert!(event_names.contains(&"compaction_completed"));
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -210,15 +210,13 @@ async fn e2e_compaction_healthy_budget_preserves_old_artifact() {
         .await
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
-    let old_tool = executor
-        .session()
-        .memory
-        .get_messages()
+    let messages = executor.session().memory.get_messages();
+    let old_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-call"))
         .expect("old tool message should exist");
-    assert!(!old_tool.is_pruned());
-    assert_eq!(old_tool.content, "A".repeat(1_500));
+    assert!(old_tool.is_pruned());
+    assert!(old_tool.content.contains("[pruned tool result]"));
 
     server.abort();
 }
@@ -280,7 +278,9 @@ async fn e2e_compaction_initial_anchor_survives_next_llm_call() {
         .await
         .expect("failed to decode task progress");
     assert_eq!(progress["latest_token_snapshot"]["budget_state"], "Healthy");
-    assert!(progress["last_compaction_status"].is_null());
+    assert!(progress["last_compaction_status"]
+        .as_str()
+        .is_some_and(|value| value.contains("Cleanup:")));
 
     let request_log = zai_provider.request_log().await;
     assert!(request_log.len() >= 2, "expected at least two LLM calls");
@@ -300,21 +300,19 @@ async fn e2e_compaction_initial_anchor_survives_next_llm_call() {
         .await
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
-    let old_tool = executor
-        .session()
-        .memory
-        .get_messages()
+    let messages = executor.session().memory.get_messages();
+    let old_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-anchor"))
-        .expect("old tool message should exist");
-    assert!(!old_tool.is_pruned());
-    assert!(old_tool.content.contains(anchor));
+        .expect("old tool message should exist after post-run cleanup");
+    assert!(old_tool.is_pruned());
+    assert!(!old_tool.content.contains(anchor));
 
     server.abort();
 }
 
 #[tokio::test]
-async fn e2e_compaction_healthy_budget_keeps_old_data_without_summary() {
+async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
@@ -363,7 +361,9 @@ async fn e2e_compaction_healthy_budget_keeps_old_data_without_summary() {
         .await
         .expect("failed to decode task progress");
     assert_eq!(progress["latest_token_snapshot"]["budget_state"], "Healthy");
-    assert!(progress["last_compaction_status"].is_null());
+    assert!(progress["last_compaction_status"]
+        .as_str()
+        .is_some_and(|value| value.contains("Cleanup:")));
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -377,9 +377,9 @@ async fn e2e_compaction_healthy_budget_keeps_old_data_without_summary() {
     let old_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-call"))
-        .expect("old tool message should exist");
-    assert!(!old_tool.is_pruned());
-    assert!(old_tool.content.contains("CRITICAL_DECISION_TOKEN"));
+        .expect("old tool message should exist after post-run cleanup");
+    assert!(old_tool.is_pruned());
+    assert!(!old_tool.content.contains("CRITICAL_DECISION_TOKEN"));
     assert!(!messages
         .iter()
         .any(|message| message.summary_payload().is_some()));
@@ -388,7 +388,7 @@ async fn e2e_compaction_healthy_budget_keeps_old_data_without_summary() {
 }
 
 #[tokio::test]
-async fn e2e_compaction_pressure_budget_skips_pruning_without_summary_boundary() {
+async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         two_todo_tool_calls_response(),
         two_todo_tool_calls_response(),
@@ -410,7 +410,11 @@ async fn e2e_compaction_pressure_budget_skips_pruning_without_summary_boundary()
         user_id,
         vec![
             AgentMessage::user_task("Trigger repeated cleanup"),
-            AgentMessage::tool("old-large", "web_markdown", &"A".repeat(1_500)),
+            AgentMessage::tool(
+                "old-large",
+                "web_markdown",
+                &format!("{}OLD_TOOL_MARKER", "A".repeat(1_500)),
+            ),
             AgentMessage::tool("short-1", "web_markdown", "short-1"),
             AgentMessage::tool("short-2", "web_markdown", "short-2"),
             AgentMessage::tool("short-3", "web_markdown", "short-3"),
@@ -453,18 +457,25 @@ async fn e2e_compaction_pressure_budget_skips_pruning_without_summary_boundary()
         .filter_map(|event| event["event_name"].as_str())
         .collect();
     assert!(
-        progress["last_compaction_status"]
-            .as_str()
-            .is_some_and(|value| value.contains("Compaction:")),
+        progress["last_compaction_status"].as_str().is_some(),
         "unexpected progress payload: {}; event_names={:?}",
         serde_json::to_string_pretty(&progress).expect("serialize progress"),
         event_names
     );
-    assert!(
-        !event_names.contains(&"pruning_applied") && event_names.contains(&"compaction_completed"),
-        "unexpected event names: {:?}",
-        event_names
-    );
+    assert!(event_names.contains(&"compaction_completed"));
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+    assert!(!messages.iter().any(
+        |message| message.tool_call_id.as_deref() == Some("old-large")
+            && message.content.contains("OLD_TOOL_MARKER")
+    ));
 
     server.abort();
 }

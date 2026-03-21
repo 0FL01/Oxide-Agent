@@ -86,6 +86,8 @@ pub enum CompactionTrigger {
     PreIteration,
     /// Explicit manual compaction requested by the operator or transport.
     Manual,
+    /// Cleanup and compaction housekeeping after a task reaches a final answer.
+    PostRun,
 }
 
 /// Static policy knobs for the compaction subsystem.
@@ -498,8 +500,10 @@ impl CompactionOutcome {
     /// Returns true when this checkpoint deserves warning-level runtime logs.
     #[must_use]
     pub fn requires_warn_log(&self) -> bool {
-        matches!(self.trigger, CompactionTrigger::Manual)
-            || self.budget.state.requires_warn_telemetry()
+        matches!(
+            self.trigger,
+            CompactionTrigger::Manual | CompactionTrigger::PostRun
+        ) || self.budget.state.requires_warn_telemetry()
             || self.applied
             || self.summary_generation.attempted
             || self.summary_generation.used_fallback
