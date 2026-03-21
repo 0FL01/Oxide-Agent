@@ -43,19 +43,20 @@ Default branch: `agent-topics`.
 ## Ключевые подсистемы
 
 ### Agent execution model
-- Базовые точки входа: `executor.rs`, `session.rs`, `memory.rs`, `context.rs`, `profile.rs`, `tool_bridge.rs`, `structured_output.rs`, `recovery.rs`.
-- Runner собран в `agent/runner/` и отвечает за execution loop, dispatch tool calls, response parsing, hook integration и loop detection wiring.
-- `AgentSession` хранит lifecycle задачи, timeout, cancellation, loaded skills и hot-memory; compaction запускается orchestration layer'ом, а не как side effect `AgentMemory`.
-- Narrator (`narrator.rs`) использует отдельную модель для thought summarization и narrative summary.
-- **Parallel tool execution**: множественные tool calls в одном ответе LLM выполняются параллельно; результаты мержатся до следующего round trip.
-- **Fire-and-forget checkpoint**: memory checkpoint persistence асинхронна и не блокирует execution loop.
+- Runner (`agent/runner/`) - execution loop, tool dispatch, response parsing, hook integration, loop detection.
+- `AgentSession` - lifecycle tasks, timeout, cancellation, loaded skills, hot-memory.
+- **Parallel tool execution** - multiple tool calls in one LLM response run concurrently.
+- **Fire-and-forget checkpoint** - memory persistence is async, non-blocking.
+- Narrator - separate model for thought/narrative summarization.
 
 ### Agent Mode compaction
-- Код: `crates/oxide-agent-core/src/agent/compaction/`.
-- Pipeline: budget estimation -> classify -> externalize -> prune -> summarize -> rebuild hot context -> optional archive refs.
-- Сохраняются base system context, topic `AGENTS.md`, текущая задача, todos, runtime injections, approvals и recent working set.
-- Крупные tool outputs сначала externalize/prune, потом попадают в LLM compaction.
-- PreRun compaction fast path оптимизирует early termination для коротких задач.
+- Pipeline: budget estimation -> classify -> externalize -> prune -> summarize -> rebuild hot context.
+- Token-based protected window (configurable via `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`).
+- Prunes only before summary boundary; delegate results skip externalization.
+
+### Model Route Failover
+- Weighted fallback routes via `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`.
+- Route quarantine after persistent 429s; emits `ProviderFailoverActivated` event.
 
 ### Hooks и loop detection
 - Hook system: `agent/hooks/` + интеграция в `agent/runner/hooks.rs`.
@@ -81,9 +82,9 @@ Default branch: `agent-topics`.
 - `forum_topic_list` доступен для memory-independent topic discovery, но заблокирован у sub-agent'ов.
 
 ### Topic-scoped AGENTS.md
-- Storage record: `TopicAgentsMdRecord`; orchestration - через storage API и `prompt/composer.rs`.
-- Topic prompt ограничен по размеру: до 300 строк для полного `AGENTS.md`, до 40 строк для `topic_context`.
-- Topic `AGENTS.md` сохраняется при compaction и может быть управляем через manager CRUD с rollback/audit trail.
+- Storage record: `TopicAgentsMdRecord`; orchestration via storage API and `prompt/composer.rs`.
+- Topic prompt ограничен: до 300 строк для `AGENTS.md`, до 40 строк для `topic_context`.
+- Self-editing tools: `agents_md_get`, `agents_md_update` (top-level agents only).
 
 ### Manager control plane
 - Код: `agent/providers/manager_control_plane/`.
@@ -119,45 +120,37 @@ Default branch: `agent-topics`.
 ## Storage, LLM и providers
 
 ### Storage
-- `storage/mod.rs` - публичный facade и реэкспорты.
-- R2 backend разнесен по темам: base primitives, user/history, memory/flows, control plane, reminders.
-- Storage tests сгруппированы по тематике в `storage/tests/`.
+- `storage/mod.rs` - facade и реэкспорты; R2 backend разнесен по темам.
+- Tests: `storage/tests/`.
 
 ### LLM
-- Базовый вход: `llm/mod.rs`, `common.rs`, `embeddings.rs`, `http_utils.rs`, `openai_compat.rs`.
-- Провайдеры: `gemini`, `groq`, `mistral`, `minimax/` (folder structure: client, messages, tools, response), `openrouter`, `zai`.
-- **HTTP connection pooling**: `http_utils.rs` реализует reuse `Client` с connection pool; OpenRouter использует явный пулинг.
-- **Tokenizer caching**: `cl100k_base` tokenizer кешируется при инициализации — устраняет ~15s startup latency.
+- Providers: `gemini`, `groq`, `mistral`, `minimax/`, `openrouter`, `zai`.
+- HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
 
 ### Tool providers
-- Основные provider'ы: sandbox, todos, tavily, crawl4ai, filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders.
-- При расширении экосистемы провайдеров добавляй код в `agent/providers/` и сохраняй transport-agnostic контракт на уровне core.
+- sandbox, todos, tavily, crawl4ai, filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md.
+- Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport
 
-- Весь Telegram-specific код держим в `crates/oxide-agent-transport-telegram`.
-- `bot/agent_handlers/` разбит по ролям: lifecycle, controls, callbacks, input, task runner, session, reminders, shared helpers.
-- `context.rs` и `topic_route.rs` отвечают за context-scoped state и topic binding resolution.
-- `thread.rs` и `session_registry.rs` обеспечивают thread-aware session isolation.
-- `agent/media.rs`, `messaging.rs`, `resilient.rs`, `unauthorized_cache.rs` закрывают медиа, длинные сообщения, retry/edit и защиту от неавторизованного доступа.
+- `crates/oxide-agent-transport-telegram` - handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
+- `bot/agent_handlers/` - lifecycle, controls, callbacks, input, task runner, session, reminders.
+- `context.rs`, `topic_route.rs` - context-scoped state, topic binding resolution.
+- `thread.rs`, `session_registry.rs` - thread-aware session isolation.
+- Rate limit status отображается в UI; provider failover notice показывается при переключении.
 
 ## Web transport (E2E tests)
 
-- Crate: `crates/oxide-agent-transport-web` — изолированный transport для E2E-тестирования без зависимости от реальных LLM/Telegram API.
-- HTTP API (axum): `POST /sessions`, `GET /sessions/:id`, `DELETE /sessions/:id`, `POST /sessions/:session_id/tasks`, `GET /tasks/:task_id/progress`, `GET /tasks/:task_id/events`, `GET /tasks/:task_id/stream` (SSE), `GET /tasks/:task_id/timeline`, `POST /tasks/:task_id/cancel`, `GET /health`.
-- Scripted LLM provider (`src/scripted_llm.rs`): детерминированные ответы через `ScriptedResponse::Text` и `ScriptedResponse::ToolCalls`. `chat_with_tools()` возвращает валидный JSON (важно для structured output).
-- `TaskEventLog` (`src/web_transport.rs`): буферизация событий в памяти + broadcast-канал для SSE. Методы: `push()`, `subscribe()`, `close()`, `snapshot()`, `drain()`.
-- `collect_events()`: собирает `AgentEvent` из mpsc-канала, возвращает `(ProgressState, MilestoneTimestamps)`. Отслеживает `first_thinking_at` и `finished_at`.
-- Latency milestones: `session_ready_ms` (HTTP → executor ready), `first_thinking_ms` (agent start → first Thinking), `final_response_ms` (agent start → Finished/Error/Cancelled).
-- SSE endpoint: `stream!` macro + `tokio::select!` на broadcast-канале для непрерывной доставки событий.
-- Task tracking: `AppState` хранит `task_handles: Arc<RwLock<HashMap<String, Arc<JoinHandle<()>>>>>` для abort при cancel.
+- `crates/oxide-agent-transport-web` — изолированный transport для E2E-тестирования без зависимости от реальных LLM/Telegram API.
+- HTTP API (axum): sessions CRUD, task execution, SSE streaming (`/tasks/:id/stream`), timeline, health.
+- Scripted LLM provider: `ScriptedResponse::Text` и `ScriptedResponse::ToolCalls` для deterministic responses.
+- Latency milestones: `session_ready_ms`, `first_thinking_ms`, `final_response_ms`.
 
 ## Конфигурация
 
 - Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Конфигурационные файлы опциональны (`required(false)`).
-- Ключевые настройки: search provider, embedding provider/model, narrator/sub-agent model settings, media/chat/agent overrides, `SANDBOX_BACKEND`, `SANDBOXD_SOCKET`, `SANDBOX_IMAGE`.
-- Telegram-специфика включает `topic_configs`, `manager_allowed_users_str` и cooldown-настройки для unauthorized access protection.
+- Ключевые: search/embedding provider, narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`.
 
 ## Практика разработки
 
