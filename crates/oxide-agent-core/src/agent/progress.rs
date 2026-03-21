@@ -712,6 +712,7 @@ fn compaction_trigger_label(trigger: CompactionTrigger) -> &'static str {
         CompactionTrigger::PreRun => "pre-run",
         CompactionTrigger::PreIteration => "pre-iteration",
         CompactionTrigger::Manual => "manual",
+        CompactionTrigger::PostRun => "post-run",
     }
 }
 

@@ -94,7 +94,7 @@ impl CompactionService {
         let budget_before = estimate_request_budget(&self.policy, request, agent);
         let (externalization, pruning) =
             if Self::should_apply_deterministic_stages(request.trigger, budget_before.state) {
-                self.apply_deterministic_stages(agent)
+                self.apply_deterministic_stages(request.trigger, agent)
             } else {
                 (Default::default(), Default::default())
             };
@@ -158,6 +158,7 @@ impl CompactionService {
 
     fn apply_deterministic_stages(
         &self,
+        trigger: super::CompactionTrigger,
         agent: &mut dyn AgentContext,
     ) -> (ExternalizationOutcome, PruneOutcome) {
         let snapshot_before = classify_hot_memory(agent.memory().get_messages());
@@ -178,6 +179,7 @@ impl CompactionService {
             &self.policy,
             &snapshot_after_externalization,
             agent.memory().get_messages(),
+            matches!(trigger, super::CompactionTrigger::PostRun),
         );
         if pruning.applied {
             agent.memory_mut().replace_messages(pruned_messages);
@@ -190,13 +192,15 @@ impl CompactionService {
         trigger: super::CompactionTrigger,
         budget_state: super::BudgetState,
     ) -> bool {
-        matches!(trigger, super::CompactionTrigger::Manual)
-            || matches!(
-                budget_state,
-                super::BudgetState::ShouldPrune
-                    | super::BudgetState::ShouldCompact
-                    | super::BudgetState::OverLimit
-            )
+        matches!(
+            trigger,
+            super::CompactionTrigger::Manual | super::CompactionTrigger::PostRun
+        ) || matches!(
+            budget_state,
+            super::BudgetState::ShouldPrune
+                | super::BudgetState::ShouldCompact
+                | super::BudgetState::OverLimit
+        )
     }
 
     async fn summarize_and_rebuild(
@@ -377,8 +381,10 @@ fn should_warn_checkpoint(
     budget_before: &BudgetEstimate,
     metrics: &CheckpointMetrics<'_>,
 ) -> bool {
-    matches!(request.trigger, super::CompactionTrigger::Manual)
-        || budget_before.state.requires_warn_telemetry()
+    matches!(
+        request.trigger,
+        super::CompactionTrigger::Manual | super::CompactionTrigger::PostRun
+    ) || budget_before.state.requires_warn_telemetry()
         || metrics.budget.state.requires_warn_telemetry()
         || metrics.externalization.applied
         || metrics.pruning.applied

@@ -449,7 +449,7 @@ impl AgentRunner {
         Ok(())
     }
 
-    async fn run_compaction_checkpoint(
+    pub(super) async fn run_compaction_checkpoint(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
@@ -480,8 +480,10 @@ impl AgentRunner {
             }
         };
         Self::log_compaction_success(ctx.task_id, state.iteration, trigger, &outcome);
-        let should_emit_progress = matches!(trigger, CompactionTrigger::Manual)
-            || outcome.applied
+        let should_emit_progress = matches!(
+            trigger,
+            CompactionTrigger::Manual | CompactionTrigger::PostRun
+        ) || outcome.applied
             || outcome.summary_generation.attempted
             || outcome.archive_persistence.attempted;
         if should_emit_progress {
@@ -550,6 +552,10 @@ impl AgentRunner {
         trigger: CompactionTrigger,
         outcome: &crate::agent::CompactionOutcome,
     ) {
+        if matches!(trigger, CompactionTrigger::PostRun) {
+            return;
+        }
+
         if outcome.rebuild.inserted_summary {
             state.compaction_count = state.compaction_count.saturating_add(1);
             if state.compaction_count > 1 {

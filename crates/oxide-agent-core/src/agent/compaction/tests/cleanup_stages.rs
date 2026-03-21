@@ -1,5 +1,5 @@
 use super::fixtures::{
-    cleanup_policy, pre_iteration_request, ErrorPayloadSink, RecordingArchiveSink,
+    cleanup_policy, manual_request, pre_iteration_request, ErrorPayloadSink, RecordingArchiveSink,
     RecordingPayloadSink,
 };
 use crate::agent::memory::AgentMessage;
@@ -39,10 +39,7 @@ async fn cleanup_externalizes_recent_large_tool_result_without_pruning_recent_wi
     }
 
     let outcome = service
-        .prepare_for_run(
-            &pre_iteration_request("Inspect fresh tool output"),
-            &mut session,
-        )
+        .prepare_for_run(&manual_request("Inspect fresh tool output"), &mut session)
         .await
         .expect("cleanup succeeds");
 
@@ -74,6 +71,7 @@ async fn cleanup_prunes_old_externalized_tool_and_preserves_archive_ref() {
             vec![tool_call("call-1", "read_file")],
         ),
         AgentMessage::tool("call-1", "read_file", &"A".repeat(512)),
+        AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
         AgentMessage::assistant_with_tools("Call search 1", vec![tool_call("call-2", "search")]),
         AgentMessage::tool("call-2", "search", "short-1"),
         AgentMessage::assistant_with_tools("Call search 2", vec![tool_call("call-3", "search")]),
@@ -87,10 +85,7 @@ async fn cleanup_prunes_old_externalized_tool_and_preserves_archive_ref() {
     }
 
     let outcome = service
-        .prepare_for_run(
-            &pre_iteration_request("Inspect stale tool output"),
-            &mut session,
-        )
+        .prepare_for_run(&manual_request("Inspect stale tool output"), &mut session)
         .await
         .expect("cleanup succeeds");
 
@@ -148,10 +143,7 @@ async fn cleanup_is_idempotent_after_externalize_and_prune() {
     }
 
     let first = service
-        .prepare_for_run(
-            &pre_iteration_request("Inspect repeated cleanup"),
-            &mut session,
-        )
+        .prepare_for_run(&manual_request("Inspect repeated cleanup"), &mut session)
         .await
         .expect("first cleanup succeeds");
     assert!(first.applied);
@@ -164,10 +156,7 @@ async fn cleanup_is_idempotent_after_externalize_and_prune() {
         .collect();
 
     let second = service
-        .prepare_for_run(
-            &pre_iteration_request("Inspect repeated cleanup"),
-            &mut session,
-        )
+        .prepare_for_run(&manual_request("Inspect repeated cleanup"), &mut session)
         .await
         .expect("second cleanup succeeds");
 
@@ -203,6 +192,7 @@ async fn cleanup_preserves_inline_fallback_when_pruning_after_non_persisted_exte
             vec![tool_call("call-1", "read_file")],
         ),
         AgentMessage::tool("call-1", "read_file", &original_payload),
+        AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
         AgentMessage::assistant_with_tools("Call search 1", vec![tool_call("call-2", "search")]),
         AgentMessage::tool("call-2", "search", "short-1"),
         AgentMessage::assistant_with_tools("Call search 2", vec![tool_call("call-3", "search")]),
@@ -217,7 +207,7 @@ async fn cleanup_preserves_inline_fallback_when_pruning_after_non_persisted_exte
 
     let outcome = service
         .prepare_for_run(
-            &pre_iteration_request("Inspect fallback preservation"),
+            &manual_request("Inspect fallback preservation"),
             &mut session,
         )
         .await

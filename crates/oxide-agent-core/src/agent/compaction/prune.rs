@@ -13,6 +13,7 @@ pub fn prune_hot_memory(
     policy: &CompactionPolicy,
     snapshot: &CompactionSnapshot,
     messages: &[AgentMessage],
+    allow_without_summary_boundary: bool,
 ) -> (Vec<AgentMessage>, PruneOutcome) {
     let mut rewritten = messages.to_vec();
     let mut outcome = PruneOutcome::default();
@@ -23,9 +24,9 @@ pub fn prune_hot_memory(
         .find(|entry| entry.kind == super::types::AgentMessageKind::Summary)
         .map(|entry| entry.index);
 
-    let Some(latest_summary_boundary) = latest_summary_boundary else {
+    if latest_summary_boundary.is_none() && !allow_without_summary_boundary {
         return (rewritten, outcome);
-    };
+    }
 
     for entry in &snapshot.entries {
         let Some(pruned) = prune_entry(policy, latest_summary_boundary, entry, messages) else {
@@ -65,12 +66,12 @@ struct PrunedMessage {
 
 fn prune_entry(
     policy: &CompactionPolicy,
-    latest_summary_boundary: usize,
+    latest_summary_boundary: Option<usize>,
     entry: &ClassifiedMemoryEntry,
     messages: &[AgentMessage],
 ) -> Option<PrunedMessage> {
     if entry.retention != CompactionRetention::PrunableArtifact
-        || entry.index >= latest_summary_boundary
+        || latest_summary_boundary.is_some_and(|boundary| entry.index >= boundary)
         || entry.preserve_in_raw_window
         || entry.is_pruned
     {
@@ -198,7 +199,7 @@ mod tests {
         ];
 
         let snapshot = classify_hot_memory(&messages);
-        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages);
+        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
 
         assert!(outcome.applied);
         assert_eq!(outcome.pruned_indices, vec![0]);
@@ -223,7 +224,7 @@ mod tests {
         ];
 
         let snapshot = classify_hot_memory(&messages);
-        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages);
+        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
 
         assert!(!outcome.applied);
         assert_eq!(rewritten.len(), messages.len());
@@ -247,7 +248,7 @@ mod tests {
         ];
 
         let snapshot = classify_hot_memory(&messages);
-        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages);
+        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
 
         assert!(!outcome.applied);
         assert_eq!(rewritten.len(), messages.len());
@@ -275,7 +276,7 @@ mod tests {
         ];
 
         let snapshot = classify_hot_memory(&messages);
-        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages);
+        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
 
         assert_eq!(outcome.pruned_indices, vec![0]);
         assert!(rewritten[0].is_pruned());
