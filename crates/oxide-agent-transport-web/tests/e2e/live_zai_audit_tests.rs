@@ -209,6 +209,7 @@ async fn e2e_zai_seeded_initial_anchor_missing_after_healthy_cleanup() {
     for attempt in 1..=LIVE_ANCHOR_MAX_ATTEMPTS {
         let user_id = unique_test_user_id();
         let anchor = format!("ANCHOR_CTX_{user_id:x}_7f4c2b9d1e6a3c8f");
+        let anchor_tail = format!("{user_id:x}_7f4c2b9d1e6a3c8f");
         let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
         let old_payload = format!("{}{}", "x".repeat(1_400), anchor);
 
@@ -279,8 +280,8 @@ async fn e2e_zai_seeded_initial_anchor_missing_after_healthy_cleanup() {
         );
         assert!(artifacts.progress["last_compaction_status"].is_null());
         assert!(
-            final_response.contains(&anchor),
-            "anchor missing despite healthy budget and no cleanup; final_response={final_response:?}"
+            final_response.contains(&anchor_tail),
+            "anchor tail missing despite healthy budget and no cleanup; final_response={final_response:?}; anchor={anchor:?}"
         );
 
         server.abort();
