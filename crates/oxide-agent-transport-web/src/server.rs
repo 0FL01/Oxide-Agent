@@ -68,6 +68,9 @@ pub struct SerializableProgress {
     pub error: Option<String>,
     pub current_thought: Option<String>,
     pub narrative_headline: Option<String>,
+    pub last_compaction_status: Option<String>,
+    pub repeated_compaction_warning: Option<String>,
+    pub latest_token_snapshot: Option<oxide_agent_core::agent::progress::TokenSnapshot>,
 }
 
 impl SerializableProgress {
@@ -79,6 +82,9 @@ impl SerializableProgress {
             error: state.error.clone(),
             current_thought: state.current_thought.clone(),
             narrative_headline: state.narrative_headline.clone(),
+            last_compaction_status: state.last_compaction_status.clone(),
+            repeated_compaction_warning: state.repeated_compaction_warning.clone(),
+            latest_token_snapshot: state.latest_token_snapshot.clone(),
         }
     }
 }

@@ -92,7 +92,12 @@ impl CompactionService {
         agent: &mut dyn AgentContext,
     ) -> Result<CompactionOutcome> {
         let budget_before = estimate_request_budget(&self.policy, request, agent);
-        let (externalization, pruning) = self.apply_deterministic_stages(agent);
+        let (externalization, pruning) =
+            if Self::should_apply_deterministic_stages(request.trigger, budget_before.state) {
+                self.apply_deterministic_stages(agent)
+            } else {
+                (Default::default(), Default::default())
+            };
         let (archive_persistence, summary_generation, rebuild) =
             self.summarize_and_rebuild(request, agent).await;
 
@@ -179,6 +184,19 @@ impl CompactionService {
         }
 
         (externalization, pruning)
+    }
+
+    const fn should_apply_deterministic_stages(
+        trigger: super::CompactionTrigger,
+        budget_state: super::BudgetState,
+    ) -> bool {
+        matches!(trigger, super::CompactionTrigger::Manual)
+            || matches!(
+                budget_state,
+                super::BudgetState::ShouldPrune
+                    | super::BudgetState::ShouldCompact
+                    | super::BudgetState::OverLimit
+            )
     }
 
     async fn summarize_and_rebuild(
@@ -418,7 +436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_for_run_externalizes_large_tool_payloads() {
+    async fn prepare_for_run_skips_externalization_for_healthy_budget() {
         let mut session = EphemeralSession::new(20_000);
         session.memory_mut().add_message(AgentMessage::tool(
             "call-1",
@@ -442,19 +460,20 @@ mod tests {
             .await
             .expect("stage 5 externalization checkpoint should succeed");
 
-        assert!(outcome.applied);
-        assert_eq!(outcome.externalization.externalized_count, 1);
-        assert!(outcome.token_count_after < outcome.token_count_before);
-        assert!(session.memory().get_messages()[0].is_externalized());
-        assert!(session.memory().get_messages()[0]
-            .content
-            .contains("[externalized tool result]"));
+        assert!(!outcome.applied);
+        assert_eq!(outcome.externalization.externalized_count, 0);
+        assert_eq!(outcome.token_count_after, outcome.token_count_before);
+        assert!(!session.memory().get_messages()[0].is_externalized());
+        assert_eq!(
+            session.memory().get_messages()[0].content,
+            "A".repeat(5_000)
+        );
         assert_eq!(outcome.pruning.pruned_count, 0);
     }
 
     #[tokio::test]
-    async fn prepare_for_run_prunes_old_tool_payloads_outside_recent_window() {
-        let mut session = EphemeralSession::new(20_000);
+    async fn prepare_for_run_prunes_old_tool_payloads_outside_recent_window_under_pressure() {
+        let mut session = EphemeralSession::new(2_048);
         for index in 0..5 {
             session.memory_mut().add_message(AgentMessage::tool(
                 &format!("call-{index}"),
@@ -476,7 +495,7 @@ mod tests {
             "system prompt",
             &[],
             "demo-model",
-            512,
+            1_024,
             false,
         );
 
@@ -486,6 +505,10 @@ mod tests {
             .expect("stage 6 pruning checkpoint should succeed");
 
         assert!(outcome.applied);
+        assert!(matches!(
+            outcome.budget.state,
+            BudgetState::ShouldPrune | BudgetState::ShouldCompact | BudgetState::OverLimit
+        ));
         assert_eq!(outcome.externalization.externalized_count, 0);
         assert_eq!(outcome.pruning.pruned_indices, vec![0]);
         assert!(session.memory().get_messages()[0].is_pruned());

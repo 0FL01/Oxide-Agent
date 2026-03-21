@@ -104,6 +104,10 @@ const ZAI_API_BASE: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions
 
 /// Set up web transport state backed by the real ZAI provider.
 pub fn setup_live_zai_test() -> anyhow::Result<AppState> {
+    // Load .env file if present so that `ZAI_API_KEY` and `ZAI_API_BASE`
+    // are available when the test is run from a fresh shell.
+    let _ = dotenvy::dotenv();
+
     let api_key = env::var("ZAI_API_KEY")
         .ok()
         .filter(|value| !value.is_empty() && value != "dummy")
@@ -112,6 +116,8 @@ pub fn setup_live_zai_test() -> anyhow::Result<AppState> {
     let mut settings = AgentSettings {
         agent_model_id: Some("glm-4.7".to_string()),
         agent_model_provider: Some("zai".to_string()),
+        agent_model_max_output_tokens: Some(32_000),
+        agent_model_context_window_tokens: Some(200_000),
         agent_timeout_secs: Some(900),
         zai_api_key: Some(api_key),
         ..AgentSettings::default()
