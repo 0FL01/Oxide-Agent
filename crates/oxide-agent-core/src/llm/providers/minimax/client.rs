@@ -275,7 +275,7 @@ mod tests {
         .expect("should create params");
 
         // No tools provided, so tools should be empty
-        assert!(params.tools.is_none() || params.tools.as_ref().unwrap().is_empty());
+        assert!(params.tools.as_ref().is_none_or(|t| t.is_empty()));
     }
 
     #[test]

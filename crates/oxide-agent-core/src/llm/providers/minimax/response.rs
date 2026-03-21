@@ -151,11 +151,10 @@ mod tests {
         let response = from_claudius_message(msg).expect("should parse");
 
         assert_eq!(response.content, Some("The answer is 42.".to_string()));
-        assert!(response.reasoning_content.is_some());
-        assert!(response
+        let reasoning = response
             .reasoning_content
-            .unwrap()
-            .contains("Let me think..."));
+            .expect("reasoning_content should be present");
+        assert!(reasoning.contains("Let me think..."));
     }
 
     #[test]
@@ -170,8 +169,7 @@ mod tests {
 
         let response = from_claudius_message(msg).expect("should parse");
 
-        assert!(response.usage.is_some());
-        let usage = response.usage.unwrap();
+        let usage = response.usage.expect("usage should be present");
         assert_eq!(usage.prompt_tokens, 10);
         assert_eq!(usage.completion_tokens, 5);
         assert_eq!(usage.total_tokens, 15);

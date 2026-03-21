@@ -88,11 +88,12 @@ impl AgentRunner {
             let tool_call = &tool_calls[idx];
             self.record_blocked_tool_result(ctx, tool_call, &reason)
                 .await;
-            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
-            Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
+            Self::emit_token_snapshot_update(
+                ctx.progress_tx,
+                Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration),
+            )
+            .await;
         }
-
-        // If no tools approved, return early
         if approved_tools.is_empty() {
             return Ok(None);
         }
@@ -145,10 +146,7 @@ impl AgentRunner {
         sorted_results.sort_by_key(|(idx, _, _)| *idx);
 
         for (_idx, tool_call, result) in sorted_results {
-            if self
-                .record_tool_execution_result(ctx, state, tool_call, result)
-                .await?
-            {
+            if self.record_tool_execution_result(ctx, state, tool_call, result).await? {
                 return Ok(Some(AgentRunResult::WaitingForApproval));
             }
         }

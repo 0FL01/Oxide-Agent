@@ -829,7 +829,9 @@ mod tests {
         assert_eq!(assistant_msg["content"], json!("I'll get the weather."));
         assert!(assistant_msg.get("tool_calls").is_some());
 
-        let tool_calls = assistant_msg["tool_calls"].as_array().unwrap();
+        let tool_calls = assistant_msg["tool_calls"]
+            .as_array()
+            .expect("tool_calls should be present in assistant message");
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0]["id"], json!("call_xyz"));
         assert_eq!(tool_calls[0]["function"]["name"], json!("get_weather"));
