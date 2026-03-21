@@ -11,10 +11,18 @@ use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
+use crate::config::ModelInfo;
 use crate::llm::{ChatResponse, LlmClient, LlmError};
 use anyhow::{anyhow, Result};
 use std::future::Future;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
+
+enum AttemptOutcome {
+    Return(ChatResponse),
+    RetrySameRoute,
+    FailoverToNextRoute(LlmError),
+}
 
 impl AgentRunner {
     /// Execute the agent loop until completion or error.
@@ -133,13 +141,6 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<ChatResponse> {
-        let max_retries = LlmClient::MAX_RETRIES;
-        let json_mode = self.requires_structured_output(&ctx.config.model_name);
-        let provider_name = self
-            .llm_client
-            .get_provider_name(&ctx.config.model_name)
-            .unwrap_or_else(|_| "unknown".to_string());
-
         // Emit milestone on first LLM call of first iteration.
         if state.iteration == 0 {
             if let Some(tx) = ctx.progress_tx {
@@ -153,6 +154,31 @@ impl AgentRunner {
             }
         }
 
+        if ctx.config.model_routes.is_empty() {
+            return self.call_llm_with_tools_legacy(ctx, state).await;
+        }
+
+        self.call_llm_with_tools_with_failover(ctx, state).await
+    }
+
+    async fn call_llm_with_tools_legacy(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+    ) -> Result<ChatResponse> {
+        let max_retries = LlmClient::MAX_RETRIES;
+        let json_mode = self.requires_structured_output(&ctx.config);
+        let provider_name = ctx
+            .config
+            .model_provider
+            .clone()
+            .or_else(|| {
+                self.llm_client
+                    .get_provider_name(&ctx.config.model_name)
+                    .ok()
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
         for attempt in 1..=max_retries {
             let result = self
                 .llm_client
@@ -165,92 +191,280 @@ impl AgentRunner {
                 )
                 .await;
 
-            match result {
-                Ok(response) => {
-                    if attempt > 1 {
-                        info!(
-                            attempt = attempt,
-                            max_attempts = max_retries,
-                            "LLM retry succeeded after rate limit"
-                        );
-                    }
-                    return Ok(response);
-                }
-                Err(error) => {
-                    // Check if this is a context overflow error
-                    if Self::llm_error_suggests_context_overflow(&error) && attempt == 1 {
-                        let retried = self
-                            .run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual)
-                            .await?;
-                        if retried {
-                            // Retry after compaction
-                            continue;
-                        }
-                        // If compaction didn't help, fall through to emit error
-                    }
-
-                    // Check if we should retry
-                    if attempt < max_retries {
-                        if let Some(backoff) = LlmClient::get_retry_delay(&error, attempt) {
-                            let wait_secs = backoff.as_secs();
-                            let wait_secs_display = if wait_secs > 0 {
-                                Some(wait_secs)
-                            } else {
-                                LlmClient::get_rate_limit_wait_secs(&error)
-                            };
-
-                            // Emit the appropriate retry event.
-                            if LlmClient::is_rate_limit_error(&error) {
-                                Self::emit_rate_limit_retrying(
-                                    ctx.progress_tx,
-                                    attempt,
-                                    max_retries,
-                                    wait_secs_display,
-                                    &provider_name,
-                                )
-                                .await;
-                                debug!(
-                                    error = %error,
-                                    attempt = attempt,
-                                    max_attempts = max_retries,
-                                    backoff_ms = backoff.as_millis(),
-                                    "Retrying LLM request after rate limit"
-                                );
-                            } else {
-                                let error_class = Self::error_class(&error);
-                                Self::emit_llm_retrying(
-                                    ctx.progress_tx,
-                                    attempt,
-                                    max_retries,
-                                    wait_secs_display,
-                                    &provider_name,
-                                    error_class,
-                                )
-                                .await;
-                                debug!(
-                                    error = %error,
-                                    error_class = error_class,
-                                    attempt = attempt,
-                                    max_attempts = max_retries,
-                                    backoff_ms = backoff.as_millis(),
-                                    "Retrying LLM request after retryable error"
-                                );
-                            }
-
-                            tokio::time::sleep(backoff).await;
-                            continue;
-                        }
-                    }
-
-                    // No more retries or error is not retryable
-                    Self::emit_llm_error(ctx.progress_tx, &error).await;
-                    return Err(anyhow!("LLM call failed: {error}"));
-                }
+            match self
+                .handle_llm_attempt_result(ctx, state, &provider_name, attempt, max_retries, result)
+                .await?
+            {
+                AttemptOutcome::Return(response) => return Ok(response),
+                AttemptOutcome::RetrySameRoute => continue,
+                AttemptOutcome::FailoverToNextRoute(_) => unreachable!("legacy path has no routes"),
             }
         }
 
-        // This should be unreachable, but just in case
         Err(anyhow!("LLM call failed after all retries"))
+    }
+
+    async fn call_llm_with_tools_with_failover(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+    ) -> Result<ChatResponse> {
+        let max_retries = LlmClient::MAX_RETRIES;
+
+        let mut exhausted_routes = std::collections::HashSet::new();
+        let mut pending_failover_from: Option<ModelInfo> = None;
+        let mut last_rate_limit_error: Option<LlmError> = None;
+
+        loop {
+            let Some(route_index) = self.select_model_route_index(ctx, &exhausted_routes) else {
+                let error = last_rate_limit_error.unwrap_or_else(|| {
+                    LlmError::Unknown("No healthy model routes available".to_string())
+                });
+                Self::emit_llm_error(ctx.progress_tx, &error).await;
+                return Err(anyhow!("LLM call failed: {error}"));
+            };
+
+            let route = ctx.config.model_routes[route_index].clone();
+            if let Some(from_route) = pending_failover_from.take() {
+                Self::emit_provider_failover(ctx.progress_tx, &from_route, &route).await;
+            }
+
+            ctx.config.model_name = route.id.clone();
+            ctx.config.model_max_output_tokens = route.max_output_tokens;
+            ctx.config.model_provider = Some(route.provider.clone());
+
+            let json_mode = self.requires_structured_output(&ctx.config);
+            let provider_name = route.provider.clone();
+
+            for attempt in 1..=max_retries {
+                let result = self
+                    .llm_client
+                    .chat_with_tools_single_attempt_for_model_info(
+                        ctx.system_prompt,
+                        ctx.messages,
+                        ctx.tools,
+                        &route,
+                        json_mode,
+                    )
+                    .await;
+
+                let attempt_result = self
+                    .handle_llm_attempt_result(
+                        ctx,
+                        state,
+                        &provider_name,
+                        attempt,
+                        max_retries,
+                        result,
+                    )
+                    .await?;
+                match attempt_result {
+                    AttemptOutcome::Return(response) => return Ok(response),
+                    AttemptOutcome::RetrySameRoute => continue,
+                    AttemptOutcome::FailoverToNextRoute(error) => {
+                        let quarantine_for =
+                            Self::rate_limit_quarantine_duration(&error, max_retries);
+                        self.quarantine_model_route(&route, quarantine_for);
+                        exhausted_routes.insert(Self::route_key(&route));
+                        pending_failover_from = Some(route.clone());
+                        last_rate_limit_error = Some(error);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_llm_attempt_result(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+        provider_name: &str,
+        attempt: usize,
+        max_retries: usize,
+        result: std::result::Result<ChatResponse, LlmError>,
+    ) -> Result<AttemptOutcome> {
+        match result {
+            Ok(response) => {
+                if attempt > 1 {
+                    info!(
+                        attempt = attempt,
+                        max_attempts = max_retries,
+                        provider = provider_name,
+                        "LLM retry succeeded after rate limit"
+                    );
+                }
+                Ok(AttemptOutcome::Return(response))
+            }
+            Err(error) => {
+                if Self::llm_error_suggests_context_overflow(&error) && attempt == 1 {
+                    let retried = self
+                        .run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual)
+                        .await?;
+                    if retried {
+                        return Ok(AttemptOutcome::RetrySameRoute);
+                    }
+                }
+
+                if attempt < max_retries {
+                    if let Some(backoff) = LlmClient::get_retry_delay(&error, attempt) {
+                        let wait_secs = backoff.as_secs();
+                        let wait_secs_display = if wait_secs > 0 {
+                            Some(wait_secs)
+                        } else {
+                            LlmClient::get_rate_limit_wait_secs(&error)
+                        };
+
+                        if LlmClient::is_rate_limit_error(&error) {
+                            Self::emit_rate_limit_retrying(
+                                ctx.progress_tx,
+                                attempt,
+                                max_retries,
+                                wait_secs_display,
+                                provider_name,
+                            )
+                            .await;
+                            debug!(
+                                error = %error,
+                                attempt = attempt,
+                                max_attempts = max_retries,
+                                backoff_ms = backoff.as_millis(),
+                                provider = provider_name,
+                                "Retrying LLM request after rate limit"
+                            );
+                        } else {
+                            let error_class = Self::error_class(&error);
+                            Self::emit_llm_retrying(
+                                ctx.progress_tx,
+                                attempt,
+                                max_retries,
+                                wait_secs_display,
+                                provider_name,
+                                error_class,
+                            )
+                            .await;
+                            debug!(
+                                error = %error,
+                                error_class = error_class,
+                                attempt = attempt,
+                                max_attempts = max_retries,
+                                backoff_ms = backoff.as_millis(),
+                                provider = provider_name,
+                                "Retrying LLM request after retryable error"
+                            );
+                        }
+
+                        tokio::time::sleep(backoff).await;
+                        return Ok(AttemptOutcome::RetrySameRoute);
+                    }
+                }
+
+                if LlmClient::is_rate_limit_error(&error) && !ctx.config.model_routes.is_empty() {
+                    return Ok(AttemptOutcome::FailoverToNextRoute(error));
+                }
+
+                Self::emit_llm_error(ctx.progress_tx, &error).await;
+                Err(anyhow!("LLM call failed: {error}"))
+            }
+        }
+    }
+
+    fn select_model_route_index(
+        &mut self,
+        ctx: &AgentRunnerContext<'_>,
+        exhausted_routes: &std::collections::HashSet<String>,
+    ) -> Option<usize> {
+        let now = Instant::now();
+        self.route_failover_state
+            .route_quarantine
+            .retain(|_, until| *until > now);
+
+        if ctx.config.model_routes.is_empty() {
+            return None;
+        }
+
+        if self.route_is_available(&ctx.config.model_routes[0], exhausted_routes, now) {
+            return Some(0);
+        }
+
+        let fallback_candidates: Vec<(usize, usize)> = ctx
+            .config
+            .model_routes
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(index, route)| {
+                self.route_is_available(route, exhausted_routes, now)
+                    .then_some((index, route.weight.max(1) as usize))
+            })
+            .collect();
+
+        if fallback_candidates.is_empty() {
+            return None;
+        }
+
+        let total_weight: usize = fallback_candidates.iter().map(|(_, weight)| *weight).sum();
+        let slot = self.route_failover_state.fallback_cursor % total_weight;
+        self.route_failover_state.fallback_cursor =
+            (self.route_failover_state.fallback_cursor + 1) % total_weight;
+
+        let mut cursor = slot;
+        for (index, weight) in fallback_candidates {
+            if cursor < weight {
+                return Some(index);
+            }
+            cursor -= weight;
+        }
+
+        None
+    }
+
+    fn route_is_available(
+        &self,
+        route: &ModelInfo,
+        exhausted_routes: &std::collections::HashSet<String>,
+        now: Instant,
+    ) -> bool {
+        let route_key = Self::route_key(route);
+        !exhausted_routes.contains(&route_key)
+            && self.llm_client.is_provider_available(&route.provider)
+            && self
+                .route_failover_state
+                .route_quarantine
+                .get(&route_key)
+                .is_none_or(|until| *until <= now)
+    }
+
+    fn quarantine_model_route(&mut self, route: &ModelInfo, duration: Duration) {
+        self.route_failover_state
+            .route_quarantine
+            .insert(Self::route_key(route), Instant::now() + duration);
+    }
+
+    fn rate_limit_quarantine_duration(error: &LlmError, attempt: usize) -> Duration {
+        LlmClient::get_retry_delay(error, attempt).unwrap_or_else(|| Duration::from_secs(60))
+    }
+
+    fn route_key(route: &ModelInfo) -> String {
+        format!("{}:{}", route.provider, route.id)
+    }
+
+    fn requires_structured_output(&self, config: &super::types::AgentRunnerConfig) -> bool {
+        if let Some(provider) = config.model_provider.as_deref() {
+            return !provider.eq_ignore_ascii_case("zai");
+        }
+
+        match self.llm_client.get_model_info(&config.model_name) {
+            Ok(info) => !info.provider.eq_ignore_ascii_case("zai"),
+            Err(error) => {
+                warn!(
+                    model = config.model_name,
+                    error = %error,
+                    "Failed to resolve model info; defaulting to structured output"
+                );
+                true
+            }
+        }
     }
 
     async fn await_until_cancelled<T, F>(
@@ -275,7 +489,7 @@ impl AgentRunner {
     ) -> Result<ChatResponse, LlmError> {
         // This method is kept for backwards compatibility.
         // Use call_llm_with_tools for retry handling with UI events.
-        let json_mode = self.requires_structured_output(&ctx.config.model_name);
+        let json_mode = self.requires_structured_output(&ctx.config);
         self.llm_client
             .chat_with_tools_single_attempt(
                 ctx.system_prompt,
@@ -308,7 +522,7 @@ impl AgentRunner {
                 .await;
         }
 
-        if !self.requires_structured_output(&ctx.config.model_name) {
+        if !self.requires_structured_output(&ctx.config) {
             let reasoning = response.reasoning_content.take();
             return self
                 .handle_unstructured_response(reasoning, raw_json.clone(), ctx, state)
@@ -683,20 +897,6 @@ impl AgentRunner {
         self.handle_final_response(ctx, state, input).await
     }
 
-    fn requires_structured_output(&self, model_name: &str) -> bool {
-        match self.llm_client.get_model_info(model_name) {
-            Ok(info) => !info.provider.eq_ignore_ascii_case("zai"),
-            Err(error) => {
-                warn!(
-                    model = model_name,
-                    error = %error,
-                    "Failed to resolve model info; defaulting to structured output"
-                );
-                true
-            }
-        }
-    }
-
     async fn preprocess_llm_response(
         &mut self,
         response: &mut ChatResponse,
@@ -724,7 +924,11 @@ impl AgentRunner {
             .unwrap_or(true);
 
         if content_empty && response.tool_calls.is_empty() {
-            warn!(model = %ctx.config.model_name, "Model returned empty content");
+            warn!(
+                model = %ctx.config.model_name,
+                provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                "Model returned empty content"
+            );
         }
     }
 
@@ -753,6 +957,23 @@ impl AgentRunner {
                     max_attempts,
                     wait_secs,
                     provider: provider.to_string(),
+                })
+                .await;
+        }
+    }
+
+    async fn emit_provider_failover(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        from_route: &ModelInfo,
+        to_route: &ModelInfo,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::ProviderFailoverActivated {
+                    from_provider: from_route.provider.clone(),
+                    from_model: from_route.id.clone(),
+                    to_provider: to_route.provider.clone(),
+                    to_model: to_route.id.clone(),
                 })
                 .await;
         }
@@ -1020,7 +1241,7 @@ mod tests {
     use crate::agent::provider::ToolProvider;
     use crate::agent::registry::ToolRegistry;
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
-    use crate::config::AgentSettings;
+    use crate::config::{AgentSettings, ModelInfo};
     use crate::llm::{
         ChatResponse, LlmClient, MockLlmProvider, TokenUsage, ToolCall, ToolCallFunction,
         ToolDefinition,
@@ -1682,6 +1903,193 @@ mod tests {
         assert_eq!(ctx.agent.memory().api_token_count(), Some(9_512));
     }
 
+    #[tokio::test]
+    async fn run_fails_over_to_weighted_backup_after_persistent_rate_limits() {
+        let mut primary = MockLlmProvider::new();
+        primary
+            .expect_chat_with_tools()
+            .times(LlmClient::MAX_RETRIES)
+            .returning(|_| {
+                Err(LlmError::RateLimit {
+                    wait_secs: Some(0),
+                    message: "primary rate limit".to_string(),
+                })
+            });
+        stub_non_chat_methods(&mut primary);
+
+        let mut backup = MockLlmProvider::new();
+        backup
+            .expect_chat_with_tools()
+            .times(1)
+            .return_once(|_| Ok(final_structured_response()));
+        stub_non_chat_methods(&mut backup);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("primary-model".to_string()),
+            agent_model_provider: Some("primary".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("primary".to_string(), Arc::new(primary));
+        llm_client.register_provider("backup".to_string(), Arc::new(backup));
+        let llm_client = Arc::new(llm_client);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Fail over after persistent 429"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = AgentRunnerContext {
+            task: "Fail over after persistent 429",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-provider-failover",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
+                .with_model_provider("primary")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "primary-model".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "primary".to_string(),
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "backup-model".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "backup".to_string(),
+                        weight: 3,
+                    },
+                ]),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::ProviderFailoverActivated {
+                    from_provider,
+                    from_model,
+                    to_provider,
+                    to_model,
+                } if from_provider == "primary"
+                    && from_model == "primary-model"
+                    && to_provider == "backup"
+                    && to_model == "backup-model"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn run_keeps_primary_provider_when_rate_limit_recovers() {
+        let mut primary = MockLlmProvider::new();
+        let mut sequence = mockall::Sequence::new();
+        primary
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Err(LlmError::RateLimit {
+                    wait_secs: Some(0),
+                    message: "primary temporary rate limit".to_string(),
+                })
+            });
+        primary
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| Ok(final_structured_response()));
+        stub_non_chat_methods(&mut primary);
+
+        let mut backup = MockLlmProvider::new();
+        backup.expect_chat_with_tools().times(0);
+        stub_non_chat_methods(&mut backup);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("primary-model".to_string()),
+            agent_model_provider: Some("primary".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("primary".to_string(), Arc::new(primary));
+        llm_client.register_provider("backup".to_string(), Arc::new(backup));
+        let llm_client = Arc::new(llm_client);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Stay on primary when it wakes up"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = AgentRunnerContext {
+            task: "Stay on primary when it wakes up",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-primary-recovery",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
+                .with_model_provider("primary")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "primary-model".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "primary".to_string(),
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "backup-model".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "backup".to_string(),
+                        weight: 2,
+                    },
+                ]),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(!events
+            .iter()
+            .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) }));
+    }
+
     fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {
         let settings = AgentSettings {
             agent_model_id: Some("mock-model".to_string()),
@@ -1692,6 +2100,28 @@ mod tests {
         let mut llm_client = LlmClient::new(&settings);
         llm_client.register_provider("mock".to_string(), Arc::new(provider));
         Arc::new(llm_client)
+    }
+
+    fn final_structured_response() -> ChatResponse {
+        ChatResponse {
+            content: Some(r#"{"thought":"done","final_answer":"done"}"#.to_string()),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: None,
+            usage: None,
+        }
+    }
+
+    fn stub_non_chat_methods(provider: &mut MockLlmProvider) {
+        provider
+            .expect_chat_completion()
+            .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+            .expect_analyze_image()
+            .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
     }
 
     fn single_final_response_provider() -> MockLlmProvider {

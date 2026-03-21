@@ -4,6 +4,7 @@
 //!
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // LLM provider defaults
 /// Default temperature used for Groq chat completions.
@@ -121,6 +122,9 @@ pub struct AgentSettings {
     pub agent_model_max_output_tokens: Option<u32>,
     /// Agent model context window tokens override
     pub agent_model_context_window_tokens: Option<u32>,
+    /// Optional weighted fallback routes for the main agent model.
+    #[serde(default)]
+    pub agent_model_routes: Option<Vec<ModelInfo>>,
 
     /// Sub-agent model ID override
     pub sub_agent_model_id: Option<String>,
@@ -131,6 +135,9 @@ pub struct AgentSettings {
     pub sub_agent_max_output_tokens: Option<u32>,
     /// Sub-agent model context window tokens override
     pub sub_agent_context_window_tokens: Option<u32>,
+    /// Optional weighted fallback routes for the sub-agent model.
+    #[serde(default)]
+    pub sub_agent_model_routes: Option<Vec<ModelInfo>>,
 
     /// Media model ID override (for voice/images)
     pub media_model_id: Option<String>,
@@ -217,6 +224,7 @@ impl AgentSettings {
     /// Returns a `ConfigError` if loading fails.
     pub fn new() -> Result<Self, ConfigError> {
         let mut settings: Self = build_config()?.try_deserialize()?;
+        settings.apply_model_routes_from_env();
 
         // Fallback: Check environment variables directly if config didn't pick them up
         // This handles cases where automatic mapping might fail or behavior differs
@@ -320,6 +328,73 @@ impl AgentSettings {
         Ok(settings)
     }
 
+    fn apply_model_routes_from_env(&mut self) {
+        if let Some(routes) = Self::parse_model_routes_from_env("AGENT_MODEL_ROUTES") {
+            if let Some(primary) = routes.first() {
+                self.agent_model_id = Some(primary.id.clone());
+                self.agent_model_provider = Some(primary.provider.clone());
+                self.agent_model_max_output_tokens = Some(primary.max_output_tokens);
+                self.agent_model_context_window_tokens = Some(primary.context_window_tokens);
+            }
+            self.agent_model_routes = Some(routes);
+        }
+
+        if let Some(routes) = Self::parse_model_routes_from_env("SUB_AGENT_MODEL_ROUTES") {
+            if let Some(primary) = routes.first() {
+                self.sub_agent_model_id = Some(primary.id.clone());
+                self.sub_agent_model_provider = Some(primary.provider.clone());
+                self.sub_agent_max_output_tokens = Some(primary.max_output_tokens);
+                self.sub_agent_context_window_tokens = Some(primary.context_window_tokens);
+            }
+            self.sub_agent_model_routes = Some(routes);
+        }
+    }
+
+    fn parse_model_routes_from_env(prefix: &str) -> Option<Vec<ModelInfo>> {
+        let mut routes = BTreeMap::<usize, PartialModelRoute>::new();
+
+        for (key, value) in std::env::vars() {
+            if value.trim().is_empty() {
+                continue;
+            }
+
+            let Some(rest) = key.strip_prefix(prefix) else {
+                continue;
+            };
+            let Some(rest) = rest.strip_prefix("__") else {
+                continue;
+            };
+
+            let mut parts = rest.split("__");
+            let Some(index) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
+                continue;
+            };
+            let Some(field) = parts.next() else {
+                continue;
+            };
+            if parts.next().is_some() {
+                continue;
+            }
+
+            let route = routes.entry(index).or_default();
+            match field {
+                "ID" => route.id = Some(value),
+                "PROVIDER" => route.provider = Some(value),
+                "MAX_OUTPUT_TOKENS" => route.max_output_tokens = value.parse::<u32>().ok(),
+                "CONTEXT_WINDOW_TOKENS" => route.context_window_tokens = value.parse::<u32>().ok(),
+                "WEIGHT" => route.weight = value.parse::<u32>().ok(),
+                _ => {}
+            }
+        }
+
+        let parsed_routes: Vec<ModelInfo> = routes
+            .into_iter()
+            .filter_map(|(_index, route)| route.into_model_info())
+            .collect();
+
+        (!parsed_routes.is_empty()).then_some(parsed_routes)
+    }
+
     fn upsert_model(models: &mut Vec<(String, ModelInfo)>, name: String, info: ModelInfo) {
         if let Some(pos) = models.iter().position(|(n, _)| n == &name) {
             models[pos] = (name, info);
@@ -339,7 +414,41 @@ impl AgentSettings {
             max_output_tokens,
             context_window_tokens,
             provider: provider.to_string(),
+            weight: default_model_route_weight(),
         }
+    }
+
+    fn normalize_model_routes(
+        routes: &[ModelInfo],
+        default_max_output_tokens: u32,
+        default_context_window_tokens: u32,
+    ) -> Vec<ModelInfo> {
+        routes
+            .iter()
+            .filter_map(|route| {
+                let id = route.id.trim();
+                let provider = route.provider.trim();
+                if id.is_empty() || provider.is_empty() {
+                    return None;
+                }
+
+                Some(ModelInfo {
+                    id: id.to_string(),
+                    max_output_tokens: if route.max_output_tokens == 0 {
+                        default_max_output_tokens
+                    } else {
+                        route.max_output_tokens
+                    },
+                    context_window_tokens: if route.context_window_tokens == 0 {
+                        default_context_window_tokens
+                    } else {
+                        route.context_window_tokens
+                    },
+                    provider: provider.to_string(),
+                    weight: route.weight.max(1),
+                })
+            })
+            .collect()
     }
 
     fn chat_model_spec(&self) -> Option<(String, ModelInfo)> {
@@ -508,12 +617,94 @@ impl AgentSettings {
 
     /// Returns the configured model info for the main agent.
     pub fn get_configured_agent_model(&self) -> ModelInfo {
-        self.resolve_execution_model(false)
+        self.configured_agent_route_primary()
+            .unwrap_or_else(|| self.resolve_execution_model(false))
+    }
+
+    /// Returns the configured weighted routes for the main agent.
+    pub fn get_configured_agent_model_routes(&self) -> Vec<ModelInfo> {
+        let routes = self
+            .agent_model_routes
+            .as_deref()
+            .map(|routes| {
+                Self::normalize_model_routes(
+                    routes,
+                    self.agent_model_max_output_tokens
+                        .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS),
+                    self.agent_model_context_window_tokens
+                        .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS),
+                )
+            })
+            .unwrap_or_default();
+
+        if routes.is_empty() {
+            vec![self.resolve_execution_model(false)]
+        } else {
+            routes
+        }
     }
 
     /// Returns the configured model info for the sub-agent.
     pub fn get_configured_sub_agent_model(&self) -> ModelInfo {
+        if let Some(primary) = self.configured_sub_agent_route_primary() {
+            return primary;
+        }
         self.resolve_execution_model(true)
+    }
+
+    /// Returns the configured weighted routes for the sub-agent.
+    pub fn get_configured_sub_agent_model_routes(&self) -> Vec<ModelInfo> {
+        let routes = self
+            .sub_agent_model_routes
+            .as_deref()
+            .map(|routes| {
+                Self::normalize_model_routes(
+                    routes,
+                    self.sub_agent_max_output_tokens
+                        .unwrap_or(DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS),
+                    self.sub_agent_context_window_tokens
+                        .unwrap_or(DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS),
+                )
+            })
+            .unwrap_or_default();
+
+        if !routes.is_empty() {
+            return routes;
+        }
+
+        if self.sub_agent_model_spec().is_some() {
+            vec![self.resolve_execution_model(true)]
+        } else {
+            self.get_configured_agent_model_routes()
+        }
+    }
+
+    fn configured_agent_route_primary(&self) -> Option<ModelInfo> {
+        self.agent_model_routes.as_deref().and_then(|routes| {
+            Self::normalize_model_routes(
+                routes,
+                self.agent_model_max_output_tokens
+                    .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS),
+                self.agent_model_context_window_tokens
+                    .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS),
+            )
+            .into_iter()
+            .next()
+        })
+    }
+
+    fn configured_sub_agent_route_primary(&self) -> Option<ModelInfo> {
+        self.sub_agent_model_routes.as_deref().and_then(|routes| {
+            Self::normalize_model_routes(
+                routes,
+                self.sub_agent_max_output_tokens
+                    .unwrap_or(DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS),
+                self.sub_agent_context_window_tokens
+                    .unwrap_or(DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS),
+            )
+            .into_iter()
+            .next()
+        })
     }
 
     /// Returns the internal Agent Mode context budget after applying the clamp policy.
@@ -698,6 +889,57 @@ mod tests {
             48_000
         );
     }
+
+    #[test]
+    fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
+        use std::env;
+
+        env::set_var("ZAI_API_KEY", "test-key");
+        env::set_var("CHAT_MODEL_ID", "chat-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+
+        env::set_var("AGENT_MODEL_ROUTES__0__ID", "MiniMax-M2.7");
+        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "minimax");
+        env::set_var("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
+        env::set_var("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "204800");
+        env::set_var("AGENT_MODEL_ROUTES__0__WEIGHT", "10");
+        env::set_var("AGENT_MODEL_ROUTES__1__ID", "glm-4.7");
+        env::set_var("AGENT_MODEL_ROUTES__1__PROVIDER", "zai");
+        env::set_var("AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS", "32000");
+        env::set_var("AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS", "200000");
+        env::set_var("AGENT_MODEL_ROUTES__1__WEIGHT", "3");
+
+        let settings = AgentSettings::new()?;
+        let routes = settings.get_configured_agent_model_routes();
+        let primary = settings.get_configured_agent_model();
+
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].provider, "minimax");
+        assert_eq!(routes[0].weight, 10);
+        assert_eq!(routes[1].provider, "zai");
+        assert_eq!(primary.id, "MiniMax-M2.7");
+        assert_eq!(primary.provider, "minimax");
+
+        for key in [
+            "AGENT_MODEL_ROUTES__0__ID",
+            "AGENT_MODEL_ROUTES__0__PROVIDER",
+            "AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS",
+            "AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS",
+            "AGENT_MODEL_ROUTES__0__WEIGHT",
+            "AGENT_MODEL_ROUTES__1__ID",
+            "AGENT_MODEL_ROUTES__1__PROVIDER",
+            "AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS",
+            "AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS",
+            "AGENT_MODEL_ROUTES__1__WEIGHT",
+            "CHAT_MODEL_ID",
+            "CHAT_MODEL_PROVIDER",
+            "ZAI_API_KEY",
+        ] {
+            env::remove_var(key);
+        }
+
+        Ok(())
+    }
 }
 
 /// Information about a supported LLM model.
@@ -713,6 +955,43 @@ pub struct ModelInfo {
     pub context_window_tokens: u32,
     /// Provider name
     pub provider: String,
+    /// Relative selection weight when used in a fallback route pool.
+    #[serde(default = "default_model_route_weight")]
+    pub weight: u32,
+}
+
+const fn default_model_route_weight() -> u32 {
+    1
+}
+
+#[derive(Debug, Default)]
+struct PartialModelRoute {
+    id: Option<String>,
+    provider: Option<String>,
+    max_output_tokens: Option<u32>,
+    context_window_tokens: Option<u32>,
+    weight: Option<u32>,
+}
+
+impl PartialModelRoute {
+    fn into_model_info(self) -> Option<ModelInfo> {
+        let id = self.id?.trim().to_string();
+        let provider = self.provider?.trim().to_string();
+        if id.is_empty() || provider.is_empty() {
+            return None;
+        }
+
+        Some(ModelInfo {
+            id,
+            provider,
+            max_output_tokens: self.max_output_tokens.unwrap_or_default(),
+            context_window_tokens: self.context_window_tokens.unwrap_or_default(),
+            weight: self
+                .weight
+                .unwrap_or_else(default_model_route_weight)
+                .max(1),
+        })
+    }
 }
 
 fn clamp_internal_context_budget_tokens(model_context_window_tokens: u32, cap: usize) -> usize {

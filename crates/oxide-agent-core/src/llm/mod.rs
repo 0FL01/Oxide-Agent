@@ -497,11 +497,31 @@ impl LlmClient {
     ) -> Result<ChatResponse, LlmError> {
         let model_info = self.get_model_info(model_name)?;
 
+        self.chat_with_tools_single_attempt_for_model_info(
+            system_prompt,
+            messages,
+            tools,
+            &model_info,
+            json_mode,
+        )
+        .await
+    }
+
+    /// Perform a single tool-enabled chat attempt for an explicit model route.
+    #[instrument(skip(self, system_prompt, messages, tools, model_info))]
+    pub async fn chat_with_tools_single_attempt_for_model_info(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model_info: &crate::config::ModelInfo,
+        json_mode: bool,
+    ) -> Result<ChatResponse, LlmError> {
         // Get provider and call its chat_with_tools method (via trait)
         let provider = self.get_provider(&model_info.provider)?;
 
         debug!(
-            model = model_name,
+            model = model_info.id,
             provider = model_info.provider,
             tools_count = tools.len(),
             messages_count = messages.len(),

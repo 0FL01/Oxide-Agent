@@ -43,6 +43,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::RepeatedCompactionWarning { .. } => "repeated_compaction_warning".to_string(),
         AgentEvent::RateLimitRetrying { .. } => "rate_limit_retrying".to_string(),
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
+        AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
     }
 }

@@ -21,6 +21,13 @@ pub fn render_progress_html(state: &ProgressState) -> String {
         ));
     }
 
+    if let Some(notice) = &state.provider_failover_notice {
+        lines.push(format!(
+            "↪️ {}",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(notice, 180))
+        ));
+    }
+
     let grouped = format_grouped_steps(state);
     if !grouped.is_empty() {
         lines.push(String::new());
