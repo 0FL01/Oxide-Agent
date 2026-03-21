@@ -10,6 +10,7 @@ mod openai_compat;
 pub mod providers;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,9 @@ pub enum LlmError {
         /// Error message from the server
         message: String,
     },
+    /// Request history is internally inconsistent but can be repaired locally.
+    #[error("Repairable history error: {0}")]
+    RepairableHistory(String),
     /// Any other unexpected error
     #[error("Unknown error: {0}")]
     Unknown(String),
@@ -520,6 +524,8 @@ impl LlmClient {
         // Get provider and call its chat_with_tools method (via trait)
         let provider = self.get_provider(&model_info.provider)?;
 
+        validate_tool_history(messages)?;
+
         debug!(
             model = model_info.id,
             provider = model_info.provider,
@@ -569,6 +575,8 @@ impl LlmClient {
         const MAX_RETRIES: usize = 5;
 
         let model_info = self.get_model_info(model_name)?;
+
+        validate_tool_history(messages)?;
 
         // Get provider and call its chat_with_tools method (via trait)
         let provider = self.get_provider(&model_info.provider)?;
@@ -839,5 +847,145 @@ impl LlmClient {
             .find(|(name, _)| name == model_name)
             .map(|(_, info)| info.clone())
             .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))
+    }
+}
+
+fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError> {
+    let mut index = 0;
+
+    while index < messages.len() {
+        let message = &messages[index];
+
+        if message.role == "assistant" {
+            if let Some(tool_calls) = &message.tool_calls {
+                if tool_calls.is_empty() {
+                    return Err(LlmError::RepairableHistory(
+                        "assistant tool call batch is empty".to_string(),
+                    ));
+                }
+
+                let mut expected_ids = HashSet::new();
+                for tool_call in tool_calls {
+                    let tool_call_id = tool_call.id.trim();
+                    if tool_call_id.is_empty() {
+                        return Err(LlmError::RepairableHistory(
+                            "assistant tool call has an empty tool_call_id".to_string(),
+                        ));
+                    }
+                    if !expected_ids.insert(tool_call.id.clone()) {
+                        return Err(LlmError::RepairableHistory(format!(
+                            "assistant tool call batch contains duplicate tool_call_id `{}`",
+                            tool_call.id
+                        )));
+                    }
+                }
+
+                let mut seen_results = HashSet::new();
+                let mut cursor = index + 1;
+                while cursor < messages.len() && messages[cursor].role == "tool" {
+                    let result = &messages[cursor];
+                    let Some(tool_call_id) = result
+                        .tool_call_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                    else {
+                        return Err(LlmError::RepairableHistory(
+                            "tool result is missing tool_call_id".to_string(),
+                        ));
+                    };
+
+                    if !expected_ids.contains(tool_call_id) {
+                        return Err(LlmError::RepairableHistory(format!(
+                            "tool result references unknown tool_call_id `{tool_call_id}`"
+                        )));
+                    }
+
+                    if !seen_results.insert(tool_call_id.to_string()) {
+                        return Err(LlmError::RepairableHistory(format!(
+                            "tool result for tool_call_id `{tool_call_id}` is duplicated"
+                        )));
+                    }
+
+                    cursor += 1;
+                }
+
+                if seen_results.len() != expected_ids.len() {
+                    return Err(LlmError::RepairableHistory(format!(
+                        "assistant tool call batch is incomplete: {} tool calls but {} tool results",
+                        expected_ids.len(),
+                        seen_results.len()
+                    )));
+                }
+
+                index = cursor;
+                continue;
+            }
+        }
+
+        if message.role == "tool" {
+            let detail = message
+                .tool_call_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map_or_else(
+                    || "orphaned tool result without tool_call_id".to_string(),
+                    |tool_call_id| {
+                        format!(
+                            "orphaned tool result references missing assistant tool call `{tool_call_id}`"
+                        )
+                    },
+                );
+            return Err(LlmError::RepairableHistory(detail));
+        }
+
+        index += 1;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_tool_history, LlmError, Message, ToolCall, ToolCallFunction};
+
+    fn tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            function: ToolCallFunction {
+                name: name.to_string(),
+                arguments: "{}".to_string(),
+            },
+            is_recovered: false,
+        }
+    }
+
+    #[test]
+    fn validate_tool_history_rejects_orphaned_tool_result() {
+        let messages = vec![
+            Message::user("hi"),
+            Message::tool("call-1", "search", "result"),
+        ];
+
+        let error = validate_tool_history(&messages).expect_err("history must be rejected");
+        assert!(matches!(error, LlmError::RepairableHistory(_)));
+    }
+
+    #[test]
+    fn validate_tool_history_rejects_incomplete_parallel_batch() {
+        let messages = vec![
+            Message::assistant_with_tools(
+                "calling tools",
+                vec![
+                    tool_call("call-1", "search"),
+                    tool_call("call-2", "read_file"),
+                ],
+            ),
+            Message::tool("call-1", "search", "result"),
+        ];
+
+        let error = validate_tool_history(&messages).expect_err("history must be rejected");
+        assert!(matches!(error, LlmError::RepairableHistory(_)));
     }
 }

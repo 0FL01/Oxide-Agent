@@ -9,7 +9,7 @@ use crate::agent::compaction::{
 };
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
-use crate::agent::recovery::sanitize_tool_calls;
+use crate::agent::recovery::{repair_agent_message_history, sanitize_tool_calls};
 use crate::agent::structured_output::parse_structured_output;
 use crate::config::ModelInfo;
 use crate::llm::{ChatResponse, LlmClient, LlmError};
@@ -297,6 +297,24 @@ impl AgentRunner {
                 Ok(AttemptOutcome::Return(response))
             }
             Err(error) => {
+                if let LlmError::RepairableHistory(reason) = &error {
+                    if self
+                        .repair_history_before_retry(
+                            ctx,
+                            provider_name,
+                            attempt,
+                            max_retries,
+                            reason,
+                        )
+                        .await
+                    {
+                        return Ok(AttemptOutcome::RetrySameRoute);
+                    }
+
+                    Self::emit_llm_error(ctx.progress_tx, &error).await;
+                    return Err(anyhow!("LLM call failed: {error}"));
+                }
+
                 if Self::llm_error_suggests_context_overflow(&error) && attempt == 1 {
                     let retried = self
                         .run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual)
@@ -367,6 +385,56 @@ impl AgentRunner {
                 Err(anyhow!("LLM call failed: {error}"))
             }
         }
+    }
+
+    async fn repair_history_before_retry(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        provider_name: &str,
+        attempt: usize,
+        max_retries: usize,
+        reason: &str,
+    ) -> bool {
+        let (repaired_messages, outcome) =
+            repair_agent_message_history(ctx.agent.memory().get_messages());
+        if !outcome.applied {
+            warn!(
+                provider = provider_name,
+                attempt,
+                reason,
+                "Detected repairable history error but local repair produced no changes"
+            );
+            return false;
+        }
+
+        ctx.agent.memory_mut().replace_messages(repaired_messages);
+        ctx.agent.persist_memory_checkpoint_background();
+        Self::refresh_messages_from_memory(ctx);
+        Self::emit_llm_retrying(
+            ctx.progress_tx,
+            attempt,
+            max_retries,
+            None,
+            provider_name,
+            "history_repair",
+        )
+        .await;
+        Self::emit_token_snapshot_update(
+            ctx.progress_tx,
+            Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration),
+        )
+        .await;
+        warn!(
+            provider = provider_name,
+            attempt,
+            dropped_tool_results = outcome.dropped_tool_results,
+            trimmed_tool_calls = outcome.trimmed_tool_calls,
+            converted_tool_call_messages = outcome.converted_tool_call_messages,
+            dropped_tool_call_messages = outcome.dropped_tool_call_messages,
+            reason,
+            "Repaired invalid tool history before retrying LLM request"
+        );
+        true
     }
 
     fn select_model_route_index(
@@ -1384,6 +1452,83 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content == "Older request about compaction."));
+    }
+
+    #[tokio::test]
+    async fn run_repairs_invalid_tool_history_before_llm_call() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Repair invalid tool history"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant_with_tools(
+                "Calling tools",
+                vec![
+                    ToolCall {
+                        id: "call-1".to_string(),
+                        function: ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        is_recovered: false,
+                    },
+                    ToolCall {
+                        id: "call-2".to_string(),
+                        function: ToolCallFunction {
+                            name: "read_file".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        is_recovered: false,
+                    },
+                ],
+            ));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::tool("call-1", "search", "result-1"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Repair invalid tool history",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-history-repair",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        let repaired_call = ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .find(|message| message.tool_calls.is_some())
+            .expect("assistant tool call must remain after repair");
+        let repaired_tool_calls = repaired_call
+            .tool_calls
+            .as_ref()
+            .expect("tool call batch must still exist");
+        assert_eq!(repaired_tool_calls.len(), 1);
+        assert_eq!(repaired_tool_calls[0].id, "call-1");
+        assert!(!ctx.agent.memory().get_messages().iter().any(|message| {
+            message.tool_calls.as_ref().is_some_and(|tool_calls| {
+                tool_calls.iter().any(|tool_call| tool_call.id == "call-2")
+            })
+        }));
     }
 
     #[tokio::test]
