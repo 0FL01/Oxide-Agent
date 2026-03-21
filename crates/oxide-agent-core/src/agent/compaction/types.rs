@@ -1,6 +1,7 @@
 //! Shared types for Agent Mode context compaction.
 
 use super::archive::ArchiveRef;
+use crate::config::get_compaction_protected_tool_window_tokens;
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -134,7 +135,7 @@ impl Default for CompactionPolicy {
             prune_min_tokens: 128,
             prune_min_chars: 512,
             prune_preview_chars: 160,
-            protected_tool_window_tokens: 4_096,
+            protected_tool_window_tokens: get_compaction_protected_tool_window_tokens(),
         }
     }
 }
