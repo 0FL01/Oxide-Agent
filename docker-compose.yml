@@ -64,8 +64,9 @@ services:
     image: unclecode/crawl4ai:0.8
     container_name: crawl4ai
     restart: unless-stopped
-    volumes:
-      - /dev/shm:/dev/shm
+    shm_size: '2gb'
+    #volumes:
+    #  - /dev/shm:/dev/shm
     deploy:
       resources:
         limits:
