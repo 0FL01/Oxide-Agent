@@ -90,6 +90,56 @@ pub fn rebuild_hot_context(
         |entry, _message| entry.preserve_in_raw_window,
     );
 
+    // FIX: Remove orphaned tool results whose corresponding tool_calls were dropped by compaction.
+    // When compaction removes an assistant message with tool_calls, we must also remove
+    // the tool result messages that reference those tool_call_ids. Otherwise, LLM providers
+    // like MiniMax will receive tool results referencing non-existent tool_uses, causing
+    // "tool id not found" errors (error 2013).
+    let dropped_tool_call_ids: std::collections::HashSet<String> = snapshot
+        .entries
+        .iter()
+        .filter(|entry| !preserved.get(entry.index).copied().unwrap_or(true))
+        .filter(|entry| entry.kind == AgentMessageKind::AssistantToolCall)
+        .filter_map(|entry| messages.get(entry.index))
+        .filter_map(|msg| msg.tool_calls.as_ref())
+        .flat_map(|tool_calls| tool_calls.iter().map(|tc| tc.id.clone()))
+        .collect();
+
+    if !dropped_tool_call_ids.is_empty() {
+        // Mark tool results referencing dropped tool_calls as not preserved
+        for entry in &snapshot.entries {
+            if entry.kind == AgentMessageKind::ToolResult {
+                if let Some(msg) = messages.get(entry.index) {
+                    if let Some(ref tool_call_id) = msg.tool_call_id {
+                        if dropped_tool_call_ids.contains(tool_call_id) {
+                            if let Some(preserved_flag) = preserved.get_mut(entry.index) {
+                                *preserved_flag = false;
+                                warn!(
+                                    tool_call_id = %tool_call_id,
+                                    message_index = entry.index,
+                                    "Removing orphaned tool result - corresponding tool_call was compacted"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove orphaned tool results from rebuilt vector
+        rebuilt.retain(|msg| {
+            if msg.kind == AgentMessageKind::ToolResult {
+                if let Some(ref tool_call_id) = msg.tool_call_id {
+                    !dropped_tool_call_ids.contains(tool_call_id)
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        });
+    }
+
     outcome.dropped_indices = preserved
         .iter()
         .enumerate()
