@@ -179,7 +179,7 @@ fn build_placeholder(
 #[cfg(test)]
 mod tests {
     use super::prune_hot_memory;
-    use crate::agent::compaction::{classify_hot_memory, CompactionPolicy};
+    use crate::agent::compaction::{classify_hot_memory_with_policy, CompactionPolicy};
     use crate::agent::memory::AgentMessage;
 
     #[test]
@@ -187,6 +187,7 @@ mod tests {
         let policy = CompactionPolicy {
             prune_min_tokens: 1,
             prune_min_chars: 16,
+            protected_tool_window_tokens: 1,
             ..CompactionPolicy::default()
         };
         let messages = vec![
@@ -198,7 +199,7 @@ mod tests {
             AgentMessage::tool("call-5", "search", "recent-4"),
         ];
 
-        let snapshot = classify_hot_memory(&messages);
+        let snapshot = classify_hot_memory_with_policy(&messages, &policy, None);
         let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
 
         assert!(outcome.applied);
@@ -214,6 +215,7 @@ mod tests {
         let policy = CompactionPolicy {
             prune_min_tokens: 1,
             prune_min_chars: 8,
+            protected_tool_window_tokens: 64,
             ..CompactionPolicy::default()
         };
         let messages = vec![
@@ -223,7 +225,7 @@ mod tests {
             AgentMessage::tool("call-4", "read_file", "recent"),
         ];
 
-        let snapshot = classify_hot_memory(&messages);
+        let snapshot = classify_hot_memory_with_policy(&messages, &policy, None);
         let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
 
         assert!(!outcome.applied);
@@ -237,6 +239,7 @@ mod tests {
         let policy = CompactionPolicy {
             prune_min_tokens: 1,
             prune_min_chars: 16,
+            protected_tool_window_tokens: 1,
             ..CompactionPolicy::default()
         };
         let messages = vec![
@@ -247,7 +250,7 @@ mod tests {
             AgentMessage::tool("call-5", "search", "recent-4"),
         ];
 
-        let snapshot = classify_hot_memory(&messages);
+        let snapshot = classify_hot_memory_with_policy(&messages, &policy, None);
         let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
 
         assert!(!outcome.applied);
@@ -263,6 +266,7 @@ mod tests {
         let policy = CompactionPolicy {
             prune_min_tokens: 1,
             prune_min_chars: 16,
+            protected_tool_window_tokens: 1,
             ..CompactionPolicy::default()
         };
         let messages = vec![
@@ -275,7 +279,7 @@ mod tests {
             AgentMessage::tool("call-6", "search", "recent-4"),
         ];
 
-        let snapshot = classify_hot_memory(&messages);
+        let snapshot = classify_hot_memory_with_policy(&messages, &policy, None);
         let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages, false);
 
         assert_eq!(outcome.pruned_indices, vec![0]);

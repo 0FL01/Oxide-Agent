@@ -16,7 +16,7 @@ pub use archive::{
     NoopArchiveSink,
 };
 pub use budget::{count_tokens_cached, estimate_request_budget};
-pub use classifier::classify_hot_memory;
+pub use classifier::{classify_hot_memory, classify_hot_memory_with_policy};
 pub use externalize::{
     externalize_hot_memory, ExternalizedPayloadRecord, NoopPayloadSink, PayloadSink,
 };

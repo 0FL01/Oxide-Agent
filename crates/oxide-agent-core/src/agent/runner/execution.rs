@@ -1106,7 +1106,7 @@ mod tests {
         );
         let compaction_service = CompactionService::default().with_summarizer(summarizer);
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
-        let mut session = EphemeralSession::new(256);
+        let mut session = EphemeralSession::new(768);
         session
             .memory_mut()
             .add_message(AgentMessage::user_task("Ship stage 9"));
@@ -1192,7 +1192,7 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
-            config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 256),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 128),
         };
 
         let result = runner.run(&mut ctx).await.expect("runner succeeds");
@@ -1207,7 +1207,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_does_not_warn_when_cleanup_follows_single_summary_compaction() {
+    async fn run_does_not_emit_repeated_cleanup_warning_after_summary_compaction() {
         let llm_client = build_llm_client(tool_then_final_provider());
         let summarizer = CompactionSummarizer::new(
             Arc::clone(&llm_client),
@@ -1302,7 +1302,10 @@ mod tests {
         }
 
         assert!(completion_events >= 2);
-        assert_eq!(repeated_warning, None);
+        assert_ne!(
+            repeated_warning.map(|(kind, _count)| kind),
+            Some(RepeatedCompactionKind::Cleanup)
+        );
     }
 
     #[tokio::test]

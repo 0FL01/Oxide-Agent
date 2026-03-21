@@ -115,6 +115,9 @@ pub struct CompactionPolicy {
     pub prune_min_chars: usize,
     /// Maximum preview size kept inline after pruning.
     pub prune_preview_chars: usize,
+    /// Token budget reserved for the recent raw tool window before older tool
+    /// artifacts become eligible for pruning or summary compaction.
+    pub protected_tool_window_tokens: usize,
 }
 
 impl Default for CompactionPolicy {
@@ -131,6 +134,7 @@ impl Default for CompactionPolicy {
             prune_min_tokens: 128,
             prune_min_chars: 512,
             prune_preview_chars: 160,
+            protected_tool_window_tokens: 4_096,
         }
     }
 }

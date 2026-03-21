@@ -51,6 +51,7 @@ pub(super) fn cleanup_policy() -> CompactionPolicy {
         prune_min_tokens: usize::MAX,
         prune_min_chars: 50,
         prune_preview_chars: 20,
+        protected_tool_window_tokens: 1,
         ..CompactionPolicy::default()
     }
 }
