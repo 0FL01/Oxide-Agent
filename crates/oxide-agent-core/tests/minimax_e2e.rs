@@ -83,7 +83,11 @@ async fn test_minimax_simple_chat() -> Result<()> {
         Ok(response) => {
             info!("Response: {:?}", response.content);
             anyhow::ensure!(
-                !response.content.as_ref().expect("content should be present").is_empty(),
+                !response
+                    .content
+                    .as_ref()
+                    .expect("content should be present")
+                    .is_empty(),
                 "Expected text content"
             );
             info!("✓ Simple chat test passed");
@@ -412,14 +416,16 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
         "What's the weather in Tokyo and what's the current time in London?",
     )];
 
-    let first_result = provider.chat_with_tools(ChatWithToolsRequest {
-        system_prompt: "You are a helpful assistant. Use the available tools.",
-        messages: &first_messages,
-        tools: &tools,
-        model_id: "MiniMax-M2.7",
-        max_tokens: 1024,
-        json_mode: false,
-    }).await;
+    let first_result = provider
+        .chat_with_tools(ChatWithToolsRequest {
+            system_prompt: "You are a helpful assistant. Use the available tools.",
+            messages: &first_messages,
+            tools: &tools,
+            model_id: "MiniMax-M2.7",
+            max_tokens: 1024,
+            json_mode: false,
+        })
+        .await;
 
     let first_response = match first_result {
         Ok(r) => r,
@@ -443,7 +449,10 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
         "What's the weather in Tokyo and what's the current time in London?",
     )];
     second_messages.push(Message::assistant_with_tools(
-        first_response.content.as_deref().unwrap_or("Let me check both."),
+        first_response
+            .content
+            .as_deref()
+            .unwrap_or("Let me check both."),
         first_response.tool_calls.clone(),
     ));
 
@@ -456,14 +465,16 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
         second_messages.push(Message::tool(&tc.id, &tc.function.name, result));
     }
 
-    let second_result = provider.chat_with_tools(ChatWithToolsRequest {
-        system_prompt: "You are a helpful assistant. Use the available tools.",
-        messages: &second_messages,
-        tools: &tools,
-        model_id: "MiniMax-M2.7",
-        max_tokens: 1024,
-        json_mode: false,
-    }).await;
+    let second_result = provider
+        .chat_with_tools(ChatWithToolsRequest {
+            system_prompt: "You are a helpful assistant. Use the available tools.",
+            messages: &second_messages,
+            tools: &tools,
+            model_id: "MiniMax-M2.7",
+            max_tokens: 1024,
+            json_mode: false,
+        })
+        .await;
 
     match second_result {
         Ok(response) => {

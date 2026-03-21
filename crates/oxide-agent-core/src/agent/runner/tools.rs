@@ -146,7 +146,10 @@ impl AgentRunner {
         sorted_results.sort_by_key(|(idx, _, _)| *idx);
 
         for (_idx, tool_call, result) in sorted_results {
-            if self.record_tool_execution_result(ctx, state, tool_call, result).await? {
+            if self
+                .record_tool_execution_result(ctx, state, tool_call, result)
+                .await?
+            {
                 return Ok(Some(AgentRunResult::WaitingForApproval));
             }
         }
