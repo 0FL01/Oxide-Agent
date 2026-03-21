@@ -388,7 +388,7 @@ async fn e2e_compaction_healthy_budget_keeps_old_data_without_summary() {
 }
 
 #[tokio::test]
-async fn e2e_compaction_pressure_budget_still_prunes_old_artifacts() {
+async fn e2e_compaction_pressure_budget_skips_pruning_without_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         two_todo_tool_calls_response(),
         two_todo_tool_calls_response(),
@@ -455,16 +455,88 @@ async fn e2e_compaction_pressure_budget_still_prunes_old_artifacts() {
     assert!(
         progress["last_compaction_status"]
             .as_str()
-            .is_some_and(|value| { value.contains("Cleanup:") || value.contains("Compaction:") }),
+            .is_some_and(|value| value.contains("Compaction:")),
         "unexpected progress payload: {}; event_names={:?}",
         serde_json::to_string_pretty(&progress).expect("serialize progress"),
         event_names
     );
     assert!(
-        event_names.contains(&"pruning_applied") || event_names.contains(&"compaction_completed"),
+        !event_names.contains(&"pruning_applied") && event_names.contains(&"compaction_completed"),
         "unexpected event names: {:?}",
         event_names
     );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
+    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+        super::helpers::unstructured_text_response("done"),
+    ]));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
+    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone(), narrator_provider);
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260325;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+
+    seed_history(
+        session_manager.as_ref(),
+        &session_id,
+        user_id,
+        vec![
+            AgentMessage::tool("old-before-summary", "web_markdown", &"A".repeat(1_500)),
+            AgentMessage::summary("[Previous context compressed]\n- old web findings preserved"),
+            AgentMessage::tool("after-summary-1", "web_markdown", &"B".repeat(1_500)),
+            AgentMessage::tool("after-summary-2", "web_markdown", "short-1"),
+            AgentMessage::tool("after-summary-3", "web_markdown", "short-2"),
+            AgentMessage::tool("after-summary-4", "web_markdown", "short-3"),
+            AgentMessage::tool("after-summary-5", "web_markdown", "short-4"),
+        ],
+    )
+    .await;
+
+    let task_id = create_task_http_with_body(&client, &base_url, &session_id, "Return done").await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(3),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let event_names: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .collect();
+    assert!(event_names.contains(&"pruning_applied"));
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+
+    let before_summary = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("old-before-summary"))
+        .expect("old before-summary tool should exist");
+    let after_summary = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("after-summary-1"))
+        .expect("after-summary tool should exist");
+
+    assert!(before_summary.is_pruned());
+    assert!(!after_summary.is_pruned());
 
     server.abort();
 }

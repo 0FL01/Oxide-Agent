@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_for_run_prunes_old_tool_payloads_outside_recent_window_under_pressure() {
+    async fn prepare_for_run_does_not_prune_without_summary_boundary_under_pressure() {
         let mut session = EphemeralSession::new(2_048);
         for index in 0..5 {
             session.memory_mut().add_message(AgentMessage::tool(
@@ -504,18 +504,66 @@ mod tests {
             .await
             .expect("stage 6 pruning checkpoint should succeed");
 
-        assert!(outcome.applied);
+        assert!(!outcome.applied);
         assert!(matches!(
             outcome.budget.state,
             BudgetState::ShouldPrune | BudgetState::ShouldCompact | BudgetState::OverLimit
         ));
         assert_eq!(outcome.externalization.externalized_count, 0);
+        assert!(outcome.pruning.pruned_indices.is_empty());
+        assert!(!session.memory().get_messages()[0].is_pruned());
+        assert!(!session.memory().get_messages()[1].is_pruned());
+    }
+
+    #[tokio::test]
+    async fn prepare_for_run_prunes_only_before_summary_boundary_under_pressure() {
+        let mut session = EphemeralSession::new(2_048);
+        session.memory_mut().add_message(AgentMessage::tool(
+            "call-0",
+            "search",
+            &format!("before-summary-{}", "B".repeat(80)),
+        ));
+        session.memory_mut().add_message(AgentMessage::summary(
+            "[Previous context compressed]\n- preserved",
+        ));
+        for index in 1..6 {
+            session.memory_mut().add_message(AgentMessage::tool(
+                &format!("call-{index}"),
+                "search",
+                &format!("after-summary-{index}-{}", "C".repeat(80)),
+            ));
+        }
+
+        let service = CompactionService::new(CompactionPolicy {
+            externalize_threshold_tokens: usize::MAX,
+            externalize_threshold_chars: usize::MAX,
+            prune_min_tokens: 1,
+            prune_min_chars: 16,
+            ..CompactionPolicy::default()
+        });
+        let request = CompactionRequest::new(
+            crate::agent::compaction::CompactionTrigger::PreIteration,
+            "Review summarized search results",
+            "system prompt",
+            &[],
+            "demo-model",
+            1_024,
+            false,
+        );
+
+        let outcome = service
+            .prepare_for_run(&request, &mut session)
+            .await
+            .expect("summary-boundary pruning checkpoint should succeed");
+
+        assert!(outcome.applied);
         assert_eq!(outcome.pruning.pruned_indices, vec![0]);
         assert!(session.memory().get_messages()[0].is_pruned());
-        assert!(!session.memory().get_messages()[1].is_pruned());
-        assert!(session.memory().get_messages()[0]
-            .content
-            .contains("[pruned tool result]"));
+        assert_eq!(
+            session.memory().get_messages()[1].resolved_kind(),
+            AgentMessageKind::Summary
+        );
+        assert!(!session.memory().get_messages()[2].is_pruned());
     }
 
     #[tokio::test]

@@ -16,9 +16,19 @@ pub fn prune_hot_memory(
 ) -> (Vec<AgentMessage>, PruneOutcome) {
     let mut rewritten = messages.to_vec();
     let mut outcome = PruneOutcome::default();
+    let latest_summary_boundary = snapshot
+        .entries
+        .iter()
+        .rev()
+        .find(|entry| entry.kind == super::types::AgentMessageKind::Summary)
+        .map(|entry| entry.index);
+
+    let Some(latest_summary_boundary) = latest_summary_boundary else {
+        return (rewritten, outcome);
+    };
 
     for entry in &snapshot.entries {
-        let Some(pruned) = prune_entry(policy, entry, messages) else {
+        let Some(pruned) = prune_entry(policy, latest_summary_boundary, entry, messages) else {
             continue;
         };
 
@@ -55,10 +65,12 @@ struct PrunedMessage {
 
 fn prune_entry(
     policy: &CompactionPolicy,
+    latest_summary_boundary: usize,
     entry: &ClassifiedMemoryEntry,
     messages: &[AgentMessage],
 ) -> Option<PrunedMessage> {
     if entry.retention != CompactionRetention::PrunableArtifact
+        || entry.index >= latest_summary_boundary
         || entry.preserve_in_raw_window
         || entry.is_pruned
     {
@@ -178,6 +190,7 @@ mod tests {
         };
         let messages = vec![
             AgentMessage::tool("call-1", "search", &"A".repeat(80)),
+            AgentMessage::summary("[Previous context compressed]\n- done"),
             AgentMessage::tool("call-2", "search", "recent-1"),
             AgentMessage::tool("call-3", "search", "recent-2"),
             AgentMessage::tool("call-4", "search", "recent-3"),
@@ -191,8 +204,8 @@ mod tests {
         assert_eq!(outcome.pruned_indices, vec![0]);
         assert!(rewritten[0].is_pruned());
         assert!(rewritten[0].content.contains("[pruned tool result]"));
-        assert!(!rewritten[1].is_pruned());
-        assert!(!rewritten[4].is_pruned());
+        assert!(!rewritten[2].is_pruned());
+        assert!(!rewritten[5].is_pruned());
     }
 
     #[test]
@@ -216,5 +229,56 @@ mod tests {
         assert_eq!(rewritten.len(), messages.len());
         assert_eq!(rewritten[0].content, messages[0].content);
         assert!(!rewritten[0].is_pruned());
+    }
+
+    #[test]
+    fn prune_hot_memory_requires_summary_boundary() {
+        let policy = CompactionPolicy {
+            prune_min_tokens: 1,
+            prune_min_chars: 16,
+            ..CompactionPolicy::default()
+        };
+        let messages = vec![
+            AgentMessage::tool("call-1", "search", &"A".repeat(80)),
+            AgentMessage::tool("call-2", "search", "recent-1"),
+            AgentMessage::tool("call-3", "search", "recent-2"),
+            AgentMessage::tool("call-4", "search", "recent-3"),
+            AgentMessage::tool("call-5", "search", "recent-4"),
+        ];
+
+        let snapshot = classify_hot_memory(&messages);
+        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages);
+
+        assert!(!outcome.applied);
+        assert_eq!(rewritten.len(), messages.len());
+        assert!(rewritten
+            .iter()
+            .zip(messages.iter())
+            .all(|(rewritten, original)| rewritten.content == original.content));
+    }
+
+    #[test]
+    fn prune_hot_memory_does_not_prune_tools_after_latest_summary() {
+        let policy = CompactionPolicy {
+            prune_min_tokens: 1,
+            prune_min_chars: 16,
+            ..CompactionPolicy::default()
+        };
+        let messages = vec![
+            AgentMessage::tool("call-1", "search", &"A".repeat(80)),
+            AgentMessage::summary("[Earlier context compressed]\n- phase 1"),
+            AgentMessage::tool("call-2", "search", &"B".repeat(80)),
+            AgentMessage::tool("call-3", "search", "recent-1"),
+            AgentMessage::tool("call-4", "search", "recent-2"),
+            AgentMessage::tool("call-5", "search", "recent-3"),
+            AgentMessage::tool("call-6", "search", "recent-4"),
+        ];
+
+        let snapshot = classify_hot_memory(&messages);
+        let (rewritten, outcome) = prune_hot_memory(&policy, &snapshot, &messages);
+
+        assert_eq!(outcome.pruned_indices, vec![0]);
+        assert!(rewritten[0].is_pruned());
+        assert!(!rewritten[2].is_pruned());
     }
 }
