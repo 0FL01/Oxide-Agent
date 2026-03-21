@@ -137,7 +137,10 @@ fn push_rate_limit_retry(lines: &mut Vec<String>, retry: &RateLimitRetryState) {
 }
 
 fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
-    if state.latest_token_snapshot.is_none() && state.last_compaction_status.is_none() {
+    if state.latest_token_snapshot.is_none()
+        && state.last_compaction_status.is_none()
+        && state.last_history_repair_status.is_none()
+    {
         return;
     }
     if !lines.last().is_some_and(String::is_empty) {
@@ -149,6 +152,12 @@ fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
         push_budget_breakdown(lines, snapshot);
     }
     if let Some(status) = &state.last_compaction_status {
+        lines.push(format!(
+            "   {}",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(status, 160))
+        ));
+    }
+    if let Some(status) = &state.last_history_repair_status {
         lines.push(format!(
             "   {}",
             html_escape::encode_text(&oxide_agent_core::utils::truncate_str(status, 160))

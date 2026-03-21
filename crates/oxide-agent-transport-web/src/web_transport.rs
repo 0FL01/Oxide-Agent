@@ -41,6 +41,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::CompactionCompleted { .. } => "compaction_completed".to_string(),
         AgentEvent::CompactionFailed { .. } => "compaction_failed".to_string(),
         AgentEvent::RepeatedCompactionWarning { .. } => "repeated_compaction_warning".to_string(),
+        AgentEvent::HistoryRepairApplied { .. } => "history_repair_applied".to_string(),
         AgentEvent::RateLimitRetrying { .. } => "rate_limit_retrying".to_string(),
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
         AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),

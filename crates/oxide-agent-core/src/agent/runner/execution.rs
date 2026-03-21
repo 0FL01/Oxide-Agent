@@ -9,10 +9,10 @@ use crate::agent::compaction::{
 };
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
-use crate::agent::recovery::{repair_agent_message_history, sanitize_tool_calls};
+use crate::agent::recovery::{repair_agent_message_history_for_provider, sanitize_tool_calls};
 use crate::agent::structured_output::parse_structured_output;
 use crate::config::ModelInfo;
-use crate::llm::{ChatResponse, LlmClient, LlmError};
+use crate::llm::{ChatResponse, LlmClient, LlmError, ProviderCapabilities};
 use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -22,6 +22,14 @@ enum AttemptOutcome {
     Return(ChatResponse),
     RetrySameRoute,
     FailoverToNextRoute(LlmError),
+}
+
+#[derive(Clone, Copy)]
+struct LlmAttemptMetadata<'a> {
+    provider_name: &'a str,
+    capabilities: ProviderCapabilities,
+    attempt: usize,
+    max_retries: usize,
 }
 
 impl AgentRunner {
@@ -178,8 +186,10 @@ impl AgentRunner {
                     .ok()
             })
             .unwrap_or_else(|| "unknown".to_string());
+        let capabilities = LlmClient::provider_capabilities(&provider_name);
 
         for attempt in 1..=max_retries {
+            Self::refresh_messages_from_memory(ctx);
             let result = self
                 .llm_client
                 .chat_with_tools_single_attempt(
@@ -192,7 +202,17 @@ impl AgentRunner {
                 .await;
 
             match self
-                .handle_llm_attempt_result(ctx, state, &provider_name, attempt, max_retries, result)
+                .handle_llm_attempt_result(
+                    ctx,
+                    state,
+                    LlmAttemptMetadata {
+                        provider_name: &provider_name,
+                        capabilities,
+                        attempt,
+                        max_retries,
+                    },
+                    result,
+                )
                 .await?
             {
                 AttemptOutcome::Return(response) => return Ok(response),
@@ -235,8 +255,10 @@ impl AgentRunner {
 
             let json_mode = self.requires_structured_output(&ctx.config);
             let provider_name = route.provider.clone();
+            let capabilities = LlmClient::provider_capabilities(&provider_name);
 
             for attempt in 1..=max_retries {
+                Self::refresh_messages_from_memory(ctx);
                 let result = self
                     .llm_client
                     .chat_with_tools_single_attempt_for_model_info(
@@ -252,9 +274,12 @@ impl AgentRunner {
                     .handle_llm_attempt_result(
                         ctx,
                         state,
-                        &provider_name,
-                        attempt,
-                        max_retries,
+                        LlmAttemptMetadata {
+                            provider_name: &provider_name,
+                            capabilities,
+                            attempt,
+                            max_retries,
+                        },
                         result,
                     )
                     .await?;
@@ -279,18 +304,16 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
-        provider_name: &str,
-        attempt: usize,
-        max_retries: usize,
+        metadata: LlmAttemptMetadata<'_>,
         result: std::result::Result<ChatResponse, LlmError>,
     ) -> Result<AttemptOutcome> {
         match result {
             Ok(response) => {
-                if attempt > 1 {
+                if metadata.attempt > 1 {
                     info!(
-                        attempt = attempt,
-                        max_attempts = max_retries,
-                        provider = provider_name,
+                        attempt = metadata.attempt,
+                        max_attempts = metadata.max_retries,
+                        provider = metadata.provider_name,
                         "LLM retry succeeded after rate limit"
                     );
                 }
@@ -301,9 +324,10 @@ impl AgentRunner {
                     if self
                         .repair_history_before_retry(
                             ctx,
-                            provider_name,
-                            attempt,
-                            max_retries,
+                            metadata.provider_name,
+                            metadata.capabilities,
+                            metadata.attempt,
+                            metadata.max_retries,
                             reason,
                         )
                         .await
@@ -315,7 +339,7 @@ impl AgentRunner {
                     return Err(anyhow!("LLM call failed: {error}"));
                 }
 
-                if Self::llm_error_suggests_context_overflow(&error) && attempt == 1 {
+                if Self::llm_error_suggests_context_overflow(&error) && metadata.attempt == 1 {
                     let retried = self
                         .run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual)
                         .await?;
@@ -324,8 +348,8 @@ impl AgentRunner {
                     }
                 }
 
-                if attempt < max_retries {
-                    if let Some(backoff) = LlmClient::get_retry_delay(&error, attempt) {
+                if metadata.attempt < metadata.max_retries {
+                    if let Some(backoff) = LlmClient::get_retry_delay(&error, metadata.attempt) {
                         let wait_secs = backoff.as_secs();
                         let wait_secs_display = if wait_secs > 0 {
                             Some(wait_secs)
@@ -336,38 +360,38 @@ impl AgentRunner {
                         if LlmClient::is_rate_limit_error(&error) {
                             Self::emit_rate_limit_retrying(
                                 ctx.progress_tx,
-                                attempt,
-                                max_retries,
+                                metadata.attempt,
+                                metadata.max_retries,
                                 wait_secs_display,
-                                provider_name,
+                                metadata.provider_name,
                             )
                             .await;
                             debug!(
                                 error = %error,
-                                attempt = attempt,
-                                max_attempts = max_retries,
+                                attempt = metadata.attempt,
+                                max_attempts = metadata.max_retries,
                                 backoff_ms = backoff.as_millis(),
-                                provider = provider_name,
+                                provider = metadata.provider_name,
                                 "Retrying LLM request after rate limit"
                             );
                         } else {
                             let error_class = Self::error_class(&error);
                             Self::emit_llm_retrying(
                                 ctx.progress_tx,
-                                attempt,
-                                max_retries,
+                                metadata.attempt,
+                                metadata.max_retries,
                                 wait_secs_display,
-                                provider_name,
+                                metadata.provider_name,
                                 error_class,
                             )
                             .await;
                             debug!(
                                 error = %error,
                                 error_class = error_class,
-                                attempt = attempt,
-                                max_attempts = max_retries,
+                                attempt = metadata.attempt,
+                                max_attempts = metadata.max_retries,
                                 backoff_ms = backoff.as_millis(),
-                                provider = provider_name,
+                                provider = metadata.provider_name,
                                 "Retrying LLM request after retryable error"
                             );
                         }
@@ -391,16 +415,20 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         provider_name: &str,
+        capabilities: ProviderCapabilities,
         attempt: usize,
         max_retries: usize,
         reason: &str,
     ) -> bool {
-        let (repaired_messages, outcome) =
-            repair_agent_message_history(ctx.agent.memory().get_messages());
+        let (repaired_messages, outcome) = repair_agent_message_history_for_provider(
+            ctx.agent.memory().get_messages(),
+            capabilities.strict_tool_history(),
+        );
         if !outcome.applied {
             warn!(
                 provider = provider_name,
                 attempt,
+                tool_history_mode = capabilities.tool_history_label(),
                 reason,
                 "Detected repairable history error but local repair produced no changes"
             );
@@ -410,13 +438,15 @@ impl AgentRunner {
         ctx.agent.memory_mut().replace_messages(repaired_messages);
         ctx.agent.persist_memory_checkpoint_background();
         Self::refresh_messages_from_memory(ctx);
+        Self::emit_history_repair_applied(ctx.progress_tx, provider_name, capabilities, &outcome)
+            .await;
         Self::emit_llm_retrying(
             ctx.progress_tx,
             attempt,
             max_retries,
             None,
             provider_name,
-            "history_repair",
+            capabilities.tool_history_label(),
         )
         .await;
         Self::emit_token_snapshot_update(
@@ -431,6 +461,7 @@ impl AgentRunner {
             trimmed_tool_calls = outcome.trimmed_tool_calls,
             converted_tool_call_messages = outcome.converted_tool_call_messages,
             dropped_tool_call_messages = outcome.dropped_tool_call_messages,
+            tool_history_mode = capabilities.tool_history_label(),
             reason,
             "Repaired invalid tool history before retrying LLM request"
         );
@@ -1123,6 +1154,26 @@ impl AgentRunner {
         }
     }
 
+    async fn emit_history_repair_applied(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        provider_name: &str,
+        capabilities: ProviderCapabilities,
+        outcome: &crate::agent::recovery::HistoryRepairOutcome,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::HistoryRepairApplied {
+                    provider: provider_name.to_string(),
+                    strict_tool_history: capabilities.strict_tool_history(),
+                    dropped_tool_results: outcome.dropped_tool_results,
+                    trimmed_tool_calls: outcome.trimmed_tool_calls,
+                    converted_tool_call_messages: outcome.converted_tool_call_messages,
+                    dropped_tool_call_messages: outcome.dropped_tool_call_messages,
+                })
+                .await;
+        }
+    }
+
     async fn emit_compaction_completed(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         trigger: CompactionTrigger,
@@ -1255,7 +1306,7 @@ impl AgentRunner {
         .any(|needle| message.contains(needle))
     }
 
-    fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
+    pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
         *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
     }
 

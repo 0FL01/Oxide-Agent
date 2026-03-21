@@ -204,6 +204,39 @@ pub struct ChatWithToolsRequest<'a> {
     pub json_mode: bool,
 }
 
+/// How strictly a provider enforces tool-call history consistency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolHistoryMode {
+    /// Reject only clearly invalid references such as orphaned tool results.
+    BestEffort,
+    /// Require every tool call batch to have a fully matching set of tool results.
+    Strict,
+}
+
+/// Provider-specific request behavior relevant to history validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    /// Tool history matching mode enforced before a request is sent.
+    pub tool_history_mode: ToolHistoryMode,
+}
+
+impl ProviderCapabilities {
+    #[must_use]
+    /// Returns true when the provider expects exact tool-call/result matching.
+    pub const fn strict_tool_history(self) -> bool {
+        matches!(self.tool_history_mode, ToolHistoryMode::Strict)
+    }
+
+    #[must_use]
+    /// Returns a short label for logs and progress updates.
+    pub const fn tool_history_label(self) -> &'static str {
+        match self.tool_history_mode {
+            ToolHistoryMode::BestEffort => "best_effort",
+            ToolHistoryMode::Strict => "strict",
+        }
+    }
+}
+
 /// Interface for all LLM providers
 #[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
@@ -523,8 +556,9 @@ impl LlmClient {
     ) -> Result<ChatResponse, LlmError> {
         // Get provider and call its chat_with_tools method (via trait)
         let provider = self.get_provider(&model_info.provider)?;
+        let capabilities = Self::provider_capabilities(&model_info.provider);
 
-        validate_tool_history(messages)?;
+        validate_tool_history(messages, capabilities)?;
 
         debug!(
             model = model_info.id,
@@ -552,6 +586,17 @@ impl LlmClient {
         Ok(model_info.provider)
     }
 
+    /// Returns request-side capabilities for the named provider.
+    #[must_use]
+    pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
+        let tool_history_mode = match provider_name.to_ascii_lowercase().as_str() {
+            "minimax" | "mistral" => ToolHistoryMode::Strict,
+            _ => ToolHistoryMode::BestEffort,
+        };
+
+        ProviderCapabilities { tool_history_mode }
+    }
+
     /// Chat completion with tool calling support (for agent mode)
     ///
     /// This method includes retry logic with exponential backoff for transient errors
@@ -575,8 +620,9 @@ impl LlmClient {
         const MAX_RETRIES: usize = 5;
 
         let model_info = self.get_model_info(model_name)?;
+        let capabilities = Self::provider_capabilities(&model_info.provider);
 
-        validate_tool_history(messages)?;
+        validate_tool_history(messages, capabilities)?;
 
         // Get provider and call its chat_with_tools method (via trait)
         let provider = self.get_provider(&model_info.provider)?;
@@ -850,7 +896,10 @@ impl LlmClient {
     }
 }
 
-fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError> {
+fn validate_tool_history(
+    messages: &[Message],
+    capabilities: ProviderCapabilities,
+) -> Result<(), LlmError> {
     let mut index = 0;
 
     while index < messages.len() {
@@ -910,9 +959,13 @@ fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError> {
                     cursor += 1;
                 }
 
-                if seen_results.len() != expected_ids.len() {
+                let batch_is_terminal = cursor == messages.len();
+                let should_require_complete_batch =
+                    capabilities.strict_tool_history() || !batch_is_terminal;
+                if should_require_complete_batch && seen_results.len() != expected_ids.len() {
                     return Err(LlmError::RepairableHistory(format!(
-                        "assistant tool call batch is incomplete: {} tool calls but {} tool results",
+                        "assistant tool call batch is incomplete for {} tool history: {} tool calls but {} tool results",
+                        capabilities.tool_history_label(),
                         expected_ids.len(),
                         seen_results.len()
                     )));
@@ -948,7 +1001,10 @@ fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_tool_history, LlmError, Message, ToolCall, ToolCallFunction};
+    use super::{
+        validate_tool_history, LlmError, Message, ProviderCapabilities, ToolCall, ToolCallFunction,
+        ToolHistoryMode,
+    };
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
@@ -968,7 +1024,13 @@ mod tests {
             Message::tool("call-1", "search", "result"),
         ];
 
-        let error = validate_tool_history(&messages).expect_err("history must be rejected");
+        let error = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::Strict,
+            },
+        )
+        .expect_err("history must be rejected");
         assert!(matches!(error, LlmError::RepairableHistory(_)));
     }
 
@@ -985,7 +1047,63 @@ mod tests {
             Message::tool("call-1", "search", "result"),
         ];
 
-        let error = validate_tool_history(&messages).expect_err("history must be rejected");
+        let error = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::Strict,
+            },
+        )
+        .expect_err("history must be rejected");
+        assert!(matches!(error, LlmError::RepairableHistory(_)));
+    }
+
+    #[test]
+    fn validate_tool_history_allows_terminal_open_batch_for_best_effort_provider() {
+        let messages = vec![
+            Message::assistant_with_tools(
+                "calling tools",
+                vec![
+                    tool_call("call-1", "search"),
+                    tool_call("call-2", "read_file"),
+                ],
+            ),
+            Message::tool("call-1", "search", "result"),
+        ];
+
+        let result = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::BestEffort,
+            },
+        );
+
+        assert!(
+            result.is_ok(),
+            "best-effort providers should allow an open terminal batch"
+        );
+    }
+
+    #[test]
+    fn validate_tool_history_rejects_nonterminal_open_batch_even_for_best_effort_provider() {
+        let messages = vec![
+            Message::assistant_with_tools(
+                "calling tools",
+                vec![
+                    tool_call("call-1", "search"),
+                    tool_call("call-2", "read_file"),
+                ],
+            ),
+            Message::tool("call-1", "search", "result"),
+            Message::user("follow up"),
+        ];
+
+        let error = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::BestEffort,
+            },
+        )
+        .expect_err("history must be rejected");
         assert!(matches!(error, LlmError::RepairableHistory(_)));
     }
 }

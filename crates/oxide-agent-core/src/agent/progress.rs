@@ -180,6 +180,21 @@ pub enum AgentEvent {
         /// Number of applied compaction passes in the current run.
         count: usize,
     },
+    /// Local tool-history repair rewrote invalid messages before retrying.
+    HistoryRepairApplied {
+        /// Provider handling the current request.
+        provider: String,
+        /// Whether the provider requires strict tool-call/result matching.
+        strict_tool_history: bool,
+        /// Number of invalid tool result messages removed.
+        dropped_tool_results: usize,
+        /// Number of tool calls trimmed out of assistant batches.
+        trimmed_tool_calls: usize,
+        /// Number of assistant tool-call messages converted to plain assistant text.
+        converted_tool_call_messages: usize,
+        /// Number of assistant tool-call messages dropped entirely.
+        dropped_tool_call_messages: usize,
+    },
     /// Rate limit hit, retrying with backoff.
     RateLimitRetrying {
         /// Current attempt number (starts at 1)
@@ -261,6 +276,8 @@ pub struct ProgressState {
     pub repeated_compaction_warning: Option<String>,
     /// Latest request-side token budget snapshot.
     pub latest_token_snapshot: Option<TokenSnapshot>,
+    /// Latest status for automatic tool-history repair.
+    pub last_history_repair_status: Option<String>,
     /// Current rate limit retry status (cleared on success or final error)
     pub rate_limit_retry: Option<RateLimitRetryState>,
     /// Latest provider failover notice for the current run.
@@ -388,6 +405,21 @@ impl ProgressState {
             AgentEvent::RepeatedCompactionWarning { kind, count } => {
                 self.handle_repeated_compaction_warning(kind, count)
             }
+            AgentEvent::HistoryRepairApplied {
+                provider,
+                strict_tool_history,
+                dropped_tool_results,
+                trimmed_tool_calls,
+                converted_tool_call_messages,
+                dropped_tool_call_messages,
+            } => self.handle_history_repair_applied(
+                provider,
+                strict_tool_history,
+                dropped_tool_results,
+                trimmed_tool_calls,
+                converted_tool_call_messages,
+                dropped_tool_call_messages,
+            ),
             AgentEvent::RateLimitRetrying {
                 attempt,
                 max_attempts,
@@ -687,6 +719,26 @@ impl ProgressState {
             RepeatedCompactionKind::Cleanup => format!("Cleanup repeated: {count}x"),
             RepeatedCompactionKind::Compaction => format!("History compaction: {count}x"),
         });
+    }
+
+    fn handle_history_repair_applied(
+        &mut self,
+        provider: String,
+        strict_tool_history: bool,
+        dropped_tool_results: usize,
+        trimmed_tool_calls: usize,
+        converted_tool_call_messages: usize,
+        dropped_tool_call_messages: usize,
+    ) {
+        let mode = if strict_tool_history {
+            "strict"
+        } else {
+            "best-effort"
+        };
+        self.last_history_repair_status = Some(format!(
+            "History repair ({provider}, {mode}): removed {dropped_tool_results} tool results, trimmed {trimmed_tool_calls} tool calls, converted {converted_tool_call_messages}, dropped {dropped_tool_call_messages}."
+        ));
+        self.error = None;
     }
 
     fn handle_rate_limit_retrying(

@@ -7,8 +7,10 @@ use crate::agent::compaction::{
     count_tokens_cached, AgentMessageKind, ArchiveRef, CompactionRetention, CompactionSummary,
 };
 use crate::agent::providers::TodoList;
+use crate::agent::recovery::repair_agent_message_history_runtime;
 use crate::llm::{TokenUsage, ToolCall};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
 
@@ -462,15 +464,9 @@ impl AgentMemory {
 
     /// Add a message to memory and update token accounting.
     pub fn add_message(&mut self, msg: AgentMessage) {
-        let mut msg_tokens = Self::count_tokens(&msg.content);
-
-        // Also count reasoning tokens (GLM-4.7 thinking process)
-        if let Some(ref reasoning) = msg.reasoning {
-            msg_tokens += Self::count_tokens(reasoning);
-        }
-
-        self.token_count += msg_tokens;
         self.messages.push(msg);
+        self.recalculate_token_count();
+        self.repair_history_after_mutation("add_message");
     }
 
     /// Returns true when memory already contains a pinned topic `AGENTS.md` message.
@@ -581,6 +577,31 @@ impl AgentMemory {
     /// Replace hot memory messages and recalculate token accounting.
     pub fn replace_messages(&mut self, messages: Vec<AgentMessage>) {
         self.messages = messages;
+        self.last_api_usage = None;
+        self.recalculate_token_count();
+        self.repair_history_after_mutation("replace_messages");
+    }
+
+    fn repair_history_after_mutation(&mut self, boundary: &'static str) {
+        let (repaired_messages, outcome) = repair_agent_message_history_runtime(&self.messages);
+        if !outcome.applied {
+            return;
+        }
+
+        self.messages = repaired_messages;
+        self.recalculate_token_count();
+        self.last_api_usage = None;
+        warn!(
+            boundary,
+            dropped_tool_results = outcome.dropped_tool_results,
+            trimmed_tool_calls = outcome.trimmed_tool_calls,
+            converted_tool_call_messages = outcome.converted_tool_call_messages,
+            dropped_tool_call_messages = outcome.dropped_tool_call_messages,
+            "Agent memory repaired invalid tool history after mutation"
+        );
+    }
+
+    fn recalculate_token_count(&mut self) {
         self.token_count = self
             .messages
             .iter()
@@ -592,7 +613,6 @@ impl AgentMemory {
                 tokens
             })
             .sum();
-        self.last_api_usage = None;
     }
 
     /// Count tokens in a string using cached cl100k tokenizer (GPT-4/Claude compatible)
@@ -650,12 +670,55 @@ impl AgentMessage {
 mod tests {
     use super::*;
 
+    fn tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            function: crate::llm::ToolCallFunction {
+                name: name.to_string(),
+                arguments: "{}".to_string(),
+            },
+            is_recovered: false,
+        }
+    }
+
     #[test]
     fn test_memory_add_message() {
         let mut memory = AgentMemory::new(100_000);
         memory.add_message(AgentMessage::user("Hello, agent!"));
         assert_eq!(memory.get_messages().len(), 1);
         assert!(memory.token_count() > 0);
+    }
+
+    #[test]
+    fn test_memory_runtime_repair_drops_orphaned_tool_results() {
+        let mut memory = AgentMemory::new(100_000);
+
+        memory.add_message(AgentMessage::user("Hello"));
+        memory.add_message(AgentMessage::tool("call-orphan", "search", "result"));
+
+        assert_eq!(memory.get_messages().len(), 1);
+        assert_eq!(memory.get_messages()[0].content, "Hello");
+    }
+
+    #[test]
+    fn test_memory_runtime_repair_preserves_open_terminal_tool_batch() {
+        let mut memory = AgentMemory::new(100_000);
+
+        memory.add_message(AgentMessage::assistant_with_tools(
+            "Calling tools",
+            vec![
+                tool_call("call-1", "search"),
+                tool_call("call-2", "read_file"),
+            ],
+        ));
+        memory.add_message(AgentMessage::tool("call-1", "search", "result-1"));
+
+        assert_eq!(memory.get_messages().len(), 2);
+        let tool_calls = memory.get_messages()[0]
+            .tool_calls
+            .as_ref()
+            .expect("tool batch should be preserved");
+        assert_eq!(tool_calls.len(), 2);
     }
 
     #[test]
