@@ -78,6 +78,21 @@ impl AgentMessageKind {
     }
 }
 
+/// Resolve the retention class for a message, allowing tool-aware overrides.
+#[must_use]
+pub fn resolve_retention(kind: AgentMessageKind, tool_name: Option<&str>) -> CompactionRetention {
+    match kind {
+        AgentMessageKind::ToolResult if is_summary_preferred_tool(tool_name) => {
+            CompactionRetention::CompactableHistory
+        }
+        _ => kind.retention(),
+    }
+}
+
+fn is_summary_preferred_tool(tool_name: Option<&str>) -> bool {
+    matches!(tool_name, Some("delegate_to_sub_agent"))
+}
+
 /// Trigger point for a compaction pipeline invocation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CompactionTrigger {
@@ -534,8 +549,9 @@ impl CompactionOutcome {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentMessageKind, BudgetEstimate, BudgetState, CompactionOutcome, CompactionPolicy,
-        CompactionRetention, CompactionSnapshot, CompactionTrigger, HotMemoryBudget,
+        resolve_retention, AgentMessageKind, BudgetEstimate, BudgetState, CompactionOutcome,
+        CompactionPolicy, CompactionRetention, CompactionSnapshot, CompactionTrigger,
+        HotMemoryBudget,
     };
 
     #[test]
@@ -550,6 +566,18 @@ mod tests {
     fn tool_results_are_prunable() {
         assert_eq!(
             AgentMessageKind::ToolResult.retention(),
+            CompactionRetention::PrunableArtifact
+        );
+    }
+
+    #[test]
+    fn delegate_results_are_summary_preferred() {
+        assert_eq!(
+            resolve_retention(AgentMessageKind::ToolResult, Some("delegate_to_sub_agent")),
+            CompactionRetention::CompactableHistory
+        );
+        assert_eq!(
+            resolve_retention(AgentMessageKind::ToolResult, Some("ssh_exec")),
             CompactionRetention::PrunableArtifact
         );
     }

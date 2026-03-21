@@ -273,6 +273,135 @@ async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
 }
 
 #[tokio::test]
+async fn e2e_compaction_post_run_preserves_delegate_results_while_cleaning_regular_tools() {
+    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+        super::helpers::unstructured_text_response("done"),
+    ]));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
+    let app_state =
+        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260326;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+
+    seed_history(
+        session_manager.as_ref(),
+        &session_id,
+        user_id,
+        vec![
+            AgentMessage::user_task("Investigate delegated network findings"),
+            AgentMessage::tool(
+                "delegate-old",
+                "delegate_to_sub_agent",
+                &format!(
+                    "delegated summary DELEGATE_MARKER {}",
+                    token_rich_payload("delegate", 2_500)
+                ),
+            ),
+            AgentMessage::tool(
+                "web-old",
+                "web_markdown",
+                &format!("{} WEB_MARKER", token_rich_payload("web-old", 2_500)),
+            ),
+            AgentMessage::tool(
+                "recent-1",
+                "ssh_exec",
+                &token_rich_payload("recent-1", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-2",
+                "ssh_exec",
+                &token_rich_payload("recent-2", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-3",
+                "ssh_exec",
+                &token_rich_payload("recent-3", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-4",
+                "ssh_exec",
+                &token_rich_payload("recent-4", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-5",
+                "ssh_exec",
+                &token_rich_payload("recent-5", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-6",
+                "ssh_exec",
+                &token_rich_payload("recent-6", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-7",
+                "ssh_exec",
+                &token_rich_payload("recent-7", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-8",
+                "ssh_exec",
+                &token_rich_payload("recent-8", 2_500),
+            ),
+            AgentMessage::tool(
+                "recent-9",
+                "ssh_exec",
+                &token_rich_payload("recent-9", 2_500),
+            ),
+        ],
+    )
+    .await;
+
+    let task_id = create_task_http_with_body(&client, &base_url, &session_id, "Return done").await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(3),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+
+    let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
+    assert!(progress_resp.status().is_success());
+    let progress: serde_json::Value = progress_resp
+        .json()
+        .await
+        .expect("failed to decode task progress");
+    assert_eq!(progress["latest_token_snapshot"]["budget_state"], "Healthy");
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+
+    let delegate_tool = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("delegate-old"))
+        .expect("delegate result should exist");
+    let web_tool = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("web-old"))
+        .expect("web result should exist");
+
+    assert!(delegate_tool.content.contains("DELEGATE_MARKER"));
+    assert!(!delegate_tool.is_externalized());
+    assert!(!delegate_tool.is_pruned());
+    assert!(web_tool.is_externalized() || web_tool.is_pruned());
+    assert!(!web_tool.content.contains("WEB_MARKER"));
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
     let anchor = "ANCHOR_CTX_9f3a9a4bc7f14d60b2a6e8c14529f0aa";
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
