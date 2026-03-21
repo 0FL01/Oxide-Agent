@@ -7,12 +7,19 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
+#[derive(Debug, Clone)]
+pub struct RecordedToolRequest {
+    pub system_prompt: String,
+    pub messages: Vec<Message>,
+}
+
 /// Scripted ZAI provider that returns pre-programmed responses in sequence.
 /// Logs each model_id call for verification.
 #[derive(Clone)]
 pub struct SequencedZaiProvider {
     responses: Arc<Mutex<VecDeque<ChatResponse>>>,
     model_log: Arc<Mutex<Vec<String>>>,
+    request_log: Arc<Mutex<Vec<RecordedToolRequest>>>,
 }
 
 impl SequencedZaiProvider {
@@ -20,11 +27,16 @@ impl SequencedZaiProvider {
         Self {
             responses: Arc::new(Mutex::new(VecDeque::from(responses))),
             model_log: Arc::new(Mutex::new(Vec::new())),
+            request_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub async fn model_log(&self) -> Vec<String> {
         self.model_log.lock().await.clone()
+    }
+
+    pub async fn request_log(&self) -> Vec<RecordedToolRequest> {
+        self.request_log.lock().await.clone()
     }
 }
 
@@ -51,6 +63,10 @@ impl LlmProvider for SequencedZaiProvider {
             .lock()
             .await
             .push(request.model_id.to_string());
+        self.request_log.lock().await.push(RecordedToolRequest {
+            system_prompt: request.system_prompt.to_string(),
+            messages: request.messages.to_vec(),
+        });
 
         self.responses
             .lock()

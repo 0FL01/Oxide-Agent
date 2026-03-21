@@ -2,6 +2,8 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use oxide_agent_core::agent::memory::{AgentMessage, MessageRole};
+use oxide_agent_core::agent::SessionId;
 use oxide_agent_transport_web::session::{TaskStatus, WebSessionManager};
 use serde_json::Value;
 
@@ -12,6 +14,7 @@ use crate::helpers::{
 use crate::setup::{cleanup_web_sandbox, setup_live_zai_test};
 
 const MAX_ATTEMPTS: usize = 3;
+const LIVE_ANCHOR_MAX_ATTEMPTS: usize = 2;
 
 const HEAVY_AUDIT_PROMPT: &str = r#"Ты работаешь в Linux sandbox.
 Нужно сделать подробный аудит окружения и инструментов, не останавливаясь на кратких выводах:
@@ -31,6 +34,53 @@ struct LiveAuditArtifacts {
     progress: Value,
     events: Vec<Value>,
     timeline: Value,
+}
+
+fn derive_session_id(session_id: &str, user_id: i64) -> SessionId {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut h = DefaultHasher::new();
+    session_id.hash(&mut h);
+    user_id.hash(&mut h);
+    SessionId::from(h.finish() as i64)
+}
+
+async fn seed_history(
+    session_manager: &WebSessionManager,
+    session_id: &str,
+    user_id: i64,
+    messages: Vec<AgentMessage>,
+) {
+    let sid = derive_session_id(session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+
+    let mut executor = executor_arc.write().await;
+    for message in messages {
+        executor.session_mut().memory.add_message(message);
+    }
+}
+
+async fn latest_assistant_response(
+    session_manager: &WebSessionManager,
+    session_id: &str,
+    user_id: i64,
+) -> Option<String> {
+    let sid = derive_session_id(session_id, user_id);
+    let executor_arc = session_manager.session_registry().get(&sid).await?;
+    let executor = executor_arc.read().await;
+    executor
+        .session()
+        .memory
+        .get_messages()
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::Assistant)
+        .map(|message| message.content.clone())
 }
 
 #[tokio::test]
@@ -136,6 +186,110 @@ async fn e2e_zai_heavy_sandbox_audit_logs_baselines() {
     }
 }
 
+#[tokio::test]
+#[ignore = "Requires RUN_LLM_E2E_CHECKS=1, ZAI_API_KEY, Docker sandbox, and network access"]
+async fn e2e_zai_seeded_initial_anchor_missing_after_healthy_cleanup() {
+    if std::env::var("RUN_LLM_E2E_CHECKS").as_deref() != Ok("1") {
+        eprintln!("[LIVE-ZAI] Skipping anchor cleanup test: RUN_LLM_E2E_CHECKS != 1");
+        return;
+    }
+
+    let app_state = match setup_live_zai_test() {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!("[LIVE-ZAI] Skipping anchor cleanup test: {error}");
+            return;
+        }
+    };
+
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+
+    for attempt in 1..=LIVE_ANCHOR_MAX_ATTEMPTS {
+        let user_id = unique_test_user_id();
+        let anchor = format!("ANCHOR_CTX_{user_id:x}_7f4c2b9d1e6a3c8f");
+        let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+        let old_payload = format!("{}{}", "x".repeat(1_400), anchor);
+
+        seed_history(
+            session_manager.as_ref(),
+            &session_id,
+            user_id,
+            vec![
+                AgentMessage::user_task("Recall the exact initial anchor from prior context."),
+                AgentMessage::tool("old-anchor", "web_markdown", &old_payload),
+                AgentMessage::tool("recent-1", "web_markdown", "short-1"),
+                AgentMessage::tool("recent-2", "web_markdown", "short-2"),
+                AgentMessage::tool("recent-3", "web_markdown", "short-3"),
+                AgentMessage::tool("recent-4", "web_markdown", "short-4"),
+            ],
+        )
+        .await;
+
+        let task_id = create_task_http_with_body(
+            &client,
+            &base_url,
+            &session_id,
+            "Return the exact anchor token from the initial session context and nothing else. Do not use tools unless strictly necessary.",
+        )
+        .await;
+
+        let artifacts =
+            run_live_audit_scenario(&client, &base_url, &session_manager, &session_id, &task_id)
+                .await;
+        let event_names = event_names(&artifacts.events);
+        let final_response =
+            latest_assistant_response(session_manager.as_ref(), &session_id, user_id)
+                .await
+                .unwrap_or_default();
+
+        eprintln!(
+            "[LIVE-ZAI] Anchor cleanup attempt {attempt}/{LIVE_ANCHOR_MAX_ATTEMPTS}: final_response={:?}",
+            final_response
+        );
+        log_live_attempt(&artifacts, &event_names);
+
+        let retryable = is_retryable_live_failure(&artifacts, &event_names);
+        cleanup_live_attempt(&client, &base_url, &session_id, user_id).await;
+
+        if retryable {
+            if attempt < LIVE_ANCHOR_MAX_ATTEMPTS {
+                eprintln!(
+                    "[LIVE-ZAI] Anchor cleanup test saw transient failure, retrying attempt {}",
+                    attempt + 1
+                );
+                continue;
+            }
+
+            server.abort();
+            panic!(
+                "anchor cleanup test exhausted retries; status={:?}; progress_error={}; events={:?}",
+                artifacts.terminal_status,
+                progress_error(&artifacts),
+                event_names
+            );
+        }
+
+        assert!(matches!(artifacts.terminal_status, TaskStatus::Completed));
+        assert!(artifacts.progress_status.is_success());
+        assert_eq!(
+            artifacts.progress["latest_token_snapshot"]["budget_state"],
+            "Healthy"
+        );
+        assert!(artifacts.progress["last_compaction_status"].is_null());
+        assert!(
+            final_response.contains(&anchor),
+            "anchor missing despite healthy budget and no cleanup; final_response={final_response:?}"
+        );
+
+        server.abort();
+        return;
+    }
+
+    server.abort();
+}
+
 async fn run_live_audit_scenario(
     client: &reqwest::Client,
     base_url: &str,
@@ -196,6 +350,7 @@ async fn cleanup_live_attempt(
 fn log_live_attempt(artifacts: &LiveAuditArtifacts, event_names: &[String]) {
     log_timeline(&artifacts.timeline);
     log_tool_calls(&artifacts.timeline);
+    log_compaction_probe(artifacts, event_names);
     eprintln!(
         "[LIVE-ZAI] Terminal status: {:?}",
         artifacts.terminal_status
@@ -211,6 +366,53 @@ fn event_names(events: &[Value]) -> Vec<String> {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect()
+}
+
+fn log_compaction_probe(artifacts: &LiveAuditArtifacts, event_names: &[String]) {
+    let latest_snapshot = &artifacts.progress["latest_token_snapshot"];
+    let budget_state = latest_snapshot["budget_state"].as_str();
+    let headroom_tokens = latest_snapshot["headroom_tokens"].as_i64();
+    let context_window_tokens = latest_snapshot["context_window_tokens"].as_i64();
+    let projected_total_tokens = latest_snapshot["projected_total_tokens"].as_i64();
+    let last_compaction_status = artifacts.progress["last_compaction_status"].as_str();
+    let repeated_compaction_warning = artifacts.progress["repeated_compaction_warning"].as_str();
+
+    let compaction_started = event_names
+        .iter()
+        .filter(|name| name.as_str() == "compaction_started")
+        .count();
+    let pruning_applied = event_names
+        .iter()
+        .filter(|name| name.as_str() == "pruning_applied")
+        .count();
+    let compaction_completed = event_names
+        .iter()
+        .filter(|name| name.as_str() == "compaction_completed")
+        .count();
+    let repeated_compaction = event_names
+        .iter()
+        .filter(|name| name.as_str() == "repeated_compaction_warning")
+        .count();
+
+    eprintln!("[LIVE-ZAI] Compaction probe:");
+    eprintln!(
+        "  - budget_state={:?}, headroom_tokens={:?}, projected_total_tokens={:?}, context_window_tokens={:?}",
+        budget_state, headroom_tokens, projected_total_tokens, context_window_tokens
+    );
+    eprintln!(
+        "  - last_compaction_status={:?}, repeated_compaction_warning={:?}",
+        last_compaction_status, repeated_compaction_warning
+    );
+    eprintln!(
+        "  - event_counts: started={}, pruning_applied={}, completed={}, repeated_warning={}",
+        compaction_started, pruning_applied, compaction_completed, repeated_compaction
+    );
+
+    if latest_snapshot.is_null() {
+        eprintln!(
+            "[LIVE-ZAI][warn] progress.latest_token_snapshot missing; compaction/budget baseline is incomplete"
+        );
+    }
 }
 
 fn validate_successful_live_audit(

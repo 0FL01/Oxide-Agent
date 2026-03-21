@@ -3,6 +3,7 @@
 //! Tests the full agent execution pipeline with a scripted LLM provider
 //! to measure application-level latency without depending on real LLM APIs.
 
+mod compaction_regression_tests;
 mod delegation_tests;
 mod helpers;
 mod integration_tests;
