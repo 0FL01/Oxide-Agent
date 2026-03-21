@@ -2,10 +2,154 @@
 //!
 //! Handles sanitization of XML tags, JSON extraction, and recovery of malformed tool calls.
 
+use crate::agent::compaction::AgentMessageKind;
+use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::llm::{ToolCall, ToolCallFunction};
 use lazy_regex::regex;
 use serde_json::Value;
+use std::collections::HashSet;
 use tracing::warn;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Summary of local history repairs applied before retrying an LLM call.
+pub struct HistoryRepairOutcome {
+    /// Whether any message was rewritten or removed.
+    pub applied: bool,
+    /// Number of invalid tool result messages removed.
+    pub dropped_tool_results: usize,
+    /// Number of assistant tool calls trimmed out of a batch.
+    pub trimmed_tool_calls: usize,
+    /// Number of assistant tool-call messages converted back to plain assistant text.
+    pub converted_tool_call_messages: usize,
+    /// Number of assistant tool-call messages dropped entirely.
+    pub dropped_tool_call_messages: usize,
+}
+
+#[must_use]
+/// Repair locally inconsistent tool-call history so the runner can retry safely.
+pub fn repair_agent_message_history(
+    messages: &[AgentMessage],
+) -> (Vec<AgentMessage>, HistoryRepairOutcome) {
+    let mut repaired = Vec::with_capacity(messages.len());
+    let mut outcome = HistoryRepairOutcome::default();
+    let mut index = 0;
+
+    while index < messages.len() {
+        let message = &messages[index];
+        if message.resolved_kind() == AgentMessageKind::AssistantToolCall {
+            let (mut repaired_batch, next_index, batch_outcome) =
+                repair_assistant_tool_batch(messages, index);
+            repaired.append(&mut repaired_batch);
+            outcome.applied |= batch_outcome.applied;
+            outcome.dropped_tool_results += batch_outcome.dropped_tool_results;
+            outcome.trimmed_tool_calls += batch_outcome.trimmed_tool_calls;
+            outcome.converted_tool_call_messages += batch_outcome.converted_tool_call_messages;
+            outcome.dropped_tool_call_messages += batch_outcome.dropped_tool_call_messages;
+            index = next_index;
+            continue;
+        }
+
+        if message.resolved_kind() == AgentMessageKind::ToolResult {
+            outcome.applied = true;
+            outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
+            index += 1;
+            continue;
+        }
+
+        repaired.push(message.clone());
+        index += 1;
+    }
+
+    (repaired, outcome)
+}
+
+fn repair_assistant_tool_batch(
+    messages: &[AgentMessage],
+    assistant_index: usize,
+) -> (Vec<AgentMessage>, usize, HistoryRepairOutcome) {
+    let assistant = messages[assistant_index].clone();
+    let mut outcome = HistoryRepairOutcome::default();
+    let Some(tool_calls) = assistant.tool_calls.clone() else {
+        return (vec![assistant], assistant_index + 1, outcome);
+    };
+
+    let mut expected_ids = HashSet::new();
+    let mut valid_tool_calls = Vec::with_capacity(tool_calls.len());
+    for tool_call in tool_calls {
+        let tool_call_id = tool_call.id.trim();
+        if tool_call_id.is_empty() || !expected_ids.insert(tool_call.id.clone()) {
+            outcome.applied = true;
+            outcome.trimmed_tool_calls = outcome.trimmed_tool_calls.saturating_add(1);
+            continue;
+        }
+        valid_tool_calls.push(tool_call);
+    }
+
+    let mut repaired_tool_results = Vec::new();
+    let mut seen_result_ids = HashSet::new();
+    let mut cursor = assistant_index + 1;
+    while cursor < messages.len()
+        && messages[cursor].resolved_kind() == AgentMessageKind::ToolResult
+    {
+        let tool_result = &messages[cursor];
+        let Some(tool_call_id) = tool_result
+            .tool_call_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            outcome.applied = true;
+            outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
+            cursor += 1;
+            continue;
+        };
+
+        if !expected_ids.contains(tool_call_id) || !seen_result_ids.insert(tool_call_id.to_string())
+        {
+            outcome.applied = true;
+            outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
+            cursor += 1;
+            continue;
+        }
+
+        repaired_tool_results.push(tool_result.clone());
+        cursor += 1;
+    }
+
+    let original_tool_call_count = valid_tool_calls.len();
+    valid_tool_calls.retain(|tool_call| seen_result_ids.contains(&tool_call.id));
+    if valid_tool_calls.len() != original_tool_call_count {
+        outcome.applied = true;
+        outcome.trimmed_tool_calls = outcome
+            .trimmed_tool_calls
+            .saturating_add(original_tool_call_count.saturating_sub(valid_tool_calls.len()));
+    }
+
+    let mut repaired_batch = Vec::new();
+    if valid_tool_calls.is_empty() {
+        if assistant.content.trim().is_empty() {
+            outcome.applied = true;
+            outcome.dropped_tool_call_messages =
+                outcome.dropped_tool_call_messages.saturating_add(1);
+        } else {
+            let mut converted = assistant;
+            converted.kind = AgentMessageKind::AssistantResponse;
+            converted.role = MessageRole::Assistant;
+            converted.tool_calls = None;
+            outcome.applied = true;
+            outcome.converted_tool_call_messages =
+                outcome.converted_tool_call_messages.saturating_add(1);
+            repaired_batch.push(converted);
+        }
+    } else {
+        let mut repaired_assistant = assistant;
+        repaired_assistant.tool_calls = Some(valid_tool_calls);
+        repaired_batch.push(repaired_assistant);
+    }
+
+    repaired_batch.extend(repaired_tool_results);
+    (repaired_batch, cursor, outcome)
+}
 
 /// Sanitize leaked control XML tags from text.
 ///
@@ -498,6 +642,17 @@ pub fn sanitize_leaked_xml(iteration: usize, final_response: &mut String) -> boo
 mod tests {
     use super::*;
 
+    fn tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            function: ToolCallFunction {
+                name: name.to_string(),
+                arguments: "{}".to_string(),
+            },
+            is_recovered: false,
+        }
+    }
+
     #[test]
     fn test_sanitize_tool_call_normal() {
         let (name, args) = sanitize_tool_call("write_todos", "{}");
@@ -844,5 +999,47 @@ mod tests {
             tool_call.is_recovered,
             "Recovered tool call should have is_recovered=true"
         );
+    }
+
+    #[test]
+    fn repair_agent_message_history_drops_orphaned_tool_results() {
+        let messages = vec![
+            AgentMessage::user("Question"),
+            AgentMessage::tool("call-orphan", "search", "result"),
+        ];
+
+        let (repaired, outcome) = repair_agent_message_history(&messages);
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.dropped_tool_results, 1);
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(repaired[0].content, "Question");
+    }
+
+    #[test]
+    fn repair_agent_message_history_trims_incomplete_parallel_batch() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Calling tools",
+                vec![
+                    tool_call("call-1", "search"),
+                    tool_call("call-2", "read_file"),
+                ],
+            ),
+            AgentMessage::tool("call-1", "search", "result-1"),
+        ];
+
+        let (repaired, outcome) = repair_agent_message_history(&messages);
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.trimmed_tool_calls, 1);
+        assert_eq!(repaired.len(), 2);
+        let repaired_calls = repaired[0]
+            .tool_calls
+            .as_ref()
+            .expect("assistant tool call must remain");
+        assert_eq!(repaired_calls.len(), 1);
+        assert_eq!(repaired_calls[0].id, "call-1");
+        assert_eq!(repaired[1].tool_call_id.as_deref(), Some("call-1"));
     }
 }
