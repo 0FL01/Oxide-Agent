@@ -554,7 +554,11 @@ impl AgentExecutor {
             .execution_profile
             .tool_policy()
             .filter_definitions(registry.all_tools());
-        let model = self.settings.get_configured_agent_model();
+        let model_routes = self.settings.get_configured_agent_model_routes();
+        let model = model_routes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| self.settings.get_configured_agent_model());
         let structured_output = !model.provider.eq_ignore_ascii_case("zai");
         let system_prompt = create_agent_system_prompt(
             task,
@@ -573,12 +577,14 @@ impl AgentExecutor {
             system_prompt,
             messages: AgentRunner::convert_memory_to_messages(self.session.memory.get_messages()),
             runner_config: AgentRunnerConfig::new(
-                model.id,
+                model.id.clone(),
                 get_agent_max_iterations(),
                 crate::config::AGENT_CONTINUATION_LIMIT,
                 self.settings.get_agent_timeout_secs(),
                 model.max_output_tokens,
-            ),
+            )
+            .with_model_provider(model.provider.clone())
+            .with_model_routes(model_routes),
         }
     }
 

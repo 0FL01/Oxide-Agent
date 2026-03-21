@@ -6,7 +6,9 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
 use crate::agent::skills::SkillRegistry;
-use crate::config::{get_agent_max_iterations, get_agent_model, AGENT_CONTINUATION_LIMIT};
+use crate::config::{
+    get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
+};
 use crate::llm::{Message, ToolDefinition};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -26,6 +28,10 @@ pub struct AgentRunnerConfig {
     pub timeout_secs: u64,
     /// Reserved output token budget for the active model.
     pub model_max_output_tokens: u32,
+    /// Active provider name for the current model.
+    pub model_provider: Option<String>,
+    /// Optional weighted fallback routes for this execution.
+    pub model_routes: Vec<ModelInfo>,
 }
 
 impl AgentRunnerConfig {
@@ -45,6 +51,8 @@ impl AgentRunnerConfig {
             is_sub_agent: false,
             timeout_secs,
             model_max_output_tokens,
+            model_provider: None,
+            model_routes: Vec::new(),
         }
     }
 
@@ -52,6 +60,20 @@ impl AgentRunnerConfig {
     #[must_use]
     pub fn with_sub_agent(mut self, is_sub_agent: bool) -> Self {
         self.is_sub_agent = is_sub_agent;
+        self
+    }
+
+    /// Set the active provider name.
+    #[must_use]
+    pub fn with_model_provider(mut self, model_provider: impl Into<String>) -> Self {
+        self.model_provider = Some(model_provider.into());
+        self
+    }
+
+    /// Set weighted fallback routes for the execution.
+    #[must_use]
+    pub fn with_model_routes(mut self, model_routes: Vec<ModelInfo>) -> Self {
+        self.model_routes = model_routes;
         self
     }
 }

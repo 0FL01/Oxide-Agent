@@ -204,6 +204,17 @@ pub enum AgentEvent {
         /// Error class (e.g. "network", "timeout", "server_error")
         error_class: String,
     },
+    /// LLM routing switched to a fallback provider after persistent rate limits.
+    ProviderFailoverActivated {
+        /// Previous provider name.
+        from_provider: String,
+        /// Previous model identifier.
+        from_model: String,
+        /// New provider name.
+        to_provider: String,
+        /// New model identifier.
+        to_model: String,
+    },
     /// Execution milestone for latency tracking.
     Milestone {
         /// Milestone name (e.g., "executor_lock_acquired", "thinking_sent", "llm_call_started")
@@ -252,6 +263,8 @@ pub struct ProgressState {
     pub latest_token_snapshot: Option<TokenSnapshot>,
     /// Current rate limit retry status (cleared on success or final error)
     pub rate_limit_retry: Option<RateLimitRetryState>,
+    /// Latest provider failover notice for the current run.
+    pub provider_failover_notice: Option<String>,
 }
 
 /// State for rate limit retry display
@@ -388,6 +401,12 @@ impl ProgressState {
                 provider,
                 error_class,
             } => self.handle_llm_retrying(attempt, max_attempts, wait_secs, provider, error_class),
+            AgentEvent::ProviderFailoverActivated {
+                from_provider,
+                from_model,
+                to_provider,
+                to_model,
+            } => self.handle_provider_failover(from_provider, from_model, to_provider, to_model),
             AgentEvent::Milestone { name, timestamp_ms } => {
                 tracing::debug!(milestone = %name, timestamp_ms, "Execution milestone reached");
             }
@@ -416,6 +435,7 @@ impl ProgressState {
         // Clear any active rate-limit display: the agent is back to work,
         // so the user should no longer see the "retrying" banner.
         self.rate_limit_retry = None;
+        self.provider_failover_notice = None;
         self.current_iteration += 1;
         self.complete_last_step();
         self.latest_token_snapshot = Some(snapshot.clone());
@@ -701,6 +721,21 @@ impl ProgressState {
             wait_secs,
             provider: format!("{} [{}]", provider, error_class),
         });
+        self.error = None;
+    }
+
+    fn handle_provider_failover(
+        &mut self,
+        from_provider: String,
+        from_model: String,
+        to_provider: String,
+        to_model: String,
+    ) {
+        self.rate_limit_retry = None;
+        self.provider_failover_notice = Some(format!(
+            "Failover: {}:{} -> {}:{}",
+            from_provider, from_model, to_provider, to_model
+        ));
         self.error = None;
     }
 

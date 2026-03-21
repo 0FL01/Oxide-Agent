@@ -14,7 +14,9 @@ use crate::agent::loop_detection::{LoopDetectionConfig, LoopDetectionService};
 use crate::agent::memory::AgentMessage;
 use crate::agent::narrator::Narrator;
 use crate::llm::{LlmClient, Message};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 pub use types::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
@@ -26,6 +28,13 @@ pub struct AgentRunner {
     loop_detector: Arc<Mutex<LoopDetectionService>>,
     loop_detection_disabled_next_run: bool,
     narrator: Arc<Narrator>,
+    route_failover_state: RouteFailoverState,
+}
+
+#[derive(Debug, Default)]
+struct RouteFailoverState {
+    route_quarantine: HashMap<String, Instant>,
+    fallback_cursor: usize,
 }
 
 impl AgentRunner {
@@ -46,6 +55,7 @@ impl AgentRunner {
             loop_detector,
             loop_detection_disabled_next_run: false,
             narrator,
+            route_failover_state: RouteFailoverState::default(),
         }
     }
 
@@ -68,6 +78,7 @@ impl AgentRunner {
     /// Reset internal loop detector state.
     pub fn reset(&mut self) {
         self.loop_detection_disabled_next_run = false;
+        self.route_failover_state = RouteFailoverState::default();
         if let Ok(mut detector) = self.loop_detector.try_lock() {
             detector.reset(String::new());
         }

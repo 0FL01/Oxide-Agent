@@ -296,6 +296,8 @@ impl DelegationProvider {
             self.settings.get_sub_agent_timeout_secs(),
             model.max_output_tokens,
         )
+        .with_model_provider(model.provider.clone())
+        .with_model_routes(self.settings.get_configured_sub_agent_model_routes())
         .with_sub_agent(true)
     }
 
@@ -312,7 +314,11 @@ impl DelegationProvider {
         } = Self::parse_delegate_args(arguments)?;
 
         let task_id = format!("sub-{}", Uuid::new_v4());
-        let model = self.settings.get_configured_sub_agent_model();
+        let model_routes = self.settings.get_configured_sub_agent_model_routes();
+        let model = model_routes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| self.settings.get_configured_sub_agent_model());
         let sub_agent_context_budget = self.settings.get_sub_agent_internal_context_budget_tokens();
         let sub_session = Self::build_sub_agent_session(
             task.as_str(),
