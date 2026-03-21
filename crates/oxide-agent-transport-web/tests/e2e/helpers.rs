@@ -190,9 +190,18 @@ pub async fn fetch_task_timeline(
 
 /// Create a session via HTTP.
 pub async fn create_session_http(client: &reqwest::Client, base_url: &str) -> String {
+    create_session_http_with_user(client, base_url, 1).await
+}
+
+/// Create a session via HTTP for a specific user.
+pub async fn create_session_http_with_user(
+    client: &reqwest::Client,
+    base_url: &str,
+    user_id: i64,
+) -> String {
     let response: serde_json::Value = client
         .post(format!("{base_url}/sessions"))
-        .json(&serde_json::json!({ "user_id": 1 }))
+        .json(&serde_json::json!({ "user_id": user_id }))
         .send()
         .await
         .expect("failed to create session")
@@ -212,9 +221,19 @@ pub async fn create_task_http(
     base_url: &str,
     session_id: &str,
 ) -> String {
+    create_task_http_with_body(client, base_url, session_id, "Investigate package status").await
+}
+
+/// Create a task via HTTP with a custom plain-text body.
+pub async fn create_task_http_with_body(
+    client: &reqwest::Client,
+    base_url: &str,
+    session_id: &str,
+    body: &str,
+) -> String {
     let response: serde_json::Value = client
         .post(format!("{base_url}/sessions/{session_id}/tasks"))
-        .body("Investigate package status")
+        .body(body.to_string())
         .send()
         .await
         .expect("failed to create task")

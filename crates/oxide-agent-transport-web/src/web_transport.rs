@@ -7,6 +7,7 @@
 use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -41,6 +42,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::CompactionFailed { .. } => "compaction_failed".to_string(),
         AgentEvent::RepeatedCompactionWarning { .. } => "repeated_compaction_warning".to_string(),
         AgentEvent::RateLimitRetrying { .. } => "rate_limit_retrying".to_string(),
+        AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
     }
 }
@@ -78,8 +80,8 @@ impl TaskEventLog {
     }
 
     /// Record an event with the current timestamp and broadcast it to SSE subscribers.
-    pub async fn push(&self, event: AgentEvent) {
-        let event_name = event_variant_name(&event);
+    pub async fn push(&self, event: &AgentEvent) {
+        let event_name = event_variant_name(event);
         let entry = TaskEventEntry {
             timestamp: chrono::Utc::now(),
             event_name,
@@ -175,7 +177,7 @@ impl AgentTransport for WebAgentTransport {
             file_name: file_name.to_string(),
             content: content.to_vec(),
         };
-        self.event_log.push(event).await;
+        self.event_log.push(&event).await;
         Ok(())
     }
 
@@ -188,7 +190,7 @@ impl AgentTransport for WebAgentTransport {
             loop_type,
             iteration,
         };
-        self.event_log.push(event).await;
+        self.event_log.push(&event).await;
         Ok(())
     }
 }
@@ -198,10 +200,28 @@ impl AgentTransport for WebAgentTransport {
 pub struct MilestoneTimestamps {
     /// When the first `AgentEvent::Thinking` was received.
     pub first_thinking_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the first `AgentEvent::Reasoning` was received.
+    pub first_reasoning_at: Option<chrono::DateTime<chrono::Utc>>,
     /// When the final event was received (agent finished).
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Map of named milestone timestamps received via AgentEvent::Milestone
     pub named_milestones: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
+}
+
+/// Timing capture for an individual tool call observed during event collection.
+#[derive(Debug, Clone)]
+pub struct CollectedToolCallTiming {
+    pub name: String,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Final event-collection output used to populate web transport APIs.
+#[derive(Debug, Clone)]
+pub struct EventCollectionResult {
+    pub state: ProgressState,
+    pub timestamps: MilestoneTimestamps,
+    pub tool_calls: Vec<CollectedToolCallTiming>,
 }
 
 /// Start collecting events from a `Receiver<AgentEvent>` and drive the
@@ -212,15 +232,18 @@ pub struct MilestoneTimestamps {
 pub async fn collect_events(
     event_log: TaskEventLog,
     mut rx: mpsc::Receiver<AgentEvent>,
-) -> (ProgressState, MilestoneTimestamps) {
+) -> EventCollectionResult {
     use oxide_agent_core::agent::progress::ProgressState;
 
     let mut state = ProgressState::new(100); // max_iterations, can be overridden
     let mut timestamps = MilestoneTimestamps::default();
+    let mut tool_calls = Vec::new();
+    let mut active_tool_calls: HashMap<String, VecDeque<usize>> = HashMap::new();
 
     while let Some(event) = rx.recv().await {
         // Classify event type once to avoid borrow-after-move.
         let is_thinking = matches!(&event, AgentEvent::Thinking { .. });
+        let is_reasoning = matches!(&event, AgentEvent::Reasoning { .. });
         let is_file_to_send = matches!(&event, AgentEvent::FileToSend { .. });
         let is_terminal = matches!(
             &event,
@@ -228,9 +251,12 @@ pub async fn collect_events(
         );
         let is_milestone = matches!(&event, AgentEvent::Milestone { .. });
 
-        // Track first_thinking_at.
+        // Track first Thinking/Reasoning to derive llm_call_started_ms on collector-side.
         if timestamps.first_thinking_at.is_none() && is_thinking {
             timestamps.first_thinking_at = Some(chrono::Utc::now());
+        }
+        if timestamps.first_reasoning_at.is_none() && is_reasoning {
+            timestamps.first_reasoning_at = Some(chrono::Utc::now());
         }
 
         // Track named milestones from the agent core.
@@ -240,15 +266,41 @@ pub async fn collect_events(
             }
         }
 
-        // FileToSend is already recorded by the transport; skip it here.
-        if is_file_to_send || is_milestone {
-            // Milestones are tracked separately, don't need to be in event log
-            if is_file_to_send {
-                state.update(event);
+        match &event {
+            AgentEvent::ToolCall { name, .. } => {
+                let idx = tool_calls.len();
+                tool_calls.push(CollectedToolCallTiming {
+                    name: name.clone(),
+                    started_at: chrono::Utc::now(),
+                    finished_at: None,
+                });
+                active_tool_calls
+                    .entry(name.clone())
+                    .or_default()
+                    .push_back(idx);
             }
-        } else {
-            event_log.push(event).await;
+            AgentEvent::ToolResult { name, .. } => {
+                if let Some(indices) = active_tool_calls.get_mut(name) {
+                    if let Some(idx) = indices.pop_front() {
+                        if let Some(tool_call) = tool_calls.get_mut(idx) {
+                            tool_call.finished_at = Some(chrono::Utc::now());
+                        }
+                    }
+                    if indices.is_empty() {
+                        active_tool_calls.remove(name);
+                    }
+                }
+            }
+            _ => {}
         }
+
+        // Milestones are tracked separately and FileToSend is already recorded by the
+        // transport itself, but both still should update progress state for consistency.
+        if !is_milestone && !is_file_to_send {
+            event_log.push(&event).await;
+        }
+
+        state.update(event);
 
         // Track finished_at.
         if is_terminal {
@@ -259,5 +311,9 @@ pub async fn collect_events(
     // Close the event log — signals SSE subscribers to stop.
     event_log.close().await;
 
-    (state, timestamps)
+    EventCollectionResult {
+        state,
+        timestamps,
+        tool_calls,
+    }
 }
