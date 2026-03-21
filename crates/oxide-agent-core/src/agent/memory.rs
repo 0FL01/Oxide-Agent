@@ -533,7 +533,7 @@ impl AgentMemory {
         );
 
         if diff.abs() > 100 {
-            tracing::warn!(
+            tracing::debug!(
                 local = self.token_count,
                 real = real_total_tokens,
                 diff = diff,
