@@ -22,6 +22,58 @@ fn should_run_e2e_checks() -> bool {
     matches!(env::var("RUN_LLM_E2E_CHECKS").as_deref(), Ok("1"))
 }
 
+fn weather_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_weather".to_string(),
+        description: "Get the current weather for a city".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "The city name"}
+            },
+            "required": ["city"]
+        }),
+    }
+}
+
+fn time_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_time".to_string(),
+        description: "Get current time for a timezone".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "timezone": {"type": "string"}
+            },
+            "required": ["timezone"]
+        }),
+    }
+}
+
+fn weather_and_time_tools() -> Vec<ToolDefinition> {
+    vec![weather_tool(), time_tool()]
+}
+
+fn build_weather_result() -> &'static str {
+    r#"{"temperature": 22, "condition": "sunny"}"#
+}
+
+fn build_weather_second_turn(
+    first_response: &oxide_agent_core::llm::ChatResponse,
+    tool_call: &oxide_agent_core::llm::ToolCall,
+) -> Vec<Message> {
+    vec![
+        Message::user("What's the weather in Tokyo?"),
+        Message::assistant_with_tools(
+            first_response.content.as_deref().unwrap_or("I'll check the weather for you."),
+            first_response.tool_calls.clone(),
+        ),
+        Message::tool(&tool_call.id, &tool_call.function.name, build_weather_result()),
+        Message::user("Is it a nice day?"),
+    ]
+}
+
+
 #[tokio::test]
 async fn test_mistral_simple_chat() -> Result<()> {
     init_test_env();
@@ -59,7 +111,7 @@ async fn test_mistral_simple_chat() -> Result<()> {
         Ok(response) => {
             info!("Response: {:?}", response.content);
             anyhow::ensure!(
-                response.content.is_some() && !response.content.as_ref().unwrap().is_empty(),
+                !response.content.as_ref().expect("content should be present").is_empty(),
                 "Expected text content"
             );
             info!("✓ Simple chat test passed");
@@ -176,21 +228,7 @@ async fn test_mistral_tool_call_with_result() -> Result<()> {
 
     info!("=== Test: Tool Call WITH Result (Multi-turn) ===");
     let provider = MistralProvider::new(api_key.clone());
-
-    let tools = vec![ToolDefinition {
-        name: "get_weather".to_string(),
-        description: "Get the current weather for a city".to_string(),
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "city": {
-                    "type": "string",
-                    "description": "The city name"
-                }
-            },
-            "required": ["city"]
-        }),
-    }];
+    let tools = vec![weather_tool()];
 
     // First turn: model should call a tool
     let first_request_messages = vec![Message::user("What's the weather in Tokyo?")];
@@ -224,44 +262,18 @@ async fn test_mistral_tool_call_with_result() -> Result<()> {
     );
 
     let tool_call = &first_response.tool_calls[0];
-    info!(
-        "First turn: called '{}' with args '{}'",
-        tool_call.function.name, tool_call.function.arguments
-    );
+    info!("First turn: called '{}'", tool_call.function.name);
 
     // Second turn: add tool result and ask for follow-up
-    let second_request_messages = vec![
-        Message::user("What's the weather in Tokyo?"),
-        Message::assistant_with_tools(
-            first_response
-                .content
-                .as_deref()
-                .unwrap_or("I'll check the weather for you."),
-            first_response.tool_calls.clone(),
-        ),
-        Message::tool(
-            &tool_call.id,
-            &tool_call.function.name,
-            r#"{"temperature": 22, "condition": "sunny"}"#,
-        ),
-        Message::user("Is it a nice day?"),
-    ];
-
-    info!(
-        "Second turn: sending {} messages",
-        second_request_messages.len()
-    );
-
-    let second_result = provider
-        .chat_with_tools(ChatWithToolsRequest {
-            system_prompt: "You are a helpful weather assistant. Use the get_weather tool.",
-            messages: &second_request_messages,
-            tools: &tools,
-            model_id: "mistral-large-latest",
-            max_tokens: 1024,
-            json_mode: false,
-        })
-        .await;
+    let second_request_messages = build_weather_second_turn(&first_response, tool_call);
+    let second_result = provider.chat_with_tools(ChatWithToolsRequest {
+        system_prompt: "You are a helpful weather assistant.",
+        messages: &second_request_messages,
+        tools: &tools,
+        model_id: "mistral-large-latest",
+        max_tokens: 1024,
+        json_mode: false,
+    }).await;
 
     match second_result {
         Ok(response) => {
@@ -391,47 +403,21 @@ async fn test_mistral_parallel_tool_results() -> Result<()> {
 
     info!("=== Test: Parallel Tool Calls WITH Results ===");
     let provider = MistralProvider::new(api_key.clone());
-
-    let tools = vec![
-        ToolDefinition {
-            name: "get_weather".to_string(),
-            description: "Get weather for a city".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "city": { "type": "string" }
-                },
-                "required": ["city"]
-            }),
-        },
-        ToolDefinition {
-            name: "get_time".to_string(),
-            description: "Get current time for a timezone".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "timezone": { "type": "string" }
-                },
-                "required": ["timezone"]
-            }),
-        },
-    ];
+    let tools = weather_and_time_tools();
 
     // First turn: get parallel tool calls
     let first_messages = vec![Message::user(
         "What's the weather in Tokyo and what's the current time in London?",
     )];
 
-    let first_result = provider
-        .chat_with_tools(ChatWithToolsRequest {
-            system_prompt: "You are a helpful assistant. Use the available tools.",
-            messages: &first_messages,
-            tools: &tools,
-            model_id: "mistral-large-latest",
-            max_tokens: 1024,
-            json_mode: false,
-        })
-        .await;
+    let first_result = provider.chat_with_tools(ChatWithToolsRequest {
+        system_prompt: "You are a helpful assistant. Use the available tools.",
+        messages: &first_messages,
+        tools: &tools,
+        model_id: "mistral-large-latest",
+        max_tokens: 1024,
+        json_mode: false,
+    }).await;
 
     let first_response = match first_result {
         Ok(r) => r,
@@ -448,50 +434,34 @@ async fn test_mistral_parallel_tool_results() -> Result<()> {
         warn!("Model didn't make parallel tool calls, skipping this test");
         return Ok(());
     }
-
     info!("First turn: {} tool calls", first_response.tool_calls.len());
-    for tc in &first_response.tool_calls {
-        info!("  - {}: {}", tc.function.name, tc.function.arguments);
-    }
 
     // Second turn: add ALL tool results
     let mut second_messages = vec![Message::user(
         "What's the weather in Tokyo and what's the current time in London?",
     )];
     second_messages.push(Message::assistant_with_tools(
-        first_response
-            .content
-            .as_deref()
-            .unwrap_or("Let me check both."),
+        first_response.content.as_deref().unwrap_or("Let me check both."),
         first_response.tool_calls.clone(),
     ));
 
-    // CRITICAL: Add a tool result for EACH tool call
     for tc in &first_response.tool_calls {
         let result = match tc.function.name.as_str() {
-            "get_weather" => r#"{"temperature": 22, "condition": "sunny"}"#,
+            "get_weather" => build_weather_result(),
             "get_time" => r#"{"time": "14:30", "timezone": "GMT"}"#,
             _ => r#"{"result": "done"}"#,
         };
         second_messages.push(Message::tool(&tc.id, &tc.function.name, result));
     }
 
-    info!(
-        "Second turn: {} messages (including {} tool results)",
-        second_messages.len(),
-        first_response.tool_calls.len()
-    );
-
-    let second_result = provider
-        .chat_with_tools(ChatWithToolsRequest {
-            system_prompt: "You are a helpful assistant. Use the available tools.",
-            messages: &second_messages,
-            tools: &tools,
-            model_id: "mistral-large-latest",
-            max_tokens: 1024,
-            json_mode: false,
-        })
-        .await;
+    let second_result = provider.chat_with_tools(ChatWithToolsRequest {
+        system_prompt: "You are a helpful assistant. Use the available tools.",
+        messages: &second_messages,
+        tools: &tools,
+        model_id: "mistral-large-latest",
+        max_tokens: 1024,
+        json_mode: false,
+    }).await;
 
     match second_result {
         Ok(response) => {

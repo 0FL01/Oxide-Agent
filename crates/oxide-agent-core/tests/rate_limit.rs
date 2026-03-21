@@ -14,7 +14,10 @@ use reqwest::header::RETRY_AFTER;
 #[test]
 fn parse_retry_after_seconds() {
     let mut headers = HeaderMap::new();
-    headers.insert(RETRY_AFTER, "120".parse().unwrap());
+    headers.insert(
+        RETRY_AFTER,
+        "120".parse().expect("valid retry-after header"),
+    );
 
     let wait_secs = parse_retry_after(&headers);
     assert_eq!(wait_secs, Some(120));
@@ -26,12 +29,13 @@ fn parse_retry_after_http_date() {
     // Future date: 1 hour from now
     let future_dt = chrono::Utc::now() + chrono::Duration::hours(1);
     let future_date = future_dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
-    headers.insert(RETRY_AFTER, future_date.parse().unwrap());
+    headers.insert(
+        RETRY_AFTER,
+        future_date.parse().expect("valid retry-after header"),
+    );
 
-    let wait_secs = parse_retry_after(&headers);
-    // Should be positive (~3600 seconds)
-    assert!(wait_secs.is_some());
-    assert!(wait_secs.unwrap() >= 3500); // ~1 hour
+    let wait_secs = parse_retry_after(&headers).expect("wait_secs should be Some for valid date");
+    assert!(wait_secs >= 3500, "~1 hour"); // ~1 hour
 }
 
 #[test]
@@ -44,7 +48,10 @@ fn parse_retry_after_missing() {
 #[test]
 fn parse_retry_after_invalid() {
     let mut headers = HeaderMap::new();
-    headers.insert(RETRY_AFTER, "invalid".parse().unwrap());
+    headers.insert(
+        RETRY_AFTER,
+        "invalid".parse().expect("header parse should not panic"),
+    );
 
     let wait_secs = parse_retry_after(&headers);
     assert_eq!(wait_secs, None);
@@ -75,8 +82,8 @@ mod openrouter_rate_limit {
 
         let wait_secs = parse_openrouter_rate_limit(&body);
         // Should be positive (~3600 seconds)
-        assert!(wait_secs.is_some());
-        assert!(wait_secs.unwrap() >= 3500); // ~1 hour
+        let wait_secs = wait_secs.expect("wait_secs should be Some for valid body");
+        assert!(wait_secs >= 3500, "~1 hour"); // ~1 hour
     }
 
     #[test]
@@ -107,9 +114,9 @@ mod zai_rate_limit {
             future_ts
         );
 
-        let wait_secs = parse_zai_flush_time(&message);
-        assert!(wait_secs.is_some());
-        assert!((wait_secs.unwrap() as i64 - 300).abs() < 5); // ~300 seconds
+        let wait_secs =
+            parse_zai_flush_time(&message).expect("wait_secs should be Some for unix timestamp");
+        assert!((wait_secs as i64 - 300).abs() < 5, "~300 seconds"); // ~300 seconds
     }
 
     #[test]
@@ -142,8 +149,8 @@ mod zai_rate_limit {
             "Usage limit reached. Your limit will reset at {}",
             future_str
         );
-        let wait_secs = parse_zai_flush_time(&message);
-        assert!(wait_secs.is_some());
-        assert!(wait_secs.unwrap() >= 200); // ~5 minutes
+        let wait_secs = parse_zai_flush_time(&message)
+            .expect("wait_secs should be Some for valid ISO datetime");
+        assert!(wait_secs >= 200, "~5 minutes"); // ~5 minutes
     }
 }

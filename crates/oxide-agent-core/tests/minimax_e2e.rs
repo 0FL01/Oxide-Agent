@@ -22,6 +22,30 @@ fn should_run_e2e_checks() -> bool {
     matches!(env::var("RUN_LLM_E2E_CHECKS").as_deref(), Ok("1"))
 }
 
+fn weather_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_weather".to_string(),
+        description: "Get weather for a city".to_string(),
+        parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}),
+    }
+}
+
+fn time_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_time".to_string(),
+        description: "Get current time for a timezone".to_string(),
+        parameters: json!({"type": "object", "properties": {"timezone": {"type": "string"}}, "required": ["timezone"]}),
+    }
+}
+
+fn weather_and_time_tools() -> Vec<ToolDefinition> {
+    vec![weather_tool(), time_tool()]
+}
+
+fn weather_result() -> &'static str {
+    r#"{"temperature": 22, "condition": "sunny"}"#
+}
+
 #[tokio::test]
 async fn test_minimax_simple_chat() -> Result<()> {
     init_test_env();
@@ -59,7 +83,7 @@ async fn test_minimax_simple_chat() -> Result<()> {
         Ok(response) => {
             info!("Response: {:?}", response.content);
             anyhow::ensure!(
-                response.content.is_some() && !response.content.as_ref().unwrap().is_empty(),
+                !response.content.as_ref().expect("content should be present").is_empty(),
                 "Expected text content"
             );
             info!("✓ Simple chat test passed");
@@ -381,47 +405,21 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
 
     info!("=== Test: Parallel Tool Calls WITH Results ===");
     let provider = MiniMaxProvider::new(api_key.clone());
-
-    let tools = vec![
-        ToolDefinition {
-            name: "get_weather".to_string(),
-            description: "Get weather for a city".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "city": { "type": "string" }
-                },
-                "required": ["city"]
-            }),
-        },
-        ToolDefinition {
-            name: "get_time".to_string(),
-            description: "Get current time for a timezone".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "timezone": { "type": "string" }
-                },
-                "required": ["timezone"]
-            }),
-        },
-    ];
+    let tools = weather_and_time_tools();
 
     // First turn: get parallel tool calls
     let first_messages = vec![Message::user(
         "What's the weather in Tokyo and what's the current time in London?",
     )];
 
-    let first_result = provider
-        .chat_with_tools(ChatWithToolsRequest {
-            system_prompt: "You are a helpful assistant. Use the available tools.",
-            messages: &first_messages,
-            tools: &tools,
-            model_id: "MiniMax-M2.7",
-            max_tokens: 1024,
-            json_mode: false,
-        })
-        .await;
+    let first_result = provider.chat_with_tools(ChatWithToolsRequest {
+        system_prompt: "You are a helpful assistant. Use the available tools.",
+        messages: &first_messages,
+        tools: &tools,
+        model_id: "MiniMax-M2.7",
+        max_tokens: 1024,
+        json_mode: false,
+    }).await;
 
     let first_response = match first_result {
         Ok(r) => r,
@@ -438,50 +436,34 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
         warn!("Model didn't make parallel tool calls, skipping this test");
         return Ok(());
     }
-
     info!("First turn: {} tool calls", first_response.tool_calls.len());
-    for tc in &first_response.tool_calls {
-        info!("  - {}: {}", tc.function.name, tc.function.arguments);
-    }
 
     // Second turn: add ALL tool results
     let mut second_messages = vec![Message::user(
         "What's the weather in Tokyo and what's the current time in London?",
     )];
     second_messages.push(Message::assistant_with_tools(
-        first_response
-            .content
-            .as_deref()
-            .unwrap_or("Let me check both."),
+        first_response.content.as_deref().unwrap_or("Let me check both."),
         first_response.tool_calls.clone(),
     ));
 
-    // Add a tool result for EACH tool call
     for tc in &first_response.tool_calls {
         let result = match tc.function.name.as_str() {
-            "get_weather" => r#"{"temperature": 22, "condition": "sunny"}"#,
+            "get_weather" => weather_result(),
             "get_time" => r#"{"time": "14:30", "timezone": "GMT"}"#,
             _ => r#"{"result": "done"}"#,
         };
         second_messages.push(Message::tool(&tc.id, &tc.function.name, result));
     }
 
-    info!(
-        "Second turn: {} messages (including {} tool results)",
-        second_messages.len(),
-        first_response.tool_calls.len()
-    );
-
-    let second_result = provider
-        .chat_with_tools(ChatWithToolsRequest {
-            system_prompt: "You are a helpful assistant. Use the available tools.",
-            messages: &second_messages,
-            tools: &tools,
-            model_id: "MiniMax-M2.7",
-            max_tokens: 1024,
-            json_mode: false,
-        })
-        .await;
+    let second_result = provider.chat_with_tools(ChatWithToolsRequest {
+        system_prompt: "You are a helpful assistant. Use the available tools.",
+        messages: &second_messages,
+        tools: &tools,
+        model_id: "MiniMax-M2.7",
+        max_tokens: 1024,
+        json_mode: false,
+    }).await;
 
     match second_result {
         Ok(response) => {
