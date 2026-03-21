@@ -671,7 +671,11 @@ impl LlmClient {
                 }
                 None
             }
-            LlmError::NetworkError(_) => {
+            LlmError::NetworkError(msg) => {
+                // "builder" errors indicate a configuration/endpoint problem, not a transient failure.
+                if msg.to_lowercase().contains("builder") {
+                    return None;
+                }
                 let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
                 Some(std::time::Duration::from_millis(backoff_ms))
             }
@@ -688,6 +692,15 @@ impl LlmClient {
     /// Returns true if the error is retryable.
     pub fn is_retryable_error(error: &LlmError) -> bool {
         Self::get_retry_delay(error, 1).is_some()
+    }
+
+    /// Returns true if the error is a rate limit (429 or RateLimit variant).
+    pub fn is_rate_limit_error(error: &LlmError) -> bool {
+        match error {
+            LlmError::RateLimit { .. } => true,
+            LlmError::ApiError(msg) => msg.to_lowercase().contains("429"),
+            _ => false,
+        }
     }
 
     /// Returns the wait time in seconds from a rate limit error, if available.

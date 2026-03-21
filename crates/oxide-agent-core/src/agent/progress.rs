@@ -191,6 +191,19 @@ pub enum AgentEvent {
         /// Provider name for display
         provider: String,
     },
+    /// Non-rate-limit retryable error, retrying with backoff.
+    LlmRetrying {
+        /// Current attempt number (starts at 1)
+        attempt: usize,
+        /// Maximum number of retry attempts
+        max_attempts: usize,
+        /// Wait time in seconds before next attempt
+        wait_secs: Option<u64>,
+        /// Provider name for display
+        provider: String,
+        /// Error class (e.g. "network", "timeout", "server_error")
+        error_class: String,
+    },
     /// Execution milestone for latency tracking.
     Milestone {
         /// Milestone name (e.g., "executor_lock_acquired", "thinking_sent", "llm_call_started")
@@ -368,6 +381,13 @@ impl ProgressState {
                 wait_secs,
                 provider,
             } => self.handle_rate_limit_retrying(attempt, max_attempts, wait_secs, provider),
+            AgentEvent::LlmRetrying {
+                attempt,
+                max_attempts,
+                wait_secs,
+                provider,
+                error_class,
+            } => self.handle_llm_retrying(attempt, max_attempts, wait_secs, provider, error_class),
             AgentEvent::Milestone { name, timestamp_ms } => {
                 tracing::debug!(milestone = %name, timestamp_ms, "Execution milestone reached");
             }
@@ -663,6 +683,24 @@ impl ProgressState {
             provider,
         });
         // Clear any previous error since we're retrying
+        self.error = None;
+    }
+
+    fn handle_llm_retrying(
+        &mut self,
+        attempt: usize,
+        max_attempts: usize,
+        wait_secs: Option<u64>,
+        provider: String,
+        error_class: String,
+    ) {
+        // Uses the same rate_limit_retry field for consistency in the UI.
+        self.rate_limit_retry = Some(RateLimitRetryState {
+            attempt,
+            max_attempts,
+            wait_secs,
+            provider: format!("{} [{}]", provider, error_class),
+        });
         self.error = None;
     }
 

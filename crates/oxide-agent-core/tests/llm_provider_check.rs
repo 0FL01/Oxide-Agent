@@ -50,7 +50,7 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
 
     let provider = ZaiProvider::new(
         api_key,
-        "https://api.z.ai/api/paas/v4/chat/completions".to_string(),
+        "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string(),
     );
 
     // Define a simple tool

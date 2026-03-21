@@ -199,23 +199,43 @@ impl AgentRunner {
                                 LlmClient::get_rate_limit_wait_secs(&error)
                             };
 
-                            // Emit retry event
-                            Self::emit_rate_limit_retrying(
-                                ctx.progress_tx,
-                                attempt,
-                                max_retries,
-                                wait_secs_display,
-                                &provider_name,
-                            )
-                            .await;
-
-                            debug!(
-                                error = %error,
-                                attempt = attempt,
-                                max_attempts = max_retries,
-                                backoff_ms = backoff.as_millis(),
-                                "Retrying LLM request after rate limit"
-                            );
+                            // Emit the appropriate retry event.
+                            if LlmClient::is_rate_limit_error(&error) {
+                                Self::emit_rate_limit_retrying(
+                                    ctx.progress_tx,
+                                    attempt,
+                                    max_retries,
+                                    wait_secs_display,
+                                    &provider_name,
+                                )
+                                .await;
+                                debug!(
+                                    error = %error,
+                                    attempt = attempt,
+                                    max_attempts = max_retries,
+                                    backoff_ms = backoff.as_millis(),
+                                    "Retrying LLM request after rate limit"
+                                );
+                            } else {
+                                let error_class = Self::error_class(&error);
+                                Self::emit_llm_retrying(
+                                    ctx.progress_tx,
+                                    attempt,
+                                    max_retries,
+                                    wait_secs_display,
+                                    &provider_name,
+                                    error_class,
+                                )
+                                .await;
+                                debug!(
+                                    error = %error,
+                                    error_class = error_class,
+                                    attempt = attempt,
+                                    max_attempts = max_retries,
+                                    backoff_ms = backoff.as_millis(),
+                                    "Retrying LLM request after retryable error"
+                                );
+                            }
 
                             tokio::time::sleep(backoff).await;
                             continue;
@@ -727,6 +747,59 @@ impl AgentRunner {
                     max_attempts,
                     wait_secs,
                     provider: provider.to_string(),
+                })
+                .await;
+        }
+    }
+
+    fn error_class(error: &LlmError) -> &'static str {
+        match error {
+            LlmError::NetworkError(msg) => {
+                let m = msg.to_lowercase();
+                if m.contains("timeout") || m.contains("timed out") {
+                    "timeout"
+                } else if m.contains("connection") || m.contains("reset") {
+                    "connection"
+                } else {
+                    "network"
+                }
+            }
+            LlmError::ApiError(msg) => {
+                let m = msg.to_lowercase();
+                if m.contains("500")
+                    || m.contains("502")
+                    || m.contains("503")
+                    || m.contains("504")
+                    || m.contains("overloaded")
+                {
+                    "server_error"
+                } else if m.contains("timeout") {
+                    "timeout"
+                } else {
+                    "api"
+                }
+            }
+            LlmError::JsonError(_) => "json_error",
+            _ => "unknown",
+        }
+    }
+
+    async fn emit_llm_retrying(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        attempt: usize,
+        max_attempts: usize,
+        wait_secs: Option<u64>,
+        provider: &str,
+        error_class: &str,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::LlmRetrying {
+                    attempt,
+                    max_attempts,
+                    wait_secs,
+                    provider: provider.to_string(),
+                    error_class: error_class.to_string(),
                 })
                 .await;
         }
