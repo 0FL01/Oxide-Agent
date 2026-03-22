@@ -148,10 +148,12 @@ impl ToolProvider for JiraMcpProvider {
             ToolDefinition {
                 name: TOOL_JIRA_WRITE.to_string(),
                 description: concat!(
-                    "Create, update, delete, transition issues; add/edit comments; move issues to sprints. ",
+                    "Create, update, delete, transition issues; add/edit comments; move issues to sprints; ",
+                    "add/update/delete worklogs (time tracking). ",
                     "Supports dry_run for preview. Actions: create, update, delete, transition, ",
-                    "comment, edit_comment, move_to_sprint. ",
-                    "For Jira Server 7.5.0: uses username (not accountId), plain text descriptions (not ADF)."
+                    "comment, edit_comment, move_to_sprint, add_worklog, update_worklog, delete_worklog. ",
+                    "For Jira Server 7.5.0: uses username (not accountId), plain text descriptions (not ADF). ",
+                    "Time tracking: use add_worklog action for time tracking."
                 )
                 .to_string(),
                 parameters: json!({
@@ -159,7 +161,7 @@ impl ToolProvider for JiraMcpProvider {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["create", "update", "delete", "transition", "comment", "edit_comment", "move_to_sprint"],
+                            "enum": ["create", "update", "delete", "transition", "comment", "edit_comment", "move_to_sprint", "add_worklog", "update_worklog", "delete_worklog"],
                             "description": "Action to perform"
                         },
                         "items": {
@@ -167,7 +169,7 @@ impl ToolProvider for JiraMcpProvider {
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "key": {"type": "string", "description": "Issue key (for update/delete/transition/comment)"},
+                                    "key": {"type": "string", "description": "Issue key (for update/delete/transition/comment/worklog)"},
                                     "project": {"type": "string", "description": "Project key (for create)"},
                                     "summary": {"type": "string"},
                                     "issue_type": {"type": "string", "description": "Bug, Task, Story, Epic, etc."},
@@ -182,7 +184,17 @@ impl ToolProvider for JiraMcpProvider {
                                     "comment": {"type": "string"},
                                     "comment_id": {"type": "string", "description": "For edit_comment"},
                                     "sprint_id": {"type": "integer"},
-                                    "fields_json": {"type": "string", "description": "Raw JSON for custom fields"}
+                                    "fields_json": {"type": "string", "description": "Raw JSON for custom fields"},
+                                    "time_spent": {"type": "string", "description": "Time spent (e.g., '3h 20m', '1d'). For add_worklog/update_worklog."},
+                                    "time_spent_seconds": {"type": "integer", "description": "Time spent in seconds. Alternative to time_spent."},
+                                    "started": {"type": "string", "description": "ISO 8601 timestamp when work started. For add_worklog."},
+                                    "worklog_id": {"type": "string", "description": "Worklog ID. Required for update_worklog/delete_worklog."},
+                                    "visibility_type": {"type": "string", "enum": ["group", "role"], "description": "Who can see the worklog."},
+                                    "visibility_value": {"type": "string", "description": "Group or role name for visibility."},
+                                    "adjust_estimate": {"type": "string", "enum": ["auto", "new", "leave", "manual"], "description": "How to adjust remaining estimate."},
+                                    "new_estimate": {"type": "string", "description": "New estimate value (e.g., '2d')."},
+                                    "reduce_by": {"type": "string", "description": "Amount to reduce estimate by (for add_worklog)."},
+                                    "increase_by": {"type": "string", "description": "Amount to increase estimate by (for delete_worklog)."}
                                 }
                             }
                         },
