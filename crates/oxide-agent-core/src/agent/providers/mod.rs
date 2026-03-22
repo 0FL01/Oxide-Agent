@@ -21,6 +21,9 @@ pub mod tavily;
 #[cfg(feature = "crawl4ai")]
 pub mod crawl4ai;
 
+#[cfg(feature = "jira")]
+pub mod jira_mcp;
+
 pub use agents_md::{agents_md_tool_names, AgentsMdProvider};
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
@@ -46,3 +49,6 @@ pub use tavily::TavilyProvider;
 
 #[cfg(feature = "crawl4ai")]
 pub use crawl4ai::Crawl4aiProvider;
+
+#[cfg(feature = "jira")]
+pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};
