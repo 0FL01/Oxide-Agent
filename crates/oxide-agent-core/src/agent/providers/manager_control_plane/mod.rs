@@ -178,6 +178,7 @@ const TOPIC_AGENT_SANDBOX_TOOLS: &[&str] = &[
     "read_file",
     "send_file_to_user",
     "list_files",
+    "recreate_sandbox",
 ];
 const TOPIC_AGENT_FILEHOSTER_TOOLS: &[&str] = &["upload_file"];
 const TOPIC_AGENT_YTDLP_TOOLS: &[&str] = &[

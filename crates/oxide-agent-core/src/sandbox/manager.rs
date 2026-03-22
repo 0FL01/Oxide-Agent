@@ -1513,4 +1513,28 @@ mod tests {
         sandbox.destroy().await?;
         Ok(())
     }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_recreate_clears_workspace() -> Result<(), Box<dyn std::error::Error>> {
+        let mut sandbox = DockerSandboxManager::new(12347).await?;
+        sandbox.create_sandbox().await?;
+
+        sandbox
+            .write_file("/workspace/recreate-me.txt", b"before recreate")
+            .await?;
+        let before = sandbox.read_file("/workspace/recreate-me.txt").await?;
+        assert_eq!(before, b"before recreate");
+
+        sandbox.recreate().await?;
+
+        let after = sandbox.read_file("/workspace/recreate-me.txt").await;
+        assert!(
+            after.is_err(),
+            "workspace file should be removed after recreate"
+        );
+
+        sandbox.destroy().await?;
+        Ok(())
+    }
 }

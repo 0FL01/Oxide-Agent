@@ -1,6 +1,7 @@
 //! Sandbox Provider - executes tools in Docker sandbox
 //!
-//! Provides `execute_command`, `read_file`, `write_file`, `send_file_to_user` tools.
+//! Provides `execute_command`, `read_file`, `write_file`, `send_file_to_user`,
+//! `list_files`, and `recreate_sandbox` tools.
 
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use super::path::resolve_file_path;
@@ -25,6 +27,7 @@ const CHAT_DELIVERY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(120);
 /// Provider for Docker sandbox tools
 pub struct SandboxProvider {
     sandbox: Arc<Mutex<Option<SandboxManager>>>,
+    execution_gate: Arc<RwLock<()>>,
     sandbox_scope: SandboxScope,
     progress_tx: Option<Sender<AgentEvent>>,
 }
@@ -41,6 +44,7 @@ impl SandboxProvider {
     pub fn new(sandbox_scope: impl Into<SandboxScope>) -> Self {
         Self {
             sandbox: Arc::new(Mutex::new(None)),
+            execution_gate: Arc::new(RwLock::new(())),
             sandbox_scope: sandbox_scope.into(),
             progress_tx: None,
         }
@@ -59,27 +63,43 @@ impl SandboxProvider {
         *guard = Some(sandbox);
     }
 
-    /// Get or create the sandbox
-    async fn ensure_sandbox(&self) -> Result<()> {
-        if self
-            .sandbox
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(SandboxManager::is_running)
-        {
-            return Ok(());
+    async fn get_or_create_sandbox(&self) -> Result<SandboxManager> {
+        let mut guard = self.sandbox.lock().await;
+
+        if guard.as_ref().is_none_or(|sandbox| !sandbox.is_running()) {
+            debug!(scope = %self.sandbox_scope.namespace(), "Creating new sandbox for provider");
+            let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
+            sandbox.create_sandbox().await?;
+            *guard = Some(sandbox);
         }
 
-        debug!(scope = %self.sandbox_scope.namespace(), "Creating new sandbox for provider");
-        let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
-        sandbox.create_sandbox().await?;
-
-        *self.sandbox.lock().await = Some(sandbox);
-        Ok(())
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
     }
 
-    async fn deliver_file_to_user(&self, request: FileDeliveryRequest) -> String {
+    async fn get_or_init_sandbox_manager(&self) -> Result<SandboxManager> {
+        let mut guard = self.sandbox.lock().await;
+
+        if guard.is_none() {
+            debug!(
+                scope = %self.sandbox_scope.namespace(),
+                "Initializing sandbox manager for provider"
+            );
+            *guard = Some(SandboxManager::new(self.sandbox_scope.clone()).await?);
+        }
+
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
+    }
+
+    async fn deliver_file_to_user(
+        progress_tx: Option<&Sender<AgentEvent>>,
+        request: FileDeliveryRequest,
+    ) -> String {
         let FileDeliveryRequest {
             file_name,
             content,
@@ -95,7 +115,7 @@ impl SandboxProvider {
 
         let size_mb = content.len() as f64 / 1024.0 / 1024.0;
 
-        let Some(ref tx) = self.progress_tx else {
+        let Some(tx) = progress_tx else {
             warn!(file_name = %file_name, "Progress channel not available");
             return format!(
                 "⚠️ File '{file_name}' read ({size_mb:.2} MB), but send channel is not available.\n\
@@ -200,7 +220,7 @@ impl SandboxProvider {
     }
 
     async fn handle_send_file(
-        &self,
+        progress_tx: Option<&Sender<AgentEvent>>,
         sandbox: &mut SandboxManager,
         arguments: &str,
     ) -> Result<String> {
@@ -243,13 +263,15 @@ impl SandboxProvider {
 
         match sandbox.download_file(&resolved_path).await {
             Ok(content) => {
-                let message = self
-                    .deliver_file_to_user(FileDeliveryRequest {
+                let message = Self::deliver_file_to_user(
+                    progress_tx,
+                    FileDeliveryRequest {
                         file_name: file_name.clone(),
                         content,
                         sandbox_path: resolved_path.clone(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 Ok(message)
             }
             Err(e) => {
@@ -298,6 +320,25 @@ impl SandboxProvider {
             Err(e) => Ok(format!("❌ Error executing command: {e}")),
         }
     }
+
+    async fn handle_recreate_sandbox(
+        sandbox: &mut SandboxManager,
+        arguments: &str,
+    ) -> Result<String> {
+        let _: RecreateSandboxArgs = if arguments.trim().is_empty() {
+            RecreateSandboxArgs::default()
+        } else {
+            serde_json::from_str(arguments)?
+        };
+
+        match sandbox.recreate().await {
+            Ok(()) => Ok(
+                "Sandbox recreated successfully. Previous workspace contents were removed."
+                    .to_string(),
+            ),
+            Err(e) => Ok(format!("Error recreating sandbox: {e}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -318,13 +359,15 @@ mod tests {
             }
         });
 
-        let result = provider
-            .deliver_file_to_user(FileDeliveryRequest {
+        let result = SandboxProvider::deliver_file_to_user(
+            provider.progress_tx.as_ref(),
+            FileDeliveryRequest {
                 file_name: "ok.txt".to_string(),
                 content: b"hello".to_vec(),
                 sandbox_path: "/workspace/ok.txt".to_string(),
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert!(result.starts_with("✅"), "unexpected result: {result}");
     }
@@ -344,13 +387,15 @@ mod tests {
             }
         });
 
-        let result = provider
-            .deliver_file_to_user(FileDeliveryRequest {
+        let result = SandboxProvider::deliver_file_to_user(
+            provider.progress_tx.as_ref(),
+            FileDeliveryRequest {
                 file_name: "empty.txt".to_string(),
                 content: b"x".to_vec(),
                 sandbox_path: "/workspace/empty.txt".to_string(),
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert!(result.starts_with("❌"), "unexpected result: {result}");
         assert!(
@@ -365,13 +410,15 @@ mod tests {
         drop(rx);
 
         let provider = SandboxProvider::new(1).with_progress_tx(tx);
-        let result = provider
-            .deliver_file_to_user(FileDeliveryRequest {
+        let result = SandboxProvider::deliver_file_to_user(
+            provider.progress_tx.as_ref(),
+            FileDeliveryRequest {
                 file_name: "file.txt".to_string(),
                 content: b"hello".to_vec(),
                 sandbox_path: "/workspace/file.txt".to_string(),
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert!(!result.starts_with("✅"), "unexpected result: {result}");
         assert!(result.starts_with("⚠️"), "unexpected result: {result}");
@@ -379,17 +426,27 @@ mod tests {
 
     #[tokio::test]
     async fn deliver_file_rejects_empty_content() {
-        let provider = SandboxProvider::new(1);
-        let result = provider
-            .deliver_file_to_user(FileDeliveryRequest {
+        let result = SandboxProvider::deliver_file_to_user(
+            None,
+            FileDeliveryRequest {
                 file_name: "empty.bin".to_string(),
                 content: Vec::new(),
                 sandbox_path: "/workspace/empty.bin".to_string(),
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert!(result.starts_with("❌"), "unexpected result: {result}");
         assert!(result.contains("0 bytes"), "unexpected result: {result}");
+    }
+
+    #[test]
+    fn recreate_sandbox_is_registered() {
+        let provider = SandboxProvider::new(1);
+        let tools = provider.tools();
+
+        assert!(tools.iter().any(|tool| tool.name == "recreate_sandbox"));
+        assert!(provider.can_handle("recreate_sandbox"));
     }
 }
 
@@ -417,6 +474,10 @@ struct ReadFileArgs {
 struct SendFileArgs {
     path: String,
 }
+
+/// Arguments for `recreate_sandbox` tool
+#[derive(Debug, Default, Deserialize)]
+struct RecreateSandboxArgs {}
 
 #[async_trait]
 impl ToolProvider for SandboxProvider {
@@ -499,13 +560,26 @@ impl ToolProvider for SandboxProvider {
                     }
                 }),
             },
+            ToolDefinition {
+                name: "recreate_sandbox".to_string(),
+                description: "Recreate the sandbox container from scratch, wiping all previous workspace contents. Use this when the sandbox state is corrupted or you need a completely clean environment.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ]
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "execute_command" | "read_file" | "write_file" | "send_file_to_user" | "list_files"
+            "execute_command"
+                | "read_file"
+                | "write_file"
+                | "send_file_to_user"
+                | "list_files"
+                | "recreate_sandbox"
         )
     }
 
@@ -518,25 +592,40 @@ impl ToolProvider for SandboxProvider {
     ) -> Result<String> {
         debug!(tool = tool_name, "Executing sandbox tool");
 
-        // Ensure sandbox is running
-        self.ensure_sandbox().await?;
-
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))?
-        };
-
+        let progress_tx = self.progress_tx.clone();
         match tool_name {
+            "recreate_sandbox" => {
+                let _exclusive = self.execution_gate.write().await;
+                let mut sandbox = self.get_or_init_sandbox_manager().await?;
+                let result = Self::handle_recreate_sandbox(&mut sandbox, arguments).await;
+                self.set_sandbox(sandbox).await;
+                result
+            }
             "execute_command" => {
+                let _shared = self.execution_gate.read().await;
+                let mut sandbox = self.get_or_create_sandbox().await?;
                 Self::handle_execute_command(&mut sandbox, arguments, cancellation_token).await
             }
-            "write_file" => Self::handle_write_file(&mut sandbox, arguments).await,
-            "read_file" => Self::handle_read_file(&mut sandbox, arguments).await,
-            "send_file_to_user" => self.handle_send_file(&mut sandbox, arguments).await,
-            "list_files" => Self::handle_list_files(&mut sandbox, arguments).await,
+            "write_file" => {
+                let _shared = self.execution_gate.read().await;
+                let mut sandbox = self.get_or_create_sandbox().await?;
+                Self::handle_write_file(&mut sandbox, arguments).await
+            }
+            "read_file" => {
+                let _shared = self.execution_gate.read().await;
+                let mut sandbox = self.get_or_create_sandbox().await?;
+                Self::handle_read_file(&mut sandbox, arguments).await
+            }
+            "send_file_to_user" => {
+                let _shared = self.execution_gate.read().await;
+                let mut sandbox = self.get_or_create_sandbox().await?;
+                Self::handle_send_file(progress_tx.as_ref(), &mut sandbox, arguments).await
+            }
+            "list_files" => {
+                let _shared = self.execution_gate.read().await;
+                let mut sandbox = self.get_or_create_sandbox().await?;
+                Self::handle_list_files(&mut sandbox, arguments).await
+            }
             _ => anyhow::bail!("Unknown sandbox tool: {tool_name}"),
         }
     }

@@ -20,6 +20,7 @@ const GENERIC_TOOLS: &[&str] = &[
     "write_file",
     "send_file_to_user",
     "list_files",
+    "recreate_sandbox",
 ];
 
 /// Resulting prompt composed from selected skills.

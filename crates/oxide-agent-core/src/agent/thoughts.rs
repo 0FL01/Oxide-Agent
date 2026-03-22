@@ -11,6 +11,7 @@ const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
     ("write_file", "Writing changes to {path}"),
     ("execute_command", "Executing command"),
     ("list_files", "Viewing directory contents {directory}"),
+    ("recreate_sandbox", "Resetting sandbox workspace"),
     ("tavily_search", "Searching for information: {query}"),
     ("tavily_extract", "Extracting content from {url}"),
     ("tavily_crawl", "Analyzing website structure {url}"),
@@ -224,6 +225,12 @@ mod tests {
             thought,
             Some("Searching for information: rust async programming".to_string())
         );
+    }
+
+    #[test]
+    fn test_infer_thought_recreate_sandbox() {
+        let thought = infer_thought("recreate_sandbox", r#"{}"#);
+        assert_eq!(thought, Some("Resetting sandbox workspace".to_string()));
     }
 
     #[test]
