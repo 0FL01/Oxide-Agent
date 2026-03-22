@@ -39,7 +39,7 @@ RUN curl -fsSL "https://github.com/0FL01/ssh-mcp-rs/releases/download/${SSH_MCP_
 
 FROM debian:trixie-slim AS jira-mcp-binary
 
-ARG JIRA_MCP_VERSION=0.1.0
+ARG JIRA_MCP_VERSION=0.1.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
