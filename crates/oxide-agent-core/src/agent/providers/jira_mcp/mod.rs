@@ -19,6 +19,7 @@ mod types;
 
 use client::JiraMcpClient;
 pub use config::JiraMcpConfig;
+use types::{JiraReadArgs, JiraSchemaArgs, JiraWriteArgs};
 
 const TOOL_JIRA_READ: &str = "jira_read";
 const TOOL_JIRA_WRITE: &str = "jira_write";
@@ -239,14 +240,37 @@ impl ToolProvider for JiraMcpProvider {
             .await
             .context("failed to initialize jira-mcp client")?;
 
-        // Parse arguments into JSON object
-        let args_value: serde_json::Value =
-            serde_json::from_str(arguments).context("failed to parse tool arguments as JSON")?;
-
-        let args = args_value
-            .as_object()
-            .cloned()
-            .ok_or_else(|| anyhow!("tool arguments must be a JSON object"))?;
+        // Parse and validate arguments based on tool type
+        let args = match tool_name {
+            TOOL_JIRA_READ => {
+                let _: JiraReadArgs = serde_json::from_str(arguments)
+                    .context("failed to parse jira_read arguments")?;
+                serde_json::from_str::<serde_json::Value>(arguments)
+                    .context("failed to parse arguments to JSON")?
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| anyhow!("arguments must be a JSON object"))?
+            }
+            TOOL_JIRA_WRITE => {
+                let _: JiraWriteArgs = serde_json::from_str(arguments)
+                    .context("failed to parse jira_write arguments")?;
+                serde_json::from_str::<serde_json::Value>(arguments)
+                    .context("failed to parse arguments to JSON")?
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| anyhow!("arguments must be a JSON object"))?
+            }
+            TOOL_JIRA_SCHEMA => {
+                let _: JiraSchemaArgs = serde_json::from_str(arguments)
+                    .context("failed to parse jira_schema arguments")?;
+                serde_json::from_str::<serde_json::Value>(arguments)
+                    .context("failed to parse arguments to JSON")?
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| anyhow!("arguments must be a JSON object"))?
+            }
+            _ => return Err(anyhow!("unknown tool: {}", tool_name)),
+        };
 
         // Call the MCP tool
         client

@@ -1,8 +1,10 @@
 //! MCP client types and DTOs for Jira MCP provider.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// Arguments for jira_read tool.
+/// Used for schema validation via serde; fields intentionally not read directly.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct JiraReadArgs {
     #[serde(default)]
@@ -38,6 +40,8 @@ fn default_limit() -> i64 {
 }
 
 /// Arguments for jira_write tool.
+/// Used for schema validation via serde; fields intentionally not read directly.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct JiraWriteArgs {
     pub action: String,
@@ -47,6 +51,8 @@ pub struct JiraWriteArgs {
 }
 
 /// Single item for jira_write action.
+/// Used for schema validation via serde; fields intentionally not read directly.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct JiraWriteItem {
     #[serde(default)]
@@ -78,6 +84,8 @@ pub struct JiraWriteItem {
 }
 
 /// Arguments for jira_schema tool.
+/// Used for schema validation via serde; fields intentionally not read directly.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct JiraSchemaArgs {
     pub resource: String,
