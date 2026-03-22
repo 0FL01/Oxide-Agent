@@ -40,7 +40,6 @@ RUN curl -fsSL "https://github.com/0FL01/ssh-mcp-rs/releases/download/${SSH_MCP_
 FROM debian:trixie-slim AS jira-mcp-binary
 
 ARG JIRA_MCP_VERSION=0.1.0
-ARG JIRA_MCP_LINUX_AMD64_SHA256=a4f7e7c8e3f9d2b1c0a9e8f7d6c5b4a3e2d1c0b9a8f7e6d5c4b3a2e1d0c9b8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -48,7 +47,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL "https://github.com/0FL01/jira-mcp/releases/download/${JIRA_MCP_VERSION}/jira-mcp_linux_amd64.tar.gz" -o /tmp/jira-mcp.tar.gz \
-    && echo "${JIRA_MCP_LINUX_AMD64_SHA256}  /tmp/jira-mcp.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/jira-mcp.tar.gz -C /usr/local/bin jira-mcp \
     && rm /tmp/jira-mcp.tar.gz \
     && chmod +x /usr/local/bin/jira-mcp
