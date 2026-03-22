@@ -66,6 +66,7 @@ ignored = ["serde_bytes"]
 default = ["tavily"]
 tavily = ["dep:tavily"]
 crawl4ai = []
+jira = []
 
 [dev-dependencies]
 dotenvy = "0.15"

@@ -467,6 +467,17 @@ impl AgentExecutor {
             registry.register(Box::new(ReminderProvider::new(reminder_context.clone())));
         }
 
+        // Register Jira MCP provider if configured and feature enabled
+        #[cfg(feature = "jira")]
+        {
+            if let Some(config) = crate::agent::providers::JiraMcpConfig::from_env() {
+                registry.register(Box::new(crate::agent::providers::JiraMcpProvider::new(
+                    config,
+                )));
+                tracing::info!("Jira MCP provider registered");
+            }
+        }
+
         // Register web search provider based on configuration
         let search_provider = crate::config::get_search_provider();
         match search_provider.as_str() {
