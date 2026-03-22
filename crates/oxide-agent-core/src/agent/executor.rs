@@ -471,10 +471,18 @@ impl AgentExecutor {
         #[cfg(feature = "jira")]
         {
             if let Some(config) = crate::agent::providers::JiraMcpConfig::from_env() {
+                let binary_path = config.binary_path.clone();
+                tracing::info!(
+                    binary_path = %binary_path,
+                    jira_url_present = !config.jira_url.is_empty(),
+                    jira_email_present = !config.jira_email.is_empty(),
+                    jira_token_present = !config.jira_token.is_empty(),
+                    "Registering Jira MCP provider"
+                );
                 registry.register(Box::new(crate::agent::providers::JiraMcpProvider::new(
                     config,
                 )));
-                tracing::info!("Jira MCP provider registered");
+                tracing::info!(binary_path = %binary_path, "Jira MCP provider registered");
             } else {
                 tracing::warn!(
                     "jira feature is enabled but JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN is not set; \

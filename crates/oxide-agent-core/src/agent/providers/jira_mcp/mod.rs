@@ -48,7 +48,7 @@ impl JiraMcpProvider {
     /// Lazily initializes the MCP client.
     async fn ensure_client(&self) -> Result<Arc<JiraMcpClient>> {
         let mut guard = self.client.lock().await;
-        
+
         if let Some(ref client) = *guard {
             return Ok(Arc::clone(client));
         }
@@ -58,7 +58,7 @@ impl JiraMcpProvider {
                 .await
                 .context("failed to initialize jira-mcp client")?,
         );
-        
+
         *guard = Some(Arc::clone(&client));
         Ok(client)
     }
@@ -223,7 +223,10 @@ impl ToolProvider for JiraMcpProvider {
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(tool_name, TOOL_JIRA_READ | TOOL_JIRA_WRITE | TOOL_JIRA_SCHEMA)
+        matches!(
+            tool_name,
+            TOOL_JIRA_READ | TOOL_JIRA_WRITE | TOOL_JIRA_SCHEMA
+        )
     }
 
     async fn execute(
@@ -281,7 +284,7 @@ mod tests {
         };
         let provider = JiraMcpProvider::new(config);
         let tools = provider.tools();
-        
+
         assert_eq!(tools.len(), 3);
         assert!(tools.iter().any(|t| t.name == "jira_read"));
         assert!(tools.iter().any(|t| t.name == "jira_write"));
@@ -297,7 +300,7 @@ mod tests {
             jira_token: "token".to_string(),
         };
         let provider = JiraMcpProvider::new(config);
-        
+
         assert!(provider.can_handle("jira_read"));
         assert!(provider.can_handle("jira_write"));
         assert!(provider.can_handle("jira_schema"));

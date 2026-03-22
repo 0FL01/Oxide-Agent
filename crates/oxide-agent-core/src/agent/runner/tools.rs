@@ -10,8 +10,20 @@ use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_bridge::extract_updated_topic_agents_md;
 
 use crate::llm::{Message, ToolCall, ToolCallFunction};
+use std::fmt::Write as _;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    let mut output = String::new();
+    for (idx, cause) in error.chain().enumerate() {
+        if idx > 0 {
+            output.push_str(" | caused by: ");
+        }
+        let _ = write!(&mut output, "{cause}");
+    }
+    output
+}
 
 impl AgentRunner {
     /// Build a tool call payload from validated structured output.
@@ -168,7 +180,12 @@ impl AgentRunner {
         let output = match result {
             Ok(output) => output,
             Err(e) => {
-                warn!(tool = %tool_call.function.name, error = %e, "Tool execution failed");
+                warn!(
+                    tool = %tool_call.function.name,
+                    error = %e,
+                    error_chain = %format_error_chain(&e),
+                    "Tool execution failed"
+                );
                 format!("Tool execution error: {e}")
             }
         };
