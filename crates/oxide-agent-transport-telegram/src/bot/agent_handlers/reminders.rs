@@ -121,7 +121,8 @@ async fn process_due_reminder(
         thread_spec.thread_id,
         &reminder.flow_id,
     );
-    let manager_enabled = manager_control_plane_enabled(settings, reminder.user_id, thread_spec);
+    let manager_enabled =
+        manager_control_plane_enabled(settings, reminder.user_id, chat_id, thread_spec);
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
         context_key: reminder.context_key.clone(),
@@ -131,7 +132,8 @@ async fn process_due_reminder(
         user_id: reminder.user_id,
         bot,
         transport_ctx: SessionTransportContext {
-            manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
+            chat_id,
+            manager_default_chat_id: manager_default_chat_id(settings, chat_id, thread_spec),
             thread_spec,
         },
         llm,

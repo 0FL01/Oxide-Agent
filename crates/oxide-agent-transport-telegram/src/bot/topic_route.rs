@@ -83,7 +83,7 @@ pub async fn resolve_topic_route(
         reply_to_bot: is_reply_to_bot(message),
     };
 
-    resolve_topic_route_decision(topic, &context, bot_username.as_deref())
+    resolve_topic_route_decision(topic.as_ref(), &context, bot_username.as_deref())
 }
 
 #[must_use]
@@ -1072,6 +1072,9 @@ mod tests {
                 allowed_users_str: None,
                 agent_allowed_users_str: None,
                 manager_allowed_users_str: None,
+                manager_home_chat_id: None,
+                manager_home_thread_id: None,
+                manager_home_agent_id: None,
                 topic_configs: vec![TelegramTopicSettings {
                     chat_id: -1001,
                     thread_id: Some(313),

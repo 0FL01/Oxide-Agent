@@ -185,6 +185,7 @@ async fn handle_loop_retry(
         user_id: ctx.user_id,
         bot: &ctx.bot,
         transport_ctx: SessionTransportContext {
+            chat_id: ctx.chat_id,
             manager_default_chat_id: ctx.manager_default_chat_id,
             thread_spec: ctx.thread_spec,
         },
@@ -801,7 +802,7 @@ pub async fn handle_agent_callback(
             agent_flow_id,
             user_id,
             session_keys,
-            manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
+            manager_default_chat_id: manager_default_chat_id(&settings, chat_id, thread_spec),
             thread_spec,
             outbound_thread: outbound_thread_from_callback(&q),
         },
