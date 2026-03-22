@@ -207,6 +207,8 @@ const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_apply_file_edit",
     "ssh_check_process",
 ];
+#[cfg(feature = "jira")]
+const TOPIC_AGENT_JIRA_TOOLS: &[&str] = &["jira_read", "jira_write", "jira_schema"];
 
 /// Transport-agnostic request for forum topic creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

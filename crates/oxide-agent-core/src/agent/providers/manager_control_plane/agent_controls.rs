@@ -325,6 +325,15 @@ impl ManagerControlPlaneProvider {
             });
         }
 
+        #[cfg(feature = "jira")]
+        {
+            groups.push(TopicAgentToolGroup {
+                provider: "jira",
+                aliases: &["jira"],
+                tools: TOPIC_AGENT_JIRA_TOOLS,
+            });
+        }
+
         let mut tool_names = BTreeSet::new();
         for group in &groups {
             for tool in group.tools {
