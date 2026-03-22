@@ -37,6 +37,17 @@ RUN curl -fsSL "https://github.com/0FL01/ssh-mcp-rs/releases/download/${SSH_MCP_
     && echo "${SSH_MCP_LINUX_X86_64_SHA256}  /usr/local/bin/ssh-mcp" | sha256sum -c - \
     && chmod +x /usr/local/bin/ssh-mcp
 
+# Jira MCP binary stage - build from local source
+FROM golang:1.23-bookworm AS jira-mcp-binary
+
+WORKDIR /build
+# Copy jira-mcp source from local path
+COPY /home/stfu/ai/mcp/jira-mcp /build/
+
+# Download dependencies and build static binary
+RUN go mod download && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o jira-mcp ./cmd/jira-mcp
+
 # Runtime stage - Debian Trixie (stable)
 FROM debian:trixie-slim
 
@@ -57,6 +68,8 @@ WORKDIR /app
 COPY --from=builder /app/target/release/oxide-agent-telegram-bot /app/oxide-agent-telegram-bot
 COPY --from=builder /app/target/release/oxide-agent-sandboxd /app/oxide-agent-sandboxd
 COPY --from=ssh-mcp-binary /usr/local/bin/ssh-mcp /usr/local/bin/ssh-mcp
+COPY --from=jira-mcp-binary /build/jira-mcp /usr/local/bin/jira-mcp
+RUN chmod +x /usr/local/bin/jira-mcp
 COPY skills/ /app/skills/
 
 RUN chown -R oxide:oxide /app /home/oxide
