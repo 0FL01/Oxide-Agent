@@ -6,7 +6,7 @@ Oxide Agent - Telegram-бот с Agent Mode поверх нескольких LL
 
 ## Branch
 
-Default branch: `agent-topics`.
+Default branch: `testing`.
 
 ## Workspace Overview
 
@@ -47,11 +47,13 @@ Default branch: `agent-topics`.
 - `AgentSession` - lifecycle tasks, timeout, cancellation, loaded skills, hot-memory.
 - **Parallel tool execution** - multiple tool calls in one LLM response run concurrently.
 - **Fire-and-forget checkpoint** - memory persistence is async, non-blocking.
+- **History repair** - tool_call_id validation before LLM calls; orphaned tool results prevented during compaction.
 - Narrator - separate model for thought/narrative summarization.
 
 ### Agent Mode compaction
 - Pipeline: budget estimation -> classify -> externalize -> prune -> summarize -> rebuild hot context.
 - Token-based protected window (configurable via `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`).
+- Compaction summarization inherits `AGENT_MODEL_ROUTES`/`SUB_AGENT_MODEL_ROUTES` fallback.
 - Prunes only before summary boundary; delegate results skip externalization.
 
 ### Model Route Failover
@@ -128,7 +130,7 @@ Default branch: `agent-topics`.
 - HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
 
 ### Tool providers
-- sandbox, todos, tavily, crawl4ai, filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md.
+- sandbox, todos, tavily, crawl4ai, jira-mcp, filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md.
 - Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport
@@ -150,7 +152,7 @@ Default branch: `agent-topics`.
 
 - Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Конфигурационные файлы опциональны (`required(false)`).
-- Ключевые: search/embedding provider, narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`.
+- Ключевые: search/embedding provider, narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`).
 
 ## Практика разработки
 
