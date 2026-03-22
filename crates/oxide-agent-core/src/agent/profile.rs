@@ -10,6 +10,10 @@ const TOPIC_AGENT_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
     "ytdlp_search_videos",
     "ytdlp_download_video",
     "ytdlp_download_audio",
+    // Jira tools disabled by default - must be enabled via topic_agent_tools_enable
+    "jira_read",
+    "jira_write",
+    "jira_schema",
 ];
 
 const MANAGER_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
