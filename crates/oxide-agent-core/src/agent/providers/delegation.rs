@@ -81,6 +81,8 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "reminder_pause",
     "reminder_resume",
     "reminder_retry",
+    // Jira write operations blocked for sub-agents (read-only access allowed)
+    "jira_write",
 ];
 const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
 const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
