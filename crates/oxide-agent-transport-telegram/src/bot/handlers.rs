@@ -1620,6 +1620,9 @@ mod tests {
                 allowed_users_str: None,
                 agent_allowed_users_str: agent_allowed_users.map(str::to_string),
                 manager_allowed_users_str: None,
+                manager_home_chat_id: None,
+                manager_home_thread_id: None,
+                manager_home_agent_id: None,
                 topic_configs: Vec::new(),
             },
         )

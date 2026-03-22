@@ -31,6 +31,7 @@ pub(crate) struct AgentModeSessionKeys {
 
 #[derive(Clone, Copy)]
 pub(crate) struct SessionTransportContext {
+    pub(crate) chat_id: ChatId,
     pub(crate) manager_default_chat_id: Option<ChatId>,
     pub(crate) thread_spec: crate::bot::TelegramThreadSpec,
 }
@@ -236,8 +237,12 @@ pub(crate) async fn clear_pending_text_batch(session_id: SessionId) {
 }
 
 pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> SessionId {
-    let manager_enabled =
-        manager_control_plane_enabled(ctx.settings, ctx.user_id, ctx.transport_ctx.thread_spec);
+    let manager_enabled = manager_control_plane_enabled(
+        ctx.settings,
+        ctx.user_id,
+        ctx.transport_ctx.chat_id,
+        ctx.transport_ctx.thread_spec,
+    );
     let requires_primary_session = ctx.session_keys.primary != ctx.session_keys.legacy;
 
     if let Some(existing_session_id) = resolve_existing_session_id(ctx.session_keys).await {

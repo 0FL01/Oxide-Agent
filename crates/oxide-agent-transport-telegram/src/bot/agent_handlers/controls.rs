@@ -184,7 +184,12 @@ pub(crate) async fn start_manual_compaction(
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
-            manager_default_chat_id: super::manager_default_chat_id(msg.chat.id, thread_spec),
+            chat_id: msg.chat.id,
+            manager_default_chat_id: super::manager_default_chat_id(
+                &settings,
+                msg.chat.id,
+                thread_spec,
+            ),
             thread_spec,
         },
         llm: &llm,
@@ -528,6 +533,7 @@ pub(crate) async fn handle_recreate_container_confirmation(
         user_id,
         bot: send_ctx.bot,
         transport_ctx: SessionTransportContext {
+            chat_id: send_ctx.chat_id,
             manager_default_chat_id: send_ctx.manager_default_chat_id,
             thread_spec: TelegramThreadSpec::new(
                 if send_ctx.manager_default_chat_id.is_some() {
@@ -720,7 +726,7 @@ pub(crate) async fn handle_agent_confirmation(
         context_key: &context_key,
         agent_flow_id: &agent_flow_id,
         reply_markup,
-        manager_default_chat_id: super::manager_default_chat_id(chat_id, thread_spec),
+        manager_default_chat_id: super::manager_default_chat_id(&settings, chat_id, thread_spec),
         outbound_thread,
     };
 

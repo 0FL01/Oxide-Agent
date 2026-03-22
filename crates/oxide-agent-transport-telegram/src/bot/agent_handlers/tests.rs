@@ -478,6 +478,9 @@ fn test_settings(manager_users: Option<&str>) -> Arc<BotSettings> {
             allowed_users_str: None,
             agent_allowed_users_str: Some("77 88".to_string()),
             manager_allowed_users_str: manager_users.map(str::to_string),
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
     ))
@@ -730,17 +733,92 @@ async fn pending_cancel_confirmation_round_trip_clears_entry() {
 
 #[test]
 fn manager_default_chat_id_is_available_in_general_forum_topic() {
+    let settings = test_settings(Some("88"));
     let spec = resolve_thread_spec_from_context(true, true, None);
     assert_eq!(
-        manager_default_chat_id(ChatId(-100_123), spec),
+        manager_default_chat_id(&settings, ChatId(-100_123), spec),
         Some(ChatId(-100_123))
     );
 }
 
 #[test]
 fn manager_default_chat_id_is_not_available_outside_forum_context() {
+    let settings = test_settings(Some("88"));
     let spec = resolve_thread_spec_from_context(true, false, None);
-    assert_eq!(manager_default_chat_id(ChatId(-100_123), spec), None);
+    assert_eq!(
+        manager_default_chat_id(&settings, ChatId(-100_123), spec),
+        None
+    );
+}
+
+#[test]
+fn manager_default_chat_id_is_restricted_to_configured_manager_home() {
+    let settings = Arc::new(BotSettings::new(
+        AgentSettings::default(),
+        TelegramSettings {
+            telegram_token: "dummy".to_string(),
+            allowed_users_str: None,
+            agent_allowed_users_str: Some("77 88".to_string()),
+            manager_allowed_users_str: Some("88".to_string()),
+            manager_home_chat_id: Some(-100_123),
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
+            topic_configs: Vec::new(),
+        },
+    ));
+
+    let general_spec = resolve_thread_spec_from_context(true, true, None);
+    let created_topic_spec =
+        resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
+
+    assert_eq!(
+        manager_default_chat_id(&settings, ChatId(-100_123), general_spec),
+        Some(ChatId(-100_123))
+    );
+    assert_eq!(
+        manager_default_chat_id(&settings, ChatId(-100_123), created_topic_spec),
+        None
+    );
+}
+
+#[test]
+fn manager_control_plane_access_is_restricted_to_configured_manager_home() {
+    let settings = BotSettings::new(
+        AgentSettings::default(),
+        TelegramSettings {
+            telegram_token: "dummy".to_string(),
+            allowed_users_str: None,
+            agent_allowed_users_str: Some("88".to_string()),
+            manager_allowed_users_str: Some("88".to_string()),
+            manager_home_chat_id: Some(-100_123),
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
+            topic_configs: Vec::new(),
+        },
+    );
+
+    let general_spec = resolve_thread_spec_from_context(true, true, None);
+    let created_topic_spec =
+        resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
+
+    assert!(manager_control_plane_enabled(
+        &settings,
+        88,
+        ChatId(-100_123),
+        general_spec,
+    ));
+    assert!(!manager_control_plane_enabled(
+        &settings,
+        88,
+        ChatId(-100_123),
+        created_topic_spec,
+    ));
+    assert!(!manager_control_plane_enabled(
+        &settings,
+        88,
+        ChatId(-100_999),
+        general_spec,
+    ));
 }
 
 #[test]
@@ -752,14 +830,27 @@ fn manager_control_plane_access_requires_dedicated_allowlist_entry() {
             allowed_users_str: None,
             agent_allowed_users_str: Some("77 88".to_string()),
             manager_allowed_users_str: Some("88".to_string()),
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
     );
 
     let general_spec = resolve_thread_spec_from_context(true, true, None);
 
-    assert!(!manager_control_plane_enabled(&settings, 77, general_spec));
-    assert!(manager_control_plane_enabled(&settings, 88, general_spec));
+    assert!(!manager_control_plane_enabled(
+        &settings,
+        77,
+        ChatId(-100_123),
+        general_spec
+    ));
+    assert!(manager_control_plane_enabled(
+        &settings,
+        88,
+        ChatId(-100_123),
+        general_spec
+    ));
 }
 
 #[test]
@@ -771,13 +862,21 @@ fn manager_control_plane_access_is_disabled_in_direct_messages() {
             allowed_users_str: None,
             agent_allowed_users_str: Some("88".to_string()),
             manager_allowed_users_str: Some("88".to_string()),
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
     );
 
     let dm_spec = resolve_thread_spec_from_context(false, false, None);
 
-    assert!(!manager_control_plane_enabled(&settings, 88, dm_spec));
+    assert!(!manager_control_plane_enabled(
+        &settings,
+        88,
+        ChatId(-100_123),
+        dm_spec
+    ));
 }
 
 #[test]
@@ -789,13 +888,21 @@ fn manager_control_plane_access_is_disabled_in_non_forum_groups() {
             allowed_users_str: None,
             agent_allowed_users_str: Some("88".to_string()),
             manager_allowed_users_str: Some("88".to_string()),
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
     );
 
     let group_spec = resolve_thread_spec_from_context(true, false, None);
 
-    assert!(!manager_control_plane_enabled(&settings, 88, group_spec));
+    assert!(!manager_control_plane_enabled(
+        &settings,
+        88,
+        ChatId(-100_123),
+        group_spec
+    ));
 }
 
 #[test]
@@ -807,13 +914,21 @@ fn manager_control_plane_access_disabled_when_allowlist_is_empty() {
             allowed_users_str: None,
             agent_allowed_users_str: Some("77".to_string()),
             manager_allowed_users_str: None,
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
     );
 
     let general_spec = resolve_thread_spec_from_context(true, true, None);
 
-    assert!(!manager_control_plane_enabled(&settings, 77, general_spec));
+    assert!(!manager_control_plane_enabled(
+        &settings,
+        77,
+        ChatId(-100_123),
+        general_spec
+    ));
 }
 
 #[test]
@@ -825,6 +940,9 @@ fn manager_control_plane_gating_disables_tools_inside_created_topics() {
             allowed_users_str: None,
             agent_allowed_users_str: Some("77 88".to_string()),
             manager_allowed_users_str: Some("88".to_string()),
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
     );
@@ -840,13 +958,24 @@ fn manager_control_plane_gating_disables_tools_inside_created_topics() {
         resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
 
     assert_ne!(thread_keys.primary, thread_keys.legacy);
-    assert!(manager_control_plane_enabled(&settings, 88, general_spec));
+    assert!(manager_control_plane_enabled(
+        &settings,
+        88,
+        ChatId(-100_123),
+        general_spec
+    ));
     assert!(!manager_control_plane_enabled(
         &settings,
         88,
+        ChatId(-100_123),
         created_topic_spec
     ));
-    assert!(!manager_control_plane_enabled(&settings, 77, general_spec));
+    assert!(!manager_control_plane_enabled(
+        &settings,
+        77,
+        ChatId(-100_123),
+        general_spec
+    ));
 }
 
 #[tokio::test]
@@ -874,6 +1003,7 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
         user_id: 88,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(general_thread)),
         },
@@ -891,6 +1021,7 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(blocked_thread)),
         },
@@ -936,6 +1067,7 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
         user_id: 88,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -976,6 +1108,7 @@ async fn new_flow_injects_topic_agents_md_once() {
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -1037,6 +1170,7 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -1087,6 +1221,7 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -1110,6 +1245,7 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -1151,6 +1287,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -1183,6 +1320,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -1215,6 +1353,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -1262,6 +1401,7 @@ async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },
@@ -1308,6 +1448,7 @@ async fn threaded_transport_session_migrates_idle_legacy_session_to_primary_scop
         user_id: 77,
         bot: &bot,
         transport_ctx: SessionTransportContext {
+            chat_id,
             manager_default_chat_id: Some(chat_id),
             thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
         },

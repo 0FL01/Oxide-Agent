@@ -418,6 +418,9 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
         allowed_users_str: None,
         agent_allowed_users_str: None,
         manager_allowed_users_str: None,
+        manager_home_chat_id: None,
+        manager_home_thread_id: None,
+        manager_home_agent_id: None,
         topic_configs: vec![
             topic(-100_123, Some(42), false, true, Some("support-only")),
             topic(-100_123, Some(7), true, true, Some("mention-required")),
@@ -432,7 +435,7 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
     };
     let disabled_topic = settings.resolve_topic_config(-100_123, Some(42));
     let disabled_decision =
-        resolve_topic_route_decision(disabled_topic, &blocked_context, Some("bot"));
+        resolve_topic_route_decision(disabled_topic.as_ref(), &blocked_context, Some("bot"));
     assert!(!disabled_decision.allows_processing());
     assert!(disabled_decision.require_mention);
     assert_eq!(
@@ -447,7 +450,7 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
     };
     let mention_topic = settings.resolve_topic_config(-100_123, Some(7));
     let mention_decision =
-        resolve_topic_route_decision(mention_topic, &no_mention_context, Some("bot"));
+        resolve_topic_route_decision(mention_topic.as_ref(), &no_mention_context, Some("bot"));
     assert!(!mention_decision.allows_processing());
     assert!(mention_decision.require_mention);
     assert!(!mention_decision.mention_satisfied);
@@ -458,14 +461,14 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
 
     let chat_default = settings.resolve_topic_config(-100_123, None);
     let chat_default_decision =
-        resolve_topic_route_decision(chat_default, &no_mention_context, Some("bot"));
+        resolve_topic_route_decision(chat_default.as_ref(), &no_mention_context, Some("bot"));
     assert!(chat_default_decision.allows_processing());
     assert!(!chat_default_decision.require_mention);
     assert_eq!(chat_default_decision.system_prompt_override, None);
 
     let unknown_chat = settings.resolve_topic_config(-200_999, Some(42));
     let fallback_decision =
-        resolve_topic_route_decision(unknown_chat, &no_mention_context, Some("bot"));
+        resolve_topic_route_decision(unknown_chat.as_ref(), &no_mention_context, Some("bot"));
     assert!(fallback_decision.allows_processing());
     assert!(!fallback_decision.require_mention);
     assert!(fallback_decision.mention_satisfied);
@@ -479,6 +482,9 @@ fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies
         allowed_users_str: None,
         agent_allowed_users_str: None,
         manager_allowed_users_str: None,
+        manager_home_chat_id: None,
+        manager_home_thread_id: None,
+        manager_home_agent_id: None,
         topic_configs: vec![topic(-100_123, Some(42), true, true, Some("topic-prompt"))],
     };
 
@@ -488,7 +494,7 @@ fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies
         reply_to_bot: true,
     };
     let reply_route = resolve_topic_route_decision(
-        settings.resolve_topic_config(-100_123, Some(42)),
+        settings.resolve_topic_config(-100_123, Some(42)).as_ref(),
         &reply_context,
         Some("oxide_agent"),
     );
@@ -514,7 +520,7 @@ fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies
         reply_to_bot: false,
     };
     let mention_route = resolve_topic_route_decision(
-        settings.resolve_topic_config(-100_123, Some(42)),
+        settings.resolve_topic_config(-100_123, Some(42)).as_ref(),
         &mention_context,
         Some("oxide_agent"),
     );
@@ -557,6 +563,9 @@ async fn resolve_topic_route_prefers_dynamic_binding_over_static_topic_config() 
             allowed_users_str: None,
             agent_allowed_users_str: None,
             manager_allowed_users_str: None,
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
             topic_configs: vec![TelegramTopicSettings {
                 chat_id: -1001,
                 thread_id: Some(313),

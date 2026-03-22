@@ -9,6 +9,10 @@ fn default_topic_enabled() -> bool {
     true
 }
 
+fn default_manager_home_thread_id() -> i32 {
+    1
+}
+
 /// Telegram per-topic configuration.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +53,15 @@ pub struct TelegramSettings {
     /// Comma-separated list of allowed user IDs for manager control-plane tools.
     #[serde(rename = "manager_allowed_users")]
     pub manager_allowed_users_str: Option<String>,
+    /// Forum chat id where the manager control-plane agent lives.
+    #[serde(default, alias = "managerHomeChatId")]
+    pub manager_home_chat_id: Option<i64>,
+    /// Forum thread id for the manager control-plane home topic.
+    #[serde(default, alias = "managerHomeThreadId")]
+    pub manager_home_thread_id: Option<i32>,
+    /// Agent profile id used in the manager control-plane home topic.
+    #[serde(default, alias = "managerHomeAgentId")]
+    pub manager_home_agent_id: Option<String>,
     /// Per-topic overrides loaded from structured config.
     #[serde(default, rename = "topicConfigs", alias = "topic_configs")]
     pub topic_configs: Vec<TelegramTopicSettings>,
@@ -126,16 +139,72 @@ impl TelegramSettings {
             .unwrap_or_default()
     }
 
+    /// Returns the effective manager home thread id when manager home is configured.
+    #[must_use]
+    pub fn effective_manager_home_thread_id(&self) -> Option<i32> {
+        self.manager_home_chat_id.map(|_| {
+            self.manager_home_thread_id
+                .unwrap_or_else(default_manager_home_thread_id)
+        })
+    }
+
+    /// Returns the effective manager home agent id when manager home is configured.
+    #[must_use]
+    pub fn effective_manager_home_agent_id(&self) -> Option<&str> {
+        self.manager_home_chat_id.map(|_| {
+            self.manager_home_agent_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("control-plane")
+        })
+    }
+
+    /// Returns the synthetic topic config for the configured manager home.
+    #[must_use]
+    pub fn manager_home_topic_config(&self) -> Option<TelegramTopicSettings> {
+        Some(TelegramTopicSettings {
+            chat_id: self.manager_home_chat_id?,
+            thread_id: self.effective_manager_home_thread_id(),
+            agent_id: self
+                .effective_manager_home_agent_id()
+                .map(ToOwned::to_owned),
+            enabled: true,
+            require_mention: false,
+            skills: Vec::new(),
+            system_prompt: None,
+        })
+    }
+
+    /// Returns true when the provided chat/thread pair matches the configured manager home.
+    #[must_use]
+    pub fn manager_home_matches(&self, chat_id: i64, thread_id: Option<i32>) -> bool {
+        match (
+            self.manager_home_chat_id,
+            self.effective_manager_home_thread_id(),
+        ) {
+            (Some(home_chat_id), Some(home_thread_id)) => {
+                chat_id == home_chat_id && thread_id == Some(home_thread_id)
+            }
+            _ => false,
+        }
+    }
+
     /// Resolves per-topic settings by chat and thread identifiers.
     #[must_use]
     pub fn resolve_topic_config(
         &self,
         chat_id: i64,
         thread_id: Option<i32>,
-    ) -> Option<&TelegramTopicSettings> {
+    ) -> Option<TelegramTopicSettings> {
+        if self.manager_home_matches(chat_id, thread_id) {
+            return self.manager_home_topic_config();
+        }
+
         self.topic_configs
             .iter()
             .find(|cfg| cfg.chat_id == chat_id && cfg.thread_id == thread_id)
+            .cloned()
     }
 }
 
@@ -193,6 +262,9 @@ mod tests {
             allowed_users_str: None,
             agent_allowed_users_str: None,
             manager_allowed_users_str: None,
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
             topic_configs: Vec::new(),
         };
 
@@ -326,13 +398,13 @@ mod tests {
         };
 
         let forum = settings.resolve_topic_config(-10001, Some(10));
-        match forum {
+        match forum.as_ref() {
             Some(topic) => assert_eq!(topic.agent_id.as_deref(), Some("forum-agent")),
             None => panic!("expected forum topic config"),
         }
 
         let chat_default = settings.resolve_topic_config(-10001, None);
-        match chat_default {
+        match chat_default.as_ref() {
             Some(topic) => assert_eq!(topic.agent_id.as_deref(), Some("default-chat-agent")),
             None => panic!("expected chat-level topic config"),
         }
@@ -366,5 +438,61 @@ mod tests {
 
         assert_eq!(settings.topic_configs.len(), 1);
         assert_eq!(settings.topic_configs[0].agent_id, None);
+    }
+
+    #[test]
+    fn manager_home_defaults_to_general_control_plane_agent() {
+        let settings = TelegramSettings {
+            telegram_token: "dummy".to_string(),
+            allowed_users_str: None,
+            agent_allowed_users_str: None,
+            manager_allowed_users_str: None,
+            manager_home_chat_id: Some(-10001),
+            manager_home_thread_id: None,
+            manager_home_agent_id: None,
+            topic_configs: Vec::new(),
+        };
+
+        let topic = settings
+            .resolve_topic_config(-10001, Some(1))
+            .expect("manager home topic config must be synthesized");
+
+        assert_eq!(topic.chat_id, -10001);
+        assert_eq!(topic.thread_id, Some(1));
+        assert_eq!(topic.agent_id.as_deref(), Some("control-plane"));
+        assert!(topic.enabled);
+        assert!(!topic.require_mention);
+    }
+
+    #[test]
+    fn manager_home_overrides_static_topic_config_for_same_topic() {
+        let settings = TelegramSettings {
+            telegram_token: "dummy".to_string(),
+            allowed_users_str: None,
+            agent_allowed_users_str: None,
+            manager_allowed_users_str: None,
+            manager_home_chat_id: Some(-10001),
+            manager_home_thread_id: Some(1),
+            manager_home_agent_id: Some("control-plane".to_string()),
+            topic_configs: vec![super::TelegramTopicSettings {
+                chat_id: -10001,
+                thread_id: Some(1),
+                agent_id: Some("static-agent".to_string()),
+                enabled: false,
+                require_mention: true,
+                skills: vec!["faq".to_string()],
+                system_prompt: Some("static prompt".to_string()),
+            }],
+        };
+
+        let topic = settings
+            .resolve_topic_config(-10001, Some(1))
+            .expect("manager home topic config must win");
+
+        assert_eq!(topic.agent_id.as_deref(), Some("control-plane"));
+        assert!(topic.enabled);
+        assert!(!topic.require_mention);
+        assert!(topic.skills.is_empty());
+        assert_eq!(topic.system_prompt, None);
     }
 }

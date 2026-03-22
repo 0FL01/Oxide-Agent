@@ -75,7 +75,8 @@ pub async fn activate_agent_mode(
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
-            manager_default_chat_id: manager_default_chat_id(msg.chat.id, thread_spec),
+            chat_id: msg.chat.id,
+            manager_default_chat_id: manager_default_chat_id(&settings, msg.chat.id, thread_spec),
             thread_spec,
         },
         llm: &llm,
@@ -176,7 +177,7 @@ pub async fn handle_agent_message(
         return Ok(());
     }
 
-    let manager_enabled = manager_control_plane_enabled(&settings, user_id, thread_spec);
+    let manager_enabled = manager_control_plane_enabled(&settings, user_id, chat_id, thread_spec);
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys,
         context_key: context_key.clone(),
@@ -186,7 +187,8 @@ pub async fn handle_agent_message(
         user_id,
         bot: &bot,
         transport_ctx: SessionTransportContext {
-            manager_default_chat_id: manager_default_chat_id(chat_id, thread_spec),
+            chat_id,
+            manager_default_chat_id: manager_default_chat_id(&settings, chat_id, thread_spec),
             thread_spec,
         },
         llm: &llm,
