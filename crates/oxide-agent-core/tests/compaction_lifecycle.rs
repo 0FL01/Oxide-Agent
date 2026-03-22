@@ -52,8 +52,7 @@ async fn public_compaction_service_preserves_live_context_and_todos() {
     let service = CompactionService::default().with_summarizer(CompactionSummarizer::new(
         llm_client,
         CompactionSummarizerConfig {
-            model_name: String::new(),
-            provider_name: String::new(),
+            model_routes: Vec::new(),
             timeout_secs: 1,
         },
     ));

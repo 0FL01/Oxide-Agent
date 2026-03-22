@@ -5,7 +5,7 @@ use crate::agent::compaction::{
 };
 use crate::agent::memory::AgentMessage;
 use crate::agent::{AgentContext, EphemeralSession};
-use crate::config::AgentSettings;
+use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::{ChatWithToolsRequest, LlmClient, LlmError, LlmProvider};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,9 +36,20 @@ fn recent_only_messages() -> Vec<AgentMessage> {
     ]
 }
 
+fn route(model_id: &str, provider: &str, max_output_tokens: u32) -> ModelInfo {
+    ModelInfo {
+        id: model_id.to_string(),
+        provider: provider.to_string(),
+        max_output_tokens,
+        context_window_tokens: 0,
+        weight: 1,
+    }
+}
+
 enum ProbeBehavior {
     Return(&'static str),
     Sleep(Duration),
+    Error(&'static str),
 }
 
 struct ProbeProvider {
@@ -63,6 +74,7 @@ impl LlmProvider for ProbeProvider {
                 tokio::time::sleep(duration).await;
                 Ok(r#"{"goal":"late","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":[],"risks":[]}"#.to_string())
             }
+            ProbeBehavior::Error(message) => Err(LlmError::Unknown(message.to_string())),
         }
     }
 
@@ -117,8 +129,7 @@ fn probe_summarizer(
         CompactionSummarizer::new(
             Arc::new(llm_client),
             CompactionSummarizerConfig {
-                model_name: "compact-model".to_string(),
-                provider_name: "probe".to_string(),
+                model_routes: vec![route("compact-model", "probe", 256)],
                 timeout_secs,
             },
         ),
@@ -247,6 +258,64 @@ async fn summary_timeout_falls_back_to_deterministic_summary() {
     assert_eq!(outcome.model_name.as_deref(), Some("compact-model"));
     assert!(outcome.summary.is_some());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn summary_uses_next_route_when_primary_route_fails() {
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let mut llm_client = LlmClient::new(&AgentSettings {
+        compaction_model_max_output_tokens: Some(256),
+        compaction_model_timeout_secs: Some(5),
+        ..AgentSettings::default()
+    });
+    llm_client.register_provider(
+        "primary".to_string(),
+        Arc::new(ProbeProvider {
+            calls: Arc::clone(&primary_calls),
+            behavior: ProbeBehavior::Error("primary failed"),
+        }),
+    );
+    llm_client.register_provider(
+        "fallback".to_string(),
+        Arc::new(ProbeProvider {
+            calls: Arc::clone(&fallback_calls),
+            behavior: ProbeBehavior::Return(
+                r#"{"goal":"fallback","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":["continue"],"risks":[]}"#,
+            ),
+        }),
+    );
+    let summarizer = CompactionSummarizer::new(
+        Arc::new(llm_client),
+        CompactionSummarizerConfig {
+            model_routes: vec![
+                route("compact-primary", "primary", 256),
+                route("compact-fallback", "fallback", 256),
+            ],
+            timeout_secs: 5,
+        },
+    );
+    let messages = compactable_history_messages();
+    let snapshot = classify_hot_memory(&messages);
+
+    let outcome = summarizer
+        .summarize_if_needed(
+            &manual_request("Inspect route fallback"),
+            crate::agent::compaction::BudgetState::ShouldCompact,
+            &snapshot,
+            &messages,
+        )
+        .await;
+
+    assert!(outcome.attempted);
+    assert!(!outcome.used_fallback);
+    assert_eq!(outcome.model_name.as_deref(), Some("compact-fallback"));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcome.summary.expect("llm summary").remaining_work,
+        vec!["continue"]
+    );
 }
 
 #[tokio::test]

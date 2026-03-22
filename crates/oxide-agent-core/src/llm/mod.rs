@@ -474,10 +474,27 @@ impl LlmClient {
     ) -> Result<String, LlmError> {
         let model_info = self.get_model_info(model_name)?;
 
+        self.chat_completion_for_model_info(system_prompt, history, user_message, &model_info)
+            .await
+    }
+
+    /// Perform a chat completion request for an explicit model route.
+    ///
+    /// # Errors
+    ///
+    /// Returns any provider error for the requested route.
+    #[instrument(skip(self, system_prompt, history, model_info))]
+    pub async fn chat_completion_for_model_info(
+        &self,
+        system_prompt: &str,
+        history: &[Message],
+        user_message: &str,
+        model_info: &crate::config::ModelInfo,
+    ) -> Result<String, LlmError> {
         let provider = self.get_provider(&model_info.provider)?;
 
         debug!(
-            model = model_name,
+            model = model_info.id,
             provider = model_info.provider,
             "Sending request to LLM"
         );
@@ -502,14 +519,14 @@ impl LlmClient {
 
         if let Ok(resp) = &result {
             debug!(
-                model = model_name,
+                model = model_info.id,
                 duration_ms = duration.as_millis(),
                 "Received success response from LLM"
             );
             trace!(response = ?resp, "Full LLM Response");
         } else if let Err(e) = &result {
             warn!(
-                model = model_name,
+                model = model_info.id,
                 duration_ms = duration.as_millis(),
                 error = %e,
                 "Received error response from LLM"

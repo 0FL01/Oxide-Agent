@@ -4,7 +4,7 @@
 //!
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 // LLM provider defaults
 /// Default temperature used for Groq chat completions.
@@ -707,6 +707,26 @@ impl AgentSettings {
         })
     }
 
+    fn normalize_compaction_route(route: ModelInfo, max_output_tokens: u32) -> Option<ModelInfo> {
+        let id = route.id.trim();
+        let provider = route.provider.trim();
+        if id.is_empty() || provider.is_empty() {
+            return None;
+        }
+
+        Some(ModelInfo {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            max_output_tokens,
+            context_window_tokens: route.context_window_tokens,
+            weight: route.weight.max(1),
+        })
+    }
+
+    fn route_dedupe_key(route: &ModelInfo) -> (String, String) {
+        (route.id.clone(), route.provider.to_ascii_lowercase())
+    }
+
     /// Returns the internal Agent Mode context budget after applying the clamp policy.
     pub fn get_agent_internal_context_budget_tokens(&self) -> usize {
         clamp_internal_context_budget_tokens(
@@ -758,6 +778,38 @@ impl AgentSettings {
             );
         }
         (String::new(), String::new(), 0, COMPACTION_TIMEOUT_SECS)
+    }
+
+    /// Returns compaction routes with an optional dedicated primary route and inherited fallback routes.
+    pub fn get_configured_compaction_model_routes(&self, prefer_sub_agent: bool) -> Vec<ModelInfo> {
+        let max_output_tokens = self
+            .compaction_model_max_output_tokens
+            .unwrap_or(COMPACTION_MAX_TOKENS);
+        let mut routes = Vec::new();
+
+        if let Some((_, route)) = self.compaction_model_spec() {
+            if let Some(route) = Self::normalize_compaction_route(route, max_output_tokens) {
+                routes.push(route);
+            }
+        }
+
+        let inherited_routes = if prefer_sub_agent {
+            self.get_configured_sub_agent_model_routes()
+        } else {
+            self.get_configured_agent_model_routes()
+        };
+
+        routes.extend(
+            inherited_routes
+                .into_iter()
+                .filter_map(|route| Self::normalize_compaction_route(route, max_output_tokens)),
+        );
+
+        let mut seen = BTreeSet::new();
+        routes
+            .into_iter()
+            .filter(|route| seen.insert(Self::route_dedupe_key(route)))
+            .collect()
     }
 
     /// Returns model info by its display name
@@ -940,10 +992,78 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn compaction_routes_prepend_dedicated_model_and_reuse_agent_fallbacks() {
+        let settings = AgentSettings {
+            compaction_model_id: Some("compact-model".to_string()),
+            compaction_model_provider: Some("mock".to_string()),
+            compaction_model_max_output_tokens: Some(512),
+            agent_model_routes: Some(vec![
+                ModelInfo {
+                    id: "MiniMax-M2.7".to_string(),
+                    provider: "minimax".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 204_800,
+                    weight: 10,
+                },
+                ModelInfo {
+                    id: "glm-4.7".to_string(),
+                    provider: "zai".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 5,
+                },
+            ]),
+            ..AgentSettings::default()
+        };
+
+        let routes = settings.get_configured_compaction_model_routes(false);
+
+        assert_eq!(routes.len(), 3);
+        assert_eq!(routes[0].id, "compact-model");
+        assert_eq!(routes[0].provider, "mock");
+        assert_eq!(routes[1].id, "MiniMax-M2.7");
+        assert_eq!(routes[2].id, "glm-4.7");
+        assert!(routes.iter().all(|route| route.max_output_tokens == 512));
+    }
+
+    #[test]
+    fn compaction_routes_dedupe_and_sub_agent_inherits_agent_routes() {
+        let settings = AgentSettings {
+            compaction_model_id: Some("MiniMax-M2.7".to_string()),
+            compaction_model_provider: Some("minimax".to_string()),
+            compaction_model_max_output_tokens: Some(512),
+            agent_model_routes: Some(vec![
+                ModelInfo {
+                    id: "MiniMax-M2.7".to_string(),
+                    provider: "minimax".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 204_800,
+                    weight: 10,
+                },
+                ModelInfo {
+                    id: "glm-4.7".to_string(),
+                    provider: "zai".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 5,
+                },
+            ]),
+            ..AgentSettings::default()
+        };
+
+        let routes = settings.get_configured_compaction_model_routes(true);
+
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].id, "MiniMax-M2.7");
+        assert_eq!(routes[1].id, "glm-4.7");
+        assert!(routes.iter().all(|route| route.max_output_tokens == 512));
+    }
 }
 
 /// Information about a supported LLM model.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// Internal model identifier
     pub id: String,
