@@ -475,6 +475,11 @@ impl AgentExecutor {
                     config,
                 )));
                 tracing::info!("Jira MCP provider registered");
+            } else {
+                tracing::warn!(
+                    "jira feature is enabled but JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN is not set; \
+                     Jira MCP provider will not be available. Set these env vars to enable it."
+                );
             }
         }
 
