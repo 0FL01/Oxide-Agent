@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use rmcp::{
     model::CallToolRequestParams,
-    service::Peer,
+    service::{Peer, RoleClient},
     transport::{ConfigureCommandExt, TokioChildProcess},
     ServiceExt,
 };
@@ -14,7 +14,7 @@ use super::config::JiraMcpConfig;
 
 /// MCP client for communicating with jira-mcp binary.
 pub struct JiraMcpClient {
-    peer: Peer,
+    peer: Peer<RoleClient>,
     _stderr_task: tokio::task::JoinHandle<()>,
 }
 

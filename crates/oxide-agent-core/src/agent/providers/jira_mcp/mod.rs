@@ -6,7 +6,7 @@
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ mod config;
 mod types;
 
 use client::JiraMcpClient;
-use config::JiraMcpConfig;
+pub use config::JiraMcpConfig;
 
 const TOOL_JIRA_READ: &str = "jira_read";
 const TOOL_JIRA_WRITE: &str = "jira_write";
