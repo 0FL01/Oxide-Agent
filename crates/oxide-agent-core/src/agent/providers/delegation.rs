@@ -45,6 +45,7 @@ use crate::agent::providers::TavilyProvider;
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "delegate_to_sub_agent",
     "send_file_to_user",
+    "recreate_sandbox",
     "topic_binding_set",
     "topic_binding_get",
     "topic_binding_delete",
@@ -723,6 +724,7 @@ mod tests {
         let blocked = DelegationProvider::blocked_tool_set();
 
         for tool in [
+            "recreate_sandbox",
             "topic_binding_set",
             "topic_binding_get",
             "topic_binding_delete",

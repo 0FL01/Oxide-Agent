@@ -420,12 +420,13 @@ pub fn sanitize_tool_calls(tool_calls: Vec<ToolCall>) -> Vec<ToolCall> {
 ///
 /// BUGFIX AGENT-2026-001: Extended to support ytdlp tools
 pub fn try_parse_malformed_tool_call(content: &str) -> Option<ToolCall> {
-    const TOOL_NAMES: [&str; 11] = [
+    const TOOL_NAMES: [&str; 12] = [
         "read_file",
         "write_file",
         "execute_command",
         "list_files",
         "send_file_to_user",
+        "recreate_sandbox",
         "upload_file",
         // BUGFIX AGENT-2026-001: Add ytdlp tools to malformed call recovery
         "ytdlp_get_video_metadata",
@@ -457,6 +458,7 @@ fn extract_malformed_tool_arguments(tool_name: &str, content: &str) -> Option<Va
         "execute_command" => extract_execute_command_arguments(content),
         "list_files" => extract_list_files_arguments(content),
         "send_file_to_user" => extract_send_file_to_user_arguments(content),
+        "recreate_sandbox" => extract_recreate_sandbox_arguments(content),
         "upload_file" => extract_upload_file_arguments(content),
         "ytdlp_get_video_metadata" => extract_ytdlp_url_arguments(content, tool_name),
         "ytdlp_download_transcript" => extract_ytdlp_url_arguments(content, tool_name),
@@ -568,6 +570,18 @@ fn extract_send_file_to_user_arguments(content: &str) -> Option<Value> {
     }
 
     None
+}
+
+fn extract_recreate_sandbox_arguments(content: &str) -> Option<Value> {
+    let trimmed = content.trim();
+    if trimmed.starts_with("recreate_sandbox")
+        || trimmed.contains("[Call tools: recreate_sandbox]")
+        || trimmed.contains("[Tool calls: recreate_sandbox]")
+    {
+        Some(serde_json::json!({}))
+    } else {
+        None
+    }
 }
 
 fn extract_upload_file_arguments(content: &str) -> Option<Value> {
@@ -1028,6 +1042,17 @@ mod tests {
             tool_call.is_recovered,
             "Recovered tool call should have is_recovered=true"
         );
+    }
+
+    #[test]
+    fn test_try_parse_malformed_recreate_sandbox_without_args() {
+        let input = "recreate_sandbox";
+        let result = try_parse_malformed_tool_call(input);
+
+        assert!(result.is_some());
+        let tool_call = result.expect("tool_call should be Some");
+        assert_eq!(tool_call.function.name, "recreate_sandbox");
+        assert_eq!(tool_call.function.arguments, "{}");
     }
 
     #[test]
