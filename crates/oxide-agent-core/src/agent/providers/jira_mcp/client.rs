@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use rmcp::{
     model::CallToolRequestParams,
-    service::{Peer, RoleClient},
+    service::{Peer, RoleClient, RunningService},
     transport::{ConfigureCommandExt, TokioChildProcess},
     ServiceExt,
 };
@@ -18,6 +18,7 @@ const STDERR_TAIL_MAX_BYTES: usize = 16 * 1024;
 
 /// MCP client for communicating with jira-mcp binary.
 pub struct JiraMcpClient {
+    _service: RunningService<RoleClient, ()>,
     peer: Peer<RoleClient>,
     binary_path: String,
     child_pid: Option<u32>,
@@ -118,6 +119,7 @@ impl JiraMcpClient {
         });
 
         let client = Self {
+            _service: service,
             peer,
             binary_path: config.binary_path.clone(),
             child_pid,
