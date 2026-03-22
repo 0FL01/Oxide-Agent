@@ -185,13 +185,11 @@ impl AgentExecutor {
         let skill_registry = None;
 
         let compaction_service = {
-            let (model_name, provider_name, _, timeout_secs) =
-                settings.get_configured_compaction_model();
+            let (_, _, _, timeout_secs) = settings.get_configured_compaction_model();
             CompactionService::default().with_summarizer(CompactionSummarizer::new(
                 llm_client,
                 CompactionSummarizerConfig {
-                    model_name,
-                    provider_name,
+                    model_routes: settings.get_configured_compaction_model_routes(false),
                     timeout_secs,
                 },
             ))

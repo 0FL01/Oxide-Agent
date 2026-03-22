@@ -254,13 +254,11 @@ impl DelegationProvider {
     }
 
     fn create_sub_agent_compaction_service(&self) -> CompactionService {
-        let (model_name, provider_name, _, timeout_secs) =
-            self.settings.get_configured_compaction_model();
+        let (_, _, _, timeout_secs) = self.settings.get_configured_compaction_model();
         CompactionService::default().with_summarizer(CompactionSummarizer::new(
             Arc::clone(&self.llm_client),
             CompactionSummarizerConfig {
-                model_name,
-                provider_name,
+                model_routes: self.settings.get_configured_compaction_model_routes(true),
                 timeout_secs,
             },
         ))

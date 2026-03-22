@@ -1439,8 +1439,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             Arc::clone(&llm_client),
             CompactionSummarizerConfig {
-                model_name: String::new(),
-                provider_name: String::new(),
+                model_routes: Vec::new(),
                 timeout_secs: 1,
             },
         );
@@ -1629,8 +1628,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             Arc::clone(&llm_client),
             CompactionSummarizerConfig {
-                model_name: String::new(),
-                provider_name: String::new(),
+                model_routes: Vec::new(),
                 timeout_secs: 1,
             },
         );
@@ -1820,8 +1818,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             Arc::clone(&llm_client),
             CompactionSummarizerConfig {
-                model_name: String::new(),
-                provider_name: String::new(),
+                model_routes: Vec::new(),
                 timeout_secs: 1,
             },
         );
@@ -1891,8 +1888,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             Arc::clone(&llm_client),
             CompactionSummarizerConfig {
-                model_name: String::new(),
-                provider_name: String::new(),
+                model_routes: Vec::new(),
                 timeout_secs: 1,
             },
         );
@@ -1985,8 +1981,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             Arc::clone(&llm_client),
             CompactionSummarizerConfig {
-                model_name: String::new(),
-                provider_name: String::new(),
+                model_routes: Vec::new(),
                 timeout_secs: 1,
             },
         );

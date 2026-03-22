@@ -5,6 +5,7 @@ use super::types::{
     BudgetState, CompactionRequest, CompactionSnapshot, CompactionSummary, SummaryGenerationOutcome,
 };
 use crate::agent::memory::{AgentMessage, MessageRole};
+use crate::config::ModelInfo;
 use crate::llm::{LlmClient, LlmError};
 use lazy_regex::lazy_regex;
 use std::sync::Arc;
@@ -15,10 +16,8 @@ use tracing::{debug, warn};
 /// Configuration for the dedicated compaction summary model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactionSummarizerConfig {
-    /// Model name registered in `LlmClient`.
-    pub model_name: String,
-    /// Provider name for availability checks.
-    pub provider_name: String,
+    /// Candidate compaction routes, with dedicated compaction model first when configured.
+    pub model_routes: Vec<ModelInfo>,
     /// Request timeout for the sidecar summary call.
     pub timeout_secs: u64,
 }
@@ -53,102 +52,101 @@ impl CompactionSummarizer {
         let fallback = deterministic_fallback_summary(request, snapshot, messages);
         let compactable_entries = snapshot.compactable_history.message_count;
 
-        if self.config.model_name.is_empty()
-            || self.config.provider_name.is_empty()
-            || !self
-                .llm_client
-                .is_provider_available(&self.config.provider_name)
+        let mut attempted_model_name = None;
+
+        for route in self
+            .config
+            .model_routes
+            .iter()
+            .filter(|route| !route.id.trim().is_empty() && !route.provider.trim().is_empty())
         {
-            warn!(
-                trigger = ?request.trigger,
-                model = %self.config.model_name,
-                provider = %self.config.provider_name,
-                compactable_entries,
-                budget_state = ?budget_state,
-                "Compaction summary model unavailable, using deterministic fallback"
-            );
-            return SummaryGenerationOutcome {
-                attempted: true,
-                used_fallback: true,
-                model_name: None,
-                summary: Some(fallback),
-            };
-        }
-
-        debug!(
-            model = %self.config.model_name,
-            provider = %self.config.provider_name,
-            compactable_entries,
-            "Generating compaction summary"
-        );
-
-        let llm_started_at = Instant::now();
-        match self.call_llm(&user_message).await {
-            Ok(response) => match parse_summary_response(&response) {
-                Some(summary) => {
-                    warn!(
-                        trigger = ?request.trigger,
-                        model = %self.config.model_name,
-                        provider = %self.config.provider_name,
-                        compactable_entries,
-                        budget_state = ?budget_state,
-                        elapsed_ms = llm_started_at.elapsed().as_millis(),
-                        "Compaction generated structured summary"
-                    );
-                    SummaryGenerationOutcome {
-                        attempted: true,
-                        used_fallback: false,
-                        model_name: Some(self.config.model_name.clone()),
-                        summary: Some(summary),
-                    }
-                }
-                None => {
-                    warn!(
-                        trigger = ?request.trigger,
-                        model = %self.config.model_name,
-                        provider = %self.config.provider_name,
-                        compactable_entries,
-                        budget_state = ?budget_state,
-                        elapsed_ms = llm_started_at.elapsed().as_millis(),
-                        "Compaction summary response invalid, using deterministic fallback"
-                    );
-                    SummaryGenerationOutcome {
-                        attempted: true,
-                        used_fallback: true,
-                        model_name: Some(self.config.model_name.clone()),
-                        summary: Some(fallback),
-                    }
-                }
-            },
-            Err(error) => {
+            if !self.llm_client.is_provider_available(&route.provider) {
                 warn!(
                     trigger = ?request.trigger,
-                    model = %self.config.model_name,
-                    provider = %self.config.provider_name,
+                    model = %route.id,
+                    provider = %route.provider,
                     compactable_entries,
                     budget_state = ?budget_state,
-                    elapsed_ms = llm_started_at.elapsed().as_millis(),
-                    error = %error,
-                    "Compaction LLM call failed, using fallback summary"
+                    "Compaction summary route unavailable, trying next route"
                 );
-                SummaryGenerationOutcome {
-                    attempted: true,
-                    used_fallback: true,
-                    model_name: Some(self.config.model_name.clone()),
-                    summary: Some(fallback),
+                continue;
+            }
+
+            attempted_model_name = Some(route.id.clone());
+            debug!(
+                model = %route.id,
+                provider = %route.provider,
+                compactable_entries,
+                "Generating compaction summary"
+            );
+
+            let llm_started_at = Instant::now();
+            match self.call_llm(&user_message, route).await {
+                Ok(response) => match parse_summary_response(&response) {
+                    Some(summary) => {
+                        warn!(
+                            trigger = ?request.trigger,
+                            model = %route.id,
+                            provider = %route.provider,
+                            compactable_entries,
+                            budget_state = ?budget_state,
+                            elapsed_ms = llm_started_at.elapsed().as_millis(),
+                            "Compaction generated structured summary"
+                        );
+                        return SummaryGenerationOutcome {
+                            attempted: true,
+                            used_fallback: false,
+                            model_name: Some(route.id.clone()),
+                            summary: Some(summary),
+                        };
+                    }
+                    None => {
+                        warn!(
+                            trigger = ?request.trigger,
+                            model = %route.id,
+                            provider = %route.provider,
+                            compactable_entries,
+                            budget_state = ?budget_state,
+                            elapsed_ms = llm_started_at.elapsed().as_millis(),
+                            "Compaction summary response invalid, trying next route"
+                        );
+                    }
+                },
+                Err(error) => {
+                    warn!(
+                        trigger = ?request.trigger,
+                        model = %route.id,
+                        provider = %route.provider,
+                        compactable_entries,
+                        budget_state = ?budget_state,
+                        elapsed_ms = llm_started_at.elapsed().as_millis(),
+                        error = %error,
+                        "Compaction LLM call failed, trying next route"
+                    );
                 }
             }
         }
+
+        warn!(
+            trigger = ?request.trigger,
+            compactable_entries,
+            budget_state = ?budget_state,
+            attempted_model = attempted_model_name.as_deref().unwrap_or("none"),
+            "Compaction routes exhausted, using deterministic fallback"
+        );
+        SummaryGenerationOutcome {
+            attempted: true,
+            used_fallback: true,
+            model_name: attempted_model_name,
+            summary: Some(fallback),
+        }
     }
 
-    async fn call_llm(&self, user_message: &str) -> Result<String, LlmError> {
+    async fn call_llm(&self, user_message: &str, route: &ModelInfo) -> Result<String, LlmError> {
         let system_prompt = compaction_system_prompt();
-        let llm_call = self.llm_client.chat_completion(
-            system_prompt,
-            &[],
-            user_message,
-            &self.config.model_name,
-        );
+        let llm_call =
+            self.llm_client
+                .chat_completion_for_model_info(system_prompt, &[], user_message, route);
 
         timeout(Duration::from_secs(self.config.timeout_secs), llm_call)
             .await
@@ -401,9 +399,20 @@ mod tests {
         classify_hot_memory, BudgetState, CompactionRequest, CompactionTrigger,
     };
     use crate::agent::memory::AgentMessage;
+    use crate::config::ModelInfo;
     use crate::llm::{LlmClient, MockLlmProvider};
     use crate::testing::mock_llm_simple;
     use std::sync::Arc;
+
+    fn route(model_name: &str, provider_name: &str, max_output_tokens: u32) -> ModelInfo {
+        ModelInfo {
+            id: model_name.to_string(),
+            provider: provider_name.to_string(),
+            max_output_tokens,
+            context_window_tokens: 0,
+            weight: 1,
+        }
+    }
 
     #[test]
     fn parse_summary_response_accepts_json() {
@@ -468,8 +477,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             Arc::new(llm_client),
             CompactionSummarizerConfig {
-                model_name: "compact-model".to_string(),
-                provider_name: "mock".to_string(),
+                model_routes: vec![route("compact-model", "mock", 256)],
                 timeout_secs: 5,
             },
         );
@@ -511,8 +519,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             llm_client,
             CompactionSummarizerConfig {
-                model_name: "compact-model".to_string(),
-                provider_name: "missing".to_string(),
+                model_routes: vec![route("compact-model", "missing", 256)],
                 timeout_secs: 1,
             },
         );
@@ -571,8 +578,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             Arc::new(llm_client),
             CompactionSummarizerConfig {
-                model_name: "compact-model".to_string(),
-                provider_name: "mock".to_string(),
+                model_routes: vec![route("compact-model", "mock", 256)],
                 timeout_secs: 5,
             },
         );
@@ -649,8 +655,7 @@ mod tests {
         let summarizer = CompactionSummarizer::new(
             Arc::new(llm_client),
             CompactionSummarizerConfig {
-                model_name: "compact-model".to_string(),
-                provider_name: "mock".to_string(),
+                model_routes: vec![route("compact-model", "mock", 256)],
                 timeout_secs: 5,
             },
         );
