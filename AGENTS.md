@@ -48,6 +48,7 @@ Default branch: `testing`.
 - **Parallel tool execution** - multiple tool calls in one LLM response run concurrently.
 - **Fire-and-forget checkpoint** - memory persistence is async, non-blocking.
 - **History repair** - tool_call_id validation before LLM calls; orphaned tool results prevented during compaction.
+- **Cold-start tool drift pruning** - removes stale tool calls from persisted memories; configurable via `STARTUP_TOOL_DRIFT_PRUNE_*` env vars.
 - Narrator - separate model for thought/narrative summarization.
 
 ### Agent Mode compaction
@@ -92,6 +93,7 @@ Default branch: `testing`.
 - Код: `agent/providers/manager_control_plane/`.
 - Покрывает CRUD для forum topics, bindings, contexts, AGENTS.md, infra config, sandboxes, agent profiles и controls.
 - Все операции журналируются в audit trail; есть rollback для поддерживаемых сущностей.
+- Optional `MANAGER_HOME_*` env vars restrict operations к specific topic when configured.
 - При удалении forum topic автоматически чистятся topic memory, chat history, sandboxes, bindings, contexts, AGENTS.md и infra records.
 
 ### Sandbox и SSH infrastructure
@@ -100,6 +102,7 @@ Default branch: `testing`.
 - SSH infrastructure topic-scoped: `ssh_mcp.rs`, `TopicInfraConfigRecord`, `TopicInfraAuthMode`, `TopicInfraToolMode`.
 - Secret refs поддерживают `env:KEY` и `storage:PATH`; секреты не должны попадать в prompts или memory.
 - Разрешенные SSH tool modes включают `exec`, `sudo_exec`, `read_file`, `apply_file_edit`, `check_process`.
+- `recreate_sandbox` - exclusive lock, reset workspace; blocked для sub-agents.
 
 ### Approval flow
 - Используется для чувствительных SSH-операций.
@@ -110,6 +113,7 @@ Default branch: `testing`.
 ### Reminder system
 - Основной код: `agent/providers/reminder.rs` + storage records в `storage/reminder.rs` и `r2_reminder.rs`.
 - Поддерживаются `Once`, `Interval`, `Cron` расписания.
+- Simplified args: `date`, `time`, `every_minutes`, `every_hours`, `timezone`, `weekdays`; partial date/time inputs supported.
 - Основные tools: `reminder_schedule`, `reminder_list`, `reminder_cancel`, `reminder_pause`, `reminder_resume`, `reminder_retry`.
 - Scheduler просыпает агента в исходном topic/flow; storage использует lease-based claiming.
 
@@ -123,14 +127,16 @@ Default branch: `testing`.
 
 ### Storage
 - `storage/mod.rs` - facade и реэкспорты; R2 backend разнесен по темам.
+- `R2_REGION` env (default `auto`) - MinIO/Wasabi/B2 compatibility.
 - Tests: `storage/tests/`.
 
 ### LLM
 - Providers: `gemini`, `groq`, `mistral`, `minimax/`, `openrouter`, `zai`.
 - HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
+- Voice transcription: `voxtral` (Mistral) с retry backoff (5 attempts, 3s→48s).
 
 ### Tool providers
-- sandbox, todos, tavily, crawl4ai, jira-mcp, filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md.
+- sandbox, todos, tavily, crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md.
 - Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport
