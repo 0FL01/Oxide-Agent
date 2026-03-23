@@ -53,7 +53,7 @@ RUN curl -fsSL "https://github.com/0FL01/jira-mcp/releases/download/${JIRA_MCP_V
 
 FROM debian:trixie-slim AS mattermost-mcp-binary
 
-ARG MATTERMOST_MCP_VERSION=0.1.1
+ARG MATTERMOST_MCP_VERSION=0.1.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

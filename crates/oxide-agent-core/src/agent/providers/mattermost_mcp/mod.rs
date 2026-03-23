@@ -18,24 +18,41 @@ mod config;
 use client::MattermostMcpClient;
 pub use config::MattermostMcpConfig;
 
+// === Team tools ===
+const TOOL_MATTERMOST_LIST_TEAMS: &str = "mattermost_list_teams";
+const TOOL_MATTERMOST_GET_TEAM: &str = "mattermost_get_team";
+const TOOL_MATTERMOST_GET_TEAM_MEMBERS: &str = "mattermost_get_team_members";
+
+// === Channel tools ===
 const TOOL_MATTERMOST_LIST_CHANNELS: &str = "mattermost_list_channels";
 const TOOL_MATTERMOST_GET_CHANNEL: &str = "mattermost_get_channel";
 const TOOL_MATTERMOST_GET_CHANNEL_BY_NAME: &str = "mattermost_get_channel_by_name";
 const TOOL_MATTERMOST_CREATE_CHANNEL: &str = "mattermost_create_channel";
 const TOOL_MATTERMOST_JOIN_CHANNEL: &str = "mattermost_join_channel";
 const TOOL_MATTERMOST_CREATE_DIRECT_CHANNEL: &str = "mattermost_create_direct_channel";
+
+// === Message tools ===
 const TOOL_MATTERMOST_POST_MESSAGE: &str = "mattermost_post_message";
 const TOOL_MATTERMOST_GET_CHANNEL_MESSAGES: &str = "mattermost_get_channel_messages";
 const TOOL_MATTERMOST_SEARCH_MESSAGES: &str = "mattermost_search_messages";
 const TOOL_MATTERMOST_UPDATE_MESSAGE: &str = "mattermost_update_message";
 const TOOL_MATTERMOST_GET_THREAD: &str = "mattermost_get_thread";
+
+// === User tools ===
 const TOOL_MATTERMOST_GET_ME: &str = "mattermost_get_me";
 const TOOL_MATTERMOST_GET_USER: &str = "mattermost_get_user";
 const TOOL_MATTERMOST_GET_USER_BY_USERNAME: &str = "mattermost_get_user_by_username";
 const TOOL_MATTERMOST_SEARCH_USERS: &str = "mattermost_search_users";
+
+// === File tools ===
 const TOOL_MATTERMOST_UPLOAD_FILE: &str = "mattermost_upload_file";
 
 const TOOL_MAPPINGS: &[(&str, &str)] = &[
+    // Team tools
+    (TOOL_MATTERMOST_LIST_TEAMS, "list_teams"),
+    (TOOL_MATTERMOST_GET_TEAM, "get_team"),
+    (TOOL_MATTERMOST_GET_TEAM_MEMBERS, "get_team_members"),
+    // Channel tools
     (TOOL_MATTERMOST_LIST_CHANNELS, "list_channels"),
     (TOOL_MATTERMOST_GET_CHANNEL, "get_channel"),
     (TOOL_MATTERMOST_GET_CHANNEL_BY_NAME, "get_channel_by_name"),
@@ -45,15 +62,18 @@ const TOOL_MAPPINGS: &[(&str, &str)] = &[
         TOOL_MATTERMOST_CREATE_DIRECT_CHANNEL,
         "create_direct_channel",
     ),
+    // Message tools
     (TOOL_MATTERMOST_POST_MESSAGE, "post_message"),
     (TOOL_MATTERMOST_GET_CHANNEL_MESSAGES, "get_channel_messages"),
     (TOOL_MATTERMOST_SEARCH_MESSAGES, "search_messages"),
     (TOOL_MATTERMOST_UPDATE_MESSAGE, "update_message"),
     (TOOL_MATTERMOST_GET_THREAD, "get_thread"),
+    // User tools
     (TOOL_MATTERMOST_GET_ME, "get_me"),
     (TOOL_MATTERMOST_GET_USER, "get_user"),
     (TOOL_MATTERMOST_GET_USER_BY_USERNAME, "get_user_by_username"),
     (TOOL_MATTERMOST_SEARCH_USERS, "search_users"),
+    // File tools
     (TOOL_MATTERMOST_UPLOAD_FILE, "upload_file"),
 ];
 
@@ -98,6 +118,7 @@ impl ToolProvider for MattermostMcpProvider {
 
     fn tools(&self) -> Vec<ToolDefinition> {
         let mut tools = Vec::new();
+        tools.extend(team_tools());
         tools.extend(channel_tools());
         tools.extend(message_tools());
         tools.extend(user_tools());
@@ -158,6 +179,43 @@ fn tool_definition(name: &str, description: &str, parameters: serde_json::Value)
         description: description.to_string(),
         parameters,
     }
+}
+
+fn team_tools() -> Vec<ToolDefinition> {
+    vec![
+        tool_definition(
+            TOOL_MATTERMOST_LIST_TEAMS,
+            "List all teams the configured Mattermost account belongs to. Use this first to discover available team IDs before listing channels or searching messages.",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        tool_definition(
+            TOOL_MATTERMOST_GET_TEAM,
+            "Get detailed information about a Mattermost team by team ID.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "team_id": {"type": "string", "description": "Mattermost team ID (26-character alphanumeric)"}
+                },
+                "required": ["team_id"]
+            }),
+        ),
+        tool_definition(
+            TOOL_MATTERMOST_GET_TEAM_MEMBERS,
+            "Get list of users who belong to a Mattermost team.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "team_id": {"type": "string", "description": "Mattermost team ID (26-character alphanumeric)"},
+                    "page": {"type": "integer", "description": "Page number (0-indexed)", "default": 0},
+                    "per_page": {"type": "integer", "description": "Results per page (max 200)", "default": 60}
+                },
+                "required": ["team_id"]
+            }),
+        ),
+    ]
 }
 
 fn channel_tools() -> Vec<ToolDefinition> {
