@@ -17,11 +17,11 @@ FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 # Build dependencies - this layer is cached unless dependencies change
-RUN cargo chef cook --release --workspace --features oxide-agent-core/crawl4ai,oxide-agent-core/jira --recipe-path recipe.json
+RUN cargo chef cook --release --workspace --features oxide-agent-core/crawl4ai,oxide-agent-core/jira,oxide-agent-core/mattermost --recipe-path recipe.json
 
 # Build application - this layer is rebuilt when source changes
 COPY . .
-RUN cargo build --release -p oxide-agent-telegram-bot -p oxide-agent-sandboxd -F oxide-agent-core/crawl4ai -F oxide-agent-core/jira
+RUN cargo build --release -p oxide-agent-telegram-bot -p oxide-agent-sandboxd -F oxide-agent-core/crawl4ai -F oxide-agent-core/jira -F oxide-agent-core/mattermost
 
 FROM debian:trixie-slim AS ssh-mcp-binary
 
@@ -51,6 +51,18 @@ RUN curl -fsSL "https://github.com/0FL01/jira-mcp/releases/download/${JIRA_MCP_V
     && rm /tmp/jira-mcp.tar.gz \
     && chmod +x /usr/local/bin/jira-mcp
 
+FROM debian:trixie-slim AS mattermost-mcp-binary
+
+ARG MATTERMOST_MCP_VERSION=0.1.1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/0FL01/mcp-server-mattermost/releases/download/${MATTERMOST_MCP_VERSION}/mcp-server-mattermost" -o /usr/local/bin/mattermost-mcp \
+    && chmod +x /usr/local/bin/mattermost-mcp
+
 # Runtime stage - Debian Trixie (stable)
 FROM debian:trixie-slim
 
@@ -72,6 +84,7 @@ COPY --from=builder /app/target/release/oxide-agent-telegram-bot /app/oxide-agen
 COPY --from=builder /app/target/release/oxide-agent-sandboxd /app/oxide-agent-sandboxd
 COPY --from=ssh-mcp-binary /usr/local/bin/ssh-mcp /usr/local/bin/ssh-mcp
 COPY --from=jira-mcp-binary /usr/local/bin/jira-mcp /usr/local/bin/jira-mcp
+COPY --from=mattermost-mcp-binary /usr/local/bin/mattermost-mcp /usr/local/bin/mattermost-mcp
 COPY skills/ /app/skills/
 
 RUN chown -R oxide:oxide /app /home/oxide

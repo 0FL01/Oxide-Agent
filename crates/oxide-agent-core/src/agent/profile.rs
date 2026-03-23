@@ -14,6 +14,23 @@ const TOPIC_AGENT_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
     "jira_read",
     "jira_write",
     "jira_schema",
+    // Mattermost tools disabled by default - must be enabled via topic_agent_tools_enable
+    "mattermost_list_channels",
+    "mattermost_get_channel",
+    "mattermost_get_channel_by_name",
+    "mattermost_create_channel",
+    "mattermost_join_channel",
+    "mattermost_create_direct_channel",
+    "mattermost_post_message",
+    "mattermost_get_channel_messages",
+    "mattermost_search_messages",
+    "mattermost_update_message",
+    "mattermost_get_thread",
+    "mattermost_get_me",
+    "mattermost_get_user",
+    "mattermost_get_user_by_username",
+    "mattermost_search_users",
+    "mattermost_upload_file",
 ];
 
 const MANAGER_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
