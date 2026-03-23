@@ -24,6 +24,9 @@ pub mod crawl4ai;
 #[cfg(feature = "jira")]
 pub mod jira_mcp;
 
+#[cfg(feature = "mattermost")]
+pub mod mattermost_mcp;
+
 pub use agents_md::{agents_md_tool_names, AgentsMdProvider};
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
@@ -52,3 +55,6 @@ pub use crawl4ai::Crawl4aiProvider;
 
 #[cfg(feature = "jira")]
 pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};
+
+#[cfg(feature = "mattermost")]
+pub use mattermost_mcp::{MattermostMcpConfig, MattermostMcpProvider};

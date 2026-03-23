@@ -489,6 +489,31 @@ impl AgentExecutor {
             }
         }
 
+        #[cfg(feature = "mattermost")]
+        {
+            if let Some(config) = crate::agent::providers::MattermostMcpConfig::from_env() {
+                let binary_path = config.binary_path.clone();
+                tracing::info!(
+                    binary_path = %binary_path,
+                    mattermost_url_present = !config.mattermost_url.is_empty(),
+                    mattermost_token_present = !config.mattermost_token.is_empty(),
+                    timeout_secs = config.timeout_secs,
+                    max_retries = config.max_retries,
+                    verify_ssl = config.verify_ssl,
+                    "Registering Mattermost MCP provider"
+                );
+                registry.register(Box::new(
+                    crate::agent::providers::MattermostMcpProvider::new(config),
+                ));
+                tracing::info!(binary_path = %binary_path, "Mattermost MCP provider registered");
+            } else {
+                tracing::warn!(
+                    "mattermost feature is enabled but MATTERMOST_URL or MATTERMOST_TOKEN is not set; \
+                     Mattermost MCP provider will not be available. Set these env vars to enable it."
+                );
+            }
+        }
+
         // Register web search provider based on configuration
         let search_provider = crate::config::get_search_provider();
         match search_provider.as_str() {

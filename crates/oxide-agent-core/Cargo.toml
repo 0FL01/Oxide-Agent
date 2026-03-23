@@ -67,6 +67,7 @@ default = ["tavily"]
 tavily = ["dep:tavily"]
 crawl4ai = []
 jira = []
+mattermost = []
 
 [dev-dependencies]
 dotenvy = "0.15"

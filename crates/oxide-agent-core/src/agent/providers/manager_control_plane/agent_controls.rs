@@ -334,6 +334,17 @@ impl ManagerControlPlaneProvider {
             });
         }
 
+        #[cfg(feature = "mattermost")]
+        {
+            if crate::agent::providers::MattermostMcpConfig::from_env().is_some() {
+                groups.push(TopicAgentToolGroup {
+                    provider: "mattermost",
+                    aliases: &["mattermost"],
+                    tools: TOPIC_AGENT_MATTERMOST_TOOLS,
+                });
+            }
+        }
+
         let mut tool_names = BTreeSet::new();
         for group in &groups {
             for tool in group.tools {
