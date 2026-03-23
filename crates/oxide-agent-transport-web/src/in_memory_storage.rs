@@ -5,11 +5,13 @@
 //! - chat history
 //! - agent memory (legacy + context-scoped + flow-scoped)
 //! - topic agents md (minimal)
+//! - reminder jobs used by reminder E2E tests
 //!
-//! All other operations (reminders, audit, secrets, infra config, bindings) return
-//! no-op defaults suitable for isolated E2E testing.
+//! All other operations (audit, secrets, infra config, bindings) return no-op
+//! defaults suitable for isolated E2E testing.
 
 use async_trait::async_trait;
+use chrono::Utc;
 use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
@@ -35,6 +37,7 @@ pub struct InMemoryStorage {
     agent_memories_context: RwLock<HashMap<(i64, String), AgentMemory>>,
     agent_memories_flow: RwLock<HashMap<(i64, String, String), AgentMemory>>,
     flow_records: RwLock<HashMap<(i64, String, String), AgentFlowRecord>>,
+    reminder_jobs: RwLock<HashMap<(i64, String), ReminderJobRecord>>,
     topic_agents_md: RwLock<HashMap<(i64, String), TopicAgentsMdRecord>>,
 }
 
@@ -52,6 +55,7 @@ impl InMemoryStorage {
             agent_memories_context: RwLock::new(HashMap::new()),
             agent_memories_flow: RwLock::new(HashMap::new()),
             flow_records: RwLock::new(HashMap::new()),
+            reminder_jobs: RwLock::new(HashMap::new()),
             topic_agents_md: RwLock::new(HashMap::new()),
         }
     }
@@ -492,13 +496,14 @@ impl crate::api::StorageProvider for InMemoryStorage {
         Ok(Vec::new())
     }
 
-    // --- Reminder jobs (noop for E2E) ---
+    // --- Reminder jobs ---
 
     async fn create_reminder_job(
         &self,
         options: CreateReminderJobOptions,
     ) -> Result<ReminderJobRecord, StorageError> {
-        Ok(ReminderJobRecord {
+        let now = Utc::now().timestamp();
+        let record = ReminderJobRecord {
             schema_version: 1,
             version: 1,
             reminder_id: uuid::Uuid::new_v4().to_string(),
@@ -519,27 +524,63 @@ impl crate::api::StorageProvider for InMemoryStorage {
             last_run_at: None,
             last_error: None,
             run_count: 0,
-            created_at: 0,
-            updated_at: 0,
-        })
+            created_at: now,
+            updated_at: now,
+        };
+        self.reminder_jobs
+            .write()
+            .await
+            .insert((record.user_id, record.reminder_id.clone()), record.clone());
+        Ok(record)
     }
 
     async fn get_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
+        user_id: i64,
+        reminder_id: String,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        Ok(self
+            .reminder_jobs
+            .read()
+            .await
+            .get(&(user_id, reminder_id))
+            .cloned())
     }
 
     async fn list_reminder_jobs(
         &self,
-        _user_id: i64,
-        _context_key: Option<String>,
-        _statuses: Option<Vec<ReminderJobStatus>>,
-        _limit: usize,
+        user_id: i64,
+        context_key: Option<String>,
+        statuses: Option<Vec<ReminderJobStatus>>,
+        limit: usize,
     ) -> Result<Vec<ReminderJobRecord>, StorageError> {
-        Ok(Vec::new())
+        let mut records = self
+            .reminder_jobs
+            .read()
+            .await
+            .values()
+            .filter(|record| record.user_id == user_id)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if let Some(context_key) = context_key.as_ref() {
+            records.retain(|record| record.context_key == *context_key);
+        }
+
+        if let Some(statuses) = statuses.as_ref() {
+            records.retain(|record| statuses.contains(&record.status));
+        }
+
+        records.sort_by(|left, right| {
+            right
+                .next_run_at
+                .cmp(&left.next_run_at)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+        });
+        if records.len() > limit {
+            records.truncate(limit);
+        }
+        Ok(records)
     }
 
     async fn list_due_reminder_jobs(
