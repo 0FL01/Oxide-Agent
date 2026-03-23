@@ -50,6 +50,97 @@ pub fn repair_agent_message_history_for_provider(
     repair_agent_message_history_with_policy(messages, !strict_tool_history)
 }
 
+#[must_use]
+/// Remove tool calls and tool results for tools that are no longer available.
+///
+/// After filtering by the current tool catalog/policy, the function runs the
+/// standard runtime history repair pass to drop any now-orphaned tool results.
+pub fn prune_tool_history_by_availability(
+    messages: &[AgentMessage],
+    available_tools: &HashSet<String>,
+) -> (Vec<AgentMessage>, HistoryRepairOutcome) {
+    let mut rewritten = Vec::with_capacity(messages.len());
+    let mut outcome = HistoryRepairOutcome::default();
+
+    for message in messages {
+        match message.resolved_kind() {
+            AgentMessageKind::AssistantToolCall => {
+                let Some(tool_calls) = message.tool_calls.as_ref() else {
+                    rewritten.push(message.clone());
+                    continue;
+                };
+
+                let retained_tool_calls = tool_calls
+                    .iter()
+                    .filter(|tool_call| available_tools.contains(&tool_call.function.name))
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                if retained_tool_calls.len() == tool_calls.len() {
+                    rewritten.push(message.clone());
+                    continue;
+                }
+
+                outcome.applied = true;
+                outcome.trimmed_tool_calls = outcome
+                    .trimmed_tool_calls
+                    .saturating_add(tool_calls.len().saturating_sub(retained_tool_calls.len()));
+
+                if retained_tool_calls.is_empty() {
+                    if message.content.trim().is_empty() {
+                        outcome.dropped_tool_call_messages =
+                            outcome.dropped_tool_call_messages.saturating_add(1);
+                        continue;
+                    }
+
+                    let mut converted = message.clone();
+                    converted.kind = AgentMessageKind::AssistantResponse;
+                    converted.role = MessageRole::Assistant;
+                    converted.tool_calls = None;
+                    outcome.converted_tool_call_messages =
+                        outcome.converted_tool_call_messages.saturating_add(1);
+                    rewritten.push(converted);
+                    continue;
+                }
+
+                let mut rewritten_message = message.clone();
+                rewritten_message.tool_calls = Some(retained_tool_calls);
+                rewritten.push(rewritten_message);
+            }
+            AgentMessageKind::ToolResult => {
+                let keep = message
+                    .tool_name
+                    .as_ref()
+                    .is_some_and(|tool_name| available_tools.contains(tool_name));
+                if keep {
+                    rewritten.push(message.clone());
+                } else {
+                    outcome.applied = true;
+                    outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
+                }
+            }
+            _ => rewritten.push(message.clone()),
+        }
+    }
+
+    let (repaired, repair_outcome) = repair_agent_message_history_runtime(&rewritten);
+    outcome.applied |= repair_outcome.applied;
+    outcome.dropped_tool_results = outcome
+        .dropped_tool_results
+        .saturating_add(repair_outcome.dropped_tool_results);
+    outcome.trimmed_tool_calls = outcome
+        .trimmed_tool_calls
+        .saturating_add(repair_outcome.trimmed_tool_calls);
+    outcome.converted_tool_call_messages = outcome
+        .converted_tool_call_messages
+        .saturating_add(repair_outcome.converted_tool_call_messages);
+    outcome.dropped_tool_call_messages = outcome
+        .dropped_tool_call_messages
+        .saturating_add(repair_outcome.dropped_tool_call_messages);
+
+    (repaired, outcome)
+}
+
 fn repair_agent_message_history_with_policy(
     messages: &[AgentMessage],
     allow_terminal_incomplete_batch: bool,
@@ -684,6 +775,7 @@ pub fn sanitize_leaked_xml(iteration: usize, final_response: &mut String) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
@@ -1095,5 +1187,56 @@ mod tests {
         assert_eq!(repaired_calls.len(), 1);
         assert_eq!(repaired_calls[0].id, "call-1");
         assert_eq!(repaired[1].tool_call_id.as_deref(), Some("call-1"));
+    }
+
+    #[test]
+    fn prune_tool_history_by_availability_drops_stale_tool_results() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Calling tools",
+                vec![
+                    tool_call("call-1", "search"),
+                    tool_call("call-2", "jira_read"),
+                ],
+            ),
+            AgentMessage::tool("call-1", "search", "result-1"),
+            AgentMessage::tool("call-2", "jira_read", "result-2"),
+        ];
+        let available = HashSet::from(["search".to_string()]);
+
+        let (repaired, outcome) = prune_tool_history_by_availability(&messages, &available);
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.dropped_tool_results, 1);
+        assert_eq!(outcome.trimmed_tool_calls, 1);
+        assert_eq!(repaired.len(), 2);
+        let repaired_calls = repaired[0]
+            .tool_calls
+            .as_ref()
+            .expect("assistant tool call must remain");
+        assert_eq!(repaired_calls.len(), 1);
+        assert_eq!(repaired_calls[0].function.name, "search");
+        assert_eq!(repaired[1].tool_name.as_deref(), Some("search"));
+    }
+
+    #[test]
+    fn prune_tool_history_by_availability_converts_empty_batch_to_assistant_text() {
+        let messages = vec![AgentMessage::assistant_with_tools(
+            "Need to check something first",
+            vec![tool_call("call-1", "jira_read")],
+        )];
+        let available = HashSet::new();
+
+        let (repaired, outcome) = prune_tool_history_by_availability(&messages, &available);
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.trimmed_tool_calls, 1);
+        assert_eq!(outcome.converted_tool_call_messages, 1);
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(
+            repaired[0].resolved_kind(),
+            AgentMessageKind::AssistantResponse
+        );
+        assert!(repaired[0].tool_calls.is_none());
     }
 }

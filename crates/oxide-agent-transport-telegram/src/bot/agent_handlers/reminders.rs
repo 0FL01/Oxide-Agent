@@ -11,6 +11,7 @@ use crate::bot::topic_route::{touch_dynamic_binding_activity_if_needed, TopicRou
 use crate::bot::{build_outbound_thread_params, TelegramThreadKind, TelegramThreadSpec};
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
+use oxide_agent_core::agent::SessionId;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::{
     compute_next_reminder_run_at, resolve_active_topic_binding, ReminderJobRecord,
@@ -100,6 +101,93 @@ async fn process_due_reminder(
     settings: &Arc<BotSettings>,
     reminder: ReminderJobRecord,
 ) -> Result<()> {
+    let Some(prepared) =
+        prepare_due_reminder_execution(bot, storage, llm, settings, reminder).await?
+    else {
+        return Ok(());
+    };
+
+    let route = resolve_scheduled_topic_route(
+        storage,
+        prepared.reminder.user_id,
+        settings,
+        &prepared.reminder.context_key,
+        prepared.chat_id,
+        prepared.thread_spec,
+    )
+    .await;
+    let execution_profile = resolve_execution_profile(
+        storage,
+        prepared.reminder.user_id,
+        &prepared.reminder.context_key,
+        &route,
+        prepared.manager_enabled,
+    )
+    .await;
+    let topic_infra_config = resolve_topic_infra_config(
+        storage,
+        prepared.reminder.user_id,
+        &prepared.reminder.context_key,
+    )
+    .await;
+
+    apply_execution_profile(prepared.session_id, execution_profile).await;
+    apply_topic_infra_config(
+        prepared.session_id,
+        storage.clone(),
+        prepared.reminder.user_id,
+        prepared.reminder.context_key.clone(),
+        topic_infra_config,
+    )
+    .await;
+    apply_reminder_context(
+        prepared.session_id,
+        storage.clone(),
+        prepared.reminder.user_id,
+        prepared.reminder.context_key.clone(),
+        prepared.reminder.flow_id.clone(),
+        prepared.chat_id,
+        prepared.thread_spec,
+    )
+    .await;
+    renew_cancellation_token(prepared.session_id).await;
+
+    let result = run_agent_task_with_text(RunAgentTaskTextContext {
+        bot: bot.clone(),
+        chat_id: prepared.chat_id,
+        session_id: prepared.session_id,
+        user_id: prepared.reminder.user_id,
+        task_text: scheduled_reminder_task_text(&prepared.reminder),
+        storage: storage.clone(),
+        context_key: prepared.reminder.context_key.clone(),
+        agent_flow_id: prepared.reminder.flow_id.clone(),
+        message_thread_id: build_outbound_thread_params(prepared.thread_spec).message_thread_id,
+        use_inline_progress_controls: use_inline_topic_controls(prepared.thread_spec),
+        use_inline_flow_controls: use_inline_flow_controls(prepared.thread_spec),
+    })
+    .await;
+
+    finalize_reminder_execution(storage, &prepared.reminder, result.as_ref()).await;
+    touch_dynamic_binding_activity_if_needed(storage.as_ref(), prepared.reminder.user_id, &route)
+        .await;
+    result
+}
+
+struct PreparedReminderExecution {
+    reminder: ReminderJobRecord,
+    chat_id: ChatId,
+    thread_spec: TelegramThreadSpec,
+    session_id: SessionId,
+    manager_enabled: bool,
+}
+
+async fn prepare_due_reminder_execution(
+    bot: &Bot,
+    storage: &Arc<dyn StorageProvider>,
+    llm: &Arc<LlmClient>,
+    settings: &Arc<BotSettings>,
+    reminder: ReminderJobRecord,
+) -> Result<Option<PreparedReminderExecution>> {
     let now = current_timestamp_unix_secs();
     let Some(reminder) = storage
         .claim_reminder_job(
@@ -110,7 +198,7 @@ async fn process_due_reminder(
         )
         .await?
     else {
-        return Ok(());
+        return Ok(None);
     };
 
     let chat_id = ChatId(reminder.chat_id);
@@ -144,68 +232,16 @@ async fn process_due_reminder(
 
     if is_agent_task_running(session_id).await {
         defer_busy_reminder(storage, &reminder).await;
-        return Ok(());
+        return Ok(None);
     }
 
-    let route = resolve_scheduled_topic_route(
-        storage,
-        reminder.user_id,
-        settings,
-        &reminder.context_key,
+    Ok(Some(PreparedReminderExecution {
+        reminder,
         chat_id,
         thread_spec,
-    )
-    .await;
-    let execution_profile = resolve_execution_profile(
-        storage,
-        reminder.user_id,
-        &reminder.context_key,
-        &route,
+        session_id,
         manager_enabled,
-    )
-    .await;
-    let topic_infra_config =
-        resolve_topic_infra_config(storage, reminder.user_id, &reminder.context_key).await;
-
-    apply_execution_profile(session_id, execution_profile).await;
-    apply_topic_infra_config(
-        session_id,
-        storage.clone(),
-        reminder.user_id,
-        reminder.context_key.clone(),
-        topic_infra_config,
-    )
-    .await;
-    apply_reminder_context(
-        session_id,
-        storage.clone(),
-        reminder.user_id,
-        reminder.context_key.clone(),
-        reminder.flow_id.clone(),
-        chat_id,
-        thread_spec,
-    )
-    .await;
-    renew_cancellation_token(session_id).await;
-
-    let result = run_agent_task_with_text(RunAgentTaskTextContext {
-        bot: bot.clone(),
-        chat_id,
-        session_id,
-        user_id: reminder.user_id,
-        task_text: scheduled_reminder_task_text(&reminder),
-        storage: storage.clone(),
-        context_key: reminder.context_key.clone(),
-        agent_flow_id: reminder.flow_id.clone(),
-        message_thread_id: build_outbound_thread_params(thread_spec).message_thread_id,
-        use_inline_progress_controls: use_inline_topic_controls(thread_spec),
-        use_inline_flow_controls: use_inline_flow_controls(thread_spec),
-    })
-    .await;
-
-    finalize_reminder_execution(storage, &reminder, result.as_ref()).await;
-    touch_dynamic_binding_activity_if_needed(storage.as_ref(), reminder.user_id, &route).await;
-    result
+    }))
 }
 
 async fn resolve_scheduled_topic_route(

@@ -401,6 +401,16 @@ impl AgentExecutor {
             .push_runtime_context(RuntimeContextInjection { content });
     }
 
+    /// Build the currently exposed tool definitions for this executor state.
+    #[must_use]
+    pub fn current_tool_definitions(&self) -> Vec<ToolDefinition> {
+        let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
+        let registry = self.build_tool_registry(todos_arc, None);
+        self.execution_profile
+            .tool_policy()
+            .filter_definitions(registry.all_tools())
+    }
+
     fn build_tool_registry(
         &self,
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,

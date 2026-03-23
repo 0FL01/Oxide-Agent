@@ -7,3 +7,5 @@ pub mod bot;
 pub mod config;
 /// Telegram runtime entrypoint.
 pub mod runner;
+
+mod startup_maintenance;
