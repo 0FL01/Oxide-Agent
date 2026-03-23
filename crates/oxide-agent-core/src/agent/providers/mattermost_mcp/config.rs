@@ -7,6 +7,8 @@ const DEFAULT_BINARY_PATHS: &[&str] = &[
     "/usr/bin/mattermost-mcp",
     "/usr/local/bin/mcp-server-mattermost",
     "/usr/bin/mcp-server-mattermost",
+    "/usr/local/bin/mcp-server-mattermost-0.1.2",
+    "/usr/bin/mcp-server-mattermost-0.1.2",
 ];
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
