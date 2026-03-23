@@ -1061,7 +1061,7 @@ mod tests {
         let now = Utc
             .with_ymd_and_hms(2026, 3, 23, 5, 0, 0)
             .single()
-            .unwrap()
+            .expect("valid date for test")
             .timestamp();
 
         let interval_secs = resolve_interval_secs(&args).expect("interval should resolve");
@@ -1072,7 +1072,7 @@ mod tests {
         let expected = Utc
             .with_ymd_and_hms(2026, 3, 23, 6, 0, 0)
             .single()
-            .unwrap()
+            .expect("valid date for test")
             .timestamp();
         assert_eq!(next_run_at, expected);
     }
@@ -1090,7 +1090,7 @@ mod tests {
         let now = Utc
             .with_ymd_and_hms(2026, 3, 23, 5, 0, 0)
             .single()
-            .unwrap()
+            .expect("valid date for test")
             .timestamp();
 
         let interval_secs = resolve_interval_secs(&args).expect("interval should resolve");
@@ -1101,7 +1101,7 @@ mod tests {
         let expected = Utc
             .with_ymd_and_hms(2026, 3, 23, 7, 0, 0)
             .single()
-            .unwrap()
+            .expect("valid date for test")
             .timestamp();
         assert_eq!(next_run_at, expected);
     }
@@ -1110,7 +1110,7 @@ mod tests {
     fn resolve_local_datetime_with_only_time_uses_today_date() {
         let result = resolve_local_datetime(None, Some("09:00"), Some("UTC+3"))
             .expect("should resolve with only time")
-            .unwrap();
+            .expect("valid date for test");
 
         // Should use today's date with the specified time
         let today = Local::now().format("%Y-%m-%d").to_string();
@@ -1124,7 +1124,7 @@ mod tests {
     fn resolve_local_datetime_with_only_date_uses_midnight() {
         let result = resolve_local_datetime(Some("2026-03-24"), None, Some("UTC+3"))
             .expect("should resolve with only date")
-            .unwrap();
+            .expect("valid date for test");
 
         // Should use midnight with the specified date
         let expected = resolve_reminder_local_datetime("2026-03-24", "00:00:00", Some("UTC+3"))
