@@ -841,12 +841,14 @@ impl LlmClient {
             .await
     }
 
-    /// Transcribe audio with automatic fallback for text-only providers
-    /// If the provider returns `ZAI_FALLBACK_TO_GEMINI` error, use `OpenRouter` instead
+    /// Transcribe audio with automatic fallback for text-only providers and retry logic.
+    ///
+    /// If the provider returns `ZAI_FALLBACK_TO_GEMINI` error, uses `media_model_provider` instead.
+    /// Retries up to 5 times with exponential backoff for retryable errors.
     ///
     /// # Errors
     ///
-    /// Returns any error from the provider.
+    /// Returns any error from the provider after all retry attempts are exhausted.
     pub async fn transcribe_audio_with_fallback(
         &self,
         provider_name: &str,
@@ -854,11 +856,21 @@ impl LlmClient {
         mime_type: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
-        let provider = self.get_provider(provider_name)?;
-        match provider
-            .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
-            .await
-        {
+        // Try primary provider with retry (first retry after 3s)
+        let primary_result = self
+            .retry_with_backoff(
+                || async {
+                    let provider = self.get_provider(provider_name)?;
+                    provider
+                        .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
+                        .await
+                },
+                &format!("Transcription with {}", provider_name),
+                3000, // Initial backoff: 3s, then 6s, 12s, 24s
+            )
+            .await;
+
+        match primary_result {
             Ok(text) => Ok(text),
             Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_GEMINI" => {
                 let media_provider = self
@@ -871,10 +883,19 @@ impl LlmClient {
                     .ok_or_else(|| LlmError::MissingConfig("media_model_id".to_string()))?;
 
                 info!("ZAI does not support audio, falling back to media model {media_model_id}");
-                let provider = self.get_provider(media_provider)?;
-                provider
-                    .transcribe_audio(audio_bytes, mime_type, media_model_id)
-                    .await
+
+                // Try fallback provider with retry (first retry after 3s)
+                self.retry_with_backoff(
+                    || async {
+                        let provider = self.get_provider(media_provider)?;
+                        provider
+                            .transcribe_audio(audio_bytes.clone(), mime_type, media_model_id)
+                            .await
+                    },
+                    &format!("Transcription fallback with {}", media_provider),
+                    3000, // Initial backoff: 3s, then 6s, 12s, 24s
+                )
+                .await
             }
             Err(e) => Err(e),
         }
@@ -910,6 +931,125 @@ impl LlmClient {
             .find(|(name, _)| name == model_name)
             .map(|(_, info)| info.clone())
             .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))
+    }
+
+    /// Execute an async operation with retry logic and exponential backoff.
+    ///
+    /// Retries up to 5 times with exponential backoff for retryable errors
+    /// (5xx status codes, network errors, rate limits).
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The success type returned by the operation
+    /// * `F` - The operation function type
+    /// * `Fut` - The future type returned by the operation
+    ///
+    /// # Arguments
+    ///
+    /// * `operation` - Async closure that returns `Result<T, LlmError>`
+    /// * `context` - Description of the operation for logging
+    /// * `initial_backoff_ms` - Initial backoff in milliseconds (doubles each retry)
+    async fn retry_with_backoff<T, F, Fut>(
+        &self,
+        operation: F,
+        context: &str,
+        initial_backoff_ms: u64,
+    ) -> Result<T, LlmError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, LlmError>>,
+    {
+        const MAX_RETRIES: usize = 5;
+
+        for attempt in 1..=MAX_RETRIES {
+            match operation().await {
+                Ok(result) => {
+                    if attempt > 1 {
+                        info!("{} succeeded after {} attempts", context, attempt);
+                    }
+                    return Ok(result);
+                }
+                Err(e) => {
+                    if attempt < MAX_RETRIES {
+                        if let Some(backoff) =
+                            Self::get_retry_delay_with_initial(&e, attempt, initial_backoff_ms)
+                        {
+                            warn!(
+                                "{} failed (attempt {}/{}): {}, retrying after {:?}",
+                                context, attempt, MAX_RETRIES, e, backoff
+                            );
+                            tokio::time::sleep(backoff).await;
+                            continue;
+                        }
+                    }
+                    warn!("{} failed after {} attempts: {}", context, attempt, e);
+                    return Err(e);
+                }
+            }
+        }
+
+        // This should be unreachable, but just in case
+        Err(LlmError::ApiError(
+            "All retry attempts exhausted".to_string(),
+        ))
+    }
+
+    /// Calculates the delay before the next retry attempt based on the error type and initial backoff.
+    /// Returns `None` if the error is not retryable.
+    fn get_retry_delay_with_initial(
+        error: &LlmError,
+        attempt: usize,
+        initial_backoff_ms: u64,
+    ) -> Option<std::time::Duration> {
+        match error {
+            LlmError::RateLimit { wait_secs, .. } => {
+                // If the server provided a wait time, use it (plus a small buffer)
+                if let Some(secs) = wait_secs {
+                    return Some(std::time::Duration::from_secs(*secs + 1));
+                }
+                // Otherwise use exponential backoff based on initial value
+                let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
+                Some(std::time::Duration::from_millis(backoff_ms))
+            }
+            LlmError::ApiError(msg) => {
+                let msg_lower = msg.to_lowercase();
+                if msg_lower.contains("429") {
+                    let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
+                    return Some(std::time::Duration::from_millis(backoff_ms));
+                }
+                if msg_lower.contains("500")
+                    || msg_lower.contains("502")
+                    || msg_lower.contains("503")
+                    || msg_lower.contains("504")
+                    || msg_lower.contains("timeout")
+                    || msg_lower.contains("overloaded")
+                {
+                    let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
+                    return Some(std::time::Duration::from_millis(backoff_ms));
+                }
+                None
+            }
+            LlmError::NetworkError(msg) => {
+                // Don't retry DNS or connection refused errors immediately
+                let msg_lower = msg.to_lowercase();
+                if msg_lower.contains("dns")
+                    || msg_lower.contains("refused")
+                    || msg_lower.contains("reset")
+                {
+                    let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
+                    return Some(std::time::Duration::from_millis(backoff_ms));
+                }
+                // Retry other network errors with backoff
+                let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
+                Some(std::time::Duration::from_millis(backoff_ms))
+            }
+            LlmError::JsonError(_) => {
+                // JSON errors might be transient, retry with backoff
+                let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
+                Some(std::time::Duration::from_millis(backoff_ms))
+            }
+            _ => None,
+        }
     }
 }
 
