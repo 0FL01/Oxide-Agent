@@ -74,9 +74,10 @@ pub use identity::SessionId;
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::{AgentMemory, ExternalizedPayload, PrunedArtifact};
 pub use profile::{
-    manager_default_blocked_tools, parse_agent_profile, topic_agent_all_hooks,
-    topic_agent_default_blocked_tools, topic_agent_manageable_hooks, topic_agent_protected_hooks,
-    AgentExecutionProfile, HookAccessPolicy, ParsedAgentProfile, ToolAccessPolicy,
+    dm_default_blocked_tools, dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
+    topic_agent_all_hooks, topic_agent_default_blocked_tools, topic_agent_manageable_hooks,
+    topic_agent_protected_hooks, AgentExecutionProfile, HookAccessPolicy, ParsedAgentProfile,
+    ToolAccessPolicy,
 };
 pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
 pub use provider::ToolProvider;

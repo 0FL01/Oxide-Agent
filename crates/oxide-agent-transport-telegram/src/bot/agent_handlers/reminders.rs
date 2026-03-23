@@ -122,6 +122,7 @@ async fn process_due_reminder(
         &prepared.reminder.context_key,
         &route,
         prepared.manager_enabled,
+        prepared.thread_spec,
     )
     .await;
     let topic_infra_config = resolve_topic_infra_config(
