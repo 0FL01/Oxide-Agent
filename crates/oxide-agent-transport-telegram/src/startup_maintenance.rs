@@ -260,6 +260,7 @@ async fn resolve_available_tools_for_memory(
         &reference.context_key,
         &route,
         manager_enabled,
+        thread_spec,
     )
     .await;
     let topic_infra_config =

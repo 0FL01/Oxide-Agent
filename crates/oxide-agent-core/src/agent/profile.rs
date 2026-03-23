@@ -446,9 +446,9 @@ fn parse_tool_name_set(value: &Value, camel_key: &str, snake_key: &str) -> Optio
 #[cfg(test)]
 mod tests {
     use super::{
-        manager_default_blocked_tools, parse_agent_profile, topic_agent_default_blocked_tools,
-        topic_agent_manageable_hooks, topic_agent_protected_hooks, AgentExecutionProfile,
-        HookAccessPolicy, ToolAccessPolicy,
+        dm_default_blocked_tools, dm_tool_policy, manager_default_blocked_tools,
+        parse_agent_profile, topic_agent_default_blocked_tools, topic_agent_manageable_hooks,
+        topic_agent_protected_hooks, AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy,
     };
     use crate::llm::ToolDefinition;
     use serde_json::json;
@@ -576,5 +576,80 @@ mod tests {
         assert!(protected.iter().any(|hook| hook == "completion_check"));
         assert!(protected.iter().any(|hook| hook == "tool_access_policy"));
         assert!(manageable.iter().all(|hook| !protected.contains(hook)));
+    }
+
+    #[test]
+    fn dm_default_blocklist_contains_ssh_jira_mattermost_tools() {
+        let blocked = dm_default_blocked_tools();
+
+        // SSH tools should be fully blocked in DM
+        let ssh_count = blocked.iter().filter(|t| t.starts_with("ssh_")).count();
+        assert!(ssh_count > 0, "Should block SSH tools");
+
+        // Jira tools should be blocked in DM
+        let jira_count = blocked.iter().filter(|t| t.starts_with("jira_")).count();
+        assert!(jira_count > 0, "Should block Jira tools");
+
+        // Mattermost tools should be blocked in DM
+        let mattermost_count = blocked
+            .iter()
+            .filter(|t| t.starts_with("mattermost_"))
+            .count();
+        assert!(mattermost_count > 0, "Should block Mattermost tools");
+
+        // Verify specific SSH tools are blocked
+        assert!(blocked.contains(&"ssh_exec".to_string()));
+        assert!(blocked.contains(&"ssh_sudo_exec".to_string()));
+        assert!(blocked.contains(&"ssh_read_file".to_string()));
+        assert!(blocked.contains(&"ssh_apply_file_edit".to_string()));
+        assert!(blocked.contains(&"ssh_check_process".to_string()));
+
+        // Verify specific Jira tools are blocked
+        assert!(blocked.contains(&"jira_read".to_string()));
+        assert!(blocked.contains(&"jira_write".to_string()));
+        assert!(blocked.contains(&"jira_schema".to_string()));
+    }
+
+    #[test]
+    fn dm_tool_policy_blocks_ssh_jira_mattermost() {
+        let policy = dm_tool_policy();
+
+        // SSH tools should be blocked
+        assert!(!policy.allows("ssh_exec"));
+        assert!(!policy.allows("ssh_sudo_exec"));
+        assert!(!policy.allows("ssh_read_file"));
+        assert!(!policy.allows("ssh_apply_file_edit"));
+        assert!(!policy.allows("ssh_check_process"));
+
+        // Jira tools should be blocked
+        assert!(!policy.allows("jira_read"));
+        assert!(!policy.allows("jira_write"));
+        assert!(!policy.allows("jira_schema"));
+
+        // Mattermost tools should be blocked
+        assert!(!policy.allows("mattermost_list_teams"));
+        assert!(!policy.allows("mattermost_post_message"));
+        assert!(!policy.allows("mattermost_get_channel"));
+
+        // Regular tools should still be allowed (unless blocked by default)
+        assert!(policy.allows("todos_write"));
+        assert!(policy.allows("delegate_to_sub_agent"));
+    }
+
+    #[test]
+    fn dm_policy_can_be_merged_with_other_blocklist() {
+        let base_policy = ToolAccessPolicy::default();
+        let dm_policy = dm_tool_policy();
+
+        let merged =
+            base_policy.with_additional_blocked_tools(dm_policy.blocked_tools().iter().cloned());
+
+        // DM blocked tools should still be blocked
+        assert!(!merged.allows("ssh_exec"));
+        assert!(!merged.allows("jira_read"));
+        assert!(!merged.allows("mattermost_post_message"));
+
+        // Regular tools should be allowed
+        assert!(merged.allows("todos_write"));
     }
 }

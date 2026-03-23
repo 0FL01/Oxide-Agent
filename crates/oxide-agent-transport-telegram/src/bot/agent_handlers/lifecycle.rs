@@ -293,8 +293,15 @@ async fn configure_message_active_session(
     manager_enabled: bool,
     active_session: &ActiveSessionConfig,
 ) {
-    let execution_profile =
-        resolve_execution_profile(storage, user_id, context_key, route, manager_enabled).await;
+    let execution_profile = resolve_execution_profile(
+        storage,
+        user_id,
+        context_key,
+        route,
+        manager_enabled,
+        active_session.thread_spec,
+    )
+    .await;
     let topic_infra_config = resolve_topic_infra_config(storage, user_id, context_key).await;
     configure_active_session(active_session, execution_profile, topic_infra_config).await;
 }

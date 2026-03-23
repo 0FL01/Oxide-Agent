@@ -1,8 +1,9 @@
 use super::{reminder_thread_kind, SESSION_REGISTRY};
 use crate::bot::topic_route::TopicRouteDecision;
+use crate::bot::TelegramThreadKind;
 use crate::bot::TelegramThreadSpec;
 use oxide_agent_core::agent::{
-    manager_default_blocked_tools, parse_agent_profile,
+    dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
     providers::{
         agents_md_tool_names, inject_topic_infra_preflight_system_message,
         inspect_topic_infra_config, manager_control_plane_tool_names, reminder_tool_names,
@@ -57,6 +58,7 @@ pub(crate) async fn resolve_execution_profile(
     topic_id: &str,
     route: &TopicRouteDecision,
     manager_enabled: bool,
+    thread_spec: TelegramThreadSpec,
 ) -> AgentExecutionProfile {
     let route_prompt = normalize_prompt_section(route.system_prompt_override.as_deref());
     let topic_context_prompt = match storage
@@ -76,13 +78,24 @@ pub(crate) async fn resolve_execution_profile(
             None
         }
     };
+
+    // Check if this is a DM context (direct/private chat)
+    let is_dm = thread_spec.kind == TelegramThreadKind::Dm;
+
     let Some(agent_id) = route.agent_id.clone() else {
-        let tool_policy = if manager_enabled {
+        let mut tool_policy = if manager_enabled {
             oxide_agent_core::agent::ToolAccessPolicy::default()
                 .with_additional_blocked_tools(manager_default_blocked_tools())
         } else {
             oxide_agent_core::agent::ToolAccessPolicy::default()
         };
+
+        // Apply DM tool policy if in DM context
+        if is_dm {
+            tool_policy = tool_policy
+                .with_additional_blocked_tools(dm_tool_policy().blocked_tools().iter().cloned());
+        }
+
         return AgentExecutionProfile::new(
             None,
             compose_execution_prompt_instructions(
@@ -118,6 +131,13 @@ pub(crate) async fn resolve_execution_profile(
         .tool_policy
         .with_additional_allowed_tools(agents_md_tool_names())
         .with_additional_allowed_tools(reminder_tool_names());
+
+    // Apply DM tool policy if in DM context
+    if is_dm {
+        parsed_profile.tool_policy = parsed_profile
+            .tool_policy
+            .with_additional_blocked_tools(dm_tool_policy().blocked_tools().iter().cloned());
+    }
 
     let prompt_instructions = compose_execution_prompt_instructions(
         parsed_profile.prompt_instructions.as_deref(),

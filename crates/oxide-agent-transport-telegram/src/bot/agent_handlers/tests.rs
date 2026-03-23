@@ -17,7 +17,10 @@ use crate::bot::views::{
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL,
     AGENT_CALLBACK_CONFIRM_COMPACT_YES,
 };
-use crate::bot::{general_forum_topic_id, resolve_thread_spec_from_context};
+use crate::bot::{
+    general_forum_topic_id, resolve_thread_spec_from_context, TelegramThreadKind,
+    TelegramThreadSpec,
+};
 use crate::config::{BotSettings, TelegramSettings};
 use async_trait::async_trait;
 use oxide_agent_core::agent::SessionId;
@@ -1561,7 +1564,15 @@ async fn resolve_execution_profile_loads_profile_policy_for_static_topic_agent()
         dynamic_binding_topic_id: None,
     };
 
-    let profile = resolve_execution_profile(&storage, 77, "topic-a", &route, false).await;
+    let profile = resolve_execution_profile(
+        &storage,
+        77,
+        "topic-a",
+        &route,
+        false,
+        TelegramThreadSpec::new(TelegramThreadKind::Forum, None),
+    )
+    .await;
 
     assert_eq!(profile.agent_id(), Some("infra-agent"));
     let prompt = profile
@@ -1590,7 +1601,15 @@ async fn resolve_execution_profile_applies_manager_default_blocklist() {
         dynamic_binding_topic_id: None,
     };
 
-    let profile = resolve_execution_profile(&storage, 77, "manager-topic", &route, true).await;
+    let profile = resolve_execution_profile(
+        &storage,
+        77,
+        "manager-topic",
+        &route,
+        true,
+        TelegramThreadSpec::new(TelegramThreadKind::Forum, None),
+    )
+    .await;
 
     assert!(profile.tool_policy().allows("execute_command"));
     assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
@@ -1617,11 +1636,80 @@ async fn resolve_execution_profile_keeps_manager_tools_available_with_profile_al
         dynamic_binding_topic_id: None,
     };
 
-    let profile = resolve_execution_profile(&storage, 77, "manager-topic", &route, true).await;
+    let profile = resolve_execution_profile(
+        &storage,
+        77,
+        "manager-topic",
+        &route,
+        true,
+        TelegramThreadSpec::new(TelegramThreadKind::Forum, None),
+    )
+    .await;
 
     assert!(profile.tool_policy().allows("execute_command"));
     assert!(profile.tool_policy().allows("topic_agents_md_upsert"));
     assert!(profile.tool_policy().allows("topic_agents_md_get"));
     assert!(profile.tool_policy().allows("forum_topic_list"));
     assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
+}
+
+#[tokio::test]
+async fn resolve_execution_profile_blocks_ssh_jira_mattermost_in_dm_context() {
+    let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
+    let route = crate::bot::topic_route::TopicRouteDecision {
+        enabled: true,
+        require_mention: false,
+        mention_satisfied: true,
+        system_prompt_override: None,
+        agent_id: None,
+        dynamic_binding_topic_id: None,
+    };
+
+    // DM context
+    let dm_profile = resolve_execution_profile(
+        &storage,
+        77,
+        "dm-topic",
+        &route,
+        false,
+        TelegramThreadSpec::new(TelegramThreadKind::Dm, None),
+    )
+    .await;
+
+    // SSH tools should be blocked in DM
+    assert!(!dm_profile.tool_policy().allows("ssh_exec"));
+    assert!(!dm_profile.tool_policy().allows("ssh_sudo_exec"));
+    assert!(!dm_profile.tool_policy().allows("ssh_read_file"));
+    assert!(!dm_profile.tool_policy().allows("ssh_apply_file_edit"));
+    assert!(!dm_profile.tool_policy().allows("ssh_check_process"));
+
+    // Jira tools should be blocked in DM
+    assert!(!dm_profile.tool_policy().allows("jira_read"));
+    assert!(!dm_profile.tool_policy().allows("jira_write"));
+
+    // Mattermost tools should be blocked in DM
+    assert!(!dm_profile.tool_policy().allows("mattermost_list_teams"));
+    assert!(!dm_profile.tool_policy().allows("mattermost_post_message"));
+
+    // Regular tools should still be allowed
+    assert!(dm_profile.tool_policy().allows("todos_write"));
+    assert!(dm_profile.tool_policy().allows("delegate_to_sub_agent"));
+
+    // Forum context - same agent_id (no agent configured, so no topic-agent blocklist)
+    let forum_profile = resolve_execution_profile(
+        &storage,
+        77,
+        "forum-topic",
+        &route,
+        false,
+        TelegramThreadSpec::new(TelegramThreadKind::Forum, None),
+    )
+    .await;
+
+    // SSH tools should be allowed in Forum (not blocked by default without agent)
+    assert!(forum_profile.tool_policy().allows("ssh_exec"));
+    assert!(forum_profile.tool_policy().allows("ssh_sudo_exec"));
+
+    // Regular tools should still be allowed
+    assert!(forum_profile.tool_policy().allows("todos_write"));
 }
