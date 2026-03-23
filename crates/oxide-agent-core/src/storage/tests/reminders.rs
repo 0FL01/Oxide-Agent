@@ -7,6 +7,12 @@ fn parse_reminder_timezone_defaults_to_utc() {
 }
 
 #[test]
+fn parse_reminder_timezone_accepts_utc_offsets() {
+    let timezone = parse_reminder_timezone(Some("UTC+3")).expect("timezone should parse");
+    assert_eq!(timezone.name(), "UTC+3");
+}
+
+#[test]
 fn compute_cron_next_run_at_uses_timezone() {
     let after = chrono::Utc
         .with_ymd_and_hms(2026, 6, 1, 6, 0, 0)
@@ -62,4 +68,33 @@ fn compute_next_reminder_run_at_supports_cron_records() {
         .expect("valid datetime")
         .timestamp();
     assert_eq!(next, Some(expected));
+}
+
+#[test]
+fn compute_cron_next_run_at_supports_fixed_utc_offset_timezones() {
+    let after = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 23, 5, 0, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    let next = compute_cron_next_run_at("0 0 9 * * * *", Some("UTC+3"), after)
+        .expect("cron should resolve");
+    let expected = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 23, 6, 0, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    assert_eq!(next, expected);
+}
+
+#[test]
+fn resolve_local_datetime_uses_offset_timezone() {
+    let unix = resolve_reminder_local_datetime("2026-03-24", "09:00", Some("UTC+3"))
+        .expect("local datetime should resolve");
+    let expected = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 24, 6, 0, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    assert_eq!(unix, expected);
 }

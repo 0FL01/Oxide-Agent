@@ -48,9 +48,9 @@ pub use provider::MockStorageProvider;
 pub use provider::StorageProvider;
 pub use r2::R2Storage;
 pub use reminder::{
-    compute_cron_next_run_at, compute_next_reminder_run_at, parse_reminder_timezone,
-    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind,
-    ReminderThreadKind,
+    compute_cron_next_run_at, compute_next_reminder_run_at, format_reminder_unix_in_timezone,
+    parse_reminder_timezone, resolve_reminder_local_datetime, CreateReminderJobOptions,
+    ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
 };
 pub use user::{Message, UserConfig, UserContextConfig};
 

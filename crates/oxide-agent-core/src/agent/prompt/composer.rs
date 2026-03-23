@@ -12,9 +12,16 @@ fn build_date_context() -> String {
     let now = chrono::Local::now();
     let current_date = now.format("%Y-%m-%d %H:%M:%S").to_string();
     let current_day = now.format("%A").to_string();
+    let current_offset = now.format("UTC%:z").to_string();
 
     format!(
-        "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nIMPORTANT: Always use this date as the current date. If search results (web_search) contain phrases like 'today', 'tomorrow', or dates contradicting this, consider the search results outdated and interpret them relative to the date above.\n\n"
+        "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nCurrent local timezone: {current_offset}\nIMPORTANT: Always use this date as the current date. If search results (web_search) contain phrases like 'today', 'tomorrow', or dates contradicting this, consider the search results outdated and interpret them relative to the date above.\n\n"
+    )
+}
+
+fn build_reminder_guidance(tools: &[ToolDefinition]) -> Option<&'static str> {
+    tools.iter().any(|tool| tool.name == "reminder_schedule").then_some(
+        "## Reminder Scheduling\n- The current date/time block above is the source of truth for local time\n- Do not compute unix timestamps by hand for reminders\n- For a one-time reminder, use `kind=once` with `date` + `time` and optional `timezone`\n- For repeat-after-N-minutes or repeat-after-N-hours, use `kind=interval` with `every_minutes` or `every_hours`\n- For wall-clock schedules like every day at 09:00 or weekdays at 18:30, use `kind=cron` with `time`, optional `weekdays`, and optional `timezone`\n- Do not use `kind=interval` for calendar schedules like every day at 09:00 because interval means fixed delay after the previous run\n- When `timezone` is omitted, reminder scheduling uses the current local timezone shown above"
     )
 }
 
@@ -114,11 +121,13 @@ pub async fn create_agent_system_prompt(
         strip_structured_output_requirement(&base_prompt)
     };
 
+    let reminder_guidance = build_reminder_guidance(tools).unwrap_or_default();
+
     if structured_output {
         let structured_output = build_structured_output_instructions(tools);
-        format!("{date_context}{base_prompt}\n\n{structured_output}")
+        format!("{date_context}{base_prompt}\n\n{reminder_guidance}\n\n{structured_output}")
     } else {
-        format!("{date_context}{base_prompt}")
+        format!("{date_context}{base_prompt}\n\n{reminder_guidance}")
     }
 }
 
@@ -176,6 +185,7 @@ mod tests {
         let context = build_date_context();
         assert!(context.contains("CURRENT DATE AND TIME"));
         assert!(context.contains("Today:"));
+        assert!(context.contains("Current local timezone:"));
     }
 
     #[test]
@@ -207,5 +217,21 @@ mod tests {
 
         assert!(prompt.contains("Additional agent role instructions:"));
         assert!(prompt.contains("Stay within the infra role."));
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_system_prompt_adds_reminder_guidance() {
+        let tools = [ToolDefinition {
+            name: "reminder_schedule".to_string(),
+            description: "demo".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }];
+        let mut session = AgentSession::new(1_i64.into());
+
+        let prompt =
+            create_agent_system_prompt("demo task", &tools, true, None, &mut session, None).await;
+
+        assert!(prompt.contains("## Reminder Scheduling"));
+        assert!(prompt.contains("Do not compute unix timestamps by hand for reminders"));
     }
 }
