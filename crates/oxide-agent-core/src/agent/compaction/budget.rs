@@ -171,7 +171,7 @@ mod tests {
     };
     use crate::agent::memory::AgentMessage;
     use crate::agent::{AgentContext, EphemeralSession};
-    use crate::llm::ToolDefinition;
+    use crate::llm::{ToolCall, ToolCallFunction, ToolDefinition};
 
     #[test]
     fn estimate_request_budget_accounts_for_request_components() {
@@ -184,10 +184,24 @@ mod tests {
         session
             .memory_mut()
             .add_message(AgentMessage::user_task("Deploy the hotfix"));
+        // Tool result requires a preceding assistant message with tool call to avoid being dropped by history repair
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant_with_tools(
+                "I'll run cargo check",
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    function: ToolCallFunction {
+                        name: "execute_command".to_string(),
+                        arguments: r#"{"command":"cargo check"}"#.to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ));
         session.memory_mut().add_message(AgentMessage::tool(
             "call-1",
             "execute_command",
-            "cargo check",
+            "cargo check output",
         ));
         assert!(session.register_loaded_skill("release", 321));
 

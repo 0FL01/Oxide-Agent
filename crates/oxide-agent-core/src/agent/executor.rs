@@ -536,12 +536,12 @@ impl AgentExecutor {
         }
     }
 
-    fn register_mcp_providers(&self, registry: &mut ToolRegistry) {
+    fn register_mcp_providers(&self, _registry: &mut ToolRegistry) {
         #[cfg(feature = "jira")]
-        Self::register_jira_mcp_provider(registry);
+        Self::register_jira_mcp_provider(_registry);
 
         #[cfg(feature = "mattermost")]
-        Self::register_mattermost_mcp_provider(registry);
+        Self::register_mattermost_mcp_provider(_registry);
     }
 
     fn register_search_provider(&self, registry: &mut ToolRegistry) {
