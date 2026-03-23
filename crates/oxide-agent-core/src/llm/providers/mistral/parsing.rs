@@ -1,5 +1,6 @@
 //! Response parsing utilities for Mistral API
 
+use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
 use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall, ToolCallFunction};
 use serde_json::Value;
 
@@ -14,7 +15,9 @@ pub fn parse_usage(response: &Value) -> Option<TokenUsage> {
 }
 
 /// Parse tool calls from Mistral API response message
-pub fn parse_tool_calls(message: &Value) -> Vec<ToolCall> {
+///
+/// Maps Mistral's 9-character IDs back to original UUID-based IDs using the mapper.
+pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<ToolCall> {
     let Some(tool_calls_array) = message.get("tool_calls") else {
         return Vec::new();
     };
@@ -26,7 +29,10 @@ pub fn parse_tool_calls(message: &Value) -> Vec<ToolCall> {
     array
         .iter()
         .filter_map(|tc| {
-            let id = tc.get("id")?.as_str()?.to_string();
+            let mistral_id = tc.get("id")?.as_str()?.to_string();
+            // Map back to original ID if known, otherwise use as-is
+            let id = id_mapper.to_original(&mistral_id);
+
             let function = tc.get("function")?;
             let name = function.get("name")?.as_str()?.to_string();
             let arguments = function
@@ -50,8 +56,23 @@ pub fn parse_tool_calls(message: &Value) -> Vec<ToolCall> {
         .collect()
 }
 
+/// Legacy function without ID mapping (for backward compatibility)
+#[deprecated(
+    since = "0.1.0",
+    note = "Use parse_tool_calls with id_mapper for proper Mistral compatibility"
+)]
+pub fn parse_tool_calls_legacy(message: &Value) -> Vec<ToolCall> {
+    let dummy_mapper = ToolCallIdMapper::new();
+    parse_tool_calls(message, &dummy_mapper)
+}
+
 /// Parse chat completion response
-pub fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
+///
+/// Maps Mistral's tool call IDs back to original IDs using the mapper.
+pub fn parse_chat_response(
+    response: Value,
+    id_mapper: &ToolCallIdMapper,
+) -> Result<ChatResponse, LlmError> {
     let choice = response
         .get("choices")
         .and_then(|choices| choices.get(0))
@@ -70,8 +91,8 @@ pub fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
     let (content, extracted_reasoning) = extract_message_content(message.get("content"));
     let reasoning_content = extracted_reasoning.or_else(|| extract_reasoning_content(message));
 
-    // Parse tool_calls from the response
-    let tool_calls = parse_tool_calls(message);
+    // Parse tool_calls from the response, mapping IDs back to original
+    let tool_calls = parse_tool_calls(message, id_mapper);
 
     // Allow empty content if there are tool_calls or reasoning_content
     if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
@@ -85,6 +106,16 @@ pub fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
         reasoning_content,
         usage: parse_usage(&response),
     })
+}
+
+/// Legacy function without ID mapping (for backward compatibility)
+#[deprecated(
+    since = "0.1.0",
+    note = "Use parse_chat_response with id_mapper for proper Mistral compatibility"
+)]
+pub fn parse_chat_response_legacy(response: Value) -> Result<ChatResponse, LlmError> {
+    let dummy_mapper = ToolCallIdMapper::new();
+    parse_chat_response(response, &dummy_mapper)
 }
 
 /// Extract text segments from JSON value recursively

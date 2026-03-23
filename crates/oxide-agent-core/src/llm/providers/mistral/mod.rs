@@ -1,7 +1,7 @@
 //! Mistral AI LLM provider
 //!
 //! Supports chat completion, tool calling, and audio transcription.
-//! 
+//!
 //! # Structure
 //! - `types`: Constants and type definitions
 //! - `client`: HTTP client creation utilities
@@ -10,6 +10,7 @@
 //! - `chat`: Chat completion and tool calling
 //! - `transcription`: Audio transcription (Stage 2)
 //! - `image`: Image analysis (placeholder)
+//! - `id_mapper`: Tool call ID mapping for API compatibility
 //! - `tests`: Unit tests
 
 use crate::config::MISTRAL_CHAT_TEMPERATURE;
@@ -19,9 +20,11 @@ use crate::llm::{
 use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;
 use reqwest::Client as HttpClient;
+use std::sync::{Arc, Mutex};
 
 pub mod chat;
 pub mod client;
+pub mod id_mapper;
 pub mod image;
 pub mod messages;
 pub mod parsing;
@@ -29,11 +32,18 @@ pub mod tests;
 pub mod transcription;
 pub mod types;
 
+use id_mapper::ToolCallIdMapper;
+
 /// LLM provider implementation for Mistral AI
+///
+/// Uses bidirectional mapping between original UUID-based tool call IDs
+/// and Mistral-compatible 9-character alphanumeric IDs.
 pub struct MistralProvider {
     client: Client<OpenAIConfig>,
     http_client: HttpClient,
     api_key: String,
+    /// Maps between original and Mistral-compatible tool call IDs
+    id_mapper: Arc<Mutex<ToolCallIdMapper>>,
 }
 
 impl MistralProvider {
@@ -46,6 +56,7 @@ impl MistralProvider {
             client: openai_client,
             http_client,
             api_key,
+            id_mapper: Arc::new(Mutex::new(ToolCallIdMapper::new())),
         }
     }
 
@@ -60,7 +71,18 @@ impl MistralProvider {
             client: openai_client,
             http_client,
             api_key,
+            id_mapper: Arc::new(Mutex::new(ToolCallIdMapper::new())),
         }
+    }
+
+    /// Get a reference to the ID mapper (for testing/debugging)
+    pub fn id_mapper(&self) -> std::sync::MutexGuard<'_, ToolCallIdMapper> {
+        self.id_mapper.lock().expect("ID mapper lock poisoned")
+    }
+
+    /// Clear the ID mapper (useful for testing or session reset)
+    pub fn clear_id_mapper(&self) {
+        self.id_mapper().clear();
     }
 }
 
@@ -82,12 +104,7 @@ impl LlmProvider for MistralProvider {
                 model_id,
                 max_tokens,
             );
-            let response = chat::send_chat_request(
-                &self.http_client,
-                &self.api_key,
-                body,
-            )
-            .await?;
+            let response = chat::send_chat_request(&self.http_client, &self.api_key, body).await?;
             return response
                 .content
                 .ok_or_else(|| LlmError::ApiError("Empty response".to_string()));
@@ -133,6 +150,9 @@ impl LlmProvider for MistralProvider {
 
     /// Chat completion with tool calling support for agent mode
     ///
+    /// Automatically maps tool call IDs to/from Mistral-compatible format (9 alphanumeric chars).
+    /// Original UUID-based IDs are preserved internally.
+    ///
     /// # Errors
     ///
     /// Returns `LlmError::NetworkError` on connectivity issues, `LlmError::ApiError` on non-success status codes,
@@ -141,11 +161,7 @@ impl LlmProvider for MistralProvider {
         &self,
         request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
-        chat::chat_with_tools(&self.http_client,
-            &self.api_key,
-            request,
-        )
-        .await
+        chat::chat_with_tools(&self.http_client, &self.api_key, request, &self.id_mapper).await
     }
 }
 

@@ -3,19 +3,20 @@
 use crate::config::{
     MISTRAL_CHAT_TEMPERATURE, MISTRAL_REASONING_TEMPERATURE, MISTRAL_TOOL_TEMPERATURE,
 };
-use crate::llm::{
-    http_utils::parse_retry_after,
-    openai_compat, ChatResponse, ChatWithToolsRequest, LlmError, Message,
-    ToolDefinition,
-};
 use crate::llm::providers::mistral::{
+    id_mapper::ToolCallIdMapper,
     messages::{prepare_chat_messages, prepare_structured_messages},
     parsing::parse_chat_response,
     types::{MISTRAL_REASONING_EFFORT, MISTRAL_REASONING_MODEL_ID},
 };
+use crate::llm::{
+    http_utils::parse_retry_after, openai_compat, ChatResponse, ChatWithToolsRequest, LlmError,
+    Message, ToolDefinition,
+};
 use async_openai::Client;
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 
 /// Build chat completion request body
 pub fn build_chat_completion_body(
@@ -41,14 +42,17 @@ pub fn build_chat_completion_body(
 }
 
 /// Build tool chat request body
+///
+/// Maps tool call IDs to Mistral-compatible format using the provided mapper.
 pub fn build_tool_chat_body(
     system_prompt: &str,
     history: &[Message],
     tools: &[ToolDefinition],
     model_id: &str,
     max_tokens: u32,
+    id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
-    let messages = prepare_structured_messages(system_prompt, history);
+    let messages = prepare_structured_messages(system_prompt, history, id_mapper);
     let mut body = json!({
         "model": model_id,
         "messages": messages,
@@ -104,10 +108,30 @@ fn chat_temperature(model_id: &str) -> f32 {
 }
 
 /// Send chat request to Mistral API
+///
+/// Legacy version without ID mapping. Use `send_chat_request_with_mapping` for tool calling.
 pub async fn send_chat_request(
     http_client: &HttpClient,
     api_key: &str,
     body: Value,
+) -> Result<ChatResponse, LlmError> {
+    send_chat_request_with_mapping(
+        http_client,
+        api_key,
+        body,
+        &Arc::new(Mutex::new(ToolCallIdMapper::new())),
+    )
+    .await
+}
+
+/// Send chat request to Mistral API with ID mapping
+///
+/// Maps tool call IDs from Mistral format back to original format in the response.
+pub async fn send_chat_request_with_mapping(
+    http_client: &HttpClient,
+    api_key: &str,
+    body: Value,
+    id_mapper: &Arc<Mutex<ToolCallIdMapper>>,
 ) -> Result<ChatResponse, LlmError> {
     let url = "https://api.mistral.ai/v1/chat/completions";
 
@@ -143,7 +167,9 @@ pub async fn send_chat_request(
         .await
         .map_err(|e| LlmError::JsonError(e.to_string()))?;
 
-    parse_chat_response(response_json)
+    // Take lock for parsing (maps Mistral IDs back to original)
+    let mapper = id_mapper.lock().expect("ID mapper lock poisoned");
+    parse_chat_response(response_json, &*mapper)
 }
 
 /// Chat completion implementation
@@ -158,13 +184,8 @@ pub async fn chat_completion(
     max_tokens: u32,
 ) -> Result<String, LlmError> {
     if is_reasoning_model(model_id) {
-        let body = build_chat_completion_body(
-            system_prompt,
-            history,
-            user_message,
-            model_id,
-            max_tokens,
-        );
+        let body =
+            build_chat_completion_body(system_prompt, history, user_message, model_id, max_tokens);
         let response = send_chat_request(http_client, api_key, body).await?;
         return response
             .content
@@ -184,10 +205,13 @@ pub async fn chat_completion(
 }
 
 /// Chat with tools implementation
+///
+/// Maps tool call IDs to/from Mistral-compatible format using the provided mapper.
 pub async fn chat_with_tools(
     http_client: &HttpClient,
     api_key: &str,
     request: ChatWithToolsRequest<'_>,
+    id_mapper: &Arc<Mutex<ToolCallIdMapper>>,
 ) -> Result<ChatResponse, LlmError> {
     let ChatWithToolsRequest {
         system_prompt,
@@ -197,7 +221,20 @@ pub async fn chat_with_tools(
         max_tokens,
         json_mode: _,
     } = request;
-    
-    let body = build_tool_chat_body(system_prompt, history, tools, model_id, max_tokens);
-    send_chat_request(http_client, api_key, body).await
+
+    // Build request body with ID mapping (takes lock for message preparation)
+    let body = {
+        let mut mapper = id_mapper.lock().expect("ID mapper lock poisoned");
+        build_tool_chat_body(
+            system_prompt,
+            history,
+            tools,
+            model_id,
+            max_tokens,
+            &mut *mapper,
+        )
+    };
+
+    // Send request and parse response with ID mapping
+    send_chat_request_with_mapping(http_client, api_key, body, id_mapper).await
 }
