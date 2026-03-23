@@ -428,10 +428,25 @@ mod tests {
     }
 
     #[test]
-    fn topic_agent_default_blocklist_contains_ytdlp_tools_only() {
+    fn topic_agent_default_blocklist_contains_ytdlp_jira_mattermost_tools() {
         let blocked = topic_agent_default_blocked_tools();
 
-        assert!(blocked.iter().all(|tool| tool.starts_with("ytdlp_")));
+        // All blocked tools should be from restricted categories
+        let ytdlp_count = blocked.iter().filter(|t| t.starts_with("ytdlp_")).count();
+        let jira_count = blocked.iter().filter(|t| t.starts_with("jira_")).count();
+        let mattermost_count = blocked
+            .iter()
+            .filter(|t| t.starts_with("mattermost_"))
+            .count();
+
+        assert!(ytdlp_count > 0, "Should block ytdlp tools");
+        assert!(jira_count > 0, "Should block jira tools");
+        assert!(mattermost_count > 0, "Should block mattermost tools");
+        assert_eq!(
+            ytdlp_count + jira_count + mattermost_count,
+            blocked.len(),
+            "All blocked tools should be from ytdlp/jira/mattermost categories"
+        );
         assert!(!blocked.iter().any(|tool| tool == "delegate_to_sub_agent"));
     }
 

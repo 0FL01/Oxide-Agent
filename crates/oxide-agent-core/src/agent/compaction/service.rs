@@ -419,7 +419,7 @@ mod tests {
     use crate::agent::memory::AgentMessage;
     use crate::agent::providers::{TodoItem, TodoStatus};
     use crate::agent::EphemeralSession;
-    use crate::llm::LlmClient;
+    use crate::llm::{LlmClient, ToolCall, ToolCallFunction};
     use std::sync::Arc;
 
     #[tokio::test]
@@ -460,6 +460,20 @@ mod tests {
     #[tokio::test]
     async fn prepare_for_run_skips_externalization_for_healthy_budget() {
         let mut session = EphemeralSession::new(20_000);
+        // Tool result requires a preceding assistant message with tool call to avoid being dropped by history repair
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant_with_tools(
+                "Reading file",
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    function: ToolCallFunction {
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":"file.txt"}"#.to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ));
         session.memory_mut().add_message(AgentMessage::tool(
             "call-1",
             "read_file",
@@ -485,9 +499,10 @@ mod tests {
         assert!(!outcome.applied);
         assert_eq!(outcome.externalization.externalized_count, 0);
         assert_eq!(outcome.token_count_after, outcome.token_count_before);
-        assert!(!session.memory().get_messages()[0].is_externalized());
+        // Now messages[0] is assistant, messages[1] is tool result
+        assert!(!session.memory().get_messages()[1].is_externalized());
         assert_eq!(
-            session.memory().get_messages()[0].content,
+            session.memory().get_messages()[1].content,
             "A".repeat(5_000)
         );
         assert_eq!(outcome.pruning.pruned_count, 0);
@@ -496,7 +511,22 @@ mod tests {
     #[tokio::test]
     async fn prepare_for_run_does_not_prune_without_summary_boundary_under_pressure() {
         let mut session = EphemeralSession::new(2_048);
+        // Tool results require preceding assistant messages with tool calls to avoid being dropped by history repair
         for index in 0..5 {
+            session
+                .memory_mut()
+                .add_message(AgentMessage::assistant_with_tools(
+                    "Searching",
+                    vec![ToolCall {
+                        id: format!("call-{index}"),
+                        function: ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: serde_json::json!({"query": format!("query-{index}")})
+                                .to_string(),
+                        },
+                        is_recovered: false,
+                    }],
+                ));
             session.memory_mut().add_message(AgentMessage::tool(
                 &format!("call-{index}"),
                 "search",
@@ -541,6 +571,20 @@ mod tests {
     #[tokio::test]
     async fn prepare_for_run_prunes_only_before_summary_boundary_under_pressure() {
         let mut session = EphemeralSession::new(512);
+        // Tool results require preceding assistant messages with tool calls to avoid being dropped by history repair
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant_with_tools(
+                "Searching before summary",
+                vec![ToolCall {
+                    id: "call-0".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: serde_json::json!({"query": "query-0"}).to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ));
         session.memory_mut().add_message(AgentMessage::tool(
             "call-0",
             "search",
@@ -550,6 +594,20 @@ mod tests {
             "[Previous context compressed]\n- preserved",
         ));
         for index in 1..6 {
+            session
+                .memory_mut()
+                .add_message(AgentMessage::assistant_with_tools(
+                    "Searching after summary",
+                    vec![ToolCall {
+                        id: format!("call-{index}"),
+                        function: ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: serde_json::json!({"query": format!("query-{index}")})
+                                .to_string(),
+                        },
+                        is_recovered: false,
+                    }],
+                ));
             session.memory_mut().add_message(AgentMessage::tool(
                 &format!("call-{index}"),
                 "search",
@@ -580,13 +638,16 @@ mod tests {
             .expect("summary-boundary pruning checkpoint should succeed");
 
         assert!(outcome.applied);
-        assert_eq!(outcome.pruning.pruned_indices, vec![0]);
-        assert!(session.memory().get_messages()[0].is_pruned());
+        // Now the structure is: [assistant, tool_result, summary, ...]
+        // The tool result at index 1 should be pruned (before summary boundary)
+        assert_eq!(outcome.pruning.pruned_indices, vec![1]);
+        assert!(session.memory().get_messages()[1].is_pruned());
         assert_eq!(
-            session.memory().get_messages()[1].resolved_kind(),
+            session.memory().get_messages()[2].resolved_kind(),
             AgentMessageKind::Summary
         );
-        assert!(!session.memory().get_messages()[2].is_pruned());
+        // Tool result after summary should not be pruned
+        assert!(!session.memory().get_messages()[4].is_pruned());
     }
 
     #[tokio::test]
