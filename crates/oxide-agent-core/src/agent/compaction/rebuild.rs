@@ -91,10 +91,50 @@ pub fn rebuild_hot_context(
     );
 
     // FIX: Remove orphaned tool results whose corresponding tool_calls were dropped by compaction.
-    // When compaction removes an assistant message with tool_calls, we must also remove
-    // the tool result messages that reference those tool_call_ids. Otherwise, LLM providers
-    // like MiniMax will receive tool results referencing non-existent tool_uses, causing
-    // "tool id not found" errors (error 2013).
+    remove_orphaned_tool_results(snapshot, messages, &mut preserved, &mut rebuilt);
+
+    outcome.dropped_indices = preserved
+        .iter()
+        .enumerate()
+        .filter_map(|(index, is_preserved)| (!is_preserved).then_some(index))
+        .collect();
+    outcome.dropped_message_count = outcome.dropped_indices.len();
+    outcome.applied = outcome.dropped_message_count > 0 || has_existing_structured_summary;
+
+    if outcome.applied {
+        warn!(
+            inserted_summary = outcome.inserted_summary,
+            inserted_archive_reference = outcome.inserted_archive_reference,
+            dropped_message_count = outcome.dropped_message_count,
+            dropped_indices = ?outcome.dropped_indices,
+            preserved_recent_count = outcome.preserved_recent_indices.len(),
+            preserved_recent_indices = ?outcome.preserved_recent_indices,
+            "Compaction rebuilt hot context"
+        );
+    }
+
+    (rebuilt, outcome)
+}
+
+fn format_archive_reference(archive_ref: &ArchiveRef) -> String {
+    format!(
+        "[archived context chunk]\narchive_id: {}\ntitle: {}\nstorage_key: {}",
+        archive_ref.archive_id, archive_ref.title, archive_ref.storage_key
+    )
+}
+
+/// Remove orphaned tool results whose corresponding tool_calls were dropped by compaction.
+///
+/// When compaction removes an assistant message with tool_calls, we must also remove
+/// the tool result messages that reference those tool_call_ids. Otherwise, LLM providers
+/// like MiniMax will receive tool results referencing non-existent tool_uses, causing
+/// "tool id not found" errors (error 2013).
+fn remove_orphaned_tool_results(
+    snapshot: &CompactionSnapshot,
+    messages: &[AgentMessage],
+    preserved: &mut [bool],
+    rebuilt: &mut Vec<AgentMessage>,
+) {
     let dropped_tool_call_ids: std::collections::HashSet<String> = snapshot
         .entries
         .iter()
@@ -139,35 +179,6 @@ pub fn rebuild_hot_context(
             }
         });
     }
-
-    outcome.dropped_indices = preserved
-        .iter()
-        .enumerate()
-        .filter_map(|(index, is_preserved)| (!is_preserved).then_some(index))
-        .collect();
-    outcome.dropped_message_count = outcome.dropped_indices.len();
-    outcome.applied = outcome.dropped_message_count > 0 || has_existing_structured_summary;
-
-    if outcome.applied {
-        warn!(
-            inserted_summary = outcome.inserted_summary,
-            inserted_archive_reference = outcome.inserted_archive_reference,
-            dropped_message_count = outcome.dropped_message_count,
-            dropped_indices = ?outcome.dropped_indices,
-            preserved_recent_count = outcome.preserved_recent_indices.len(),
-            preserved_recent_indices = ?outcome.preserved_recent_indices,
-            "Compaction rebuilt hot context"
-        );
-    }
-
-    (rebuilt, outcome)
-}
-
-fn format_archive_reference(archive_ref: &ArchiveRef) -> String {
-    format!(
-        "[archived context chunk]\narchive_id: {}\ntitle: {}\nstorage_key: {}",
-        archive_ref.archive_id, archive_ref.title, archive_ref.storage_key
-    )
 }
 
 fn append_matching_messages(
