@@ -1,9 +1,89 @@
 use super::StorageError;
-use chrono::{TimeZone, Utc};
+use chrono::{FixedOffset, LocalResult, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReminderTimezoneKind {
+    Named(Tz),
+    Fixed(FixedOffset),
+}
+
+/// Parsed reminder timezone used for cron and local wall-clock scheduling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReminderTimezone {
+    kind: ReminderTimezoneKind,
+    label: String,
+}
+
+impl ReminderTimezone {
+    /// Returns the original timezone label.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.label
+    }
+
+    fn localize(&self, unix: i64) -> Result<String, StorageError> {
+        match &self.kind {
+            ReminderTimezoneKind::Named(named) => named
+                .timestamp_opt(unix, 0)
+                .single()
+                .map(|value| value.format("%Y-%m-%d %H:%M:%S %Z").to_string())
+                .ok_or_else(|| {
+                    StorageError::InvalidInput(format!(
+                        "cannot resolve reminder timestamp {unix} in timezone {}",
+                        self.name()
+                    ))
+                }),
+            ReminderTimezoneKind::Fixed(offset) => offset
+                .timestamp_opt(unix, 0)
+                .single()
+                .map(|value| value.format("%Y-%m-%d %H:%M:%S %:z").to_string())
+                .ok_or_else(|| {
+                    StorageError::InvalidInput(format!(
+                        "cannot resolve reminder timestamp {unix} in timezone {}",
+                        self.name()
+                    ))
+                }),
+        }
+    }
+
+    fn local_datetime_to_unix(
+        &self,
+        date: NaiveDate,
+        time: NaiveTime,
+    ) -> Result<i64, StorageError> {
+        let local = date.and_time(time);
+        match &self.kind {
+            ReminderTimezoneKind::Named(named) => match named.from_local_datetime(&local) {
+                LocalResult::Single(value) => Ok(value.with_timezone(&Utc).timestamp()),
+                LocalResult::Ambiguous(first, second) => {
+                    Ok(first.min(second).with_timezone(&Utc).timestamp())
+                }
+                LocalResult::None => Err(StorageError::InvalidInput(format!(
+                    "cannot resolve local reminder time {} {} in timezone {}",
+                    date,
+                    time.format("%H:%M:%S"),
+                    self.name()
+                ))),
+            },
+            ReminderTimezoneKind::Fixed(offset) => match offset.from_local_datetime(&local) {
+                LocalResult::Single(value) => Ok(value.with_timezone(&Utc).timestamp()),
+                LocalResult::Ambiguous(first, second) => {
+                    Ok(first.min(second).with_timezone(&Utc).timestamp())
+                }
+                LocalResult::None => Err(StorageError::InvalidInput(format!(
+                    "cannot resolve local reminder time {} {} in timezone {}",
+                    date,
+                    time.format("%H:%M:%S"),
+                    self.name()
+                ))),
+            },
+        }
+    }
+}
 
 /// Thread routing kind persisted for reminder delivery.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -151,12 +231,27 @@ pub struct CreateReminderJobOptions {
 
 /// Parse a reminder timezone identifier.
 ///
-/// Falls back to `UTC` when not specified.
-pub fn parse_reminder_timezone(timezone: Option<&str>) -> Result<Tz, StorageError> {
+/// Falls back to `UTC` when not specified. Accepts IANA names such as
+/// `Europe/Moscow` and fixed UTC offsets such as `UTC+3` or `+03:00`.
+pub fn parse_reminder_timezone(timezone: Option<&str>) -> Result<ReminderTimezone, StorageError> {
     let timezone = timezone.unwrap_or("UTC").trim();
-    Tz::from_str(timezone).map_err(|error| {
-        StorageError::InvalidInput(format!("invalid reminder timezone '{timezone}': {error}"))
-    })
+    if let Ok(named) = Tz::from_str(timezone) {
+        return Ok(ReminderTimezone {
+            kind: ReminderTimezoneKind::Named(named),
+            label: timezone.to_string(),
+        });
+    }
+
+    if let Some(offset) = parse_fixed_offset(timezone) {
+        return Ok(ReminderTimezone {
+            kind: ReminderTimezoneKind::Fixed(offset),
+            label: timezone.to_string(),
+        });
+    }
+
+    Err(StorageError::InvalidInput(format!(
+        "invalid reminder timezone '{timezone}'"
+    )))
 }
 
 /// Compute the next cron wake-up timestamp after `after_unix`.
@@ -171,23 +266,67 @@ pub fn compute_cron_next_run_at(
             "invalid reminder cron expression '{cron_expression}': {error}"
         ))
     })?;
-    let after = timezone
-        .timestamp_opt(after_unix, 0)
-        .single()
-        .ok_or_else(|| {
-            StorageError::InvalidInput(format!(
-                "cannot resolve reminder timestamp {after_unix} in timezone {timezone}"
-            ))
-        })?;
-    schedule
-        .after(&after)
-        .next()
-        .map(|next| next.with_timezone(&Utc).timestamp())
-        .ok_or_else(|| {
-            StorageError::InvalidInput(format!(
-                "cron expression '{cron_expression}' does not yield future occurrences"
-            ))
-        })
+    match &timezone.kind {
+        ReminderTimezoneKind::Named(named) => {
+            let after = named.timestamp_opt(after_unix, 0).single().ok_or_else(|| {
+                StorageError::InvalidInput(format!(
+                    "cannot resolve reminder timestamp {after_unix} in timezone {}",
+                    timezone.name()
+                ))
+            })?;
+            schedule
+                .after(&after)
+                .next()
+                .map(|next| next.with_timezone(&Utc).timestamp())
+                .ok_or_else(|| {
+                    StorageError::InvalidInput(format!(
+                        "cron expression '{cron_expression}' does not yield future occurrences"
+                    ))
+                })
+        }
+        ReminderTimezoneKind::Fixed(offset) => {
+            let after = offset
+                .timestamp_opt(after_unix, 0)
+                .single()
+                .ok_or_else(|| {
+                    StorageError::InvalidInput(format!(
+                        "cannot resolve reminder timestamp {after_unix} in timezone {}",
+                        timezone.name()
+                    ))
+                })?;
+            schedule
+                .after(&after)
+                .next()
+                .map(|next| next.with_timezone(&Utc).timestamp())
+                .ok_or_else(|| {
+                    StorageError::InvalidInput(format!(
+                        "cron expression '{cron_expression}' does not yield future occurrences"
+                    ))
+                })
+        }
+    }
+}
+
+/// Convert a local calendar date/time into a unix timestamp using reminder timezone rules.
+pub fn resolve_reminder_local_datetime(
+    date: &str,
+    time: &str,
+    timezone: Option<&str>,
+) -> Result<i64, StorageError> {
+    let timezone = parse_reminder_timezone(timezone)?;
+    let date = NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d").map_err(|error| {
+        StorageError::InvalidInput(format!("invalid reminder date '{}': {error}", date.trim()))
+    })?;
+    let time = parse_reminder_clock_time(time)?;
+    timezone.local_datetime_to_unix(date, time)
+}
+
+/// Format a unix timestamp in reminder timezone.
+pub fn format_reminder_unix_in_timezone(
+    unix: i64,
+    timezone: Option<&str>,
+) -> Result<String, StorageError> {
+    parse_reminder_timezone(timezone)?.localize(unix)
 }
 
 /// Compute the next recurring execution timestamp for a reminder.
@@ -222,4 +361,47 @@ pub fn compute_next_reminder_run_at(
             )?))
         }
     }
+}
+
+fn parse_fixed_offset(raw: &str) -> Option<FixedOffset> {
+    let trimmed = raw.trim();
+    let candidate = trimmed
+        .strip_prefix("UTC")
+        .or_else(|| trimmed.strip_prefix("utc"))
+        .unwrap_or(trimmed)
+        .trim();
+    if candidate == "Z" {
+        return FixedOffset::east_opt(0);
+    }
+    let mut chars = candidate.chars();
+    let sign = match chars.next()? {
+        '+' => 1,
+        '-' => -1,
+        _ => return None,
+    };
+    let rest = chars.as_str();
+    let (hours, minutes) = if let Some((hours, minutes)) = rest.split_once(':') {
+        (hours.parse::<i32>().ok()?, minutes.parse::<i32>().ok()?)
+    } else if rest.len() <= 2 {
+        (rest.parse::<i32>().ok()?, 0)
+    } else if rest.len() == 4 {
+        let (hours, minutes) = rest.split_at(2);
+        (hours.parse::<i32>().ok()?, minutes.parse::<i32>().ok()?)
+    } else {
+        return None;
+    };
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    let seconds = sign * ((hours * 3600) + (minutes * 60));
+    FixedOffset::east_opt(seconds)
+}
+
+fn parse_reminder_clock_time(raw: &str) -> Result<NaiveTime, StorageError> {
+    let trimmed = raw.trim();
+    NaiveTime::parse_from_str(trimmed, "%H:%M:%S")
+        .or_else(|_| NaiveTime::parse_from_str(trimmed, "%H:%M"))
+        .map_err(|error| {
+            StorageError::InvalidInput(format!("invalid reminder time '{}': {error}", trimmed))
+        })
 }
