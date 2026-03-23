@@ -89,6 +89,9 @@ pub struct AgentSettings {
     pub r2_endpoint_url: Option<String>,
     /// R2 Storage bucket name
     pub r2_bucket_name: Option<String>,
+    /// R2 Storage region (defaults to "auto" for Cloudflare R2)
+    #[serde(default = "default_r2_region")]
+    pub r2_region: String,
 
     /// Site URL for `OpenRouter` identification
     #[serde(default = "default_openrouter_site_url")]
@@ -174,6 +177,10 @@ const fn default_openrouter_site_url() -> String {
     String::new()
 }
 
+fn default_r2_region() -> String {
+    "auto".to_string()
+}
+
 fn default_zai_api_base() -> String {
     "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string()
 }
@@ -254,6 +261,13 @@ impl AgentSettings {
                 if !val.is_empty() {
                     settings.r2_bucket_name = Some(val);
                 }
+            }
+        }
+
+        // R2_REGION has a default value, but allow env override
+        if let Ok(val) = std::env::var("R2_REGION") {
+            if !val.is_empty() {
+                settings.r2_region = val;
             }
         }
 
