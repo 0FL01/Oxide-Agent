@@ -9,7 +9,7 @@ use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +22,168 @@ pub use config::JiraMcpConfig;
 const TOOL_JIRA_READ: &str = "jira_read";
 const TOOL_JIRA_WRITE: &str = "jira_write";
 const TOOL_JIRA_SCHEMA: &str = "jira_schema";
+
+static JIRA_READ_TOOL: LazyLock<ToolDefinition> = LazyLock::new(|| ToolDefinition {
+    name: TOOL_JIRA_READ.to_string(),
+    description: concat!(
+        "Read Jira issues, search via JQL, or list resources (projects, boards, sprints). ",
+        "Three modes (mutually exclusive): keys=[KEYS] to fetch specific issues, ",
+        "jql=QUERY to search, resource=TYPE to list projects/boards/sprints. ",
+        "For Jira Server 7.5.0 compatibility - uses REST API v2 and plain text descriptions."
+    )
+    .to_string(),
+    parameters: json!({
+        "type": "object",
+        "properties": {
+            "keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Issue keys (e.g., ['PROJ-1', 'PROJ-2']). Mutually exclusive with jql/resource."
+            },
+            "jql": {
+                "type": "string",
+                "description": "JQL search query. Mutually exclusive with keys/resource."
+            },
+            "resource": {
+                "type": "string",
+                "enum": ["projects", "boards", "sprints", "sprint_issues"],
+                "description": "Resource type to list. Mutually exclusive with keys/jql."
+            },
+            "board_id": {
+                "type": "integer",
+                "description": "Board ID (required for resource=sprints)"
+            },
+            "sprint_id": {
+                "type": "integer",
+                "description": "Sprint ID (required for resource=sprint_issues)"
+            },
+            "project_key": {
+                "type": "string",
+                "description": "Filter boards by project key"
+            },
+            "board_name": {
+                "type": "string",
+                "description": "Filter boards by name substring"
+            },
+            "board_type": {
+                "type": "string",
+                "enum": ["scrum", "kanban"],
+                "description": "Filter boards by type"
+            },
+            "sprint_state": {
+                "type": "string",
+                "enum": ["active", "closed", "future"],
+                "description": "Filter sprints by state"
+            },
+            "fields": {
+                "type": "string",
+                "description": "Comma-separated field names to return"
+            },
+            "expand": {
+                "type": "string",
+                "description": "Comma-separated expansions (renderedFields, transitions, changelog)"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default 100)",
+                "default": 100
+            },
+            "start_at": {
+                "type": "integer",
+                "description": "Pagination offset",
+                "default": 0
+            }
+        }
+    }),
+});
+
+static JIRA_WRITE_TOOL: LazyLock<ToolDefinition> = LazyLock::new(|| ToolDefinition {
+    name: TOOL_JIRA_WRITE.to_string(),
+    description: concat!(
+        "Create, update, delete, transition issues; add/edit comments; move issues to sprints; ",
+        "add/update/delete worklogs (time tracking). ",
+        "Supports dry_run for preview. Actions: create, update, delete, transition, ",
+        "comment, edit_comment, move_to_sprint, add_worklog, update_worklog, delete_worklog. ",
+        "For Jira Server 7.5.0: uses username (not accountId), plain text descriptions (not ADF). ",
+        "Time tracking: use add_worklog action for time tracking."
+    )
+    .to_string(),
+    parameters: json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["create", "update", "delete", "transition", "comment", "edit_comment", "move_to_sprint", "add_worklog", "update_worklog", "delete_worklog"],
+                "description": "Action to perform"
+            },
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "description": "Issue key (for update/delete/transition/comment/worklog)"},
+                        "project": {"type": "string", "description": "Project key (for create)"},
+                        "summary": {"type": "string"},
+                        "issue_type": {"type": "string", "description": "Bug, Task, Story, Epic, etc."},
+                        "priority": {"type": "string"},
+                        "assignee": {"type": "string", "description": "Username (NOT accountId for Jira Server 7.x)"},
+                        "description": {"type": "string", "description": "Plain text/wiki markup (NOT ADF)"},
+                        "labels": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "transition_id": {"type": "string"},
+                        "comment": {"type": "string"},
+                        "comment_id": {"type": "string", "description": "For edit_comment"},
+                        "sprint_id": {"type": "integer"},
+                        "fields_json": {"type": "string", "description": "Raw JSON for custom fields"},
+                        "time_spent": {"type": "string", "description": "Time spent (e.g., '3h 20m', '1d'). For add_worklog/update_worklog."},
+                        "time_spent_seconds": {"type": "integer", "description": "Time spent in seconds. Alternative to time_spent."},
+                        "started": {"type": "string", "description": "ISO 8601 timestamp when work started. For add_worklog."},
+                        "worklog_id": {"type": "string", "description": "Worklog ID. Required for update_worklog/delete_worklog."},
+                        "visibility_type": {"type": "string", "enum": ["group", "role"], "description": "Who can see the worklog."},
+                        "visibility_value": {"type": "string", "description": "Group or role name for visibility."},
+                        "adjust_estimate": {"type": "string", "enum": ["auto", "new", "leave", "manual"], "description": "How to adjust remaining estimate."},
+                        "new_estimate": {"type": "string", "description": "New estimate value (e.g., '2d')."},
+                        "reduce_by": {"type": "string", "description": "Amount to reduce estimate by (for add_worklog)."},
+                        "increase_by": {"type": "string", "description": "Amount to increase estimate by (for delete_worklog)."}
+                    }
+                }
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "Preview changes without applying",
+                "default": false
+            }
+        },
+        "required": ["action", "items"]
+    }),
+});
+
+static JIRA_SCHEMA_TOOL: LazyLock<ToolDefinition> = LazyLock::new(|| ToolDefinition {
+    name: TOOL_JIRA_SCHEMA.to_string(),
+    description: concat!(
+        "Discover Jira metadata: fields, transitions, allowed values. ",
+        "Resources: fields (all fields), transitions (for issue). ",
+        "Note: field_options NOT supported on Jira Server 7.x"
+    )
+    .to_string(),
+    parameters: json!({
+        "type": "object",
+        "properties": {
+            "resource": {
+                "type": "string",
+                "enum": ["fields", "transitions"],
+                "description": "Schema resource to fetch"
+            },
+            "issue_key": {
+                "type": "string",
+                "description": "Required for resource=transitions"
+            }
+        },
+        "required": ["resource"]
+    }),
+});
 
 /// Jira MCP provider implementation.
 ///
@@ -72,165 +234,9 @@ impl ToolProvider for JiraMcpProvider {
 
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
-            ToolDefinition {
-                name: TOOL_JIRA_READ.to_string(),
-                description: concat!(
-                    "Read Jira issues, search via JQL, or list resources (projects, boards, sprints). ",
-                    "Three modes (mutually exclusive): keys=[KEYS] to fetch specific issues, ",
-                    "jql=QUERY to search, resource=TYPE to list projects/boards/sprints. ",
-                    "For Jira Server 7.5.0 compatibility - uses REST API v2 and plain text descriptions."
-                )
-                .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "keys": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Issue keys (e.g., ['PROJ-1', 'PROJ-2']). Mutually exclusive with jql/resource."
-                        },
-                        "jql": {
-                            "type": "string",
-                            "description": "JQL search query. Mutually exclusive with keys/resource."
-                        },
-                        "resource": {
-                            "type": "string",
-                            "enum": ["projects", "boards", "sprints", "sprint_issues"],
-                            "description": "Resource type to list. Mutually exclusive with keys/jql."
-                        },
-                        "board_id": {
-                            "type": "integer",
-                            "description": "Board ID (required for resource=sprints)"
-                        },
-                        "sprint_id": {
-                            "type": "integer",
-                            "description": "Sprint ID (required for resource=sprint_issues)"
-                        },
-                        "project_key": {
-                            "type": "string",
-                            "description": "Filter boards by project key"
-                        },
-                        "board_name": {
-                            "type": "string",
-                            "description": "Filter boards by name substring"
-                        },
-                        "board_type": {
-                            "type": "string",
-                            "enum": ["scrum", "kanban"],
-                            "description": "Filter boards by type"
-                        },
-                        "sprint_state": {
-                            "type": "string",
-                            "enum": ["active", "closed", "future"],
-                            "description": "Filter sprints by state"
-                        },
-                        "fields": {
-                            "type": "string",
-                            "description": "Comma-separated field names to return"
-                        },
-                        "expand": {
-                            "type": "string",
-                            "description": "Comma-separated expansions (renderedFields, transitions, changelog)"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max results (default 100)",
-                            "default": 100
-                        },
-                        "start_at": {
-                            "type": "integer",
-                            "description": "Pagination offset",
-                            "default": 0
-                        }
-                    }
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_JIRA_WRITE.to_string(),
-                description: concat!(
-                    "Create, update, delete, transition issues; add/edit comments; move issues to sprints; ",
-                    "add/update/delete worklogs (time tracking). ",
-                    "Supports dry_run for preview. Actions: create, update, delete, transition, ",
-                    "comment, edit_comment, move_to_sprint, add_worklog, update_worklog, delete_worklog. ",
-                    "For Jira Server 7.5.0: uses username (not accountId), plain text descriptions (not ADF). ",
-                    "Time tracking: use add_worklog action for time tracking."
-                )
-                .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["create", "update", "delete", "transition", "comment", "edit_comment", "move_to_sprint", "add_worklog", "update_worklog", "delete_worklog"],
-                            "description": "Action to perform"
-                        },
-                        "items": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "key": {"type": "string", "description": "Issue key (for update/delete/transition/comment/worklog)"},
-                                    "project": {"type": "string", "description": "Project key (for create)"},
-                                    "summary": {"type": "string"},
-                                    "issue_type": {"type": "string", "description": "Bug, Task, Story, Epic, etc."},
-                                    "priority": {"type": "string"},
-                                    "assignee": {"type": "string", "description": "Username (NOT accountId for Jira Server 7.x)"},
-                                    "description": {"type": "string", "description": "Plain text/wiki markup (NOT ADF)"},
-                                    "labels": {
-                                        "type": "array",
-                                        "items": {"type": "string"}
-                                    },
-                                    "transition_id": {"type": "string"},
-                                    "comment": {"type": "string"},
-                                    "comment_id": {"type": "string", "description": "For edit_comment"},
-                                    "sprint_id": {"type": "integer"},
-                                    "fields_json": {"type": "string", "description": "Raw JSON for custom fields"},
-                                    "time_spent": {"type": "string", "description": "Time spent (e.g., '3h 20m', '1d'). For add_worklog/update_worklog."},
-                                    "time_spent_seconds": {"type": "integer", "description": "Time spent in seconds. Alternative to time_spent."},
-                                    "started": {"type": "string", "description": "ISO 8601 timestamp when work started. For add_worklog."},
-                                    "worklog_id": {"type": "string", "description": "Worklog ID. Required for update_worklog/delete_worklog."},
-                                    "visibility_type": {"type": "string", "enum": ["group", "role"], "description": "Who can see the worklog."},
-                                    "visibility_value": {"type": "string", "description": "Group or role name for visibility."},
-                                    "adjust_estimate": {"type": "string", "enum": ["auto", "new", "leave", "manual"], "description": "How to adjust remaining estimate."},
-                                    "new_estimate": {"type": "string", "description": "New estimate value (e.g., '2d')."},
-                                    "reduce_by": {"type": "string", "description": "Amount to reduce estimate by (for add_worklog)."},
-                                    "increase_by": {"type": "string", "description": "Amount to increase estimate by (for delete_worklog)."}
-                                }
-                            }
-                        },
-                        "dry_run": {
-                            "type": "boolean",
-                            "description": "Preview changes without applying",
-                            "default": false
-                        }
-                    },
-                    "required": ["action", "items"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_JIRA_SCHEMA.to_string(),
-                description: concat!(
-                    "Discover Jira metadata: fields, transitions, allowed values. ",
-                    "Resources: fields (all fields), transitions (for issue). ",
-                    "Note: field_options NOT supported on Jira Server 7.x"
-                )
-                .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "resource": {
-                            "type": "string",
-                            "enum": ["fields", "transitions"],
-                            "description": "Schema resource to fetch"
-                        },
-                        "issue_key": {
-                            "type": "string",
-                            "description": "Required for resource=transitions"
-                        }
-                    },
-                    "required": ["resource"]
-                }),
-            },
+            JIRA_READ_TOOL.clone(),
+            JIRA_WRITE_TOOL.clone(),
+            JIRA_SCHEMA_TOOL.clone(),
         ]
     }
 
