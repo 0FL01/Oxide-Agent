@@ -1,0 +1,123 @@
+//! Message preparation utilities for Mistral API
+
+use crate::llm::Message;
+use serde_json::{json, Value};
+
+/// Prepare structured messages for tool calling
+///
+/// Mistral requires system role before any tool/user/assistant after tool
+pub fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<Value> {
+    // Collect all system messages from history to prepend them
+    let mut history_systems = Vec::new();
+    let mut other_messages = Vec::new();
+
+    for msg in history {
+        match msg.role.as_str() {
+            "system" => {
+                history_systems.push(json!({
+                    "role": "system",
+                    "content": msg.content
+                }));
+            }
+            "assistant" => {
+                let content = msg.content.clone();
+                let tool_calls = msg.tool_calls.as_ref();
+
+                let mut msg_obj = json!({
+                    "role": "assistant",
+                    "content": content
+                });
+
+                if let Some(calls) = tool_calls {
+                    if !calls.is_empty() {
+                        let mistral_tool_calls: Vec<Value> = calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                })
+                            })
+                            .collect();
+                        msg_obj["tool_calls"] = json!(mistral_tool_calls);
+                    }
+                }
+                other_messages.push(msg_obj);
+            }
+            "tool" => {
+                let mut tool_msg = json!({
+                    "role": "tool",
+                    "content": msg.content
+                });
+                if let Some(tool_call_id) = &msg.tool_call_id {
+                    tool_msg["tool_call_id"] = json!(tool_call_id);
+                }
+                if let Some(name) = &msg.name {
+                    tool_msg["name"] = json!(name);
+                }
+                other_messages.push(tool_msg);
+            }
+            _ => {
+                other_messages.push(json!({
+                    "role": "user",
+                    "content": msg.content
+                }));
+            }
+        }
+    }
+
+    // Build final message list: all systems first, then main system, then others
+    let mut messages = Vec::new();
+    messages.extend(history_systems);
+    messages.push(json!({
+        "role": "system",
+        "content": system_prompt
+    }));
+    messages.extend(other_messages);
+
+    messages
+}
+
+/// Prepare simple chat messages (no tool calling)
+pub fn prepare_chat_messages(
+    system_prompt: &str,
+    history: &[Message],
+    user_message: &str,
+) -> Vec<Value> {
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": system_prompt
+    })];
+
+    for msg in history {
+        match msg.role.as_str() {
+            "system" => messages.push(json!({
+                "role": "system",
+                "content": msg.content
+            })),
+            "assistant" => messages.push(json!({
+                "role": "assistant",
+                "content": msg.content
+            })),
+            "tool" => messages.push(json!({
+                "role": "user",
+                "content": format!("[Tool Output] {}", msg.content)
+            })),
+            _ => messages.push(json!({
+                "role": "user",
+                "content": msg.content
+            })),
+        }
+    }
+
+    messages.push(json!({
+        "role": "user",
+        "content": user_message
+    }));
+
+    messages
+}

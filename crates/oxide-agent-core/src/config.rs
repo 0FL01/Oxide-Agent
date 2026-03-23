@@ -15,6 +15,8 @@ pub const MISTRAL_CHAT_TEMPERATURE: f32 = 0.9;
 pub const MISTRAL_REASONING_TEMPERATURE: f32 = 0.7;
 /// Temperature used when Mistral runs tool-enabled chat requests.
 pub const MISTRAL_TOOL_TEMPERATURE: f32 = 0.7;
+/// Temperature for Mistral audio transcription requests.
+pub const MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 /// Default temperature used for ZAI chat completions.
 // NOTE: Hardcoded to 0.95 in ZaiProvider to avoid f32 serialization issues.
 // Kept here for reference only - do NOT use in code.
