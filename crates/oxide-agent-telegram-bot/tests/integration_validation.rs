@@ -32,6 +32,7 @@ struct IntegrationEnv {
     r2_access: String,
     r2_secret: String,
     r2_bucket: String,
+    r2_region: String,
 }
 
 fn load_dotenv() {
@@ -70,6 +71,7 @@ fn load_env_settings() -> Result<IntegrationEnv> {
             r2_bucket: agent
                 .r2_bucket_name
                 .ok_or_else(|| anyhow!("R2_BUCKET_NAME missing"))?,
+            r2_region: agent.r2_region,
         }),
         (agent_result, telegram_result) => {
             if let Err(err) = agent_result {
@@ -93,6 +95,7 @@ fn load_env_settings() -> Result<IntegrationEnv> {
                 r2_access: std::env::var("R2_ACCESS_KEY_ID")?,
                 r2_secret: std::env::var("R2_SECRET_ACCESS_KEY")?,
                 r2_bucket: std::env::var("R2_BUCKET_NAME")?,
+                r2_region: std::env::var("R2_REGION").unwrap_or_else(|_| "auto".to_string()),
             })
         }
     }
@@ -137,7 +140,7 @@ async fn build_r2_client(env: &IntegrationEnv) -> Result<Client> {
 
     let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .credentials_provider(credentials)
-        .region(Region::new("us-east-1"))
+        .region(Region::new(env.r2_region.clone()))
         .load()
         .await;
 

@@ -95,7 +95,7 @@ impl R2Storage {
 
         let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
-            .region(Region::new("auto"))
+            .region(Region::new(settings.r2_region.clone()))
             .load()
             .await;
 
