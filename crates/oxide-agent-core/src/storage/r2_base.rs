@@ -460,6 +460,41 @@ impl R2Storage {
         Ok(records)
     }
 
+    pub(super) async fn list_keys_under_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let mut continuation_token: Option<String> = None;
+        let mut keys = Vec::new();
+
+        loop {
+            let response = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_continuation_token(continuation_token.clone())
+                .send()
+                .await
+                .map_err(|error| StorageError::S3Put(error.to_string()))?;
+
+            for object in response.contents() {
+                let Some(key) = object.key() else {
+                    continue;
+                };
+                keys.push(key.to_string());
+            }
+
+            if !response.is_truncated().unwrap_or(false) {
+                break;
+            }
+
+            continuation_token = response.next_continuation_token().map(str::to_string);
+        }
+
+        Ok(keys)
+    }
+
     pub(super) async fn mutate_reminder_job<F>(
         &self,
         user_id: i64,

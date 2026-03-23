@@ -6,6 +6,7 @@ use crate::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
     BotSettings,
 };
+use crate::startup_maintenance::run_startup_tool_drift_prune;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
@@ -18,9 +19,20 @@ use tracing::{error, info};
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
     let storage = init_storage(&settings).await;
-
     let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
     info!("LLM Client initialized.");
+
+    if let Err(error) = run_startup_tool_drift_prune(
+        Arc::clone(&storage),
+        Arc::clone(&llm_client),
+        Arc::clone(&settings),
+    )
+    .await
+    {
+        error!(%error, "Startup tool drift prune failed");
+    }
+
+    let storage: Arc<dyn storage::StorageProvider> = storage;
 
     let bot = Bot::new(settings.telegram.telegram_token.clone());
     bot::agent_handlers::spawn_reminder_scheduler(
@@ -49,7 +61,7 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
         .await;
 }
 
-async fn init_storage(settings: &BotSettings) -> Arc<dyn storage::StorageProvider> {
+async fn init_storage(settings: &BotSettings) -> Arc<storage::R2Storage> {
     match storage::R2Storage::new(settings.agent.as_ref()).await {
         Ok(s) => {
             info!("R2 Storage initialized.");
@@ -58,7 +70,7 @@ async fn init_storage(settings: &BotSettings) -> Arc<dyn storage::StorageProvide
             } else {
                 error!("R2 Storage connection check returned error.");
             }
-            Arc::new(s) as Arc<dyn storage::StorageProvider>
+            Arc::new(s)
         }
         Err(e) => {
             error!("Failed to initialize R2 Storage: {}", e);
