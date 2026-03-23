@@ -407,6 +407,26 @@ impl AgentExecutor {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
+
+        // Core providers: todos, sandbox, filehoster, ytdlp, delegation
+        self.register_core_providers(&mut registry, todos_arc, progress_tx);
+
+        // Topic-scoped providers: agents_md, manager, ssh, reminders
+        self.register_topic_providers(&mut registry);
+
+        // Feature-gated MCP and search providers
+        self.register_mcp_providers(&mut registry);
+        self.register_search_provider(&mut registry);
+
+        registry
+    }
+
+    fn register_core_providers(
+        &self,
+        registry: &mut ToolRegistry,
+        todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
         registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
 
         let sandbox_scope = self.session.sandbox_scope().clone();
@@ -430,7 +450,9 @@ impl AgentExecutor {
             sandbox_scope,
             self.settings.clone(),
         )));
+    }
 
+    fn register_topic_providers(&self, registry: &mut ToolRegistry) {
         if let Some(agents_md) = &self.agents_md {
             registry.register(Box::new(AgentsMdProvider::new(
                 Arc::clone(&agents_md.storage),
@@ -464,57 +486,65 @@ impl AgentExecutor {
         if let Some(reminder_context) = &self.reminder_context {
             registry.register(Box::new(ReminderProvider::new(reminder_context.clone())));
         }
+    }
 
-        // Register Jira MCP provider if configured and feature enabled
-        #[cfg(feature = "jira")]
-        {
-            if let Some(config) = crate::agent::providers::JiraMcpConfig::from_env() {
-                let binary_path = config.binary_path.clone();
-                tracing::info!(
-                    binary_path = %binary_path,
-                    jira_url_present = !config.jira_url.is_empty(),
-                    jira_email_present = !config.jira_email.is_empty(),
-                    jira_token_present = !config.jira_token.is_empty(),
-                    "Registering Jira MCP provider"
-                );
-                registry.register(Box::new(crate::agent::providers::JiraMcpProvider::new(
-                    config,
-                )));
-                tracing::info!(binary_path = %binary_path, "Jira MCP provider registered");
-            } else {
-                tracing::warn!(
-                    "jira feature is enabled but JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN is not set; \
-                     Jira MCP provider will not be available. Set these env vars to enable it."
-                );
-            }
+    #[cfg(feature = "jira")]
+    fn register_jira_mcp_provider(registry: &mut ToolRegistry) {
+        if let Some(config) = crate::agent::providers::JiraMcpConfig::from_env() {
+            let binary_path = config.binary_path.clone();
+            tracing::info!(
+                binary_path = %binary_path,
+                jira_url_present = !config.jira_url.is_empty(),
+                jira_email_present = !config.jira_email.is_empty(),
+                jira_token_present = !config.jira_token.is_empty(),
+                "Registering Jira MCP provider"
+            );
+            registry.register(Box::new(crate::agent::providers::JiraMcpProvider::new(
+                config,
+            )));
+            tracing::info!(binary_path = %binary_path, "Jira MCP provider registered");
+        } else {
+            tracing::warn!(
+                "jira feature is enabled but JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN is not set; \
+                 Jira MCP provider will not be available. Set these env vars to enable it."
+            );
         }
+    }
+
+    #[cfg(feature = "mattermost")]
+    fn register_mattermost_mcp_provider(registry: &mut ToolRegistry) {
+        if let Some(config) = crate::agent::providers::MattermostMcpConfig::from_env() {
+            let binary_path = config.binary_path.clone();
+            tracing::info!(
+                binary_path = %binary_path,
+                mattermost_url_present = !config.mattermost_url.is_empty(),
+                mattermost_token_present = !config.mattermost_token.is_empty(),
+                timeout_secs = config.timeout_secs,
+                max_retries = config.max_retries,
+                verify_ssl = config.verify_ssl,
+                "Registering Mattermost MCP provider"
+            );
+            registry.register(Box::new(
+                crate::agent::providers::MattermostMcpProvider::new(config),
+            ));
+            tracing::info!(binary_path = %binary_path, "Mattermost MCP provider registered");
+        } else {
+            tracing::warn!(
+                "mattermost feature is enabled but MATTERMOST_URL or MATTERMOST_TOKEN is not set; \
+                 Mattermost MCP provider will not be available. Set these env vars to enable it."
+            );
+        }
+    }
+
+    fn register_mcp_providers(&self, registry: &mut ToolRegistry) {
+        #[cfg(feature = "jira")]
+        Self::register_jira_mcp_provider(registry);
 
         #[cfg(feature = "mattermost")]
-        {
-            if let Some(config) = crate::agent::providers::MattermostMcpConfig::from_env() {
-                let binary_path = config.binary_path.clone();
-                tracing::info!(
-                    binary_path = %binary_path,
-                    mattermost_url_present = !config.mattermost_url.is_empty(),
-                    mattermost_token_present = !config.mattermost_token.is_empty(),
-                    timeout_secs = config.timeout_secs,
-                    max_retries = config.max_retries,
-                    verify_ssl = config.verify_ssl,
-                    "Registering Mattermost MCP provider"
-                );
-                registry.register(Box::new(
-                    crate::agent::providers::MattermostMcpProvider::new(config),
-                ));
-                tracing::info!(binary_path = %binary_path, "Mattermost MCP provider registered");
-            } else {
-                tracing::warn!(
-                    "mattermost feature is enabled but MATTERMOST_URL or MATTERMOST_TOKEN is not set; \
-                     Mattermost MCP provider will not be available. Set these env vars to enable it."
-                );
-            }
-        }
+        Self::register_mattermost_mcp_provider(registry);
+    }
 
-        // Register web search provider based on configuration
+    fn register_search_provider(&self, registry: &mut ToolRegistry) {
         let search_provider = crate::config::get_search_provider();
         match search_provider.as_str() {
             "tavily" => {
@@ -541,8 +571,6 @@ impl AgentExecutor {
             }
             _ => unreachable!(), // get_search_provider() guarantees valid value
         }
-
-        registry
     }
 
     async fn run_execution(
