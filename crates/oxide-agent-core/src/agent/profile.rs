@@ -50,6 +50,48 @@ const MANAGER_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
     "ytdlp_download_audio",
 ];
 
+/// Default blocked tools for DM (direct/private chat) contexts.
+/// Blocks SSH, Jira, and Mattermost tools in personal chats while allowing
+/// them in forum/supergroup topics.
+const DM_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
+    // SSH tools - fully blocked in DM
+    "ssh_exec",
+    "ssh_sudo_exec",
+    "ssh_read_file",
+    "ssh_apply_file_edit",
+    "ssh_check_process",
+    // Jira tools - blocked in DM
+    "jira_read",
+    "jira_write",
+    "jira_schema",
+    // Mattermost tools - blocked in DM
+    "mattermost_list_teams",
+    "mattermost_get_team",
+    "mattermost_get_team_members",
+    "mattermost_list_channels",
+    "mattermost_get_channel",
+    "mattermost_get_channel_by_name",
+    "mattermost_create_channel",
+    "mattermost_join_channel",
+    "mattermost_create_direct_channel",
+    "mattermost_post_message",
+    "mattermost_get_channel_messages",
+    "mattermost_search_messages",
+    "mattermost_update_message",
+    "mattermost_get_thread",
+    "mattermost_get_me",
+    "mattermost_get_user",
+    "mattermost_get_user_by_username",
+    "mattermost_search_users",
+    "mattermost_upload_file",
+];
+
+/// Environment variable for overriding DM allowed tools (comma-separated).
+const DM_ALLOWED_TOOLS_ENV: &str = "DM_ALLOWED_TOOLS";
+
+/// Environment variable for adding tools to DM blocklist (comma-separated).
+const DM_BLOCKED_TOOLS_ENV: &str = "DM_BLOCKED_TOOLS";
+
 const TOPIC_AGENT_MANAGEABLE_HOOKS: &[&str] = &[
     "workload_distributor",
     "delegation_guard",
@@ -198,6 +240,57 @@ pub fn manager_default_blocked_tools() -> Vec<String> {
         .iter()
         .map(|tool| (*tool).to_string())
         .collect()
+}
+
+/// Default blocked tools for DM (direct/private chat) contexts.
+#[must_use]
+pub fn dm_default_blocked_tools() -> Vec<String> {
+    DM_DEFAULT_BLOCKED_TOOLS
+        .iter()
+        .map(|tool| (*tool).to_string())
+        .collect()
+}
+
+/// Creates a ToolAccessPolicy for DM contexts.
+/// Uses DM_ALLOWED_TOOLS env var as allowlist if set, otherwise uses
+/// DM_BLOCKED_TOOLS (additional) and default DM blocklist.
+#[must_use]
+pub fn dm_tool_policy() -> ToolAccessPolicy {
+    let mut policy = ToolAccessPolicy::default();
+
+    // Apply default DM blocklist
+    policy = policy.with_additional_blocked_tools(dm_default_blocked_tools());
+
+    // Check for admin override via DM_ALLOWED_TOOLS (allowlist mode)
+    if let Ok(allowed) = std::env::var(DM_ALLOWED_TOOLS_ENV) {
+        if !allowed.is_empty() {
+            let tools: HashSet<String> = allowed
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            if !tools.is_empty() {
+                // Allowlist mode: only these tools are allowed
+                return ToolAccessPolicy::new(Some(tools), HashSet::new());
+            }
+        }
+    }
+
+    // Check for additional blocked tools via DM_BLOCKED_TOOLS env var
+    if let Ok(blocked) = std::env::var(DM_BLOCKED_TOOLS_ENV) {
+        if !blocked.is_empty() {
+            let additional: Vec<String> = blocked
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            policy = policy.with_additional_blocked_tools(additional);
+        }
+    }
+
+    policy
 }
 
 /// Default blocked tools for newly provisioned topic agents.
