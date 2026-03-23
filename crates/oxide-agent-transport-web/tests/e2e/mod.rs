@@ -9,6 +9,7 @@ mod helpers;
 mod integration_tests;
 mod live_zai_audit_tests;
 mod providers;
+mod reminder_tests;
 mod session_tests;
 mod setup;
 mod sse_tests;

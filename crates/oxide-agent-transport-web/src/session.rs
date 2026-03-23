@@ -9,11 +9,12 @@ use crate::in_memory_storage::InMemoryStorage;
 use crate::web_transport::TaskEventLog;
 use chrono::{DateTime, Utc};
 use oxide_agent_core::agent::memory::AgentMessage;
+use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{AgentExecutor, AgentMemory, AgentSession, SessionId};
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
-use oxide_agent_core::storage::StorageProvider;
+use oxide_agent_core::storage::{ReminderThreadKind, StorageProvider};
 use oxide_agent_runtime::SessionRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -237,6 +238,17 @@ impl WebSessionManager {
             user_id,
             context_key.clone().unwrap_or_else(|| "default".to_string()),
         );
+        executor.set_reminder_context(ReminderContext {
+            storage: self.storage(),
+            user_id,
+            context_key: context_key.clone().unwrap_or_else(|| "default".to_string()),
+            flow_id: agent_flow_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
+            chat_id: user_id,
+            thread_id: None,
+            thread_kind: ReminderThreadKind::None,
+        });
 
         self.registry.insert(sid, executor).await;
 
