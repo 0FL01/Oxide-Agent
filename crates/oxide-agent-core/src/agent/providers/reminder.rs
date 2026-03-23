@@ -640,20 +640,34 @@ fn resolve_local_datetime(
     time: Option<&str>,
     timezone: Option<&str>,
 ) -> Result<Option<i64>> {
-    match (
-        date.map(str::trim).filter(|value| !value.is_empty()),
-        time.map(str::trim).filter(|value| !value.is_empty()),
-    ) {
-        (Some(date), Some(time)) => {
-            let timezone = effective_timezone(timezone);
+    let date = date.map(str::trim).filter(|value| !value.is_empty());
+    let time = time.map(str::trim).filter(|value| !value.is_empty());
+    let tz = effective_timezone(timezone);
+
+    match (date, time) {
+        (Some(date), Some(time)) => Ok(Some(resolve_reminder_local_datetime(
+            date,
+            time,
+            tz.as_deref(),
+        )?)),
+        (None, Some(time)) => {
+            // Use today's date when only time is specified
+            let today = Local::now().format("%Y-%m-%d").to_string();
+            Ok(Some(resolve_reminder_local_datetime(
+                &today,
+                time,
+                tz.as_deref(),
+            )?))
+        }
+        (Some(date), None) => {
+            // Use midnight when only date is specified
             Ok(Some(resolve_reminder_local_datetime(
                 date,
-                time,
-                timezone.as_deref(),
+                "00:00:00",
+                tz.as_deref(),
             )?))
         }
         (None, None) => Ok(None),
-        _ => bail!("date and time must be provided together"),
     }
 }
 
@@ -1032,5 +1046,90 @@ mod tests {
         }));
 
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn resolves_interval_first_run_at_with_only_time() {
+        use chrono::TimeZone;
+
+        let mut args = base_args(ReminderScheduleKind::Interval);
+        args.every_hours = Some(24);
+        args.first_time = Some("09:00".to_string());
+        args.timezone = Some("UTC+3".to_string());
+
+        // Set `now` to 2026-03-23 08:00 UTC (before 09:00 UTC+3)
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 5, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+
+        let interval_secs = resolve_interval_secs(&args).expect("interval should resolve");
+        let next_run_at = resolve_interval_first_run_at(&args, now, interval_secs)
+            .expect("should resolve with only time");
+
+        // Should be 2026-03-23 09:00 UTC+3 = 2026-03-23 06:00 UTC
+        let expected = Utc
+            .with_ymd_and_hms(2026, 3, 23, 6, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        assert_eq!(next_run_at, expected);
+    }
+
+    #[test]
+    fn resolves_interval_first_run_at_uses_timezone_offset() {
+        use chrono::TimeZone;
+
+        let mut args = base_args(ReminderScheduleKind::Interval);
+        args.every_minutes = Some(60);
+        args.first_time = Some("12:00".to_string());
+        args.timezone = Some("UTC+5".to_string());
+
+        // Set `now` to 2026-03-23 05:00 UTC (before 12:00 UTC+5 = 07:00 UTC)
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 5, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+
+        let interval_secs = resolve_interval_secs(&args).expect("interval should resolve");
+        let next_run_at = resolve_interval_first_run_at(&args, now, interval_secs)
+            .expect("should resolve with timezone offset");
+
+        // 12:00 UTC+5 = 07:00 UTC
+        let expected = Utc
+            .with_ymd_and_hms(2026, 3, 23, 7, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        assert_eq!(next_run_at, expected);
+    }
+
+    #[test]
+    fn resolve_local_datetime_with_only_time_uses_today_date() {
+        let result = resolve_local_datetime(None, Some("09:00"), Some("UTC+3"))
+            .expect("should resolve with only time")
+            .unwrap();
+
+        // Should use today's date with the specified time
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let expected = resolve_reminder_local_datetime(&today, "09:00", Some("UTC+3"))
+            .expect("valid datetime");
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn resolve_local_datetime_with_only_date_uses_midnight() {
+        let result = resolve_local_datetime(Some("2026-03-24"), None, Some("UTC+3"))
+            .expect("should resolve with only date")
+            .unwrap();
+
+        // Should use midnight with the specified date
+        let expected = resolve_reminder_local_datetime("2026-03-24", "00:00:00", Some("UTC+3"))
+            .expect("valid datetime");
+
+        assert_eq!(result, expected);
     }
 }
