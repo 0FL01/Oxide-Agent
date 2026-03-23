@@ -7,6 +7,7 @@ mod tests {
     };
     use crate::llm::providers::mistral::{
         chat::{build_chat_completion_body, build_tool_chat_body, is_reasoning_model},
+        id_mapper::ToolCallIdMapper,
         messages::prepare_structured_messages,
         parsing::parse_chat_response,
     };
@@ -23,7 +24,15 @@ mod tests {
 
     #[test]
     fn regular_model_tool_body_keeps_existing_temperature() {
-        let body = build_tool_chat_body("system", &[], &[], "mistral-large-latest", 4096);
+        let mut id_mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "mistral-large-latest",
+            4096,
+            &mut id_mapper,
+        );
 
         assert!(body.get("reasoning_effort").is_none());
         assert_eq!(body["temperature"], json!(MISTRAL_TOOL_TEMPERATURE));
@@ -71,7 +80,8 @@ mod tests {
             }
         });
 
-        let parsed = parse_chat_response(response).expect("response parses");
+        let parsed =
+            parse_chat_response(response, &ToolCallIdMapper::new()).expect("response parses");
 
         assert_eq!(parsed.content.as_deref(), Some("final answer"));
         assert_eq!(
@@ -83,17 +93,20 @@ mod tests {
 
     #[test]
     fn prepare_structured_messages_formats_tool_message() {
+        let mut id_mapper = ToolCallIdMapper::new();
         let history = vec![Message::tool(
             "call_abc123",
             "get_weather",
             "{\"temperature\": 20}",
         )];
-        let messages = prepare_structured_messages("You are helpful.", &history);
+        let messages = prepare_structured_messages("You are helpful.", &history, &mut id_mapper);
 
         let tool_msg = &messages[1];
         assert_eq!(tool_msg["role"], json!("tool"));
         assert_eq!(tool_msg["content"], json!("{\"temperature\": 20}"));
-        assert_eq!(tool_msg["tool_call_id"], json!("call_abc123"));
+        // ID should be transformed to Mistral format (9 alphanumeric chars)
+        // "call_abc123" → filter → "callabc123" → last 9 → "allabc123"
+        assert_eq!(tool_msg["tool_call_id"], json!("allabc123"));
         assert_eq!(tool_msg["name"], json!("get_weather"));
     }
 
@@ -131,7 +144,8 @@ mod tests {
             }
         });
 
-        let parsed = parse_chat_response(response).expect("response parses");
+        let parsed =
+            parse_chat_response(response, &ToolCallIdMapper::new()).expect("response parses");
 
         assert!(parsed.content.is_none());
         assert_eq!(parsed.finish_reason, "tool_calls");
@@ -175,7 +189,8 @@ mod tests {
             }
         });
 
-        let parsed = parse_chat_response(response).expect("response parses");
+        let parsed =
+            parse_chat_response(response, &ToolCallIdMapper::new()).expect("response parses");
 
         assert_eq!(
             parsed.content.as_deref(),
@@ -209,12 +224,14 @@ mod tests {
             },
         ];
 
+        let mut id_mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "You are a helpful assistant.",
             &[],
             &tools,
             "mistral-large-latest",
             4096,
+            &mut id_mapper,
         );
 
         // Verify tools array is present
@@ -241,12 +258,14 @@ mod tests {
 
     #[test]
     fn builds_tool_chat_body_without_tools() {
+        let mut id_mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "You are a helpful assistant.",
             &[],
             &[],
             "mistral-large-latest",
             4096,
+            &mut id_mapper,
         );
 
         // Verify tools array is NOT present when empty
@@ -255,6 +274,7 @@ mod tests {
 
     #[test]
     fn prepare_structured_messages_preserves_assistant_tool_calls() {
+        let mut id_mapper = ToolCallIdMapper::new();
         let history = vec![Message::assistant_with_tools(
             "I'll get the weather.",
             vec![ToolCall {
@@ -266,7 +286,7 @@ mod tests {
                 is_recovered: false,
             }],
         )];
-        let messages = prepare_structured_messages("You are helpful.", &history);
+        let messages = prepare_structured_messages("You are helpful.", &history, &mut id_mapper);
 
         let assistant_msg = &messages[1];
         assert_eq!(assistant_msg["role"], json!("assistant"));
@@ -277,7 +297,8 @@ mod tests {
             .as_array()
             .expect("tool_calls should be present in assistant message");
         assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0]["id"], json!("call_xyz"));
+        // ID should be transformed to Mistral format (9 alphanumeric chars)
+        assert_eq!(tool_calls[0]["id"], json!("callxyz"));
         assert_eq!(tool_calls[0]["function"]["name"], json!("get_weather"));
         assert_eq!(
             tool_calls[0]["function"]["arguments"],
@@ -291,5 +312,98 @@ mod tests {
         assert!(is_reasoning_model("Mistral-Small-2603"));
         assert!(!is_reasoning_model("mistral-large-latest"));
         assert!(!is_reasoning_model("mistral-small-2409"));
+    }
+
+    #[test]
+    fn bidirectional_id_mapping_roundtrip() {
+        // Simulate a complete cycle: generate tool call -> send to Mistral -> receive response
+        let mut id_mapper = ToolCallIdMapper::new();
+        let original_id = "call_44456aeb-f16d-4c5e-8f38-f1243acb9e14";
+
+        // Step 1: Register the original ID and get Mistral-compatible version
+        let mistral_id = id_mapper.register(original_id.to_string());
+        assert_eq!(mistral_id, "43acb9e14"); // Last 9 alphanumeric chars
+        assert_eq!(id_mapper.len(), 1);
+
+        // Step 2: Simulate sending tool results back (use Mistral ID)
+        let history = vec![Message::tool(
+            original_id, // Original ID in our system
+            "get_weather",
+            "{\"temperature\": 20}",
+        )];
+        let messages = prepare_structured_messages("You are helpful.", &history, &mut id_mapper);
+
+        // The tool message should use the Mistral ID
+        let tool_msg = &messages[1];
+        assert_eq!(tool_msg["tool_call_id"], json!(mistral_id));
+
+        // Step 3: Simulate receiving a response from Mistral with the same Mistral ID
+        let response = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": mistral_id,  // Mistral returns the same ID we sent
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"location\":\"Moscow\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 30,
+                "total_tokens": 80
+            }
+        });
+
+        let parsed = parse_chat_response(response, &id_mapper).expect("response parses");
+        assert_eq!(parsed.tool_calls.len(), 1);
+
+        // Step 4: The parsed tool call should have the ORIGINAL ID, not the Mistral ID
+        assert_eq!(parsed.tool_calls[0].id, original_id);
+
+        // Verify the mapper has the correct bidirectional mapping
+        assert_eq!(id_mapper.to_mistral(original_id), mistral_id);
+        assert_eq!(id_mapper.to_original(&mistral_id), original_id);
+    }
+
+    #[test]
+    fn multiple_tool_calls_id_mapping() {
+        // Test that multiple tool calls in one request are correctly mapped
+        let mut id_mapper = ToolCallIdMapper::new();
+
+        let original_ids = vec![
+            "call_44456aeb-f16d-4c5e-8f38-f1243acb9e14",
+            "call_55567bfb-e27e-6d6f-9g49-g2354bcd0f25",
+            "call_66678cfc-f38f-7e7g-0h50-h3465cde1g36",
+        ];
+
+        // Register all IDs
+        let mistral_ids: Vec<String> = original_ids
+            .iter()
+            .map(|id| id_mapper.register(id.to_string()))
+            .collect();
+
+        assert_eq!(id_mapper.len(), 3);
+
+        // All Mistral IDs should be 9 characters
+        for mistral_id in &mistral_ids {
+            assert_eq!(mistral_id.len(), 9);
+            assert!(mistral_id.chars().all(|c| c.is_alphanumeric()));
+        }
+
+        // All Mistral IDs should be unique (no collisions for these test IDs)
+        let unique_mistral_ids: std::collections::HashSet<_> = mistral_ids.iter().collect();
+        assert_eq!(unique_mistral_ids.len(), 3);
+
+        // Verify bidirectional mapping for each
+        for (original, mistral) in original_ids.iter().zip(mistral_ids.iter()) {
+            assert_eq!(id_mapper.to_mistral(original), *mistral);
+            assert_eq!(id_mapper.to_original(mistral), **original);
+        }
     }
 }

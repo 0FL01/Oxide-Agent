@@ -1,12 +1,18 @@
 //! Message preparation utilities for Mistral API
 
+use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
 use crate::llm::Message;
 use serde_json::{json, Value};
 
 /// Prepare structured messages for tool calling
 ///
-/// Mistral requires system role before any tool/user/assistant after tool
-pub fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<Value> {
+/// Mistral requires system role before any tool/user/assistant after tool.
+/// Tool call IDs are transformed to Mistral-compatible format (9 alphanumeric chars).
+pub fn prepare_structured_messages(
+    system_prompt: &str,
+    history: &[Message],
+    id_mapper: &mut ToolCallIdMapper,
+) -> Vec<Value> {
     // Collect all system messages from history to prepend them
     let mut history_systems = Vec::new();
     let mut other_messages = Vec::new();
@@ -33,8 +39,10 @@ pub fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> 
                         let mistral_tool_calls: Vec<Value> = calls
                             .iter()
                             .map(|tc| {
+                                // Transform ID to Mistral-compatible format
+                                let mistral_id = id_mapper.to_mistral(&tc.id);
                                 json!({
-                                    "id": tc.id,
+                                    "id": mistral_id,
                                     "type": "function",
                                     "function": {
                                         "name": tc.function.name,
@@ -54,7 +62,9 @@ pub fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> 
                     "content": msg.content
                 });
                 if let Some(tool_call_id) = &msg.tool_call_id {
-                    tool_msg["tool_call_id"] = json!(tool_call_id);
+                    // Transform ID to Mistral-compatible format
+                    let mistral_id = id_mapper.to_mistral(tool_call_id);
+                    tool_msg["tool_call_id"] = json!(mistral_id);
                 }
                 if let Some(name) = &msg.name {
                     tool_msg["name"] = json!(name);
@@ -80,6 +90,15 @@ pub fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> 
     messages.extend(other_messages);
 
     messages
+}
+
+/// Legacy function without ID mapping (for backward compatibility where mapping isn't needed)
+///
+/// ⚠️ Warning: This should only be used when tool calling is not involved,
+/// as Mistral requires 9-character alphanumeric tool call IDs.
+pub fn prepare_structured_messages_legacy(system_prompt: &str, history: &[Message]) -> Vec<Value> {
+    let mut dummy_mapper = ToolCallIdMapper::new();
+    prepare_structured_messages(system_prompt, history, &mut dummy_mapper)
 }
 
 /// Prepare simple chat messages (no tool calling)

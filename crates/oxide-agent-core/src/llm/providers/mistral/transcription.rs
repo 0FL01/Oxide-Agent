@@ -43,7 +43,14 @@ pub async fn transcribe_audio(
 ) -> Result<String, LlmError> {
     retry_transcription(
         || async {
-            transcribe_audio_once(http_client, api_key, audio_bytes.clone(), mime_type, model_id).await
+            transcribe_audio_once(
+                http_client,
+                api_key,
+                audio_bytes.clone(),
+                mime_type,
+                model_id,
+            )
+            .await
         },
         model_id,
     )
@@ -173,7 +180,10 @@ async fn transcribe_audio_once(
     let form = Form::new()
         .part("file", part)
         .text("model", model_id.to_string())
-        .text("temperature", MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE.to_string());
+        .text(
+            "temperature",
+            MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE.to_string(),
+        );
 
     // Send request
     let response = http_client
@@ -221,7 +231,9 @@ async fn transcribe_audio_once(
     json.get("text")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .ok_or_else(|| LlmError::ApiError("Missing 'text' field in transcription response".to_string()))
+        .ok_or_else(|| {
+            LlmError::ApiError("Missing 'text' field in transcription response".to_string())
+        })
 }
 
 /// Map MIME type to file extension
@@ -257,18 +269,9 @@ mod tests {
     fn test_retry_delay_calculation() {
         // Test exponential backoff
         let err = LlmError::ApiError("502 Bad Gateway".to_string());
-        assert_eq!(
-            get_retry_delay(&err, 1),
-            Some(Duration::from_millis(3000))
-        );
-        assert_eq!(
-            get_retry_delay(&err, 2),
-            Some(Duration::from_millis(6000))
-        );
-        assert_eq!(
-            get_retry_delay(&err, 3),
-            Some(Duration::from_millis(12000))
-        );
+        assert_eq!(get_retry_delay(&err, 1), Some(Duration::from_millis(3000)));
+        assert_eq!(get_retry_delay(&err, 2), Some(Duration::from_millis(6000)));
+        assert_eq!(get_retry_delay(&err, 3), Some(Duration::from_millis(12000)));
     }
 
     #[test]
@@ -291,9 +294,6 @@ mod tests {
             wait_secs: None,
             message: "Rate limited".to_string(),
         };
-        assert_eq!(
-            get_retry_delay(&err, 1),
-            Some(Duration::from_millis(3000))
-        );
+        assert_eq!(get_retry_delay(&err, 1), Some(Duration::from_millis(3000)));
     }
 }
