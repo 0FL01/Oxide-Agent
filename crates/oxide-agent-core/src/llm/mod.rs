@@ -11,6 +11,7 @@ pub mod providers;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -150,6 +151,282 @@ pub struct ToolCall {
     /// Whether this tool call was recovered from a malformed LLM response
     #[serde(default)]
     pub is_recovered: bool,
+}
+
+/// Stable runtime identifier for one tool invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InvocationId(String);
+
+impl InvocationId {
+    /// Build a runtime invocation id from any owned string input.
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Borrow the invocation id as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume the id and return the owned string.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl From<String> for InvocationId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for InvocationId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl AsRef<str> for InvocationId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<InvocationId> for String {
+    fn from(value: InvocationId) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for InvocationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Opaque provider-owned identifier used to correlate a tool result back to a provider call.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderToolCallId(String);
+
+impl ProviderToolCallId {
+    /// Build a provider tool-call id from any owned string input.
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Borrow the provider id as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume the id and return the owned string.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl From<String> for ProviderToolCallId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ProviderToolCallId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl AsRef<str> for ProviderToolCallId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<ProviderToolCallId> for String {
+    fn from(value: ProviderToolCallId) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for ProviderToolCallId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Optional provider-owned item identifier for APIs that distinguish item and call ids.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderItemId(String);
+
+impl ProviderItemId {
+    /// Build a provider item id from any owned string input.
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Borrow the provider item id as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume the id and return the owned string.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl From<String> for ProviderItemId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ProviderItemId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl AsRef<str> for ProviderItemId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<ProviderItemId> for String {
+    fn from(value: ProviderItemId) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for ProviderItemId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Provider protocol family used to encode tool interactions on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ToolProtocol {
+    /// OpenAI-style chat messages with `tool_calls[].id` and `role=tool` responses.
+    #[default]
+    ChatLike,
+    /// OpenAI Responses-style items with distinct item and call identifiers.
+    ResponsesLike,
+    /// Anthropic-compatible client-side tools with `tool_use`/`tool_result` blocks.
+    AnthropicClientTools,
+    /// Provider-executed tool flows such as Anthropic server tools.
+    AnthropicServerTools,
+    /// Gemini native `functionCall`/`functionResponse` parts.
+    GeminiNative,
+}
+
+/// Execution transport for a tool interaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ToolTransport {
+    /// The model emits a tool request and expects the client to send the result back.
+    #[default]
+    ClientRoundTrip,
+    /// The provider executes the tool and returns control after server-side completion.
+    ServerExecuted,
+}
+
+/// Shared domain correlation record for one tool invocation across runtime and provider layers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallCorrelation {
+    /// Stable internal identifier used by runtime, memory, retries, and tracing.
+    pub invocation_id: InvocationId,
+    /// Opaque provider correlation id echoed back in tool results when required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_tool_call_id: Option<ProviderToolCallId>,
+    /// Optional provider item id for APIs that return both item and call identifiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_item_id: Option<ProviderItemId>,
+    /// Provider protocol family responsible for this correlation.
+    #[serde(default)]
+    pub protocol: ToolProtocol,
+    /// Execution transport used for the tool flow.
+    #[serde(default)]
+    pub transport: ToolTransport,
+}
+
+impl ToolCallCorrelation {
+    /// Build a correlation record seeded by the stable internal invocation id.
+    #[must_use]
+    pub fn new(invocation_id: impl Into<InvocationId>) -> Self {
+        Self {
+            invocation_id: invocation_id.into(),
+            provider_tool_call_id: None,
+            provider_item_id: None,
+            protocol: ToolProtocol::ChatLike,
+            transport: ToolTransport::ClientRoundTrip,
+        }
+    }
+
+    /// Convert a legacy single-string tool call id into the new correlation record.
+    #[must_use]
+    pub fn from_legacy_tool_call_id(id: impl Into<InvocationId>) -> Self {
+        Self::new(id)
+    }
+
+    /// Attach the opaque provider correlation id used for outbound tool results.
+    #[must_use]
+    pub fn with_provider_tool_call_id(
+        mut self,
+        provider_tool_call_id: impl Into<ProviderToolCallId>,
+    ) -> Self {
+        self.provider_tool_call_id = Some(provider_tool_call_id.into());
+        self
+    }
+
+    /// Attach an optional provider item id for responses-like APIs.
+    #[must_use]
+    pub fn with_provider_item_id(mut self, provider_item_id: impl Into<ProviderItemId>) -> Self {
+        self.provider_item_id = Some(provider_item_id.into());
+        self
+    }
+
+    /// Override the provider protocol family for this correlation.
+    #[must_use]
+    pub fn with_protocol(mut self, protocol: ToolProtocol) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
+    /// Override how the tool execution round-trip is transported.
+    #[must_use]
+    pub fn with_transport(mut self, transport: ToolTransport) -> Self {
+        self.transport = transport;
+        self
+    }
+
+    /// Return the provider-facing tool call id, falling back to the invocation id for legacy flows.
+    #[must_use]
+    pub fn wire_tool_call_id(&self) -> &str {
+        match &self.provider_tool_call_id {
+            Some(provider_tool_call_id) => provider_tool_call_id.as_str(),
+            None => self.invocation_id.as_str(),
+        }
+    }
+
+    /// Return the legacy internal id used by the current runtime and persisted history.
+    #[must_use]
+    pub fn legacy_tool_call_id(&self) -> &str {
+        self.invocation_id.as_str()
+    }
 }
 
 /// Function details within a tool call
@@ -1159,8 +1436,9 @@ fn validate_tool_history(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_tool_history, LlmError, Message, ProviderCapabilities, ToolCall, ToolCallFunction,
-        ToolHistoryMode,
+        validate_tool_history, InvocationId, LlmError, Message, ProviderCapabilities,
+        ProviderItemId, ProviderToolCallId, ToolCall, ToolCallCorrelation, ToolCallFunction,
+        ToolHistoryMode, ToolProtocol, ToolTransport,
     };
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
@@ -1302,5 +1580,40 @@ mod tests {
         )
         .expect_err("history must be rejected");
         assert!(matches!(error, LlmError::RepairableHistory(_)));
+    }
+
+    #[test]
+    fn tool_call_correlation_defaults_to_invocation_id_for_legacy_wire_usage() {
+        let correlation = ToolCallCorrelation::from_legacy_tool_call_id("call-123");
+
+        assert_eq!(correlation.invocation_id, InvocationId::from("call-123"));
+        assert_eq!(correlation.wire_tool_call_id(), "call-123");
+        assert_eq!(correlation.legacy_tool_call_id(), "call-123");
+        assert!(correlation.provider_tool_call_id.is_none());
+        assert!(correlation.provider_item_id.is_none());
+        assert_eq!(correlation.protocol, ToolProtocol::ChatLike);
+        assert_eq!(correlation.transport, ToolTransport::ClientRoundTrip);
+    }
+
+    #[test]
+    fn tool_call_correlation_prefers_provider_ids_when_present() {
+        let correlation = ToolCallCorrelation::new("invoke-1")
+            .with_provider_tool_call_id("provider-call-9")
+            .with_provider_item_id("item-4")
+            .with_protocol(ToolProtocol::ResponsesLike)
+            .with_transport(ToolTransport::ServerExecuted);
+
+        assert_eq!(correlation.wire_tool_call_id(), "provider-call-9");
+        assert_eq!(correlation.legacy_tool_call_id(), "invoke-1");
+        assert_eq!(
+            correlation.provider_tool_call_id,
+            Some(ProviderToolCallId::from("provider-call-9"))
+        );
+        assert_eq!(
+            correlation.provider_item_id,
+            Some(ProviderItemId::from("item-4"))
+        );
+        assert_eq!(correlation.protocol, ToolProtocol::ResponsesLike);
+        assert_eq!(correlation.transport, ToolTransport::ServerExecuted);
     }
 }
