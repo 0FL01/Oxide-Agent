@@ -59,6 +59,7 @@ impl ScriptedResponse {
                             arguments: tc.arguments,
                         },
                         is_recovered: false,
+                        tool_call_correlation: None,
                     })
                     .collect(),
                 finish_reason: "tool_calls".to_string(),

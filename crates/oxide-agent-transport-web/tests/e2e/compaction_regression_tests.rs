@@ -110,6 +110,7 @@ fn two_todo_tool_calls_response() -> ChatResponse {
                     .to_string(),
                 },
                 is_recovered: false,
+                tool_call_correlation: None,
             },
             ToolCall {
                 id: "call-todo-2".to_string(),
@@ -126,6 +127,7 @@ fn two_todo_tool_calls_response() -> ChatResponse {
                     .to_string(),
                 },
                 is_recovered: false,
+                tool_call_correlation: None,
             },
         ],
         finish_reason: "tool_calls".to_string(),

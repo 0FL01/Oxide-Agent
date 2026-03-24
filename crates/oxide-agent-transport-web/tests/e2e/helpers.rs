@@ -16,6 +16,7 @@ pub fn tool_call_response(name: &str, arguments: serde_json::Value) -> ChatRespo
                 arguments: arguments.to_string(),
             },
             is_recovered: false,
+            tool_call_correlation: None,
         }],
         finish_reason: "tool_calls".to_string(),
         reasoning_content: None,
