@@ -1,16 +1,11 @@
 //! Message preparation utilities for Mistral API
 
 use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
-use crate::llm::providers::protocol_profiles::{
-    CHAT_LIKE_TOOL_CALL_ENCODER, CHAT_LIKE_TOOL_RESULT_ENCODER,
-};
-use crate::llm::providers::tool_call_encoder::{ProviderToolCallEncoder, ToolCallEncoder};
-use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
+use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
+use crate::llm::providers::tool_call_encoder::ToolCallEncoder;
+use crate::llm::providers::tool_result_encoder::ToolResultEncoder;
 use crate::llm::Message;
 use serde_json::{json, Value};
-
-const MISTRAL_TOOL_CALL_ENCODER: ProviderToolCallEncoder = CHAT_LIKE_TOOL_CALL_ENCODER;
-const MISTRAL_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = CHAT_LIKE_TOOL_RESULT_ENCODER;
 
 /// Prepare structured messages for tool calling
 ///
@@ -47,7 +42,8 @@ pub fn prepare_structured_messages(
                         let mistral_tool_calls: Vec<Value> = calls
                             .iter()
                             .filter_map(|tc| {
-                                MISTRAL_TOOL_CALL_ENCODER
+                                CHAT_LIKE_TOOL_PROFILE
+                                    .tool_call_encoder
                                     .encode(tc)
                                     .and_then(|call| call.into_chat_like())
                                     .map(|call| {
@@ -70,7 +66,8 @@ pub fn prepare_structured_messages(
                 other_messages.push(msg_obj);
             }
             "tool" => {
-                if let Some(result) = MISTRAL_TOOL_RESULT_ENCODER
+                if let Some(result) = CHAT_LIKE_TOOL_PROFILE
+                    .tool_result_encoder
                     .encode(msg)
                     .and_then(|result| result.into_chat_like())
                 {

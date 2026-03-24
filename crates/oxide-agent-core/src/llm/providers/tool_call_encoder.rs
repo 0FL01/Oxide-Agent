@@ -1,4 +1,5 @@
-use crate::llm::{ToolCall, ToolCallCorrelation, ToolProtocol, ToolTransport};
+use crate::llm::providers::tool_correlation::ToolCorrelationNormalizer;
+use crate::llm::{ToolCall, ToolProtocol, ToolTransport};
 use serde_json::Value;
 
 /// Protocol-shaped outbound assistant tool-call envelope.
@@ -98,22 +99,6 @@ impl ProviderToolCallEncoder {
             transport,
         }
     }
-
-    fn normalize_outbound_correlation(
-        self,
-        correlation: ToolCallCorrelation,
-    ) -> ToolCallCorrelation {
-        let mut normalized = correlation
-            .with_protocol(self.protocol)
-            .with_transport(self.transport);
-
-        if normalized.provider_tool_call_id.is_none() {
-            let invocation_id = normalized.invocation_id.as_str().to_string();
-            normalized = normalized.with_provider_tool_call_id(invocation_id);
-        }
-
-        normalized
-    }
 }
 
 impl ToolCallEncoder for ProviderToolCallEncoder {
@@ -122,7 +107,8 @@ impl ToolCallEncoder for ProviderToolCallEncoder {
             return None;
         }
 
-        let correlation = self.normalize_outbound_correlation(tool_call.correlation());
+        let correlation = ToolCorrelationNormalizer::new(self.protocol, self.transport)
+            .normalize(tool_call.correlation());
         let wire_id = correlation.wire_tool_call_id().to_string();
 
         match self.protocol {

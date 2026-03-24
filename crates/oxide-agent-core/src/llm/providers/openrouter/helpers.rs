@@ -1,13 +1,8 @@
-use crate::llm::providers::protocol_profiles::{
-    CHAT_LIKE_TOOL_ADAPTER, CHAT_LIKE_TOOL_CALL_ENCODER, CHAT_LIKE_TOOL_RESULT_ENCODER,
-};
-use crate::llm::providers::tool_call_encoder::{ProviderToolCallEncoder, ToolCallEncoder};
-use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
+use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
+use crate::llm::providers::tool_call_encoder::ToolCallEncoder;
+use crate::llm::providers::tool_result_encoder::ToolResultEncoder;
 use crate::llm::{LlmError, Message, ToolCall, ToolDefinition};
 use serde_json::json;
-
-const OPENROUTER_TOOL_CALL_ENCODER: ProviderToolCallEncoder = CHAT_LIKE_TOOL_CALL_ENCODER;
-const OPENROUTER_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = CHAT_LIKE_TOOL_RESULT_ENCODER;
 
 pub(super) fn prepare_structured_messages(
     system_prompt: &str,
@@ -36,7 +31,8 @@ pub(super) fn prepare_structured_messages(
                     let api_tool_calls: Vec<serde_json::Value> = tool_calls
                         .iter()
                         .filter_map(|tc| {
-                            OPENROUTER_TOOL_CALL_ENCODER
+                            CHAT_LIKE_TOOL_PROFILE
+                                .tool_call_encoder
                                 .encode(tc)
                                 .and_then(|call| call.into_chat_like())
                                 .map(|call| {
@@ -60,7 +56,8 @@ pub(super) fn prepare_structured_messages(
                 messages.push(m);
             }
             "tool" => {
-                if let Some(result) = OPENROUTER_TOOL_RESULT_ENCODER
+                if let Some(result) = CHAT_LIKE_TOOL_PROFILE
+                    .tool_result_encoder
                     .encode(msg)
                     .and_then(|result| result.into_chat_like())
                 {
@@ -124,15 +121,15 @@ pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall
             .unwrap_or_default();
         let wire_id = call.get("id").and_then(|value| value.as_str());
         tool_calls.push(match wire_id {
-            Some(wire_id) => CHAT_LIKE_TOOL_ADAPTER.inbound_provider_tool_call(
+            Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.adapter.inbound_provider_tool_call(
                 wire_id,
                 None,
                 name.to_string(),
                 arguments,
             ),
-            None => {
-                CHAT_LIKE_TOOL_ADAPTER.inbound_uncorrelated_tool_call(name.to_string(), arguments)
-            }
+            None => CHAT_LIKE_TOOL_PROFILE
+                .adapter
+                .inbound_uncorrelated_tool_call(name.to_string(), arguments),
         });
     }
 

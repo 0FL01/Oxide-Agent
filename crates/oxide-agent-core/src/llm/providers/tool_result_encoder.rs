@@ -1,4 +1,5 @@
-use crate::llm::{Message, ToolCallCorrelation, ToolProtocol, ToolTransport};
+use crate::llm::providers::tool_correlation::ToolCorrelationNormalizer;
+use crate::llm::{Message, ToolProtocol, ToolTransport};
 
 /// Protocol-shaped outbound tool result envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,22 +98,6 @@ impl ProviderToolResultEncoder {
             transport,
         }
     }
-
-    fn normalize_outbound_correlation(
-        self,
-        correlation: ToolCallCorrelation,
-    ) -> ToolCallCorrelation {
-        let mut normalized = correlation
-            .with_protocol(self.protocol)
-            .with_transport(self.transport);
-
-        if normalized.provider_tool_call_id.is_none() {
-            let invocation_id = normalized.invocation_id.as_str().to_string();
-            normalized = normalized.with_provider_tool_call_id(invocation_id);
-        }
-
-        normalized
-    }
 }
 
 impl ToolResultEncoder for ProviderToolResultEncoder {
@@ -121,8 +106,8 @@ impl ToolResultEncoder for ProviderToolResultEncoder {
             return None;
         }
 
-        let correlation =
-            self.normalize_outbound_correlation(message.resolved_tool_call_correlation()?);
+        let correlation = ToolCorrelationNormalizer::new(self.protocol, self.transport)
+            .normalize(message.resolved_tool_call_correlation()?);
         let wire_id = correlation.wire_tool_call_id().to_string();
 
         match self.protocol {
