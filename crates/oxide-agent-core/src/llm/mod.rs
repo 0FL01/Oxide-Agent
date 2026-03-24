@@ -433,10 +433,6 @@ pub enum ToolProtocol {
     ResponsesLike,
     /// Anthropic-compatible client-side tools with `tool_use`/`tool_result` blocks.
     AnthropicClientTools,
-    /// Provider-executed tool flows such as Anthropic server tools.
-    AnthropicServerTools,
-    /// Gemini native `functionCall`/`functionResponse` parts.
-    GeminiNative,
 }
 
 /// Execution transport for a tool interaction.

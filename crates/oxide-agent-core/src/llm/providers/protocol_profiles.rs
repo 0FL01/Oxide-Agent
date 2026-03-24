@@ -95,9 +95,6 @@ pub const ANTHROPIC_CLIENT_TOOL_PROFILE: ToolProtocolProfile = ToolProtocolProfi
     ToolTransport::ClientRoundTrip,
 );
 
-pub const RESPONSES_LIKE_TOOL_PROFILE: ToolProtocolProfile =
-    ToolProtocolProfile::new(ToolProtocol::ResponsesLike, ToolTransport::ClientRoundTrip);
-
 #[cfg(test)]
 mod tests {
     use super::{ToolProtocolProfile, CHAT_LIKE_TOOL_PROFILE};
