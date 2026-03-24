@@ -100,8 +100,10 @@ impl AgentRunner {
                     role: role.to_string(),
                     content: msg.content.clone(),
                     tool_call_id: msg.tool_call_id.clone(),
+                    tool_call_correlation: msg.resolved_tool_call_correlation(),
                     name: msg.tool_name.clone(),
                     tool_calls: msg.tool_calls.clone(),
+                    tool_call_correlations: msg.resolved_tool_call_correlations(),
                 }
             })
             .collect()
