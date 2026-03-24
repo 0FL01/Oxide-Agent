@@ -109,14 +109,17 @@ pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall
             })
             .unwrap_or_default();
         let wire_id = call.get("id").and_then(|value| value.as_str());
-        let invocation_id = wire_id.unwrap_or(name);
-        tool_calls.push(OPENROUTER_TOOL_ADAPTER.inbound_tool_call(
-            invocation_id,
-            wire_id,
-            None,
-            name.to_string(),
-            arguments,
-        ));
+        tool_calls.push(match wire_id {
+            Some(wire_id) => OPENROUTER_TOOL_ADAPTER.inbound_provider_tool_call(
+                wire_id,
+                None,
+                name.to_string(),
+                arguments,
+            ),
+            None => {
+                OPENROUTER_TOOL_ADAPTER.inbound_uncorrelated_tool_call(name.to_string(), arguments)
+            }
+        });
     }
 
     Ok(tool_calls)
@@ -178,7 +181,7 @@ mod tests {
         ]))
         .expect("tool calls parse");
 
-        assert_eq!(tool_calls[0].invocation_id().as_str(), "call-openrouter-2");
+        assert_ne!(tool_calls[0].invocation_id().as_str(), "call-openrouter-2");
         assert_eq!(tool_calls[0].wire_tool_call_id(), "call-openrouter-2");
     }
 }
