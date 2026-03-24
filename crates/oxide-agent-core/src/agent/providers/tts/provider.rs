@@ -188,7 +188,7 @@ impl ToolProvider for KokoroTtsProvider {
                     "format": {
                         "type": "string",
                         "enum": ["ogg", "mp3", "wav"],
-                        "description": "Audio format. Default: 'ogg' (best for Telegram). Options: 'ogg' (Opus, smallest), 'mp3' (compatible), 'wav' (lossless)"
+                        "description": "Audio format. RECOMMENDED: 'ogg' (Opus codec, smallest size, native Telegram support). Fallback options: 'mp3' (wider compatibility), 'wav' (lossless, larger size). Default: 'ogg'"
                     },
                     "speed": {
                         "type": "number",
