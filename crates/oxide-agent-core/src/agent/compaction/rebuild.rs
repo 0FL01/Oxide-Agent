@@ -266,9 +266,24 @@ fn push_unique(target: &mut Vec<String>, items: Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::rebuild_hot_context;
-    use crate::agent::compaction::{classify_hot_memory, CompactionSummary};
+    use super::{rebuild_hot_context, remove_orphaned_tool_results};
+    use crate::agent::compaction::{
+        classify_hot_memory, AgentMessageKind, ClassifiedMemoryEntry, CompactionRetention,
+        CompactionSnapshot, CompactionSummary,
+    };
     use crate::agent::memory::AgentMessage;
+    use crate::llm::{ToolCall, ToolCallFunction};
+
+    fn tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            function: ToolCallFunction {
+                name: name.to_string(),
+                arguments: "{}".to_string(),
+            },
+            is_recovered: false,
+        }
+    }
 
     #[test]
     fn rebuild_hot_context_inserts_structured_summary_before_recent_raw_window() {
@@ -425,5 +440,69 @@ mod tests {
         );
         assert_eq!(rebuilt[2].archive_ref_payload(), Some(&archive_ref));
         assert!(rebuilt[2].content.contains("[archived context chunk]"));
+    }
+
+    #[test]
+    fn remove_orphaned_tool_results_drops_results_for_compacted_tool_batch() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Calling tools",
+                vec![tool_call("call-1", "search")],
+            ),
+            AgentMessage::tool("call-1", "search", "result-1"),
+            AgentMessage::user("Recent request"),
+        ];
+        let snapshot = CompactionSnapshot {
+            entries: vec![
+                ClassifiedMemoryEntry {
+                    index: 0,
+                    kind: AgentMessageKind::AssistantToolCall,
+                    retention: CompactionRetention::CompactableHistory,
+                    estimated_tokens: 10,
+                    content_chars: messages[0].content.len(),
+                    has_reasoning: false,
+                    tool_name: None,
+                    is_externalized: false,
+                    archive_ref: None,
+                    is_pruned: false,
+                    preserve_in_raw_window: false,
+                },
+                ClassifiedMemoryEntry {
+                    index: 1,
+                    kind: AgentMessageKind::ToolResult,
+                    retention: CompactionRetention::PrunableArtifact,
+                    estimated_tokens: 10,
+                    content_chars: messages[1].content.len(),
+                    has_reasoning: false,
+                    tool_name: Some("search".to_string()),
+                    is_externalized: false,
+                    archive_ref: None,
+                    is_pruned: false,
+                    preserve_in_raw_window: true,
+                },
+                ClassifiedMemoryEntry {
+                    index: 2,
+                    kind: AgentMessageKind::UserTurn,
+                    retention: CompactionRetention::CompactableHistory,
+                    estimated_tokens: 10,
+                    content_chars: messages[2].content.len(),
+                    has_reasoning: false,
+                    tool_name: None,
+                    is_externalized: false,
+                    archive_ref: None,
+                    is_pruned: false,
+                    preserve_in_raw_window: true,
+                },
+            ],
+            ..CompactionSnapshot::default()
+        };
+        let mut preserved = vec![false, true, true];
+        let mut rebuilt = vec![messages[1].clone(), messages[2].clone()];
+
+        remove_orphaned_tool_results(&snapshot, &messages, &mut preserved, &mut rebuilt);
+
+        assert_eq!(preserved, vec![false, false, true]);
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(rebuilt[0].content, "Recent request");
     }
 }
