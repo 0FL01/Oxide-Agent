@@ -1,5 +1,5 @@
 use super::map_zai_error;
-use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_ADAPTER;
+use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall};
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -130,7 +130,7 @@ fn finalize_tool_calls(pending: Vec<PendingToolCall>) -> Vec<ToolCall> {
                 call.arguments
             };
             Some(match call.id {
-                Some(id) => CHAT_LIKE_TOOL_ADAPTER.inbound_provider_tool_call(
+                Some(id) => CHAT_LIKE_TOOL_PROFILE.adapter.inbound_provider_tool_call(
                     id.as_str(),
                     None,
                     name,
@@ -138,7 +138,9 @@ fn finalize_tool_calls(pending: Vec<PendingToolCall>) -> Vec<ToolCall> {
                 ),
                 None => {
                     let _ = idx;
-                    CHAT_LIKE_TOOL_ADAPTER.inbound_uncorrelated_tool_call(name, arguments)
+                    CHAT_LIKE_TOOL_PROFILE
+                        .adapter
+                        .inbound_uncorrelated_tool_call(name, arguments)
                 }
             })
         })

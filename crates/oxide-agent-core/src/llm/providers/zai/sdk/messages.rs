@@ -1,17 +1,12 @@
-use crate::llm::providers::protocol_profiles::{
-    CHAT_LIKE_TOOL_CALL_ENCODER, CHAT_LIKE_TOOL_RESULT_ENCODER,
-};
-use crate::llm::providers::tool_call_encoder::{ProviderToolCallEncoder, ToolCallEncoder};
-use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
+use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
+use crate::llm::providers::tool_call_encoder::ToolCallEncoder;
+use crate::llm::providers::tool_result_encoder::ToolResultEncoder;
 use crate::llm::{Message, ToolCall, ToolDefinition};
 use serde_json::Value;
 use zai_rs::model::chat_message_types::{
     FunctionParams, TextMessage, ToolCall as ZaiToolCall, VisionMessage, VisionRichContent,
 };
 use zai_rs::model::tools::{Function, Tools};
-
-const ZAI_TOOL_CALL_ENCODER: ProviderToolCallEncoder = CHAT_LIKE_TOOL_CALL_ENCODER;
-const ZAI_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = CHAT_LIKE_TOOL_RESULT_ENCODER;
 
 pub(super) fn convert_to_text_messages(
     system_prompt: &str,
@@ -41,7 +36,8 @@ pub(super) fn convert_to_text_messages(
                     TextMessage::assistant_with_tools(content, tool_calls)
                 }
             }
-            "tool" => ZAI_TOOL_RESULT_ENCODER
+            "tool" => CHAT_LIKE_TOOL_PROFILE
+                .tool_result_encoder
                 .encode(msg)
                 .and_then(|result| result.into_chat_like())
                 .map(|result| TextMessage::tool_with_id(result.content, result.tool_call_id))
@@ -133,7 +129,8 @@ fn convert_assistant_tool_calls(tool_calls: &[ToolCall]) -> Vec<ZaiToolCall> {
     tool_calls
         .iter()
         .filter_map(|call| {
-            ZAI_TOOL_CALL_ENCODER
+            CHAT_LIKE_TOOL_PROFILE
+                .tool_call_encoder
                 .encode(call)
                 .and_then(|call| call.into_chat_like())
                 .map(|call| {

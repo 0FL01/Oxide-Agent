@@ -1,3 +1,4 @@
+use crate::llm::providers::tool_correlation::ToolCorrelationNormalizer;
 use crate::llm::{
     InvocationId, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol,
     ToolTransport,
@@ -24,7 +25,8 @@ impl ProviderToolCallAdapter {
     /// Resolve the outbound provider wire id for an assistant tool call.
     #[must_use]
     pub fn assistant_tool_call_id(self, tool_call: &ToolCall) -> String {
-        self.normalize_outbound_correlation(tool_call.correlation())
+        ToolCorrelationNormalizer::new(self.protocol, self.transport)
+            .normalize(tool_call.correlation())
             .wire_tool_call_id()
             .to_string()
     }
@@ -34,7 +36,9 @@ impl ProviderToolCallAdapter {
     pub fn tool_result_call_id(self, message: &Message) -> Option<String> {
         message
             .resolved_tool_call_correlation()
-            .map(|correlation| self.normalize_outbound_correlation(correlation))
+            .map(|correlation| {
+                ToolCorrelationNormalizer::new(self.protocol, self.transport).normalize(correlation)
+            })
             .map(|correlation| correlation.wire_tool_call_id().to_string())
     }
 
@@ -99,20 +103,6 @@ impl ProviderToolCallAdapter {
     ) -> ToolCall {
         let invocation_id = InvocationId::new(format!("call_{}", Uuid::new_v4()));
         self.inbound_tool_call(invocation_id, None, None, name, arguments)
-    }
-
-    fn normalize_outbound_correlation(
-        self,
-        correlation: ToolCallCorrelation,
-    ) -> ToolCallCorrelation {
-        let mut normalized = correlation
-            .with_protocol(self.protocol)
-            .with_transport(self.transport);
-        if normalized.provider_tool_call_id.is_none() {
-            let invocation_id = normalized.invocation_id.as_str().to_string();
-            normalized = normalized.with_provider_tool_call_id(invocation_id);
-        }
-        normalized
     }
 }
 

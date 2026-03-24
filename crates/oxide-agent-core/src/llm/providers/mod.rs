@@ -15,6 +15,8 @@ pub mod tool_call_adapter;
 #[allow(missing_docs)]
 pub mod tool_call_encoder;
 #[allow(missing_docs)]
+pub mod tool_correlation;
+#[allow(missing_docs)]
 pub mod tool_result_encoder;
 #[allow(missing_docs)]
 pub mod zai;
