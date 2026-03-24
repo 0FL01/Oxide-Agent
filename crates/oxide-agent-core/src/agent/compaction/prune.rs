@@ -85,7 +85,12 @@ fn prune_entry(
 
     let original = messages.get(entry.index)?;
     let tool_name = original.tool_name.as_deref()?;
-    let tool_call_id = original.tool_call_id.as_deref()?;
+    let tool_call_correlation = original.resolved_tool_call_correlation()?;
+    let tool_call_id = original
+        .tool_call_id
+        .as_deref()
+        .unwrap_or_else(|| tool_call_correlation.wire_tool_call_id())
+        .to_string();
     let preview = original
         .pruned_artifact
         .as_ref()
@@ -109,8 +114,9 @@ fn prune_entry(
         &preview,
     );
     let has_archive_ref = archive_ref.is_some();
-    let replacement = AgentMessage::pruned_tool(
-        tool_call_id,
+    let replacement = AgentMessage::pruned_tool_with_correlation(
+        &tool_call_id,
+        tool_call_correlation,
         tool_name,
         placeholder,
         PrunedArtifact {

@@ -133,7 +133,12 @@ fn externalize_entry(
 
     let original = messages.get(entry.index)?;
     let tool_name = original.tool_name.as_deref()?;
-    let tool_call_id = original.tool_call_id.as_deref()?;
+    let tool_call_correlation = original.resolved_tool_call_correlation()?;
+    let tool_call_id = original
+        .tool_call_id
+        .as_deref()
+        .unwrap_or_else(|| tool_call_correlation.wire_tool_call_id())
+        .to_string();
     let artifact = build_artifact(policy, scope, entry, original, payload_sink, archive_sink)?;
     let placeholder = build_placeholder(
         tool_name,
@@ -157,8 +162,9 @@ fn externalize_entry(
     );
 
     Some(ExternalizedMessage {
-        message: AgentMessage::externalized_tool(
-            tool_call_id,
+        message: AgentMessage::externalized_tool_with_correlation(
+            &tool_call_id,
+            tool_call_correlation,
             tool_name,
             placeholder,
             ExternalizedPayload {

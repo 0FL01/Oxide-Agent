@@ -830,7 +830,7 @@ impl AgentExecutor {
             &grant.approval_token,
         )?;
         let tool_call = ToolCall {
-            id: replay.tool_call_id,
+            id: replay.invocation_id.to_string(),
             function: ToolCallFunction {
                 name: replay.tool_name,
                 arguments,

@@ -4,7 +4,7 @@
 
 use crate::agent::compaction::AgentMessageKind;
 use crate::agent::memory::{AgentMessage, MessageRole};
-use crate::llm::{ToolCall, ToolCallFunction};
+use crate::llm::{ToolCall, ToolCallCorrelation, ToolCallFunction};
 use lazy_regex::regex;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -70,10 +70,23 @@ pub fn prune_tool_history_by_availability(
                     continue;
                 };
 
-                let retained_tool_calls = tool_calls
+                let correlations = message
+                    .resolved_tool_call_correlations()
+                    .unwrap_or_else(|| tool_calls.iter().map(ToolCall::correlation).collect());
+
+                let retained_pairs = tool_calls
                     .iter()
-                    .filter(|tool_call| available_tools.contains(&tool_call.function.name))
                     .cloned()
+                    .zip(correlations.into_iter())
+                    .filter(|(tool_call, _)| available_tools.contains(&tool_call.function.name))
+                    .collect::<Vec<_>>();
+                let retained_tool_calls = retained_pairs
+                    .iter()
+                    .map(|(tool_call, _)| tool_call.clone())
+                    .collect::<Vec<_>>();
+                let retained_tool_call_correlations = retained_pairs
+                    .into_iter()
+                    .map(|(_, correlation)| correlation)
                     .collect::<Vec<_>>();
 
                 if retained_tool_calls.len() == tool_calls.len() {
@@ -97,6 +110,7 @@ pub fn prune_tool_history_by_availability(
                     converted.kind = AgentMessageKind::AssistantResponse;
                     converted.role = MessageRole::Assistant;
                     converted.tool_calls = None;
+                    converted.tool_call_correlations = None;
                     outcome.converted_tool_call_messages =
                         outcome.converted_tool_call_messages.saturating_add(1);
                     rewritten.push(converted);
@@ -105,6 +119,7 @@ pub fn prune_tool_history_by_availability(
 
                 let mut rewritten_message = message.clone();
                 rewritten_message.tool_calls = Some(retained_tool_calls);
+                rewritten_message.tool_call_correlations = Some(retained_tool_call_correlations);
                 rewritten.push(rewritten_message);
             }
             AgentMessageKind::ToolResult => {
@@ -188,17 +203,25 @@ fn repair_assistant_tool_batch(
     let Some(tool_calls) = assistant.tool_calls.clone() else {
         return (vec![assistant], assistant_index + 1, outcome);
     };
+    let tool_call_correlations = assistant
+        .resolved_tool_call_correlations()
+        .unwrap_or_else(|| tool_calls.iter().map(ToolCall::correlation).collect());
 
     let mut expected_ids = HashSet::new();
     let mut valid_tool_calls = Vec::with_capacity(tool_calls.len());
-    for tool_call in tool_calls {
-        let tool_call_id = tool_call.id.trim();
-        if tool_call_id.is_empty() || !expected_ids.insert(tool_call.id.clone()) {
+    let mut valid_tool_call_correlations = Vec::with_capacity(tool_calls.len());
+    for (tool_call, correlation) in tool_calls
+        .into_iter()
+        .zip(tool_call_correlations.into_iter())
+    {
+        let invocation_id = correlation.invocation_id.as_str().trim();
+        if invocation_id.is_empty() || !expected_ids.insert(correlation.invocation_id.clone()) {
             outcome.applied = true;
             outcome.trimmed_tool_calls = outcome.trimmed_tool_calls.saturating_add(1);
             continue;
         }
         valid_tool_calls.push(tool_call);
+        valid_tool_call_correlations.push(correlation);
     }
 
     let mut repaired_tool_results = Vec::new();
@@ -208,11 +231,10 @@ fn repair_assistant_tool_batch(
         && messages[cursor].resolved_kind() == AgentMessageKind::ToolResult
     {
         let tool_result = &messages[cursor];
-        let Some(tool_call_id) = tool_result
-            .tool_call_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
+        let Some(invocation_id) = tool_result
+            .resolved_tool_call_correlation()
+            .map(|correlation| correlation.invocation_id)
+            .filter(|id| !id.as_str().trim().is_empty())
         else {
             outcome.applied = true;
             outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
@@ -220,8 +242,7 @@ fn repair_assistant_tool_batch(
             continue;
         };
 
-        if !expected_ids.contains(tool_call_id) || !seen_result_ids.insert(tool_call_id.to_string())
-        {
+        if !expected_ids.contains(&invocation_id) || !seen_result_ids.insert(invocation_id) {
             outcome.applied = true;
             outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
             cursor += 1;
@@ -236,7 +257,19 @@ fn repair_assistant_tool_batch(
     let preserve_incomplete_batch = allow_terminal_incomplete_batch && terminal_batch;
     if !preserve_incomplete_batch {
         let original_tool_call_count = valid_tool_calls.len();
-        valid_tool_calls.retain(|tool_call| seen_result_ids.contains(&tool_call.id));
+        let retained_pairs: Vec<(ToolCall, ToolCallCorrelation)> = valid_tool_calls
+            .into_iter()
+            .zip(valid_tool_call_correlations)
+            .filter(|(_, correlation)| seen_result_ids.contains(&correlation.invocation_id))
+            .collect();
+        valid_tool_calls = retained_pairs
+            .iter()
+            .map(|(tool_call, _)| tool_call.clone())
+            .collect();
+        valid_tool_call_correlations = retained_pairs
+            .into_iter()
+            .map(|(_, correlation)| correlation)
+            .collect();
         if valid_tool_calls.len() != original_tool_call_count {
             outcome.applied = true;
             outcome.trimmed_tool_calls = outcome
@@ -256,6 +289,7 @@ fn repair_assistant_tool_batch(
             converted.kind = AgentMessageKind::AssistantResponse;
             converted.role = MessageRole::Assistant;
             converted.tool_calls = None;
+            converted.tool_call_correlations = None;
             outcome.applied = true;
             outcome.converted_tool_call_messages =
                 outcome.converted_tool_call_messages.saturating_add(1);
@@ -264,6 +298,7 @@ fn repair_assistant_tool_batch(
     } else {
         let mut repaired_assistant = assistant;
         repaired_assistant.tool_calls = Some(valid_tool_calls);
+        repaired_assistant.tool_call_correlations = Some(valid_tool_call_correlations);
         repaired_batch.push(repaired_assistant);
     }
 
@@ -1258,5 +1293,61 @@ mod tests {
         assert_eq!(repaired.len(), 2);
         assert_eq!(repaired[1].tool_call_id.as_deref(), Some("call-1"));
         assert_eq!(repaired[1].content, "result-1");
+    }
+
+    #[test]
+    fn repair_agent_message_history_matches_on_invocation_id_not_raw_wire_id() {
+        let correlation =
+            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1");
+        let messages = vec![
+            AgentMessage {
+                kind: AgentMessageKind::AssistantToolCall,
+                role: MessageRole::Assistant,
+                content: "Calling tools".to_string(),
+                reasoning: None,
+                tool_call_id: None,
+                tool_call_correlation: None,
+                tool_name: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "provider-a".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }]),
+                tool_call_correlations: Some(vec![correlation.clone()]),
+                externalized_payload: None,
+                pruned_artifact: None,
+                structured_summary: None,
+                archive_ref: None,
+            },
+            AgentMessage {
+                kind: AgentMessageKind::ToolResult,
+                role: MessageRole::Tool,
+                content: "result".to_string(),
+                reasoning: None,
+                tool_call_id: Some("provider-b".to_string()),
+                tool_call_correlation: Some(correlation),
+                tool_name: Some("search".to_string()),
+                tool_calls: None,
+                tool_call_correlations: None,
+                externalized_payload: None,
+                pruned_artifact: None,
+                structured_summary: None,
+                archive_ref: None,
+            },
+        ];
+
+        let (repaired, outcome) = repair_agent_message_history(&messages);
+
+        assert!(!outcome.applied);
+        assert_eq!(repaired.len(), 2);
+        assert_eq!(
+            repaired[0]
+                .resolved_tool_call_correlations()
+                .expect("assistant correlations"),
+            vec![ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1")]
+        );
     }
 }

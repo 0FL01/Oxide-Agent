@@ -5,6 +5,7 @@ use super::types::{
     AgentMessageKind, CompactionRetention, CompactionSnapshot, CompactionSummary, RebuildOutcome,
 };
 use crate::agent::memory::AgentMessage;
+use crate::llm::InvocationId;
 use tracing::warn;
 
 /// Rebuild hot memory into pinned, live, structured-summary, and recent-raw slices.
@@ -135,14 +136,18 @@ fn remove_orphaned_tool_results(
     preserved: &mut [bool],
     rebuilt: &mut Vec<AgentMessage>,
 ) {
-    let dropped_tool_call_ids: std::collections::HashSet<String> = snapshot
+    let dropped_tool_call_ids: std::collections::HashSet<InvocationId> = snapshot
         .entries
         .iter()
         .filter(|entry| !preserved.get(entry.index).copied().unwrap_or(true))
         .filter(|entry| entry.kind == AgentMessageKind::AssistantToolCall)
         .filter_map(|entry| messages.get(entry.index))
-        .filter_map(|msg| msg.tool_calls.as_ref())
-        .flat_map(|tool_calls| tool_calls.iter().map(|tc| tc.id.clone()))
+        .filter_map(|msg| msg.resolved_tool_call_correlations())
+        .flat_map(|correlations| {
+            correlations
+                .into_iter()
+                .map(|correlation| correlation.invocation_id)
+        })
         .collect();
 
     if !dropped_tool_call_ids.is_empty() {
@@ -150,12 +155,15 @@ fn remove_orphaned_tool_results(
         for entry in &snapshot.entries {
             if entry.kind == AgentMessageKind::ToolResult {
                 if let Some(msg) = messages.get(entry.index) {
-                    if let Some(ref tool_call_id) = msg.tool_call_id {
-                        if dropped_tool_call_ids.contains(tool_call_id) {
+                    if let Some(invocation_id) = msg
+                        .resolved_tool_call_correlation()
+                        .map(|correlation| correlation.invocation_id)
+                    {
+                        if dropped_tool_call_ids.contains(&invocation_id) {
                             if let Some(preserved_flag) = preserved.get_mut(entry.index) {
                                 *preserved_flag = false;
                                 warn!(
-                                    tool_call_id = %tool_call_id,
+                                    invocation_id = %invocation_id,
                                     message_index = entry.index,
                                     "Removing orphaned tool result - corresponding tool_call was compacted"
                                 );
@@ -169,8 +177,11 @@ fn remove_orphaned_tool_results(
         // Remove orphaned tool results from rebuilt vector
         rebuilt.retain(|msg| {
             if msg.kind == AgentMessageKind::ToolResult {
-                if let Some(ref tool_call_id) = msg.tool_call_id {
-                    !dropped_tool_call_ids.contains(tool_call_id)
+                if let Some(invocation_id) = msg
+                    .resolved_tool_call_correlation()
+                    .map(|correlation| correlation.invocation_id)
+                {
+                    !dropped_tool_call_ids.contains(&invocation_id)
                 } else {
                     true
                 }
@@ -272,7 +283,7 @@ mod tests {
         CompactionSnapshot, CompactionSummary,
     };
     use crate::agent::memory::AgentMessage;
-    use crate::llm::{ToolCall, ToolCallFunction};
+    use crate::llm::{ToolCall, ToolCallCorrelation, ToolCallFunction};
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
@@ -504,5 +515,88 @@ mod tests {
         assert_eq!(preserved, vec![false, false, true]);
         assert_eq!(rebuilt.len(), 1);
         assert_eq!(rebuilt[0].content, "Recent request");
+    }
+
+    #[test]
+    fn remove_orphaned_tool_results_matches_on_invocation_id_not_raw_wire_id() {
+        let correlation =
+            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1");
+        let messages = vec![
+            AgentMessage {
+                kind: AgentMessageKind::AssistantToolCall,
+                role: crate::agent::memory::MessageRole::Assistant,
+                content: "Calling tools".to_string(),
+                reasoning: None,
+                tool_call_id: None,
+                tool_call_correlation: None,
+                tool_name: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "provider-a".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    is_recovered: false,
+                }]),
+                tool_call_correlations: Some(vec![correlation.clone()]),
+                externalized_payload: None,
+                pruned_artifact: None,
+                structured_summary: None,
+                archive_ref: None,
+            },
+            AgentMessage {
+                kind: AgentMessageKind::ToolResult,
+                role: crate::agent::memory::MessageRole::Tool,
+                content: "result".to_string(),
+                reasoning: None,
+                tool_call_id: Some("provider-b".to_string()),
+                tool_call_correlation: Some(correlation),
+                tool_name: Some("search".to_string()),
+                tool_calls: None,
+                tool_call_correlations: None,
+                externalized_payload: None,
+                pruned_artifact: None,
+                structured_summary: None,
+                archive_ref: None,
+            },
+        ];
+        let snapshot = CompactionSnapshot {
+            entries: vec![
+                ClassifiedMemoryEntry {
+                    index: 0,
+                    kind: AgentMessageKind::AssistantToolCall,
+                    retention: CompactionRetention::CompactableHistory,
+                    estimated_tokens: 10,
+                    content_chars: messages[0].content.len(),
+                    has_reasoning: false,
+                    tool_name: None,
+                    is_externalized: false,
+                    archive_ref: None,
+                    is_pruned: false,
+                    preserve_in_raw_window: false,
+                },
+                ClassifiedMemoryEntry {
+                    index: 1,
+                    kind: AgentMessageKind::ToolResult,
+                    retention: CompactionRetention::PrunableArtifact,
+                    estimated_tokens: 10,
+                    content_chars: messages[1].content.len(),
+                    has_reasoning: false,
+                    tool_name: Some("search".to_string()),
+                    is_externalized: false,
+                    archive_ref: None,
+                    is_pruned: false,
+                    preserve_in_raw_window: true,
+                },
+            ],
+            ..CompactionSnapshot::default()
+        };
+        let mut preserved = vec![false, true];
+        let mut rebuilt = vec![messages[1].clone()];
+
+        remove_orphaned_tool_results(&snapshot, &messages, &mut preserved, &mut rebuilt);
+
+        assert_eq!(preserved, vec![false, false]);
+        assert!(rebuilt.is_empty());
     }
 }
