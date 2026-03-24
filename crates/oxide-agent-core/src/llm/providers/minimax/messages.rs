@@ -7,9 +7,14 @@ use claudius::{
 use serde_json::Value;
 
 use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
 use crate::llm::{Message, ToolProtocol, ToolTransport};
 
 const MINIMAX_TOOL_ADAPTER: ProviderToolCallAdapter = ProviderToolCallAdapter::new(
+    ToolProtocol::AnthropicClientTools,
+    ToolTransport::ClientRoundTrip,
+);
+const MINIMAX_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = ProviderToolResultEncoder::new(
     ToolProtocol::AnthropicClientTools,
     ToolTransport::ClientRoundTrip,
 );
@@ -70,25 +75,64 @@ fn build_message_content(msg: &Message) -> MessageParamContent {
             // Wrap in Array variant
             MessageParamContent::Array(content_blocks)
         }
-        "tool" => {
-            // Tool result as content block
-            MessageParamContent::Array(vec![ContentBlock::ToolResult(ToolResultBlock {
-                tool_use_id: MINIMAX_TOOL_ADAPTER
-                    .tool_result_call_id(msg)
-                    .unwrap_or_default(),
-                content: Some(msg.content.clone().into()),
-                is_error: None,
-                cache_control: None,
-            })])
-        }
+        "tool" => MessageParamContent::Array(vec![anthropic_tool_result_block(msg)]),
         _ => MessageParamContent::String(msg.content.clone()),
+    }
+}
+
+fn anthropic_tool_result_block(msg: &Message) -> ContentBlock {
+    match MINIMAX_TOOL_RESULT_ENCODER
+        .encode(msg)
+        .and_then(|result| result.into_anthropic())
+    {
+        Some(result) => ContentBlock::ToolResult(ToolResultBlock {
+            tool_use_id: result.tool_use_id,
+            content: Some(result.content.into()),
+            is_error: result.is_error,
+            cache_control: None,
+        }),
+        None => ContentBlock::ToolResult(ToolResultBlock {
+            tool_use_id: String::new(),
+            content: Some(msg.content.clone().into()),
+            is_error: None,
+            cache_control: None,
+        }),
     }
 }
 
 /// Convert a slice of messages to claudius MessageParams
 #[must_use]
 pub fn to_claudius_messages(messages: &[Message]) -> Vec<MessageParam> {
-    messages.iter().map(to_claudius_message).collect()
+    let mut params = Vec::with_capacity(messages.len());
+    let mut index = 0;
+
+    while index < messages.len() {
+        let msg = &messages[index];
+
+        if msg.role == "tool" {
+            let mut blocks = Vec::new();
+            let mut cursor = index;
+
+            while cursor < messages.len() && messages[cursor].role == "tool" {
+                blocks.push(anthropic_tool_result_block(&messages[cursor]));
+                cursor += 1;
+            }
+
+            if !blocks.is_empty() {
+                params.push(MessageParam {
+                    role: MessageRole::User,
+                    content: MessageParamContent::Array(blocks),
+                });
+                index = cursor;
+                continue;
+            }
+        }
+
+        params.push(to_claudius_message(msg));
+        index += 1;
+    }
+
+    params
 }
 
 /// Create a user message param
@@ -227,5 +271,47 @@ mod tests {
         assert!(matches!(params[0].role, MessageRole::User));
         assert!(matches!(params[1].role, MessageRole::User));
         assert!(matches!(params[2].role, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn groups_parallel_tool_results_into_one_user_message() {
+        let messages = vec![
+            Message::tool_with_correlation(
+                "invoke-1",
+                ToolCallCorrelation::new("invoke-1")
+                    .with_provider_tool_call_id("toolu_1")
+                    .with_protocol(ToolProtocol::AnthropicClientTools),
+                "get_weather",
+                "sunny",
+            ),
+            Message::tool_with_correlation(
+                "invoke-2",
+                ToolCallCorrelation::new("invoke-2")
+                    .with_provider_tool_call_id("toolu_2")
+                    .with_protocol(ToolProtocol::AnthropicClientTools),
+                "get_time",
+                "noon",
+            ),
+        ];
+
+        let params = to_claudius_messages(&messages);
+
+        assert_eq!(params.len(), 1);
+        assert!(matches!(params[0].role, MessageRole::User));
+        if let MessageParamContent::Array(blocks) = &params[0].content {
+            assert_eq!(blocks.len(), 2);
+            if let ContentBlock::ToolResult(first) = &blocks[0] {
+                assert_eq!(first.tool_use_id, "toolu_1");
+            } else {
+                panic!("Expected ToolResult content block");
+            }
+            if let ContentBlock::ToolResult(second) = &blocks[1] {
+                assert_eq!(second.tool_use_id, "toolu_2");
+            } else {
+                panic!("Expected ToolResult content block");
+            }
+        } else {
+            panic!("Expected Array content");
+        }
     }
 }

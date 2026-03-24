@@ -1,4 +1,5 @@
 use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
 use crate::llm::{Message, ToolCall, ToolDefinition, ToolProtocol, ToolTransport};
 use serde_json::Value;
 use zai_rs::model::chat_message_types::{
@@ -8,6 +9,8 @@ use zai_rs::model::tools::{Function, Tools};
 
 const ZAI_TOOL_ADAPTER: ProviderToolCallAdapter =
     ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
+const ZAI_TOOL_RESULT_ENCODER: ProviderToolResultEncoder =
+    ProviderToolResultEncoder::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
 pub(super) fn convert_to_text_messages(
     system_prompt: &str,
@@ -37,16 +40,10 @@ pub(super) fn convert_to_text_messages(
                     TextMessage::assistant_with_tools(content, tool_calls)
                 }
             }
-            "tool" => msg
-                .resolved_tool_call_correlation()
-                .map(|_| {
-                    TextMessage::tool_with_id(
-                        msg.content.clone(),
-                        ZAI_TOOL_ADAPTER
-                            .tool_result_call_id(msg)
-                            .unwrap_or_default(),
-                    )
-                })
+            "tool" => ZAI_TOOL_RESULT_ENCODER
+                .encode(msg)
+                .and_then(|result| result.into_chat_like())
+                .map(|result| TextMessage::tool_with_id(result.content, result.tool_call_id))
                 .unwrap_or_else(|| TextMessage::tool(msg.content.clone())),
             "user" => TextMessage::user(msg.content.clone()),
             _ => TextMessage::user(msg.content.clone()),

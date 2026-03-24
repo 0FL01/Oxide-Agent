@@ -2,11 +2,14 @@
 
 use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
 use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
 use crate::llm::{Message, ToolProtocol, ToolTransport};
 use serde_json::{json, Value};
 
 const MISTRAL_TOOL_ADAPTER: ProviderToolCallAdapter =
     ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
+const MISTRAL_TOOL_RESULT_ENCODER: ProviderToolResultEncoder =
+    ProviderToolResultEncoder::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
 /// Prepare structured messages for tool calling
 ///
@@ -62,19 +65,22 @@ pub fn prepare_structured_messages(
                 other_messages.push(msg_obj);
             }
             "tool" => {
-                let mut tool_msg = json!({
-                    "role": "tool",
-                    "content": msg.content
-                });
-                if let Some(tool_call_id) = MISTRAL_TOOL_ADAPTER.tool_result_call_id(msg) {
+                if let Some(result) = MISTRAL_TOOL_RESULT_ENCODER
+                    .encode(msg)
+                    .and_then(|result| result.into_chat_like())
+                {
+                    let mut tool_msg = json!({
+                        "role": "tool",
+                        "content": result.content
+                    });
                     // Transform ID to Mistral-compatible format
-                    let mistral_id = id_mapper.to_mistral(&tool_call_id);
+                    let mistral_id = id_mapper.to_mistral(&result.tool_call_id);
                     tool_msg["tool_call_id"] = json!(mistral_id);
+                    if let Some(name) = result.name {
+                        tool_msg["name"] = json!(name);
+                    }
+                    other_messages.push(tool_msg);
                 }
-                if let Some(name) = &msg.name {
-                    tool_msg["name"] = json!(name);
-                }
-                other_messages.push(tool_msg);
             }
             _ => {
                 other_messages.push(json!({
