@@ -1,6 +1,4 @@
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
-use crate::llm::providers::tool_call_encoder::ToolCallEncoder;
-use crate::llm::providers::tool_result_encoder::ToolResultEncoder;
 use crate::llm::{LlmError, Message, ToolCall, ToolDefinition};
 use serde_json::json;
 
@@ -32,8 +30,7 @@ pub(super) fn prepare_structured_messages(
                         .iter()
                         .filter_map(|tc| {
                             CHAT_LIKE_TOOL_PROFILE
-                                .tool_call_encoder
-                                .encode(tc)
+                                .encode_tool_call(tc)
                                 .and_then(|call| call.into_chat_like())
                                 .map(|call| {
                                     json!({
@@ -57,8 +54,7 @@ pub(super) fn prepare_structured_messages(
             }
             "tool" => {
                 if let Some(result) = CHAT_LIKE_TOOL_PROFILE
-                    .tool_result_encoder
-                    .encode(msg)
+                    .encode_tool_result(msg)
                     .and_then(|result| result.into_chat_like())
                 {
                     messages.push(json!({
@@ -121,15 +117,15 @@ pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall
             .unwrap_or_default();
         let wire_id = call.get("id").and_then(|value| value.as_str());
         tool_calls.push(match wire_id {
-            Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.adapter.inbound_provider_tool_call(
+            Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
                 wire_id,
                 None,
                 name.to_string(),
                 arguments,
             ),
-            None => CHAT_LIKE_TOOL_PROFILE
-                .adapter
-                .inbound_uncorrelated_tool_call(name.to_string(), arguments),
+            None => {
+                CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name.to_string(), arguments)
+            }
         });
     }
 

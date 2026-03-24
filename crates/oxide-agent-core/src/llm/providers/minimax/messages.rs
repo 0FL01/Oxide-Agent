@@ -6,8 +6,6 @@ use claudius::{
 };
 
 use crate::llm::providers::protocol_profiles::ANTHROPIC_CLIENT_TOOL_PROFILE;
-use crate::llm::providers::tool_call_encoder::ToolCallEncoder;
-use crate::llm::providers::tool_result_encoder::ToolResultEncoder;
 use crate::llm::Message;
 
 /// Convert our Message to claudius MessageParam
@@ -48,8 +46,7 @@ fn build_message_content(msg: &Message) -> MessageParamContent {
             if let Some(tool_calls) = &msg.tool_calls {
                 for tc in tool_calls {
                     if let Some(call) = ANTHROPIC_CLIENT_TOOL_PROFILE
-                        .tool_call_encoder
-                        .encode(tc)
+                        .encode_tool_call(tc)
                         .and_then(|call| call.into_anthropic())
                     {
                         content_blocks.push(ContentBlock::ToolUse(ToolUseBlock::new(
@@ -74,8 +71,7 @@ fn build_message_content(msg: &Message) -> MessageParamContent {
 
 fn anthropic_tool_result_block(msg: &Message) -> ContentBlock {
     match ANTHROPIC_CLIENT_TOOL_PROFILE
-        .tool_result_encoder
-        .encode(msg)
+        .encode_tool_result(msg)
         .and_then(|result| result.into_anthropic())
     {
         Some(result) => ContentBlock::ToolResult(ToolResultBlock {

@@ -2,8 +2,6 @@
 
 use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
-use crate::llm::providers::tool_call_encoder::ToolCallEncoder;
-use crate::llm::providers::tool_result_encoder::ToolResultEncoder;
 use crate::llm::Message;
 use serde_json::{json, Value};
 
@@ -43,8 +41,7 @@ pub fn prepare_structured_messages(
                             .iter()
                             .filter_map(|tc| {
                                 CHAT_LIKE_TOOL_PROFILE
-                                    .tool_call_encoder
-                                    .encode(tc)
+                                    .encode_tool_call(tc)
                                     .and_then(|call| call.into_chat_like())
                                     .map(|call| {
                                         // Transform ID to Mistral-compatible format
@@ -67,8 +64,7 @@ pub fn prepare_structured_messages(
             }
             "tool" => {
                 if let Some(result) = CHAT_LIKE_TOOL_PROFILE
-                    .tool_result_encoder
-                    .encode(msg)
+                    .encode_tool_result(msg)
                     .and_then(|result| result.into_chat_like())
                 {
                     let mut tool_msg = json!({
