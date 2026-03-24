@@ -1,9 +1,12 @@
 use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
 use crate::llm::{LlmError, Message, ToolCall, ToolDefinition, ToolProtocol, ToolTransport};
 use serde_json::json;
 
 const OPENROUTER_TOOL_ADAPTER: ProviderToolCallAdapter =
     ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
+const OPENROUTER_TOOL_RESULT_ENCODER: ProviderToolResultEncoder =
+    ProviderToolResultEncoder::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
 pub(super) fn prepare_structured_messages(
     system_prompt: &str,
@@ -51,11 +54,16 @@ pub(super) fn prepare_structured_messages(
                 messages.push(m);
             }
             "tool" => {
-                messages.push(json!({
-                    "role": "tool",
-                    "tool_call_id": OPENROUTER_TOOL_ADAPTER.tool_result_call_id(msg),
-                    "content": msg.content
-                }));
+                if let Some(result) = OPENROUTER_TOOL_RESULT_ENCODER
+                    .encode(msg)
+                    .and_then(|result| result.into_chat_like())
+                {
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": result.tool_call_id,
+                        "content": result.content
+                    }));
+                }
             }
             _ => {
                 messages.push(json!({
