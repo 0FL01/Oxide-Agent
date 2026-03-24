@@ -228,14 +228,14 @@ mod tests {
         let mut llm_client = LlmClient::new(&settings);
         llm_client.register_provider("mock".to_string(), Arc::new(provider));
         let narrator = Narrator::new(Arc::new(llm_client));
-        let tool_calls = vec![crate::llm::ToolCall {
-            id: "call-1".to_string(),
-            function: crate::llm::ToolCallFunction {
+        let tool_calls = vec![crate::llm::ToolCall::new(
+            "call-1".to_string(),
+            crate::llm::ToolCallFunction {
                 name: "execute_command".to_string(),
                 arguments: "{\"command\":\"ls\"}".to_string(),
             },
-            is_recovered: false,
-        }];
+            false,
+        )];
 
         let narrative = narrator
             .generate(Some("Inspect files and summarize findings"), &tool_calls)

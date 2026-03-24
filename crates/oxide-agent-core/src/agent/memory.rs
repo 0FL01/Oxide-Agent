@@ -780,14 +780,14 @@ mod tests {
     use serde_json::json;
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
-        ToolCall {
-            id: id.to_string(),
-            function: crate::llm::ToolCallFunction {
+        ToolCall::new(
+            id.to_string(),
+            crate::llm::ToolCallFunction {
                 name: name.to_string(),
                 arguments: "{}".to_string(),
             },
-            is_recovered: false,
-        }
+            false,
+        )
     }
 
     #[test]

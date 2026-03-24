@@ -277,14 +277,14 @@ mod tests {
         let mut id_mapper = ToolCallIdMapper::new();
         let history = vec![Message::assistant_with_tools(
             "I'll get the weather.",
-            vec![ToolCall {
-                id: "call_xyz".to_string(),
-                function: ToolCallFunction {
+            vec![ToolCall::new(
+                "call_xyz".to_string(),
+                ToolCallFunction {
                     name: "get_weather".to_string(),
                     arguments: "{\"city\":\"Paris\"}".to_string(),
                 },
-                is_recovered: false,
-            }],
+                false,
+            )],
         )];
         let messages = prepare_structured_messages("You are helpful.", &history, &mut id_mapper);
 
@@ -365,6 +365,11 @@ mod tests {
 
         // Step 4: The parsed tool call should have the ORIGINAL ID, not the Mistral ID
         assert_eq!(parsed.tool_calls[0].id, original_id);
+        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), mistral_id);
+        assert_eq!(
+            parsed.tool_calls[0].correlation().provider_tool_call_id,
+            Some(mistral_id.clone().into())
+        );
 
         // Verify the mapper has the correct bidirectional mapping
         assert_eq!(id_mapper.to_mistral(original_id), mistral_id);

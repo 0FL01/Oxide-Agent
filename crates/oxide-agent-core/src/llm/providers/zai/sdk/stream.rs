@@ -1,5 +1,6 @@
 use super::map_zai_error;
-use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall, ToolCallFunction};
+use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall, ToolProtocol, ToolTransport};
 use futures_util::StreamExt;
 use serde::Serialize;
 use zai_rs::model::chat::ChatCompletion;
@@ -7,6 +8,9 @@ use zai_rs::model::chat_base_response::{ToolCallMessage, Usage};
 use zai_rs::model::chat_message_types::TextMessage;
 use zai_rs::model::traits::{Chat, ModelName};
 use zai_rs::model::StreamChatLikeExt;
+
+const ZAI_TOOL_ADAPTER: ProviderToolCallAdapter =
+    ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
 struct PendingToolCall {
     id: Option<String>,
@@ -129,11 +133,13 @@ fn finalize_tool_calls(pending: Vec<PendingToolCall>) -> Vec<ToolCall> {
             } else {
                 call.arguments
             };
-            Some(ToolCall {
-                id,
-                function: ToolCallFunction { name, arguments },
-                is_recovered: false,
-            })
+            Some(ZAI_TOOL_ADAPTER.inbound_tool_call(
+                id.as_str(),
+                Some(id.as_str()),
+                None,
+                name,
+                arguments,
+            ))
         })
         .collect()
 }

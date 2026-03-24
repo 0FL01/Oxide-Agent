@@ -494,14 +494,14 @@ mod tests {
         let mut messages = Vec::new();
         let cancellation_token = tokio_util::sync::CancellationToken::new();
 
-        let tool_call = ToolCall {
-            id: "call-1".to_string(),
-            function: ToolCallFunction {
+        let tool_call = ToolCall::new(
+            "call-1".to_string(),
+            ToolCallFunction {
                 name: "ssh_sudo_exec".to_string(),
                 arguments: r#"{"command":"journalctl -p err -n 10 --no-pager"}"#.to_string(),
             },
-            is_recovered: false,
-        };
+            false,
+        );
 
         let mut ctx = ToolExecutionContext {
             registry: &registry,
@@ -553,14 +553,14 @@ mod tests {
         })
         .to_string();
 
-        let tool_call = ToolCall {
-            id: "call-2".to_string(),
-            function: ToolCallFunction {
+        let tool_call = ToolCall::new(
+            "call-2".to_string(),
+            ToolCallFunction {
                 name: "agents_md_update".to_string(),
                 arguments,
             },
-            is_recovered: false,
-        };
+            false,
+        );
 
         let mut ctx = ToolExecutionContext {
             registry: &registry,

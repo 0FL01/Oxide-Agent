@@ -115,28 +115,28 @@ async fn manual_compaction_preserves_recent_raw_window_order_with_tool_interacti
         AgentMessage::assistant("Older response that should be compacted."),
         AgentMessage::assistant_with_tools(
             "Calling search",
-            vec![ToolCall {
-                id: "call-1".to_string(),
-                function: ToolCallFunction {
+            vec![ToolCall::new(
+                "call-1".to_string(),
+                ToolCallFunction {
                     name: "search".to_string(),
                     arguments: "{}".to_string(),
                 },
-                is_recovered: false,
-            }],
+                false,
+            )],
         ),
         AgentMessage::tool("call-1", "search", "search result 1"),
         AgentMessage::user("Recent request 1."),
         AgentMessage::assistant("Recent response 1."),
         AgentMessage::assistant_with_tools(
             "Calling read_file",
-            vec![ToolCall {
-                id: "call-2".to_string(),
-                function: ToolCallFunction {
+            vec![ToolCall::new(
+                "call-2".to_string(),
+                ToolCallFunction {
                     name: "read_file".to_string(),
                     arguments: "{}".to_string(),
                 },
-                is_recovered: false,
-            }],
+                false,
+            )],
         ),
         AgentMessage::tool("call-2", "read_file", "file result 2"),
         AgentMessage::user("Recent request 2."),

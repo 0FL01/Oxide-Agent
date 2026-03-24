@@ -6,7 +6,13 @@ use claudius::{
 };
 use serde_json::Value;
 
-use crate::llm::Message;
+use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::{Message, ToolProtocol, ToolTransport};
+
+const MINIMAX_TOOL_ADAPTER: ProviderToolCallAdapter = ProviderToolCallAdapter::new(
+    ToolProtocol::AnthropicClientTools,
+    ToolTransport::ClientRoundTrip,
+);
 
 /// Convert our Message to claudius MessageParam
 ///
@@ -49,7 +55,7 @@ fn build_message_content(msg: &Message) -> MessageParamContent {
                         .unwrap_or(Value::Object(serde_json::Map::new()));
 
                     content_blocks.push(ContentBlock::ToolUse(ToolUseBlock::new(
-                        tc.id.clone(),
+                        MINIMAX_TOOL_ADAPTER.assistant_tool_call_id(tc),
                         tc.function.name.clone(),
                         input,
                     )));
@@ -67,7 +73,9 @@ fn build_message_content(msg: &Message) -> MessageParamContent {
         "tool" => {
             // Tool result as content block
             MessageParamContent::Array(vec![ContentBlock::ToolResult(ToolResultBlock {
-                tool_use_id: msg.tool_call_id.clone().unwrap_or_default(),
+                tool_use_id: MINIMAX_TOOL_ADAPTER
+                    .tool_result_call_id(msg)
+                    .unwrap_or_default(),
                 content: Some(msg.content.clone().into()),
                 is_error: None,
                 cache_control: None,
@@ -95,7 +103,7 @@ pub fn new_user_message(content: &str) -> MessageParam {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{ToolCall, ToolCallFunction};
+    use crate::llm::{ToolCall, ToolCallCorrelation, ToolCallFunction};
 
     #[test]
     fn converts_user_message() {
@@ -132,14 +140,18 @@ mod tests {
     fn converts_assistant_message_with_tool_calls() {
         let msg = Message::assistant_with_tools(
             "I'll check the weather.",
-            vec![ToolCall {
-                id: "call_abc123".to_string(),
-                function: ToolCallFunction {
+            vec![ToolCall::new(
+                "invoke-weather-1".to_string(),
+                ToolCallFunction {
                     name: "get_weather".to_string(),
                     arguments: r#"{"city":"Moscow"}"#.to_string(),
                 },
-                is_recovered: false,
-            }],
+                false,
+            )
+            .with_correlation(
+                ToolCallCorrelation::new("invoke-weather-1")
+                    .with_provider_tool_call_id("call_abc123"),
+            )],
         );
         let param = to_claudius_message(&msg);
 

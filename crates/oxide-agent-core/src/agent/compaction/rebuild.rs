@@ -286,14 +286,14 @@ mod tests {
     use crate::llm::{ToolCall, ToolCallCorrelation, ToolCallFunction};
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
-        ToolCall {
-            id: id.to_string(),
-            function: ToolCallFunction {
+        ToolCall::new(
+            id.to_string(),
+            ToolCallFunction {
                 name: name.to_string(),
                 arguments: "{}".to_string(),
             },
-            is_recovered: false,
-        }
+            false,
+        )
     }
 
     #[test]
@@ -530,14 +530,14 @@ mod tests {
                 tool_call_id: None,
                 tool_call_correlation: None,
                 tool_name: None,
-                tool_calls: Some(vec![ToolCall {
-                    id: "provider-a".to_string(),
-                    function: ToolCallFunction {
+                tool_calls: Some(vec![ToolCall::new(
+                    "provider-a".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }]),
+                    false,
+                )]),
                 tool_call_correlations: Some(vec![correlation.clone()]),
                 externalized_payload: None,
                 pruned_artifact: None,

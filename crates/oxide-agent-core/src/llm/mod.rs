@@ -202,6 +202,9 @@ pub struct ToolDefinition {
 pub struct ToolCall {
     /// Legacy/internal identifier for the tool call.
     pub id: String,
+    /// Canonical correlation metadata for provider-specific tool transports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_correlation: Option<ToolCallCorrelation>,
     /// Function to be called
     #[serde(rename = "function")]
     pub function: ToolCallFunction,
@@ -211,16 +214,47 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
+    /// Build a legacy tool call with an internal invocation id and no provider metadata.
+    #[must_use]
+    pub fn new(id: impl Into<String>, function: ToolCallFunction, is_recovered: bool) -> Self {
+        Self {
+            id: id.into(),
+            tool_call_correlation: None,
+            function,
+            is_recovered,
+        }
+    }
+
+    /// Attach explicit canonical correlation metadata to the tool call.
+    #[must_use]
+    pub fn with_correlation(mut self, tool_call_correlation: ToolCallCorrelation) -> Self {
+        self.tool_call_correlation = Some(tool_call_correlation);
+        self
+    }
+
     /// Resolve the stable runtime invocation id for this tool call.
     #[must_use]
     pub fn invocation_id(&self) -> InvocationId {
-        InvocationId::from(self.id.clone())
+        self.tool_call_correlation
+            .as_ref()
+            .map(|correlation| correlation.invocation_id.clone())
+            .unwrap_or_else(|| InvocationId::from(self.id.clone()))
     }
 
     /// Resolve the canonical correlation for this tool call using the legacy id.
     #[must_use]
     pub fn correlation(&self) -> ToolCallCorrelation {
-        ToolCallCorrelation::from_legacy_tool_call_id(self.id.clone())
+        self.tool_call_correlation
+            .clone()
+            .unwrap_or_else(|| ToolCallCorrelation::from_legacy_tool_call_id(self.id.clone()))
+    }
+
+    /// Resolve the provider-facing tool call id for outbound history.
+    #[must_use]
+    pub fn wire_tool_call_id(&self) -> &str {
+        self.tool_call_correlation
+            .as_ref()
+            .map_or_else(|| self.id.as_str(), ToolCallCorrelation::wire_tool_call_id)
     }
 }
 
@@ -1517,14 +1551,14 @@ mod tests {
     use serde_json::json;
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
-        ToolCall {
-            id: id.to_string(),
-            function: ToolCallFunction {
+        ToolCall::new(
+            id.to_string(),
+            ToolCallFunction {
                 name: name.to_string(),
                 arguments: "{}".to_string(),
             },
-            is_recovered: false,
-        }
+            false,
+        )
     }
 
     #[test]
@@ -1693,6 +1727,30 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_uses_explicit_correlation_for_runtime_and_wire_ids() {
+        let tool_call = ToolCall::new(
+            "legacy-provider-id",
+            ToolCallFunction {
+                name: "search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-1")
+                .with_provider_tool_call_id("provider-call-1")
+                .with_protocol(ToolProtocol::AnthropicClientTools),
+        );
+
+        assert_eq!(tool_call.invocation_id().as_str(), "invoke-1");
+        assert_eq!(tool_call.wire_tool_call_id(), "provider-call-1");
+        assert_eq!(
+            tool_call.correlation().protocol,
+            ToolProtocol::AnthropicClientTools
+        );
+    }
+
+    #[test]
     fn tool_message_serialization_includes_legacy_and_canonical_correlation_fields() {
         let message = Message::tool("call-1", "search", "result");
         let value = serde_json::to_value(&message).expect("message serializes");
@@ -1731,6 +1789,31 @@ mod tests {
         assert_eq!(
             value["tool_call_correlations"][0]["invocation_id"],
             json!("call-1")
+        );
+    }
+
+    #[test]
+    fn assistant_tool_batch_uses_explicit_tool_call_correlation_metadata() {
+        let correlated_tool_call = ToolCall::new(
+            "provider-id",
+            ToolCallFunction {
+                name: "search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-2")
+                .with_provider_tool_call_id("provider-call-2")
+                .with_protocol(ToolProtocol::ChatLike),
+        );
+        let message = Message::assistant_with_tools("calling tools", vec![correlated_tool_call]);
+
+        assert_eq!(
+            message.resolved_tool_call_correlations(),
+            Some(vec![ToolCallCorrelation::new("invoke-2")
+                .with_provider_tool_call_id("provider-call-2")
+                .with_protocol(ToolProtocol::ChatLike)])
         );
     }
 

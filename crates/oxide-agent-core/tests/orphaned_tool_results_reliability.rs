@@ -10,14 +10,14 @@ use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::llm::{ToolCall, ToolCallFunction};
 
 fn tool_call(id: &str, name: &str) -> ToolCall {
-    ToolCall {
-        id: id.to_string(),
-        function: ToolCallFunction {
+    ToolCall::new(
+        id.to_string(),
+        ToolCallFunction {
             name: name.to_string(),
             arguments: r#"{}"#.to_string(),
         },
-        is_recovered: false,
-    }
+        false,
+    )
 }
 
 /// Scenario 1: Multiple tool calls from single assistant message

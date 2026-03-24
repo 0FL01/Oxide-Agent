@@ -11,7 +11,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client as HttpClient;
 use serde_json::json;
 
-use helpers::{prepare_structured_messages, prepare_tools_json};
+use helpers::{parse_tool_calls, prepare_structured_messages, prepare_tools_json};
 
 /// LLM provider implementation for `OpenRouter`
 pub struct OpenRouterProvider {
@@ -289,8 +289,7 @@ impl LlmProvider for OpenRouterProvider {
 
         let tool_calls = match tool_calls_value {
             Some(value) if value.is_null() => Vec::new(),
-            Some(value) if value.is_array() => serde_json::from_value(value.clone())
-                .map_err(|e| LlmError::JsonError(e.to_string()))?,
+            Some(value) if value.is_array() => parse_tool_calls(value)?,
             Some(_) => {
                 return Err(LlmError::JsonError(
                     "Invalid tool_calls format from OpenRouter".to_string(),

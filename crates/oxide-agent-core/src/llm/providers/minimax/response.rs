@@ -2,7 +2,13 @@
 
 use claudius::{ContentBlock, ThinkingBlock};
 
-use crate::llm::{ChatResponse, TokenUsage, ToolCall, ToolCallFunction};
+use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::{ChatResponse, TokenUsage, ToolCall, ToolProtocol, ToolTransport};
+
+const MINIMAX_TOOL_ADAPTER: ProviderToolCallAdapter = ProviderToolCallAdapter::new(
+    ToolProtocol::AnthropicClientTools,
+    ToolTransport::ClientRoundTrip,
+);
 
 /// Convert claudius Message to our ChatResponse
 ///
@@ -22,14 +28,14 @@ pub fn from_claudius_message(msg: claudius::Message) -> Result<ChatResponse, cra
                 }
             }
             ContentBlock::ToolUse(tool_use) => {
-                tool_calls.push(ToolCall {
-                    id: tool_use.id,
-                    function: ToolCallFunction {
-                        name: tool_use.name,
-                        arguments: serde_json::to_string(&tool_use.input).unwrap_or_default(),
-                    },
-                    is_recovered: false,
-                });
+                let wire_id = tool_use.id;
+                tool_calls.push(MINIMAX_TOOL_ADAPTER.inbound_tool_call(
+                    wire_id.as_str(),
+                    Some(wire_id.as_str()),
+                    None,
+                    tool_use.name,
+                    serde_json::to_string(&tool_use.input).unwrap_or_default(),
+                ));
             }
             ContentBlock::Thinking(thinking) => {
                 // Extended thinking content
@@ -130,6 +136,7 @@ mod tests {
         assert!(response.content.is_none());
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].id, "call_abc");
+        assert_eq!(response.tool_calls[0].wire_tool_call_id(), "call_abc");
         assert_eq!(response.tool_calls[0].function.name, "get_weather");
         assert_eq!(response.finish_reason, "tool_calls");
     }
