@@ -1,6 +1,9 @@
 name: Docker Build & Push
 
 on:
+  push:
+    branches:
+      - testing
   workflow_dispatch:
 
 env:
