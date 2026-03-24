@@ -1231,6 +1231,8 @@ async fn process_llm_request(
             tool_call_id: None,
             name: None,
             tool_calls: None,
+            tool_call_correlation: None,
+            tool_call_correlations: None,
         })
         .collect();
 
