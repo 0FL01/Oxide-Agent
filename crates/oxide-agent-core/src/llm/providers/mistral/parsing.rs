@@ -49,7 +49,7 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
                 .unwrap_or_default();
 
             Some(if has_known_mapping {
-                CHAT_LIKE_TOOL_PROFILE.adapter.inbound_tool_call(
+                CHAT_LIKE_TOOL_PROFILE.inbound_tool_call(
                     original_id,
                     Some(&mistral_id),
                     None,
@@ -57,7 +57,7 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
                     arguments,
                 )
             } else {
-                CHAT_LIKE_TOOL_PROFILE.adapter.inbound_provider_tool_call(
+                CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
                     &mistral_id,
                     None,
                     name,

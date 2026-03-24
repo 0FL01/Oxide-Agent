@@ -24,16 +24,12 @@ pub fn from_claudius_message(msg: claudius::Message) -> Result<ChatResponse, cra
             }
             ContentBlock::ToolUse(tool_use) => {
                 let wire_id = tool_use.id;
-                tool_calls.push(
-                    ANTHROPIC_CLIENT_TOOL_PROFILE
-                        .adapter
-                        .inbound_provider_tool_call(
-                            wire_id.as_str(),
-                            None,
-                            tool_use.name,
-                            serde_json::to_string(&tool_use.input).unwrap_or_default(),
-                        ),
-                );
+                tool_calls.push(ANTHROPIC_CLIENT_TOOL_PROFILE.inbound_provider_tool_call(
+                    wire_id.as_str(),
+                    None,
+                    tool_use.name,
+                    serde_json::to_string(&tool_use.input).unwrap_or_default(),
+                ));
             }
             ContentBlock::Thinking(thinking) => {
                 // Extended thinking content
