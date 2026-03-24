@@ -429,6 +429,9 @@ impl AgentExecutor {
         self.register_mcp_providers(&mut registry);
         self.register_search_provider(&mut registry);
 
+        // Optional TTS provider (requires KOKORO_TTS_URL and accessible server)
+        self.register_tts_provider(&mut registry, progress_tx);
+
         registry
     }
 
@@ -461,14 +464,6 @@ impl AgentExecutor {
             sandbox_scope,
             self.settings.clone(),
         )));
-
-        // Kokoro TTS provider for voice synthesis
-        let kokoro_provider = if let Some(tx) = progress_tx {
-            KokoroTtsProvider::from_env().with_progress_tx(tx.clone())
-        } else {
-            KokoroTtsProvider::from_env()
-        };
-        registry.register(Box::new(kokoro_provider));
     }
 
     fn register_topic_providers(&self, registry: &mut ToolRegistry) {
@@ -590,6 +585,57 @@ impl AgentExecutor {
             }
             _ => unreachable!(), // get_search_provider() guarantees valid value
         }
+    }
+
+    fn register_tts_provider(
+        &self,
+        registry: &mut ToolRegistry,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
+        use crate::agent::providers::tts::KokoroClient;
+
+        // Check if KOKORO_TTS_URL is configured
+        let tts_url = match std::env::var("KOKORO_TTS_URL") {
+            Ok(url) if !url.is_empty() => url,
+            _ => {
+                tracing::debug!("TTS provider disabled: KOKORO_TTS_URL not configured");
+                return;
+            }
+        };
+
+        // Create client and check server availability
+        let config = crate::agent::providers::tts::TtsConfig {
+            base_url: tts_url.clone(),
+            default_voice: crate::agent::providers::tts::TtsVoice::default(),
+            default_format: crate::agent::providers::tts::TtsFormat::default(),
+            timeout_secs: 5, // Short timeout for health check
+        };
+
+        let client = KokoroClient::new(config);
+        let rt = tokio::runtime::Handle::current();
+
+        // Check if server is reachable (blocking check in sync context)
+        let is_healthy = rt.block_on(client.health_check());
+
+        if !is_healthy {
+            tracing::warn!(
+                url = %tts_url,
+                "TTS provider disabled: server unreachable at {}. \
+                 Set KOKORO_TTS_URL to a reachable Kokoro TTS server or remove the env var to disable.",
+                tts_url
+            );
+            return;
+        }
+
+        // Register the TTS provider
+        let provider = if let Some(tx) = progress_tx {
+            KokoroTtsProvider::from_env().with_progress_tx(tx.clone())
+        } else {
+            KokoroTtsProvider::from_env()
+        };
+
+        registry.register(Box::new(provider));
+        tracing::info!(url = %tts_url, "TTS provider registered");
     }
 
     async fn run_execution(
