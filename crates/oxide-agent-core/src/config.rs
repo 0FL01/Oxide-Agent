@@ -80,6 +80,9 @@ pub struct AgentSettings {
     /// Crawl4AI request timeout (seconds)
     pub crawl4ai_timeout_secs: Option<u64>,
 
+    /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
+    pub kokoro_tts_url: Option<String>,
+
     /// Web search provider: "tavily" or "crawl4ai"
     pub search_provider: Option<String>,
 

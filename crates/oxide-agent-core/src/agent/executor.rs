@@ -16,9 +16,10 @@ use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
     inject_approval_credentials, AgentsMdProvider, DelegationProvider, FileHosterProvider,
-    ManagerControlPlaneProvider, ManagerTopicLifecycle, ReminderContext, ReminderProvider,
-    SandboxProvider, SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
-    TodoList, TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
+    KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle, ReminderContext,
+    ReminderProvider, SandboxProvider, SshApprovalGrant, SshApprovalRegistry,
+    SshApprovalRequestView, SshMcpProvider, TodoList, TodosProvider, TopicInfraPreflightReport,
+    YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -460,6 +461,14 @@ impl AgentExecutor {
             sandbox_scope,
             self.settings.clone(),
         )));
+
+        // Kokoro TTS provider for voice synthesis
+        let kokoro_provider = if let Some(tx) = progress_tx {
+            KokoroTtsProvider::from_env().with_progress_tx(tx.clone())
+        } else {
+            KokoroTtsProvider::from_env()
+        };
+        registry.register(Box::new(kokoro_provider));
     }
 
     fn register_topic_providers(&self, registry: &mut ToolRegistry) {

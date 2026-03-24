@@ -11,6 +11,7 @@ pub mod reminder;
 pub mod sandbox;
 pub mod ssh_mcp;
 pub mod todos;
+pub mod tts;
 pub mod ytdlp;
 
 mod path;
@@ -45,6 +46,7 @@ pub use ssh_mcp::{
     TopicInfraPreflightReport,
 };
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
+pub use tts::{KokoroTtsProvider, TtsConfig, TtsVoice};
 pub use ytdlp::YtdlpProvider;
 
 #[cfg(feature = "tavily")]
