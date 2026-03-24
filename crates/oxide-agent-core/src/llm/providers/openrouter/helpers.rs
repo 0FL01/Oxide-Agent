@@ -1,10 +1,12 @@
 use crate::llm::providers::protocol_profiles::{
-    CHAT_LIKE_TOOL_ADAPTER, CHAT_LIKE_TOOL_RESULT_ENCODER,
+    CHAT_LIKE_TOOL_ADAPTER, CHAT_LIKE_TOOL_CALL_ENCODER, CHAT_LIKE_TOOL_RESULT_ENCODER,
 };
+use crate::llm::providers::tool_call_encoder::{ProviderToolCallEncoder, ToolCallEncoder};
 use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
 use crate::llm::{LlmError, Message, ToolCall, ToolDefinition};
 use serde_json::json;
 
+const OPENROUTER_TOOL_CALL_ENCODER: ProviderToolCallEncoder = CHAT_LIKE_TOOL_CALL_ENCODER;
 const OPENROUTER_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = CHAT_LIKE_TOOL_RESULT_ENCODER;
 
 pub(super) fn prepare_structured_messages(
@@ -33,15 +35,20 @@ pub(super) fn prepare_structured_messages(
                 if let Some(tool_calls) = &msg.tool_calls {
                     let api_tool_calls: Vec<serde_json::Value> = tool_calls
                         .iter()
-                        .map(|tc| {
-                            json!({
-                                "id": CHAT_LIKE_TOOL_ADAPTER.assistant_tool_call_id(tc),
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments
-                                }
-                            })
+                        .filter_map(|tc| {
+                            OPENROUTER_TOOL_CALL_ENCODER
+                                .encode(tc)
+                                .and_then(|call| call.into_chat_like())
+                                .map(|call| {
+                                    json!({
+                                        "id": call.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": call.name,
+                                            "arguments": call.arguments
+                                        }
+                                    })
+                                })
                         })
                         .collect();
 

@@ -2,12 +2,14 @@
 
 use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
 use crate::llm::providers::protocol_profiles::{
-    CHAT_LIKE_TOOL_ADAPTER, CHAT_LIKE_TOOL_RESULT_ENCODER,
+    CHAT_LIKE_TOOL_CALL_ENCODER, CHAT_LIKE_TOOL_RESULT_ENCODER,
 };
+use crate::llm::providers::tool_call_encoder::{ProviderToolCallEncoder, ToolCallEncoder};
 use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
 use crate::llm::Message;
 use serde_json::{json, Value};
 
+const MISTRAL_TOOL_CALL_ENCODER: ProviderToolCallEncoder = CHAT_LIKE_TOOL_CALL_ENCODER;
 const MISTRAL_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = CHAT_LIKE_TOOL_RESULT_ENCODER;
 
 /// Prepare structured messages for tool calling
@@ -44,18 +46,22 @@ pub fn prepare_structured_messages(
                     if !calls.is_empty() {
                         let mistral_tool_calls: Vec<Value> = calls
                             .iter()
-                            .map(|tc| {
-                                // Transform ID to Mistral-compatible format
-                                let mistral_id = id_mapper
-                                    .to_mistral(&CHAT_LIKE_TOOL_ADAPTER.assistant_tool_call_id(tc));
-                                json!({
-                                    "id": mistral_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments
-                                    }
-                                })
+                            .filter_map(|tc| {
+                                MISTRAL_TOOL_CALL_ENCODER
+                                    .encode(tc)
+                                    .and_then(|call| call.into_chat_like())
+                                    .map(|call| {
+                                        // Transform ID to Mistral-compatible format
+                                        let mistral_id = id_mapper.to_mistral(&call.id);
+                                        json!({
+                                            "id": mistral_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": call.name,
+                                                "arguments": call.arguments
+                                            }
+                                        })
+                                    })
                             })
                             .collect();
                         msg_obj["tool_calls"] = json!(mistral_tool_calls);

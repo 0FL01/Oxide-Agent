@@ -1,6 +1,7 @@
 use crate::llm::providers::protocol_profiles::{
-    CHAT_LIKE_TOOL_ADAPTER, CHAT_LIKE_TOOL_RESULT_ENCODER,
+    CHAT_LIKE_TOOL_CALL_ENCODER, CHAT_LIKE_TOOL_RESULT_ENCODER,
 };
+use crate::llm::providers::tool_call_encoder::{ProviderToolCallEncoder, ToolCallEncoder};
 use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
 use crate::llm::{Message, ToolCall, ToolDefinition};
 use serde_json::Value;
@@ -9,6 +10,7 @@ use zai_rs::model::chat_message_types::{
 };
 use zai_rs::model::tools::{Function, Tools};
 
+const ZAI_TOOL_CALL_ENCODER: ProviderToolCallEncoder = CHAT_LIKE_TOOL_CALL_ENCODER;
 const ZAI_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = CHAT_LIKE_TOOL_RESULT_ENCODER;
 
 pub(super) fn convert_to_text_messages(
@@ -130,10 +132,14 @@ pub(super) fn extract_text_content(content: Option<Value>) -> Option<String> {
 fn convert_assistant_tool_calls(tool_calls: &[ToolCall]) -> Vec<ZaiToolCall> {
     tool_calls
         .iter()
-        .map(|call| {
-            let params =
-                FunctionParams::new(call.function.name.clone(), call.function.arguments.clone());
-            ZaiToolCall::new_function(CHAT_LIKE_TOOL_ADAPTER.assistant_tool_call_id(call), params)
+        .filter_map(|call| {
+            ZAI_TOOL_CALL_ENCODER
+                .encode(call)
+                .and_then(|call| call.into_chat_like())
+                .map(|call| {
+                    let params = FunctionParams::new(call.name, call.arguments);
+                    ZaiToolCall::new_function(call.id, params)
+                })
         })
         .collect()
 }
