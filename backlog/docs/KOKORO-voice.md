@@ -37,7 +37,8 @@ Best for real-time playback while audio is being generated.
 **Note:** `format` parameter is only available on `/v1/audio/speech`. For `/v1/audio/speech/stream`, format is always PCM.
 
 ## Available Voices
-- `af_bella` (default)
+- `af_heart` (default)
+- `af_bella`
 - `af_aoede`
 - `af_alloy`
 
