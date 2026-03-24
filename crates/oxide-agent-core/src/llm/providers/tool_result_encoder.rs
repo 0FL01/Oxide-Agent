@@ -5,6 +5,8 @@ use crate::llm::{Message, ToolCallCorrelation, ToolProtocol, ToolTransport};
 pub enum EncodedToolResult {
     /// Chat-like `role=tool` message payload.
     ChatLike(ChatLikeToolResult),
+    /// Responses-style `function_call_output` item payload.
+    ResponsesLike(ResponsesLikeToolResult),
     /// Anthropic-compatible `tool_result` content block payload.
     Anthropic(AnthropicToolResult),
 }
@@ -15,6 +17,7 @@ impl EncodedToolResult {
     pub fn into_chat_like(self) -> Option<ChatLikeToolResult> {
         match self {
             Self::ChatLike(result) => Some(result),
+            Self::ResponsesLike(_) => None,
             Self::Anthropic(_) => None,
         }
     }
@@ -24,7 +27,17 @@ impl EncodedToolResult {
     pub fn into_anthropic(self) -> Option<AnthropicToolResult> {
         match self {
             Self::Anthropic(result) => Some(result),
+            Self::ResponsesLike(_) | Self::ChatLike(_) => None,
+        }
+    }
+
+    /// Extract the Responses-style envelope when available.
+    #[must_use]
+    pub fn into_responses_like(self) -> Option<ResponsesLikeToolResult> {
+        match self {
+            Self::ResponsesLike(result) => Some(result),
             Self::ChatLike(_) => None,
+            Self::Anthropic(_) => None,
         }
     }
 }
@@ -38,6 +51,17 @@ pub struct ChatLikeToolResult {
     pub name: Option<String>,
     /// Tool output payload serialized as a string.
     pub content: String,
+}
+
+/// Responses-compatible outbound tool result item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponsesLikeToolResult {
+    /// Optional provider item id for APIs that separate item and call ids.
+    pub item_id: Option<String>,
+    /// Opaque provider call id echoed back on the wire.
+    pub call_id: String,
+    /// Tool output payload serialized as a string.
+    pub output: String,
 }
 
 /// Anthropic-compatible outbound tool result block.
@@ -107,6 +131,16 @@ impl ToolResultEncoder for ProviderToolResultEncoder {
                 name: message.name.clone(),
                 content: message.content.clone(),
             })),
+            ToolProtocol::ResponsesLike => {
+                Some(EncodedToolResult::ResponsesLike(ResponsesLikeToolResult {
+                    item_id: correlation
+                        .provider_item_id
+                        .as_ref()
+                        .map(|item_id| item_id.as_str().to_string()),
+                    call_id: wire_id,
+                    output: message.content.clone(),
+                }))
+            }
             ToolProtocol::AnthropicClientTools => {
                 Some(EncodedToolResult::Anthropic(AnthropicToolResult {
                     tool_use_id: wire_id,
@@ -114,9 +148,7 @@ impl ToolResultEncoder for ProviderToolResultEncoder {
                     is_error: None,
                 }))
             }
-            ToolProtocol::ResponsesLike
-            | ToolProtocol::AnthropicServerTools
-            | ToolProtocol::GeminiNative => None,
+            ToolProtocol::AnthropicServerTools | ToolProtocol::GeminiNative => None,
         }
     }
 }
@@ -172,6 +204,34 @@ mod tests {
                 tool_use_id: "toolu_2".to_string(),
                 content: "done".to_string(),
                 is_error: None,
+            })
+        );
+    }
+
+    #[test]
+    fn responses_encoder_preserves_provider_item_and_call_ids() {
+        let encoder = ProviderToolResultEncoder::new(
+            ToolProtocol::ResponsesLike,
+            ToolTransport::ClientRoundTrip,
+        );
+        let message = Message::tool_with_correlation(
+            "invoke-3",
+            ToolCallCorrelation::new("invoke-3")
+                .with_provider_tool_call_id("call-3")
+                .with_provider_item_id("item-3")
+                .with_protocol(ToolProtocol::ResponsesLike),
+            "search",
+            "done",
+        );
+
+        let encoded = encoder.encode(&message).expect("tool result encodes");
+
+        assert_eq!(
+            encoded.into_responses_like(),
+            Some(super::ResponsesLikeToolResult {
+                item_id: Some("item-3".to_string()),
+                call_id: "call-3".to_string(),
+                output: "done".to_string(),
             })
         );
     }

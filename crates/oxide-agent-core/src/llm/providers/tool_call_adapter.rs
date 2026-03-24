@@ -167,6 +167,31 @@ mod tests {
     }
 
     #[test]
+    fn adapter_preserves_optional_provider_item_ids() {
+        let adapter = ProviderToolCallAdapter::new(
+            ToolProtocol::ResponsesLike,
+            crate::llm::ToolTransport::ClientRoundTrip,
+        );
+
+        let tool_call = adapter.inbound_tool_call(
+            "invoke-2b",
+            Some("provider-call-2b"),
+            Some("provider-item-2b"),
+            "search",
+            "{}",
+        );
+
+        assert_eq!(
+            tool_call.correlation().provider_item_id,
+            Some("provider-item-2b".into())
+        );
+        assert_eq!(
+            tool_call.correlation().protocol,
+            ToolProtocol::ResponsesLike
+        );
+    }
+
+    #[test]
     fn adapter_generates_fresh_invocation_ids_for_provider_generated_calls() {
         let adapter = ProviderToolCallAdapter::new(
             ToolProtocol::ChatLike,

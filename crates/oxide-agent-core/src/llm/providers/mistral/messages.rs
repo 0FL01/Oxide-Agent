@@ -1,15 +1,14 @@
 //! Message preparation utilities for Mistral API
 
 use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
-use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::providers::protocol_profiles::{
+    CHAT_LIKE_TOOL_ADAPTER, CHAT_LIKE_TOOL_RESULT_ENCODER,
+};
 use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
-use crate::llm::{Message, ToolProtocol, ToolTransport};
+use crate::llm::Message;
 use serde_json::{json, Value};
 
-const MISTRAL_TOOL_ADAPTER: ProviderToolCallAdapter =
-    ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
-const MISTRAL_TOOL_RESULT_ENCODER: ProviderToolResultEncoder =
-    ProviderToolResultEncoder::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
+const MISTRAL_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = CHAT_LIKE_TOOL_RESULT_ENCODER;
 
 /// Prepare structured messages for tool calling
 ///
@@ -48,7 +47,7 @@ pub fn prepare_structured_messages(
                             .map(|tc| {
                                 // Transform ID to Mistral-compatible format
                                 let mistral_id = id_mapper
-                                    .to_mistral(&MISTRAL_TOOL_ADAPTER.assistant_tool_call_id(tc));
+                                    .to_mistral(&CHAT_LIKE_TOOL_ADAPTER.assistant_tool_call_id(tc));
                                 json!({
                                     "id": mistral_id,
                                     "type": "function",

@@ -1,12 +1,11 @@
-use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::providers::protocol_profiles::{
+    CHAT_LIKE_TOOL_ADAPTER, CHAT_LIKE_TOOL_RESULT_ENCODER,
+};
 use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
-use crate::llm::{LlmError, Message, ToolCall, ToolDefinition, ToolProtocol, ToolTransport};
+use crate::llm::{LlmError, Message, ToolCall, ToolDefinition};
 use serde_json::json;
 
-const OPENROUTER_TOOL_ADAPTER: ProviderToolCallAdapter =
-    ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
-const OPENROUTER_TOOL_RESULT_ENCODER: ProviderToolResultEncoder =
-    ProviderToolResultEncoder::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
+const OPENROUTER_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = CHAT_LIKE_TOOL_RESULT_ENCODER;
 
 pub(super) fn prepare_structured_messages(
     system_prompt: &str,
@@ -36,7 +35,7 @@ pub(super) fn prepare_structured_messages(
                         .iter()
                         .map(|tc| {
                             json!({
-                                "id": OPENROUTER_TOOL_ADAPTER.assistant_tool_call_id(tc),
+                                "id": CHAT_LIKE_TOOL_ADAPTER.assistant_tool_call_id(tc),
                                 "type": "function",
                                 "function": {
                                     "name": tc.function.name,
@@ -118,14 +117,14 @@ pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall
             .unwrap_or_default();
         let wire_id = call.get("id").and_then(|value| value.as_str());
         tool_calls.push(match wire_id {
-            Some(wire_id) => OPENROUTER_TOOL_ADAPTER.inbound_provider_tool_call(
+            Some(wire_id) => CHAT_LIKE_TOOL_ADAPTER.inbound_provider_tool_call(
                 wire_id,
                 None,
                 name.to_string(),
                 arguments,
             ),
             None => {
-                OPENROUTER_TOOL_ADAPTER.inbound_uncorrelated_tool_call(name.to_string(), arguments)
+                CHAT_LIKE_TOOL_ADAPTER.inbound_uncorrelated_tool_call(name.to_string(), arguments)
             }
         });
     }
