@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use oxide_agent_core::llm::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage, ToolCall,
-    ToolCallFunction,
+    ToolCallCorrelation, ToolCallFunction,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -35,6 +35,23 @@ pub struct ScriptedToolCall {
     pub arguments: String,
 }
 
+impl ScriptedToolCall {
+    fn into_tool_call(self) -> ToolCall {
+        let correlation = ToolCallCorrelation::new(self.id.clone())
+            .with_provider_tool_call_id(format!("scripted-{}", self.id));
+
+        ToolCall::new(
+            self.id,
+            ToolCallFunction {
+                name: self.name,
+                arguments: self.arguments,
+            },
+            false,
+        )
+        .with_correlation(correlation)
+    }
+}
+
 impl ScriptedResponse {
     fn into_chat_response(self) -> ChatResponse {
         match self {
@@ -52,15 +69,7 @@ impl ScriptedResponse {
                 content: final_text,
                 tool_calls: tool_calls
                     .into_iter()
-                    .map(|tc| ToolCall {
-                        id: tc.id,
-                        function: ToolCallFunction {
-                            name: tc.name,
-                            arguments: tc.arguments,
-                        },
-                        is_recovered: false,
-                        tool_call_correlation: None,
-                    })
+                    .map(ScriptedToolCall::into_tool_call)
                     .collect(),
                 finish_reason: "tool_calls".to_string(),
                 reasoning_content: None,
@@ -197,5 +206,30 @@ impl LlmProvider for ScriptedLlmProvider {
         Err(LlmError::Unknown(
             "analyze_image not implemented".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ScriptedResponse, ScriptedToolCall};
+
+    #[test]
+    fn scripted_tool_calls_include_correlation_metadata() {
+        let response = ScriptedResponse::ToolCalls {
+            tool_calls: vec![ScriptedToolCall {
+                id: "call_1".to_string(),
+                name: "todos_write".to_string(),
+                arguments: r#"{"todos":[]}"#.to_string(),
+            }],
+            final_text: None,
+        }
+        .into_chat_response();
+
+        let tool_call = response.tool_calls.first().expect("tool call present");
+        let correlation = tool_call.correlation();
+
+        assert_eq!(tool_call.invocation_id().as_str(), "call_1");
+        assert_eq!(correlation.legacy_tool_call_id(), "call_1");
+        assert_eq!(correlation.wire_tool_call_id(), "scripted-call_1");
     }
 }

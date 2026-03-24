@@ -1,23 +1,30 @@
 //! Helper functions for E2E tests: response builders, polling helpers, HTTP helpers.
 
-use oxide_agent_core::llm::{ChatResponse, TokenUsage, ToolCall, ToolCallFunction};
+use oxide_agent_core::llm::{
+    ChatResponse, TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction,
+};
 use oxide_agent_transport_web::session::WebSessionManager;
 use oxide_agent_transport_web::AppState;
 use std::time::{Duration, Instant};
 
 /// Build a tool-call ChatResponse.
 pub fn tool_call_response(name: &str, arguments: serde_json::Value) -> ChatResponse {
+    let invocation_id = format!("call-{name}");
+
     ChatResponse {
         content: None,
-        tool_calls: vec![ToolCall {
-            id: format!("call-{name}"),
-            function: ToolCallFunction {
+        tool_calls: vec![ToolCall::new(
+            invocation_id.clone(),
+            ToolCallFunction {
                 name: name.to_string(),
                 arguments: arguments.to_string(),
             },
-            is_recovered: false,
-            tool_call_correlation: None,
-        }],
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new(invocation_id)
+                .with_provider_tool_call_id(format!("sequenced-{name}")),
+        )],
         finish_reason: "tool_calls".to_string(),
         reasoning_content: None,
         usage: Some(TokenUsage {
@@ -266,4 +273,22 @@ pub async fn spawn_test_server(app_state: AppState) -> (tokio::task::JoinHandle<
     });
 
     (server, base_url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_call_response;
+
+    #[test]
+    fn tool_call_response_attaches_explicit_correlation() {
+        let response = tool_call_response("reminder_schedule", serde_json::json!({"kind": "once"}));
+        let tool_call = response.tool_calls.first().expect("tool call present");
+        let correlation = tool_call.correlation();
+
+        assert_eq!(tool_call.invocation_id().as_str(), "call-reminder_schedule");
+        assert_eq!(
+            correlation.wire_tool_call_id(),
+            "sequenced-reminder_schedule"
+        );
+    }
 }
