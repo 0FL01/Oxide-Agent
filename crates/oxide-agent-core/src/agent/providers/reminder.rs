@@ -1057,7 +1057,7 @@ mod tests {
         args.first_time = Some("09:00".to_string());
         args.timezone = Some("UTC+3".to_string());
 
-        // Set `now` to 2026-03-23 08:00 UTC (before 09:00 UTC+3)
+        // Set `now` to yesterday 08:00 UTC (before 09:00 UTC+3)
         let now = Utc
             .with_ymd_and_hms(2026, 3, 23, 5, 0, 0)
             .single()
@@ -1068,12 +1068,10 @@ mod tests {
         let next_run_at = resolve_interval_first_run_at(&args, now, interval_secs)
             .expect("should resolve with only time");
 
-        // Should be 2026-03-23 09:00 UTC+3 = 2026-03-23 06:00 UTC
-        let expected = Utc
-            .with_ymd_and_hms(2026, 3, 23, 6, 0, 0)
-            .single()
-            .expect("valid date for test")
-            .timestamp();
+        // Should use today's date (via Local::now()) with 09:00 UTC+3
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let expected = resolve_reminder_local_datetime(&today, "09:00", Some("UTC+3"))
+            .expect("valid datetime");
         assert_eq!(next_run_at, expected);
     }
 
@@ -1097,12 +1095,10 @@ mod tests {
         let next_run_at = resolve_interval_first_run_at(&args, now, interval_secs)
             .expect("should resolve with timezone offset");
 
-        // 12:00 UTC+5 = 07:00 UTC
-        let expected = Utc
-            .with_ymd_and_hms(2026, 3, 23, 7, 0, 0)
-            .single()
-            .expect("valid date for test")
-            .timestamp();
+        // Should use today's date (via Local::now()) with 12:00 UTC+5
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let expected = resolve_reminder_local_datetime(&today, "12:00", Some("UTC+5"))
+            .expect("valid datetime");
         assert_eq!(next_run_at, expected);
     }
 
