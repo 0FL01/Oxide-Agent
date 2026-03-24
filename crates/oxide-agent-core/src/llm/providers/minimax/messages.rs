@@ -4,14 +4,15 @@ use claudius::{
     ContentBlock, MessageParam, MessageParamContent, MessageRole, TextBlock, ToolResultBlock,
     ToolUseBlock,
 };
-use serde_json::Value;
 
 use crate::llm::providers::protocol_profiles::{
-    ANTHROPIC_CLIENT_TOOL_ADAPTER, ANTHROPIC_CLIENT_TOOL_RESULT_ENCODER,
+    ANTHROPIC_CLIENT_TOOL_CALL_ENCODER, ANTHROPIC_CLIENT_TOOL_RESULT_ENCODER,
 };
+use crate::llm::providers::tool_call_encoder::{ProviderToolCallEncoder, ToolCallEncoder};
 use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
 use crate::llm::Message;
 
+const MINIMAX_TOOL_CALL_ENCODER: ProviderToolCallEncoder = ANTHROPIC_CLIENT_TOOL_CALL_ENCODER;
 const MINIMAX_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = ANTHROPIC_CLIENT_TOOL_RESULT_ENCODER;
 
 /// Convert our Message to claudius MessageParam
@@ -51,14 +52,14 @@ fn build_message_content(msg: &Message) -> MessageParamContent {
             // Add tool use blocks if present
             if let Some(tool_calls) = &msg.tool_calls {
                 for tc in tool_calls {
-                    let input: Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or(Value::Object(serde_json::Map::new()));
-
-                    content_blocks.push(ContentBlock::ToolUse(ToolUseBlock::new(
-                        ANTHROPIC_CLIENT_TOOL_ADAPTER.assistant_tool_call_id(tc),
-                        tc.function.name.clone(),
-                        input,
-                    )));
+                    if let Some(call) = MINIMAX_TOOL_CALL_ENCODER
+                        .encode(tc)
+                        .and_then(|call| call.into_anthropic())
+                    {
+                        content_blocks.push(ContentBlock::ToolUse(ToolUseBlock::new(
+                            call.id, call.name, call.input,
+                        )));
+                    }
                 }
             }
 
