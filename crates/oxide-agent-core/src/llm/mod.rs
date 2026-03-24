@@ -56,15 +56,21 @@ pub struct Message {
     pub role: String,
     /// Text content of the message
     pub content: String,
-    /// Tool call ID (for tool responses)
+    /// Legacy tool call id echoed by chat-like providers and persisted for compatibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Canonical correlation metadata for a tool result message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_correlation: Option<ToolCallCorrelation>,
     /// Tool name (for tool responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Tool calls made by the assistant
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// Canonical correlation metadata for assistant tool call batches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_correlations: Option<Vec<ToolCallCorrelation>>,
 }
 
 impl Message {
@@ -75,8 +81,10 @@ impl Message {
             role: "user".to_string(),
             content: content.to_string(),
             tool_call_id: None,
+            tool_call_correlation: None,
             name: None,
             tool_calls: None,
+            tool_call_correlations: None,
         }
     }
 
@@ -87,20 +95,26 @@ impl Message {
             role: "assistant".to_string(),
             content: content.to_string(),
             tool_call_id: None,
+            tool_call_correlation: None,
             name: None,
             tool_calls: None,
+            tool_call_correlations: None,
         }
     }
 
     /// Create a new assistant message with tool calls
     #[must_use]
     pub fn assistant_with_tools(content: &str, tool_calls: Vec<ToolCall>) -> Self {
+        let tool_call_correlations = (!tool_calls.is_empty())
+            .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             role: "assistant".to_string(),
             content: content.to_string(),
             tool_call_id: None,
+            tool_call_correlation: None,
             name: None,
             tool_calls: Some(tool_calls),
+            tool_call_correlations,
         }
     }
 
@@ -111,8 +125,12 @@ impl Message {
             role: "tool".to_string(),
             content: content.to_string(),
             tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_correlation: Some(ToolCallCorrelation::from_legacy_tool_call_id(
+                tool_call_id,
+            )),
             name: Some(name.to_string()),
             tool_calls: None,
+            tool_call_correlations: None,
         }
     }
 
@@ -123,8 +141,33 @@ impl Message {
             role: "system".to_string(),
             content: content.to_string(),
             tool_call_id: None,
+            tool_call_correlation: None,
             name: None,
             tool_calls: None,
+            tool_call_correlations: None,
+        }
+    }
+
+    /// Resolve the canonical correlation for a tool result message.
+    #[must_use]
+    pub fn resolved_tool_call_correlation(&self) -> Option<ToolCallCorrelation> {
+        self.tool_call_correlation.clone().or_else(|| {
+            self.tool_call_id
+                .as_deref()
+                .map(ToolCallCorrelation::from_legacy_tool_call_id)
+        })
+    }
+
+    /// Resolve canonical correlations for an assistant tool call batch.
+    #[must_use]
+    pub fn resolved_tool_call_correlations(&self) -> Option<Vec<ToolCallCorrelation>> {
+        let tool_calls = self.tool_calls.as_ref()?;
+        let derived: Vec<ToolCallCorrelation> =
+            tool_calls.iter().map(ToolCall::correlation).collect();
+
+        match &self.tool_call_correlations {
+            Some(correlations) if correlations.len() == derived.len() => Some(correlations.clone()),
+            _ => Some(derived),
         }
     }
 }
@@ -143,7 +186,7 @@ pub struct ToolDefinition {
 /// Tool call from LLM response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    /// Unique identifier for the tool call
+    /// Legacy/internal identifier for the tool call.
     pub id: String,
     /// Function to be called
     #[serde(rename = "function")]
@@ -151,6 +194,20 @@ pub struct ToolCall {
     /// Whether this tool call was recovered from a malformed LLM response
     #[serde(default)]
     pub is_recovered: bool,
+}
+
+impl ToolCall {
+    /// Resolve the stable runtime invocation id for this tool call.
+    #[must_use]
+    pub fn invocation_id(&self) -> InvocationId {
+        InvocationId::from(self.id.clone())
+    }
+
+    /// Resolve the canonical correlation for this tool call using the legacy id.
+    #[must_use]
+    pub fn correlation(&self) -> ToolCallCorrelation {
+        ToolCallCorrelation::from_legacy_tool_call_id(self.id.clone())
+    }
 }
 
 /// Stable runtime identifier for one tool invocation.
@@ -1440,6 +1497,7 @@ mod tests {
         ProviderItemId, ProviderToolCallId, ToolCall, ToolCallCorrelation, ToolCallFunction,
         ToolHistoryMode, ToolProtocol, ToolTransport,
     };
+    use serde_json::json;
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
@@ -1615,5 +1673,72 @@ mod tests {
         );
         assert_eq!(correlation.protocol, ToolProtocol::ResponsesLike);
         assert_eq!(correlation.transport, ToolTransport::ServerExecuted);
+    }
+
+    #[test]
+    fn tool_message_serialization_includes_legacy_and_canonical_correlation_fields() {
+        let message = Message::tool("call-1", "search", "result");
+        let value = serde_json::to_value(&message).expect("message serializes");
+
+        assert_eq!(value["tool_call_id"], json!("call-1"));
+        assert_eq!(
+            value["tool_call_correlation"]["invocation_id"],
+            json!("call-1")
+        );
+    }
+
+    #[test]
+    fn legacy_tool_message_resolves_correlation_from_tool_call_id() {
+        let legacy = json!({
+            "role": "tool",
+            "content": "result",
+            "tool_call_id": "call-legacy",
+            "name": "search"
+        });
+        let message: Message = serde_json::from_value(legacy).expect("message deserializes");
+
+        assert_eq!(message.tool_call_correlation, None);
+        assert_eq!(
+            message.resolved_tool_call_correlation(),
+            Some(ToolCallCorrelation::from_legacy_tool_call_id("call-legacy"))
+        );
+    }
+
+    #[test]
+    fn assistant_tool_batch_serialization_includes_correlation_vector() {
+        let message =
+            Message::assistant_with_tools("calling tools", vec![tool_call("call-1", "search")]);
+        let value = serde_json::to_value(&message).expect("message serializes");
+
+        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+        assert_eq!(
+            value["tool_call_correlations"][0]["invocation_id"],
+            json!("call-1")
+        );
+    }
+
+    #[test]
+    fn legacy_assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
+        let legacy = json!({
+            "role": "assistant",
+            "content": "calling tools",
+            "tool_calls": [{
+                "id": "call-legacy",
+                "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                },
+                "is_recovered": false
+            }]
+        });
+        let message: Message = serde_json::from_value(legacy).expect("message deserializes");
+
+        assert_eq!(message.tool_call_correlations, None);
+        assert_eq!(
+            message.resolved_tool_call_correlations(),
+            Some(vec![ToolCallCorrelation::from_legacy_tool_call_id(
+                "call-legacy"
+            )])
+        );
     }
 }

@@ -8,7 +8,7 @@ use crate::agent::compaction::{
 };
 use crate::agent::providers::TodoList;
 use crate::agent::recovery::repair_agent_message_history_runtime;
-use crate::llm::{TokenUsage, ToolCall};
+use crate::llm::{TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -27,12 +27,18 @@ pub struct AgentMessage {
     /// Optional reasoning/thinking content (for models that support it, e.g., GLM-4.7)
     /// This is counted towards token limits but not shown to user
     pub reasoning: Option<String>,
-    /// Tool call ID (for tool responses)
+    /// Legacy tool call id echoed by chat-like providers and persisted for compatibility.
     pub tool_call_id: Option<String>,
+    /// Canonical correlation metadata for a tool result message.
+    #[serde(default)]
+    pub tool_call_correlation: Option<ToolCallCorrelation>,
     /// Tool name (for tool responses)
     pub tool_name: Option<String>,
     /// Tool calls made by assistant
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// Canonical correlation metadata for assistant tool call batches.
+    #[serde(default)]
+    pub tool_call_correlations: Option<Vec<ToolCallCorrelation>>,
     /// Metadata for payloads that were externalized outside hot memory.
     #[serde(default)]
     pub externalized_payload: Option<ExternalizedPayload>,
@@ -104,8 +110,10 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -121,8 +129,10 @@ impl AgentMessage {
             content: format!("{TOPIC_AGENTS_MD_SYSTEM_PREFIX}{}", content.as_ref().trim()),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -143,8 +153,10 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -160,8 +172,10 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -177,8 +191,10 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -194,8 +210,10 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -214,8 +232,10 @@ impl AgentMessage {
             content: content.into(),
             reasoning: Some(reasoning.into()),
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -231,8 +251,12 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_correlation: Some(ToolCallCorrelation::from_legacy_tool_call_id(
+                tool_call_id,
+            )),
             tool_name: Some(name.to_string()),
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -253,8 +277,12 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_correlation: Some(ToolCallCorrelation::from_legacy_tool_call_id(
+                tool_call_id,
+            )),
             tool_name: Some(name.to_string()),
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: Some(externalized_payload),
             pruned_artifact: None,
             structured_summary: None,
@@ -276,8 +304,12 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_correlation: Some(ToolCallCorrelation::from_legacy_tool_call_id(
+                tool_call_id,
+            )),
             tool_name: Some(name.to_string()),
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload,
             pruned_artifact: Some(pruned_artifact),
             structured_summary: None,
@@ -287,14 +319,18 @@ impl AgentMessage {
 
     /// Create a new assistant message with tool calls
     pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        let tool_call_correlations = (!tool_calls.is_empty())
+            .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             kind: AgentMessageKind::AssistantToolCall,
             role: MessageRole::Assistant,
             content: content.into(),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: Some(tool_calls),
+            tool_call_correlations,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -342,8 +378,10 @@ impl AgentMessage {
             content: format_compaction_summary(&summary),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: Some(summary),
@@ -370,8 +408,10 @@ impl AgentMessage {
             content: content.into(),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -432,6 +472,29 @@ impl AgentMessage {
     #[must_use]
     pub fn archive_ref_payload(&self) -> Option<&ArchiveRef> {
         self.archive_ref.as_ref()
+    }
+
+    /// Resolve the canonical correlation for a tool result message.
+    #[must_use]
+    pub fn resolved_tool_call_correlation(&self) -> Option<ToolCallCorrelation> {
+        self.tool_call_correlation.clone().or_else(|| {
+            self.tool_call_id
+                .as_deref()
+                .map(ToolCallCorrelation::from_legacy_tool_call_id)
+        })
+    }
+
+    /// Resolve canonical correlations for an assistant tool call batch.
+    #[must_use]
+    pub fn resolved_tool_call_correlations(&self) -> Option<Vec<ToolCallCorrelation>> {
+        let tool_calls = self.tool_calls.as_ref()?;
+        let derived: Vec<ToolCallCorrelation> =
+            tool_calls.iter().map(ToolCall::correlation).collect();
+
+        match &self.tool_call_correlations {
+            Some(correlations) if correlations.len() == derived.len() => Some(correlations.clone()),
+            _ => Some(derived),
+        }
     }
 }
 
@@ -669,6 +732,7 @@ impl AgentMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
@@ -865,8 +929,10 @@ mod tests {
             content: "Done".to_string(),
             reasoning: None,
             tool_call_id: None,
+            tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -878,8 +944,10 @@ mod tests {
             content: "stdout".to_string(),
             reasoning: None,
             tool_call_id: Some("call-1".to_string()),
+            tool_call_correlation: None,
             tool_name: Some("execute_command".to_string()),
             tool_calls: None,
+            tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
             structured_summary: None,
@@ -891,6 +959,90 @@ mod tests {
             AgentMessageKind::AssistantResponse
         );
         assert_eq!(legacy_tool.resolved_kind(), AgentMessageKind::ToolResult);
+    }
+
+    #[test]
+    fn test_tool_message_serialization_includes_canonical_correlation_fields() {
+        let message = AgentMessage::tool("call-1", "execute_command", "stdout");
+        let value = serde_json::to_value(&message).expect("message serializes");
+
+        assert_eq!(value["tool_call_id"], json!("call-1"));
+        assert_eq!(
+            value["tool_call_correlation"]["invocation_id"],
+            json!("call-1")
+        );
+    }
+
+    #[test]
+    fn test_legacy_tool_message_resolves_correlation_from_tool_call_id() {
+        let legacy = json!({
+            "kind": "Legacy",
+            "role": "Tool",
+            "content": "stdout",
+            "reasoning": null,
+            "tool_call_id": "call-legacy",
+            "tool_name": "execute_command",
+            "tool_calls": null,
+            "externalized_payload": null,
+            "pruned_artifact": null,
+            "structured_summary": null,
+            "archive_ref": null
+        });
+        let message: AgentMessage = serde_json::from_value(legacy).expect("message deserializes");
+
+        assert_eq!(message.tool_call_correlation, None);
+        assert_eq!(
+            message.resolved_tool_call_correlation(),
+            Some(ToolCallCorrelation::from_legacy_tool_call_id("call-legacy"))
+        );
+    }
+
+    #[test]
+    fn test_assistant_tool_batch_serialization_includes_correlation_vector() {
+        let message = AgentMessage::assistant_with_tools(
+            "Calling tools",
+            vec![tool_call("call-1", "search")],
+        );
+        let value = serde_json::to_value(&message).expect("message serializes");
+
+        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+        assert_eq!(
+            value["tool_call_correlations"][0]["invocation_id"],
+            json!("call-1")
+        );
+    }
+
+    #[test]
+    fn test_legacy_assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
+        let legacy = json!({
+            "kind": "Legacy",
+            "role": "Assistant",
+            "content": "Calling tools",
+            "reasoning": null,
+            "tool_call_id": null,
+            "tool_name": null,
+            "tool_calls": [{
+                "id": "call-legacy",
+                "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                },
+                "is_recovered": false
+            }],
+            "externalized_payload": null,
+            "pruned_artifact": null,
+            "structured_summary": null,
+            "archive_ref": null
+        });
+        let message: AgentMessage = serde_json::from_value(legacy).expect("message deserializes");
+
+        assert_eq!(message.tool_call_correlations, None);
+        assert_eq!(
+            message.resolved_tool_call_correlations(),
+            Some(vec![ToolCallCorrelation::from_legacy_tool_call_id(
+                "call-legacy"
+            )])
+        );
     }
 
     #[test]

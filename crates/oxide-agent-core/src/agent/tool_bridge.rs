@@ -267,8 +267,10 @@ pub(crate) fn upsert_topic_agents_md_messages(messages: &mut Vec<Message>, agent
         role: "system".to_string(),
         content: format!("{TOPIC_AGENTS_MD_SYSTEM_PREFIX}{}", agents_md.trim()),
         tool_call_id: None,
+        tool_call_correlation: None,
         name: None,
         tool_calls: None,
+        tool_call_correlations: None,
     };
 
     if let Some(first_idx) = messages.iter().position(|message| {
