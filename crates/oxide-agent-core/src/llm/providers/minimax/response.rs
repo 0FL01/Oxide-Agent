@@ -2,13 +2,8 @@
 
 use claudius::{ContentBlock, ThinkingBlock};
 
-use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
-use crate::llm::{ChatResponse, TokenUsage, ToolCall, ToolProtocol, ToolTransport};
-
-const MINIMAX_TOOL_ADAPTER: ProviderToolCallAdapter = ProviderToolCallAdapter::new(
-    ToolProtocol::AnthropicClientTools,
-    ToolTransport::ClientRoundTrip,
-);
+use crate::llm::providers::protocol_profiles::ANTHROPIC_CLIENT_TOOL_ADAPTER;
+use crate::llm::{ChatResponse, TokenUsage, ToolCall};
 
 /// Convert claudius Message to our ChatResponse
 ///
@@ -29,7 +24,7 @@ pub fn from_claudius_message(msg: claudius::Message) -> Result<ChatResponse, cra
             }
             ContentBlock::ToolUse(tool_use) => {
                 let wire_id = tool_use.id;
-                tool_calls.push(MINIMAX_TOOL_ADAPTER.inbound_provider_tool_call(
+                tool_calls.push(ANTHROPIC_CLIENT_TOOL_ADAPTER.inbound_provider_tool_call(
                     wire_id.as_str(),
                     None,
                     tool_use.name,

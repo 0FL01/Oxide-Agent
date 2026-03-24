@@ -6,18 +6,13 @@ use claudius::{
 };
 use serde_json::Value;
 
-use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::providers::protocol_profiles::{
+    ANTHROPIC_CLIENT_TOOL_ADAPTER, ANTHROPIC_CLIENT_TOOL_RESULT_ENCODER,
+};
 use crate::llm::providers::tool_result_encoder::{ProviderToolResultEncoder, ToolResultEncoder};
-use crate::llm::{Message, ToolProtocol, ToolTransport};
+use crate::llm::Message;
 
-const MINIMAX_TOOL_ADAPTER: ProviderToolCallAdapter = ProviderToolCallAdapter::new(
-    ToolProtocol::AnthropicClientTools,
-    ToolTransport::ClientRoundTrip,
-);
-const MINIMAX_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = ProviderToolResultEncoder::new(
-    ToolProtocol::AnthropicClientTools,
-    ToolTransport::ClientRoundTrip,
-);
+const MINIMAX_TOOL_RESULT_ENCODER: ProviderToolResultEncoder = ANTHROPIC_CLIENT_TOOL_RESULT_ENCODER;
 
 /// Convert our Message to claudius MessageParam
 ///
@@ -60,7 +55,7 @@ fn build_message_content(msg: &Message) -> MessageParamContent {
                         .unwrap_or(Value::Object(serde_json::Map::new()));
 
                     content_blocks.push(ContentBlock::ToolUse(ToolUseBlock::new(
-                        MINIMAX_TOOL_ADAPTER.assistant_tool_call_id(tc),
+                        ANTHROPIC_CLIENT_TOOL_ADAPTER.assistant_tool_call_id(tc),
                         tc.function.name.clone(),
                         input,
                     )));
@@ -147,7 +142,7 @@ pub fn new_user_message(content: &str) -> MessageParam {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{ToolCall, ToolCallCorrelation, ToolCallFunction};
+    use crate::llm::{ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol};
 
     #[test]
     fn converts_user_message() {

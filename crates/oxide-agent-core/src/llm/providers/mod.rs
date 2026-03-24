@@ -9,6 +9,8 @@ pub mod mistral;
 #[allow(missing_docs)]
 pub mod openrouter;
 #[allow(missing_docs)]
+pub mod protocol_profiles;
+#[allow(missing_docs)]
 pub mod tool_call_adapter;
 #[allow(missing_docs)]
 pub mod tool_result_encoder;

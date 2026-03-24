@@ -1,12 +1,9 @@
 //! Response parsing utilities for Mistral API
 
 use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
-use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
-use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall, ToolProtocol, ToolTransport};
+use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_ADAPTER;
+use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall};
 use serde_json::Value;
-
-const MISTRAL_TOOL_ADAPTER: ProviderToolCallAdapter =
-    ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
 /// Parse token usage from response
 pub fn parse_usage(response: &Value) -> Option<TokenUsage> {
@@ -52,7 +49,7 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
                 .unwrap_or_default();
 
             Some(if has_known_mapping {
-                MISTRAL_TOOL_ADAPTER.inbound_tool_call(
+                CHAT_LIKE_TOOL_ADAPTER.inbound_tool_call(
                     original_id,
                     Some(&mistral_id),
                     None,
@@ -60,7 +57,12 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
                     arguments,
                 )
             } else {
-                MISTRAL_TOOL_ADAPTER.inbound_provider_tool_call(&mistral_id, None, name, arguments)
+                CHAT_LIKE_TOOL_ADAPTER.inbound_provider_tool_call(
+                    &mistral_id,
+                    None,
+                    name,
+                    arguments,
+                )
             })
         })
         .collect()
