@@ -189,14 +189,14 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::assistant_with_tools(
                 "I'll run cargo check",
-                vec![ToolCall {
-                    id: "call-1".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-1".to_string(),
+                    ToolCallFunction {
                         name: "execute_command".to_string(),
                         arguments: r#"{"command":"cargo check"}"#.to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ));
         session.memory_mut().add_message(AgentMessage::tool(
             "call-1",

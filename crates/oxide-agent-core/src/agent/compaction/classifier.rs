@@ -193,14 +193,14 @@ mod tests {
             AgentMessage::infra_status("SSH target validated"),
             AgentMessage::assistant_with_tools(
                 "Calling tools",
-                vec![ToolCall {
-                    id: "call-1".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-1".to_string(),
+                    ToolCallFunction {
                         name: "execute_command".to_string(),
                         arguments: "{\"command\":\"cargo check\"}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool("call-1", "execute_command", "stdout"),
             AgentMessage::user("Earlier user turn"),
@@ -241,28 +241,28 @@ mod tests {
             AgentMessage::assistant("assistant-1"),
             AgentMessage::assistant_with_tools(
                 "tool-call-1",
-                vec![ToolCall {
-                    id: "call-1".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-1".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool("call-1", "search", "result-1"),
             AgentMessage::user("user-2"),
             AgentMessage::assistant_with_reasoning("assistant-2", "thinking"),
             AgentMessage::assistant_with_tools(
                 "tool-call-2",
-                vec![ToolCall {
-                    id: "call-2".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-2".to_string(),
+                    ToolCallFunction {
                         name: "read_file".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool("call-2", "read_file", "result-2"),
             AgentMessage::user("user-3"),
@@ -295,62 +295,62 @@ mod tests {
         let messages = vec![
             AgentMessage::assistant_with_tools(
                 "call-1",
-                vec![ToolCall {
-                    id: "call-1".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-1".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool("call-1", "search", &"A".repeat(1_200)),
             AgentMessage::assistant_with_tools(
                 "call-2",
-                vec![ToolCall {
-                    id: "call-2".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-2".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool("call-2", "search", "short-2"),
             AgentMessage::assistant_with_tools(
                 "call-3",
-                vec![ToolCall {
-                    id: "call-3".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-3".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool("call-3", "search", "short-3"),
             AgentMessage::assistant_with_tools(
                 "call-4",
-                vec![ToolCall {
-                    id: "call-4".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-4".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool("call-4", "search", "short-4"),
             AgentMessage::assistant_with_tools(
                 "call-5",
-                vec![ToolCall {
-                    id: "call-5".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-5".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool("call-5", "search", "short-5"),
         ];
@@ -374,14 +374,14 @@ mod tests {
         let messages = vec![
             AgentMessage::assistant_with_tools(
                 "call-1",
-                vec![ToolCall {
-                    id: "call-1".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-1".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool(
                 "call-1",
@@ -393,14 +393,14 @@ mod tests {
             ),
             AgentMessage::assistant_with_tools(
                 "call-2",
-                vec![ToolCall {
-                    id: "call-2".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-2".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool(
                 "call-2",
@@ -412,14 +412,14 @@ mod tests {
             ),
             AgentMessage::assistant_with_tools(
                 "call-3",
-                vec![ToolCall {
-                    id: "call-3".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-3".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ),
             AgentMessage::tool(
                 "call-3",

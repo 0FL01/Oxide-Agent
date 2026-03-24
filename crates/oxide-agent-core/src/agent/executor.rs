@@ -829,14 +829,14 @@ impl AgentExecutor {
             &grant.request_id,
             &grant.approval_token,
         )?;
-        let tool_call = ToolCall {
-            id: replay.invocation_id.to_string(),
-            function: ToolCallFunction {
+        let tool_call = ToolCall::new(
+            replay.invocation_id.to_string(),
+            ToolCallFunction {
                 name: replay.tool_name,
                 arguments,
             },
-            is_recovered: false,
-        };
+            false,
+        );
 
         self.run_execution(&task, progress_tx, false, Some(tool_call), Some(request_id))
             .await

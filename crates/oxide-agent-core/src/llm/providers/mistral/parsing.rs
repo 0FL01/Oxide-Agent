@@ -1,8 +1,12 @@
 //! Response parsing utilities for Mistral API
 
 use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
-use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall, ToolCallFunction};
+use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall, ToolProtocol, ToolTransport};
 use serde_json::Value;
+
+const MISTRAL_TOOL_ADAPTER: ProviderToolCallAdapter =
+    ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
 /// Parse token usage from response
 pub fn parse_usage(response: &Value) -> Option<TokenUsage> {
@@ -47,11 +51,13 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
                 })
                 .unwrap_or_default();
 
-            Some(ToolCall {
+            Some(MISTRAL_TOOL_ADAPTER.inbound_tool_call(
                 id,
-                function: ToolCallFunction { name, arguments },
-                is_recovered: false,
-            })
+                Some(&mistral_id),
+                None,
+                name,
+                arguments,
+            ))
         })
         .collect()
 }

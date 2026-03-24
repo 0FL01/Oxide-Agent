@@ -529,6 +529,7 @@ pub fn sanitize_tool_calls(tool_calls: Vec<ToolCall>) -> Vec<ToolCall> {
                 sanitize_tool_call(&call.function.name, &call.function.arguments);
             ToolCall {
                 id: call.id,
+                tool_call_correlation: call.tool_call_correlation,
                 function: ToolCallFunction { name, arguments },
                 is_recovered: call.is_recovered,
             }
@@ -612,14 +613,14 @@ fn build_recovered_tool_call(tool_name: &str, arguments: Value) -> Option<ToolCa
         "Recovered malformed tool call from content"
     );
 
-    Some(ToolCall {
-        id: format!("recovered_{}", Uuid::new_v4()),
-        function: ToolCallFunction {
+    Some(ToolCall::new(
+        format!("recovered_{}", Uuid::new_v4()),
+        ToolCallFunction {
             name: tool_name.to_string(),
             arguments: arguments_str,
         },
-        is_recovered: true,
-    })
+        true,
+    ))
 }
 
 fn extract_tag_value<'a>(content: &'a str, tag: &str) -> Option<&'a str> {
@@ -813,14 +814,14 @@ mod tests {
     use std::collections::HashSet;
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
-        ToolCall {
-            id: id.to_string(),
-            function: ToolCallFunction {
+        ToolCall::new(
+            id.to_string(),
+            ToolCallFunction {
                 name: name.to_string(),
                 arguments: "{}".to_string(),
             },
-            is_recovered: false,
-        }
+            false,
+        )
     }
 
     #[test]
@@ -1308,14 +1309,14 @@ mod tests {
                 tool_call_id: None,
                 tool_call_correlation: None,
                 tool_name: None,
-                tool_calls: Some(vec![ToolCall {
-                    id: "provider-a".to_string(),
-                    function: ToolCallFunction {
+                tool_calls: Some(vec![ToolCall::new(
+                    "provider-a".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: "{}".to_string(),
                     },
-                    is_recovered: false,
-                }]),
+                    false,
+                )]),
                 tool_call_correlations: Some(vec![correlation.clone()]),
                 externalized_payload: None,
                 pruned_artifact: None,

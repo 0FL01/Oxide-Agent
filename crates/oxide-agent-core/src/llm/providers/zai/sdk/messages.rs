@@ -1,9 +1,13 @@
-use crate::llm::{Message, ToolCall, ToolDefinition};
+use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::{Message, ToolCall, ToolDefinition, ToolProtocol, ToolTransport};
 use serde_json::Value;
 use zai_rs::model::chat_message_types::{
     FunctionParams, TextMessage, ToolCall as ZaiToolCall, VisionMessage, VisionRichContent,
 };
 use zai_rs::model::tools::{Function, Tools};
+
+const ZAI_TOOL_ADAPTER: ProviderToolCallAdapter =
+    ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
 pub(super) fn convert_to_text_messages(
     system_prompt: &str,
@@ -34,9 +38,15 @@ pub(super) fn convert_to_text_messages(
                 }
             }
             "tool" => msg
-                .tool_call_id
-                .as_ref()
-                .map(|id| TextMessage::tool_with_id(msg.content.clone(), id.clone()))
+                .resolved_tool_call_correlation()
+                .map(|_| {
+                    TextMessage::tool_with_id(
+                        msg.content.clone(),
+                        ZAI_TOOL_ADAPTER
+                            .tool_result_call_id(msg)
+                            .unwrap_or_default(),
+                    )
+                })
                 .unwrap_or_else(|| TextMessage::tool(msg.content.clone())),
             "user" => TextMessage::user(msg.content.clone()),
             _ => TextMessage::user(msg.content.clone()),
@@ -127,7 +137,7 @@ fn convert_assistant_tool_calls(tool_calls: &[ToolCall]) -> Vec<ZaiToolCall> {
         .map(|call| {
             let params =
                 FunctionParams::new(call.function.name.clone(), call.function.arguments.clone());
-            ZaiToolCall::new_function(call.id.clone(), params)
+            ZaiToolCall::new_function(ZAI_TOOL_ADAPTER.assistant_tool_call_id(call), params)
         })
         .collect()
 }

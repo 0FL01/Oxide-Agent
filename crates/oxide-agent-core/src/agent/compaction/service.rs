@@ -465,14 +465,14 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::assistant_with_tools(
                 "Reading file",
-                vec![ToolCall {
-                    id: "call-1".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-1".to_string(),
+                    ToolCallFunction {
                         name: "read_file".to_string(),
                         arguments: r#"{"path":"file.txt"}"#.to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ));
         session.memory_mut().add_message(AgentMessage::tool(
             "call-1",
@@ -517,15 +517,15 @@ mod tests {
                 .memory_mut()
                 .add_message(AgentMessage::assistant_with_tools(
                     "Searching",
-                    vec![ToolCall {
-                        id: format!("call-{index}"),
-                        function: ToolCallFunction {
+                    vec![ToolCall::new(
+                        format!("call-{index}"),
+                        ToolCallFunction {
                             name: "search".to_string(),
                             arguments: serde_json::json!({"query": format!("query-{index}")})
                                 .to_string(),
                         },
-                        is_recovered: false,
-                    }],
+                        false,
+                    )],
                 ));
             session.memory_mut().add_message(AgentMessage::tool(
                 &format!("call-{index}"),
@@ -576,14 +576,14 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::assistant_with_tools(
                 "Searching before summary",
-                vec![ToolCall {
-                    id: "call-0".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "call-0".to_string(),
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: serde_json::json!({"query": "query-0"}).to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )],
             ));
         session.memory_mut().add_message(AgentMessage::tool(
             "call-0",
@@ -598,15 +598,15 @@ mod tests {
                 .memory_mut()
                 .add_message(AgentMessage::assistant_with_tools(
                     "Searching after summary",
-                    vec![ToolCall {
-                        id: format!("call-{index}"),
-                        function: ToolCallFunction {
+                    vec![ToolCall::new(
+                        format!("call-{index}"),
+                        ToolCallFunction {
                             name: "search".to_string(),
                             arguments: serde_json::json!({"query": format!("query-{index}")})
                                 .to_string(),
                         },
-                        is_recovered: false,
-                    }],
+                        false,
+                    )],
                 ));
             session.memory_mut().add_message(AgentMessage::tool(
                 &format!("call-{index}"),

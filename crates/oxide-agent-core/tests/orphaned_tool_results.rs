@@ -13,14 +13,14 @@ use oxide_agent_core::llm::{ToolCall, ToolCallFunction};
 
 /// Создает тестовый ToolCall с заданным id
 fn tool_call(id: &str, name: &str) -> ToolCall {
-    ToolCall {
-        id: id.to_string(),
-        function: ToolCallFunction {
+    ToolCall::new(
+        id.to_string(),
+        ToolCallFunction {
             name: name.to_string(),
             arguments: r#"{}"#.to_string(),
         },
-        is_recovered: false,
-    }
+        false,
+    )
 }
 
 /// Проверяет, что tool_call_id присутствует в сообщениях

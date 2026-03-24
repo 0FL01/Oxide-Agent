@@ -1,5 +1,9 @@
-use crate::llm::{Message, ToolDefinition};
+use crate::llm::providers::tool_call_adapter::ProviderToolCallAdapter;
+use crate::llm::{LlmError, Message, ToolCall, ToolDefinition, ToolProtocol, ToolTransport};
 use serde_json::json;
+
+const OPENROUTER_TOOL_ADAPTER: ProviderToolCallAdapter =
+    ProviderToolCallAdapter::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
 pub(super) fn prepare_structured_messages(
     system_prompt: &str,
@@ -29,7 +33,7 @@ pub(super) fn prepare_structured_messages(
                         .iter()
                         .map(|tc| {
                             json!({
-                                "id": tc.id,
+                                "id": OPENROUTER_TOOL_ADAPTER.assistant_tool_call_id(tc),
                                 "type": "function",
                                 "function": {
                                     "name": tc.function.name,
@@ -49,7 +53,7 @@ pub(super) fn prepare_structured_messages(
             "tool" => {
                 messages.push(json!({
                     "role": "tool",
-                    "tool_call_id": msg.tool_call_id,
+                    "tool_call_id": OPENROUTER_TOOL_ADAPTER.tool_result_call_id(msg),
                     "content": msg.content
                 }));
             }
@@ -80,10 +84,48 @@ pub(super) fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<serde_json::Va
         .collect()
 }
 
+pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall>, LlmError> {
+    let Some(array) = value.as_array() else {
+        return Err(LlmError::JsonError(
+            "Invalid tool_calls format from OpenRouter".to_string(),
+        ));
+    };
+
+    let mut tool_calls = Vec::with_capacity(array.len());
+    for call in array {
+        let Some(function) = call.get("function") else {
+            continue;
+        };
+        let Some(name) = function.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let arguments = function
+            .get("arguments")
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .map(ToString::to_string)
+                    .or_else(|| serde_json::to_string(value).ok())
+            })
+            .unwrap_or_default();
+        let wire_id = call.get("id").and_then(|value| value.as_str());
+        let invocation_id = wire_id.unwrap_or(name);
+        tool_calls.push(OPENROUTER_TOOL_ADAPTER.inbound_tool_call(
+            invocation_id,
+            wire_id,
+            None,
+            name.to_string(),
+            arguments,
+        ));
+    }
+
+    Ok(tool_calls)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::prepare_structured_messages;
-    use crate::llm::{Message, ToolCall, ToolCallFunction};
+    use super::{parse_tool_calls, prepare_structured_messages};
+    use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
     use serde_json::json;
 
     #[test]
@@ -91,16 +133,26 @@ mod tests {
         let history = vec![
             Message::assistant_with_tools(
                 "Calling tools",
-                vec![ToolCall {
-                    id: "call-openrouter-1".to_string(),
-                    function: ToolCallFunction {
+                vec![ToolCall::new(
+                    "invoke-openrouter-1",
+                    ToolCallFunction {
                         name: "search".to_string(),
                         arguments: r#"{"query":"oxide"}"#.to_string(),
                     },
-                    is_recovered: false,
-                }],
+                    false,
+                )
+                .with_correlation(
+                    ToolCallCorrelation::new("invoke-openrouter-1")
+                        .with_provider_tool_call_id("call-openrouter-1"),
+                )],
             ),
-            Message::tool("call-openrouter-1", "search", "result"),
+            Message::tool_with_correlation(
+                "invoke-openrouter-1",
+                ToolCallCorrelation::new("invoke-openrouter-1")
+                    .with_provider_tool_call_id("call-openrouter-1"),
+                "search",
+                "result",
+            ),
         ];
 
         let messages = prepare_structured_messages("system", &history);
@@ -110,5 +162,23 @@ mod tests {
             json!("call-openrouter-1")
         );
         assert_eq!(messages[2]["tool_call_id"], json!("call-openrouter-1"));
+    }
+
+    #[test]
+    fn parse_tool_calls_attaches_openrouter_wire_ids() {
+        let tool_calls = parse_tool_calls(&json!([
+            {
+                "id": "call-openrouter-2",
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "arguments": "{\"query\":\"oxide\"}"
+                }
+            }
+        ]))
+        .expect("tool calls parse");
+
+        assert_eq!(tool_calls[0].invocation_id().as_str(), "call-openrouter-2");
+        assert_eq!(tool_calls[0].wire_tool_call_id(), "call-openrouter-2");
     }
 }

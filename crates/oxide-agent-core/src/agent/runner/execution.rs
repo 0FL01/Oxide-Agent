@@ -1517,22 +1517,22 @@ mod tests {
             .add_message(AgentMessage::assistant_with_tools(
                 "Calling tools",
                 vec![
-                    ToolCall {
-                        id: "call-1".to_string(),
-                        function: ToolCallFunction {
+                    ToolCall::new(
+                        "call-1".to_string(),
+                        ToolCallFunction {
                             name: "search".to_string(),
                             arguments: "{}".to_string(),
                         },
-                        is_recovered: false,
-                    },
-                    ToolCall {
-                        id: "call-2".to_string(),
-                        function: ToolCallFunction {
+                        false,
+                    ),
+                    ToolCall::new(
+                        "call-2".to_string(),
+                        ToolCallFunction {
                             name: "read_file".to_string(),
                             arguments: "{}".to_string(),
                         },
-                        is_recovered: false,
-                    },
+                        false,
+                    ),
                 ],
             ));
         session
@@ -2331,14 +2331,14 @@ mod tests {
             .return_once(|_| {
                 Ok(ChatResponse {
                     content: Some(String::new()),
-                    tool_calls: vec![ToolCall {
-                        id: "call-1".to_string(),
-                        function: ToolCallFunction {
+                    tool_calls: vec![ToolCall::new(
+                        "call-1".to_string(),
+                        ToolCallFunction {
                             name: "fake_large_tool".to_string(),
                             arguments: "{}".to_string(),
                         },
-                        is_recovered: false,
-                    }],
+                        false,
+                    )],
                     finish_reason: "tool_calls".to_string(),
                     reasoning_content: None,
                     usage: None,
@@ -2417,14 +2417,14 @@ mod tests {
                 .return_once(move |_| {
                     Ok(ChatResponse {
                         content: Some(String::new()),
-                        tool_calls: vec![ToolCall {
-                            id: call_id.to_string(),
-                            function: ToolCallFunction {
+                        tool_calls: vec![ToolCall::new(
+                            call_id.to_string(),
+                            ToolCallFunction {
                                 name: "fake_large_tool".to_string(),
                                 arguments: "{}".to_string(),
                             },
-                            is_recovered: false,
-                        }],
+                            false,
+                        )],
                         finish_reason: "tool_calls".to_string(),
                         reasoning_content: None,
                         usage: None,
@@ -2467,14 +2467,14 @@ mod tests {
                 .return_once(move |_| {
                     Ok(ChatResponse {
                         content: Some(String::new()),
-                        tool_calls: vec![ToolCall {
-                            id: call_id.to_string(),
-                            function: ToolCallFunction {
+                        tool_calls: vec![ToolCall::new(
+                            call_id.to_string(),
+                            ToolCallFunction {
                                 name: "fake_small_tool".to_string(),
                                 arguments: "{}".to_string(),
                             },
-                            is_recovered: false,
-                        }],
+                            false,
+                        )],
                         finish_reason: "tool_calls".to_string(),
                         reasoning_content: None,
                         usage: None,

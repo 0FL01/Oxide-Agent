@@ -5,14 +5,14 @@ use crate::agent::memory::AgentMessage;
 use crate::llm::{ToolCall, ToolCallFunction};
 
 fn tool_call(id: &str, name: &str) -> ToolCall {
-    ToolCall {
-        id: id.to_string(),
-        function: ToolCallFunction {
+    ToolCall::new(
+        id.to_string(),
+        ToolCallFunction {
             name: name.to_string(),
             arguments: "{}".to_string(),
         },
-        is_recovered: false,
-    }
+        false,
+    )
 }
 
 #[test]

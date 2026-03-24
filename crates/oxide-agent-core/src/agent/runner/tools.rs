@@ -32,14 +32,14 @@ impl AgentRunner {
         tool_call: crate::agent::structured_output::ValidatedToolCall,
     ) -> ToolCall {
         let invocation_id = InvocationId::new(format!("call_{}", Uuid::new_v4()));
-        ToolCall {
-            id: invocation_id.to_string(),
-            function: ToolCallFunction {
+        ToolCall::new(
+            invocation_id.to_string(),
+            ToolCallFunction {
                 name: tool_call.name,
                 arguments: tool_call.arguments_json,
             },
-            is_recovered: false,
-        }
+            false,
+        )
     }
 
     /// Record a tool call in both the LLM message log and memory.
@@ -211,17 +211,22 @@ impl AgentRunner {
         };
 
         self.apply_after_tool_hooks(ctx, state, &tool_result);
-        let invocation_id = tool_call.invocation_id();
-        ctx.messages.push(Message::tool(
+        let tool_call_correlation = tool_call.correlation();
+        let invocation_id = tool_call_correlation.invocation_id.clone();
+        ctx.messages.push(Message::tool_with_correlation(
             invocation_id.as_str(),
+            tool_call_correlation.clone(),
             &tool_call.function.name,
             &output,
         ));
-        ctx.agent.memory_mut().add_message(AgentMessage::tool(
-            invocation_id.as_str(),
-            &tool_call.function.name,
-            &output,
-        ));
+        ctx.agent
+            .memory_mut()
+            .add_message(AgentMessage::tool_with_correlation(
+                invocation_id.as_str(),
+                tool_call_correlation,
+                &tool_call.function.name,
+                &output,
+            ));
         Self::refresh_messages_from_memory(ctx);
 
         if let Some(agents_md) = extract_updated_topic_agents_md(&tool_call.function.name, &output)
