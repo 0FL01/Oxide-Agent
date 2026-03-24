@@ -1239,4 +1239,24 @@ mod tests {
         );
         assert!(repaired[0].tool_calls.is_none());
     }
+
+    #[test]
+    fn repair_agent_message_history_drops_duplicate_tool_results_from_same_batch() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Calling tools",
+                vec![tool_call("call-1", "search")],
+            ),
+            AgentMessage::tool("call-1", "search", "result-1"),
+            AgentMessage::tool("call-1", "search", "result-2"),
+        ];
+
+        let (repaired, outcome) = repair_agent_message_history(&messages);
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.dropped_tool_results, 1);
+        assert_eq!(repaired.len(), 2);
+        assert_eq!(repaired[1].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(repaired[1].content, "result-1");
+    }
 }

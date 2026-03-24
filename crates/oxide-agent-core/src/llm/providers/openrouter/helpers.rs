@@ -79,3 +79,36 @@ pub(super) fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<serde_json::Va
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_structured_messages;
+    use crate::llm::{Message, ToolCall, ToolCallFunction};
+    use serde_json::json;
+
+    #[test]
+    fn prepare_structured_messages_preserves_tool_ids_for_assistant_and_tool_messages() {
+        let history = vec![
+            Message::assistant_with_tools(
+                "Calling tools",
+                vec![ToolCall {
+                    id: "call-openrouter-1".to_string(),
+                    function: ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: r#"{"query":"oxide"}"#.to_string(),
+                    },
+                    is_recovered: false,
+                }],
+            ),
+            Message::tool("call-openrouter-1", "search", "result"),
+        ];
+
+        let messages = prepare_structured_messages("system", &history);
+
+        assert_eq!(
+            messages[1]["tool_calls"][0]["id"],
+            json!("call-openrouter-1")
+        );
+        assert_eq!(messages[2]["tool_call_id"], json!("call-openrouter-1"));
+    }
+}

@@ -1215,6 +1215,46 @@ mod tests {
     }
 
     #[test]
+    fn validate_tool_history_rejects_duplicate_tool_call_ids_in_assistant_batch() {
+        let messages = vec![Message::assistant_with_tools(
+            "calling tools",
+            vec![
+                tool_call("call-1", "search"),
+                tool_call("call-1", "read_file"),
+            ],
+        )];
+
+        let error = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::Strict,
+            },
+        )
+        .expect_err("history must be rejected");
+
+        assert!(matches!(error, LlmError::RepairableHistory(_)));
+    }
+
+    #[test]
+    fn validate_tool_history_rejects_duplicate_tool_results_for_same_call() {
+        let messages = vec![
+            Message::assistant_with_tools("calling tools", vec![tool_call("call-1", "search")]),
+            Message::tool("call-1", "search", "result-1"),
+            Message::tool("call-1", "search", "result-2"),
+        ];
+
+        let error = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::Strict,
+            },
+        )
+        .expect_err("history must be rejected");
+
+        assert!(matches!(error, LlmError::RepairableHistory(_)));
+    }
+
+    #[test]
     fn validate_tool_history_allows_terminal_open_batch_for_best_effort_provider() {
         let messages = vec![
             Message::assistant_with_tools(
