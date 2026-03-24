@@ -11,10 +11,10 @@ use crate::llm::{
 /// Unified tool protocol behavior profile for one provider wire family.
 #[derive(Debug, Clone, Copy)]
 pub struct ToolProtocolProfile {
-    pub adapter: ProviderToolCallAdapter,
-    pub tool_call_encoder: ProviderToolCallEncoder,
-    pub tool_result_encoder: ProviderToolResultEncoder,
-    pub correlation_normalizer: ToolCorrelationNormalizer,
+    adapter: ProviderToolCallAdapter,
+    tool_call_encoder: ProviderToolCallEncoder,
+    tool_result_encoder: ProviderToolResultEncoder,
+    correlation_normalizer: ToolCorrelationNormalizer,
 }
 
 impl ToolProtocolProfile {
@@ -109,9 +109,7 @@ mod tests {
     fn profile_builds_consistent_components() {
         let profile =
             ToolProtocolProfile::new(ToolProtocol::ResponsesLike, ToolTransport::ClientRoundTrip);
-        let normalized = profile
-            .correlation_normalizer
-            .normalize(ToolCallCorrelation::new("invoke-1"));
+        let normalized = profile.normalize_correlation(ToolCallCorrelation::new("invoke-1"));
 
         assert_eq!(normalized.protocol, ToolProtocol::ResponsesLike);
         assert_eq!(normalized.transport, ToolTransport::ClientRoundTrip);

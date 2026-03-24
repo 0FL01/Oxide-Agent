@@ -1,7 +1,5 @@
-use crate::llm::providers::tool_correlation::ToolCorrelationNormalizer;
 use crate::llm::{
-    InvocationId, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol,
-    ToolTransport,
+    InvocationId, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol, ToolTransport,
 };
 use uuid::Uuid;
 
@@ -20,26 +18,6 @@ impl ProviderToolCallAdapter {
             protocol,
             transport,
         }
-    }
-
-    /// Resolve the outbound provider wire id for an assistant tool call.
-    #[must_use]
-    pub fn assistant_tool_call_id(self, tool_call: &ToolCall) -> String {
-        ToolCorrelationNormalizer::new(self.protocol, self.transport)
-            .normalize(tool_call.correlation())
-            .wire_tool_call_id()
-            .to_string()
-    }
-
-    /// Resolve the outbound provider wire id for a tool result message.
-    #[must_use]
-    pub fn tool_result_call_id(self, message: &Message) -> Option<String> {
-        message
-            .resolved_tool_call_correlation()
-            .map(|correlation| {
-                ToolCorrelationNormalizer::new(self.protocol, self.transport).normalize(correlation)
-            })
-            .map(|correlation| correlation.wire_tool_call_id().to_string())
     }
 
     /// Build a runtime tool call from provider wire identifiers.
@@ -109,36 +87,7 @@ impl ProviderToolCallAdapter {
 #[cfg(test)]
 mod tests {
     use super::ProviderToolCallAdapter;
-    use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol};
-
-    #[test]
-    fn adapter_prefers_provider_wire_ids_for_outbound_history() {
-        let adapter = ProviderToolCallAdapter::new(
-            ToolProtocol::AnthropicClientTools,
-            crate::llm::ToolTransport::ClientRoundTrip,
-        );
-        let tool_call = ToolCall::new(
-            "invoke-1",
-            ToolCallFunction {
-                name: "search".to_string(),
-                arguments: "{}".to_string(),
-            },
-            false,
-        )
-        .with_correlation(
-            ToolCallCorrelation::new("invoke-1")
-                .with_provider_tool_call_id("wire-1")
-                .with_protocol(ToolProtocol::AnthropicClientTools),
-        );
-        let tool_message =
-            Message::tool_with_correlation("invoke-1", tool_call.correlation(), "search", "done");
-
-        assert_eq!(adapter.assistant_tool_call_id(&tool_call), "wire-1");
-        assert_eq!(
-            adapter.tool_result_call_id(&tool_message),
-            Some("wire-1".to_string())
-        );
-    }
+    use crate::llm::ToolProtocol;
 
     #[test]
     fn adapter_builds_inbound_tool_calls_with_protocol_metadata() {
