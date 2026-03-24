@@ -127,19 +127,38 @@ fn finalize_tool_calls(pending: Vec<PendingToolCall>) -> Vec<ToolCall> {
         .enumerate()
         .filter_map(|(idx, call)| {
             let name = call.name?;
-            let id = call.id.unwrap_or_else(|| format!("zai-tool-{idx}"));
             let arguments = if call.arguments.trim().is_empty() {
                 "{}".to_string()
             } else {
                 call.arguments
             };
-            Some(ZAI_TOOL_ADAPTER.inbound_tool_call(
-                id.as_str(),
-                Some(id.as_str()),
-                None,
-                name,
-                arguments,
-            ))
+            Some(match call.id {
+                Some(id) => {
+                    ZAI_TOOL_ADAPTER.inbound_provider_tool_call(id.as_str(), None, name, arguments)
+                }
+                None => {
+                    let _ = idx;
+                    ZAI_TOOL_ADAPTER.inbound_uncorrelated_tool_call(name, arguments)
+                }
+            })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{finalize_tool_calls, PendingToolCall};
+
+    #[test]
+    fn finalize_tool_calls_separates_runtime_and_wire_ids() {
+        let tool_calls = finalize_tool_calls(vec![PendingToolCall {
+            id: Some("zai-call-1".to_string()),
+            name: Some("search".to_string()),
+            arguments: "{}".to_string(),
+        }]);
+
+        assert_eq!(tool_calls.len(), 1);
+        assert_ne!(tool_calls[0].id, "zai-call-1");
+        assert_eq!(tool_calls[0].wire_tool_call_id(), "zai-call-1");
+    }
 }

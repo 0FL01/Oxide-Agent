@@ -151,14 +151,16 @@ mod tests {
         assert_eq!(parsed.finish_reason, "tool_calls");
         assert_eq!(parsed.tool_calls.len(), 2);
 
-        assert_eq!(parsed.tool_calls[0].id, "call_abc123");
+        assert_ne!(parsed.tool_calls[0].id, "call_abc123");
+        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "call_abc123");
         assert_eq!(parsed.tool_calls[0].function.name, "get_weather");
         assert_eq!(
             parsed.tool_calls[0].function.arguments,
             "{\"location\":\"Moscow\"}"
         );
 
-        assert_eq!(parsed.tool_calls[1].id, "call_def456");
+        assert_ne!(parsed.tool_calls[1].id, "call_def456");
+        assert_eq!(parsed.tool_calls[1].wire_tool_call_id(), "call_def456");
         assert_eq!(parsed.tool_calls[1].function.name, "get_time");
         assert_eq!(parsed.tool_calls[1].function.arguments, "{}");
     }
@@ -197,7 +199,8 @@ mod tests {
             Some("I'll check the weather for you.")
         );
         assert_eq!(parsed.tool_calls.len(), 1);
-        assert_eq!(parsed.tool_calls[0].id, "call_xyz789");
+        assert_ne!(parsed.tool_calls[0].id, "call_xyz789");
+        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "call_xyz789");
     }
 
     #[test]

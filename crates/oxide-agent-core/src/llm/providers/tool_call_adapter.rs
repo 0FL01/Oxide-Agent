@@ -2,6 +2,7 @@ use crate::llm::{
     InvocationId, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol,
     ToolTransport,
 };
+use uuid::Uuid;
 
 /// Provider-local adapter for encoding and decoding tool-call wire identifiers.
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +71,36 @@ impl ProviderToolCallAdapter {
         .with_correlation(correlation)
     }
 
+    /// Build a runtime tool call from a provider-generated wire identifier.
+    #[must_use]
+    pub fn inbound_provider_tool_call(
+        self,
+        provider_tool_call_id: &str,
+        provider_item_id: Option<&str>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> ToolCall {
+        let invocation_id = InvocationId::new(format!("call_{}", Uuid::new_v4()));
+        self.inbound_tool_call(
+            invocation_id,
+            Some(provider_tool_call_id),
+            provider_item_id,
+            name,
+            arguments,
+        )
+    }
+
+    /// Build a runtime tool call when the provider omits a wire correlation id.
+    #[must_use]
+    pub fn inbound_uncorrelated_tool_call(
+        self,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> ToolCall {
+        let invocation_id = InvocationId::new(format!("call_{}", Uuid::new_v4()));
+        self.inbound_tool_call(invocation_id, None, None, name, arguments)
+    }
+
     fn normalize_outbound_correlation(
         self,
         correlation: ToolCallCorrelation,
@@ -133,5 +164,36 @@ mod tests {
         assert_eq!(tool_call.invocation_id().as_str(), "invoke-2");
         assert_eq!(tool_call.wire_tool_call_id(), "provider-2");
         assert_eq!(tool_call.correlation().protocol, ToolProtocol::ChatLike);
+    }
+
+    #[test]
+    fn adapter_generates_fresh_invocation_ids_for_provider_generated_calls() {
+        let adapter = ProviderToolCallAdapter::new(
+            ToolProtocol::ChatLike,
+            crate::llm::ToolTransport::ClientRoundTrip,
+        );
+
+        let tool_call = adapter.inbound_provider_tool_call("provider-3", None, "search", "{}");
+
+        assert_ne!(tool_call.id, "provider-3");
+        assert_eq!(tool_call.wire_tool_call_id(), "provider-3");
+        assert_eq!(
+            tool_call.correlation().provider_tool_call_id,
+            Some("provider-3".into())
+        );
+    }
+
+    #[test]
+    fn adapter_generates_uncorrelated_runtime_ids_when_provider_omits_wire_id() {
+        let adapter = ProviderToolCallAdapter::new(
+            ToolProtocol::ChatLike,
+            crate::llm::ToolTransport::ClientRoundTrip,
+        );
+
+        let tool_call = adapter.inbound_uncorrelated_tool_call("search", "{}");
+
+        assert_ne!(tool_call.id, "search");
+        assert_eq!(tool_call.wire_tool_call_id(), tool_call.id);
+        assert!(tool_call.correlation().provider_tool_call_id.is_none());
     }
 }

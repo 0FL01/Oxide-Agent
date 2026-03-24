@@ -34,8 +34,8 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
         .iter()
         .filter_map(|tc| {
             let mistral_id = tc.get("id")?.as_str()?.to_string();
-            // Map back to original ID if known, otherwise use as-is
-            let id = id_mapper.to_original(&mistral_id);
+            let original_id = id_mapper.to_original(&mistral_id);
+            let has_known_mapping = id_mapper.has_mistral_id(&mistral_id);
 
             let function = tc.get("function")?;
             let name = function.get("name")?.as_str()?.to_string();
@@ -51,13 +51,17 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
                 })
                 .unwrap_or_default();
 
-            Some(MISTRAL_TOOL_ADAPTER.inbound_tool_call(
-                id,
-                Some(&mistral_id),
-                None,
-                name,
-                arguments,
-            ))
+            Some(if has_known_mapping {
+                MISTRAL_TOOL_ADAPTER.inbound_tool_call(
+                    original_id,
+                    Some(&mistral_id),
+                    None,
+                    name,
+                    arguments,
+                )
+            } else {
+                MISTRAL_TOOL_ADAPTER.inbound_provider_tool_call(&mistral_id, None, name, arguments)
+            })
         })
         .collect()
 }

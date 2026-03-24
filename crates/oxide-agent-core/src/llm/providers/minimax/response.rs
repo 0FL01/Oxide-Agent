@@ -29,9 +29,8 @@ pub fn from_claudius_message(msg: claudius::Message) -> Result<ChatResponse, cra
             }
             ContentBlock::ToolUse(tool_use) => {
                 let wire_id = tool_use.id;
-                tool_calls.push(MINIMAX_TOOL_ADAPTER.inbound_tool_call(
+                tool_calls.push(MINIMAX_TOOL_ADAPTER.inbound_provider_tool_call(
                     wire_id.as_str(),
-                    Some(wire_id.as_str()),
                     None,
                     tool_use.name,
                     serde_json::to_string(&tool_use.input).unwrap_or_default(),
@@ -135,7 +134,7 @@ mod tests {
 
         assert!(response.content.is_none());
         assert_eq!(response.tool_calls.len(), 1);
-        assert_eq!(response.tool_calls[0].id, "call_abc");
+        assert_ne!(response.tool_calls[0].id, "call_abc");
         assert_eq!(response.tool_calls[0].wire_tool_call_id(), "call_abc");
         assert_eq!(response.tool_calls[0].function.name, "get_weather");
         assert_eq!(response.finish_reason, "tool_calls");
