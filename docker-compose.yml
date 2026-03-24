@@ -61,7 +61,7 @@ services:
         max-file: "3"
 
   crawl4ai:
-    image: unclecode/crawl4ai:0.8
+    image: unclecode/crawl4ai:0.8.5
     container_name: crawl4ai
     restart: unless-stopped
     shm_size: '2gb'
