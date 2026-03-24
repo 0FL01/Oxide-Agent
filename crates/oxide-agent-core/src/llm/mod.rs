@@ -121,13 +121,27 @@ impl Message {
     /// Create a new tool response message
     #[must_use]
     pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
+        Self::tool_with_correlation(
+            tool_call_id,
+            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            name,
+            content,
+        )
+    }
+
+    /// Create a new tool response message with explicit canonical correlation metadata.
+    #[must_use]
+    pub fn tool_with_correlation(
+        tool_call_id: &str,
+        tool_call_correlation: ToolCallCorrelation,
+        name: &str,
+        content: &str,
+    ) -> Self {
         Self {
             role: "tool".to_string(),
             content: content.to_string(),
             tool_call_id: Some(tool_call_id.to_string()),
-            tool_call_correlation: Some(ToolCallCorrelation::from_legacy_tool_call_id(
-                tool_call_id,
-            )),
+            tool_call_correlation: Some(tool_call_correlation),
             name: Some(name.to_string()),
             tool_calls: None,
             tool_call_correlations: None,
@@ -1404,18 +1418,21 @@ fn validate_tool_history(
                     ));
                 }
 
-                let mut expected_ids = HashSet::new();
-                for tool_call in tool_calls {
-                    let tool_call_id = tool_call.id.trim();
-                    if tool_call_id.is_empty() {
+                let mut expected_invocation_ids = HashSet::new();
+                for correlation in message
+                    .resolved_tool_call_correlations()
+                    .unwrap_or_default()
+                {
+                    let invocation_id = correlation.invocation_id.as_str().trim();
+                    if invocation_id.is_empty() {
                         return Err(LlmError::RepairableHistory(
-                            "assistant tool call has an empty tool_call_id".to_string(),
+                            "assistant tool call has an empty invocation_id".to_string(),
                         ));
                     }
-                    if !expected_ids.insert(tool_call.id.clone()) {
+                    if !expected_invocation_ids.insert(correlation.invocation_id.clone()) {
                         return Err(LlmError::RepairableHistory(format!(
-                            "assistant tool call batch contains duplicate tool_call_id `{}`",
-                            tool_call.id
+                            "assistant tool call batch contains duplicate invocation_id `{}`",
+                            correlation.invocation_id
                         )));
                     }
                 }
@@ -1424,26 +1441,25 @@ fn validate_tool_history(
                 let mut cursor = index + 1;
                 while cursor < messages.len() && messages[cursor].role == "tool" {
                     let result = &messages[cursor];
-                    let Some(tool_call_id) = result
-                        .tool_call_id
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
+                    let Some(invocation_id) = result
+                        .resolved_tool_call_correlation()
+                        .map(|correlation| correlation.invocation_id)
+                        .filter(|id| !id.as_str().trim().is_empty())
                     else {
                         return Err(LlmError::RepairableHistory(
-                            "tool result is missing tool_call_id".to_string(),
+                            "tool result is missing invocation_id".to_string(),
                         ));
                     };
 
-                    if !expected_ids.contains(tool_call_id) {
+                    if !expected_invocation_ids.contains(&invocation_id) {
                         return Err(LlmError::RepairableHistory(format!(
-                            "tool result references unknown tool_call_id `{tool_call_id}`"
+                            "tool result references unknown invocation_id `{invocation_id}`"
                         )));
                     }
 
-                    if !seen_results.insert(tool_call_id.to_string()) {
+                    if !seen_results.insert(invocation_id.clone()) {
                         return Err(LlmError::RepairableHistory(format!(
-                            "tool result for tool_call_id `{tool_call_id}` is duplicated"
+                            "tool result for invocation_id `{invocation_id}` is duplicated"
                         )));
                     }
 
@@ -1453,11 +1469,13 @@ fn validate_tool_history(
                 let batch_is_terminal = cursor == messages.len();
                 let should_require_complete_batch =
                     capabilities.strict_tool_history() || !batch_is_terminal;
-                if should_require_complete_batch && seen_results.len() != expected_ids.len() {
+                if should_require_complete_batch
+                    && seen_results.len() != expected_invocation_ids.len()
+                {
                     return Err(LlmError::RepairableHistory(format!(
                         "assistant tool call batch is incomplete for {} tool history: {} tool calls but {} tool results",
                         capabilities.tool_history_label(),
-                        expected_ids.len(),
+                        expected_invocation_ids.len(),
                         seen_results.len()
                     )));
                 }
@@ -1469,15 +1487,14 @@ fn validate_tool_history(
 
         if message.role == "tool" {
             let detail = message
-                .tool_call_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
+                .resolved_tool_call_correlation()
+                .map(|correlation| correlation.invocation_id)
+                .filter(|id| !id.as_str().trim().is_empty())
                 .map_or_else(
-                    || "orphaned tool result without tool_call_id".to_string(),
-                    |tool_call_id| {
+                    || "orphaned tool result without invocation_id".to_string(),
+                    |invocation_id| {
                         format!(
-                            "orphaned tool result references missing assistant tool call `{tool_call_id}`"
+                            "orphaned tool result references missing assistant tool call `{invocation_id}`"
                         )
                     },
                 );
@@ -1739,6 +1756,44 @@ mod tests {
             Some(vec![ToolCallCorrelation::from_legacy_tool_call_id(
                 "call-legacy"
             )])
+        );
+    }
+
+    #[test]
+    fn validate_tool_history_matches_on_invocation_id_not_raw_wire_id() {
+        let correlation =
+            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1");
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: "calling tools".to_string(),
+                tool_call_id: None,
+                tool_call_correlation: None,
+                name: None,
+                tool_calls: Some(vec![tool_call("provider-a", "search")]),
+                tool_call_correlations: Some(vec![correlation.clone()]),
+            },
+            Message {
+                role: "tool".to_string(),
+                content: "result".to_string(),
+                tool_call_id: Some("provider-b".to_string()),
+                tool_call_correlation: Some(correlation),
+                name: Some("search".to_string()),
+                tool_calls: None,
+                tool_call_correlations: None,
+            },
+        ];
+
+        let result = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::Strict,
+            },
+        );
+
+        assert!(
+            result.is_ok(),
+            "canonical invocation ids should drive matching"
         );
     }
 }

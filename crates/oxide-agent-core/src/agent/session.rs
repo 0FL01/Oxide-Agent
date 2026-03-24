@@ -7,6 +7,7 @@ use super::identity::SessionId;
 use super::memory::AgentMemory;
 // use super::providers::TodoList;
 use crate::config::AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS;
+use crate::llm::InvocationId;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -29,8 +30,8 @@ pub struct RuntimeContextInjection {
 pub struct PendingSshReplay {
     /// Approval request identifier returned by the SSH provider.
     pub request_id: String,
-    /// Original tool call id emitted by the LLM.
-    pub tool_call_id: String,
+    /// Stable internal invocation id for the paused tool call.
+    pub invocation_id: InvocationId,
     /// Original tool name.
     pub tool_name: String,
     /// Original JSON arguments before approval credentials were injected.
@@ -453,13 +454,14 @@ impl AgentSession {
 #[cfg(test)]
 mod tests {
     use super::{AgentSession, PendingSshReplay};
+    use crate::llm::InvocationId;
 
     #[test]
     fn reset_clears_pending_ssh_replays() {
         let mut session = AgentSession::new(42_i64.into());
         session.store_pending_ssh_replay(PendingSshReplay {
             request_id: "req-1".to_string(),
-            tool_call_id: "call-1".to_string(),
+            invocation_id: InvocationId::from("call-1"),
             tool_name: "ssh_sudo_exec".to_string(),
             arguments: r#"{"command":"journalctl"}"#.to_string(),
         });

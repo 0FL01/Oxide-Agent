@@ -245,15 +245,28 @@ impl AgentMessage {
 
     /// Create a new tool response message
     pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
+        Self::tool_with_correlation(
+            tool_call_id,
+            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            name,
+            content,
+        )
+    }
+
+    /// Create a new tool response message with explicit canonical correlation metadata.
+    pub fn tool_with_correlation(
+        tool_call_id: &str,
+        tool_call_correlation: ToolCallCorrelation,
+        name: &str,
+        content: &str,
+    ) -> Self {
         Self {
             kind: AgentMessageKind::ToolResult,
             role: MessageRole::Tool,
             content: content.into(),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
-            tool_call_correlation: Some(ToolCallCorrelation::from_legacy_tool_call_id(
-                tool_call_id,
-            )),
+            tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
             tool_call_correlations: None,
@@ -271,15 +284,30 @@ impl AgentMessage {
         content: impl Into<String>,
         externalized_payload: ExternalizedPayload,
     ) -> Self {
+        Self::externalized_tool_with_correlation(
+            tool_call_id,
+            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            name,
+            content,
+            externalized_payload,
+        )
+    }
+
+    /// Create a tool result placeholder with explicit canonical correlation metadata.
+    pub fn externalized_tool_with_correlation(
+        tool_call_id: &str,
+        tool_call_correlation: ToolCallCorrelation,
+        name: &str,
+        content: impl Into<String>,
+        externalized_payload: ExternalizedPayload,
+    ) -> Self {
         Self {
             kind: AgentMessageKind::ToolResult,
             role: MessageRole::Tool,
             content: content.into(),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
-            tool_call_correlation: Some(ToolCallCorrelation::from_legacy_tool_call_id(
-                tool_call_id,
-            )),
+            tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
             tool_call_correlations: None,
@@ -298,15 +326,32 @@ impl AgentMessage {
         pruned_artifact: PrunedArtifact,
         externalized_payload: Option<ExternalizedPayload>,
     ) -> Self {
+        Self::pruned_tool_with_correlation(
+            tool_call_id,
+            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            name,
+            content,
+            pruned_artifact,
+            externalized_payload,
+        )
+    }
+
+    /// Create a pruned tool result placeholder with explicit canonical correlation metadata.
+    pub fn pruned_tool_with_correlation(
+        tool_call_id: &str,
+        tool_call_correlation: ToolCallCorrelation,
+        name: &str,
+        content: impl Into<String>,
+        pruned_artifact: PrunedArtifact,
+        externalized_payload: Option<ExternalizedPayload>,
+    ) -> Self {
         Self {
             kind: AgentMessageKind::ToolResult,
             role: MessageRole::Tool,
             content: content.into(),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
-            tool_call_correlation: Some(ToolCallCorrelation::from_legacy_tool_call_id(
-                tool_call_id,
-            )),
+            tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
             tool_call_correlations: None,

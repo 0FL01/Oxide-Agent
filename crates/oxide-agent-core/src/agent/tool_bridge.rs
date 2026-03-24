@@ -10,7 +10,7 @@ use super::recovery::sanitize_xml_tags;
 use super::registry::ToolRegistry;
 use super::PendingSshReplay;
 use crate::config::AGENT_TOOL_TIMEOUT_SECS;
-use crate::llm::{Message, ToolCall};
+use crate::llm::{InvocationId, Message, ToolCall};
 use anyhow::Result;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 struct ParsedToolCall {
-    id: String,
+    invocation_id: InvocationId,
     name: String,
     args: String,
 }
@@ -106,9 +106,10 @@ fn ensure_tool_execution_not_cancelled(
 }
 
 fn parse_tool_call(tool_call: ToolCall) -> ParsedToolCall {
-    let ToolCall { id, function, .. } = tool_call;
+    let invocation_id = tool_call.invocation_id();
+    let ToolCall { function, .. } = tool_call;
     ParsedToolCall {
-        id,
+        invocation_id,
         name: function.name,
         args: function.arguments,
     }
@@ -328,7 +329,7 @@ async fn store_pending_ssh_approval(
 ) {
     ctx.agent.store_pending_ssh_replay(PendingSshReplay {
         request_id: approval.request_id.clone(),
-        tool_call_id: tool_call.id.clone(),
+        invocation_id: tool_call.invocation_id.clone(),
         tool_name: tool_call.name.clone(),
         arguments: tool_call.args.clone(),
     });
@@ -364,9 +365,12 @@ fn append_tool_result_to_memory(
     result: &str,
     ctx: &mut ToolExecutionContext<'_>,
 ) {
-    ctx.messages
-        .push(Message::tool(&tool_call.id, &tool_call.name, result));
-    let tool_msg = AgentMessage::tool(&tool_call.id, &tool_call.name, result);
+    ctx.messages.push(Message::tool(
+        tool_call.invocation_id.as_str(),
+        &tool_call.name,
+        result,
+    ));
+    let tool_msg = AgentMessage::tool(tool_call.invocation_id.as_str(), &tool_call.name, result);
     ctx.agent.memory_mut().add_message(tool_msg);
 }
 
@@ -392,7 +396,7 @@ mod tests {
     use crate::agent::providers::TodoList;
     use crate::agent::registry::ToolRegistry;
     use crate::agent::session::AgentSession;
-    use crate::llm::{ToolCall, ToolCallFunction, ToolDefinition};
+    use crate::llm::{InvocationId, ToolCall, ToolCallFunction, ToolDefinition};
     use async_trait::async_trait;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -525,8 +529,8 @@ mod tests {
             session
                 .pending_ssh_replay("req-1")
                 .expect("pending replay must be stored")
-                .tool_call_id,
-            "call-1"
+                .invocation_id,
+            InvocationId::from("call-1")
         );
     }
 

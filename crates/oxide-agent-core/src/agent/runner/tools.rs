@@ -9,7 +9,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_bridge::extract_updated_topic_agents_md;
 
-use crate::llm::{Message, ToolCall, ToolCallFunction};
+use crate::llm::{InvocationId, Message, ToolCall, ToolCallFunction};
 use std::fmt::Write as _;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -31,8 +31,9 @@ impl AgentRunner {
         &self,
         tool_call: crate::agent::structured_output::ValidatedToolCall,
     ) -> ToolCall {
+        let invocation_id = InvocationId::new(format!("call_{}", Uuid::new_v4()));
         ToolCall {
-            id: format!("call_{}", Uuid::new_v4()),
+            id: invocation_id.to_string(),
             function: ToolCallFunction {
                 name: tool_call.name,
                 arguments: tool_call.arguments_json,
@@ -210,13 +211,14 @@ impl AgentRunner {
         };
 
         self.apply_after_tool_hooks(ctx, state, &tool_result);
+        let invocation_id = tool_call.invocation_id();
         ctx.messages.push(Message::tool(
-            &tool_call.id,
+            invocation_id.as_str(),
             &tool_call.function.name,
             &output,
         ));
         ctx.agent.memory_mut().add_message(AgentMessage::tool(
-            &tool_call.id,
+            invocation_id.as_str(),
             &tool_call.function.name,
             &output,
         ));
@@ -293,11 +295,14 @@ impl AgentRunner {
                 .await;
         }
 
+        let invocation_id = tool_call.invocation_id();
         ctx.messages
-            .push(Message::tool(&tool_call.id, tool_name, &output));
-        ctx.agent
-            .memory_mut()
-            .add_message(AgentMessage::tool(&tool_call.id, tool_name, &output));
+            .push(Message::tool(invocation_id.as_str(), tool_name, &output));
+        ctx.agent.memory_mut().add_message(AgentMessage::tool(
+            invocation_id.as_str(),
+            tool_name,
+            &output,
+        ));
         Self::refresh_messages_from_memory(ctx);
     }
 
