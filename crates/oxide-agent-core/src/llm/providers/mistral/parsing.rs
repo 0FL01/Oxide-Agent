@@ -68,16 +68,6 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
         .collect()
 }
 
-/// Legacy function without ID mapping (for backward compatibility)
-#[deprecated(
-    since = "0.1.0",
-    note = "Use parse_tool_calls with id_mapper for proper Mistral compatibility"
-)]
-pub fn parse_tool_calls_legacy(message: &Value) -> Vec<ToolCall> {
-    let dummy_mapper = ToolCallIdMapper::new();
-    parse_tool_calls(message, &dummy_mapper)
-}
-
 /// Parse chat completion response
 ///
 /// Maps Mistral's tool call IDs back to original IDs using the mapper.
@@ -118,16 +108,6 @@ pub fn parse_chat_response(
         reasoning_content,
         usage: parse_usage(&response),
     })
-}
-
-/// Legacy function without ID mapping (for backward compatibility)
-#[deprecated(
-    since = "0.1.0",
-    note = "Use parse_chat_response with id_mapper for proper Mistral compatibility"
-)]
-pub fn parse_chat_response_legacy(response: Value) -> Result<ChatResponse, LlmError> {
-    let dummy_mapper = ToolCallIdMapper::new();
-    parse_chat_response(response, &dummy_mapper)
 }
 
 /// Extract text segments from JSON value recursively

@@ -101,15 +101,6 @@ pub fn prepare_structured_messages(
     messages
 }
 
-/// Legacy function without ID mapping (for backward compatibility where mapping isn't needed)
-///
-/// ⚠️ Warning: This should only be used when tool calling is not involved,
-/// as Mistral requires 9-character alphanumeric tool call IDs.
-pub fn prepare_structured_messages_legacy(system_prompt: &str, history: &[Message]) -> Vec<Value> {
-    let mut dummy_mapper = ToolCallIdMapper::new();
-    prepare_structured_messages(system_prompt, history, &mut dummy_mapper)
-}
-
 /// Prepare simple chat messages (no tool calling)
 pub fn prepare_chat_messages(
     system_prompt: &str,

@@ -141,7 +141,6 @@ impl ToolCallEncoder for ProviderToolCallEncoder {
                     },
                 ))
             }
-            ToolProtocol::AnthropicServerTools | ToolProtocol::GeminiNative => None,
         }
     }
 }
@@ -250,10 +249,8 @@ mod tests {
 
     #[test]
     fn encoder_skips_server_executed_transports() {
-        let encoder = ProviderToolCallEncoder::new(
-            ToolProtocol::AnthropicServerTools,
-            ToolTransport::ServerExecuted,
-        );
+        let encoder =
+            ProviderToolCallEncoder::new(ToolProtocol::ChatLike, ToolTransport::ServerExecuted);
         let tool_call = ToolCall::new(
             "invoke-4",
             ToolCallFunction {

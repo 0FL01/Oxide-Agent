@@ -133,7 +133,6 @@ impl ToolResultEncoder for ProviderToolResultEncoder {
                     is_error: None,
                 }))
             }
-            ToolProtocol::AnthropicServerTools | ToolProtocol::GeminiNative => None,
         }
     }
 }
@@ -243,10 +242,8 @@ mod tests {
 
     #[test]
     fn encoder_skips_server_executed_tool_transports() {
-        let encoder = ProviderToolResultEncoder::new(
-            ToolProtocol::AnthropicServerTools,
-            ToolTransport::ServerExecuted,
-        );
+        let encoder =
+            ProviderToolResultEncoder::new(ToolProtocol::ChatLike, ToolTransport::ServerExecuted);
         let message = Message::tool("call-1", "search", "done");
 
         assert!(encoder.encode(&message).is_none());
