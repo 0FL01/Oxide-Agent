@@ -192,6 +192,7 @@ impl AgentExecutor {
                 CompactionSummarizerConfig {
                     model_routes: settings.get_configured_compaction_model_routes(false),
                     timeout_secs,
+                    ..CompactionSummarizerConfig::default()
                 },
             ))
         };

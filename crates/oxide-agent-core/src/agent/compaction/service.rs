@@ -792,6 +792,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: Vec::new(),
                 timeout_secs: 1,
+                ..CompactionSummarizerConfig::default()
             },
         ))
     }

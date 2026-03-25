@@ -8,8 +8,10 @@ use crate::agent::{AgentContext, EphemeralSession};
 use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::{ChatWithToolsRequest, LlmClient, LlmError, LlmProvider};
 use async_trait::async_trait;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 fn compactable_history_messages() -> Vec<AgentMessage> {
@@ -46,15 +48,19 @@ fn route(model_id: &str, provider: &str, max_output_tokens: u32) -> ModelInfo {
     }
 }
 
+#[derive(Clone)]
 enum ProbeBehavior {
     Return(&'static str),
     Sleep(Duration),
-    Error(&'static str),
+    UnknownError(&'static str),
+    NetworkError(&'static str),
+    RateLimit(Option<u64>),
 }
 
 struct ProbeProvider {
     calls: Arc<AtomicUsize>,
-    behavior: ProbeBehavior,
+    behaviors: Mutex<VecDeque<ProbeBehavior>>,
+    default_behavior: ProbeBehavior,
 }
 
 #[async_trait]
@@ -68,13 +74,26 @@ impl LlmProvider for ProbeProvider {
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        match self.behavior {
+        let behavior = self
+            .behaviors
+            .lock()
+            .expect("probe behaviors lock")
+            .pop_front()
+            .unwrap_or_else(|| self.default_behavior.clone());
+        match behavior {
             ProbeBehavior::Return(value) => Ok(value.to_string()),
             ProbeBehavior::Sleep(duration) => {
                 tokio::time::sleep(duration).await;
                 Ok(r#"{"goal":"late","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":[],"risks":[]}"#.to_string())
             }
-            ProbeBehavior::Error(message) => Err(LlmError::Unknown(message.to_string())),
+            ProbeBehavior::UnknownError(message) => Err(LlmError::Unknown(message.to_string())),
+            ProbeBehavior::NetworkError(message) => {
+                Err(LlmError::NetworkError(message.to_string()))
+            }
+            ProbeBehavior::RateLimit(wait_secs) => Err(LlmError::RateLimit {
+                wait_secs,
+                message: "rate limited".to_string(),
+            }),
         }
     }
 
@@ -106,7 +125,7 @@ impl LlmProvider for ProbeProvider {
 }
 
 fn probe_summarizer(
-    behavior: ProbeBehavior,
+    behaviors: Vec<ProbeBehavior>,
     timeout_secs: u64,
 ) -> (CompactionSummarizer, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -121,7 +140,11 @@ fn probe_summarizer(
         "probe".to_string(),
         Arc::new(ProbeProvider {
             calls: Arc::clone(&calls),
-            behavior,
+            default_behavior: behaviors
+                .last()
+                .cloned()
+                .unwrap_or(ProbeBehavior::UnknownError("probe behavior missing")),
+            behaviors: Mutex::new(VecDeque::from(behaviors)),
         }),
     );
 
@@ -131,6 +154,9 @@ fn probe_summarizer(
             CompactionSummarizerConfig {
                 model_routes: vec![route("compact-model", "probe", 256)],
                 timeout_secs,
+                initial_backoff_ms: 0,
+                max_backoff_ms: 12_000,
+                ..CompactionSummarizerConfig::default()
             },
         ),
         calls,
@@ -140,9 +166,9 @@ fn probe_summarizer(
 #[tokio::test]
 async fn summary_is_not_attempted_for_warning_budget_state() {
     let (summarizer, calls) = probe_summarizer(
-        ProbeBehavior::Return(
+        vec![ProbeBehavior::Return(
             r#"{"goal":"should not run","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":[],"risks":[]}"#,
-        ),
+        )],
         5,
     );
     let messages = compactable_history_messages();
@@ -166,9 +192,9 @@ async fn summary_is_not_attempted_for_warning_budget_state() {
 #[tokio::test]
 async fn summary_is_not_attempted_when_only_recent_raw_window_exists() {
     let (summarizer, calls) = probe_summarizer(
-        ProbeBehavior::Return(
+        vec![ProbeBehavior::Return(
             r#"{"goal":"should not run","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":[],"risks":[]}"#,
-        ),
+        )],
         5,
     );
     let messages = recent_only_messages();
@@ -191,9 +217,9 @@ async fn summary_is_not_attempted_when_only_recent_raw_window_exists() {
 #[tokio::test]
 async fn service_does_not_attempt_summary_for_should_prune_budget() {
     let (summarizer, calls) = probe_summarizer(
-        ProbeBehavior::Return(
+        vec![ProbeBehavior::Return(
             r#"{"goal":"should not run","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":[],"risks":[]}"#,
-        ),
+        )],
         5,
     );
     let service = CompactionService::new(CompactionPolicy {
@@ -240,7 +266,8 @@ async fn service_does_not_attempt_summary_for_should_prune_budget() {
 
 #[tokio::test]
 async fn summary_timeout_falls_back_to_deterministic_summary() {
-    let (summarizer, calls) = probe_summarizer(ProbeBehavior::Sleep(Duration::from_millis(20)), 0);
+    let (summarizer, calls) =
+        probe_summarizer(vec![ProbeBehavior::Sleep(Duration::from_millis(20))], 0);
     let messages = compactable_history_messages();
     let snapshot = classify_hot_memory(&messages);
 
@@ -257,7 +284,40 @@ async fn summary_timeout_falls_back_to_deterministic_summary() {
     assert!(outcome.used_fallback);
     assert_eq!(outcome.model_name.as_deref(), Some("compact-model"));
     assert!(outcome.summary.is_some());
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
+}
+
+#[tokio::test]
+async fn summary_retries_same_route_before_succeeding() {
+    let (summarizer, calls) = probe_summarizer(
+        vec![
+            ProbeBehavior::NetworkError("transient network failure"),
+            ProbeBehavior::Return(
+                r#"{"goal":"recovered","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":["continue"],"risks":[]}"#,
+            ),
+        ],
+        5,
+    );
+    let messages = compactable_history_messages();
+    let snapshot = classify_hot_memory(&messages);
+
+    let outcome = summarizer
+        .summarize_if_needed(
+            &manual_request("Inspect retry success"),
+            crate::agent::compaction::BudgetState::ShouldCompact,
+            &snapshot,
+            &messages,
+        )
+        .await;
+
+    assert!(outcome.attempted);
+    assert!(!outcome.used_fallback);
+    assert_eq!(outcome.model_name.as_deref(), Some("compact-model"));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        outcome.summary.expect("summary after retry").remaining_work,
+        vec!["continue"]
+    );
 }
 
 #[tokio::test]
@@ -273,16 +333,22 @@ async fn summary_uses_next_route_when_primary_route_fails() {
         "primary".to_string(),
         Arc::new(ProbeProvider {
             calls: Arc::clone(&primary_calls),
-            behavior: ProbeBehavior::Error("primary failed"),
+            default_behavior: ProbeBehavior::UnknownError("primary failed"),
+            behaviors: Mutex::new(VecDeque::from(vec![ProbeBehavior::UnknownError(
+                "primary failed",
+            )])),
         }),
     );
     llm_client.register_provider(
         "fallback".to_string(),
         Arc::new(ProbeProvider {
             calls: Arc::clone(&fallback_calls),
-            behavior: ProbeBehavior::Return(
+            default_behavior: ProbeBehavior::Return(
                 r#"{"goal":"fallback","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":["continue"],"risks":[]}"#,
             ),
+            behaviors: Mutex::new(VecDeque::from(vec![ProbeBehavior::Return(
+                r#"{"goal":"fallback","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":["continue"],"risks":[]}"#,
+            )])),
         }),
     );
     let summarizer = CompactionSummarizer::new(
@@ -293,6 +359,8 @@ async fn summary_uses_next_route_when_primary_route_fails() {
                 route("compact-fallback", "fallback", 256),
             ],
             timeout_secs: 5,
+            initial_backoff_ms: 0,
+            ..CompactionSummarizerConfig::default()
         },
     );
     let messages = compactable_history_messages();
@@ -319,9 +387,72 @@ async fn summary_uses_next_route_when_primary_route_fails() {
 }
 
 #[tokio::test]
+async fn summary_skips_retry_when_rate_limit_wait_exceeds_max_backoff() {
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let mut llm_client = LlmClient::new(&AgentSettings {
+        compaction_model_max_output_tokens: Some(256),
+        compaction_model_timeout_secs: Some(5),
+        ..AgentSettings::default()
+    });
+    llm_client.register_provider(
+        "primary".to_string(),
+        Arc::new(ProbeProvider {
+            calls: Arc::clone(&primary_calls),
+            default_behavior: ProbeBehavior::RateLimit(Some(30)),
+            behaviors: Mutex::new(VecDeque::from(vec![ProbeBehavior::RateLimit(Some(30))])),
+        }),
+    );
+    llm_client.register_provider(
+        "fallback".to_string(),
+        Arc::new(ProbeProvider {
+            calls: Arc::clone(&fallback_calls),
+            default_behavior: ProbeBehavior::Return(
+                r#"{"goal":"fallback","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":["continue"],"risks":[]}"#,
+            ),
+            behaviors: Mutex::new(VecDeque::from(vec![ProbeBehavior::Return(
+                r#"{"goal":"fallback","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":["continue"],"risks":[]}"#,
+            )])),
+        }),
+    );
+    let summarizer = CompactionSummarizer::new(
+        Arc::new(llm_client),
+        CompactionSummarizerConfig {
+            model_routes: vec![
+                route("compact-primary", "primary", 256),
+                route("compact-fallback", "fallback", 256),
+            ],
+            timeout_secs: 5,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 12_000,
+            ..CompactionSummarizerConfig::default()
+        },
+    );
+    let messages = compactable_history_messages();
+    let snapshot = classify_hot_memory(&messages);
+
+    let outcome = summarizer
+        .summarize_if_needed(
+            &manual_request("Inspect rate limit failover"),
+            crate::agent::compaction::BudgetState::ShouldCompact,
+            &snapshot,
+            &messages,
+        )
+        .await;
+
+    assert!(outcome.attempted);
+    assert!(!outcome.used_fallback);
+    assert_eq!(outcome.model_name.as_deref(), Some("compact-fallback"));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn service_invalid_summary_response_uses_fallback_and_rebuilds() {
-    let (summarizer, calls) =
-        probe_summarizer(ProbeBehavior::Return("```json\n{\"goal\":123}\n```"), 5);
+    let (summarizer, calls) = probe_summarizer(
+        vec![ProbeBehavior::Return("```json\n{\"goal\":123}\n```")],
+        5,
+    );
     let service = CompactionService::default().with_summarizer(summarizer);
     let mut session = EphemeralSession::new(20_000);
     for message in compactable_history_messages() {

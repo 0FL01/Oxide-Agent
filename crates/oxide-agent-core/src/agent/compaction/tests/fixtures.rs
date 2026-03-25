@@ -14,6 +14,7 @@ pub(super) fn fallback_summarizer_service() -> CompactionService {
         CompactionSummarizerConfig {
             model_routes: Vec::new(),
             timeout_secs: 1,
+            ..CompactionSummarizerConfig::default()
         },
     ))
 }

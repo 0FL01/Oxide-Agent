@@ -54,6 +54,7 @@ async fn public_compaction_service_preserves_live_context_and_todos() {
         CompactionSummarizerConfig {
             model_routes: Vec::new(),
             timeout_secs: 1,
+            ..CompactionSummarizerConfig::default()
         },
     ));
     let request = CompactionRequest::new(
