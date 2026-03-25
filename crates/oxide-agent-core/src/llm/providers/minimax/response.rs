@@ -28,7 +28,7 @@ pub fn from_claudius_message(msg: claudius::Message) -> Result<ChatResponse, cra
                 // MiniMax M2/M2.5 sometimes returns tool calls with null/empty IDs,
                 // which causes 'tool result's tool id() not found (2013)' errors.
                 // Work around by generating a unique fallback ID.
-                let wire_id = if tool_use.id.is_empty() {
+                let wire_id = if tool_use.id.trim().is_empty() {
                     debug!(
                         tool_name = %tool_use.name,
                         index = tool_call_index,

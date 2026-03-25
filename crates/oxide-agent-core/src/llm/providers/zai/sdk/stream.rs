@@ -130,7 +130,7 @@ fn finalize_tool_calls(pending: Vec<PendingToolCall>) -> Vec<ToolCall> {
                 call.arguments
             };
             Some(match call.id {
-                Some(id) if !id.is_empty() => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
+                Some(id) if !id.trim().is_empty() => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
                     id.as_str(),
                     None,
                     name,

@@ -416,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_chat_response_skips_empty_tool_call_id() {
+    fn parse_chat_response_recovers_empty_tool_call_id() {
         let mut id_mapper = ToolCallIdMapper::new();
 
         // Register an original ID so we can have a valid mistral ID
@@ -456,8 +456,12 @@ mod tests {
         });
 
         let parsed = parse_chat_response(response, &id_mapper).expect("response parses");
-        // Only the valid ID should be parsed
-        assert_eq!(parsed.tool_calls.len(), 1);
-        assert_eq!(parsed.tool_calls[0].function.name, "get_time");
+        assert_eq!(parsed.tool_calls.len(), 2);
+        assert_eq!(parsed.tool_calls[0].function.name, "get_weather");
+        assert_eq!(
+            parsed.tool_calls[0].wire_tool_call_id(),
+            parsed.tool_calls[0].invocation_id().as_str()
+        );
+        assert_eq!(parsed.tool_calls[1].function.name, "get_time");
     }
 }

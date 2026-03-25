@@ -118,7 +118,7 @@ pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall
         let wire_id = call
             .get("id")
             .and_then(|value| value.as_str())
-            .filter(|id| !id.is_empty());
+            .filter(|id| !id.trim().is_empty());
         tool_calls.push(match wire_id {
             Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
                 wire_id,
