@@ -23,6 +23,8 @@ pub struct HistoryRepairOutcome {
     pub converted_tool_call_messages: usize,
     /// Number of assistant tool-call messages dropped entirely.
     pub dropped_tool_call_messages: usize,
+    /// Number of tool calls with empty wire IDs (provider_tool_call_id) repaired.
+    pub repaired_empty_wire_ids: usize,
 }
 
 #[must_use]
@@ -152,6 +154,9 @@ pub fn prune_tool_history_by_availability(
     outcome.dropped_tool_call_messages = outcome
         .dropped_tool_call_messages
         .saturating_add(repair_outcome.dropped_tool_call_messages);
+    outcome.repaired_empty_wire_ids = outcome
+        .repaired_empty_wire_ids
+        .saturating_add(repair_outcome.repaired_empty_wire_ids);
 
     (repaired, outcome)
 }
@@ -175,6 +180,7 @@ fn repair_agent_message_history_with_policy(
             outcome.trimmed_tool_calls += batch_outcome.trimmed_tool_calls;
             outcome.converted_tool_call_messages += batch_outcome.converted_tool_call_messages;
             outcome.dropped_tool_call_messages += batch_outcome.dropped_tool_call_messages;
+            outcome.repaired_empty_wire_ids += batch_outcome.repaired_empty_wire_ids;
             index = next_index;
             continue;
         }
@@ -220,6 +226,22 @@ fn repair_assistant_tool_batch(
             outcome.trimmed_tool_calls = outcome.trimmed_tool_calls.saturating_add(1);
             continue;
         }
+
+        // Repair empty provider_tool_call_id (wire_id) - this causes "tool call id is invalid" errors
+        // with MiniMax and other providers. Generate a fallback ID based on invocation_id.
+        let mut correlation = correlation;
+        let wire_id = correlation.wire_tool_call_id();
+        if wire_id.is_empty() {
+            let invocation_id_str = correlation.invocation_id.as_str().to_string();
+            warn!(
+                invocation_id = %invocation_id_str,
+                "Repairing empty wire_id in stored tool call correlation"
+            );
+            correlation = correlation.with_provider_tool_call_id(invocation_id_str);
+            outcome.applied = true;
+            outcome.repaired_empty_wire_ids = outcome.repaired_empty_wire_ids.saturating_add(1);
+        }
+
         valid_tool_calls.push(tool_call);
         valid_tool_call_correlations.push(correlation);
     }
@@ -1350,5 +1372,65 @@ mod tests {
                 .expect("assistant correlations"),
             vec![ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1")]
         );
+    }
+
+    #[test]
+    fn repair_agent_message_history_repairs_empty_wire_ids() {
+        // Test that empty provider_tool_call_id (wire_id) is repaired
+        // This fixes "tool call id is invalid (2013)" errors with MiniMax
+        let correlation =
+            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("".to_string()); // Empty wire_id
+        let messages = vec![
+            AgentMessage {
+                kind: AgentMessageKind::AssistantToolCall,
+                role: MessageRole::Assistant,
+                content: "Calling tools".to_string(),
+                reasoning: None,
+                tool_call_id: None,
+                tool_call_correlation: None,
+                tool_name: None,
+                tool_calls: Some(vec![ToolCall::new(
+                    "call-1".to_string(),
+                    ToolCallFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    false,
+                )]),
+                tool_call_correlations: Some(vec![correlation.clone()]),
+                externalized_payload: None,
+                pruned_artifact: None,
+                structured_summary: None,
+                archive_ref: None,
+            },
+            AgentMessage {
+                kind: AgentMessageKind::ToolResult,
+                role: MessageRole::Tool,
+                content: "result".to_string(),
+                reasoning: None,
+                tool_call_id: Some("invoke-1".to_string()),
+                tool_call_correlation: Some(correlation),
+                tool_name: Some("search".to_string()),
+                tool_calls: None,
+                tool_call_correlations: None,
+                externalized_payload: None,
+                pruned_artifact: None,
+                structured_summary: None,
+                archive_ref: None,
+            },
+        ];
+
+        let (repaired, outcome) = repair_agent_message_history(&messages);
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.repaired_empty_wire_ids, 1);
+        assert_eq!(repaired.len(), 2);
+
+        // Verify wire_id was repaired to invocation_id
+        let repaired_correlations = repaired[0]
+            .resolved_tool_call_correlations()
+            .expect("assistant correlations");
+        assert_eq!(repaired_correlations.len(), 1);
+        assert_eq!(repaired_correlations[0].wire_tool_call_id(), "invoke-1");
     }
 }
