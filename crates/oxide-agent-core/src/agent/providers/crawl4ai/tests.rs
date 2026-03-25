@@ -23,8 +23,13 @@ fn test_args_deserialize() {
 
 #[test]
 fn test_url_building() {
-    let provider =
-        Crawl4aiProvider::with_timeout("http://localhost:11235/", Duration::from_secs(1));
+    let provider = Crawl4aiProvider::with_config(
+        "http://localhost:11235/",
+        Duration::from_secs(1),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(10),
+    );
     let url = provider.endpoint_url("/crawl");
     assert_eq!(url, "http://localhost:11235/crawl");
 }

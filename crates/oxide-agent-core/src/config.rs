@@ -1366,6 +1366,18 @@ pub const TRANSPORT_API_MAX_BACKOFF_MS: u64 = 4000;
 /// Default timeout for Crawl4AI requests (seconds)
 pub const CRAWL4AI_DEFAULT_TIMEOUT_SECS: u64 = 120;
 
+/// Default max concurrent crawl4ai requests per sub-agent
+pub const CRAWL4AI_DEFAULT_MAX_CONCURRENT: usize = 5;
+
+/// Default max retries for crawl4ai requests
+pub const CRAWL4AI_DEFAULT_MAX_RETRIES: usize = 6;
+
+/// Default initial backoff delay in seconds
+pub const CRAWL4AI_DEFAULT_INITIAL_BACKOFF_SECS: u64 = 2;
+
+/// Default max backoff delay in seconds
+pub const CRAWL4AI_DEFAULT_MAX_BACKOFF_SECS: u64 = 30;
+
 /// Get Crawl4AI base URL from env.
 ///
 /// Environment variable: `CRAWL4AI_URL`
@@ -1383,6 +1395,50 @@ pub fn get_crawl4ai_timeout() -> u64 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(CRAWL4AI_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get max concurrent crawl4ai requests from env or default
+///
+/// Environment variable: `CRAWL4AI_MAX_CONCURRENT`
+#[must_use]
+pub fn get_crawl4ai_max_concurrent() -> usize {
+    std::env::var("CRAWL4AI_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(CRAWL4AI_DEFAULT_MAX_CONCURRENT)
+}
+
+/// Get max retries for crawl4ai requests from env or default
+///
+/// Environment variable: `CRAWL4AI_MAX_RETRIES`
+#[must_use]
+pub fn get_crawl4ai_max_retries() -> usize {
+    std::env::var("CRAWL4AI_MAX_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(CRAWL4AI_DEFAULT_MAX_RETRIES)
+}
+
+/// Get initial backoff delay for crawl4ai retries from env or default (seconds)
+///
+/// Environment variable: `CRAWL4AI_INITIAL_BACKOFF_SECS`
+#[must_use]
+pub fn get_crawl4ai_initial_backoff() -> u64 {
+    std::env::var("CRAWL4AI_INITIAL_BACKOFF_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(CRAWL4AI_DEFAULT_INITIAL_BACKOFF_SECS)
+}
+
+/// Get max backoff delay for crawl4ai retries from env or default (seconds)
+///
+/// Environment variable: `CRAWL4AI_MAX_BACKOFF_SECS`
+#[must_use]
+pub fn get_crawl4ai_max_backoff() -> u64 {
+    std::env::var("CRAWL4AI_MAX_BACKOFF_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(CRAWL4AI_DEFAULT_MAX_BACKOFF_SECS)
 }
 
 /// Default web search provider
