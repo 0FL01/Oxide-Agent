@@ -8,19 +8,25 @@ mod response;
 mod tests;
 
 use crate::agent::provider::ToolProvider;
-use crate::config::get_crawl4ai_timeout;
+use crate::config::{
+    get_crawl4ai_initial_backoff, get_crawl4ai_max_backoff, get_crawl4ai_max_concurrent,
+    get_crawl4ai_max_retries, get_crawl4ai_timeout,
+};
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::debug;
+use tokio::sync::Semaphore;
+use tokio::time::sleep;
+use tracing::{debug, warn};
 
 use response::{
     build_crawl_body, format_crawl_output, format_http_error, format_markdown_output,
-    format_pdf_output, is_json_response, is_pdf_response, ResponsePayload,
+    format_pdf_output, is_json_response, is_pdf_response, is_retryable_error, ResponsePayload,
 };
 
 /// Provider for Crawl4AI tools.
@@ -28,17 +34,62 @@ pub struct Crawl4aiProvider {
     base_url: String,
     client: reqwest::Client,
     timeout: Duration,
+    max_retries: usize,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+    /// Optional semaphore to limit concurrent requests
+    semaphore: Option<Arc<Semaphore>>,
 }
 
 impl Crawl4aiProvider {
-    /// Create a new Crawl4AI provider with the default timeout.
+    /// Create a new Crawl4AI provider with default config and shared semaphore.
+    ///
+    /// The semaphore limits concurrent requests across all instances.
+    #[must_use]
+    pub fn new_with_semaphore(base_url: &str, semaphore: Arc<Semaphore>) -> Self {
+        let timeout = Duration::from_secs(get_crawl4ai_timeout());
+        let max_retries = get_crawl4ai_max_retries();
+        let initial_backoff = Duration::from_secs(get_crawl4ai_initial_backoff());
+        let max_backoff = Duration::from_secs(get_crawl4ai_max_backoff());
+        Self::with_config_and_semaphore(
+            base_url,
+            timeout,
+            max_retries,
+            initial_backoff,
+            max_backoff,
+            Some(semaphore),
+        )
+    }
+}
+
+impl Crawl4aiProvider {
+    /// Create a new Crawl4AI provider with default config (no semaphore).
     #[must_use]
     pub fn new(base_url: &str) -> Self {
         let timeout = Duration::from_secs(get_crawl4ai_timeout());
-        Self::with_timeout(base_url, timeout)
+        let max_retries = get_crawl4ai_max_retries();
+        let initial_backoff = Duration::from_secs(get_crawl4ai_initial_backoff());
+        let max_backoff = Duration::from_secs(get_crawl4ai_max_backoff());
+        Self::with_config_and_semaphore(
+            base_url,
+            timeout,
+            max_retries,
+            initial_backoff,
+            max_backoff,
+            None,
+        )
     }
 
-    fn with_timeout(base_url: &str, timeout: Duration) -> Self {
+    /// Create a Crawl4AI provider with explicit configuration and optional semaphore.
+    #[must_use]
+    pub fn with_config_and_semaphore(
+        base_url: &str,
+        timeout: Duration,
+        max_retries: usize,
+        initial_backoff: Duration,
+        max_backoff: Duration,
+        semaphore: Option<Arc<Semaphore>>,
+    ) -> Self {
         let client = match reqwest::Client::builder().timeout(timeout).build() {
             Ok(client) => client,
             Err(_) => reqwest::Client::new(),
@@ -48,7 +99,42 @@ impl Crawl4aiProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
             timeout,
+            max_retries,
+            initial_backoff,
+            max_backoff,
+            semaphore,
         }
+    }
+
+    /// Create a Crawl4AI provider with explicit configuration (no semaphore).
+    #[must_use]
+    pub fn with_config(
+        base_url: &str,
+        timeout: Duration,
+        max_retries: usize,
+        initial_backoff: Duration,
+        max_backoff: Duration,
+    ) -> Self {
+        Self::with_config_and_semaphore(
+            base_url,
+            timeout,
+            max_retries,
+            initial_backoff,
+            max_backoff,
+            None,
+        )
+    }
+
+    /// Get configured max concurrent requests.
+    #[must_use]
+    pub fn max_concurrent() -> usize {
+        get_crawl4ai_max_concurrent()
+    }
+
+    /// Create a new semaphore with configured max permits.
+    #[must_use]
+    pub fn create_semaphore() -> Arc<Semaphore> {
+        Arc::new(Semaphore::new(get_crawl4ai_max_concurrent()))
     }
 
     fn endpoint_url(&self, path: &str) -> String {
@@ -57,12 +143,50 @@ impl Crawl4aiProvider {
 
     async fn post(&self, path: &str, body: Value) -> Result<ResponsePayload> {
         let url = self.endpoint_url(path);
+        let mut last_error = None;
+        let mut backoff = self.initial_backoff;
+
+        for attempt in 0..=self.max_retries {
+            if attempt > 0 {
+                debug!(
+                    url = %url,
+                    attempt = attempt,
+                    backoff_secs = backoff.as_secs(),
+                    "Crawl4AI retry",
+                );
+                sleep(backoff).await;
+                // Exponential backoff with cap
+                backoff = Duration::min(backoff * 2, self.max_backoff);
+            }
+
+            match self.do_post(&url, &body).await {
+                Ok(payload) => return Ok(payload),
+                Err(e) => {
+                    last_error = Some(e);
+                    // Only retry on transient errors
+                    if !is_retryable_error(&last_error.as_ref().unwrap().to_string()) {
+                        break;
+                    }
+                    warn!(
+                        url = %url,
+                        attempt = attempt,
+                        error = %last_error.as_ref().unwrap(),
+                        "Crawl4AI request failed, will retry",
+                    );
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("Crawl4AI request failed")))
+    }
+
+    async fn do_post(&self, url: &str, body: &Value) -> Result<ResponsePayload> {
         debug!(url = %url, timeout_secs = self.timeout.as_secs(), "Crawl4AI request");
 
         let response = self
             .client
             .post(url)
-            .json(&body)
+            .json(body)
             .send()
             .await
             .map_err(|e| anyhow!("Crawl4AI request failed: {e}"))?;
@@ -194,6 +318,16 @@ impl ToolProvider for Crawl4aiProvider {
                 return Err(anyhow!("Crawl4AI request cancelled"));
             }
         }
+
+        // Acquire semaphore permit if configured (limits concurrent crawl4ai requests)
+        let _permit = if let Some(sem) = &self.semaphore {
+            let permit = sem.acquire().await.map_err(|_| {
+                anyhow!("Crawl4AI semaphore acquisition failed (shutdown in progress)")
+            })?;
+            Some(permit)
+        } else {
+            None
+        };
 
         match tool_name {
             "deep_crawl" => {

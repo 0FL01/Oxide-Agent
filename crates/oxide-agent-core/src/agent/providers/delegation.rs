@@ -41,6 +41,7 @@ use uuid::Uuid;
 use crate::agent::providers::Crawl4aiProvider;
 #[cfg(feature = "tavily")]
 use crate::agent::providers::TavilyProvider;
+use tokio::sync::Semaphore;
 
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "delegate_to_sub_agent",
@@ -93,6 +94,10 @@ pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
+    /// Semaphore to limit concurrent crawl4ai requests per sub-agent.
+    /// Used via Arc::clone() in build_sub_agent_providers().
+    #[allow(dead_code)]
+    crawl4ai_semaphore: Arc<Semaphore>,
 }
 
 struct PreparedSubAgentExecution {
@@ -129,6 +134,9 @@ impl DelegationProvider {
             llm_client,
             sandbox_scope: sandbox_scope.into(),
             settings,
+            crawl4ai_semaphore: Arc::new(Semaphore::new(
+                crate::config::get_crawl4ai_max_concurrent(),
+            )),
         }
     }
 
@@ -181,7 +189,9 @@ impl DelegationProvider {
                 #[cfg(feature = "crawl4ai")]
                 if let Ok(url) = std::env::var("CRAWL4AI_URL") {
                     if !url.is_empty() {
-                        providers.push(Box::new(Crawl4aiProvider::new(&url)));
+                        // Clone semaphore for each sub-agent (shared limit across sub-agents)
+                        let sem = Arc::clone(&self.crawl4ai_semaphore);
+                        providers.push(Box::new(Crawl4aiProvider::new_with_semaphore(&url, sem)));
                     }
                 }
                 #[cfg(not(feature = "crawl4ai"))]

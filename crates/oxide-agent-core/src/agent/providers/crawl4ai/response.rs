@@ -194,3 +194,38 @@ fn truncate_output(text: String) -> String {
     truncated.push_str("\n\n... (truncated)");
     truncated
 }
+
+/// Determines if an error is retryable (transient).
+/// Returns true for network errors, timeouts, and 5xx server errors.
+pub(super) fn is_retryable_error(error: &str) -> bool {
+    // Network-level errors (connection refused, timeout, etc.)
+    let transient_patterns = [
+        "connection refused",
+        "connection reset",
+        "connection timed out",
+        "timeout",
+        "operation timed out",
+        "temporary failure",
+        "network",
+        "epoxy",
+        "connection closed",
+        "error trying to connect",
+    ];
+
+    for pattern in transient_patterns {
+        if error.to_lowercase().contains(pattern) {
+            return true;
+        }
+    }
+
+    // HTTP 5xx server errors are retryable
+    if error.contains("500")
+        || error.contains("502")
+        || error.contains("503")
+        || error.contains("504")
+    {
+        return true;
+    }
+
+    false
+}
