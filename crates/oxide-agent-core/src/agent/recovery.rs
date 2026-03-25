@@ -7,7 +7,7 @@ use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::llm::{ToolCall, ToolCallCorrelation, ToolCallFunction};
 use lazy_regex::regex;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -246,6 +246,12 @@ fn repair_assistant_tool_batch(
         valid_tool_call_correlations.push(correlation);
     }
 
+    let canonical_correlations_by_invocation: HashMap<_, _> = valid_tool_call_correlations
+        .iter()
+        .cloned()
+        .map(|correlation| (correlation.invocation_id.clone(), correlation))
+        .collect();
+
     let mut repaired_tool_results = Vec::new();
     let mut seen_result_ids = HashSet::new();
     let mut cursor = assistant_index + 1;
@@ -253,10 +259,15 @@ fn repair_assistant_tool_batch(
         && messages[cursor].resolved_kind() == AgentMessageKind::ToolResult
     {
         let tool_result = &messages[cursor];
-        let Some(invocation_id) = tool_result
-            .resolved_tool_call_correlation()
-            .map(|correlation| correlation.invocation_id)
-            .filter(|id| !id.as_str().trim().is_empty())
+        let Some(result_correlation) = tool_result.resolved_tool_call_correlation() else {
+            outcome.applied = true;
+            outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
+            cursor += 1;
+            continue;
+        };
+
+        let invocation_id = result_correlation.invocation_id.clone();
+        let Some(invocation_id) = Some(invocation_id).filter(|id| !id.as_str().trim().is_empty())
         else {
             outcome.applied = true;
             outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
@@ -264,14 +275,39 @@ fn repair_assistant_tool_batch(
             continue;
         };
 
-        if !expected_ids.contains(&invocation_id) || !seen_result_ids.insert(invocation_id) {
+        if !expected_ids.contains(&invocation_id) || !seen_result_ids.insert(invocation_id.clone())
+        {
             outcome.applied = true;
             outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
             cursor += 1;
             continue;
         }
 
-        repaired_tool_results.push(tool_result.clone());
+        let Some(canonical_correlation) = canonical_correlations_by_invocation.get(&invocation_id)
+        else {
+            outcome.applied = true;
+            outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
+            cursor += 1;
+            continue;
+        };
+
+        let mut repaired_tool_result = tool_result.clone();
+        if repaired_tool_result.tool_call_correlation.as_ref() != Some(canonical_correlation) {
+            if result_correlation.wire_tool_call_id().is_empty() {
+                outcome.repaired_empty_wire_ids = outcome.repaired_empty_wire_ids.saturating_add(1);
+            }
+            repaired_tool_result.tool_call_correlation = Some(canonical_correlation.clone());
+            if repaired_tool_result
+                .tool_call_id
+                .as_deref()
+                .is_none_or(|tool_call_id| tool_call_id.trim().is_empty())
+            {
+                repaired_tool_result.tool_call_id = Some(invocation_id.as_str().to_string());
+            }
+            outcome.applied = true;
+        }
+
+        repaired_tool_results.push(repaired_tool_result);
         cursor += 1;
     }
 
@@ -1423,7 +1459,7 @@ mod tests {
         let (repaired, outcome) = repair_agent_message_history(&messages);
 
         assert!(outcome.applied);
-        assert_eq!(outcome.repaired_empty_wire_ids, 1);
+        assert_eq!(outcome.repaired_empty_wire_ids, 2);
         assert_eq!(repaired.len(), 2);
 
         // Verify wire_id was repaired to invocation_id
@@ -1432,5 +1468,13 @@ mod tests {
             .expect("assistant correlations");
         assert_eq!(repaired_correlations.len(), 1);
         assert_eq!(repaired_correlations[0].wire_tool_call_id(), "invoke-1");
+
+        let repaired_tool_result_correlation = repaired[1]
+            .resolved_tool_call_correlation()
+            .expect("tool result correlation");
+        assert_eq!(
+            repaired_tool_result_correlation.wire_tool_call_id(),
+            "invoke-1"
+        );
     }
 }

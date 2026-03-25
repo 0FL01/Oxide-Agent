@@ -1465,15 +1465,32 @@ fn validate_tool_history(
                             correlation.invocation_id
                         )));
                     }
+                    if has_empty_explicit_provider_tool_call_id(&correlation) {
+                        return Err(LlmError::RepairableHistory(format!(
+                            "assistant tool call `{}` has an empty provider_tool_call_id",
+                            correlation.invocation_id
+                        )));
+                    }
                 }
 
                 let mut seen_results = HashSet::new();
                 let mut cursor = index + 1;
                 while cursor < messages.len() && messages[cursor].role == "tool" {
                     let result = &messages[cursor];
-                    let Some(invocation_id) = result
-                        .resolved_tool_call_correlation()
-                        .map(|correlation| correlation.invocation_id)
+                    let Some(result_correlation) = result.resolved_tool_call_correlation() else {
+                        return Err(LlmError::RepairableHistory(
+                            "tool result is missing invocation_id".to_string(),
+                        ));
+                    };
+
+                    if has_empty_explicit_provider_tool_call_id(&result_correlation) {
+                        return Err(LlmError::RepairableHistory(format!(
+                            "tool result for invocation_id `{}` has an empty provider_tool_call_id",
+                            result_correlation.invocation_id
+                        )));
+                    }
+
+                    let Some(invocation_id) = Some(result_correlation.invocation_id.clone())
                         .filter(|id| !id.as_str().trim().is_empty())
                     else {
                         return Err(LlmError::RepairableHistory(
@@ -1535,6 +1552,13 @@ fn validate_tool_history(
     }
 
     Ok(())
+}
+
+fn has_empty_explicit_provider_tool_call_id(correlation: &ToolCallCorrelation) -> bool {
+    correlation
+        .provider_tool_call_id
+        .as_ref()
+        .is_some_and(|provider_tool_call_id| provider_tool_call_id.as_str().trim().is_empty())
 }
 
 #[cfg(test)]
@@ -1874,5 +1898,67 @@ mod tests {
             result.is_ok(),
             "canonical invocation ids should drive matching"
         );
+    }
+
+    #[test]
+    fn validate_tool_history_rejects_empty_explicit_provider_tool_call_id_in_assistant_batch() {
+        let messages = vec![Message {
+            role: "assistant".to_string(),
+            content: "calling tools".to_string(),
+            tool_call_id: None,
+            tool_call_correlation: None,
+            name: None,
+            tool_calls: Some(vec![tool_call("call-1", "search")]),
+            tool_call_correlations: Some(vec![ToolCallCorrelation::new("invoke-1")
+                .with_provider_tool_call_id("")]),
+        }];
+
+        let error = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::Strict,
+            },
+        )
+        .expect_err("history must be rejected");
+
+        assert!(matches!(error, LlmError::RepairableHistory(_)));
+    }
+
+    #[test]
+    fn validate_tool_history_rejects_empty_explicit_provider_tool_call_id_in_tool_result() {
+        let assistant_correlation = ToolCallCorrelation::new("invoke-1")
+            .with_provider_tool_call_id("provider-call-1");
+        let tool_result_correlation = ToolCallCorrelation::new("invoke-1")
+            .with_provider_tool_call_id("");
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: "calling tools".to_string(),
+                tool_call_id: None,
+                tool_call_correlation: None,
+                name: None,
+                tool_calls: Some(vec![tool_call("call-1", "search")]),
+                tool_call_correlations: Some(vec![assistant_correlation]),
+            },
+            Message {
+                role: "tool".to_string(),
+                content: "result".to_string(),
+                tool_call_id: Some("invoke-1".to_string()),
+                tool_call_correlation: Some(tool_result_correlation),
+                name: Some("search".to_string()),
+                tool_calls: None,
+                tool_call_correlations: None,
+            },
+        ];
+
+        let error = validate_tool_history(
+            &messages,
+            ProviderCapabilities {
+                tool_history_mode: ToolHistoryMode::Strict,
+            },
+        )
+        .expect_err("history must be rejected");
+
+        assert!(matches!(error, LlmError::RepairableHistory(_)));
     }
 }
