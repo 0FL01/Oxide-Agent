@@ -10,8 +10,13 @@ use crate::llm::{LlmClient, LlmError};
 use lazy_regex::lazy_regex;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::time::{timeout, Duration};
+use tokio::time::{sleep, timeout, Duration};
 use tracing::{debug, warn};
+
+const DEFAULT_COMPACTION_SUMMARIZER_TIMEOUT_SECS: u64 = 5;
+const DEFAULT_COMPACTION_SUMMARIZER_MAX_ATTEMPTS: usize = 5;
+const DEFAULT_COMPACTION_SUMMARIZER_INITIAL_BACKOFF_MS: u64 = 1_000;
+const DEFAULT_COMPACTION_SUMMARIZER_MAX_BACKOFF_MS: u64 = 12_000;
 
 /// Configuration for the dedicated compaction summary model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +25,24 @@ pub struct CompactionSummarizerConfig {
     pub model_routes: Vec<ModelInfo>,
     /// Request timeout for the sidecar summary call.
     pub timeout_secs: u64,
+    /// Maximum number of attempts per model route before failing over.
+    pub max_attempts: usize,
+    /// Initial retry backoff in milliseconds.
+    pub initial_backoff_ms: u64,
+    /// Maximum retry backoff in milliseconds.
+    pub max_backoff_ms: u64,
+}
+
+impl Default for CompactionSummarizerConfig {
+    fn default() -> Self {
+        Self {
+            model_routes: Vec::new(),
+            timeout_secs: DEFAULT_COMPACTION_SUMMARIZER_TIMEOUT_SECS,
+            max_attempts: DEFAULT_COMPACTION_SUMMARIZER_MAX_ATTEMPTS,
+            initial_backoff_ms: DEFAULT_COMPACTION_SUMMARIZER_INITIAL_BACKOFF_MS,
+            max_backoff_ms: DEFAULT_COMPACTION_SUMMARIZER_MAX_BACKOFF_MS,
+        }
+    }
 }
 
 /// Generates structured summaries for compactable history slices.
@@ -144,18 +167,94 @@ impl CompactionSummarizer {
 
     async fn call_llm(&self, user_message: &str, route: &ModelInfo) -> Result<String, LlmError> {
         let system_prompt = compaction_system_prompt();
-        let llm_call =
-            self.llm_client
-                .chat_completion_for_model_info(system_prompt, &[], user_message, route);
+        let max_attempts = self.config.max_attempts.max(1);
 
-        timeout(Duration::from_secs(self.config.timeout_secs), llm_call)
-            .await
-            .map_err(|_| {
-                LlmError::Unknown(format!(
-                    "Compaction summary model timed out after {}s",
-                    self.config.timeout_secs
-                ))
-            })?
+        for attempt in 1..=max_attempts {
+            let llm_call = self.llm_client.chat_completion_for_model_info(
+                system_prompt,
+                &[],
+                user_message,
+                route,
+            );
+
+            match timeout(Duration::from_secs(self.config.timeout_secs), llm_call).await {
+                Ok(Ok(response)) => return Ok(response),
+                Ok(Err(error)) => {
+                    let Some(backoff) = self.retry_backoff_for_error(&error, attempt) else {
+                        return Err(error);
+                    };
+                    warn!(
+                        model = %route.id,
+                        provider = %route.provider,
+                        attempt,
+                        max_attempts,
+                        backoff_ms = backoff.as_millis(),
+                        error = %error,
+                        "Compaction summary attempt failed, retrying route"
+                    );
+                    sleep(backoff).await;
+                }
+                Err(_) => {
+                    let Some(backoff) = self.retry_backoff_for_timeout(attempt) else {
+                        return Err(LlmError::Unknown(format!(
+                            "Compaction summary model timed out after {}s",
+                            self.config.timeout_secs
+                        )));
+                    };
+                    warn!(
+                        model = %route.id,
+                        provider = %route.provider,
+                        attempt,
+                        max_attempts,
+                        timeout_secs = self.config.timeout_secs,
+                        backoff_ms = backoff.as_millis(),
+                        "Compaction summary attempt timed out, retrying route"
+                    );
+                    sleep(backoff).await;
+                }
+            }
+        }
+
+        Err(LlmError::ApiError(
+            "Compaction summary retry attempts exhausted".to_string(),
+        ))
+    }
+
+    fn retry_backoff_for_error(&self, error: &LlmError, attempt: usize) -> Option<Duration> {
+        if attempt >= self.config.max_attempts.max(1) || !LlmClient::is_retryable_error(error) {
+            return None;
+        }
+
+        match error {
+            LlmError::RateLimit {
+                wait_secs: Some(wait_secs),
+                ..
+            } => {
+                let wait_with_buffer = wait_secs.saturating_add(1);
+                let backoff = Duration::from_secs(wait_with_buffer);
+                (backoff <= self.max_backoff()).then_some(backoff)
+            }
+            _ => Some(self.exponential_backoff(attempt)),
+        }
+    }
+
+    fn retry_backoff_for_timeout(&self, attempt: usize) -> Option<Duration> {
+        (attempt < self.config.max_attempts.max(1)).then(|| self.exponential_backoff(attempt))
+    }
+
+    fn exponential_backoff(&self, attempt: usize) -> Duration {
+        let exponent = (attempt.saturating_sub(1)).min(31) as u32;
+        let multiplier = 2u64.pow(exponent);
+        let backoff_ms = self
+            .config
+            .initial_backoff_ms
+            .saturating_mul(multiplier)
+            .min(self.config.max_backoff_ms);
+        Duration::from_millis(backoff_ms)
+    }
+
+    fn max_backoff(&self) -> Duration {
+        Duration::from_millis(self.config.max_backoff_ms)
     }
 }
 
@@ -479,6 +578,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: vec![route("compact-model", "mock", 256)],
                 timeout_secs: 5,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let messages = vec![
@@ -521,6 +621,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: vec![route("compact-model", "missing", 256)],
                 timeout_secs: 1,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let messages = vec![
@@ -580,6 +681,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: vec![route("compact-model", "mock", 256)],
                 timeout_secs: 5,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let messages = vec![
@@ -657,6 +759,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: vec![route("compact-model", "mock", 256)],
                 timeout_secs: 5,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let messages = vec![

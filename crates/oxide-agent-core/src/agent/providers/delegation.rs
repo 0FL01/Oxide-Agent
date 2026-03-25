@@ -271,6 +271,7 @@ impl DelegationProvider {
             CompactionSummarizerConfig {
                 model_routes: self.settings.get_configured_compaction_model_routes(true),
                 timeout_secs,
+                ..CompactionSummarizerConfig::default()
             },
         ))
     }

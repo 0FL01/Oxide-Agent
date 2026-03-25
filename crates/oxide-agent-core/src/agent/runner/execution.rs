@@ -1441,6 +1441,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: Vec::new(),
                 timeout_secs: 1,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let compaction_service = CompactionService::default().with_summarizer(summarizer);
@@ -1630,6 +1631,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: Vec::new(),
                 timeout_secs: 1,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let compaction_service = CompactionService::default().with_summarizer(summarizer);
@@ -1803,6 +1805,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: Vec::new(),
                 timeout_secs: 1,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let compaction_service = CompactionService::default().with_summarizer(summarizer);
@@ -1873,6 +1876,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: Vec::new(),
                 timeout_secs: 1,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let compaction_service = CompactionService::default().with_summarizer(summarizer);
@@ -1966,6 +1970,7 @@ mod tests {
             CompactionSummarizerConfig {
                 model_routes: Vec::new(),
                 timeout_secs: 1,
+                ..CompactionSummarizerConfig::default()
             },
         );
         let compaction_service = CompactionService::default().with_summarizer(summarizer);
