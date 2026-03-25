@@ -1,6 +1,7 @@
 //! Response parsing utilities for MiniMax provider
 
 use claudius::{ContentBlock, ThinkingBlock};
+use tracing::debug;
 
 use crate::llm::providers::protocol_profiles::ANTHROPIC_CLIENT_TOOL_PROFILE;
 use crate::llm::{ChatResponse, TokenUsage, ToolCall};
@@ -13,6 +14,7 @@ pub fn from_claudius_message(msg: claudius::Message) -> Result<ChatResponse, cra
     let mut content: Option<String> = None;
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut reasoning_content: Option<String> = None;
+    let mut tool_call_index: usize = 0;
 
     for block in msg.content {
         match block {
@@ -23,13 +25,27 @@ pub fn from_claudius_message(msg: claudius::Message) -> Result<ChatResponse, cra
                 }
             }
             ContentBlock::ToolUse(tool_use) => {
-                let wire_id = tool_use.id;
+                // MiniMax M2/M2.5 sometimes returns tool calls with null/empty IDs,
+                // which causes 'tool result's tool id() not found (2013)' errors.
+                // Work around by generating a unique fallback ID.
+                let wire_id = if tool_use.id.is_empty() {
+                    debug!(
+                        tool_name = %tool_use.name,
+                        index = tool_call_index,
+                        "MiniMax returned empty tool call ID, generating fallback"
+                    );
+                    format!("minimax_fallback_{}", tool_call_index)
+                } else {
+                    tool_use.id.clone()
+                };
+
                 tool_calls.push(ANTHROPIC_CLIENT_TOOL_PROFILE.inbound_provider_tool_call(
                     wire_id.as_str(),
                     None,
                     tool_use.name,
                     serde_json::to_string(&tool_use.input).unwrap_or_default(),
                 ));
+                tool_call_index += 1;
             }
             ContentBlock::Thinking(thinking) => {
                 // Extended thinking content
@@ -133,6 +149,32 @@ mod tests {
         assert_eq!(response.tool_calls[0].wire_tool_call_id(), "call_abc");
         assert_eq!(response.tool_calls[0].function.name, "get_weather");
         assert_eq!(response.finish_reason, "tool_calls");
+    }
+
+    #[test]
+    fn handles_empty_tool_call_id() {
+        // MiniMax M2/M2.5 sometimes returns tool calls with empty IDs
+        // This test verifies we generate a fallback ID
+        let msg = claudius::Message::new(
+            "msg_123".to_string(),
+            vec![ContentBlock::ToolUse(ToolUseBlock::new(
+                "", // Empty ID!
+                "get_weather",
+                serde_json::json!({"city": "Moscow"}),
+            ))],
+            claudius::Model::Custom("MiniMax-M2".to_string()),
+            Usage::new(10, 5),
+        )
+        .with_stop_reason(StopReason::ToolUse);
+
+        let response = from_claudius_message(msg).expect("should parse");
+
+        assert_eq!(response.tool_calls.len(), 1);
+        // wire_tool_call_id should be the fallback generated ID
+        assert_eq!(
+            response.tool_calls[0].wire_tool_call_id(),
+            "minimax_fallback_0"
+        );
     }
 
     #[test]

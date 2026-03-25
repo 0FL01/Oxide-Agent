@@ -414,4 +414,50 @@ mod tests {
             assert_eq!(id_mapper.to_original(mistral), **original);
         }
     }
+
+    #[test]
+    fn parse_chat_response_skips_empty_tool_call_id() {
+        let mut id_mapper = ToolCallIdMapper::new();
+
+        // Register an original ID so we can have a valid mistral ID
+        let original_id = "call_test123";
+        let mistral_id = id_mapper.register(original_id.to_string());
+
+        let response = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "",  // Empty ID - should be skipped
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{\"location\":\"Moscow\"}"
+                            }
+                        },
+                        {
+                            "id": mistral_id,  // Valid ID - should be parsed
+                            "type": "function",
+                            "function": {
+                                "name": "get_time",
+                                "arguments": "{}"
+                            }
+                        }
+                    ]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 30,
+                "total_tokens": 80
+            }
+        });
+
+        let parsed = parse_chat_response(response, &id_mapper).expect("response parses");
+        // Only the valid ID should be parsed
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].function.name, "get_time");
+    }
 }
