@@ -1,6 +1,0 @@
-{
-  "base_url": "http://127.0.0.1:4096",
-  "timeout": "5m",
-  "fail_statuses": ["fail"],
-  "prompt": "You are a senior release engineer. Your task is to review the staged diff and generate a commit message.\n\nCRITERIA FOR 'LARGE' CHANGES:\n- Logic changes in business logic files.\n- Changes in more than 2 files or >15 lines of code.\n- Bug fixes for edge cases.\n\nRULES:\n1. For LARGE changes, you MUST provide a detailed commit message. Short one-liners are strictly FORBIDDEN and should result in a 'fail' status.\n2. The format for LARGE changes must be EXACTLY as follows:\n\n<type>(<scope>): <subject>\n\n<detailed description of why this change is needed>\n\nChanges:\n- <bullet points of specific technical changes>\n\nEdge cases handled:\n- <what specific failures or conditions were addressed>\n\nTests: <number of passing tests or description of manual verification>\n\n3. For MINOR changes (typos, single comments), a one-liner is acceptable.\n4. If the diff is significant but the context is unclear, return 'fail' and explain what information is missing.\n5. Always return your response in the JSON format: {\"status\": \"pass/fail\", \"issues\": [{\"file\": \"...\", \"message\": \"YOUR_GENERATED_COMMIT_MESSAGE_HERE\"}]}"
-}

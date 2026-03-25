@@ -115,7 +115,10 @@ pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall
                     .or_else(|| serde_json::to_string(value).ok())
             })
             .unwrap_or_default();
-        let wire_id = call.get("id").and_then(|value| value.as_str());
+        let wire_id = call
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|id| !id.is_empty());
         tool_calls.push(match wire_id {
             Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
                 wire_id,
@@ -190,5 +193,26 @@ mod tests {
 
         assert_ne!(tool_calls[0].invocation_id().as_str(), "call-openrouter-2");
         assert_eq!(tool_calls[0].wire_tool_call_id(), "call-openrouter-2");
+    }
+
+    #[test]
+    fn parse_tool_calls_handles_empty_id() {
+        let tool_calls = parse_tool_calls(&json!([
+            {
+                "id": "",
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "arguments": "{\"query\":\"oxide\"}"
+                }
+            }
+        ]))
+        .expect("tool calls parse");
+
+        // Empty ID should be treated as uncorrelated
+        assert_eq!(
+            tool_calls[0].wire_tool_call_id(),
+            tool_calls[0].invocation_id().as_str()
+        );
     }
 }

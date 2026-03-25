@@ -31,6 +31,10 @@ pub fn parse_tool_calls(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<To
         .iter()
         .filter_map(|tc| {
             let mistral_id = tc.get("id")?.as_str()?.to_string();
+            // Skip empty IDs - some providers may return empty strings
+            if mistral_id.is_empty() {
+                return None;
+            }
             let original_id = id_mapper.to_original(&mistral_id);
             let has_known_mapping = id_mapper.has_mistral_id(&mistral_id);
 
