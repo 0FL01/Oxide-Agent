@@ -233,7 +233,7 @@ AGENT_MODEL_PROVIDER="mistral"
 
 Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
 
-## Available Models
+## Available LLM Providers
 
 | Name | Provider | Features |
 | :--- | :--- | :--- |
