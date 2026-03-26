@@ -43,10 +43,7 @@ impl KokoroTtsProvider {
 
     /// Set the progress channel for sending files
     #[must_use]
-    pub fn with_progress_tx(
-        mut self,
-        tx: tokio::sync::mpsc::Sender<AgentEvent>,
-    ) -> Self {
+    pub fn with_progress_tx(mut self, tx: tokio::sync::mpsc::Sender<AgentEvent>) -> Self {
         self.progress_tx = Some(tx);
         self
     }
@@ -117,10 +114,7 @@ impl KokoroTtsProvider {
                          Format: {}, Voice: {}, Duration: ~{:.1}s",
                         request.format,
                         request.voice,
-                        estimate_duration(
-                            &request.text,
-                            request.speed
-                        )
+                        estimate_duration(&request.text, request.speed)
                     ))
                 }
                 Ok(Ok(Err(e))) => {

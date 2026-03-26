@@ -99,11 +99,7 @@ impl KokoroClient {
                 "Kokoro TTS API returned error"
             );
 
-            anyhow::bail!(
-                "TTS synthesis failed: HTTP {} - {}",
-                status,
-                error_text
-            );
+            anyhow::bail!("TTS synthesis failed: HTTP {} - {}", status, error_text);
         }
 
         let audio_bytes = response
