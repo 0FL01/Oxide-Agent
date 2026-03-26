@@ -12,11 +12,15 @@ use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Additional user context that can be injected into a running agent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +47,117 @@ pub struct PendingSshReplay {
 pub trait AgentMemoryCheckpoint: Send + Sync {
     /// Persist the provided memory snapshot.
     async fn persist(&self, memory: &AgentMemory) -> Result<()>;
+}
+
+#[cfg(not(test))]
+const MEMORY_CHECKPOINT_DEBOUNCE_MS: u64 = 1_500;
+
+#[derive(Debug, Clone)]
+struct QueuedMemoryCheckpoint {
+    memory: AgentMemory,
+    hash: u64,
+    generation: u64,
+}
+
+#[derive(Debug, Default)]
+struct MemoryCheckpointState {
+    last_persisted_hash: Option<u64>,
+    last_persisted_generation: u64,
+    next_generation: u64,
+    pending: Option<QueuedMemoryCheckpoint>,
+    background_task_active: bool,
+}
+
+fn checkpoint_debounce_duration() -> Duration {
+    #[cfg(test)]
+    {
+        return Duration::from_millis(20);
+    }
+
+    #[cfg(not(test))]
+    {
+        Duration::from_millis(MEMORY_CHECKPOINT_DEBOUNCE_MS)
+    }
+}
+
+fn memory_checkpoint_hash(memory: &AgentMemory) -> Result<u64> {
+    let encoded = bincode::serialize(memory)?;
+    let mut hasher = DefaultHasher::new();
+    encoded.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
+async fn persist_queued_memory_checkpoint(
+    checkpoint: Arc<dyn AgentMemoryCheckpoint>,
+    state: Arc<AsyncMutex<MemoryCheckpointState>>,
+    persist_lock: Arc<AsyncMutex<()>>,
+    queued: QueuedMemoryCheckpoint,
+    force: bool,
+) -> Result<()> {
+    let _persist_guard = persist_lock.lock().await;
+
+    {
+        let state = state.lock().await;
+        if state.last_persisted_hash == Some(queued.hash)
+            || queued.generation <= state.last_persisted_generation
+        {
+            return Ok(());
+        }
+
+        if !force
+            && state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.generation > queued.generation)
+        {
+            return Ok(());
+        }
+    }
+
+    checkpoint.persist(&queued.memory).await?;
+
+    let mut state = state.lock().await;
+    if queued.generation > state.last_persisted_generation {
+        state.last_persisted_generation = queued.generation;
+        state.last_persisted_hash = Some(queued.hash);
+    }
+
+    Ok(())
+}
+
+async fn run_background_checkpoint_loop(
+    checkpoint: Arc<dyn AgentMemoryCheckpoint>,
+    state: Arc<AsyncMutex<MemoryCheckpointState>>,
+    persist_lock: Arc<AsyncMutex<()>>,
+) {
+    let debounce = checkpoint_debounce_duration();
+
+    loop {
+        sleep(debounce).await;
+
+        let queued = {
+            let mut state = state.lock().await;
+            match state.pending.take() {
+                Some(queued) => queued,
+                None => {
+                    state.background_task_active = false;
+                    break;
+                }
+            }
+        };
+
+        if let Err(error) = persist_queued_memory_checkpoint(
+            checkpoint.clone(),
+            state.clone(),
+            persist_lock.clone(),
+            queued,
+            false,
+        )
+        .await
+        {
+            warn!(error = %error, "Failed to persist coalesced memory checkpoint");
+        }
+    }
 }
 
 /// Thread-safe inbox for runtime context injections.
@@ -135,6 +250,10 @@ pub struct AgentSession {
     pending_ssh_replays: Vec<PendingSshReplay>,
     /// Optional sink used to persist memory snapshots during long-running tasks.
     memory_checkpoint: Option<Arc<dyn AgentMemoryCheckpoint>>,
+    /// Shared state for coalescing and deduplicating checkpoint writes.
+    checkpoint_state: Arc<AsyncMutex<MemoryCheckpointState>>,
+    /// Serializes actual checkpoint writes so stale background tasks cannot win.
+    checkpoint_persist_lock: Arc<AsyncMutex<()>>,
 }
 
 impl AgentSession {
@@ -162,6 +281,8 @@ impl AgentSession {
             runtime_context_inbox: RuntimeContextInbox::new(),
             pending_ssh_replays: Vec::new(),
             memory_checkpoint: None,
+            checkpoint_state: Arc::new(AsyncMutex::new(MemoryCheckpointState::default())),
+            checkpoint_persist_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -170,13 +291,44 @@ impl AgentSession {
         self.memory_checkpoint = Some(checkpoint);
     }
 
+    async fn prepare_forced_memory_checkpoint(&self) -> Result<Option<QueuedMemoryCheckpoint>> {
+        let hash = memory_checkpoint_hash(&self.memory)?;
+        let mut state = self.checkpoint_state.lock().await;
+
+        if state.last_persisted_hash == Some(hash) {
+            state.pending = None;
+            return Ok(None);
+        }
+
+        state.next_generation = state.next_generation.saturating_add(1);
+        let generation = state.next_generation;
+        state.pending = None;
+
+        Ok(Some(QueuedMemoryCheckpoint {
+            memory: self.memory.clone(),
+            hash,
+            generation,
+        }))
+    }
+
     /// Persist the current memory snapshot when a checkpoint sink is configured.
     pub async fn persist_memory_checkpoint(&self) -> Result<()> {
         let Some(checkpoint) = &self.memory_checkpoint else {
             return Ok(());
         };
 
-        checkpoint.persist(&self.memory).await
+        let Some(queued) = self.prepare_forced_memory_checkpoint().await? else {
+            return Ok(());
+        };
+
+        persist_queued_memory_checkpoint(
+            checkpoint.clone(),
+            self.checkpoint_state.clone(),
+            self.checkpoint_persist_lock.clone(),
+            queued,
+            true,
+        )
+        .await
     }
 
     /// Persist memory checkpoint in the background (fire-and-forget).
@@ -190,23 +342,68 @@ impl AgentSession {
         };
 
         let memory = self.memory.clone();
+        let checkpoint_state = self.checkpoint_state.clone();
+        let persist_lock = self.checkpoint_persist_lock.clone();
         tokio::spawn(async move {
             let start = std::time::Instant::now();
-            match checkpoint.persist(&memory).await {
-                Ok(_) => {
-                    tracing::debug!(
-                        elapsed_ms = start.elapsed().as_millis(),
-                        "Memory checkpoint persisted (background)"
-                    );
+            let should_spawn_worker = match async {
+                let hash = memory_checkpoint_hash(&memory)?;
+                let mut state = checkpoint_state.lock().await;
+
+                if state.last_persisted_hash == Some(hash) {
+                    state.pending = None;
+                    return Ok(false);
                 }
+
+                if state
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.hash == hash)
+                {
+                    return Ok(false);
+                }
+
+                state.next_generation = state.next_generation.saturating_add(1);
+                let generation = state.next_generation;
+                state.pending = Some(QueuedMemoryCheckpoint {
+                    memory,
+                    hash,
+                    generation,
+                });
+
+                if state.background_task_active {
+                    return Ok(false);
+                }
+
+                state.background_task_active = true;
+                Ok::<bool, anyhow::Error>(true)
+            }
+            .await
+            {
+                Ok(should_spawn_worker) => should_spawn_worker,
                 Err(error) => {
-                    tracing::warn!(
+                    warn!(
                         error = %error,
                         elapsed_ms = start.elapsed().as_millis(),
-                        "Failed to persist memory checkpoint (background)"
+                        "Failed to queue memory checkpoint (background)"
                     );
+                    return;
                 }
+            };
+
+            if should_spawn_worker {
+                tokio::spawn(run_background_checkpoint_loop(
+                    checkpoint,
+                    checkpoint_state,
+                    persist_lock,
+                ));
             }
+
+            debug!(
+                elapsed_ms = start.elapsed().as_millis(),
+                spawned_worker = should_spawn_worker,
+                "Memory checkpoint queued (background)"
+            );
         });
     }
 
@@ -329,6 +526,9 @@ impl AgentSession {
         self.skill_token_count = 0;
         let _ = self.runtime_context_inbox.drain();
         self.pending_ssh_replays.clear();
+        if let Ok(mut state) = self.checkpoint_state.try_lock() {
+            *state = MemoryCheckpointState::default();
+        }
 
         // Sandbox is persistent, do NOT destroy it here
         // if let Some(mut sandbox) = self.sandbox.take() { ... }
@@ -453,8 +653,45 @@ impl AgentSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentSession, PendingSshReplay};
+    use super::{AgentMemoryCheckpoint, AgentSession, PendingSshReplay};
+    use crate::agent::memory::AgentMessage;
     use crate::llm::InvocationId;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingCheckpoint {
+        snapshots: Mutex<Vec<crate::agent::AgentMemory>>,
+    }
+
+    impl RecordingCheckpoint {
+        fn persisted_count(&self) -> usize {
+            self.snapshots
+                .lock()
+                .expect("snapshots mutex poisoned")
+                .len()
+        }
+
+        fn latest_message_count(&self) -> usize {
+            self.snapshots
+                .lock()
+                .expect("snapshots mutex poisoned")
+                .last()
+                .map_or(0, |memory| memory.get_messages().len())
+        }
+    }
+
+    #[async_trait]
+    impl AgentMemoryCheckpoint for RecordingCheckpoint {
+        async fn persist(&self, memory: &crate::agent::AgentMemory) -> Result<()> {
+            self.snapshots
+                .lock()
+                .expect("snapshots mutex poisoned")
+                .push(memory.clone());
+            Ok(())
+        }
+    }
 
     #[test]
     fn reset_clears_pending_ssh_replays() {
@@ -471,5 +708,44 @@ mod tests {
         session.reset();
 
         assert!(session.pending_ssh_replay("req-1").is_none());
+    }
+
+    #[tokio::test]
+    async fn checkpoint_skips_identical_forced_persists() {
+        let checkpoint = Arc::new(RecordingCheckpoint::default());
+        let mut session = AgentSession::new(42_i64.into());
+        session.set_memory_checkpoint(checkpoint.clone());
+        session.memory.add_message(AgentMessage::user("hello"));
+
+        session
+            .persist_memory_checkpoint()
+            .await
+            .expect("first persist should succeed");
+        session
+            .persist_memory_checkpoint()
+            .await
+            .expect("second persist should succeed");
+
+        assert_eq!(checkpoint.persisted_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn background_checkpoint_coalesces_to_latest_snapshot() {
+        let checkpoint = Arc::new(RecordingCheckpoint::default());
+        let mut session = AgentSession::new(42_i64.into());
+        session.set_memory_checkpoint(checkpoint.clone());
+
+        session.memory.add_message(AgentMessage::user("first"));
+        session.persist_memory_checkpoint_background();
+
+        session
+            .memory
+            .add_message(AgentMessage::assistant("second"));
+        session.persist_memory_checkpoint_background();
+
+        tokio::time::sleep(super::checkpoint_debounce_duration() * 4).await;
+
+        assert_eq!(checkpoint.persisted_count(), 1);
+        assert_eq!(checkpoint.latest_message_count(), 2);
     }
 }
