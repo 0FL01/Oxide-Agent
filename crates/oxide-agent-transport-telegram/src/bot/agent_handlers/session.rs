@@ -62,13 +62,6 @@ struct FlowMemoryCheckpoint {
 impl AgentMemoryCheckpoint for FlowMemoryCheckpoint {
     async fn persist(&self, memory: &AgentMemory) -> Result<()> {
         self.storage
-            .upsert_agent_flow_record(
-                self.user_id,
-                self.context_key.clone(),
-                self.agent_flow_id.clone(),
-            )
-            .await?;
-        self.storage
             .save_agent_memory_for_flow(
                 self.user_id,
                 self.context_key.clone(),
@@ -487,37 +480,17 @@ pub(crate) async fn save_memory_after_task(
     user_id: i64,
     context_key: &str,
     agent_flow_id: &str,
-    storage: &Arc<dyn StorageProvider>,
+    _storage: &Arc<dyn StorageProvider>,
 ) {
     if let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await {
         let executor = executor_arc.read().await;
-        if let Err(error) = storage
-            .upsert_agent_flow_record(user_id, context_key.to_string(), agent_flow_id.to_string())
-            .await
-        {
+        if let Err(error) = executor.session().persist_memory_checkpoint().await {
             warn!(
                 error = %error,
                 user_id,
                 context_key,
                 flow_id = agent_flow_id,
-                "Failed to upsert agent flow record"
-            );
-        }
-        if let Err(error) = storage
-            .save_agent_memory_for_flow(
-                user_id,
-                context_key.to_string(),
-                agent_flow_id.to_string(),
-                &executor.session().memory,
-            )
-            .await
-        {
-            warn!(
-                error = %error,
-                user_id,
-                context_key,
-                flow_id = agent_flow_id,
-                "Failed to persist agent memory after task"
+                "Failed to flush agent memory checkpoint after task"
             );
         }
     }
