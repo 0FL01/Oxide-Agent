@@ -9,7 +9,7 @@ use tracing::warn;
 use zai_rs::model::chat::ChatCompletion;
 use zai_rs::model::chat_base_response::ChatCompletionResponse;
 use zai_rs::model::chat_message_types::{TextMessage, VisionMessage, VisionRichContent};
-use zai_rs::model::chat_models::{GLM4_5_air, GLM4_5v, GLM4_7};
+use zai_rs::model::chat_models::{GLM4_5_air, GLM4_5v, GLM5_turbo, GLM4_7, GLM5};
 use zai_rs::model::tools::ThinkingType;
 use zai_rs::model::traits::{Chat, ModelName, ThinkEnable};
 use zai_rs::ZaiError;
@@ -22,10 +22,13 @@ use stream::stream_text_response;
 const ZAI_TEMPERATURE: f32 = 0.95;
 const ZAI_IMAGE_MAX_TOKENS: u32 = 4000;
 
+#[derive(Debug)]
 enum ZaiModel {
     Main(GLM4_7),
     Sub(GLM4_5_air),
     Vision(GLM4_5v),
+    Flagship5(GLM5),
+    Turbo5(GLM5_turbo),
 }
 
 impl ZaiProvider {
@@ -43,6 +46,14 @@ impl ZaiProvider {
                     .await?
             }
             ZaiModel::Sub(model) => {
+                self.text_chat_completion(model, system_prompt, history, user_message, max_tokens)
+                    .await?
+            }
+            ZaiModel::Flagship5(model) => {
+                self.text_chat_completion(model, system_prompt, history, user_message, max_tokens)
+                    .await?
+            }
+            ZaiModel::Turbo5(model) => {
                 self.text_chat_completion(model, system_prompt, history, user_message, max_tokens)
                     .await?
             }
@@ -119,6 +130,24 @@ impl ZaiProvider {
                 let client = client.enable_stream();
                 stream_text_response(client).await
             }
+            ZaiModel::Flagship5(model) => {
+                let mut client =
+                    build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
+                if !converted_tools.is_empty() {
+                    client = client.add_tools(converted_tools);
+                }
+                let client = client.enable_stream();
+                stream_text_response(client).await
+            }
+            ZaiModel::Turbo5(model) => {
+                let mut client =
+                    build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
+                if !converted_tools.is_empty() {
+                    client = client.add_tools(converted_tools);
+                }
+                let client = client.enable_stream();
+                stream_text_response(client).await
+            }
             ZaiModel::Vision(_) => Err(LlmError::Unknown(
                 "ZAI vision model does not support tool calling".to_string(),
             )),
@@ -150,6 +179,8 @@ fn select_model(model_id: &str) -> Result<ZaiModel, LlmError> {
         "glm-4.7" | "glm-4" | "mainagent" => Ok(ZaiModel::Main(GLM4_7 {})),
         "glm-4.5-air" | "glm-4-air" | "subagent" => Ok(ZaiModel::Sub(GLM4_5_air {})),
         "glm-4.5v" | "glm-4v" => Ok(ZaiModel::Vision(GLM4_5v {})),
+        "glm-5" | "flagship5" => Ok(ZaiModel::Flagship5(GLM5 {})),
+        "glm-5-turbo" | "turbo5" => Ok(ZaiModel::Turbo5(GLM5_turbo {})),
         _ => Err(LlmError::Unknown(format!(
             "Unsupported ZAI model id: {model_id}"
         ))),
@@ -312,9 +343,70 @@ fn is_stream_transport_error(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_stream_transport_error, map_zai_error};
+    use super::{is_stream_transport_error, map_zai_error, select_model};
     use crate::llm::LlmError;
     use zai_rs::ZaiError;
+
+    // ── select_model tests ──────────────────────────────────────────────
+
+    #[test]
+    fn select_model_glm5_turbo_exact() {
+        assert!(select_model("glm-5-turbo").is_ok());
+    }
+
+    #[test]
+    fn select_model_glm5_turbo_alias_turbo5() {
+        assert!(select_model("turbo5").is_ok());
+    }
+
+    #[test]
+    fn select_model_glm5_turbo_case_insensitive() {
+        assert!(select_model("GLM-5-Turbo").is_ok());
+        assert!(select_model(" Glm-5-Turbo ").is_ok());
+    }
+
+    #[test]
+    fn select_model_glm5_exact() {
+        assert!(select_model("glm-5").is_ok());
+    }
+
+    #[test]
+    fn select_model_glm5_alias_flagship5() {
+        assert!(select_model("flagship5").is_ok());
+    }
+
+    #[test]
+    fn select_model_glm5_case_insensitive() {
+        assert!(select_model("GLM-5").is_ok());
+        assert!(select_model(" glm-5 ").is_ok());
+    }
+
+    #[test]
+    fn select_model_glm5_turbo_and_glm5_are_distinct() {
+        // Both must resolve successfully — they map to different internal types
+        assert!(select_model("glm-5-turbo").is_ok());
+        assert!(select_model("glm-5").is_ok());
+    }
+
+    #[test]
+    fn select_model_rejects_unknown() {
+        let err = select_model("glm-3-fake").unwrap_err();
+        assert!(matches!(err, LlmError::Unknown(msg) if msg.contains("glm-3-fake")));
+    }
+
+    #[test]
+    fn select_model_existing_aliases_still_work() {
+        assert!(select_model("glm-4.7").is_ok());
+        assert!(select_model("glm-4").is_ok());
+        assert!(select_model("mainagent").is_ok());
+        assert!(select_model("glm-4.5-air").is_ok());
+        assert!(select_model("glm-4-air").is_ok());
+        assert!(select_model("subagent").is_ok());
+        assert!(select_model("glm-4.5v").is_ok());
+        assert!(select_model("glm-4v").is_ok());
+    }
+
+    // ── error mapping tests ─────────────────────────────────────────────
 
     #[test]
     fn maps_stream_decode_failure_to_network_error() {
