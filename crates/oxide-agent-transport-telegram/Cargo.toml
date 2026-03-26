@@ -30,3 +30,4 @@ serde_json = "1.0"
 [dev-dependencies]
 lazy-regex = "3.5.1"
 serde_json = "1.0"
+oxide-agent-transport-web = { path = "../oxide-agent-transport-web" }

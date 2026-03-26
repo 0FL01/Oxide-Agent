@@ -36,7 +36,10 @@ pub use manager_control_plane::{
     ForumTopicCreateResult, ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
     ManagerControlPlaneProvider, ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
-pub use reminder::{reminder_tool_names, ReminderContext, ReminderProvider};
+pub use reminder::{
+    reminder_tool_names, ReminderContext, ReminderProvider, ReminderScheduleEvent,
+    ReminderScheduleNotifier,
+};
 pub use sandbox::SandboxProvider;
 pub use ssh_mcp::{
     cleanup_stale_private_key_tempfiles, inject_approval_credentials,

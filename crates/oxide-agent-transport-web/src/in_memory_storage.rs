@@ -585,97 +585,219 @@ impl crate::api::StorageProvider for InMemoryStorage {
 
     async fn list_due_reminder_jobs(
         &self,
-        _user_id: i64,
-        _now: i64,
-        _limit: usize,
+        user_id: i64,
+        now: i64,
+        limit: usize,
     ) -> Result<Vec<ReminderJobRecord>, StorageError> {
-        Ok(Vec::new())
+        let mut records = self
+            .reminder_jobs
+            .read()
+            .await
+            .values()
+            .filter(|record| record.user_id == user_id && record.is_due(now))
+            .cloned()
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.next_run_at
+                .cmp(&right.next_run_at)
+                .then_with(|| left.created_at.cmp(&right.created_at))
+        });
+        records.truncate(limit);
+        Ok(records)
     }
 
     async fn claim_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
-        _lease_until: i64,
-        _now: i64,
+        user_id: i64,
+        reminder_id: String,
+        lease_until: i64,
+        now: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        let mut jobs = self.reminder_jobs.write().await;
+        let Some(record) = jobs.get_mut(&(user_id, reminder_id)) else {
+            return Ok(None);
+        };
+        if !record.is_due(now) {
+            return Ok(None);
+        }
+        record.version = record.version.saturating_add(1);
+        record.lease_until = Some(lease_until);
+        record.updated_at = Utc::now().timestamp();
+        Ok(Some(record.clone()))
     }
 
     async fn reschedule_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
-        _next_run_at: i64,
-        _last_run_at: Option<i64>,
-        _last_error: Option<String>,
-        _increment_run_count: bool,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        last_run_at: Option<i64>,
+        last_error: Option<String>,
+        increment_run_count: bool,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        let mut jobs = self.reminder_jobs.write().await;
+        let Some(record) = jobs.get_mut(&(user_id, reminder_id)) else {
+            return Ok(None);
+        };
+        if record.status != ReminderJobStatus::Scheduled {
+            return Ok(None);
+        }
+        record.version = record.version.saturating_add(1);
+        record.next_run_at = next_run_at;
+        record.lease_until = None;
+        record.last_run_at = last_run_at.or(record.last_run_at);
+        record.last_error = last_error;
+        if increment_run_count {
+            record.run_count = record.run_count.saturating_add(1);
+        }
+        record.updated_at = Utc::now().timestamp();
+        Ok(Some(record.clone()))
     }
 
     async fn complete_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
-        _completed_at: i64,
+        user_id: i64,
+        reminder_id: String,
+        completed_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        let mut jobs = self.reminder_jobs.write().await;
+        let Some(record) = jobs.get_mut(&(user_id, reminder_id)) else {
+            return Ok(None);
+        };
+        if record.status != ReminderJobStatus::Scheduled {
+            return Ok(None);
+        }
+        record.version = record.version.saturating_add(1);
+        record.status = ReminderJobStatus::Completed;
+        record.lease_until = None;
+        record.last_run_at = Some(completed_at);
+        record.last_error = None;
+        record.run_count = record.run_count.saturating_add(1);
+        record.updated_at = Utc::now().timestamp();
+        Ok(Some(record.clone()))
     }
 
     async fn fail_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
-        _failed_at: i64,
-        _error: String,
+        user_id: i64,
+        reminder_id: String,
+        failed_at: i64,
+        error: String,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        let mut jobs = self.reminder_jobs.write().await;
+        let Some(record) = jobs.get_mut(&(user_id, reminder_id)) else {
+            return Ok(None);
+        };
+        if record.status != ReminderJobStatus::Scheduled {
+            return Ok(None);
+        }
+        record.version = record.version.saturating_add(1);
+        record.status = ReminderJobStatus::Failed;
+        record.lease_until = None;
+        record.last_run_at = Some(failed_at);
+        record.last_error = Some(error);
+        record.updated_at = Utc::now().timestamp();
+        Ok(Some(record.clone()))
     }
 
     async fn cancel_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
-        _cancelled_at: i64,
+        user_id: i64,
+        reminder_id: String,
+        cancelled_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        let mut jobs = self.reminder_jobs.write().await;
+        let Some(record) = jobs.get_mut(&(user_id, reminder_id)) else {
+            return Ok(None);
+        };
+        if record.status != ReminderJobStatus::Scheduled {
+            return Ok(None);
+        }
+        record.version = record.version.saturating_add(1);
+        record.status = ReminderJobStatus::Cancelled;
+        record.lease_until = None;
+        record.last_run_at = record.last_run_at.or(Some(cancelled_at));
+        record.updated_at = Utc::now().timestamp();
+        Ok(Some(record.clone()))
     }
 
     async fn pause_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
-        _paused_at: i64,
+        user_id: i64,
+        reminder_id: String,
+        paused_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        let mut jobs = self.reminder_jobs.write().await;
+        let Some(record) = jobs.get_mut(&(user_id, reminder_id)) else {
+            return Ok(None);
+        };
+        if record.status != ReminderJobStatus::Scheduled {
+            return Ok(None);
+        }
+        record.version = record.version.saturating_add(1);
+        record.status = ReminderJobStatus::Paused;
+        record.lease_until = None;
+        record.last_run_at = record.last_run_at.or(Some(paused_at));
+        record.updated_at = Utc::now().timestamp();
+        Ok(Some(record.clone()))
     }
 
     async fn resume_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
-        _next_run_at: i64,
-        _resumed_at: i64,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        resumed_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        let mut jobs = self.reminder_jobs.write().await;
+        let Some(record) = jobs.get_mut(&(user_id, reminder_id)) else {
+            return Ok(None);
+        };
+        if record.status != ReminderJobStatus::Paused {
+            return Ok(None);
+        }
+        record.version = record.version.saturating_add(1);
+        record.status = ReminderJobStatus::Scheduled;
+        record.next_run_at = next_run_at;
+        record.lease_until = None;
+        record.last_run_at = record.last_run_at.or(Some(resumed_at));
+        record.updated_at = Utc::now().timestamp();
+        Ok(Some(record.clone()))
     }
 
     async fn retry_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
-        _next_run_at: i64,
-        _retried_at: i64,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        retried_at: i64,
     ) -> Result<Option<ReminderJobRecord>, StorageError> {
-        Ok(None)
+        let mut jobs = self.reminder_jobs.write().await;
+        let Some(record) = jobs.get_mut(&(user_id, reminder_id)) else {
+            return Ok(None);
+        };
+        if record.status != ReminderJobStatus::Failed {
+            return Ok(None);
+        }
+        record.version = record.version.saturating_add(1);
+        record.status = ReminderJobStatus::Scheduled;
+        record.next_run_at = next_run_at;
+        record.lease_until = None;
+        record.last_run_at = record.last_run_at.or(Some(retried_at));
+        record.last_error = None;
+        record.updated_at = Utc::now().timestamp();
+        Ok(Some(record.clone()))
     }
 
     async fn delete_reminder_job(
         &self,
-        _user_id: i64,
-        _reminder_id: String,
+        user_id: i64,
+        reminder_id: String,
     ) -> Result<(), StorageError> {
+        self.reminder_jobs
+            .write()
+            .await
+            .remove(&(user_id, reminder_id));
         Ok(())
     }
 }

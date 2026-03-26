@@ -53,6 +53,29 @@ pub struct ReminderContext {
     pub thread_id: Option<i64>,
     /// Delivery thread kind.
     pub thread_kind: ReminderThreadKind,
+    /// Optional notifier used by transports to maintain an in-memory due queue.
+    pub notifier: Option<Arc<dyn ReminderScheduleNotifier>>,
+}
+
+/// Reminder change event emitted after successful storage mutations.
+#[derive(Debug, Clone)]
+pub enum ReminderScheduleEvent {
+    /// Insert or replace the latest state for a reminder record.
+    Upsert(Box<ReminderJobRecord>),
+    /// Remove a reminder record from any in-memory due index.
+    Delete {
+        /// User owning the reminder.
+        user_id: i64,
+        /// Stable reminder identifier.
+        reminder_id: String,
+    },
+}
+
+/// Transport hook that tracks reminder mutations outside persistent storage.
+#[async_trait]
+pub trait ReminderScheduleNotifier: Send + Sync {
+    /// Consume a reminder mutation event.
+    async fn notify(&self, event: ReminderScheduleEvent);
 }
 
 /// Provider that allows the agent to schedule reminder jobs.
@@ -152,6 +175,12 @@ impl ReminderProvider {
         Self { context }
     }
 
+    async fn notify_schedule_event(&self, event: ReminderScheduleEvent) {
+        if let Some(notifier) = &self.context.notifier {
+            notifier.notify(event).await;
+        }
+    }
+
     async fn execute_schedule(&self, arguments: &str) -> Result<String> {
         let args: ReminderScheduleArgs = serde_json::from_str(arguments)?;
         let now = now_unix_secs();
@@ -180,6 +209,8 @@ impl ReminderProvider {
                 timezone: compiled.timezone.clone(),
             })
             .await?;
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(record.clone())))
+            .await;
 
         let _ = self
             .context
@@ -259,6 +290,8 @@ impl ReminderProvider {
             .await?
             .ok_or_else(|| anyhow!("reminder '{}' could not be cancelled", args.reminder_id))?;
         let cancelled_id = cancelled.reminder_id.clone();
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(cancelled.clone())))
+            .await;
 
         let _ = self
             .context
@@ -302,6 +335,8 @@ impl ReminderProvider {
             .pause_reminder_job(self.context.user_id, args.reminder_id.clone(), now)
             .await?
             .ok_or_else(|| anyhow!("reminder '{}' could not be paused", args.reminder_id))?;
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(paused.clone())))
+            .await;
 
         self.append_audit(
             "reminder_job_paused",
@@ -346,6 +381,8 @@ impl ReminderProvider {
             )
             .await?
             .ok_or_else(|| anyhow!("reminder '{}' could not be resumed", args.reminder_id))?;
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(resumed.clone())))
+            .await;
 
         self.append_audit(
             "reminder_job_resumed",
@@ -391,6 +428,8 @@ impl ReminderProvider {
             )
             .await?
             .ok_or_else(|| anyhow!("reminder '{}' could not be retried", args.reminder_id))?;
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(retried.clone())))
+            .await;
 
         self.append_audit(
             "reminder_job_retried",

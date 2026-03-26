@@ -3353,6 +3353,7 @@ dependencies = [
  "moka",
  "oxide-agent-core",
  "oxide-agent-runtime",
+ "oxide-agent-transport-web",
  "serde",
  "serde_json",
  "teloxide",

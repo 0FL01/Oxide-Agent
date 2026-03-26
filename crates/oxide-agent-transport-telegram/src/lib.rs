@@ -5,6 +5,8 @@
 pub mod bot;
 /// Telegram transport configuration.
 pub mod config;
+/// In-memory reminder due queue and notifier integration.
+pub mod reminder_scheduler;
 /// Telegram runtime entrypoint.
 pub mod runner;
 
