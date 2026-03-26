@@ -1909,8 +1909,9 @@ mod tests {
             tool_call_correlation: None,
             name: None,
             tool_calls: Some(vec![tool_call("call-1", "search")]),
-            tool_call_correlations: Some(vec![ToolCallCorrelation::new("invoke-1")
-                .with_provider_tool_call_id("")]),
+            tool_call_correlations: Some(vec![
+                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("")
+            ]),
         }];
 
         let error = validate_tool_history(
@@ -1926,10 +1927,10 @@ mod tests {
 
     #[test]
     fn validate_tool_history_rejects_empty_explicit_provider_tool_call_id_in_tool_result() {
-        let assistant_correlation = ToolCallCorrelation::new("invoke-1")
-            .with_provider_tool_call_id("provider-call-1");
-        let tool_result_correlation = ToolCallCorrelation::new("invoke-1")
-            .with_provider_tool_call_id("");
+        let assistant_correlation =
+            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1");
+        let tool_result_correlation =
+            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("");
         let messages = vec![
             Message {
                 role: "assistant".to_string(),

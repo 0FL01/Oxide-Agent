@@ -130,12 +130,8 @@ fn finalize_tool_calls(pending: Vec<PendingToolCall>) -> Vec<ToolCall> {
                 call.arguments
             };
             Some(match call.id {
-                Some(id) if !id.trim().is_empty() => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
-                    id.as_str(),
-                    None,
-                    name,
-                    arguments,
-                ),
+                Some(id) if !id.trim().is_empty() => CHAT_LIKE_TOOL_PROFILE
+                    .inbound_provider_tool_call(id.as_str(), None, name, arguments),
                 _ => {
                     let _ = idx;
                     CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name, arguments)
@@ -172,6 +168,9 @@ mod tests {
 
         assert_eq!(tool_calls.len(), 1);
         // Empty ID should be treated as uncorrelated
-        assert_eq!(tool_calls[0].wire_tool_call_id(), tool_calls[0].invocation_id().as_str());
+        assert_eq!(
+            tool_calls[0].wire_tool_call_id(),
+            tool_calls[0].invocation_id().as_str()
+        );
     }
 }
