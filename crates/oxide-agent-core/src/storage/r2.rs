@@ -1,4 +1,5 @@
 use super::r2_base::ControlPlaneLocks;
+use super::telemetry::StorageTelemetry;
 use aws_sdk_s3::Client;
 use moka::future::Cache;
 use std::sync::Arc;
@@ -20,4 +21,5 @@ pub struct R2Storage {
     pub(super) bucket: String,
     pub(super) cache: Cache<String, Arc<Vec<u8>>>,
     pub(super) control_plane_locks: ControlPlaneLocks,
+    pub(super) telemetry: StorageTelemetry,
 }

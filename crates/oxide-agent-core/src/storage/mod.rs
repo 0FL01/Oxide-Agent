@@ -17,6 +17,7 @@ mod r2_reminder;
 mod r2_user;
 mod reminder;
 mod schema;
+mod telemetry;
 mod user;
 mod utils;
 
