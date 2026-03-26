@@ -303,6 +303,7 @@ async fn resolve_available_tools_for_memory(
             .thread_id
             .map(|thread_id| i64::from(thread_id.0 .0)),
         thread_kind: reminder_thread_kind(thread_spec),
+        notifier: None,
     });
     executor.set_execution_profile(execution_profile);
 

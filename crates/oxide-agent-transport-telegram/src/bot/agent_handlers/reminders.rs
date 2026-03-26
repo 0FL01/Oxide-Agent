@@ -1,15 +1,16 @@
 use super::{
     agent_mode_session_keys, apply_execution_profile, apply_reminder_context,
-    apply_topic_infra_config, ensure_session_exists, is_agent_task_running,
-    manager_control_plane_enabled, manager_default_chat_id, renew_cancellation_token,
-    resolve_execution_profile, resolve_topic_infra_config, run_agent_task_with_text,
-    use_inline_flow_controls, use_inline_topic_controls, EnsureSessionContext,
-    RunAgentTaskTextContext, SessionTransportContext,
+    apply_topic_infra_config, ensure_session_exists, install_reminder_scheduler,
+    is_agent_task_running, manager_control_plane_enabled, manager_default_chat_id,
+    renew_cancellation_token, resolve_execution_profile, resolve_topic_infra_config,
+    run_agent_task_with_text, use_inline_flow_controls, use_inline_topic_controls,
+    EnsureSessionContext, RunAgentTaskTextContext, SessionTransportContext,
 };
 use crate::bot::context::sandbox_scope;
 use crate::bot::topic_route::{touch_dynamic_binding_activity_if_needed, TopicRouteDecision};
 use crate::bot::{build_outbound_thread_params, TelegramThreadKind, TelegramThreadSpec};
 use crate::config::BotSettings;
+use crate::reminder_scheduler::ReminderSchedulerHandle;
 use anyhow::{Error, Result};
 use oxide_agent_core::agent::SessionId;
 use oxide_agent_core::llm::LlmClient;
@@ -23,10 +24,11 @@ use teloxide::types::{MessageId, ThreadId};
 use tokio::time::{Duration, MissedTickBehavior};
 use tracing::warn;
 
-const REMINDER_POLL_INTERVAL_SECS: u64 = 5;
 const REMINDER_BATCH_LIMIT: usize = 16;
 const REMINDER_LEASE_SECS: i64 = 300;
 const REMINDER_BUSY_BACKOFF_SECS: i64 = 30;
+const REMINDER_RECONCILE_INTERVAL_SECS: u64 = 300;
+const REMINDER_IDLE_WAIT_SECS: u64 = 60;
 
 fn telegram_thread_kind(kind: ReminderThreadKind) -> TelegramThreadKind {
     match kind {
@@ -53,16 +55,47 @@ pub(crate) fn spawn_reminder_scheduler(
     settings: Arc<BotSettings>,
 ) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(REMINDER_POLL_INTERVAL_SECS));
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let scheduler = Arc::new(ReminderSchedulerHandle::new(
+            settings.telegram.agent_allowed_users(),
+        ));
+        install_reminder_scheduler(scheduler.clone()).await;
+        if let Err(error) = scheduler.bootstrap_from_storage(&storage).await {
+            warn!(error = %error, "Reminder scheduler bootstrap failed");
+        }
+
+        let mut reconcile =
+            tokio::time::interval(Duration::from_secs(REMINDER_RECONCILE_INTERVAL_SECS));
+        reconcile.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        reconcile.tick().await;
 
         loop {
-            interval.tick().await;
-            if let Err(error) = process_due_reminders(&bot, &storage, &llm, &settings).await {
-                warn!(error = %error, "Reminder scheduler poll failed");
+            if let Err(error) =
+                process_due_reminders(&bot, &storage, &llm, &settings, &scheduler).await
+            {
+                warn!(error = %error, "Reminder scheduler due-batch failed");
+            }
+
+            let wait_duration = scheduler_wait_duration(&scheduler).await;
+            tokio::select! {
+                _ = scheduler.wait_for_change() => {}
+                _ = tokio::time::sleep(wait_duration) => {}
+                _ = reconcile.tick() => {
+                    if let Err(error) = scheduler.bootstrap_from_storage(&storage).await {
+                        warn!(error = %error, "Reminder scheduler reconcile failed");
+                    }
+                }
             }
         }
     });
+}
+
+async fn scheduler_wait_duration(scheduler: &Arc<ReminderSchedulerHandle>) -> Duration {
+    let now = current_timestamp_unix_secs();
+    match scheduler.next_due_at().await {
+        Some(next_run_at) if next_run_at <= now => Duration::ZERO,
+        Some(next_run_at) => Duration::from_secs(next_run_at.saturating_sub(now) as u64),
+        None => Duration::from_secs(REMINDER_IDLE_WAIT_SECS),
+    }
 }
 
 async fn process_due_reminders(
@@ -70,23 +103,27 @@ async fn process_due_reminders(
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
     settings: &Arc<BotSettings>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
 ) -> Result<()> {
-    for user_id in settings.telegram.agent_allowed_users() {
-        let now = current_timestamp_unix_secs();
-        let reminders = match storage
-            .list_due_reminder_jobs(user_id, now, REMINDER_BATCH_LIMIT)
-            .await
-        {
-            Ok(reminders) => reminders,
-            Err(error) => {
-                warn!(user_id, error = %error, "Failed to list due reminders");
-                continue;
-            }
-        };
+    let now = current_timestamp_unix_secs();
+    let reminders = scheduler.take_due_batch(now, REMINDER_BATCH_LIMIT).await;
 
-        for reminder in reminders {
-            if let Err(error) = process_due_reminder(bot, storage, llm, settings, reminder).await {
-                warn!(error = %error, "Failed to execute due reminder");
+    for reminder in reminders {
+        let user_id = reminder.user_id;
+        let reminder_id = reminder.reminder_id.clone();
+        if let Err(error) =
+            process_due_reminder(bot, storage, llm, settings, scheduler, reminder).await
+        {
+            warn!(error = %error, reminder_id = %reminder_id, "Failed to execute due reminder");
+            if let Err(reconcile_error) = scheduler
+                .reconcile_user_from_storage(storage, user_id)
+                .await
+            {
+                warn!(
+                    error = %reconcile_error,
+                    user_id,
+                    "Failed to reconcile reminder scheduler after execution error"
+                );
             }
         }
     }
@@ -99,10 +136,11 @@ async fn process_due_reminder(
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
     settings: &Arc<BotSettings>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: ReminderJobRecord,
 ) -> Result<()> {
     let Some(prepared) =
-        prepare_due_reminder_execution(bot, storage, llm, settings, reminder).await?
+        prepare_due_reminder_execution(bot, storage, llm, settings, scheduler, reminder).await?
     else {
         return Ok(());
     };
@@ -168,7 +206,7 @@ async fn process_due_reminder(
     })
     .await;
 
-    finalize_reminder_execution(storage, &prepared.reminder, result.as_ref()).await;
+    finalize_reminder_execution(storage, scheduler, &prepared.reminder, result.as_ref()).await;
     touch_dynamic_binding_activity_if_needed(storage.as_ref(), prepared.reminder.user_id, &route)
         .await;
     result
@@ -187,6 +225,7 @@ async fn prepare_due_reminder_execution(
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
     settings: &Arc<BotSettings>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: ReminderJobRecord,
 ) -> Result<Option<PreparedReminderExecution>> {
     let now = current_timestamp_unix_secs();
@@ -199,8 +238,12 @@ async fn prepare_due_reminder_execution(
         )
         .await?
     else {
+        let _ = scheduler
+            .reconcile_user_from_storage(storage, reminder.user_id)
+            .await;
         return Ok(None);
     };
+    scheduler.upsert_record(reminder.clone()).await;
 
     let chat_id = ChatId(reminder.chat_id);
     let thread_spec = thread_spec_from_reminder(&reminder);
@@ -232,7 +275,7 @@ async fn prepare_due_reminder_execution(
     .await;
 
     if is_agent_task_running(session_id).await {
-        defer_busy_reminder(storage, &reminder).await;
+        defer_busy_reminder(storage, scheduler, &reminder).await;
         return Ok(None);
     }
 
@@ -297,9 +340,13 @@ async fn resolve_scheduled_topic_route(
     }
 }
 
-async fn defer_busy_reminder(storage: &Arc<dyn StorageProvider>, reminder: &ReminderJobRecord) {
+async fn defer_busy_reminder(
+    storage: &Arc<dyn StorageProvider>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
+    reminder: &ReminderJobRecord,
+) {
     let next_run_at = current_timestamp_unix_secs().saturating_add(REMINDER_BUSY_BACKOFF_SECS);
-    let _ = storage
+    match storage
         .reschedule_reminder_job(
             reminder.user_id,
             reminder.reminder_id.clone(),
@@ -308,11 +355,23 @@ async fn defer_busy_reminder(storage: &Arc<dyn StorageProvider>, reminder: &Remi
             Some("Agent session is busy; reminder deferred.".to_string()),
             false,
         )
-        .await;
+        .await
+    {
+        Ok(Some(updated)) => scheduler.upsert_record(updated).await,
+        Ok(None) => {
+            let _ = scheduler
+                .reconcile_user_from_storage(storage, reminder.user_id)
+                .await;
+        }
+        Err(error) => {
+            warn!(error = %error, reminder_id = %reminder.reminder_id, "Failed to defer busy reminder")
+        }
+    }
 }
 
 async fn finalize_reminder_execution(
     storage: &Arc<dyn StorageProvider>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: &ReminderJobRecord,
     result: std::result::Result<&(), &Error>,
 ) {
@@ -320,27 +379,44 @@ async fn finalize_reminder_execution(
 
     match result {
         Ok(()) if reminder.is_recurring() => {
-            finalize_recurring_reminder_success(storage, reminder, now).await;
+            finalize_recurring_reminder_success(storage, scheduler, reminder, now).await;
         }
-        Ok(()) => finalize_one_shot_reminder_success(storage, reminder, now).await,
+        Ok(()) => finalize_one_shot_reminder_success(storage, scheduler, reminder, now).await,
         Err(error) if reminder.is_recurring() => {
-            finalize_recurring_reminder_failure(storage, reminder, now, &error.to_string()).await;
+            finalize_recurring_reminder_failure(
+                storage,
+                scheduler,
+                reminder,
+                now,
+                &error.to_string(),
+            )
+            .await;
         }
         Err(error) => {
-            finalize_one_shot_reminder_failure(storage, reminder, now, &error.to_string()).await;
+            finalize_one_shot_reminder_failure(
+                storage,
+                scheduler,
+                reminder,
+                now,
+                &error.to_string(),
+            )
+            .await;
         }
     }
 }
 
 async fn finalize_recurring_reminder_success(
     storage: &Arc<dyn StorageProvider>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: &ReminderJobRecord,
     now: i64,
 ) {
-    let Some(next_run_at) = resolve_recurring_next_run(storage, reminder, now, None).await else {
+    let Some(next_run_at) =
+        resolve_recurring_next_run(storage, scheduler, reminder, now, None).await
+    else {
         return;
     };
-    let _ = storage
+    match storage
         .reschedule_reminder_job(
             reminder.user_id,
             reminder.reminder_id.clone(),
@@ -349,7 +425,18 @@ async fn finalize_recurring_reminder_success(
             None,
             true,
         )
-        .await;
+        .await
+    {
+        Ok(Some(updated)) => scheduler.upsert_record(updated).await,
+        Ok(None) => {
+            let _ = scheduler
+                .reconcile_user_from_storage(storage, reminder.user_id)
+                .await;
+        }
+        Err(error) => {
+            warn!(error = %error, reminder_id = %reminder.reminder_id, "Failed to reschedule recurring reminder after success")
+        }
+    }
     let _ = append_reminder_audit_event(
         storage,
         reminder,
@@ -364,12 +451,24 @@ async fn finalize_recurring_reminder_success(
 
 async fn finalize_one_shot_reminder_success(
     storage: &Arc<dyn StorageProvider>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: &ReminderJobRecord,
     now: i64,
 ) {
-    let _ = storage
+    match storage
         .complete_reminder_job(reminder.user_id, reminder.reminder_id.clone(), now)
-        .await;
+        .await
+    {
+        Ok(Some(updated)) => scheduler.upsert_record(updated).await,
+        Ok(None) => {
+            let _ = scheduler
+                .reconcile_user_from_storage(storage, reminder.user_id)
+                .await;
+        }
+        Err(error) => {
+            warn!(error = %error, reminder_id = %reminder.reminder_id, "Failed to mark one-shot reminder complete")
+        }
+    }
     let _ = append_reminder_audit_event(
         storage,
         reminder,
@@ -380,23 +479,40 @@ async fn finalize_one_shot_reminder_success(
         }),
     )
     .await;
-    let _ = storage
+    match storage
         .delete_reminder_job(reminder.user_id, reminder.reminder_id.clone())
-        .await;
+        .await
+    {
+        Ok(()) => {
+            scheduler
+                .delete_record(reminder.user_id, &reminder.reminder_id)
+                .await
+        }
+        Err(error) => {
+            warn!(error = %error, reminder_id = %reminder.reminder_id, "Failed to delete completed reminder record")
+        }
+    }
 }
 
 async fn finalize_recurring_reminder_failure(
     storage: &Arc<dyn StorageProvider>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: &ReminderJobRecord,
     now: i64,
     error_text: &str,
 ) {
-    let Some(next_run_at) =
-        resolve_recurring_next_run(storage, reminder, now, Some(error_text.to_string())).await
+    let Some(next_run_at) = resolve_recurring_next_run(
+        storage,
+        scheduler,
+        reminder,
+        now,
+        Some(error_text.to_string()),
+    )
+    .await
     else {
         return;
     };
-    let _ = storage
+    match storage
         .reschedule_reminder_job(
             reminder.user_id,
             reminder.reminder_id.clone(),
@@ -405,7 +521,18 @@ async fn finalize_recurring_reminder_failure(
             Some(error_text.to_string()),
             false,
         )
-        .await;
+        .await
+    {
+        Ok(Some(updated)) => scheduler.upsert_record(updated).await,
+        Ok(None) => {
+            let _ = scheduler
+                .reconcile_user_from_storage(storage, reminder.user_id)
+                .await;
+        }
+        Err(error) => {
+            warn!(error = %error, reminder_id = %reminder.reminder_id, "Failed to reschedule recurring reminder after failure")
+        }
+    }
     let _ = append_reminder_audit_event(
         storage,
         reminder,
@@ -421,18 +548,30 @@ async fn finalize_recurring_reminder_failure(
 
 async fn finalize_one_shot_reminder_failure(
     storage: &Arc<dyn StorageProvider>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: &ReminderJobRecord,
     now: i64,
     error_text: &str,
 ) {
-    let _ = storage
+    match storage
         .fail_reminder_job(
             reminder.user_id,
             reminder.reminder_id.clone(),
             now,
             error_text.to_string(),
         )
-        .await;
+        .await
+    {
+        Ok(Some(updated)) => scheduler.upsert_record(updated).await,
+        Ok(None) => {
+            let _ = scheduler
+                .reconcile_user_from_storage(storage, reminder.user_id)
+                .await;
+        }
+        Err(error) => {
+            warn!(error = %error, reminder_id = %reminder.reminder_id, "Failed to mark one-shot reminder failed")
+        }
+    }
     let _ = append_reminder_audit_event(
         storage,
         reminder,
@@ -447,6 +586,7 @@ async fn finalize_one_shot_reminder_failure(
 
 async fn resolve_recurring_next_run(
     storage: &Arc<dyn StorageProvider>,
+    scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: &ReminderJobRecord,
     now: i64,
     error_text: Option<String>,
@@ -454,9 +594,20 @@ async fn resolve_recurring_next_run(
     match compute_next_reminder_run_at(reminder, now) {
         Ok(Some(next_run_at)) => Some(next_run_at),
         Ok(None) => {
-            let _ = storage
+            match storage
                 .complete_reminder_job(reminder.user_id, reminder.reminder_id.clone(), now)
-                .await;
+                .await
+            {
+                Ok(Some(updated)) => scheduler.upsert_record(updated).await,
+                Ok(None) => {
+                    let _ = scheduler
+                        .reconcile_user_from_storage(storage, reminder.user_id)
+                        .await;
+                }
+                Err(error) => {
+                    warn!(error = %error, reminder_id = %reminder.reminder_id, "Failed to complete exhausted recurring reminder")
+                }
+            }
             None
         }
         Err(schedule_error) => {
@@ -464,14 +615,25 @@ async fn resolve_recurring_next_run(
                 Some(error_text) => format!("{error_text}; reschedule failed: {schedule_error}"),
                 None => schedule_error.to_string(),
             };
-            let _ = storage
+            match storage
                 .fail_reminder_job(
                     reminder.user_id,
                     reminder.reminder_id.clone(),
                     now,
                     combined_error.clone(),
                 )
-                .await;
+                .await
+            {
+                Ok(Some(updated)) => scheduler.upsert_record(updated).await,
+                Ok(None) => {
+                    let _ = scheduler
+                        .reconcile_user_from_storage(storage, reminder.user_id)
+                        .await;
+                }
+                Err(error) => {
+                    warn!(error = %error, reminder_id = %reminder.reminder_id, "Failed to fail recurring reminder after schedule error")
+                }
+            }
             let _ = append_reminder_audit_event(
                 storage,
                 reminder,

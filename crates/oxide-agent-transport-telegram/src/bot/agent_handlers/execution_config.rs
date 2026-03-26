@@ -1,4 +1,4 @@
-use super::{reminder_thread_kind, SESSION_REGISTRY};
+use super::{current_reminder_schedule_notifier, reminder_thread_kind, SESSION_REGISTRY};
 use crate::bot::topic_route::TopicRouteDecision;
 use crate::bot::TelegramThreadKind;
 use crate::bot::TelegramThreadSpec;
@@ -243,6 +243,7 @@ pub(crate) async fn apply_reminder_context(
             .thread_id
             .map(|thread_id| i64::from(thread_id.0 .0)),
         thread_kind: reminder_thread_kind(thread_spec),
+        notifier: current_reminder_schedule_notifier().await,
     });
 }
 

@@ -248,6 +248,7 @@ impl WebSessionManager {
             chat_id: user_id,
             thread_id: None,
             thread_kind: ReminderThreadKind::None,
+            notifier: None,
         });
 
         self.registry.insert(sid, executor).await;

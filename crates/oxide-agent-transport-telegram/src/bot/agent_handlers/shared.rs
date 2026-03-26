@@ -1,10 +1,12 @@
 use super::input::PendingTextInputBatch;
 use crate::bot::{general_forum_topic_id, TelegramThreadKind, TelegramThreadSpec};
 use crate::config::BotSettings;
+use crate::reminder_scheduler::ReminderSchedulerHandle;
+use oxide_agent_core::agent::providers::ReminderScheduleNotifier;
 use oxide_agent_core::agent::SessionId;
 use oxide_agent_core::storage::ReminderThreadKind;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use teloxide::prelude::*;
 use teloxide::types::MessageId;
 use tokio::sync::{Mutex, RwLock};
@@ -67,3 +69,22 @@ pub(crate) static PENDING_CANCEL_CONFIRMATIONS: LazyLock<RwLock<HashMap<SessionI
 pub(crate) static PENDING_TEXT_INPUT_BATCHES: LazyLock<
     Mutex<HashMap<SessionId, PendingTextInputBatch>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) static ACTIVE_REMINDER_SCHEDULER: LazyLock<
+    RwLock<Option<Arc<ReminderSchedulerHandle>>>,
+> = LazyLock::new(|| RwLock::new(None));
+
+pub(crate) async fn install_reminder_scheduler(handle: Arc<ReminderSchedulerHandle>) {
+    let mut active = ACTIVE_REMINDER_SCHEDULER.write().await;
+    *active = Some(handle);
+}
+
+pub(crate) async fn current_reminder_scheduler_handle() -> Option<Arc<ReminderSchedulerHandle>> {
+    ACTIVE_REMINDER_SCHEDULER.read().await.clone()
+}
+
+pub(crate) async fn current_reminder_schedule_notifier() -> Option<Arc<dyn ReminderScheduleNotifier>>
+{
+    current_reminder_scheduler_handle()
+        .await
+        .map(|handle| handle as Arc<dyn ReminderScheduleNotifier>)
+}
