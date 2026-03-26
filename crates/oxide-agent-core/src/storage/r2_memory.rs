@@ -6,6 +6,7 @@ use super::{
         user_context_agent_memory_key,
     },
     r2::{PersistedAgentMemoryRef, R2Storage},
+    telemetry::with_storage_reason,
     utils::current_timestamp_unix_secs,
     AgentFlowRecord, StorageError,
 };
@@ -19,16 +20,19 @@ impl R2Storage {
     pub async fn list_persisted_agent_memories(
         &self,
     ) -> Result<Vec<PersistedAgentMemoryRef>, StorageError> {
-        let keys = self.list_keys_under_prefix("users/").await?;
-        let mut memories = BTreeSet::new();
+        with_storage_reason("list_persisted_agent_memories", async {
+            let keys = self.list_keys_under_prefix("users/").await?;
+            let mut memories = BTreeSet::new();
 
-        for key in keys {
-            if let Some(reference) = parse_persisted_agent_memory_key(&key) {
-                memories.insert(reference);
+            for key in keys {
+                if let Some(reference) = parse_persisted_agent_memory_key(&key) {
+                    memories.insert(reference);
+                }
             }
-        }
 
-        Ok(memories.into_iter().collect())
+            Ok(memories.into_iter().collect())
+        })
+        .await
     }
 
     pub(super) async fn save_agent_memory_inner(
