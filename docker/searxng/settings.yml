@@ -1,0 +1,10 @@
+use_default_settings: true
+
+server:
+  secret_key: "change-this-searxng-secret"
+  limiter: false
+
+search:
+  formats:
+    - html
+    - json
