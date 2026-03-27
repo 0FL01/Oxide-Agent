@@ -13,21 +13,6 @@ general:
 
 search:
   safe_search: 0
-  autocomplete: ""
-  favicon_resolver: ""
-  default_lang: ""
-  languages:
-    - all
-    - ru
-    - uk
-    - en
-  formats:
-    - json
-  ban_time_on_fail: 5
-  max_ban_time_on_fail: 120
-
-search:
-  safe_search: 0
   formats:
     - json
   autocomplete: ""
