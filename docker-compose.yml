@@ -30,11 +30,11 @@ services:
       - ./config:/app/config
       - sandboxd-run:/run/sandboxd
     network_mode: host
-    # depends_on:
-    #   crawl4ai:
-    #     condition: service_healthy
-    #   searxng:
-    #     condition: service_healthy
+    depends_on:
+       crawl4ai:
+         condition: service_healthy
+       searxng:
+         condition: service_healthy
     logging:
       driver: json-file
       options:
@@ -69,8 +69,6 @@ services:
     container_name: crawl4ai
     restart: unless-stopped
     shm_size: '2gb'
-    #volumes:
-    #  - /dev/shm:/dev/shm
     deploy:
       resources:
         limits:
@@ -113,3 +111,4 @@ services:
 
 volumes:
   sandboxd-run:
+
