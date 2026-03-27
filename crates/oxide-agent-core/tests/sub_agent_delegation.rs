@@ -1,3 +1,6 @@
+// Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
+#![allow(clippy::clone_on_ref_ptr)]
+
 use oxide_agent_core::agent::hooks::DelegationGuardHook;
 use oxide_agent_core::agent::providers::DelegationProvider;
 use oxide_agent_core::agent::ToolProvider;

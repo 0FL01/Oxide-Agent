@@ -157,7 +157,7 @@ impl AgentExecutor {
         session.set_context_window_tokens(settings.get_agent_internal_context_budget_tokens());
         let tool_policy_state = Arc::new(RwLock::new(ToolAccessPolicy::default()));
         let hook_policy_state = Arc::new(RwLock::new(HookAccessPolicy::default()));
-        let mut runner = AgentRunner::new(llm_client.clone());
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         Self::register_policy_controlled_hook(
             &mut runner,
@@ -463,7 +463,7 @@ impl AgentExecutor {
         registry.register(Box::new(DelegationProvider::new(
             self.runner.llm_client(),
             sandbox_scope,
-            self.settings.clone(),
+            Arc::clone(&self.settings),
         )));
     }
 
@@ -1091,6 +1091,9 @@ impl AgentExecutor {
 
 #[cfg(test)]
 mod tests {
+    // Allow clone_on_ref_ptr in tests due to trait object coercion requirements
+    #![allow(clippy::clone_on_ref_ptr)]
+
     use super::{AgentExecutor, PolicyControlledHook};
     use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
     use crate::agent::profile::HookAccessPolicy;

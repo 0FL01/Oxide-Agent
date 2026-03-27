@@ -1,3 +1,6 @@
+// Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
+#![allow(clippy::clone_on_ref_ptr)]
+
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::{
     ChatResponse, ChatWithToolsRequest, LlmClient, LlmError, LlmProvider, Message,

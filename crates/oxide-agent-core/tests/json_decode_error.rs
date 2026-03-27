@@ -7,7 +7,9 @@
 //!
 //! Related bug: JSON decoding errors should be detected and retried appropriately.
 //! Example error: "JSON error: error decoding response body"
-//!
+
+// Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
+#![allow(clippy::clone_on_ref_ptr)]
 //! This error comes from reqwest when `response.json().await` fails, typically when:
 //! - Server returns HTML error page instead of JSON
 //! - Server returns empty or malformed body

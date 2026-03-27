@@ -252,7 +252,7 @@ impl DelegationProvider {
 
     fn create_sub_agent_runner(&self, blocked: HashSet<String>, max_tokens: usize) -> AgentRunner {
         let max_iterations = get_sub_agent_max_iterations();
-        let mut runner = AgentRunner::new(self.llm_client.clone());
+        let mut runner = AgentRunner::new(Arc::clone(&self.llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
             max_iterations,
