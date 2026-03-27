@@ -67,7 +67,7 @@ chrono-tz = "0.10.4"
 ignored = ["serde_bytes"]
 
 [features]
-default = ["tavily"]
+default = ["tavily", "searxng"]
 tavily = ["dep:tavily"]
 searxng = []
 crawl4ai = []
