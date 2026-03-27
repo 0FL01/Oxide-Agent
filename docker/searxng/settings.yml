@@ -7,6 +7,9 @@ use_default_settings:
       - mojeek
       - yandex
 
+server:
+  secret_key: "oxide-agent-searxng-key-2026"
+
 general:
   debug: false
   instance_name: "oxide-searxng"
@@ -40,9 +43,6 @@ outgoing:
   pool_maxsize: 4
   keepalive_expiry: 3.0
   enable_http2: true
-
-server:
-  secret_key: "oxide-agent-searxng-key-2026"
 
 engines:
   - name: qwant
