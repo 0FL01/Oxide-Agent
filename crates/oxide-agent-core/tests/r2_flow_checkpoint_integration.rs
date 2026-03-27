@@ -1,3 +1,6 @@
+// Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
+#![allow(clippy::clone_on_ref_ptr)]
+
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use dotenvy::dotenv;

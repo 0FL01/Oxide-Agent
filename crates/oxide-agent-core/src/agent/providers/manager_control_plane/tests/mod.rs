@@ -1,3 +1,6 @@
+// Allow clone_on_ref_ptr in tests due to trait object coercion requirements
+#![allow(clippy::clone_on_ref_ptr)]
+
 use super::*;
 use crate::agent::registry::ToolRegistry;
 use crate::storage::{
