@@ -182,7 +182,7 @@ fn truncate_path(path: &str, max_len: usize) -> String {
     // Try to show the last part of the path
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {
-        return crate::utils::truncate_str(path, max_len).to_string();
+        return crate::utils::truncate_str(path, max_len);
     }
 
     // Show ".../" + last N components that fit

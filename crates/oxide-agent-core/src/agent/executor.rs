@@ -333,7 +333,7 @@ impl AgentExecutor {
     pub fn inject_system_message(&mut self, content: String) {
         self.session
             .memory
-            .add_message(AgentMessage::system_context(content.clone()));
+            .add_message(AgentMessage::system_context(content));
     }
 
     /// Attach user-scoped storage for manager control-plane tools.

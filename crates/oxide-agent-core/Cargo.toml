@@ -7,12 +7,15 @@ authors = ["@0FL01"]
 
 [lints.rust]
 unsafe_code = "forbid"
+suspicious_double_ref_op = "deny"
 
 [lints.clippy]
 unwrap_used = "forbid"
 too_many_lines = "forbid"
 too_many_arguments = "deny"
 await_holding_lock = "deny"
+redundant_clone = "deny"           
+clone_on_ref_ptr = "deny"          
 
 [dependencies]
 tokio = { version = "1.48", features = ["full"] }
