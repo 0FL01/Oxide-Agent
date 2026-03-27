@@ -170,34 +170,41 @@ impl DelegationProvider {
             Box::new(ytdlp_provider),
         ];
 
-        // Register web search provider based on configuration
-        let search_provider = crate::config::get_search_provider();
-        match search_provider.as_str() {
-            "tavily" => {
-                #[cfg(feature = "tavily")]
-                if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
-                    if !tavily_key.is_empty() {
-                        if let Ok(provider) = TavilyProvider::new(&tavily_key) {
-                            providers.push(Box::new(provider));
-                        }
+        #[cfg(feature = "tavily")]
+        if crate::config::is_tavily_enabled() {
+            if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
+                if !tavily_key.trim().is_empty() {
+                    if let Ok(provider) = TavilyProvider::new(&tavily_key) {
+                        providers.push(Box::new(provider));
                     }
+                } else {
+                    warn!("Tavily enabled but TAVILY_API_KEY is empty; sub-agent provider not registered");
                 }
-                #[cfg(not(feature = "tavily"))]
-                warn!("Tavily requested but feature not enabled");
+            } else {
+                warn!("Tavily enabled but TAVILY_API_KEY is not set; sub-agent provider not registered");
             }
-            "crawl4ai" => {
-                #[cfg(feature = "crawl4ai")]
-                if let Ok(url) = std::env::var("CRAWL4AI_URL") {
-                    if !url.is_empty() {
-                        // Clone semaphore for each sub-agent (shared limit across sub-agents)
-                        let sem = Arc::clone(&self.crawl4ai_semaphore);
-                        providers.push(Box::new(Crawl4aiProvider::new_with_semaphore(&url, sem)));
-                    }
+        }
+        #[cfg(not(feature = "tavily"))]
+        if crate::config::is_tavily_enabled() {
+            warn!("Tavily enabled but feature not compiled in");
+        }
+
+        #[cfg(feature = "crawl4ai")]
+        if crate::config::is_crawl4ai_enabled() {
+            if let Some(url) = crate::config::get_crawl4ai_url() {
+                if !url.trim().is_empty() {
+                    let sem = Arc::clone(&self.crawl4ai_semaphore);
+                    providers.push(Box::new(Crawl4aiProvider::new_with_semaphore(&url, sem)));
+                } else {
+                    warn!("Crawl4AI enabled but CRAWL4AI_URL is empty; sub-agent provider not registered");
                 }
-                #[cfg(not(feature = "crawl4ai"))]
-                warn!("Crawl4AI requested but feature not enabled");
+            } else {
+                warn!("Crawl4AI enabled but CRAWL4AI_URL is not set; sub-agent provider not registered");
             }
-            _ => unreachable!(), // get_search_provider() guarantees valid value
+        }
+        #[cfg(not(feature = "crawl4ai"))]
+        if crate::config::is_crawl4ai_enabled() {
+            warn!("Crawl4AI enabled but feature not compiled in");
         }
 
         providers

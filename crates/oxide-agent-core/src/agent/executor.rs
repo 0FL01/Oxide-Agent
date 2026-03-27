@@ -428,7 +428,7 @@ impl AgentExecutor {
 
         // Feature-gated MCP and search providers
         self.register_mcp_providers(&mut registry);
-        self.register_search_provider(&mut registry);
+        self.register_search_providers(&mut registry);
 
         // Optional TTS provider (requires KOKORO_TTS_URL and accessible server)
         self.register_tts_provider(&mut registry, progress_tx);
@@ -559,32 +559,41 @@ impl AgentExecutor {
         Self::register_mattermost_mcp_provider(_registry);
     }
 
-    fn register_search_provider(&self, registry: &mut ToolRegistry) {
-        let search_provider = crate::config::get_search_provider();
-        match search_provider.as_str() {
-            "tavily" => {
-                #[cfg(feature = "tavily")]
-                if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
-                    if !tavily_key.is_empty() {
-                        if let Ok(p) = TavilyProvider::new(&tavily_key) {
-                            registry.register(Box::new(p));
-                        }
+    fn register_search_providers(&self, registry: &mut ToolRegistry) {
+        #[cfg(feature = "tavily")]
+        if crate::config::is_tavily_enabled() {
+            if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
+                if !tavily_key.trim().is_empty() {
+                    if let Ok(provider) = TavilyProvider::new(&tavily_key) {
+                        registry.register(Box::new(provider));
                     }
+                } else {
+                    warn!("Tavily enabled but TAVILY_API_KEY is empty; provider not registered");
                 }
-                #[cfg(not(feature = "tavily"))]
-                tracing::warn!("Tavily requested but feature not enabled");
+            } else {
+                warn!("Tavily enabled but TAVILY_API_KEY is not set; provider not registered");
             }
-            "crawl4ai" => {
-                #[cfg(feature = "crawl4ai")]
-                if let Ok(url) = std::env::var("CRAWL4AI_URL") {
-                    if !url.is_empty() {
-                        registry.register(Box::new(Crawl4aiProvider::new(&url)));
-                    }
+        }
+        #[cfg(not(feature = "tavily"))]
+        if crate::config::is_tavily_enabled() {
+            tracing::warn!("Tavily enabled but feature not compiled in");
+        }
+
+        #[cfg(feature = "crawl4ai")]
+        if crate::config::is_crawl4ai_enabled() {
+            if let Some(url) = crate::config::get_crawl4ai_url() {
+                if !url.trim().is_empty() {
+                    registry.register(Box::new(Crawl4aiProvider::new(&url)));
+                } else {
+                    warn!("Crawl4AI enabled but CRAWL4AI_URL is empty; provider not registered");
                 }
-                #[cfg(not(feature = "crawl4ai"))]
-                tracing::warn!("Crawl4AI requested but feature not enabled");
+            } else {
+                warn!("Crawl4AI enabled but CRAWL4AI_URL is not set; provider not registered");
             }
-            _ => unreachable!(), // get_search_provider() guarantees valid value
+        }
+        #[cfg(not(feature = "crawl4ai"))]
+        if crate::config::is_crawl4ai_enabled() {
+            tracing::warn!("Crawl4AI enabled but feature not compiled in");
         }
     }
 

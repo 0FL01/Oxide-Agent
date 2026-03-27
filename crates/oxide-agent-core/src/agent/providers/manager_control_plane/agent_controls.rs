@@ -226,44 +226,28 @@ impl ManagerControlPlaneProvider {
         ]
     }
 
-    fn configured_search_tool_group() -> Option<TopicAgentToolGroup> {
-        match crate::config::get_search_provider().as_str() {
-            "tavily" => {
-                #[cfg(feature = "tavily")]
-                {
-                    std::env::var("TAVILY_API_KEY")
-                        .ok()
-                        .filter(|value| !value.trim().is_empty())
-                        .map(|_| TopicAgentToolGroup {
-                            provider: "search",
-                            aliases: &["search", "tavily"],
-                            tools: TOPIC_AGENT_TAVILY_TOOLS,
-                        })
-                }
-                #[cfg(not(feature = "tavily"))]
-                {
-                    None
-                }
-            }
-            "crawl4ai" => {
-                #[cfg(feature = "crawl4ai")]
-                {
-                    std::env::var("CRAWL4AI_URL")
-                        .ok()
-                        .filter(|value| !value.trim().is_empty())
-                        .map(|_| TopicAgentToolGroup {
-                            provider: "search",
-                            aliases: &["search", "crawl4ai"],
-                            tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
-                        })
-                }
-                #[cfg(not(feature = "crawl4ai"))]
-                {
-                    None
-                }
-            }
-            _ => None,
+    fn configured_search_tool_groups() -> Vec<TopicAgentToolGroup> {
+        let mut groups = Vec::new();
+
+        #[cfg(feature = "tavily")]
+        if crate::config::is_tavily_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "tavily",
+                aliases: &["search", "tavily"],
+                tools: TOPIC_AGENT_TAVILY_TOOLS,
+            });
         }
+
+        #[cfg(feature = "crawl4ai")]
+        if crate::config::is_crawl4ai_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "crawl4ai",
+                aliases: &["search", "crawl4ai"],
+                tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
+            });
+        }
+
+        groups
     }
 
     pub(super) async fn topic_agent_tool_catalog(
@@ -308,9 +292,7 @@ impl ManagerControlPlaneProvider {
             },
         ];
 
-        if let Some(search_group) = Self::configured_search_tool_group() {
-            groups.push(search_group);
-        }
+        groups.extend(Self::configured_search_tool_groups());
 
         let topic_infra = self
             .storage
@@ -514,16 +496,20 @@ impl ManagerControlPlaneProvider {
                 continue;
             }
 
-            let Some(group) = catalog
+            let matching_groups = catalog
                 .groups
                 .iter()
-                .find(|group| group.provider == token || group.aliases.contains(&token.as_str()))
-            else {
-                bail!("unknown tool or provider alias '{token}' for the topic agent");
-            };
+                .filter(|group| group.provider == token || group.aliases.contains(&token.as_str()))
+                .collect::<Vec<_>>();
 
-            for tool in group.tools {
-                requested.insert((*tool).to_string());
+            if matching_groups.is_empty() {
+                bail!("unknown tool or provider alias '{token}' for the topic agent");
+            }
+
+            for group in matching_groups {
+                for tool in group.tools {
+                    requested.insert((*tool).to_string());
+                }
             }
         }
 
@@ -1396,5 +1382,55 @@ impl ManagerControlPlaneProvider {
             snapshot,
             audit_status,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_alias_expands_all_matching_search_groups() {
+        let catalog = TopicAgentToolCatalog {
+            groups: vec![
+                TopicAgentToolGroup {
+                    provider: "tavily",
+                    aliases: &["search", "tavily"],
+                    tools: &["web_search", "web_extract"],
+                },
+                TopicAgentToolGroup {
+                    provider: "crawl4ai",
+                    aliases: &["search", "crawl4ai"],
+                    tools: &["deep_crawl", "web_markdown", "web_pdf"],
+                },
+            ],
+            tool_names: [
+                "web_search",
+                "web_extract",
+                "deep_crawl",
+                "web_markdown",
+                "web_pdf",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        };
+
+        let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
+            &catalog,
+            vec!["search".to_string()],
+        )
+        .expect("search alias should expand across all enabled search providers");
+
+        assert_eq!(
+            expanded,
+            vec![
+                "deep_crawl".to_string(),
+                "web_extract".to_string(),
+                "web_markdown".to_string(),
+                "web_pdf".to_string(),
+                "web_search".to_string(),
+            ]
+        );
     }
 }

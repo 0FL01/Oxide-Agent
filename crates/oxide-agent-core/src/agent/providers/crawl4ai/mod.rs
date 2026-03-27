@@ -162,17 +162,20 @@ impl Crawl4aiProvider {
             match self.do_post(&url, &body).await {
                 Ok(payload) => return Ok(payload),
                 Err(e) => {
+                    let retryable = is_retryable_error(&e.to_string());
                     last_error = Some(e);
                     // Only retry on transient errors
-                    if !is_retryable_error(&last_error.as_ref().unwrap().to_string()) {
+                    if !retryable {
                         break;
                     }
-                    warn!(
-                        url = %url,
-                        attempt = attempt,
-                        error = %last_error.as_ref().unwrap(),
-                        "Crawl4AI request failed, will retry",
-                    );
+                    if let Some(error) = last_error.as_ref() {
+                        warn!(
+                            url = %url,
+                            attempt = attempt,
+                            error = %error,
+                            "Crawl4AI request failed, will retry",
+                        );
+                    }
                 }
             }
         }
