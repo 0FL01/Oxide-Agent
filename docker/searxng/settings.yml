@@ -26,31 +26,55 @@ search:
   ban_time_on_fail: 5
   max_ban_time_on_fail: 120
 
-server:
-  base_url: false
-  secret_key: "change-this-searxng-secret"
-  limiter: false
-  public_instance: false
-  image_proxy: false
-  method: "POST"
-
-engines:
-  - name: brave
-    disabled: false
-  - name: bing
-    disabled: false
-  - name: qwant
-    disabled: false
-  - name: mojeek
-    disabled: false
-  - name: yandex
-    disabled: false
+search:
+  safe_search: 0
+  formats:
+    - json
+  autocomplete: ""
+  favicon_resolver: ""
+  max_page: 1
+  ban_time_on_fail: 30
+  max_ban_time_on_fail: 600
+  suspended_times:
+    SearxEngineAccessDenied: 21600
+    SearxEngineCaptcha: 86400
+    SearxEngineTooManyRequests: 21600
+    cf_SearxEngineCaptcha: 1296000
+    cf_SearxEngineAccessDenied: 86400
+    recaptcha_SearxEngineCaptcha: 604800
 
 outgoing:
-  request_timeout: 4.0
+  request_timeout: 3.0
   retries: 0
-  pool_maxsize: 8
-  pool_connections: 32
-  keepalive_expiry: 5.0
+  pool_connections: 12
+  pool_maxsize: 4
+  keepalive_expiry: 3.0
   enable_http2: true
-  useragent_suffix: "oxide-agent"
+
+engines:
+  - name: qwant
+    timeout: 2.5
+    send_accept_language_header: true
+    max_connections: 2
+    max_keepalive_connections: 1
+    keepalive_expiry: 2.0
+
+  - name: bing
+    timeout: 2.5
+    send_accept_language_header: true
+    max_connections: 2
+    max_keepalive_connections: 1
+    keepalive_expiry: 2.0
+
+  - name: mojeek
+    timeout: 2.5
+    max_connections: 1
+    max_keepalive_connections: 1
+    keepalive_expiry: 2.0
+
+  - name: yandex
+    timeout: 2.0
+    send_accept_language_header: true
+    max_connections: 1
+    max_keepalive_connections: 1
+    keepalive_expiry: 2.0
