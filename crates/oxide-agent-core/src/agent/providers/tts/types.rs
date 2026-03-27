@@ -278,17 +278,47 @@ mod tests {
 
     #[test]
     fn voice_parsing() {
-        assert_eq!("af_bella".parse::<TtsVoice>().unwrap(), TtsVoice::Bella);
-        assert_eq!("bella".parse::<TtsVoice>().unwrap(), TtsVoice::Bella);
-        assert_eq!("af_heart".parse::<TtsVoice>().unwrap(), TtsVoice::Heart);
+        assert_eq!(
+            "af_bella"
+                .parse::<TtsVoice>()
+                .expect("af_bella should parse into Bella"),
+            TtsVoice::Bella
+        );
+        assert_eq!(
+            "bella"
+                .parse::<TtsVoice>()
+                .expect("bella alias should parse into Bella"),
+            TtsVoice::Bella
+        );
+        assert_eq!(
+            "af_heart"
+                .parse::<TtsVoice>()
+                .expect("af_heart should parse into Heart"),
+            TtsVoice::Heart
+        );
         assert!("unknown".parse::<TtsVoice>().is_err());
     }
 
     #[test]
     fn format_parsing() {
-        assert_eq!("ogg".parse::<TtsFormat>().unwrap(), TtsFormat::Ogg);
-        assert_eq!("opus".parse::<TtsFormat>().unwrap(), TtsFormat::Ogg);
-        assert_eq!("mp3".parse::<TtsFormat>().unwrap(), TtsFormat::Mp3);
+        assert_eq!(
+            "ogg"
+                .parse::<TtsFormat>()
+                .expect("ogg should parse into Ogg"),
+            TtsFormat::Ogg
+        );
+        assert_eq!(
+            "opus"
+                .parse::<TtsFormat>()
+                .expect("opus alias should parse into Ogg"),
+            TtsFormat::Ogg
+        );
+        assert_eq!(
+            "mp3"
+                .parse::<TtsFormat>()
+                .expect("mp3 should parse into Mp3"),
+            TtsFormat::Mp3
+        );
         assert!("unknown".parse::<TtsFormat>().is_err());
     }
 
@@ -311,7 +341,9 @@ mod tests {
             speed: Some(1.2),
         };
 
-        let req = args.to_request(&config).unwrap();
+        let req = args
+            .to_request(&config)
+            .expect("args should convert to a valid TTS request");
         assert_eq!(req.text, "Hello");
         assert_eq!(req.voice, "af_bella");
         assert_eq!(req.format, "mp3");

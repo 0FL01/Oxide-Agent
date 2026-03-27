@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn select_model_rejects_unknown() {
-        let err = select_model("glm-3-fake").unwrap_err();
+        let err = select_model("glm-3-fake").expect_err("unknown model should be rejected");
         assert!(matches!(err, LlmError::Unknown(msg) if msg.contains("glm-3-fake")));
     }
 

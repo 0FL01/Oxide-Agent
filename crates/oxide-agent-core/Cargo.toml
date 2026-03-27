@@ -12,6 +12,7 @@ unsafe_code = "forbid"
 unwrap_used = "forbid"
 too_many_lines = "forbid"
 too_many_arguments = "deny"
+await_holding_lock = "deny"
 
 [dependencies]
 tokio = { version = "1.48", features = ["full"] }
