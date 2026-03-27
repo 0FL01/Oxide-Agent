@@ -16,6 +16,11 @@ search:
   formats:
     - json
   autocomplete: ""
+  languages:
+    - all
+    - ru
+    - uk
+    - en
   favicon_resolver: ""
   max_page: 1
   ban_time_on_fail: 30
