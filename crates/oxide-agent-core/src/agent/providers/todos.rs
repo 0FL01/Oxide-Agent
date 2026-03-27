@@ -375,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn test_todos_write() -> Result<(), Box<dyn std::error::Error>> {
         let todos = Arc::new(Mutex::new(TodoList::new()));
-        let provider = TodosProvider::new(todos.clone());
+        let provider = TodosProvider::new(Arc::clone(&todos));
 
         let args = r#"{
             "todos": [
