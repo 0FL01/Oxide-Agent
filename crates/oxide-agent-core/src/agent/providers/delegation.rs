@@ -39,6 +39,8 @@ use uuid::Uuid;
 
 #[cfg(feature = "crawl4ai")]
 use crate::agent::providers::Crawl4aiProvider;
+#[cfg(feature = "searxng")]
+use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "tavily")]
 use crate::agent::providers::TavilyProvider;
 use tokio::sync::Semaphore;
@@ -187,6 +189,30 @@ impl DelegationProvider {
         #[cfg(not(feature = "tavily"))]
         if crate::config::is_tavily_enabled() {
             warn!("Tavily enabled but feature not compiled in");
+        }
+
+        #[cfg(feature = "searxng")]
+        if crate::config::is_searxng_enabled() {
+            if let Some(url) = crate::config::get_searxng_url() {
+                if !url.trim().is_empty() {
+                    match SearxngProvider::new(&url) {
+                        Ok(provider) => providers.push(Box::new(provider)),
+                        Err(error) => {
+                            warn!(error = %error, "SearXNG sub-agent provider initialization failed")
+                        }
+                    }
+                } else {
+                    warn!("SearXNG enabled but SEARXNG_URL is empty; sub-agent provider not registered");
+                }
+            } else {
+                warn!(
+                    "SearXNG enabled but SEARXNG_URL is not set; sub-agent provider not registered"
+                );
+            }
+        }
+        #[cfg(not(feature = "searxng"))]
+        if crate::config::is_searxng_enabled() {
+            warn!("SearXNG enabled but feature not compiled in");
         }
 
         #[cfg(feature = "crawl4ai")]

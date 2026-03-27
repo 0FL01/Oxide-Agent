@@ -199,6 +199,8 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
 ];
 #[cfg(feature = "tavily")]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
+#[cfg(feature = "searxng")]
+const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
 #[cfg(feature = "crawl4ai")]
 const TOPIC_AGENT_CRAWL4AI_TOOLS: &[&str] = &["deep_crawl", "web_markdown", "web_pdf"];
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[

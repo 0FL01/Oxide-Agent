@@ -19,6 +19,9 @@ mod path;
 #[cfg(feature = "tavily")]
 pub mod tavily;
 
+#[cfg(feature = "searxng")]
+pub mod searxng;
+
 #[cfg(feature = "crawl4ai")]
 pub mod crawl4ai;
 
@@ -54,6 +57,9 @@ pub use ytdlp::YtdlpProvider;
 
 #[cfg(feature = "tavily")]
 pub use tavily::TavilyProvider;
+
+#[cfg(feature = "searxng")]
+pub use searxng::SearxngProvider;
 
 #[cfg(feature = "crawl4ai")]
 pub use crawl4ai::Crawl4aiProvider;
