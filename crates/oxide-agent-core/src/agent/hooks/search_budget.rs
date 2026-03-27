@@ -25,7 +25,12 @@ impl SearchBudgetHook {
     fn is_search_tool(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "web_search" | "web_extract" | "deep_crawl" | "web_markdown" | "web_pdf"
+            "web_search"
+                | "web_extract"
+                | "searxng_search"
+                | "deep_crawl"
+                | "web_markdown"
+                | "web_pdf"
         )
     }
 }
@@ -51,5 +56,38 @@ impl Hook for SearchBudgetHook {
         }
 
         HookResult::Continue
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::memory::AgentMemory;
+    use crate::agent::providers::TodoList;
+
+    #[test]
+    fn counts_searxng_search_against_budget() {
+        let hook = SearchBudgetHook::new(1);
+        let todos = TodoList::new();
+        let memory = AgentMemory::new(1024);
+        let context = HookContext::new(&todos, &memory, 0, 0, 1);
+
+        let first = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "searxng_search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+        let second = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "searxng_search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+
+        assert!(matches!(first, HookResult::Continue));
+        assert!(matches!(second, HookResult::Block { .. }));
     }
 }

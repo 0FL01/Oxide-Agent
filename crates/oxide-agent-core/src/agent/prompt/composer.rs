@@ -15,7 +15,7 @@ fn build_date_context() -> String {
     let current_offset = now.format("UTC%:z").to_string();
 
     format!(
-        "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nCurrent local timezone: {current_offset}\nIMPORTANT: Always use this date as the current date. If search results (web_search) contain phrases like 'today', 'tomorrow', or dates contradicting this, consider the search results outdated and interpret them relative to the date above.\n\n"
+        "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nCurrent local timezone: {current_offset}\nIMPORTANT: Always use this date as the current date. If search results (`web_search` or `searxng_search`) contain phrases like 'today', 'tomorrow', or dates contradicting this, consider the search results outdated and interpret them relative to the date above.\n\n"
     )
 }
 
