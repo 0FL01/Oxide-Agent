@@ -41,6 +41,9 @@ outgoing:
   keepalive_expiry: 3.0
   enable_http2: true
 
+server:
+  secret_key: "oxide-agent-searxng-key-2026"
+
 engines:
   - name: qwant
     timeout: 2.5
