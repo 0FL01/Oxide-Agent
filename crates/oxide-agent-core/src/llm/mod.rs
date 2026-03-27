@@ -1521,8 +1521,7 @@ fn check_batch_completion(
     capabilities: ProviderCapabilities,
 ) -> Result<(), LlmError> {
     let batch_is_terminal = cursor == messages_len;
-    let should_require_complete_batch =
-        capabilities.strict_tool_history() || !batch_is_terminal;
+    let should_require_complete_batch = capabilities.strict_tool_history() || !batch_is_terminal;
 
     if should_require_complete_batch && seen_results.len() != expected_ids.len() {
         return Err(LlmError::RepairableHistory(format!(
@@ -1573,7 +1572,13 @@ fn validate_tool_history(
                 let expected_ids = extract_expected_invocation_ids(message)?;
                 let (cursor, seen_results) =
                     validate_tool_result_sequence(messages, index + 1, &expected_ids)?;
-                check_batch_completion(cursor, messages.len(), &expected_ids, &seen_results, capabilities)?;
+                check_batch_completion(
+                    cursor,
+                    messages.len(),
+                    &expected_ids,
+                    &seen_results,
+                    capabilities,
+                )?;
 
                 index = cursor;
                 continue;
