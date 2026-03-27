@@ -5,6 +5,6 @@ server:
   limiter: false
 
 search:
+  safe_search: 0
   formats:
-    - html
     - json
