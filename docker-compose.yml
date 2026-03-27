@@ -98,11 +98,11 @@ services:
     volumes:
       - ./docker/searxng/settings.yml:/etc/searxng/settings.yml
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
     logging:
       driver: json-file
       options:
