@@ -147,9 +147,9 @@ async fn run_background_checkpoint_loop(
         };
 
         if let Err(error) = persist_queued_memory_checkpoint(
-            checkpoint.clone(),
-            state.clone(),
-            persist_lock.clone(),
+            Arc::clone(&checkpoint),
+            Arc::clone(&state),
+            Arc::clone(&persist_lock),
             queued,
             false,
         )
@@ -322,9 +322,9 @@ impl AgentSession {
         };
 
         persist_queued_memory_checkpoint(
-            checkpoint.clone(),
-            self.checkpoint_state.clone(),
-            self.checkpoint_persist_lock.clone(),
+            Arc::clone(checkpoint),
+            Arc::clone(&self.checkpoint_state),
+            Arc::clone(&self.checkpoint_persist_lock),
             queued,
             true,
         )
@@ -342,8 +342,8 @@ impl AgentSession {
         };
 
         let memory = self.memory.clone();
-        let checkpoint_state = self.checkpoint_state.clone();
-        let persist_lock = self.checkpoint_persist_lock.clone();
+        let checkpoint_state = Arc::clone(&self.checkpoint_state);
+        let persist_lock = Arc::clone(&self.checkpoint_persist_lock);
         tokio::spawn(async move {
             let start = std::time::Instant::now();
             let should_spawn_worker = match async {

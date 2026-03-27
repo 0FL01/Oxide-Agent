@@ -350,7 +350,7 @@ mod tests {
             ..CompactionSummary::default()
         };
         let messages = vec![
-            AgentMessage::from_compaction_summary(existing.clone()),
+            AgentMessage::from_compaction_summary(existing),
             AgentMessage::user_task("Ship stage 8"),
             AgentMessage::user("Older request"),
             AgentMessage::assistant("Older response"),
@@ -367,8 +367,7 @@ mod tests {
             ..CompactionSummary::default()
         };
 
-        let (rebuilt, outcome) =
-            rebuild_hot_context(&snapshot, &messages, Some(new_summary.clone()), None);
+        let (rebuilt, outcome) = rebuild_hot_context(&snapshot, &messages, Some(new_summary), None);
 
         assert!(outcome.applied);
         assert_eq!(outcome.dropped_indices, vec![0, 2, 3]);
