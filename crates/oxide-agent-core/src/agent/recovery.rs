@@ -199,145 +199,163 @@ fn repair_agent_message_history_with_policy(
     (repaired, outcome)
 }
 
-fn repair_assistant_tool_batch(
-    messages: &[AgentMessage],
-    assistant_index: usize,
-    allow_terminal_incomplete_batch: bool,
-) -> (Vec<AgentMessage>, usize, HistoryRepairOutcome) {
-    let assistant = messages[assistant_index].clone();
-    let mut outcome = HistoryRepairOutcome::default();
-    let Some(tool_calls) = assistant.tool_calls.clone() else {
-        return (vec![assistant], assistant_index + 1, outcome);
-    };
-    let tool_call_correlations = assistant
+/// Results from validating tool calls in an assistant message.
+struct ValidatedToolCalls {
+    calls: Vec<ToolCall>,
+    correlations: Vec<ToolCallCorrelation>,
+    expected_ids: HashSet<crate::llm::InvocationId>,
+}
+
+/// Extract and validate tool calls from an assistant message.
+fn extract_valid_tool_calls(
+    assistant: &AgentMessage,
+    outcome: &mut HistoryRepairOutcome,
+) -> Option<ValidatedToolCalls> {
+    let tool_calls = assistant.tool_calls.clone()?;
+    let correlations = assistant
         .resolved_tool_call_correlations()
         .unwrap_or_else(|| tool_calls.iter().map(ToolCall::correlation).collect());
 
     let mut expected_ids = HashSet::new();
-    let mut valid_tool_calls = Vec::with_capacity(tool_calls.len());
-    let mut valid_tool_call_correlations = Vec::with_capacity(tool_calls.len());
-    for (tool_call, correlation) in tool_calls
-        .into_iter()
-        .zip(tool_call_correlations.into_iter())
-    {
-        let invocation_id = correlation.invocation_id.as_str().trim();
-        if invocation_id.is_empty() || !expected_ids.insert(correlation.invocation_id.clone()) {
+    let mut valid_calls = Vec::with_capacity(tool_calls.len());
+    let mut valid_correlations = Vec::with_capacity(tool_calls.len());
+
+    for (tool_call, mut correlation) in tool_calls.into_iter().zip(correlations) {
+        let id = correlation.invocation_id.as_str().trim();
+        if id.is_empty() || !expected_ids.insert(correlation.invocation_id.clone()) {
             outcome.applied = true;
             outcome.trimmed_tool_calls = outcome.trimmed_tool_calls.saturating_add(1);
             continue;
         }
 
-        // Repair empty provider_tool_call_id (wire_id) - this causes "tool call id is invalid" errors
-        // with MiniMax and other providers. Generate a fallback ID based on invocation_id.
-        let mut correlation = correlation;
-        let wire_id = correlation.wire_tool_call_id();
-        if wire_id.is_empty() {
-            let invocation_id_str = correlation.invocation_id.as_str().to_string();
+        if correlation.wire_tool_call_id().is_empty() {
+            let id_str = correlation.invocation_id.as_str().to_string();
             warn!(
-                invocation_id = %invocation_id_str,
+                invocation_id = %id_str,
                 "Repairing empty wire_id in stored tool call correlation"
             );
-            correlation = correlation.with_provider_tool_call_id(invocation_id_str);
+            correlation = correlation.with_provider_tool_call_id(id_str);
             outcome.applied = true;
             outcome.repaired_empty_wire_ids = outcome.repaired_empty_wire_ids.saturating_add(1);
         }
 
-        valid_tool_calls.push(tool_call);
-        valid_tool_call_correlations.push(correlation);
+        valid_calls.push(tool_call);
+        valid_correlations.push(correlation);
     }
 
-    let canonical_correlations_by_invocation: HashMap<_, _> = valid_tool_call_correlations
-        .iter()
-        .cloned()
-        .map(|correlation| (correlation.invocation_id.clone(), correlation))
-        .collect();
+    Some(ValidatedToolCalls {
+        calls: valid_calls,
+        correlations: valid_correlations,
+        expected_ids,
+    })
+}
 
-    let mut repaired_tool_results = Vec::new();
+/// Process tool result messages following an assistant batch.
+fn process_tool_results(
+    messages: &[AgentMessage],
+    assistant_index: usize,
+    expected_ids: &HashSet<crate::llm::InvocationId>,
+    canonical: &HashMap<crate::llm::InvocationId, ToolCallCorrelation>,
+    outcome: &mut HistoryRepairOutcome,
+) -> (Vec<AgentMessage>, usize, HashSet<crate::llm::InvocationId>) {
+    let mut repaired_results = Vec::new();
     let mut seen_result_ids = HashSet::new();
     let mut cursor = assistant_index + 1;
+
     while cursor < messages.len()
         && messages[cursor].resolved_kind() == AgentMessageKind::ToolResult
     {
         let tool_result = &messages[cursor];
-        let Some(result_correlation) = tool_result.resolved_tool_call_correlation() else {
+        let Some(result_corr) = tool_result.resolved_tool_call_correlation() else {
             outcome.applied = true;
             outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
             cursor += 1;
             continue;
         };
 
-        let invocation_id = result_correlation.invocation_id.clone();
-        let Some(invocation_id) = Some(invocation_id).filter(|id| !id.as_str().trim().is_empty())
-        else {
+        let inv_id = result_corr.invocation_id.clone();
+        let Some(inv_id) = Some(inv_id).filter(|id| !id.as_str().trim().is_empty()) else {
             outcome.applied = true;
             outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
             cursor += 1;
             continue;
         };
 
-        if !expected_ids.contains(&invocation_id) || !seen_result_ids.insert(invocation_id.clone())
-        {
+        if !expected_ids.contains(&inv_id) || !seen_result_ids.insert(inv_id.clone()) {
             outcome.applied = true;
             outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
             cursor += 1;
             continue;
         }
 
-        let Some(canonical_correlation) = canonical_correlations_by_invocation.get(&invocation_id)
-        else {
+        let Some(canonical_corr) = canonical.get(&inv_id) else {
             outcome.applied = true;
             outcome.dropped_tool_results = outcome.dropped_tool_results.saturating_add(1);
             cursor += 1;
             continue;
         };
 
-        let mut repaired_tool_result = tool_result.clone();
-        if repaired_tool_result.tool_call_correlation.as_ref() != Some(canonical_correlation) {
-            if result_correlation.wire_tool_call_id().is_empty() {
+        let mut repaired = tool_result.clone();
+        if repaired.tool_call_correlation.as_ref() != Some(canonical_corr) {
+            if result_corr.wire_tool_call_id().is_empty() {
                 outcome.repaired_empty_wire_ids = outcome.repaired_empty_wire_ids.saturating_add(1);
             }
-            repaired_tool_result.tool_call_correlation = Some(canonical_correlation.clone());
-            if repaired_tool_result
+            repaired.tool_call_correlation = Some(canonical_corr.clone());
+            if repaired
                 .tool_call_id
                 .as_deref()
-                .is_none_or(|tool_call_id| tool_call_id.trim().is_empty())
+                .is_none_or(|id| id.trim().is_empty())
             {
-                repaired_tool_result.tool_call_id = Some(invocation_id.as_str().to_string());
+                repaired.tool_call_id = Some(inv_id.as_str().to_string());
             }
             outcome.applied = true;
         }
 
-        repaired_tool_results.push(repaired_tool_result);
+        repaired_results.push(repaired);
         cursor += 1;
     }
 
-    let terminal_batch = cursor == messages.len();
-    let preserve_incomplete_batch = allow_terminal_incomplete_batch && terminal_batch;
-    if !preserve_incomplete_batch {
-        let original_tool_call_count = valid_tool_calls.len();
-        let retained_pairs: Vec<(ToolCall, ToolCallCorrelation)> = valid_tool_calls
-            .into_iter()
-            .zip(valid_tool_call_correlations)
-            .filter(|(_, correlation)| seen_result_ids.contains(&correlation.invocation_id))
-            .collect();
-        valid_tool_calls = retained_pairs
-            .iter()
-            .map(|(tool_call, _)| tool_call.clone())
-            .collect();
-        valid_tool_call_correlations = retained_pairs
-            .into_iter()
-            .map(|(_, correlation)| correlation)
-            .collect();
-        if valid_tool_calls.len() != original_tool_call_count {
-            outcome.applied = true;
-            outcome.trimmed_tool_calls = outcome
-                .trimmed_tool_calls
-                .saturating_add(original_tool_call_count.saturating_sub(valid_tool_calls.len()));
-        }
+    (repaired_results, cursor, seen_result_ids)
+}
+
+/// Filter tool calls to only those with matching results.
+fn filter_tool_calls_by_results(
+    calls: Vec<ToolCall>,
+    correlations: Vec<ToolCallCorrelation>,
+    seen_results: &HashSet<crate::llm::InvocationId>,
+    outcome: &mut HistoryRepairOutcome,
+) -> (Vec<ToolCall>, Vec<ToolCallCorrelation>) {
+    let original_count = calls.len();
+    let pairs: Vec<_> = calls
+        .into_iter()
+        .zip(correlations)
+        .filter(|(_, corr)| seen_results.contains(&corr.invocation_id))
+        .collect();
+
+    let filtered_calls: Vec<_> = pairs.iter().map(|(call, _)| call.clone()).collect();
+    let filtered_corrs: Vec<_> = pairs.into_iter().map(|(_, corr)| corr).collect();
+
+    if filtered_calls.len() != original_count {
+        outcome.applied = true;
+        outcome.trimmed_tool_calls = outcome
+            .trimmed_tool_calls
+            .saturating_add(original_count.saturating_sub(filtered_calls.len()));
     }
 
-    let mut repaired_batch = Vec::new();
-    if valid_tool_calls.is_empty() {
+    (filtered_calls, filtered_corrs)
+}
+
+/// Build the final repaired batch from processed components.
+fn build_repaired_batch(
+    assistant: AgentMessage,
+    calls: Vec<ToolCall>,
+    correlations: Vec<ToolCallCorrelation>,
+    tool_results: Vec<AgentMessage>,
+    outcome: &mut HistoryRepairOutcome,
+) -> Vec<AgentMessage> {
+    let mut batch = Vec::new();
+
+    if calls.is_empty() {
         if assistant.content.trim().is_empty() {
             outcome.applied = true;
             outcome.dropped_tool_call_messages =
@@ -351,17 +369,68 @@ fn repair_assistant_tool_batch(
             outcome.applied = true;
             outcome.converted_tool_call_messages =
                 outcome.converted_tool_call_messages.saturating_add(1);
-            repaired_batch.push(converted);
+            batch.push(converted);
         }
     } else {
-        let mut repaired_assistant = assistant;
-        repaired_assistant.tool_calls = Some(valid_tool_calls);
-        repaired_assistant.tool_call_correlations = Some(valid_tool_call_correlations);
-        repaired_batch.push(repaired_assistant);
+        let mut repaired = assistant;
+        repaired.tool_calls = Some(calls);
+        repaired.tool_call_correlations = Some(correlations);
+        batch.push(repaired);
     }
 
-    repaired_batch.extend(repaired_tool_results);
-    (repaired_batch, cursor, outcome)
+    batch.extend(tool_results);
+    batch
+}
+
+fn repair_assistant_tool_batch(
+    messages: &[AgentMessage],
+    assistant_index: usize,
+    allow_terminal_incomplete_batch: bool,
+) -> (Vec<AgentMessage>, usize, HistoryRepairOutcome) {
+    let assistant = messages[assistant_index].clone();
+    let mut outcome = HistoryRepairOutcome::default();
+
+    let Some(validated) = extract_valid_tool_calls(&assistant, &mut outcome) else {
+        return (vec![assistant], assistant_index + 1, outcome);
+    };
+
+    let canonical: HashMap<_, _> = validated
+        .correlations
+        .iter()
+        .cloned()
+        .map(|c| (c.invocation_id.clone(), c))
+        .collect();
+
+    let (tool_results, cursor, seen_results) = process_tool_results(
+        messages,
+        assistant_index,
+        &validated.expected_ids,
+        &canonical,
+        &mut outcome,
+    );
+
+    let is_terminal = cursor == messages.len();
+    let preserve_incomplete = allow_terminal_incomplete_batch && is_terminal;
+
+    let (final_calls, final_corrs) = if preserve_incomplete {
+        (validated.calls, validated.correlations)
+    } else {
+        filter_tool_calls_by_results(
+            validated.calls,
+            validated.correlations,
+            &seen_results,
+            &mut outcome,
+        )
+    };
+
+    let batch = build_repaired_batch(
+        assistant,
+        final_calls,
+        final_corrs,
+        tool_results,
+        &mut outcome,
+    );
+    (batch, cursor, outcome)
 }
 
 /// Sanitize leaked control XML tags from text.
