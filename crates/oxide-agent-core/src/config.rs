@@ -75,16 +75,17 @@ pub struct AgentSettings {
     pub openrouter_api_key: Option<String>,
     /// Tavily API key
     pub tavily_api_key: Option<String>,
+    /// Enable Tavily tool provider registration.
+    pub tavily_enabled: Option<bool>,
     /// Crawl4AI base URL
     pub crawl4ai_url: Option<String>,
+    /// Enable Crawl4AI tool provider registration.
+    pub crawl4ai_enabled: Option<bool>,
     /// Crawl4AI request timeout (seconds)
     pub crawl4ai_timeout_secs: Option<u64>,
 
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
-
-    /// Web search provider: "tavily" or "crawl4ai"
-    pub search_provider: Option<String>,
 
     /// R2 Storage access key ID
     pub r2_access_key_id: Option<String>,
@@ -276,14 +277,6 @@ impl AgentSettings {
             }
         }
 
-        if settings.search_provider.is_none() {
-            if let Ok(val) = std::env::var("SEARCH_PROVIDER") {
-                if !val.is_empty() {
-                    settings.search_provider = Some(val);
-                }
-            }
-        }
-
         if settings.tavily_api_key.is_none() {
             if let Ok(val) = std::env::var("TAVILY_API_KEY") {
                 if !val.is_empty() {
@@ -292,12 +285,20 @@ impl AgentSettings {
             }
         }
 
+        if settings.tavily_enabled.is_none() {
+            settings.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
+        }
+
         if settings.crawl4ai_url.is_none() {
             if let Ok(val) = std::env::var("CRAWL4AI_URL") {
                 if !val.is_empty() {
                     settings.crawl4ai_url = Some(val);
                 }
             }
+        }
+
+        if settings.crawl4ai_enabled.is_none() {
+            settings.crawl4ai_enabled = parse_optional_env_bool("CRAWL4AI_ENABLED");
         }
 
         if settings
@@ -1079,6 +1080,27 @@ mod tests {
         assert_eq!(routes[1].id, "glm-4.7");
         assert!(routes.iter().all(|route| route.max_output_tokens == 512));
     }
+
+    #[test]
+    fn tavily_enabled_flag_overrides_api_key_fallback() {
+        env::set_var("TAVILY_API_KEY", "dummy-key");
+        env::set_var("TAVILY_ENABLED", "false");
+
+        assert!(!is_tavily_enabled());
+
+        env::remove_var("TAVILY_ENABLED");
+        env::remove_var("TAVILY_API_KEY");
+    }
+
+    #[test]
+    fn crawl4ai_enabled_falls_back_to_url_presence() {
+        env::remove_var("CRAWL4AI_ENABLED");
+        env::set_var("CRAWL4AI_URL", "http://crawl4ai:11235");
+
+        assert!(is_crawl4ai_enabled());
+
+        env::remove_var("CRAWL4AI_URL");
+    }
 }
 
 /// Information about a supported LLM model.
@@ -1441,19 +1463,35 @@ pub fn get_crawl4ai_max_backoff() -> u64 {
         .unwrap_or(CRAWL4AI_DEFAULT_MAX_BACKOFF_SECS)
 }
 
-/// Default web search provider
-pub const DEFAULT_SEARCH_PROVIDER: &str = "tavily";
-
-/// Get web search provider from env or default
-///
-/// Environment variable: `SEARCH_PROVIDER`
-/// Valid values: "tavily" or "crawl4ai"
-#[must_use]
-pub fn get_search_provider() -> String {
-    std::env::var("SEARCH_PROVIDER")
+fn parse_optional_env_bool(name: &str) -> Option<bool> {
+    std::env::var(name)
         .ok()
-        .filter(|s| matches!(s.as_str(), "tavily" | "crawl4ai"))
-        .unwrap_or_else(|| DEFAULT_SEARCH_PROVIDER.to_string())
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+}
+
+/// Determine whether Tavily tools should be registered.
+///
+/// Environment variable: `TAVILY_ENABLED`
+#[must_use]
+pub fn is_tavily_enabled() -> bool {
+    parse_optional_env_bool("TAVILY_ENABLED").unwrap_or_else(|| {
+        std::env::var("TAVILY_API_KEY")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+/// Determine whether Crawl4AI tools should be registered.
+///
+/// Environment variable: `CRAWL4AI_ENABLED`
+#[must_use]
+pub fn is_crawl4ai_enabled() -> bool {
+    parse_optional_env_bool("CRAWL4AI_ENABLED")
+        .unwrap_or_else(|| get_crawl4ai_url().is_some_and(|value| !value.trim().is_empty()))
 }
 
 // LLM HTTP client configuration
