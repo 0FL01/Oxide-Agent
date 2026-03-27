@@ -266,9 +266,9 @@ impl YtdlpProvider {
             Ok(result.stdout)
         } else {
             let error_msg = if result.stderr.is_empty() {
-                result.stdout.clone()
+                result.stdout
             } else {
-                result.stderr.clone()
+                result.stderr
             };
 
             // Check if this is a fatal, unrecoverable error

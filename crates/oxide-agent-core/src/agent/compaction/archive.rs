@@ -135,13 +135,13 @@ pub fn persist_compacted_history_chunk(
         archive_id
     );
     let record = ArchiveRecord {
-        archive_id: archive_id.clone(),
+        archive_id,
         context_key: scope.context_key.clone(),
         flow_id: scope.flow_id.clone(),
         created_at,
         time_range_start: created_at,
         time_range_end: created_at,
-        title: title.clone(),
+        title,
         short_summary: build_archive_short_summary(summary, archived_messages.len()),
         kind: ARCHIVE_KIND_COMPACTED_HISTORY.to_string(),
         tool_names: collect_tool_names(&archived_messages),
