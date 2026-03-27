@@ -64,11 +64,11 @@ fn multiple_tool_calls_all_orphaned() {
         .iter()
         .filter(|msg| msg.kind == AgentMessageKind::ToolResult)
         .filter(|msg| {
-            msg.tool_call_id.as_ref().map_or(false, |id| {
+            msg.tool_call_id.as_ref().is_some_and(|id| {
                 !rebuilt.iter().any(|m| {
                     m.tool_calls
                         .as_ref()
-                        .map_or(false, |calls| calls.iter().any(|tc| &tc.id == id))
+                        .is_some_and(|calls| calls.iter().any(|tc| &tc.id == id))
                 })
             })
         })
@@ -185,11 +185,11 @@ fn sub_agent_delegation_orphaned() {
     // Проверяем orphaned
     let has_orphaned = rebuilt.iter().any(|msg| {
         msg.kind == AgentMessageKind::ToolResult
-            && msg.tool_call_id.as_ref().map_or(false, |id| {
+            && msg.tool_call_id.as_ref().is_some_and(|id| {
                 !rebuilt.iter().any(|m| {
                     m.tool_calls
                         .as_ref()
-                        .map_or(false, |calls| calls.iter().any(|tc| &tc.id == id))
+                        .is_some_and(|calls| calls.iter().any(|tc| &tc.id == id))
                 })
             })
     });
@@ -264,11 +264,11 @@ fn large_tool_output_with_orphaned() {
             && msg
                 .tool_call_id
                 .as_ref()
-                .map_or(false, |id| id == "call_large")
+                .is_some_and(|id| id == "call_large")
             && !rebuilt.iter().any(|m| {
                 m.tool_calls
                     .as_ref()
-                    .map_or(false, |calls| calls.iter().any(|tc| tc.id == "call_large"))
+                    .is_some_and(|calls| calls.iter().any(|tc| tc.id == "call_large"))
             })
     });
 
@@ -328,7 +328,7 @@ fn complex_interleaved_conversation() {
         let has_matching_call = rebuilt.iter().any(|msg| {
             msg.tool_calls
                 .as_ref()
-                .map_or(false, |calls| calls.iter().any(|tc| &tc.id == tool_call_id))
+                .is_some_and(|calls| calls.iter().any(|tc| &tc.id == tool_call_id))
         });
 
         assert!(
