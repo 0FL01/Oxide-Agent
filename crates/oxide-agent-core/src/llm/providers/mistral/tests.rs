@@ -1,7 +1,7 @@
 //! Unit tests for Mistral provider
 
 #[cfg(test)]
-mod tests {
+mod provider_tests {
     use crate::config::{
         MISTRAL_CHAT_TEMPERATURE, MISTRAL_REASONING_TEMPERATURE, MISTRAL_TOOL_TEMPERATURE,
     };
@@ -384,7 +384,7 @@ mod tests {
         // Test that multiple tool calls in one request are correctly mapped
         let mut id_mapper = ToolCallIdMapper::new();
 
-        let original_ids = vec![
+        let original_ids = [
             "call_44456aeb-f16d-4c5e-8f38-f1243acb9e14",
             "call_55567bfb-e27e-6d6f-9g49-g2354bcd0f25",
             "call_66678cfc-f38f-7e7g-0h50-h3465cde1g36",

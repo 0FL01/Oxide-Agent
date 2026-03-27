@@ -107,6 +107,15 @@ fn chat_temperature(model_id: &str) -> f32 {
     }
 }
 
+/// Parameters for plain chat completion.
+pub struct ChatCompletionRequest<'a> {
+    pub system_prompt: &'a str,
+    pub history: &'a [Message],
+    pub user_message: &'a str,
+    pub model_id: &'a str,
+    pub max_tokens: u32,
+}
+
 /// Send chat request to Mistral API
 ///
 /// Legacy version without ID mapping. Use `send_chat_request_with_mapping` for tool calling.
@@ -169,7 +178,7 @@ pub async fn send_chat_request_with_mapping(
 
     // Take lock for parsing (maps Mistral IDs back to original)
     let mapper = id_mapper.lock().expect("ID mapper lock poisoned");
-    parse_chat_response(response_json, &*mapper)
+    parse_chat_response(response_json, &mapper)
 }
 
 /// Chat completion implementation
@@ -177,12 +186,16 @@ pub async fn chat_completion(
     client: &Client<async_openai::config::OpenAIConfig>,
     http_client: &HttpClient,
     api_key: &str,
-    system_prompt: &str,
-    history: &[Message],
-    user_message: &str,
-    model_id: &str,
-    max_tokens: u32,
+    request: ChatCompletionRequest<'_>,
 ) -> Result<String, LlmError> {
+    let ChatCompletionRequest {
+        system_prompt,
+        history,
+        user_message,
+        model_id,
+        max_tokens,
+    } = request;
+
     if is_reasoning_model(model_id) {
         let body =
             build_chat_completion_body(system_prompt, history, user_message, model_id, max_tokens);
@@ -231,7 +244,7 @@ pub async fn chat_with_tools(
             tools,
             model_id,
             max_tokens,
-            &mut *mapper,
+            &mut mapper,
         )
     };
 

@@ -71,7 +71,7 @@ struct MemoryCheckpointState {
 fn checkpoint_debounce_duration() -> Duration {
     #[cfg(test)]
     {
-        return Duration::from_millis(20);
+        Duration::from_millis(20)
     }
 
     #[cfg(not(test))]
