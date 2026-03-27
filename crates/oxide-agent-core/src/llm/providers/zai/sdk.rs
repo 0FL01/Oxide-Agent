@@ -2,12 +2,14 @@ mod messages;
 mod stream;
 
 use super::ZaiProvider;
-use crate::llm::{ChatResponse, LlmError, Message, ToolDefinition};
+use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
+use crate::llm::{ChatResponse, LlmError, Message, TokenUsage, ToolCall, ToolDefinition};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
+use serde_json::json;
 use tracing::warn;
 use zai_rs::model::chat::ChatCompletion;
-use zai_rs::model::chat_base_response::ChatCompletionResponse;
+use zai_rs::model::chat_base_response::{ChatCompletionResponse, ToolCallMessage, Usage};
 use zai_rs::model::chat_message_types::{TextMessage, VisionMessage, VisionRichContent};
 use zai_rs::model::chat_models::{GLM4_5_air, GLM4_5v, GLM5_turbo, GLM4_7, GLM5};
 use zai_rs::model::tools::ThinkingType;
@@ -27,6 +29,7 @@ enum ZaiModel {
     Main(GLM4_7),
     Sub(GLM4_5_air),
     Vision(GLM4_5v),
+    Flagship5_1,
     Flagship5(GLM5),
     Turbo5(GLM5_turbo),
 }
@@ -47,6 +50,11 @@ impl ZaiProvider {
             }
             ZaiModel::Sub(model) => {
                 self.text_chat_completion(model, system_prompt, history, user_message, max_tokens)
+                    .await?
+            }
+            ZaiModel::Flagship5_1 => {
+                let messages = convert_to_text_messages(system_prompt, history, Some(user_message));
+                self.text_chat_completion_raw(messages, "glm-5.1", max_tokens)
                     .await?
             }
             ZaiModel::Flagship5(model) => {
@@ -130,6 +138,10 @@ impl ZaiProvider {
                 let client = client.enable_stream();
                 stream_text_response(client).await
             }
+            ZaiModel::Flagship5_1 => {
+                self.chat_with_tools_raw(messages, converted_tools, "glm-5.1", max_tokens)
+                    .await
+            }
             ZaiModel::Flagship5(model) => {
                 let mut client =
                     build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
@@ -171,6 +183,42 @@ impl ZaiProvider {
             build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
         client.send().await.map_err(map_zai_error)
     }
+
+    async fn text_chat_completion_raw(
+        &self,
+        messages: Vec<TextMessage>,
+        model_id: &str,
+        max_tokens: u32,
+    ) -> Result<ChatCompletionResponse, LlmError> {
+        let body = json!({
+            "model": model_id,
+            "messages": messages,
+            "thinking": ThinkingType::Enabled,
+            "temperature": ZAI_TEMPERATURE,
+            "max_tokens": max_tokens,
+        });
+        send_raw_request(&self.api_key, &self.api_base, body).await
+    }
+
+    async fn chat_with_tools_raw(
+        &self,
+        messages: Vec<TextMessage>,
+        tools: Vec<zai_rs::model::tools::Tools>,
+        model_id: &str,
+        max_tokens: u32,
+    ) -> Result<ChatResponse, LlmError> {
+        let body = json!({
+            "model": model_id,
+            "messages": messages,
+            "tools": tools,
+            "thinking": ThinkingType::Enabled,
+            "temperature": ZAI_TEMPERATURE,
+            "max_tokens": max_tokens,
+            "stream": false,
+        });
+        let response = send_raw_request(&self.api_key, &self.api_base, body).await?;
+        map_chat_response(response)
+    }
 }
 
 fn select_model(model_id: &str) -> Result<ZaiModel, LlmError> {
@@ -179,6 +227,7 @@ fn select_model(model_id: &str) -> Result<ZaiModel, LlmError> {
         "glm-4.7" | "glm-4" | "mainagent" => Ok(ZaiModel::Main(GLM4_7 {})),
         "glm-4.5-air" | "glm-4-air" | "subagent" => Ok(ZaiModel::Sub(GLM4_5_air {})),
         "glm-4.5v" | "glm-4v" => Ok(ZaiModel::Vision(GLM4_5v {})),
+        "glm-5.1" | "flagship5.1" | "flagship51" => Ok(ZaiModel::Flagship5_1),
         "glm-5" | "flagship5" => Ok(ZaiModel::Flagship5(GLM5 {})),
         "glm-5-turbo" | "turbo5" => Ok(ZaiModel::Turbo5(GLM5_turbo {})),
         _ => Err(LlmError::Unknown(format!(
@@ -238,6 +287,109 @@ fn build_vision_request(
     }
 
     Ok(client)
+}
+
+async fn send_raw_request(
+    api_key: &str,
+    api_base: &str,
+    body: serde_json::Value,
+) -> Result<ChatCompletionResponse, LlmError> {
+    let response = reqwest::Client::new()
+        .post(api_base)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| LlmError::NetworkError(err.to_string()))?;
+
+    let status = response.status();
+    let payload = response
+        .text()
+        .await
+        .map_err(|err| LlmError::NetworkError(err.to_string()))?;
+
+    if !status.is_success() {
+        let message = extract_error_message(&payload);
+        if status.as_u16() == 429 {
+            let wait_secs = parse_zai_flush_time(&message);
+            return Err(LlmError::RateLimit { wait_secs, message });
+        }
+        return Err(LlmError::ApiError(message));
+    }
+
+    serde_json::from_str(&payload).map_err(|err| LlmError::JsonError(err.to_string()))
+}
+
+fn extract_error_message(payload: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| payload.to_string())
+}
+
+fn map_chat_response(response: ChatCompletionResponse) -> Result<ChatResponse, LlmError> {
+    let choice = response
+        .choices
+        .as_ref()
+        .and_then(|choices| choices.first())
+        .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))?;
+
+    let content = extract_text_content(choice.message.content.clone());
+    let reasoning_content = choice
+        .message
+        .reasoning_content
+        .clone()
+        .filter(|text| !text.is_empty());
+    let finish_reason = choice
+        .finish_reason
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let tool_calls = map_tool_calls(choice.message.tool_calls.as_deref());
+    let usage = response.usage.map(map_usage);
+
+    Ok(ChatResponse {
+        content,
+        tool_calls,
+        finish_reason,
+        reasoning_content,
+        usage,
+    })
+}
+
+fn map_usage(usage: Usage) -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: usage.prompt_tokens.unwrap_or(0),
+        completion_tokens: usage.completion_tokens.unwrap_or(0),
+        total_tokens: usage.total_tokens.unwrap_or(0),
+    }
+}
+
+fn map_tool_calls(tool_calls: Option<&[ToolCallMessage]>) -> Vec<ToolCall> {
+    tool_calls
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|call| {
+            let function = call.function.as_ref()?;
+            let name = function.name.clone()?;
+            let arguments = function
+                .arguments
+                .clone()
+                .unwrap_or_else(|| "{}".to_string());
+
+            Some(match call.id.as_deref() {
+                Some(id) if !id.trim().is_empty() => {
+                    CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(id, None, name, arguments)
+                }
+                _ => CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name, arguments),
+            })
+        })
+        .collect()
 }
 
 fn extract_text_from_response(response: ChatCompletionResponse) -> Result<String, LlmError> {
@@ -366,6 +518,23 @@ mod tests {
     }
 
     #[test]
+    fn select_model_glm5_1_exact() {
+        assert!(select_model("glm-5.1").is_ok());
+    }
+
+    #[test]
+    fn select_model_glm5_1_aliases() {
+        assert!(select_model("flagship5.1").is_ok());
+        assert!(select_model("flagship51").is_ok());
+    }
+
+    #[test]
+    fn select_model_glm5_1_case_insensitive() {
+        assert!(select_model("GLM-5.1").is_ok());
+        assert!(select_model(" Glm-5.1 ").is_ok());
+    }
+
+    #[test]
     fn select_model_glm5_exact() {
         assert!(select_model("glm-5").is_ok());
     }
@@ -382,8 +551,9 @@ mod tests {
     }
 
     #[test]
-    fn select_model_glm5_turbo_and_glm5_are_distinct() {
+    fn select_model_glm5_1_glm5_turbo_and_glm5_are_distinct() {
         // Both must resolve successfully — they map to different internal types
+        assert!(select_model("glm-5.1").is_ok());
         assert!(select_model("glm-5-turbo").is_ok());
         assert!(select_model("glm-5").is_ok());
     }
