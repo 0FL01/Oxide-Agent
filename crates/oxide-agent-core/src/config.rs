@@ -77,6 +77,12 @@ pub struct AgentSettings {
     pub tavily_api_key: Option<String>,
     /// Enable Tavily tool provider registration.
     pub tavily_enabled: Option<bool>,
+    /// SearXNG base URL.
+    pub searxng_url: Option<String>,
+    /// Enable SearXNG tool provider registration.
+    pub searxng_enabled: Option<bool>,
+    /// SearXNG request timeout (seconds).
+    pub searxng_timeout_secs: Option<u64>,
     /// Crawl4AI base URL
     pub crawl4ai_url: Option<String>,
     /// Enable Crawl4AI tool provider registration.
@@ -277,29 +283,7 @@ impl AgentSettings {
             }
         }
 
-        if settings.tavily_api_key.is_none() {
-            if let Ok(val) = std::env::var("TAVILY_API_KEY") {
-                if !val.is_empty() {
-                    settings.tavily_api_key = Some(val);
-                }
-            }
-        }
-
-        if settings.tavily_enabled.is_none() {
-            settings.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
-        }
-
-        if settings.crawl4ai_url.is_none() {
-            if let Ok(val) = std::env::var("CRAWL4AI_URL") {
-                if !val.is_empty() {
-                    settings.crawl4ai_url = Some(val);
-                }
-            }
-        }
-
-        if settings.crawl4ai_enabled.is_none() {
-            settings.crawl4ai_enabled = parse_optional_env_bool("CRAWL4AI_ENABLED");
-        }
+        settings.apply_search_provider_env_fallbacks();
 
         if settings
             .zai_api_key
@@ -367,6 +351,44 @@ impl AgentSettings {
                 self.sub_agent_context_window_tokens = Some(primary.context_window_tokens);
             }
             self.sub_agent_model_routes = Some(routes);
+        }
+    }
+
+    fn apply_search_provider_env_fallbacks(&mut self) {
+        if self.tavily_api_key.is_none() {
+            if let Ok(val) = std::env::var("TAVILY_API_KEY") {
+                if !val.is_empty() {
+                    self.tavily_api_key = Some(val);
+                }
+            }
+        }
+
+        if self.tavily_enabled.is_none() {
+            self.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
+        }
+
+        if self.searxng_url.is_none() {
+            if let Ok(val) = std::env::var("SEARXNG_URL") {
+                if !val.is_empty() {
+                    self.searxng_url = Some(val);
+                }
+            }
+        }
+
+        if self.searxng_enabled.is_none() {
+            self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
+        }
+
+        if self.crawl4ai_url.is_none() {
+            if let Ok(val) = std::env::var("CRAWL4AI_URL") {
+                if !val.is_empty() {
+                    self.crawl4ai_url = Some(val);
+                }
+            }
+        }
+
+        if self.crawl4ai_enabled.is_none() {
+            self.crawl4ai_enabled = parse_optional_env_bool("CRAWL4AI_ENABLED");
         }
     }
 
@@ -1101,6 +1123,16 @@ mod tests {
 
         env::remove_var("CRAWL4AI_URL");
     }
+
+    #[test]
+    fn searxng_enabled_flag_falls_back_to_url_presence() {
+        env::remove_var("SEARXNG_ENABLED");
+        env::set_var("SEARXNG_URL", "http://searxng:8080");
+
+        assert!(is_searxng_enabled());
+
+        env::remove_var("SEARXNG_URL");
+    }
 }
 
 /// Information about a supported LLM model.
@@ -1385,6 +1417,9 @@ pub const TRANSPORT_API_INITIAL_BACKOFF_MS: u64 = 500;
 pub const TRANSPORT_API_MAX_BACKOFF_MS: u64 = 4000;
 
 // Crawl4AI HTTP client configuration
+/// Default timeout for SearXNG requests (seconds)
+pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
+
 /// Default timeout for Crawl4AI requests (seconds)
 pub const CRAWL4AI_DEFAULT_TIMEOUT_SECS: u64 = 120;
 
@@ -1399,6 +1434,25 @@ pub const CRAWL4AI_DEFAULT_INITIAL_BACKOFF_SECS: u64 = 2;
 
 /// Default max backoff delay in seconds
 pub const CRAWL4AI_DEFAULT_MAX_BACKOFF_SECS: u64 = 30;
+
+/// Get SearXNG base URL from env.
+///
+/// Environment variable: `SEARXNG_URL`
+#[must_use]
+pub fn get_searxng_url() -> Option<String> {
+    std::env::var("SEARXNG_URL").ok().filter(|s| !s.is_empty())
+}
+
+/// Get SearXNG timeout from env or default.
+///
+/// Environment variable: `SEARXNG_TIMEOUT_SECS`
+#[must_use]
+pub fn get_searxng_timeout() -> u64 {
+    std::env::var("SEARXNG_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SEARXNG_DEFAULT_TIMEOUT_SECS)
+}
 
 /// Get Crawl4AI base URL from env.
 ///
@@ -1492,6 +1546,15 @@ pub fn is_tavily_enabled() -> bool {
 pub fn is_crawl4ai_enabled() -> bool {
     parse_optional_env_bool("CRAWL4AI_ENABLED")
         .unwrap_or_else(|| get_crawl4ai_url().is_some_and(|value| !value.trim().is_empty()))
+}
+
+/// Determine whether SearXNG tools should be registered.
+///
+/// Environment variable: `SEARXNG_ENABLED`
+#[must_use]
+pub fn is_searxng_enabled() -> bool {
+    parse_optional_env_bool("SEARXNG_ENABLED")
+        .unwrap_or_else(|| get_searxng_url().is_some_and(|value| !value.trim().is_empty()))
 }
 
 // LLM HTTP client configuration

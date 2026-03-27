@@ -238,6 +238,15 @@ impl ManagerControlPlaneProvider {
             });
         }
 
+        #[cfg(feature = "searxng")]
+        if crate::config::is_searxng_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "searxng",
+                aliases: &["search", "searxng"],
+                tools: TOPIC_AGENT_SEARXNG_TOOLS,
+            });
+        }
+
         #[cfg(feature = "crawl4ai")]
         if crate::config::is_crawl4ai_enabled() {
             groups.push(TopicAgentToolGroup {
