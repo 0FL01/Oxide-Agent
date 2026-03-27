@@ -48,7 +48,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
 
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
-    *   **Web Search and Data Extraction:** Tavily API or Crawl4AI integration for retrieving up-to-date information from the web (configurable via `SEARCH_PROVIDER`).
+    *   **Web Search and Data Extraction:** Multiple independent search providers — SearXNG (self-hosted, default), Tavily (API), Crawl4AI (deep crawling) — can run simultaneously.
     *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
         - Completion Check Hook - validates task completion
         - Workload Distributor - enforces separation of duties by blocking heavy manual operations in the Main Agent
@@ -106,8 +106,9 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 ### 🛠 Infrastructure
 *   **Docker** — run code sandbox (`agent-sandbox:latest`)
 *   **Sandbox Broker** — optional Unix socket broker for security isolation (`SANDBOX_BACKEND=broker`)
-*   **Tavily API** — optional for web search (`TAVILY_API_KEY`)
-*   **Crawl4AI** — alternative deep web crawling provider with markdown extraction and PDF parsing capabilities
+*   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
+*   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
+*   **Crawl4AI** — deep web crawling provider with markdown extraction and PDF parsing capabilities
 *   **Kokoro TTS Server** — optional for voice message synthesis (`KOKORO_TTS_URL`)
 </details>
 
@@ -151,7 +152,7 @@ AGENT_ACCESS_IDS=ID1 # Access to Agent Mode (consumes many tokens)
 
 # Agent Configuration
 AGENT_TIMEOUT_SECS=300          # Agent execution timeout
-SEARCH_PROVIDER=tavily          # Search provider (tavily/crawl4ai)
+SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / SEARXNG_ENABLED / CRAWL4AI_ENABLED
 DEBUG_MODE=false                # Debug logging mode
 
 # Cloudflare R2 (S3)
@@ -168,7 +169,10 @@ GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
 ZAI_API_KEY=...                 # Zhipu AI / ZAI Provider
 MINIMAX_API_KEY=...             # MiniMax Provider (Claude SDK-compatible)
-TAVILY_API_KEY=...             # Tavily key for web search in Agent mode (optional)
+TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enable via TAVILY_ENABLED=true)
+SEARXNG_URL=http://127.0.0.1:8081  # SearXNG self-hosted search (auto-enabled when set)
+SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
+CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
 ```
 </details>
 
@@ -453,6 +457,7 @@ Extensible architecture for personalizing agent behavior:
 ### 🛠️ Tool Providers
 The agent uses a modular provider system, each offering a specialized set of tools:
 - **Sandbox Provider** (`sandbox.rs`) — code execution, file read/write, shell commands
+- **SearXNG Provider** (`searxng/`) — self-hosted web search via JSON API
 - **Tavily Provider** (`tavily.rs`) — web search and data extraction
 - **Crawl4AI Provider** (`crawl4ai.rs`) — deep web crawling with markdown extraction and PDF parsing (retry with backoff, concurrency limit)
 - **Todos Provider** (`todos.rs`) — task list management for long-term planning
@@ -533,9 +538,15 @@ Enhanced reminder scheduling with pause/resume/retry support.
    - Socket: `/run/sandboxd/sandboxd.sock`
 
 4. **crawl4ai** (web crawler)
-   - Image: `unclecode/crawl4ai:0.8.5`
-   - Health check: `curl -f http://localhost:11235/health`
-   - Resources: 6GB RAM, 4 CPUs, 2GB shared memory
+    - Image: `unclecode/crawl4ai:0.8.5`
+    - Health check: `curl -f http://localhost:11235/health`
+    - Resources: 6GB RAM, 4 CPUs, 2GB shared memory
+
+5. **searxng** (self-hosted search)
+    - Image: `searxng/searxng:2026.3.24-054174a19`
+    - Port: `127.0.0.1:8081:8080`
+    - Health check: `wget -qO- http://localhost:8080/healthz`
+    - Config: `docker/searxng/settings.yml`
 
 ### Sandbox Broker Protocol
 - Unix socket communication with binary serialization (bincode)
@@ -683,7 +694,7 @@ cargo clippy --workspace --tests -- -D warnings
 cargo fmt --all
 
 # Build with feature flags
-cargo build --release --features tavily,crawl4ai,jira,mattermost
+cargo build --release --features searxng,crawl4ai,jira,mattermost
 
 # Run E2E tests (requires transport-web crate)
 cargo test -p oxide-agent-transport-web --test e2e
@@ -720,7 +731,7 @@ The project uses GitHub Actions for automatic testing and deployment:
   - `unwrap_used = "forbid"` — all Result/Option must be handled via `?` or `match`
   - `too_many_lines = "forbid"` — files >300 lines must be split
   - `too_many_arguments = "forbid"` — functions >3 arguments require Context/Config struct
-- **Feature flags:** Tavily, Crawl4AI, Jira, Mattermost available via `--features`
+- **Feature flags:** Tavily, SearXNG, Crawl4AI, Jira, Mattermost available via `--features`
 - **Error Handling:** Using `thiserror` for library errors, `anyhow` for application
 </details>
 
@@ -729,13 +740,14 @@ The project uses GitHub Actions for automatic testing and deployment:
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `tavily` | Enable Tavily web search provider | Enabled |
+| `searxng` | Enable SearXNG self-hosted search provider | Enabled |
 | `crawl4ai` | Enable Crawl4AI web search provider | Disabled |
 | `jira` | Enable Jira MCP integration | Disabled |
 | `mattermost` | Enable Mattermost MCP integration | Disabled |
 
 Build with features:
 ```bash
-cargo build --release --features tavily,crawl4ai,jira,mattermost
+cargo build --release --features searxng,crawl4ai,jira,mattermost
 ```
 
 ## License
