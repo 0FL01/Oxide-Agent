@@ -43,10 +43,11 @@ impl ControlPlaneLocks {
     pub(super) async fn acquire(&self, key: String) -> OwnedMutexGuard<()> {
         let lock = {
             let mut locks = self.locks.lock().await;
-            locks
-                .entry(key)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
+            Arc::clone(
+                locks
+                    .entry(key)
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
         };
 
         lock.lock_owned().await
