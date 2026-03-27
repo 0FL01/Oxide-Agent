@@ -1431,6 +1431,128 @@ impl LlmClient {
     }
 }
 
+/// Extract and validate invocation IDs from an assistant message's tool calls.
+fn extract_expected_invocation_ids(message: &Message) -> Result<HashSet<InvocationId>, LlmError> {
+    let mut expected_ids = HashSet::new();
+
+    for correlation in message
+        .resolved_tool_call_correlations()
+        .unwrap_or_default()
+    {
+        let invocation_id = correlation.invocation_id.as_str().trim();
+        if invocation_id.is_empty() {
+            return Err(LlmError::RepairableHistory(
+                "assistant tool call has an empty invocation_id".to_string(),
+            ));
+        }
+        if !expected_ids.insert(correlation.invocation_id.clone()) {
+            return Err(LlmError::RepairableHistory(format!(
+                "assistant tool call batch contains duplicate invocation_id `{}`",
+                correlation.invocation_id
+            )));
+        }
+        if has_empty_explicit_provider_tool_call_id(&correlation) {
+            return Err(LlmError::RepairableHistory(format!(
+                "assistant tool call `{}` has an empty provider_tool_call_id",
+                correlation.invocation_id
+            )));
+        }
+    }
+
+    Ok(expected_ids)
+}
+
+/// Validate a sequence of tool result messages following an assistant batch.
+fn validate_tool_result_sequence(
+    messages: &[Message],
+    start_index: usize,
+    expected_ids: &HashSet<InvocationId>,
+) -> Result<(usize, HashSet<InvocationId>), LlmError> {
+    let mut seen_results = HashSet::new();
+    let mut cursor = start_index;
+
+    while cursor < messages.len() && messages[cursor].role == "tool" {
+        let result = &messages[cursor];
+        let Some(result_correlation) = result.resolved_tool_call_correlation() else {
+            return Err(LlmError::RepairableHistory(
+                "tool result is missing invocation_id".to_string(),
+            ));
+        };
+
+        if has_empty_explicit_provider_tool_call_id(&result_correlation) {
+            return Err(LlmError::RepairableHistory(format!(
+                "tool result for invocation_id `{}` has an empty provider_tool_call_id",
+                result_correlation.invocation_id
+            )));
+        }
+
+        let Some(invocation_id) = Some(result_correlation.invocation_id.clone())
+            .filter(|id| !id.as_str().trim().is_empty())
+        else {
+            return Err(LlmError::RepairableHistory(
+                "tool result is missing invocation_id".to_string(),
+            ));
+        };
+
+        if !expected_ids.contains(&invocation_id) {
+            return Err(LlmError::RepairableHistory(format!(
+                "tool result references unknown invocation_id `{invocation_id}`"
+            )));
+        }
+
+        if !seen_results.insert(invocation_id.clone()) {
+            return Err(LlmError::RepairableHistory(format!(
+                "tool result for invocation_id `{invocation_id}` is duplicated"
+            )));
+        }
+
+        cursor += 1;
+    }
+
+    Ok((cursor, seen_results))
+}
+
+/// Check batch completion policy and return error if incomplete.
+fn check_batch_completion(
+    cursor: usize,
+    messages_len: usize,
+    expected_ids: &HashSet<InvocationId>,
+    seen_results: &HashSet<InvocationId>,
+    capabilities: ProviderCapabilities,
+) -> Result<(), LlmError> {
+    let batch_is_terminal = cursor == messages_len;
+    let should_require_complete_batch =
+        capabilities.strict_tool_history() || !batch_is_terminal;
+
+    if should_require_complete_batch && seen_results.len() != expected_ids.len() {
+        return Err(LlmError::RepairableHistory(format!(
+            "assistant tool call batch is incomplete for {} tool history: {} tool calls but {} tool results",
+            capabilities.tool_history_label(),
+            expected_ids.len(),
+            seen_results.len()
+        )));
+    }
+
+    Ok(())
+}
+
+/// Generate error detail for an orphaned tool result message.
+fn orphaned_tool_result_error(message: &Message) -> LlmError {
+    let detail = message
+        .resolved_tool_call_correlation()
+        .map(|correlation| correlation.invocation_id)
+        .filter(|id| !id.as_str().trim().is_empty())
+        .map_or_else(
+            || "orphaned tool result without invocation_id".to_string(),
+            |invocation_id| {
+                format!(
+                    "orphaned tool result references missing assistant tool call `{invocation_id}`"
+                )
+            },
+        );
+    LlmError::RepairableHistory(detail)
+}
+
 fn validate_tool_history(
     messages: &[Message],
     capabilities: ProviderCapabilities,
@@ -1448,84 +1570,10 @@ fn validate_tool_history(
                     ));
                 }
 
-                let mut expected_invocation_ids = HashSet::new();
-                for correlation in message
-                    .resolved_tool_call_correlations()
-                    .unwrap_or_default()
-                {
-                    let invocation_id = correlation.invocation_id.as_str().trim();
-                    if invocation_id.is_empty() {
-                        return Err(LlmError::RepairableHistory(
-                            "assistant tool call has an empty invocation_id".to_string(),
-                        ));
-                    }
-                    if !expected_invocation_ids.insert(correlation.invocation_id.clone()) {
-                        return Err(LlmError::RepairableHistory(format!(
-                            "assistant tool call batch contains duplicate invocation_id `{}`",
-                            correlation.invocation_id
-                        )));
-                    }
-                    if has_empty_explicit_provider_tool_call_id(&correlation) {
-                        return Err(LlmError::RepairableHistory(format!(
-                            "assistant tool call `{}` has an empty provider_tool_call_id",
-                            correlation.invocation_id
-                        )));
-                    }
-                }
-
-                let mut seen_results = HashSet::new();
-                let mut cursor = index + 1;
-                while cursor < messages.len() && messages[cursor].role == "tool" {
-                    let result = &messages[cursor];
-                    let Some(result_correlation) = result.resolved_tool_call_correlation() else {
-                        return Err(LlmError::RepairableHistory(
-                            "tool result is missing invocation_id".to_string(),
-                        ));
-                    };
-
-                    if has_empty_explicit_provider_tool_call_id(&result_correlation) {
-                        return Err(LlmError::RepairableHistory(format!(
-                            "tool result for invocation_id `{}` has an empty provider_tool_call_id",
-                            result_correlation.invocation_id
-                        )));
-                    }
-
-                    let Some(invocation_id) = Some(result_correlation.invocation_id.clone())
-                        .filter(|id| !id.as_str().trim().is_empty())
-                    else {
-                        return Err(LlmError::RepairableHistory(
-                            "tool result is missing invocation_id".to_string(),
-                        ));
-                    };
-
-                    if !expected_invocation_ids.contains(&invocation_id) {
-                        return Err(LlmError::RepairableHistory(format!(
-                            "tool result references unknown invocation_id `{invocation_id}`"
-                        )));
-                    }
-
-                    if !seen_results.insert(invocation_id.clone()) {
-                        return Err(LlmError::RepairableHistory(format!(
-                            "tool result for invocation_id `{invocation_id}` is duplicated"
-                        )));
-                    }
-
-                    cursor += 1;
-                }
-
-                let batch_is_terminal = cursor == messages.len();
-                let should_require_complete_batch =
-                    capabilities.strict_tool_history() || !batch_is_terminal;
-                if should_require_complete_batch
-                    && seen_results.len() != expected_invocation_ids.len()
-                {
-                    return Err(LlmError::RepairableHistory(format!(
-                        "assistant tool call batch is incomplete for {} tool history: {} tool calls but {} tool results",
-                        capabilities.tool_history_label(),
-                        expected_invocation_ids.len(),
-                        seen_results.len()
-                    )));
-                }
+                let expected_ids = extract_expected_invocation_ids(message)?;
+                let (cursor, seen_results) =
+                    validate_tool_result_sequence(messages, index + 1, &expected_ids)?;
+                check_batch_completion(cursor, messages.len(), &expected_ids, &seen_results, capabilities)?;
 
                 index = cursor;
                 continue;
@@ -1533,19 +1581,7 @@ fn validate_tool_history(
         }
 
         if message.role == "tool" {
-            let detail = message
-                .resolved_tool_call_correlation()
-                .map(|correlation| correlation.invocation_id)
-                .filter(|id| !id.as_str().trim().is_empty())
-                .map_or_else(
-                    || "orphaned tool result without invocation_id".to_string(),
-                    |invocation_id| {
-                        format!(
-                            "orphaned tool result references missing assistant tool call `{invocation_id}`"
-                        )
-                    },
-                );
-            return Err(LlmError::RepairableHistory(detail));
+            return Err(orphaned_tool_result_error(message));
         }
 
         index += 1;
