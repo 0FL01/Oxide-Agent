@@ -11,6 +11,7 @@ pub mod manager_control_plane;
 pub mod piper_tts;
 pub mod reminder;
 pub mod sandbox;
+pub mod silero_tts;
 pub mod ssh_mcp;
 pub mod todos;
 pub mod tts;
@@ -47,6 +48,10 @@ pub use reminder::{
     ReminderScheduleNotifier,
 };
 pub use sandbox::SandboxProvider;
+pub use silero_tts::{
+    SileroSampleRate, SileroTtsConfig, SileroTtsFormat, SileroTtsProvider, SileroTtsRequest,
+    SileroTtsSpeaker,
+};
 pub use ssh_mcp::{
     cleanup_stale_private_key_tempfiles, inject_approval_credentials,
     inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,

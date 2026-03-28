@@ -435,6 +435,7 @@ impl AgentExecutor {
         // Optional TTS providers.
         self.register_kokoro_tts_provider(&mut registry, progress_tx);
         self.register_piper_tts_provider(&mut registry, progress_tx);
+        self.register_silero_tts_provider(&mut registry, progress_tx);
 
         registry
     }
@@ -681,6 +682,36 @@ impl AgentExecutor {
         let base_url = provider.base_url().to_string();
         registry.register(Box::new(provider));
         tracing::info!(url = %base_url, "Piper TTS provider registered");
+    }
+
+    fn register_silero_tts_provider(
+        &self,
+        registry: &mut ToolRegistry,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
+        let config = crate::agent::providers::silero_tts::SileroTtsConfig::from_env();
+
+        if let Ok(url) = std::env::var("SILERO_TTS_URL") {
+            if url.trim().is_empty() {
+                tracing::debug!(
+                    "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
+                );
+                return;
+            }
+        }
+
+        tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");
+
+        let provider = if let Some(tx) = progress_tx {
+            crate::agent::providers::silero_tts::SileroTtsProvider::from_config(config)
+                .with_progress_tx(tx.clone())
+        } else {
+            crate::agent::providers::silero_tts::SileroTtsProvider::from_config(config)
+        };
+
+        let base_url = provider.base_url().to_string();
+        registry.register(Box::new(provider));
+        tracing::info!(url = %base_url, "Silero TTS provider registered");
     }
 
     async fn run_execution(
