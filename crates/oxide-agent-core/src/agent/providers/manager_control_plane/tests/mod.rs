@@ -1787,11 +1787,25 @@ async fn forum_topic_provision_ssh_agent_creates_canonical_binding_and_infra() {
     let allowed_tools = parsed["profile"]["profile"]["allowedTools"]
         .as_array()
         .expect("allowedTools must be present");
+    assert!(allowed_tools
+        .iter()
+        .any(|value| value.as_str() == Some("ssh_send_file_to_user")));
     assert!(TOPIC_AGENT_REMINDER_TOOLS.iter().all(|tool| {
         allowed_tools
             .iter()
             .any(|value| value.as_str() == Some(*tool))
     }));
+    assert_eq!(
+        parsed["topic_infra"]["allowed_tool_modes"],
+        json!([
+            "exec",
+            "sudo_exec",
+            "read_file",
+            "apply_file_edit",
+            "check_process",
+            "transfer"
+        ])
+    );
     assert_eq!(parsed["preflight"]["provider_enabled"], true);
 
     let calls = lifecycle.calls();

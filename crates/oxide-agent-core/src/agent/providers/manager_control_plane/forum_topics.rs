@@ -12,6 +12,7 @@ fn default_ssh_agent_allowed_tools() -> Vec<String> {
         "ssh_read_file".to_string(),
         "ssh_apply_file_edit".to_string(),
         "ssh_check_process".to_string(),
+        "ssh_send_file_to_user".to_string(),
         "reminder_schedule".to_string(),
         "reminder_list".to_string(),
         "reminder_cancel".to_string(),
