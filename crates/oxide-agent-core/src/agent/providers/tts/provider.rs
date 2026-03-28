@@ -35,10 +35,19 @@ impl KokoroTtsProvider {
     /// Create provider from environment variables
     #[must_use]
     pub fn from_env() -> Self {
-        Self {
-            client: KokoroClient::from_env(),
-            progress_tx: None,
-        }
+        Self::new(TtsConfig::from_env())
+    }
+
+    /// Create provider from explicit configuration
+    #[must_use]
+    pub fn from_config(config: TtsConfig) -> Self {
+        Self::new(config)
+    }
+
+    /// Get the base URL of the TTS server
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        self.client.base_url()
     }
 
     /// Set the progress channel for sending files
