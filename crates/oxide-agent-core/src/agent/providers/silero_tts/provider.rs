@@ -77,11 +77,18 @@ impl SileroTtsProvider {
             }
         };
 
-        // Check for Arabic numerals which Silero cannot pronounce
-        if request.text.chars().any(|c| c.is_ascii_digit()) {
+        let text_to_validate = if request.ssml || request.text.contains('<') {
+            strip_ssml_tags(&request.text)
+        } else {
+            request.text.clone()
+        };
+
+        // Reject Arabic numerals in spoken text. For SSML, allow digits in tag attributes.
+        if text_to_validate.chars().any(|c| c.is_ascii_digit()) {
             return Ok(
                 "ERROR: Text contains Arabic numerals (0-9) which Silero cannot pronounce. "
                     .to_string()
+                    + "Digits inside SSML attributes are allowed (e.g. <break time=\"500ms\"/>). "
                     + "Please rewrite the text using Russian words for numbers.\n\n"
                     + "Examples:\n"
                     + "- '42' -> 'сорок два'\n"
@@ -176,6 +183,20 @@ fn estimate_duration(text: &str) -> f32 {
     let words: Vec<&str> = text.split_whitespace().collect();
     let word_count = words.len() as f32;
     word_count / 2.5
+}
+
+fn strip_ssml_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
 }
 
 #[async_trait]
