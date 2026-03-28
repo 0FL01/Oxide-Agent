@@ -210,6 +210,7 @@ const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_read_file",
     "ssh_apply_file_edit",
     "ssh_check_process",
+    "ssh_send_file_to_user",
 ];
 #[cfg(feature = "jira")]
 const TOPIC_AGENT_JIRA_TOOLS: &[&str] = &["jira_read", "jira_write", "jira_schema"];
