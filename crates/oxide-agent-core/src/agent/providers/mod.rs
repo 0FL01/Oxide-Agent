@@ -5,6 +5,7 @@
 /// Topic-scoped self-editing tools for `AGENTS.md`.
 pub mod agents_md;
 pub mod delegation;
+mod file_delivery;
 pub mod filehoster;
 pub mod manager_control_plane;
 pub mod reminder;

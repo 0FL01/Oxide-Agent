@@ -89,6 +89,8 @@ pub enum TopicInfraToolMode {
     ApplyFileEdit,
     /// Inspect remote process state.
     CheckProcess,
+    /// Transfer remote files to the local host for delivery or inspection.
+    Transfer,
 }
 
 /// Topic-specific infrastructure configuration persisted in control-plane storage.

@@ -48,6 +48,7 @@ use tokio::sync::Semaphore;
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "delegate_to_sub_agent",
     "send_file_to_user",
+    "ssh_send_file_to_user",
     "recreate_sandbox",
     "topic_binding_set",
     "topic_binding_get",

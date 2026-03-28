@@ -5,15 +5,17 @@
 
 use super::client::KokoroClient;
 use super::types::{TextToSpeechArgs, TtsConfig};
-use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
-use std::time::Duration;
-use tokio::time::timeout;
 use tracing::{debug, error, info, instrument, warn};
+
+use crate::agent::progress::AgentEvent;
+use crate::agent::providers::file_delivery::{
+    deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus,
+};
 
 /// Kokoro TTS provider
 #[derive(Debug)]
@@ -97,26 +99,21 @@ impl KokoroTtsProvider {
         let file_name = format!("speech.{}", request.format);
 
         // Send file to user via progress channel
-        if let Some(tx) = progress_tx {
+        if progress_tx.is_some() {
             debug!(file_name = %file_name, bytes = audio_bytes.len(), "Sending voice message");
 
-            let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+            let report = deliver_file_via_progress(
+                progress_tx,
+                FileDeliveryRequest {
+                    file_name: file_name.clone(),
+                    content: audio_bytes,
+                    source_path: format!("/tmp/{file_name}"),
+                },
+            )
+            .await;
 
-            let file_event = AgentEvent::FileToSendWithConfirmation {
-                file_name: file_name.clone(),
-                content: audio_bytes,
-                sandbox_path: format!("/tmp/{file_name}"),
-                confirmation_tx: confirm_tx,
-            };
-
-            if let Err(e) = tx.send(file_event).await {
-                error!(error = %e, "Failed to send file event");
-                return Ok(format!("Failed to queue voice message: {e}"));
-            }
-
-            // Wait for delivery confirmation with timeout
-            match timeout(Duration::from_secs(120), confirm_rx).await {
-                Ok(Ok(Ok(()))) => {
+            match report.status {
+                FileDeliveryStatus::Delivered => {
                     info!("Voice message delivered successfully");
                     Ok(format!(
                         "Voice message sent successfully. \
@@ -126,19 +123,27 @@ impl KokoroTtsProvider {
                         estimate_duration(&request.text, request.speed)
                     ))
                 }
-                Ok(Ok(Err(e))) => {
-                    error!(error = %e, "Voice message delivery failed");
-                    Ok(format!("Voice message delivery failed: {e}"))
+                FileDeliveryStatus::DeliveryFailed(error) => {
+                    error!(error = %error, "Voice message delivery failed");
+                    Ok(format!("Voice message delivery failed: {error}"))
                 }
-                Ok(Err(_recv_error)) => {
+                FileDeliveryStatus::ConfirmationChannelClosed => {
                     warn!("Voice message confirmation channel closed");
                     Ok("Voice message sent but confirmation channel closed.".to_string())
                 }
-                Err(_) => {
+                FileDeliveryStatus::TimedOut => {
                     warn!("Voice message delivery timed out after 120s");
-                    Ok("Voice message delivery timed out. \
-                        The audio may still be delivered."
-                        .to_string())
+                    Ok(
+                        "Voice message delivery timed out. The audio may still be delivered."
+                            .to_string(),
+                    )
+                }
+                FileDeliveryStatus::QueueUnavailable(error) => {
+                    error!(error = %error, "Failed to queue voice message");
+                    Ok(format!("Failed to queue voice message: {error}"))
+                }
+                FileDeliveryStatus::EmptyContent => {
+                    Ok("Voice message generation returned empty audio.".to_string())
                 }
             }
         } else {

@@ -93,7 +93,7 @@ pub async fn run_progress_loop<T: AgentTransport>(
                 if let AgentEvent::FileToSendWithConfirmation {
                     file_name,
                     content,
-                    sandbox_path,
+                    source_path,
                     confirmation_tx,
                 } = event
                 {
@@ -108,7 +108,7 @@ pub async fn run_progress_loop<T: AgentTransport>(
                         Err(e) => {
                             error!(
                                 file_name = %file_name,
-                                sandbox_path = %sandbox_path,
+                                source_path = %source_path,
                                 error = %e,
                                 "Confirmed file delivery failed"
                             );
@@ -328,7 +328,7 @@ mod tests {
             .send(AgentEvent::FileToSendWithConfirmation {
                 file_name: "out.txt".to_string(),
                 content: vec![1, 2, 3],
-                sandbox_path: "/workspace/out.txt".to_string(),
+                source_path: "/workspace/out.txt".to_string(),
                 confirmation_tx: ack_tx,
             })
             .await;
@@ -368,7 +368,7 @@ mod tests {
             .send(AgentEvent::FileToSendWithConfirmation {
                 file_name: "out.txt".to_string(),
                 content: vec![1, 2, 3],
-                sandbox_path: "/workspace/out.txt".to_string(),
+                source_path: "/workspace/out.txt".to_string(),
                 confirmation_tx: ack_tx,
             })
             .await;

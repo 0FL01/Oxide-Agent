@@ -632,7 +632,9 @@ impl AgentExecutor {
         // Skip registration only if explicitly disabled (empty string in env var)
         if let Ok(url) = std::env::var("KOKORO_TTS_URL") {
             if url.trim().is_empty() {
-                tracing::debug!("TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string");
+                tracing::debug!(
+                    "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
+                );
                 return;
             }
         }

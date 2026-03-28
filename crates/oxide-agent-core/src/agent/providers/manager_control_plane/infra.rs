@@ -70,8 +70,8 @@ impl ManagerControlPlaneProvider {
                         "sudo_secret_ref": { "type": "string", "description": "Opaque secret reference for sudo password material" },
                         "environment": { "type": "string", "description": "Optional environment label such as prod or stage" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional free-form target tags" },
-                        "allowed_tool_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process"] }, "description": "Allowlisted SSH tool modes" },
-                        "approval_required_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process"] }, "description": "Modes that always require operator approval" },
+                        "allowed_tool_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process", "transfer"] }, "description": "Allowlisted SSH tool modes" },
+                        "approval_required_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process", "transfer"] }, "description": "Modes that always require operator approval" },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
                     "required": ["topic_id", "target_name", "host", "remote_user"]
@@ -124,6 +124,7 @@ impl ManagerControlPlaneProvider {
             TopicInfraToolMode::ReadFile => 2,
             TopicInfraToolMode::ApplyFileEdit => 3,
             TopicInfraToolMode::CheckProcess => 4,
+            TopicInfraToolMode::Transfer => 5,
         });
         modes.dedup();
         modes
