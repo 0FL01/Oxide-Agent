@@ -155,12 +155,16 @@ mod tests {
     #[tokio::test]
     async fn deliver_file_returns_success_only_after_confirmation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(1);
+        let expected_kind = FileDeliveryKind::VoiceNote;
 
         tokio::spawn(async move {
             if let Some(AgentEvent::FileToSendWithConfirmation {
-                confirmation_tx, ..
+                kind,
+                confirmation_tx,
+                ..
             }) = rx.recv().await
             {
+                assert_eq!(kind, expected_kind);
                 let _ = confirmation_tx.send(Ok(()));
             }
         });
@@ -168,7 +172,7 @@ mod tests {
         let report = deliver_file_via_progress(
             Some(&tx),
             FileDeliveryRequest {
-                kind: FileDeliveryKind::Auto,
+                kind: expected_kind,
                 file_name: "ok.txt".to_string(),
                 content: b"hello".to_vec(),
                 source_path: "/workspace/ok.txt".to_string(),

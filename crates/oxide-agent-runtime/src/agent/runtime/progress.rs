@@ -267,6 +267,33 @@ mod tests {
         assert!(updates >= 1);
     }
 
+    #[tokio::test]
+    async fn best_effort_delivery_preserves_file_kind() {
+        let (tx, rx) = mpsc::channel(8);
+        let transport = DummyTransport::default();
+
+        let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(0));
+        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+
+        tx.send(AgentEvent::FileToSend {
+            kind: FileDeliveryKind::VoiceNote,
+            file_name: "speech.ogg".to_string(),
+            content: vec![1, 2, 3],
+        })
+        .await
+        .expect("failed to send file event");
+
+        drop(tx);
+
+        let _state = handle.await.expect("progress runtime join failed");
+        let delivered = transport.delivered.lock().await;
+
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].0, DeliveryMode::BestEffort);
+        assert_eq!(delivered[0].1, FileDeliveryKind::VoiceNote);
+        assert_eq!(delivered[0].2, "speech.ogg");
+    }
+
     /// Regression test: RateLimitRetrying must trigger an immediate UI update
     /// even when the throttle is large (the user must see the retry banner
     /// without delay). A subsequent Thinking event must also clear the
