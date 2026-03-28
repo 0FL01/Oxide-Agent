@@ -8,6 +8,7 @@ pub mod delegation;
 mod file_delivery;
 pub mod filehoster;
 pub mod manager_control_plane;
+pub mod piper_tts;
 pub mod reminder;
 pub mod sandbox;
 pub mod ssh_mcp;
@@ -40,6 +41,7 @@ pub use manager_control_plane::{
     ForumTopicCreateResult, ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
     ManagerControlPlaneProvider, ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
+pub use piper_tts::{PiperTtsConfig, PiperTtsProvider, PiperTtsVoice};
 pub use reminder::{
     reminder_tool_names, ReminderContext, ReminderProvider, ReminderScheduleEvent,
     ReminderScheduleNotifier,
