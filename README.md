@@ -276,6 +276,8 @@ Generates Russian voice messages from agent output using local Silero TTS server
 
 **Tool:** `text_to_speech_ru`
 
+**Server Setup:** See [Oxide-Agent-TTS](https://github.com/0FL01/Oxide-Agent-TTS) for containerized Silero TTS server with FastAPI.
+
 **Configuration:**
 ```dotenv
 SILERO_TTS_URL=http://127.0.0.1:8001       # Default
