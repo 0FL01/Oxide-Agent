@@ -152,6 +152,7 @@ fn default_infra_allowed_tool_modes() -> Vec<TopicInfraToolMode> {
         TopicInfraToolMode::ReadFile,
         TopicInfraToolMode::ApplyFileEdit,
         TopicInfraToolMode::CheckProcess,
+        TopicInfraToolMode::Transfer,
     ]
 }
 

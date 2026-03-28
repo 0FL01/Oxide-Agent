@@ -102,8 +102,8 @@ pub enum AgentEvent {
         file_name: String,
         /// Raw file content
         content: Vec<u8>,
-        /// Path in sandbox for cleanup after success
-        sandbox_path: String,
+        /// Source path for diagnostics and cleanup logging
+        source_path: String,
         /// Channel to receive delivery confirmation
         confirmation_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
     },

@@ -583,8 +583,8 @@ impl ManagerControlPlaneProvider {
                     "sudo_secret_ref": { "type": "string", "description": "Opaque secret reference for sudo password material" },
                     "environment": { "type": "string", "description": "Optional environment label such as prod or stage" },
                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional free-form target tags" },
-                    "allowed_tool_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process"] }, "description": "Allowlisted SSH tool modes; defaults to all SSH modes" },
-                    "approval_required_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process"] }, "description": "Modes that always require approval; defaults to sudo_exec and apply_file_edit" },
+                    "allowed_tool_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process", "transfer"] }, "description": "Allowlisted SSH tool modes; defaults to all SSH modes" },
+                    "approval_required_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process", "transfer"] }, "description": "Modes that always require approval; defaults to sudo_exec and apply_file_edit" },
                     "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Telegram or storage" }
                 },
                 "required": ["name", "host", "remote_user", "auth_mode"]

@@ -19,6 +19,8 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use super::file_delivery::{deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus};
+
 /// Patterns indicating fatal, unrecoverable yt-dlp errors
 /// that should stop execution immediately
 const FATAL_ERROR_PATTERNS: &[&str] = &[
@@ -177,76 +179,54 @@ impl YtdlpProvider {
         };
 
         let size_mb = content.len() as f64 / 1024.0 / 1024.0;
+        let report = deliver_file_via_progress(
+            self.progress_tx.as_ref(),
+            FileDeliveryRequest {
+                file_name: file_name.to_string(),
+                content,
+                source_path: file_path.to_string(),
+            },
+        )
+        .await;
 
-        if let Some(ref tx) = self.progress_tx {
-            // Create oneshot channel for delivery confirmation
-            let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
-
-            // Send file with confirmation request
-            if let Err(e) = tx
-                .send(AgentEvent::FileToSendWithConfirmation {
-                    file_name: file_name.to_string(),
-                    content,
-                    sandbox_path: file_path.to_string(),
-                    confirmation_tx: confirm_tx,
-                })
-                .await
-            {
-                warn!(error = %e, "Failed to send FileToSendWithConfirmation event");
-                return Ok(format!(
-                    "⚠️ File downloaded ({size_mb:.2} MB) but failed to queue for sending: {e}\n\
-                     Path: {file_path}"
-                ));
+        match report.status {
+            FileDeliveryStatus::Delivered => {
+                info!(file_path = %file_path, "File delivered successfully, cleaning up");
+                if let Err(e) = sandbox
+                    .exec_command(&format!("rm -f '{file_path}'"), None)
+                    .await
+                {
+                    warn!(error = %e, file_path = %file_path, "Failed to cleanup file after delivery");
+                }
+                Ok(format!(
+                    "✅ File '{file_name}' ({size_mb:.2} MB) sent to user successfully"
+                ))
             }
-
-            // Wait for confirmation with timeout (2 minutes)
-            match tokio::time::timeout(std::time::Duration::from_secs(120), confirm_rx).await {
-                Ok(Ok(Ok(()))) => {
-                    // Success! Delete file from sandbox
-                    info!(file_path = %file_path, "File delivered successfully, cleaning up");
-                    if let Err(e) = sandbox
-                        .exec_command(&format!("rm -f '{file_path}'"), None)
-                        .await
-                    {
-                        warn!(error = %e, file_path = %file_path, "Failed to cleanup file after delivery");
-                    }
-                    Ok(format!(
-                        "✅ File '{file_name}' ({size_mb:.2} MB) sent to user successfully"
-                    ))
-                }
-                Ok(Ok(Err(e))) => {
-                    // Delivery failed after retries
-                    warn!(error = %e, file_path = %file_path, "File delivery failed after retries");
-                    Ok(format!(
-                        "⚠️ Failed to send file to user: {e}\n\
-                         File remains in sandbox at: {file_path}\n\
-                         You can retry using `send_file_to_user` tool."
-                    ))
-                }
-                Ok(Err(_)) => {
-                    // Channel closed unexpectedly
-                    warn!(file_path = %file_path, "Confirmation channel closed unexpectedly");
-                    Ok(format!(
-                        "⚠️ File delivery status unknown (channel closed)\n\
-                         File remains in sandbox at: {file_path}"
-                    ))
-                }
-                Err(_) => {
-                    // Timeout
-                    warn!(file_path = %file_path, "File delivery confirmation timeout");
-                    Ok(format!(
-                        "⚠️ File delivery timed out (2 minutes)\n\
-                         File remains in sandbox at: {file_path}"
-                    ))
-                }
+            FileDeliveryStatus::DeliveryFailed(error) => {
+                warn!(error = %error, file_path = %file_path, "File delivery failed after retries");
+                Ok(format!(
+                    "⚠️ Failed to send file to user: {error}\n\
+                     File remains in sandbox at: {file_path}\n\
+                     You can retry using `send_file_to_user` tool."
+                ))
             }
-        } else {
-            warn!("Progress channel not available for file delivery");
-            Ok(format!(
-                "⚠️ File downloaded ({size_mb:.2} MB) but progress channel not available\n\
+            FileDeliveryStatus::ConfirmationChannelClosed => Ok(format!(
+                "⚠️ File delivery status unknown (channel closed)\n\
+                 File remains in sandbox at: {file_path}"
+            )),
+            FileDeliveryStatus::TimedOut => Ok(format!(
+                "⚠️ File delivery timed out (2 minutes)\n\
+                 File remains in sandbox at: {file_path}"
+            )),
+            FileDeliveryStatus::QueueUnavailable(error) => Ok(format!(
+                "⚠️ File downloaded ({size_mb:.2} MB) but failed to queue for sending: {error}\n\
                  Path: {file_path}\n\
                  Use `send_file_to_user` tool to send it manually."
-            ))
+            )),
+            FileDeliveryStatus::EmptyContent => Ok(format!(
+                "❌ File '{file_name}' is empty and cannot be sent\n\
+                 Path: {file_path}"
+            )),
         }
     }
 

@@ -43,6 +43,7 @@ pub struct SubAgentSafetyConfig {
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "delegate_to_sub_agent",  // Запрещено рекурсивное делегирование
     "send_file_to_user",     // Запрещена отправка файлов пользователю
+    "ssh_send_file_to_user", // Запрещена отправка удалённых файлов пользователю
 ];
 ```
 
@@ -154,7 +155,7 @@ max_tokens = 64,000
 ### Сценарий 3: Попытка делегировать
 ```
 tool_name = "delegate_to_sub_agent"
-blocked_tools = ["delegate_to_sub_agent", "send_file_to_user"]
+blocked_tools = ["delegate_to_sub_agent", "send_file_to_user", "ssh_send_file_to_user"]
 
 Результат: HookResult::Block {
     reason: "Tool 'delegate_to_sub_agent' is blocked for sub-agents"
@@ -164,7 +165,7 @@ blocked_tools = ["delegate_to_sub_agent", "send_file_to_user"]
 ### Сценарий 4: Попытка отправить файл
 ```
 tool_name = "send_file_to_user"
-blocked_tools = ["delegate_to_sub_agent", "send_file_to_user"]
+blocked_tools = ["delegate_to_sub_agent", "send_file_to_user", "ssh_send_file_to_user"]
 
 Результат: HookResult::Block {
     reason: "Tool 'send_file_to_user' is blocked for sub-agents"
@@ -174,7 +175,7 @@ blocked_tools = ["delegate_to_sub_agent", "send_file_to_user"]
 ### Сценарий 5: Разрешённый инструмент
 ```
 tool_name = "execute_command"
-blocked_tools = ["delegate_to_sub_agent", "send_file_to_user"]
+blocked_tools = ["delegate_to_sub_agent", "send_file_to_user", "ssh_send_file_to_user"]
 
 Результат: HookResult::Continue
 ```
@@ -222,4 +223,4 @@ impl SubAgentSafetyHook {
 - Блокировка `delegate_to_sub_agent` предотвращает вложенность
 
 ### Защита от прямого взаимодействия с пользователем
-- Блокировка `send_file_to_user` обеспечивает изоляцию
+- Блокировка `send_file_to_user` и `ssh_send_file_to_user` обеспечивает изоляцию

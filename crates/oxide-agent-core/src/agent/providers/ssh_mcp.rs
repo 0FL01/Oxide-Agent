@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::TempDir;
 use tempfile::{Builder, NamedTempFile};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -37,11 +38,17 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
+use super::file_delivery::{
+    deliver_file_via_progress, format_generic_delivery_report, FileDeliveryRequest,
+    CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
+};
+
 const TOOL_SSH_EXEC: &str = "ssh_exec";
 const TOOL_SSH_SUDO_EXEC: &str = "ssh_sudo_exec";
 const TOOL_SSH_READ_FILE: &str = "ssh_read_file";
 const TOOL_SSH_APPLY_FILE_EDIT: &str = "ssh_apply_file_edit";
 const TOOL_SSH_CHECK_PROCESS: &str = "ssh_check_process";
+const TOOL_SSH_SEND_FILE_TO_USER: &str = "ssh_send_file_to_user";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_REMOTE_OUTPUT_CHARS: usize = 16_000;
@@ -51,9 +58,11 @@ const DEFAULT_UPSTREAM_SSH_MCP_BINARY_PATH: &str = "/usr/local/bin/ssh-mcp";
 const UPSTREAM_SSH_MCP_BINARY_ENV: &str = "OXIDE_SSH_MCP_BINARY";
 const UPSTREAM_TOOL_EXEC: &str = "exec";
 const UPSTREAM_TOOL_SUDO_EXEC: &str = "sudo-exec";
+const UPSTREAM_TOOL_TRANSFER: &str = "transfer";
 const UPSTREAM_TIMEOUT_GRACE_MS: u64 = 30_000;
 const UPSTREAM_MAX_OUTPUT_TOKENS: usize = 12_000;
 const PRIVATE_KEY_TEMPFILE_PREFIX: &str = "oxide-agent-ssh-key-";
+const TRANSFER_SESSION_DIR_PREFIX: &str = "oxide-agent-ssh-transfer-";
 
 /// Supported secret probe kinds for manager-facing diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -442,6 +451,28 @@ impl SshExecutionBackend {
             }
         }
     }
+
+    async fn transfer_get_file(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<()> {
+        match self {
+            Self::Upstream(backend) => {
+                backend
+                    .transfer_get_file(remote_path, local_path, timeout_secs, cancellation_token)
+                    .await
+            }
+        }
+    }
+
+    async fn transfer_root_path(&self) -> Result<PathBuf> {
+        match self {
+            Self::Upstream(backend) => backend.transfer_root_path().await,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -459,6 +490,13 @@ struct UpstreamSshMcpSession {
     peer: Peer<RoleClient>,
     stderr_task: Mutex<Option<JoinHandle<()>>>,
     _key_file: Option<NamedTempFile>,
+    _transfer_root: TempDir,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpstreamTransferResponse {
+    ok: bool,
+    error: Option<String>,
 }
 
 impl UpstreamSshMcpSession {
@@ -529,6 +567,50 @@ impl UpstreamSshMcpBackend {
             )
             .await?;
         parse_wrapped_remote_output(&wrapped.markers, &response)
+    }
+
+    async fn transfer_get_file(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<()> {
+        let _call_guard = self.call_lock.lock().await;
+        let response = self
+            .call_tool(
+                UPSTREAM_TOOL_TRANSFER,
+                json!({
+                    "operation": "get",
+                    "kind": "file",
+                    "remote_path": remote_path,
+                    "local_path": local_path,
+                    "transport": "auto",
+                    "overwrite": true,
+                    "timeout_ms": upstream_timeout_ms(timeout_secs),
+                }),
+                timeout_secs,
+                cancellation_token,
+            )
+            .await?;
+
+        let parsed: UpstreamTransferResponse = serde_json::from_str(&response)
+            .with_context(|| format!("failed to parse upstream transfer response: {response}"))?;
+        if parsed.ok {
+            return Ok(());
+        }
+
+        bail!(
+            "upstream ssh-mcp transfer failed: {}",
+            parsed
+                .error
+                .unwrap_or_else(|| "unknown transfer error".to_string())
+        )
+    }
+
+    async fn transfer_root_path(&self) -> Result<PathBuf> {
+        let session = self.ensure_session().await?;
+        Ok(session._transfer_root.path().to_path_buf())
     }
 
     async fn call_tool(
@@ -609,6 +691,10 @@ impl UpstreamSshMcpBackend {
     async fn spawn_session(&self) -> Result<UpstreamSshMcpSession> {
         let resolved_auth = resolve_backend_auth(&self.storage, self.user_id, &self.config).await?;
         let binary_path = self.binary_path.clone();
+        let transfer_root = Builder::new()
+            .prefix(TRANSFER_SESSION_DIR_PREFIX)
+            .tempdir()
+            .context("failed to create local transfer root for upstream ssh-mcp session")?;
 
         let command = tokio::process::Command::new(&binary_path);
         let (transport, stderr) = TokioChildProcess::builder(command.configure(|cmd| {
@@ -621,7 +707,8 @@ impl UpstreamSshMcpBackend {
                 ))
                 .arg("--maxChars=none")
                 .arg(format!("--max-output-tokens={UPSTREAM_MAX_OUTPUT_TOKENS}"))
-                .arg("--log-level=warn");
+                .arg("--log-level=warn")
+                .current_dir(transfer_root.path());
 
             if let Some(password) = resolved_auth.password.as_deref() {
                 cmd.env("SSH_MCP_PASSWORD", password);
@@ -673,6 +760,7 @@ impl UpstreamSshMcpBackend {
             peer,
             stderr_task: Mutex::new(stderr_task),
             _key_file: resolved_auth.key_file,
+            _transfer_root: transfer_root,
         })
     }
 
@@ -798,6 +886,23 @@ impl SshMcpProvider {
                     "required": ["pattern"]
                 }),
             },
+            ToolDefinition {
+                name: TOOL_SSH_SEND_FILE_TO_USER.to_string(),
+                description:
+                    "Transfer a remote file from the topic infra target and send it to the user via the chat transport"
+                        .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Remote file path to transfer and send" },
+                        "file_name": { "type": "string", "description": "Optional override for the delivered file name" },
+                        "timeout_secs": { "type": "integer", "description": "Optional timeout in seconds" },
+                        "approval_request_id": { "type": "string", "description": "Approval request id for replay after operator confirmation" },
+                        "approval_token": { "type": "string", "description": "Approval token issued by operator confirmation" }
+                    },
+                    "required": ["path"]
+                }),
+            },
         ]
     }
 
@@ -866,7 +971,90 @@ impl SshMcpProvider {
             TopicInfraToolMode::Exec => is_dangerous_command(summary),
             TopicInfraToolMode::ReadFile => is_sensitive_path(summary),
             TopicInfraToolMode::CheckProcess => false,
+            TopicInfraToolMode::Transfer => is_sensitive_path(summary),
         }
+    }
+
+    async fn execute_send_file_to_user(
+        &self,
+        arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        let args: SendRemoteFileArgs = serde_json::from_str(arguments)
+            .map_err(|err| anyhow!("invalid ssh send file args: {err}"))?;
+        let path = validate_non_empty(args.path, "path")?;
+        self.ensure_mode_allowed(TopicInfraToolMode::Transfer)?;
+
+        let summary = format!("transfer file on {}: {}", self.config.target_name, path);
+        if let Some(response) = self
+            .approval_or_continue(
+                TOOL_SSH_SEND_FILE_TO_USER,
+                TopicInfraToolMode::Transfer,
+                arguments,
+                summary,
+                args.approval_request_id.as_deref(),
+                args.approval_token.as_deref(),
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+
+        let timeout_secs = args.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let delivered_file_name = match args.file_name {
+            Some(file_name) => validate_chat_file_name(file_name)?,
+            None => default_remote_file_name(&path),
+        };
+        let local_path = unique_transfer_local_path(&delivered_file_name);
+
+        self.backend
+            .transfer_get_file(&path, &local_path, timeout_secs, cancellation_token)
+            .await?;
+
+        let download_path = self.backend.transfer_root_path().await?.join(&local_path);
+
+        let delivery_result = async {
+            let metadata = tokio::fs::metadata(&download_path)
+                .await
+                .with_context(|| format!("failed to stat transferred file {}", download_path.display()))?;
+            if metadata.len() == 0 {
+                return Ok(format!(
+                    "❌ ERROR: File '{}' is empty (0 bytes) and cannot be sent.\nSource path: {}",
+                    delivered_file_name, path
+                ));
+            }
+            if metadata.len() > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
+                return Ok(
+                    "⚠️ ERROR: File too large for chat delivery (>50 MB). Please use another transfer/upload path."
+                        .to_string(),
+                );
+            }
+
+            let content = tokio::fs::read(&download_path)
+                .await
+                .with_context(|| format!("failed to read transferred file {}", download_path.display()))?;
+            let report = deliver_file_via_progress(
+                progress_tx,
+                FileDeliveryRequest {
+                    file_name: delivered_file_name.clone(),
+                    content,
+                    source_path: path.clone(),
+                },
+            )
+            .await;
+            Ok(format_generic_delivery_report(&report))
+        }
+        .await;
+
+        let cleanup_result = tokio::fs::remove_file(&download_path).await;
+        if let Err(error) = cleanup_result {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(path = %download_path.display(), error = %error, "Failed to cleanup transferred SSH file");
+            }
+        }
+
+        delivery_result
     }
 
     async fn execute_exec(
@@ -1216,6 +1404,7 @@ impl ToolProvider for SshMcpProvider {
                 | TOOL_SSH_READ_FILE
                 | TOOL_SSH_APPLY_FILE_EDIT
                 | TOOL_SSH_CHECK_PROCESS
+                | TOOL_SSH_SEND_FILE_TO_USER
         )
     }
 
@@ -1223,7 +1412,7 @@ impl ToolProvider for SshMcpProvider {
         &self,
         tool_name: &str,
         arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         match tool_name {
@@ -1235,6 +1424,10 @@ impl ToolProvider for SshMcpProvider {
             TOOL_SSH_READ_FILE => self.execute_read_file(arguments).await,
             TOOL_SSH_APPLY_FILE_EDIT => self.execute_apply_file_edit(arguments).await,
             TOOL_SSH_CHECK_PROCESS => self.execute_check_process(arguments).await,
+            TOOL_SSH_SEND_FILE_TO_USER => {
+                self.execute_send_file_to_user(arguments, progress_tx, cancellation_token)
+                    .await
+            }
             _ => bail!("unknown ssh_mcp tool: {tool_name}"),
         }
     }
@@ -1284,6 +1477,20 @@ struct ApplyFileEditArgs {
 #[serde(deny_unknown_fields)]
 struct CheckProcessArgs {
     pattern: String,
+    #[serde(default)]
+    approval_request_id: Option<String>,
+    #[serde(default)]
+    approval_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SendRemoteFileArgs {
+    path: String,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
     #[serde(default)]
     approval_request_id: Option<String>,
     #[serde(default)]
@@ -1740,6 +1947,51 @@ fn validate_non_empty(value: String, field_name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+fn validate_chat_file_name(value: String) -> Result<String> {
+    let trimmed = validate_non_empty(value, "file_name")?;
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        bail!("file_name must not contain path separators");
+    }
+    if trimmed.chars().any(char::is_control) {
+        bail!("file_name must not contain control characters");
+    }
+    Ok(trimmed)
+}
+
+fn default_remote_file_name(remote_path: &str) -> String {
+    Path::new(remote_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "file".to_string())
+}
+
+fn sanitize_transfer_local_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' => '_',
+            _ if ch.is_control() => '_',
+            _ => ch,
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "file".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn unique_transfer_local_path(file_name: &str) -> String {
+    format!(
+        "{}-{}",
+        Uuid::new_v4().simple(),
+        sanitize_transfer_local_component(file_name)
+    )
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -1888,12 +2140,12 @@ pub fn inject_topic_infra_preflight_system_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_stale_private_key_tempfiles_in, decode_hex, fingerprint_for_request,
-        inject_approval_credentials, inject_ssh_approval_system_message,
+        cleanup_stale_private_key_tempfiles_in, decode_hex, default_remote_file_name,
+        fingerprint_for_request, inject_approval_credentials, inject_ssh_approval_system_message,
         inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
-        parse_ssh_keygen_listing, parse_wrapped_remote_output, write_private_key_tempfile_in,
-        SecretProbeKind, SecretProbeReport, SshApprovalRegistry, TopicInfraPreflightReport,
-        WrappedCommandMarkers,
+        parse_ssh_keygen_listing, parse_wrapped_remote_output, unique_transfer_local_path,
+        validate_chat_file_name, write_private_key_tempfile_in, SecretProbeKind, SecretProbeReport,
+        SshApprovalRegistry, TopicInfraPreflightReport, WrappedCommandMarkers,
     };
     use crate::storage::TopicInfraAuthMode;
     use std::{fs, path::Path};
@@ -1964,6 +2216,25 @@ mod tests {
             "read file on prod: /etc/nginx/nginx.conf"
         ));
         assert!(!is_sensitive_path("read file on prod: /tmp/app.log"));
+    }
+
+    #[test]
+    fn default_remote_file_name_uses_basename() {
+        assert_eq!(default_remote_file_name("/var/log/app.log"), "app.log");
+        assert_eq!(default_remote_file_name("/"), "file");
+    }
+
+    #[test]
+    fn transfer_local_path_is_sanitized_and_unique() {
+        let path = unique_transfer_local_path("../app.log");
+        assert!(!path.contains('/'));
+        assert!(!path.contains(".."));
+    }
+
+    #[test]
+    fn chat_file_name_rejects_path_separators() {
+        assert!(validate_chat_file_name("app.log".to_string()).is_ok());
+        assert!(validate_chat_file_name("foo/bar.log".to_string()).is_err());
     }
 
     #[test]
