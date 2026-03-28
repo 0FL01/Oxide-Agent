@@ -225,7 +225,7 @@ impl Default for TtsConfig {
     }
 }
 
-/// Tool arguments for text_to_speech
+/// Tool arguments for text_to_speech_en
 #[derive(Debug, Deserialize)]
 pub struct TextToSpeechArgs {
     /// Text to convert to speech (must be in English)
