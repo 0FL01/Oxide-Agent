@@ -46,7 +46,7 @@ Default branch: `testing`.
 - Runner (`agent/runner/`) - execution loop, tool dispatch, response parsing, hook integration, loop detection.
 - `AgentSession` - lifecycle tasks, timeout, cancellation, loaded skills, hot-memory.
 - **Parallel tool execution** - multiple tool calls in one LLM response run concurrently.
-- **Fire-and-forget checkpoint** - memory persistence is async, non-blocking.
+- **Fire-and-forget checkpoint** - memory persistence is async, non-blocking; flow checkpoints coalesced to skip identical snapshots.
 - **History repair** - tool_call_id validation before LLM calls; orphaned tool results prevented during compaction.
 - **Cold-start tool drift pruning** - removes stale tool calls from persisted memories; configurable via `STARTUP_TOOL_DRIFT_PRUNE_*` env vars.
 - Narrator - separate model for thought/narrative summarization.
@@ -115,7 +115,7 @@ Default branch: `testing`.
 - Поддерживаются `Once`, `Interval`, `Cron` расписания.
 - Simplified args: `date`, `time`, `every_minutes`, `every_hours`, `timezone`, `weekdays`; partial date/time inputs supported.
 - Основные tools: `reminder_schedule`, `reminder_list`, `reminder_cancel`, `reminder_pause`, `reminder_resume`, `reminder_retry`.
-- Scheduler просыпает агента в исходном topic/flow; storage использует lease-based claiming.
+- In-memory scheduler queue (bootstrap из storage); просыпает агента в исходном topic/flow.
 
 ### Progress и UI
 - Progress runtime живет в `oxide-agent-runtime`, transport rendering - в `oxide-agent-transport-telegram/src/bot/progress_render.rs`.
@@ -127,6 +127,7 @@ Default branch: `testing`.
 
 ### Storage
 - `storage/mod.rs` - facade и реэкспорты; R2 backend разнесен по темам.
+- R2 telemetry: operation counts, cache hit/miss.
 - `R2_REGION` env (default `auto`) - MinIO/Wasabi/B2 compatibility.
 - Tests: `storage/tests/`.
 
@@ -136,7 +137,7 @@ Default branch: `testing`.
 - Voice transcription: `voxtral` (Mistral) с retry backoff (5 attempts, 3s→48s).
 
 ### Tool providers
-- sandbox, todos, tavily, crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md.
+- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md.
 - Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport
@@ -158,7 +159,7 @@ Default branch: `testing`.
 
 - Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Конфигурационные файлы опциональны (`required(false)`).
-- Ключевые: search/embedding provider, narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`).
+- Ключевые: search/embedding provider, SearXNG (`SEARXNG_URL`), narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`).
 
 ## Практика разработки
 
