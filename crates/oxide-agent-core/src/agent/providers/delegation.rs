@@ -49,6 +49,8 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "delegate_to_sub_agent",
     "send_file_to_user",
     "ssh_send_file_to_user",
+    "text_to_speech_en",
+    "text_to_speech_ru",
     "recreate_sandbox",
     "topic_binding_set",
     "topic_binding_get",
@@ -610,7 +612,10 @@ fn spawn_sub_agent_progress_relay(
 fn should_forward_sub_agent_progress_event(event: &AgentEvent) -> bool {
     !matches!(
         event,
-        AgentEvent::Thinking { .. } | AgentEvent::TokenSnapshotUpdated { .. }
+        AgentEvent::Thinking { .. }
+            | AgentEvent::TokenSnapshotUpdated { .. }
+            | AgentEvent::FileToSend { .. }
+            | AgentEvent::FileToSendWithConfirmation { .. }
     )
 }
 
@@ -756,7 +761,7 @@ mod tests {
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::AgentContext;
-    use crate::agent::progress::{AgentEvent, TokenSnapshot};
+    use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use serde_json::json;
@@ -765,10 +770,12 @@ mod tests {
     use tokio::sync::mpsc;
 
     #[test]
-    fn sub_agent_blocklist_includes_manager_control_plane_tools() {
+    fn sub_agent_blocklist_includes_sensitive_tools() {
         let blocked = DelegationProvider::blocked_tool_set();
 
         for tool in [
+            "text_to_speech_en",
+            "text_to_speech_ru",
             "recreate_sandbox",
             "topic_binding_set",
             "topic_binding_get",
@@ -812,6 +819,8 @@ mod tests {
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let available_tools = HashSet::from([
             "write_todos".to_string(),
+            "text_to_speech_en".to_string(),
+            "text_to_speech_ru".to_string(),
             "forum_topic_create".to_string(),
             "topic_binding_set".to_string(),
             "topic_infra_upsert".to_string(),
@@ -821,6 +830,8 @@ mod tests {
             .filter_allowed_tools(
                 vec![
                     "write_todos".to_string(),
+                    "text_to_speech_en".to_string(),
+                    "text_to_speech_ru".to_string(),
                     "forum_topic_create".to_string(),
                     "topic_binding_set".to_string(),
                     "topic_infra_upsert".to_string(),
@@ -843,6 +854,13 @@ mod tests {
         assert!(!should_forward_sub_agent_progress_event(
             &AgentEvent::TokenSnapshotUpdated {
                 snapshot: sample_snapshot(64_000),
+            }
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::FileToSend {
+                kind: FileDeliveryKind::Auto,
+                file_name: "note.ogg".to_string(),
+                content: vec![1, 2, 3],
             }
         ));
         assert!(should_forward_sub_agent_progress_event(
@@ -874,6 +892,14 @@ mod tests {
             })
             .await
             .expect("tool call send");
+        sub_tx
+            .send(AgentEvent::FileToSend {
+                kind: FileDeliveryKind::Auto,
+                file_name: "note.ogg".to_string(),
+                content: vec![1, 2, 3],
+            })
+            .await
+            .expect("file send");
 
         drop(sub_tx);
         if let Some(task) = relay_task {
