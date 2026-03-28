@@ -59,6 +59,7 @@
     *   Голосовые и видео сообщения (распознавание речи через Gemini).
     *   Изображения (анализ и описание через мультимодальные модели).
     *   Работа с документами различных форматов.
+*   **🗣️ Синтез голоса:** Kokoro TTS для англоязычных голосовых ответов (`text_to_speech_en`) и Piper TTS для русскоязычных голосовых ответов (`text_to_speech_ru`).
 *   **Управление контекстом:** История диалога сохраняется в Cloudflare R2 (S3).
 *   **🔒 Безопасность и качество:** `unsafe_code = "forbid"`, строгие линты Clippy, отсутствие паник (`zero-panic profile`).
 
@@ -93,6 +94,8 @@
 *   **Docker** — запуск песочницы кода (`agent-sandbox:latest`)
 *   **Tavily API** — опционально для веб-поиска (`TAVILY_API_KEY`)
 *   **Crawl4AI** — альтернативный провайдер глубокого веб-краулинга с извлечением markdown и парсингом PDF
+*   **Kokoro TTS Server** — опционально для англоязычных голосовых ответов (`KOKORO_TTS_URL`)
+*   **Piper TTS Server** — опционально для русскоязычных голосовых ответов (`PIPER_TTS_URL`)
 </details>
 
 ## Установка и запуск
@@ -241,6 +244,11 @@ AGENT_MODEL_PROVIDER="mistral"
 - **File Hoster Provider** (`filehoster.rs`) — публичная загрузка файлов на временный хостинг (до 4GB)
 - **Path Provider** (`path.rs`) — работа с путями и файловой структурой
 - **Delegation Provider** (`delegation.rs`) — делегирование под-агентам для декомпозиции сложных задач
+- **Kokoro TTS Provider** (`tts/`) — англоязычный синтез голосовых ответов
+- **Piper TTS Provider** (`piper_tts/`) — русскоязычный синтез голосовых ответов
+
+> [!WARNING]
+> **Breaking change:** старый инструмент `text_to_speech` удален. Используйте `text_to_speech_en` (Kokoro) и `text_to_speech_ru` (Piper).
 </details>
 
 ## Использование

@@ -288,6 +288,8 @@ PIPER_TTS_TIMEOUT_SECS=60
 **Formats:** `ogg` (recommended), `mp3`, `wav`
 **Default Natural Preset:** `speed=0.9`, `noise_scale=0.62`, `noise_w_scale=0.78`, `sentence_silence=0.10`, `volume=1.0`, `normalize_audio=true`
 
+**Migration Note (Breaking Change):** The legacy `text_to_speech` tool has been removed. Use `text_to_speech_en` for Kokoro (English) and `text_to_speech_ru` for Piper (Russian).
+
 ### 🔌 Jira MCP Integration
 Full Jira Server 7.5.0 integration via MCP protocol.
 
@@ -412,6 +414,11 @@ Startup maintenance sweep that removes stale tool calls from persisted memories.
 Token-based protected tool window instead of fixed count.
 
 **Migration:** Adjust `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS` (default: 8192) if needed. Recommended: 12k-16k for DevOps workflows.
+
+### 5. TTS Tool Split (English/Russian)
+Legacy `text_to_speech` has been replaced by language-specific tools.
+
+**Migration:** Use `text_to_speech_en` for Kokoro (English-only) and `text_to_speech_ru` for Piper (Russian). Also configure `PIPER_TTS_*` variables when enabling Russian TTS.
 </details>
 
 ## Agent Architecture
