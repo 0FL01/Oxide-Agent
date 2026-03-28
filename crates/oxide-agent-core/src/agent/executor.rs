@@ -16,8 +16,8 @@ use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
     inject_approval_credentials, AgentsMdProvider, DelegationProvider, FileHosterProvider,
-    KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle, PiperTtsProvider,
-    ReminderContext, ReminderProvider, SandboxProvider, SshApprovalGrant, SshApprovalRegistry,
+    KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle, ReminderContext,
+    ReminderProvider, SandboxProvider, SshApprovalGrant, SshApprovalRegistry,
     SshApprovalRequestView, SshMcpProvider, TodoList, TodosProvider, TopicInfraPreflightReport,
     YtdlpProvider,
 };
@@ -434,7 +434,6 @@ impl AgentExecutor {
 
         // Optional TTS providers.
         self.register_kokoro_tts_provider(&mut registry, progress_tx);
-        self.register_piper_tts_provider(&mut registry, progress_tx);
         self.register_silero_tts_provider(&mut registry, progress_tx);
 
         registry
@@ -653,35 +652,6 @@ impl AgentExecutor {
         let base_url = provider.base_url().to_string();
         registry.register(Box::new(provider));
         tracing::info!(url = %base_url, "Kokoro TTS provider registered");
-    }
-
-    fn register_piper_tts_provider(
-        &self,
-        registry: &mut ToolRegistry,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        let config = crate::agent::providers::piper_tts::PiperTtsConfig::from_env();
-
-        if let Ok(url) = std::env::var("PIPER_TTS_URL") {
-            if url.trim().is_empty() {
-                tracing::debug!(
-                    "Piper TTS provider disabled: PIPER_TTS_URL is explicitly set to empty string"
-                );
-                return;
-            }
-        }
-
-        tracing::debug!(url = %config.base_url, "Registering Piper TTS provider");
-
-        let provider = if let Some(tx) = progress_tx {
-            PiperTtsProvider::from_config(config).with_progress_tx(tx.clone())
-        } else {
-            PiperTtsProvider::from_config(config)
-        };
-
-        let base_url = provider.base_url().to_string();
-        registry.register(Box::new(provider));
-        tracing::info!(url = %base_url, "Piper TTS provider registered");
     }
 
     fn register_silero_tts_provider(
