@@ -35,6 +35,21 @@ pub struct TokenSnapshot {
     pub last_api_usage: Option<TokenUsage>,
 }
 
+/// Preferred delivery kind for a file emitted by the agent.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FileDeliveryKind {
+    /// Let the transport infer the best delivery method from the file itself.
+    #[default]
+    Auto,
+    /// Deliver the file as a regular audio attachment when possible.
+    Audio,
+    /// Deliver the file as a Telegram voice note when possible.
+    VoiceNote,
+    /// Deliver the file as a plain document.
+    Document,
+}
+
 /// Events that can occur during agent execution
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,6 +103,9 @@ pub enum AgentEvent {
     },
     /// File to send to user
     FileToSend {
+        /// Preferred delivery kind for the file.
+        #[serde(default)]
+        kind: FileDeliveryKind,
         /// Original file name
         file_name: String,
         /// Raw file content
@@ -98,6 +116,8 @@ pub enum AgentEvent {
     /// Used by ytdlp provider for automatic cleanup after successful delivery
     #[serde(skip)]
     FileToSendWithConfirmation {
+        /// Preferred delivery kind for the file.
+        kind: FileDeliveryKind,
         /// Original file name
         file_name: String,
         /// Raw file content

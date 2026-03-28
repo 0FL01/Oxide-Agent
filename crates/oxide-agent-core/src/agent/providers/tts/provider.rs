@@ -13,6 +13,7 @@ use serde_json::json;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::agent::progress::AgentEvent;
+use crate::agent::progress::FileDeliveryKind;
 use crate::agent::providers::file_delivery::{
     deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus,
 };
@@ -105,6 +106,7 @@ impl KokoroTtsProvider {
             let report = deliver_file_via_progress(
                 progress_tx,
                 FileDeliveryRequest {
+                    kind: FileDeliveryKind::VoiceNote,
                     file_name: file_name.clone(),
                     content: audio_bytes,
                     source_path: format!("/tmp/{file_name}"),

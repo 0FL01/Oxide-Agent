@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
-use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
+use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
@@ -23,8 +23,13 @@ pub trait AgentTransport: Send + Sync + 'static {
     async fn update_progress(&self, state: &ProgressState) -> Result<()>;
 
     /// Deliver a file emitted by the agent.
-    async fn deliver_file(&self, mode: DeliveryMode, file_name: &str, content: &[u8])
-        -> Result<()>;
+    async fn deliver_file(
+        &self,
+        mode: DeliveryMode,
+        kind: FileDeliveryKind,
+        file_name: &str,
+        content: &[u8],
+    ) -> Result<()>;
 
     /// Notify the user about loop detection and prompt for an action.
     async fn notify_loop_detected(&self, _loop_type: LoopType, _iteration: usize) -> Result<()> {
@@ -80,9 +85,13 @@ pub async fn run_progress_loop<T: AgentTransport>(
     while let Some(event) = rx.recv().await {
         // File delivery is a side-effect and should not block state updates more than necessary.
         match &event {
-            AgentEvent::FileToSend { file_name, content } => {
+            AgentEvent::FileToSend {
+                kind,
+                file_name,
+                content,
+            } => {
                 if let Err(e) = transport
-                    .deliver_file(DeliveryMode::BestEffort, file_name, content)
+                    .deliver_file(DeliveryMode::BestEffort, *kind, file_name, content)
                     .await
                 {
                     warn!(file_name = %file_name, error = %e, "File delivery failed");
@@ -91,6 +100,7 @@ pub async fn run_progress_loop<T: AgentTransport>(
             AgentEvent::FileToSendWithConfirmation { .. } => {
                 // Destructure to move `confirmation_tx` out.
                 if let AgentEvent::FileToSendWithConfirmation {
+                    kind,
                     file_name,
                     content,
                     source_path,
@@ -98,7 +108,7 @@ pub async fn run_progress_loop<T: AgentTransport>(
                 } = event
                 {
                     let result = transport
-                        .deliver_file(DeliveryMode::Confirmed, &file_name, &content)
+                        .deliver_file(DeliveryMode::Confirmed, kind, &file_name, &content)
                         .await;
 
                     match result {
@@ -174,6 +184,8 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::{mpsc, oneshot, Mutex};
 
+    type DeliveredFileRecord = (DeliveryMode, FileDeliveryKind, String, usize);
+
     fn sample_snapshot() -> TokenSnapshot {
         TokenSnapshot {
             hot_memory_tokens: 1,
@@ -198,7 +210,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct DummyTransport {
         updates: Arc<Mutex<usize>>,
-        delivered: Arc<Mutex<Vec<(DeliveryMode, String, usize)>>>,
+        delivered: Arc<Mutex<Vec<DeliveredFileRecord>>>,
         fail_deliver: bool,
     }
 
@@ -213,6 +225,7 @@ mod tests {
         async fn deliver_file(
             &self,
             mode: DeliveryMode,
+            kind: FileDeliveryKind,
             file_name: &str,
             content: &[u8],
         ) -> Result<()> {
@@ -221,7 +234,7 @@ mod tests {
             }
 
             let mut delivered = self.delivered.lock().await;
-            delivered.push((mode, file_name.to_string(), content.len()));
+            delivered.push((mode, kind, file_name.to_string(), content.len()));
             Ok(())
         }
     }
@@ -326,6 +339,7 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel();
         let send_result = tx
             .send(AgentEvent::FileToSendWithConfirmation {
+                kind: FileDeliveryKind::Auto,
                 file_name: "out.txt".to_string(),
                 content: vec![1, 2, 3],
                 source_path: "/workspace/out.txt".to_string(),
@@ -349,6 +363,7 @@ mod tests {
         let delivered = transport.delivered.lock().await;
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].0, DeliveryMode::Confirmed);
+        assert_eq!(delivered[0].1, FileDeliveryKind::Auto);
     }
 
     #[tokio::test]
@@ -366,6 +381,7 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel();
         let send_result = tx
             .send(AgentEvent::FileToSendWithConfirmation {
+                kind: FileDeliveryKind::Auto,
                 file_name: "out.txt".to_string(),
                 content: vec![1, 2, 3],
                 source_path: "/workspace/out.txt".to_string(),

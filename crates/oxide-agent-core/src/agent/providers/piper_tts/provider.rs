@@ -2,7 +2,7 @@
 
 use super::client::PiperClient;
 use super::types::{PiperTtsConfig, TextToSpeechRuArgs};
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, FileDeliveryKind};
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::file_delivery::{
     deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus,
@@ -99,6 +99,7 @@ impl PiperTtsProvider {
             let report = deliver_file_via_progress(
                 progress_tx,
                 FileDeliveryRequest {
+                    kind: FileDeliveryKind::VoiceNote,
                     file_name: file_name.clone(),
                     content: audio_bytes,
                     source_path: format!("/tmp/{file_name}"),

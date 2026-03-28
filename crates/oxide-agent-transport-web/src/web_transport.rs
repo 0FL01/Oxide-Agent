@@ -4,7 +4,7 @@
 //! via the HTTP API. Unlike Telegram transport, this does not send messages
 //! to any chat — it only records the event timeline for later inspection.
 
-use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
+use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -171,11 +171,13 @@ impl AgentTransport for WebAgentTransport {
     async fn deliver_file(
         &self,
         _mode: DeliveryMode,
+        kind: FileDeliveryKind,
         file_name: &str,
         content: &[u8],
     ) -> Result<(), anyhow::Error> {
         // Record file delivery as a synthetic event so tests can observe it.
         let event = AgentEvent::FileToSend {
+            kind,
             file_name: file_name.to_string(),
             content: content.to_vec(),
         };

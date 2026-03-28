@@ -1,4 +1,4 @@
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, FileDeliveryKind};
 use tokio::sync::mpsc::Sender;
 use tracing::{info, warn};
 
@@ -7,6 +7,7 @@ const CHAT_DELIVERY_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Durat
 pub(crate) const CHAT_DELIVERY_MAX_FILE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
 
 pub(crate) struct FileDeliveryRequest {
+    pub(crate) kind: FileDeliveryKind,
     pub(crate) file_name: String,
     pub(crate) content: Vec<u8>,
     pub(crate) source_path: String,
@@ -41,6 +42,7 @@ pub(crate) async fn deliver_file_via_progress(
     request: FileDeliveryRequest,
 ) -> FileDeliveryReport {
     let FileDeliveryRequest {
+        kind,
         file_name,
         content,
         source_path,
@@ -71,6 +73,7 @@ pub(crate) async fn deliver_file_via_progress(
     let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
     if let Err(error) = tx
         .send(AgentEvent::FileToSendWithConfirmation {
+            kind,
             file_name: file_name.clone(),
             content,
             source_path: source_path.clone(),
@@ -165,6 +168,7 @@ mod tests {
         let report = deliver_file_via_progress(
             Some(&tx),
             FileDeliveryRequest {
+                kind: FileDeliveryKind::Auto,
                 file_name: "ok.txt".to_string(),
                 content: b"hello".to_vec(),
                 source_path: "/workspace/ok.txt".to_string(),
@@ -192,6 +196,7 @@ mod tests {
         let report = deliver_file_via_progress(
             Some(&tx),
             FileDeliveryRequest {
+                kind: FileDeliveryKind::Auto,
                 file_name: "empty.txt".to_string(),
                 content: b"x".to_vec(),
                 source_path: "/workspace/empty.txt".to_string(),
@@ -213,6 +218,7 @@ mod tests {
         let report = deliver_file_via_progress(
             Some(&tx),
             FileDeliveryRequest {
+                kind: FileDeliveryKind::Auto,
                 file_name: "file.txt".to_string(),
                 content: b"hello".to_vec(),
                 source_path: "/workspace/file.txt".to_string(),
@@ -231,6 +237,7 @@ mod tests {
         let report = deliver_file_via_progress(
             None,
             FileDeliveryRequest {
+                kind: FileDeliveryKind::Auto,
                 file_name: "empty.bin".to_string(),
                 content: Vec::new(),
                 source_path: "/workspace/empty.bin".to_string(),
