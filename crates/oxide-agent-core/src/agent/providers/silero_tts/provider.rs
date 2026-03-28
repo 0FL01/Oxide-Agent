@@ -77,6 +77,22 @@ impl SileroTtsProvider {
             }
         };
 
+        // Check for Arabic numerals which Silero cannot pronounce
+        if request.text.chars().any(|c| c.is_ascii_digit()) {
+            return Ok(
+                "ERROR: Text contains Arabic numerals (0-9) which Silero cannot pronounce. "
+                    .to_string()
+                    + "Please rewrite the text using Russian words for numbers.\n\n"
+                    + "Examples:\n"
+                    + "- '42' -> 'сорок два'\n"
+                    + "- '2024' -> 'две тысячи двадцать четыре'\n"
+                    + "- '15:30' -> 'пятнадцать часов тридцать минут'\n"
+                    + "- 'Room 404' -> 'комната четыреста четыре'\n"
+                    + "- 'v2.5' -> 'версия два точка пять'\n\n"
+                    + "Rewrite your text with all numbers spelled out and try again.",
+            );
+        }
+
         info!(
             text_len = request.text.len(),
             speaker = %request.speaker,
@@ -173,6 +189,10 @@ impl ToolProvider for SileroTtsProvider {
             name: "text_to_speech_ru".to_string(),
             description: concat!(
                 "Convert Russian text to speech with the Silero TTS server and send it to the user as a voice message. ",
+                "CRITICAL: Silero cannot pronounce Arabic numerals (0-9). ",
+                "You MUST convert ALL numbers to Russian words before calling. ",
+                "Examples: 42 -> 'сорок два', 2024 -> 'две тысячи двадцать четыре', 15:30 -> 'пятнадцать часов тридцать минут'. ",
+                "Never use digits like '1', '2', '33' - always spell them out. ",
                 "Supports SSML markup for enhanced speech control (pauses, pitch, rate). ",
                 "Default speaker is 'baya' (best quality). Use SSML for natural-sounding speech with proper pauses."
             )
