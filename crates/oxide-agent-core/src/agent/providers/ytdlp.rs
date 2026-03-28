@@ -5,7 +5,7 @@
 //!
 //! All operations execute inside the Docker sandbox where yt-dlp is installed.
 
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, FileDeliveryKind};
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
@@ -182,6 +182,7 @@ impl YtdlpProvider {
         let report = deliver_file_via_progress(
             self.progress_tx.as_ref(),
             FileDeliveryRequest {
+                kind: FileDeliveryKind::Auto,
                 file_name: file_name.to_string(),
                 content,
                 source_path: file_path.to_string(),

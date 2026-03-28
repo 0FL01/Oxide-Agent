@@ -1,7 +1,7 @@
 //! Topic-scoped SSH infrastructure provider with approval gating.
 
 use crate::agent::memory::AgentMessage;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, FileDeliveryKind};
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::storage::{
@@ -1037,6 +1037,7 @@ impl SshMcpProvider {
             let report = deliver_file_via_progress(
                 progress_tx,
                 FileDeliveryRequest {
+                    kind: FileDeliveryKind::Auto,
                     file_name: delivered_file_name.clone(),
                     content,
                     source_path: path.clone(),

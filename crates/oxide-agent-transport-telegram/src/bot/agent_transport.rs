@@ -5,7 +5,7 @@ use crate::bot::views::{
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
-use oxide_agent_core::agent::progress::ProgressState;
+use oxide_agent_core::agent::progress::{FileDeliveryKind, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, InlineKeyboardMarkup, InputFile, MessageId, ParseMode};
@@ -75,6 +75,7 @@ impl AgentTransport for TelegramAgentTransport {
     async fn deliver_file(
         &self,
         mode: DeliveryMode,
+        kind: FileDeliveryKind,
         file_name: &str,
         content: &[u8],
     ) -> Result<()> {
@@ -83,6 +84,7 @@ impl AgentTransport for TelegramAgentTransport {
                 if let Err(e) = send_file_smart(
                     &self.bot,
                     self.chat_id,
+                    kind,
                     file_name,
                     content,
                     self.message_thread_id,
@@ -99,6 +101,7 @@ impl AgentTransport for TelegramAgentTransport {
                     send_file_smart(
                         &self.bot,
                         self.chat_id,
+                        kind,
                         file_name,
                         content,
                         self.message_thread_id,
@@ -135,6 +138,40 @@ impl AgentTransport for TelegramAgentTransport {
 
 static VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm"];
 static AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "m4a", "flac"];
+static VOICE_NOTE_EXTENSIONS: &[&str] = &["ogg", "opus"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSendKind {
+    Video,
+    Audio,
+    Voice,
+    Document,
+}
+
+fn select_native_send_kind(file_name: &str, kind: FileDeliveryKind) -> NativeSendKind {
+    let extension = std::path::Path::new(file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|s| s.to_lowercase());
+
+    match kind {
+        FileDeliveryKind::VoiceNote => match extension.as_deref() {
+            Some(ext) if VOICE_NOTE_EXTENSIONS.contains(&ext) => NativeSendKind::Voice,
+            Some(ext) if AUDIO_EXTENSIONS.contains(&ext) => NativeSendKind::Audio,
+            _ => NativeSendKind::Document,
+        },
+        FileDeliveryKind::Audio => match extension.as_deref() {
+            Some(ext) if AUDIO_EXTENSIONS.contains(&ext) => NativeSendKind::Audio,
+            _ => NativeSendKind::Document,
+        },
+        FileDeliveryKind::Document => NativeSendKind::Document,
+        FileDeliveryKind::Auto => match extension.as_deref() {
+            Some(ext) if VIDEO_EXTENSIONS.contains(&ext) => NativeSendKind::Video,
+            Some(ext) if AUDIO_EXTENSIONS.contains(&ext) => NativeSendKind::Audio,
+            _ => NativeSendKind::Document,
+        },
+    }
+}
 
 /// Smart file sending that chooses send_video/send_audio/send_document based on extension.
 ///
@@ -142,26 +179,22 @@ static AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "m4a", "flac"];
 async fn send_file_smart(
     bot: &Bot,
     chat_id: ChatId,
+    kind: FileDeliveryKind,
     file_name: &str,
     content: &[u8],
     message_thread_id: Option<teloxide::types::ThreadId>,
 ) -> Result<teloxide::types::Message> {
-    let extension = std::path::Path::new(file_name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase());
-
     let file_name_owned = file_name.to_string();
     let make_file = || InputFile::memory(content.to_vec()).file_name(file_name_owned.clone());
 
-    if let Some(ext) = extension.as_deref() {
-        if VIDEO_EXTENSIONS.contains(&ext) {
+    match select_native_send_kind(file_name, kind) {
+        NativeSendKind::Video => {
             let mut req = bot.send_video(chat_id, make_file());
             if let Some(thread_id) = message_thread_id {
                 req = req.message_thread_id(thread_id);
             }
 
-            return match req.await {
+            match req.await {
                 Ok(msg) => Ok(msg),
                 Err(e) => {
                     warn!(
@@ -176,16 +209,15 @@ async fn send_file_smart(
 
                     doc_req.await.map_err(Into::into)
                 }
-            };
+            }
         }
-
-        if AUDIO_EXTENSIONS.contains(&ext) {
+        NativeSendKind::Audio => {
             let mut req = bot.send_audio(chat_id, make_file());
             if let Some(thread_id) = message_thread_id {
                 req = req.message_thread_id(thread_id);
             }
 
-            return match req.await {
+            match req.await {
                 Ok(msg) => Ok(msg),
                 Err(e) => {
                     warn!(
@@ -200,23 +232,73 @@ async fn send_file_smart(
 
                     doc_req.await.map_err(Into::into)
                 }
-            };
+            }
+        }
+        NativeSendKind::Voice => {
+            let mut req = bot.send_voice(chat_id, make_file());
+            if let Some(thread_id) = message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            match req.await {
+                Ok(msg) => Ok(msg),
+                Err(e) => {
+                    warn!(
+                        file_name = %file_name,
+                        error = %e,
+                        "Failed to send voice note; falling back to audio/document"
+                    );
+
+                    let fallback_kind = select_native_send_kind(file_name, FileDeliveryKind::Audio);
+                    if fallback_kind == NativeSendKind::Audio {
+                        let mut audio_req = bot.send_audio(chat_id, make_file());
+                        if let Some(thread_id) = message_thread_id {
+                            audio_req = audio_req.message_thread_id(thread_id);
+                        }
+
+                        match audio_req.await {
+                            Ok(msg) => Ok(msg),
+                            Err(audio_error) => {
+                                warn!(
+                                    file_name = %file_name,
+                                    error = %audio_error,
+                                    "Failed to send voice note fallback as audio; falling back to document"
+                                );
+                                let mut doc_req = bot.send_document(chat_id, make_file());
+                                if let Some(thread_id) = message_thread_id {
+                                    doc_req = doc_req.message_thread_id(thread_id);
+                                }
+
+                                doc_req.await.map_err(Into::into)
+                            }
+                        }
+                    } else {
+                        let mut doc_req = bot.send_document(chat_id, make_file());
+                        if let Some(thread_id) = message_thread_id {
+                            doc_req = doc_req.message_thread_id(thread_id);
+                        }
+
+                        doc_req.await.map_err(Into::into)
+                    }
+                }
+            }
+        }
+        NativeSendKind::Document => {
+            let mut req = bot.send_document(chat_id, make_file());
+            if let Some(thread_id) = message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            req.await.map_err(Into::into)
         }
     }
-
-    let mut req = bot.send_document(chat_id, make_file());
-    if let Some(thread_id) = message_thread_id {
-        req = req.message_thread_id(thread_id);
-    }
-
-    req.await.map_err(Into::into)
 }
 
 #[cfg(test)]
 mod tests {
-    use oxide_agent_core::agent::progress::ProgressState;
+    use oxide_agent_core::agent::progress::{FileDeliveryKind, ProgressState};
 
-    use super::progress_reply_markup_for_state;
+    use super::{progress_reply_markup_for_state, select_native_send_kind, NativeSendKind};
     use crate::bot::views::progress_inline_keyboard;
 
     #[test]
@@ -248,5 +330,37 @@ mod tests {
             .expect("errored task should still edit reply markup");
 
         assert!(markup.inline_keyboard.is_empty());
+    }
+
+    #[test]
+    fn auto_audio_stays_audio() {
+        assert_eq!(
+            select_native_send_kind("speech.ogg", FileDeliveryKind::Auto),
+            NativeSendKind::Audio
+        );
+    }
+
+    #[test]
+    fn voice_note_hint_uses_send_voice_for_ogg() {
+        assert_eq!(
+            select_native_send_kind("speech.ogg", FileDeliveryKind::VoiceNote),
+            NativeSendKind::Voice
+        );
+    }
+
+    #[test]
+    fn voice_note_hint_falls_back_to_audio_for_mp3() {
+        assert_eq!(
+            select_native_send_kind("speech.mp3", FileDeliveryKind::VoiceNote),
+            NativeSendKind::Audio
+        );
+    }
+
+    #[test]
+    fn document_hint_overrides_media_detection() {
+        assert_eq!(
+            select_native_send_kind("speech.ogg", FileDeliveryKind::Document),
+            NativeSendKind::Document
+        );
     }
 }

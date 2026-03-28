@@ -4,6 +4,7 @@
 //! `list_files`, and `recreate_sandbox` tools.
 
 use crate::agent::progress::AgentEvent;
+use crate::agent::progress::FileDeliveryKind;
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
@@ -187,6 +188,7 @@ impl SandboxProvider {
                 let report = deliver_file_via_progress(
                     progress_tx,
                     FileDeliveryRequest {
+                        kind: FileDeliveryKind::Auto,
                         file_name: file_name.clone(),
                         content,
                         source_path: resolved_path.clone(),
