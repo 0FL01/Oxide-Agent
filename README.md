@@ -255,7 +255,7 @@ Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or
 ### 🗣️ Kokoro TTS (Voice Synthesis)
 Generates voice messages from agent output using local Kokoro TTS server.
 
-**Server Setup:** [KOKORO-TTS-setup](https://github.com/0FL01/KOKORO-TTS-setup) — automated installation script for Linux servers.
+**Server Setup:** See [KOKORO-TTS-setup guide](https://github.com/0FL01/KOKORO-TTS-setup) for manual server setup.
 
 **Configuration:**
 ```dotenv
