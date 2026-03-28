@@ -71,7 +71,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   Voice and video messages (speech recognition via Gemini or Voxtral).
     *   Images (analysis and description via multimodal models).
     *   Work with documents of various formats.
-*   **🗣️ Voice Synthesis:** Kokoro TTS for English voice replies and Piper TTS for Russian voice replies.
+*   **🗣️ Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
 *   **Context Management:** Dialogue history saved in Cloudflare R2 (S3) with context-scoped isolation per topic.
 *   **🔒 Security and Quality:** `unsafe_code = "forbid"`, strict Clippy lints, no panics (`zero-panic profile`), DM tool restrictions, SSH approval flow, RBAC.
 
@@ -110,7 +110,7 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 *   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
 *   **Crawl4AI** — deep web crawling provider with markdown extraction and PDF parsing capabilities
 *   **Kokoro TTS Server** — optional for English voice message synthesis (`KOKORO_TTS_URL`)
-*   **Piper TTS Server** — optional for Russian voice message synthesis (`PIPER_TTS_URL`)
+*   **Silero TTS Server** — optional for Russian voice message synthesis (`SILERO_TTS_URL`)
 </details>
 
 ## Installation and Launch
@@ -271,24 +271,25 @@ KOKORO_TTS_TIMEOUT_SECS=60
 **Available Voices:** `af_bella`, `af_aoede`, `af_alloy`, `af_heart` (default)
 **Formats:** `ogg` (recommended), `mp3`, `wav`
 
-### 🇷🇺 Piper TTS (Russian Voice Synthesis)
-Generates Russian voice messages from agent output using local Piper TTS server.
+### 🇷🇺 Silero TTS (Russian Voice Synthesis)
+Generates Russian voice messages from agent output using local Silero TTS server.
 
 **Tool:** `text_to_speech_ru`
 
 **Configuration:**
 ```dotenv
-PIPER_TTS_URL=http://127.0.0.1:8001  # Default
-PIPER_TTS_VOICE=ruslan               # denis | dmitri | irina | ruslan (default)
-PIPER_TTS_FORMAT=ogg                 # Recommended for Telegram
-PIPER_TTS_TIMEOUT_SECS=60
+SILERO_TTS_URL=http://127.0.0.1:8001       # Default
+SILERO_TTS_SPEAKER=baya                    # aidar | baya (default) | kseniya | xenia
+SILERO_TTS_FORMAT=ogg                      # Recommended for Telegram
+SILERO_TTS_SAMPLE_RATE=48000               # 8000 | 24000 | 48000 (default, best quality)
+SILERO_TTS_TIMEOUT_SECS=60
 ```
 
-**Available Voices:** `denis`, `dmitri`, `irina`, `ruslan` (default)
-**Formats:** `ogg` (recommended), `mp3`, `wav`
-**Default Natural Preset:** `speed=0.9`, `noise_scale=0.62`, `noise_w_scale=0.78`, `sentence_silence=0.10`, `volume=1.0`, `normalize_audio=true`
+**Available Speakers:** `aidar`, `baya` (default), `kseniya`, `xenia`
+**Formats:** `ogg` (recommended), `wav`
+**SSML Support:** Set `ssml: true` for SSML markup with `<speak>`, `<break>`, `<prosody>` tags
 
-**Migration Note (Breaking Change):** The legacy `text_to_speech` tool has been removed. Use `text_to_speech_en` for Kokoro (English) and `text_to_speech_ru` for Piper (Russian).
+**Migration Note:** Piper TTS has been replaced with Silero TTS. Use `text_to_speech_en` for Kokoro (English) and `text_to_speech_ru` for Silero (Russian).
 
 ### 🔌 Jira MCP Integration
 Full Jira Server 7.5.0 integration via MCP protocol.
@@ -418,7 +419,7 @@ Token-based protected tool window instead of fixed count.
 ### 5. TTS Tool Split (English/Russian)
 Legacy `text_to_speech` has been replaced by language-specific tools.
 
-**Migration:** Use `text_to_speech_en` for Kokoro (English-only) and `text_to_speech_ru` for Piper (Russian). Also configure `PIPER_TTS_*` variables when enabling Russian TTS.
+**Migration:** Use `text_to_speech_en` for Kokoro (English-only) and `text_to_speech_ru` for Silero (Russian). Configure `SILERO_TTS_*` variables when enabling Russian TTS.
 </details>
 
 ## Agent Architecture
@@ -495,7 +496,7 @@ The agent uses a modular provider system, each offering a specialized set of too
 - **Delegation Provider** (`delegation.rs`) — sub-agent delegation for complex task decomposition
 - **Reminder Provider** (`reminder.rs`) — reminder scheduling with pause/resume/retry
 - **Kokoro TTS Provider** (`tts/`) — English voice message synthesis
-- **Piper TTS Provider** (`piper_tts/`) — Russian voice message synthesis
+- **Silero TTS Provider** (`silero_tts/`) — Russian voice message synthesis with SSML support
 - **Jira MCP Provider** (`jira_mcp/`) — Jira integration
 - **Mattermost MCP Provider** (`mattermost_mcp/`) — Mattermost integration
 - **SSH MCP Provider** (`ssh_mcp.rs`) — SSH infrastructure with approval flow
@@ -632,7 +633,7 @@ crates/
 │       │   │   ├── jira_mcp/             # Jira integration
 │       │   │   ├── mattermost_mcp/       # Mattermost integration
 │       │   │   ├── tts/                  # Kokoro TTS
-│       │   │   ├── piper_tts/            # Piper TTS
+│       │   │   ├── silero_tts/           # Silero TTS
 │       │   │   ├── manager_control_plane/ # Topic CRUD, RBAC
 │       │   │   └── ...
 │       │   ├── recovery/       # History repair, tool drift pruning
