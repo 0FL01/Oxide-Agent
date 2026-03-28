@@ -1,6 +1,6 @@
 //! Kokoro TTS Tool Provider
 //!
-//! Implements `ToolProvider` trait for text-to-speech synthesis.
+//! Implements `ToolProvider` trait for English text-to-speech synthesis.
 //! Sends generated audio as voice messages via the progress channel.
 
 use super::client::KokoroClient;
@@ -59,13 +59,13 @@ impl KokoroTtsProvider {
         self
     }
 
-    /// Execute text-to-speech synthesis and send to user
+    /// Execute English text-to-speech synthesis and send to user
     ///
     /// # Errors
     ///
     /// Returns error if synthesis fails or file cannot be sent
     #[instrument(skip(self, progress_tx), level = "debug")]
-    async fn execute_text_to_speech(
+    async fn execute_text_to_speech_en(
         &self,
         args: TextToSpeechArgs,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
@@ -173,7 +173,7 @@ impl ToolProvider for KokoroTtsProvider {
 
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
-            name: "text_to_speech".to_string(),
+            name: "text_to_speech_en".to_string(),
             description: concat!(
                 "Convert text to speech and send as a voice message to the user. ",
                 "IMPORTANT: Text must be in English only - the TTS server supports English language exclusively. ",
@@ -211,7 +211,7 @@ impl ToolProvider for KokoroTtsProvider {
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(tool_name, "text_to_speech")
+        matches!(tool_name, "text_to_speech_en")
     }
 
     async fn execute(
@@ -224,7 +224,7 @@ impl ToolProvider for KokoroTtsProvider {
         debug!(tool = tool_name, "Executing TTS tool");
 
         match tool_name {
-            "text_to_speech" => {
+            "text_to_speech_en" => {
                 let args: TextToSpeechArgs = match serde_json::from_str(arguments) {
                     Ok(a) => a,
                     Err(e) => {
@@ -232,7 +232,7 @@ impl ToolProvider for KokoroTtsProvider {
                     }
                 };
 
-                self.execute_text_to_speech(args, progress_tx).await
+                self.execute_text_to_speech_en(args, progress_tx).await
             }
             _ => anyhow::bail!("Unknown TTS tool: {tool_name}"),
         }
@@ -254,13 +254,13 @@ mod tests {
         let provider = KokoroTtsProvider::from_env();
         let tools = provider.tools();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "text_to_speech");
+        assert_eq!(tools[0].name, "text_to_speech_en");
     }
 
     #[test]
     fn can_handle_check() {
         let provider = KokoroTtsProvider::from_env();
-        assert!(provider.can_handle("text_to_speech"));
+        assert!(provider.can_handle("text_to_speech_en"));
         assert!(!provider.can_handle("other_tool"));
     }
 

@@ -1,6 +1,6 @@
 //! Kokoro TTS (Text-to-Speech) Provider
 //!
-//! Provides `text_to_speech` tool for generating voice messages.
+//! Provides `text_to_speech_en` tool for generating voice messages.
 //! Uses local Kokoro TTS server running at 127.0.0.1:8000.
 //!
 //! # Configuration
