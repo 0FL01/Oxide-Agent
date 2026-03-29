@@ -21,11 +21,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     whois \
     nmap \
     mtr \
+    ripgrep \
+    fd-find \
     && rm -rf /var/lib/apt/lists/*
 
 # Set timezone to Europe/Moscow
 RUN ln -snf /usr/share/zoneinfo/Europe/Moscow /etc/localtime && \
     echo "Europe/Moscow" > /etc/timezone
+
+# Create symlink for fd (binary is named fdfind in Debian package)
+RUN ln -s /usr/bin/fdfind /usr/local/bin/fd
 
 # Install yt-dlp (latest version via pip)
 RUN pip install --no-cache-dir --break-system-packages yt-dlp
