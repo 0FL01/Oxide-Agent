@@ -168,6 +168,8 @@ GROQ_API_KEY=...
 MISTRAL_API_KEY=...
 GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
+NVIDIA_API_KEY=...              # NVIDIA NIM / hosted integrate.api.nvidia.com
+NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
 ZAI_API_KEY=...                 # Zhipu AI / ZAI Provider
 MINIMAX_API_KEY=...             # MiniMax Provider (Claude SDK-compatible)
 TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enable via TAVILY_ENABLED=true)
@@ -226,6 +228,24 @@ AGENT_MODEL_ROUTES__2__ID="mistral-small-2603"
 AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
 AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
+
+### NVIDIA NIM agent route example
+Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven backup route first:
+
+```dotenv
+NVIDIA_API_KEY=...
+NVIDIA_API_BASE="https://integrate.api.nvidia.com/v1"
+
+AGENT_MODEL_ROUTES__0__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__0__PROVIDER="nvidia"
+AGENT_MODEL_ROUTES__0__WEIGHT=3
+
+AGENT_MODEL_ROUTES__1__ID="glm-4.7"
+AGENT_MODEL_ROUTES__1__PROVIDER="zai"
+AGENT_MODEL_ROUTES__1__WEIGHT=5
+```
+
+The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
 
 ### Alternate provider example
 ```

@@ -150,6 +150,8 @@ GROQ_API_KEY=...
 MISTRAL_API_KEY=...
 GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
+NVIDIA_API_KEY=... # NVIDIA NIM / hosted integrate.api.nvidia.com
+NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
 ZAI_API_KEY=... # Провайдер ZAI (Zhipu AI)
 TAVILY_API_KEY=... # Ключ Tavily для веб-поиска в режиме Агента (опционально)
 ```
@@ -187,6 +189,21 @@ MEDIA_MODEL_PROVIDER="openrouter"
 NARRATOR_MODEL_ID="labs-mistral-small-creative"
 NARRATOR_MODEL_PROVIDER="mistral"
 ```
+
+### Взвешенные маршруты моделей (failover)
+Для автоматического переключения после устойчивых 429 можно указать несколько маршрутов:
+
+```dotenv
+AGENT_MODEL_ROUTES__0__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__0__PROVIDER="nvidia"
+AGENT_MODEL_ROUTES__0__WEIGHT=3
+
+AGENT_MODEL_ROUTES__1__ID="glm-4.7"
+AGENT_MODEL_ROUTES__1__PROVIDER="zai"
+AGENT_MODEL_ROUTES__1__WEIGHT=5
+```
+
+Для NVIDIA NIM в агентных циклах используйте только модели с подтвержденным tool calling. Если есть сомнения, ставьте NIM перед проверенным backup-маршрутом: рантайм теперь сам пропускает неподдерживаемые NIM-модели в tool-enabled execution и не включает structured output там, где модель его не поддерживает безопасно.
 
 ### Альтернативный пример
 ```
