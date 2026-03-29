@@ -375,7 +375,7 @@ mod provider_tests {
         );
 
         // Verify the mapper has the correct bidirectional mapping
-        assert_eq!(id_mapper.to_mistral(original_id), mistral_id);
+        assert_eq!(id_mapper.mistral_id_for(original_id), mistral_id);
         assert_eq!(id_mapper.to_original(&mistral_id), original_id);
     }
 
@@ -410,7 +410,7 @@ mod provider_tests {
 
         // Verify bidirectional mapping for each
         for (original, mistral) in original_ids.iter().zip(mistral_ids.iter()) {
-            assert_eq!(id_mapper.to_mistral(original), *mistral);
+            assert_eq!(id_mapper.mistral_id_for(original), *mistral);
             assert_eq!(id_mapper.to_original(mistral), **original);
         }
     }
