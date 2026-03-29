@@ -63,6 +63,16 @@ const TOOL_CALLING_SUPPORTED_MODELS: &[&str] = &[
     "kakaocorp/kanana-1.5-8b-instruct-2505",
     "scb10x/llama3.1-typhoon2-8b-instruct",
     "scb10x/llama-3.1-typhoon2-70b-instruct",
+    // Moonshot AI Kimi K2 models (tool calling verified in NVIDIA NIM docs)
+    "moonshotai/kimi-k2-thinking",
+    "moonshotai/kimi-k2-instruct",
+    "moonshotai/kimi-k2-instruct-0905",
+    // Z.AI GLM models (tool calling verified in NVIDIA NIM docs)
+    "z-ai/glm5",
+    "z-ai/glm4.7",
+    // MiniMax M2 models (tool calling verified in NVIDIA NIM docs)
+    "minimaxai/minimax-m2.5",
+    "minimaxai/minimax-m2.1",
 ];
 
 const STRUCTURED_OUTPUT_UNSUPPORTED_PREFIXES: &[&str] =
@@ -75,7 +85,10 @@ pub(crate) fn model_capabilities(model_id: &str) -> NvidiaModelCapabilities {
     let supports_tool_calling = TOOL_CALLING_SUPPORTED_MODELS
         .iter()
         .any(|candidate| model_id == *candidate)
-        || model_id.contains("gpt-oss");
+        || model_id.contains("gpt-oss")
+        || model_id.starts_with("moonshotai/kimi-k2")
+        || model_id.starts_with("z-ai/glm")
+        || model_id.starts_with("minimaxai/minimax-m");
 
     let supports_structured_output = !STRUCTURED_OUTPUT_UNSUPPORTED_PREFIXES
         .iter()
