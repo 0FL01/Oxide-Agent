@@ -29,7 +29,7 @@ pub fn format_search_results(
         .take(max_results)
         .collect::<Vec<_>>();
     if results.is_empty() {
-        output.push_str("No results found for this query.\n");
+        output.push_str("Search returned no results for this query.\n");
     } else {
         output.push_str("### Results\n\n");
         for (index, result) in results.iter().enumerate() {
@@ -102,6 +102,6 @@ mod tests {
         };
 
         let formatted = format_search_results("rust", &response, 5);
-        assert!(formatted.contains("No results found"));
+        assert!(formatted.contains("Search returned no results"));
     }
 }
