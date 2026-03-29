@@ -186,7 +186,17 @@ impl AgentRunner {
                     .ok()
             })
             .unwrap_or_else(|| "unknown".to_string());
-        let capabilities = LlmClient::provider_capabilities(&provider_name);
+        let model_info = self.llm_client.get_model_info(&ctx.config.model_name)?;
+        let capabilities = LlmClient::provider_capabilities_for_model(&model_info);
+
+        if !capabilities.can_run_agent_tools() {
+            let error = LlmError::ApiError(format!(
+                "Tool-enabled agent calls are not supported for {} model `{}`",
+                model_info.provider, model_info.id
+            ));
+            Self::emit_llm_error(ctx.progress_tx, &error).await;
+            return Err(anyhow!("LLM call failed: {error}"));
+        }
 
         for attempt in 1..=max_retries {
             Self::refresh_messages_from_memory(ctx);
@@ -233,11 +243,11 @@ impl AgentRunner {
 
         let mut exhausted_routes = std::collections::HashSet::new();
         let mut pending_failover_from: Option<ModelInfo> = None;
-        let mut last_rate_limit_error: Option<LlmError> = None;
+        let mut last_route_error: Option<LlmError> = None;
 
         loop {
             let Some(route_index) = self.select_model_route_index(ctx, &exhausted_routes) else {
-                let error = last_rate_limit_error.unwrap_or_else(|| {
+                let error = last_route_error.unwrap_or_else(|| {
                     LlmError::Unknown("No healthy model routes available".to_string())
                 });
                 Self::emit_llm_error(ctx.progress_tx, &error).await;
@@ -255,7 +265,23 @@ impl AgentRunner {
 
             let json_mode = self.requires_structured_output(&ctx.config);
             let provider_name = route.provider.clone();
-            let capabilities = LlmClient::provider_capabilities(&provider_name);
+            let capabilities = LlmClient::provider_capabilities_for_model(&route);
+
+            if !capabilities.can_run_agent_tools() {
+                let error = LlmError::ApiError(format!(
+                    "Tool-enabled agent calls are not supported for {} model `{}`",
+                    route.provider, route.id
+                ));
+                warn!(
+                    provider = route.provider,
+                    model = route.id,
+                    "Skipping model route due to unsupported tool capabilities"
+                );
+                exhausted_routes.insert(Self::route_key(&route));
+                pending_failover_from = Some(route.clone());
+                last_route_error = Some(error);
+                continue;
+            }
 
             for attempt in 1..=max_retries {
                 Self::refresh_messages_from_memory(ctx);
@@ -292,7 +318,7 @@ impl AgentRunner {
                         self.quarantine_model_route(&route, quarantine_for);
                         exhausted_routes.insert(Self::route_key(&route));
                         pending_failover_from = Some(route.clone());
-                        last_rate_limit_error = Some(error);
+                        last_route_error = Some(error);
                         break;
                     }
                 }
@@ -549,12 +575,8 @@ impl AgentRunner {
     }
 
     fn requires_structured_output(&self, config: &super::types::AgentRunnerConfig) -> bool {
-        if let Some(provider) = config.model_provider.as_deref() {
-            return !provider.eq_ignore_ascii_case("zai");
-        }
-
         match self.llm_client.get_model_info(&config.model_name) {
-            Ok(info) => !info.provider.eq_ignore_ascii_case("zai"),
+            Ok(info) => LlmClient::supports_structured_output_for_model(&info),
             Err(error) => {
                 warn!(
                     model = config.model_name,

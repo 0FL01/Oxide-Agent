@@ -776,7 +776,7 @@ impl AgentExecutor {
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
-        let structured_output = !model.provider.eq_ignore_ascii_case("zai");
+        let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
         let system_prompt = create_agent_system_prompt(
             task,
             &tools,
@@ -959,7 +959,7 @@ impl AgentExecutor {
             .tool_policy()
             .filter_definitions(registry.all_tools());
         let model = self.settings.get_configured_agent_model();
-        let structured_output = !model.provider.eq_ignore_ascii_case("zai");
+        let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
         let system_prompt = create_agent_system_prompt(
             &task,
             &tools,
