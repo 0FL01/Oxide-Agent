@@ -5,7 +5,7 @@ pub const DEFAULT_MAX_RESULTS: u8 = 5;
 pub const MAX_RESULTS_LIMIT: u8 = 10;
 pub const DEFAULT_PAGE: u16 = 1;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SearxngSearchArgs {
     pub query: String,
     #[serde(default = "default_max_results")]
@@ -55,6 +55,10 @@ pub struct SearxngSearchResponse {
     #[serde(default)]
     pub corrections: Vec<String>,
     pub number_of_results: Option<f64>,
+    /// Engines that timed out or failed during search.
+    /// Used internally for automatic engine rotation on retry.
+    #[serde(default, rename = "unresponsive_engines")]
+    pub unresponsive_engines: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

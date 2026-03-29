@@ -29,7 +29,11 @@ pub fn format_search_results(
         .take(max_results)
         .collect::<Vec<_>>();
     if results.is_empty() {
-        output.push_str("Search returned no results for this query.\n");
+        if response.unresponsive_engines.is_empty() {
+            output.push_str("Search returned no results for this query.\n");
+        } else {
+            output.push_str("Partial results: some engines were unavailable for this query.\n");
+        }
     } else {
         output.push_str("### Results\n\n");
         for (index, result) in results.iter().enumerate() {
@@ -99,9 +103,25 @@ mod tests {
             suggestions: Vec::new(),
             corrections: Vec::new(),
             number_of_results: Some(0.0),
+            unresponsive_engines: Vec::new(),
         };
 
         let formatted = format_search_results("rust", &response, 5);
         assert!(formatted.contains("Search returned no results"));
+    }
+
+    #[test]
+    fn formats_partial_results_when_engines_unavailable() {
+        let response = SearxngSearchResponse {
+            results: Vec::new(),
+            answers: Vec::new(),
+            suggestions: Vec::new(),
+            corrections: Vec::new(),
+            number_of_results: Some(0.0),
+            unresponsive_engines: vec!["google".to_string(), "bing".to_string()],
+        };
+
+        let formatted = format_search_results("rust", &response, 5);
+        assert!(formatted.contains("Partial results: some engines were unavailable"));
     }
 }
