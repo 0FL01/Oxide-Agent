@@ -71,11 +71,7 @@ impl LlmClient {
         };
         let media_model_name = media_model_id.clone();
 
-        let http_client = reqwest::Client::builder()
-            .pool_max_idle_per_host(10)
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .expect("Failed to create HTTP client");
+        let http_client = support::http::create_http_client();
 
         let mut providers = HashMap::new();
 

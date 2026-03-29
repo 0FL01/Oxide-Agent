@@ -1569,9 +1569,9 @@ pub fn is_searxng_enabled() -> bool {
 }
 
 // LLM HTTP client configuration
-/// Default timeout for LLM API HTTP requests (seconds)
-/// Keeps long-running model responses alive while preventing infinite hangs
-pub const LLM_HTTP_TIMEOUT_SECS: u64 = 300;
+/// Default timeout for LLM API HTTP requests (seconds).
+/// Short enough for responsive retries, long enough for slow models.
+pub const LLM_HTTP_TIMEOUT_SECS: u64 = 30;
 
 // Compaction configuration
 /// Default token budget reserved for recent tool interactions in hot memory.
