@@ -9,7 +9,7 @@ mod error;
 mod provider;
 /// Implementations of specific LLM providers
 pub mod providers;
-pub(crate) mod support;
+mod support;
 mod types;
 
 pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
@@ -18,7 +18,7 @@ pub use error::LlmError;
 pub use provider::LlmProvider;
 #[cfg(test)]
 pub use provider::MockLlmProvider;
-pub use support::http_utils;
+pub use support::http;
 pub use types::{
     ChatResponse, ChatWithToolsRequest, InvocationId, Message, ProviderItemId, ProviderToolCallId,
     TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition, ToolProtocol,

@@ -10,7 +10,7 @@ use crate::llm::providers::mistral::{
     types::{MISTRAL_REASONING_EFFORT, MISTRAL_REASONING_MODEL_ID},
 };
 use crate::llm::{
-    support::{http_utils::parse_retry_after, openai_compat},
+    support::{http::parse_retry_after, openai_compat},
     ChatResponse, ChatWithToolsRequest, LlmError, Message, ToolDefinition,
 };
 use async_openai::Client;

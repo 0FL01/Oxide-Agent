@@ -2,7 +2,7 @@ use crate::config::{
     GEMINI_AUDIO_TRANSCRIBE_PROMPT, GEMINI_AUDIO_TRANSCRIBE_TEMPERATURE, GEMINI_CHAT_TEMPERATURE,
     GEMINI_IMAGE_TEMPERATURE,
 };
-use crate::llm::support::http_utils::{extract_text_content, send_json_request};
+use crate::llm::support::http::{extract_text_content, send_json_request};
 use crate::llm::{LlmError, LlmProvider, Message};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -20,7 +20,7 @@ impl GeminiProvider {
     #[must_use]
     pub fn new(api_key: String) -> Self {
         Self {
-            http_client: crate::llm::support::http_utils::create_http_client(),
+            http_client: crate::llm::support::http::create_http_client(),
             api_key,
         }
     }

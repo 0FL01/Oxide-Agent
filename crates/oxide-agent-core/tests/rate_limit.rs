@@ -5,7 +5,7 @@
 //! 2. Retry-After headers are parsed correctly
 //! 3. Provider-specific rate limit info is extracted (OpenRouter X-RateLimit-Reset, ZAI flush time)
 
-use oxide_agent_core::llm::http_utils::parse_retry_after;
+use oxide_agent_core::llm::http::parse_retry_after;
 use oxide_agent_core::llm::providers::openrouter::parse_openrouter_rate_limit;
 use oxide_agent_core::llm::providers::parse_zai_flush_time;
 use reqwest::header::HeaderMap;

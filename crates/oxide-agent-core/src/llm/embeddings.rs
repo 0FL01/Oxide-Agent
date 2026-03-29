@@ -1,6 +1,6 @@
 //! OpenAI-compatible embedding provider.
 
-use super::{http_utils, LlmError};
+use super::{http, LlmError};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -25,7 +25,7 @@ impl EmbeddingProvider {
     #[must_use]
     pub fn new(api_key: String, api_base: String) -> Self {
         Self {
-            http_client: http_utils::create_http_client(),
+            http_client: http::create_http_client(),
             api_key,
             api_base,
         }
