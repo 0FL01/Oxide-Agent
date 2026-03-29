@@ -99,9 +99,8 @@ Default branch: `testing`.
 ### Sandbox и SSH infrastructure
 - Sandbox facade: `crates/oxide-agent-core/src/sandbox/manager.rs`; backends - direct Docker или broker через `sandbox/broker.rs`.
 - `SandboxScope` дает стабильную идентичность контейнера для persistent sandbox reuse.
-- SSH infrastructure topic-scoped: `ssh_mcp.rs`, `TopicInfraConfigRecord`, `TopicInfraAuthMode`, `TopicInfraToolMode`.
+- SSH tools: `exec`, `sudo_exec`, `read_file`, `apply_file_edit`, `check_process`, `ssh_send_file_to_user`.
 - Secret refs поддерживают `env:KEY` и `storage:PATH`; секреты не должны попадать в prompts или memory.
-- Разрешенные SSH tool modes включают `exec`, `sudo_exec`, `read_file`, `apply_file_edit`, `check_process`.
 - `recreate_sandbox` - exclusive lock, reset workspace; blocked для sub-agents.
 
 ### Approval flow
@@ -132,12 +131,14 @@ Default branch: `testing`.
 - Tests: `storage/tests/`.
 
 ### LLM
-- Providers: `gemini`, `groq`, `mistral`, `minimax/`, `openrouter`, `zai`.
+- Providers: `gemini`, `groq`, `mistral`, `minimax/`, `nvidia`, `openrouter`, `zai`.
 - HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
 - Voice transcription: `voxtral` (Mistral) с retry backoff (5 attempts, 3s→48s).
+- NVIDIA NIM provider: `nvidia/llama-3.3-nemotron-super-49b-v1`, `nvidia/nemotron-mini`, `minimaxai/minimax-m*`.
+- LLM module structure: `capabilities.rs` (model capabilities), `client.rs` (HTTP orchestration), `support/` (backoff, history, http utils), `types.rs` (domain types).
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md.
+- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (включая `ssh_send_file_to_user`), yt-dlp, reminders, agents_md, TTS (Kokoro EN + Silero RU).
 - Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport
