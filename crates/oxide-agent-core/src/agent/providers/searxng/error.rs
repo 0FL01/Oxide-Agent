@@ -37,22 +37,28 @@ impl SearxngError {
     /// - Client errors (4xx) → configuration hint  
     /// - Other failures → generic message
     #[must_use]
-    pub fn agent_message(&self) -> &'static str {
+    pub fn agent_message(&self) -> String {
         match self {
-            Self::EmptyQuery => "Search query cannot be empty",
+            Self::EmptyQuery => "Search query cannot be empty".to_string(),
             Self::HttpStatus { status, .. } => {
                 if status.is_client_error() {
-                    "Search configuration error"
+                    "Search configuration error".to_string()
                 } else {
                     // 5xx, 429, or other server-side issues
-                    "Search temporarily unavailable, please try again in a moment"
+                    "Search temporarily unavailable, please try again in a moment".to_string()
                 }
             }
             Self::Request(err) => {
                 if err.is_timeout() || err.is_connect() {
-                    "Search temporarily unavailable, please try again in a moment"
+                    "Search temporarily unavailable, please try again in a moment".to_string()
+                } else if err.is_decode() {
+                    "Search request failed (invalid provider response format)".to_string()
+                } else if err.is_body() {
+                    "Search request failed (response body read error)".to_string()
+                } else if err.is_request() {
+                    "Search request failed (request construction error)".to_string()
                 } else {
-                    "Search request failed"
+                    "Search request failed (transport error)".to_string()
                 }
             }
         }

@@ -890,6 +890,12 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::env;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_mutex() -> &'static Mutex<()> {
+        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
 
     // Tests run sequentially to avoid environment variable race conditions
     #[test]
@@ -1143,6 +1149,40 @@ mod tests {
         assert!(is_searxng_enabled());
 
         env::remove_var("SEARXNG_URL");
+    }
+
+    #[test]
+    fn searxng_rotation_engines_use_defaults_when_env_missing() {
+        let _guard = env_mutex().lock().expect("env mutex poisoned");
+        env::remove_var("SEARXNG_ROTATION_ENGINES");
+
+        assert_eq!(
+            get_searxng_rotation_engines(),
+            vec![
+                "brave".to_string(),
+                "bing".to_string(),
+                "qwant".to_string(),
+                "mojeek".to_string(),
+                "yandex".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn searxng_rotation_engines_parse_csv() {
+        let _guard = env_mutex().lock().expect("env mutex poisoned");
+        env::set_var("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
+
+        assert_eq!(
+            get_searxng_rotation_engines(),
+            vec![
+                "bing".to_string(),
+                "qwant".to_string(),
+                "yandex".to_string()
+            ]
+        );
+
+        env::remove_var("SEARXNG_ROTATION_ENGINES");
     }
 }
 
@@ -1430,6 +1470,9 @@ pub const TRANSPORT_API_MAX_BACKOFF_MS: u64 = 4000;
 // Crawl4AI HTTP client configuration
 /// Default timeout for SearXNG requests (seconds)
 pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Default engines used for SearXNG rotation fallback.
+pub const SEARXNG_DEFAULT_ROTATION_ENGINES: &[&str] =
+    &["brave", "bing", "qwant", "mojeek", "yandex"];
 
 /// Default timeout for Crawl4AI requests (seconds)
 pub const CRAWL4AI_DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -1463,6 +1506,33 @@ pub fn get_searxng_timeout() -> u64 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(SEARXNG_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get preferred engines for SearXNG rotation from env or defaults.
+///
+/// Environment variable: `SEARXNG_ROTATION_ENGINES`
+/// Value format: comma-separated engine names, for example "bing,qwant,yandex".
+#[must_use]
+pub fn get_searxng_rotation_engines() -> Vec<String> {
+    let parsed = std::env::var("SEARXNG_ROTATION_ENGINES")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if parsed.is_empty() {
+        SEARXNG_DEFAULT_ROTATION_ENGINES
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect()
+    } else {
+        parsed
+    }
 }
 
 /// Get Crawl4AI base URL from env.
