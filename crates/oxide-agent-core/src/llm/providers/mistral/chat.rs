@@ -10,8 +10,8 @@ use crate::llm::providers::mistral::{
     types::{MISTRAL_REASONING_EFFORT, MISTRAL_REASONING_MODEL_ID},
 };
 use crate::llm::{
-    support::http::parse_retry_after, ChatResponse, ChatWithToolsRequest, LlmError, Message,
-    ToolDefinition,
+    support::http::{parse_retry_after, APP_USER_AGENT},
+    ChatResponse, ChatWithToolsRequest, LlmError, Message, ToolDefinition,
 };
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
@@ -137,6 +137,7 @@ pub async fn send_chat_request_with_mapping(
     let response = http_client
         .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
+        .header("User-Agent", APP_USER_AGENT)
         .json(&body)
         .send()
         .await

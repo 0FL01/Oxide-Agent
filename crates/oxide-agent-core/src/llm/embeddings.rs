@@ -3,6 +3,8 @@
 use super::{http, LlmError};
 use serde::Deserialize;
 
+use super::support::http::APP_USER_AGENT;
+
 #[derive(Deserialize)]
 struct EmbeddingData {
     embedding: Vec<f32>,
@@ -45,6 +47,7 @@ impl EmbeddingProvider {
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
+            .header("User-Agent", APP_USER_AGENT)
             .json(&body)
             .send()
             .await

@@ -126,6 +126,8 @@ impl LlmProvider for OpenRouterProvider {
         if !self.site_name.is_empty() {
             request = request.header("X-Title", &self.site_name);
         }
+        // OpenRouter-specific app attribution (2025 header)
+        request = request.header("X-OpenRouter-Title", "Oxide Agent");
 
         let response = request
             .json(&body)
@@ -268,6 +270,8 @@ impl LlmProvider for OpenRouterProvider {
         if !self.site_name.is_empty() {
             extra_headers.push(("X-Title", self.site_name.as_str()));
         }
+        // OpenRouter-specific app attribution (2025 header)
+        extra_headers.push(("X-OpenRouter-Title", "Oxide Agent"));
 
         let auth = format!("Bearer {}", self.api_key);
         let res_json =
