@@ -1,6 +1,6 @@
 use crate::config::NVIDIA_CHAT_TEMPERATURE;
-use crate::llm::http_utils::{extract_text_content, send_json_request};
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
+use crate::llm::support::http_utils::{extract_text_content, send_json_request};
 use crate::llm::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage, ToolCall,
     ToolDefinition,
@@ -20,7 +20,7 @@ impl NvidiaProvider {
     #[must_use]
     pub fn new(api_key: String, api_base: String) -> Self {
         Self {
-            http_client: crate::llm::http_utils::create_http_client(),
+            http_client: crate::llm::support::http_utils::create_http_client(),
             api_key,
             api_base,
         }

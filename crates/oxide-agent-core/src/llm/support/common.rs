@@ -3,7 +3,7 @@
 //! Shared helper functions for building messages, handling errors,
 //! and parsing responses across all LLM providers.
 
-use super::{LlmError, Message};
+use super::super::{LlmError, Message};
 use async_openai::types::chat::{
     ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,

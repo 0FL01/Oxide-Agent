@@ -4,17 +4,13 @@
 
 mod capabilities;
 mod client;
-mod common;
 pub mod embeddings;
 mod error;
-pub mod http_utils;
-mod openai_compat;
 mod provider;
 /// Implementations of specific LLM providers
 pub mod providers;
-mod retry;
+pub(crate) mod support;
 mod types;
-mod validation;
 
 pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
 pub use client::LlmClient;
@@ -22,6 +18,7 @@ pub use error::LlmError;
 pub use provider::LlmProvider;
 #[cfg(test)]
 pub use provider::MockLlmProvider;
+pub use support::http_utils;
 pub use types::{
     ChatResponse, ChatWithToolsRequest, InvocationId, Message, ProviderItemId, ProviderToolCallId,
     TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition, ToolProtocol,

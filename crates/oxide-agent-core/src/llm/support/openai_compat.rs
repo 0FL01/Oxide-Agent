@@ -3,14 +3,11 @@
 //! Shared implementation for providers using the async-openai client
 //! (Groq, Mistral, Zai).
 
+use super::super::{LlmError, Message};
 use super::common::{build_openai_messages, extract_openai_response};
-use super::{LlmError, Message};
 use async_openai::{config::OpenAIConfig, types::chat::CreateChatCompletionRequestArgs, Client};
 
 /// Perform a chat completion using an OpenAI-compatible API
-///
-/// This is a shared implementation for Groq, Mistral, and Zai providers
-/// which all use the same async-openai client with different base URLs.
 pub async fn chat_completion(
     client: &Client<OpenAIConfig>,
     system_prompt: &str,

@@ -1,5 +1,5 @@
 use crate::config::GROQ_CHAT_TEMPERATURE;
-use crate::llm::{openai_compat, LlmError, LlmProvider, Message};
+use crate::llm::{support::openai_compat, LlmError, LlmProvider, Message};
 use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;
 

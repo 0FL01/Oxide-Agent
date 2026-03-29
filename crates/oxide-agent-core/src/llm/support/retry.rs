@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::LlmError;
+use super::super::LlmError;
 
 /// Maximum number of retry attempts for LLM calls.
 pub const MAX_RETRIES: usize = 5;
@@ -58,13 +58,11 @@ pub fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<Duration> {
     }
 }
 
-/// Returns true if the error is retryable.
 #[must_use]
 pub fn is_retryable_error(error: &LlmError) -> bool {
     get_retry_delay(error, 1).is_some()
 }
 
-/// Returns true if the error is a rate limit (429 or RateLimit variant).
 #[must_use]
 pub fn is_rate_limit_error(error: &LlmError) -> bool {
     match error {
@@ -74,7 +72,6 @@ pub fn is_rate_limit_error(error: &LlmError) -> bool {
     }
 }
 
-/// Returns the wait time in seconds from a rate limit error, if available.
 #[must_use]
 pub fn get_rate_limit_wait_secs(error: &LlmError) -> Option<u64> {
     match error {
@@ -83,8 +80,6 @@ pub fn get_rate_limit_wait_secs(error: &LlmError) -> Option<u64> {
     }
 }
 
-/// Calculates the delay before the next retry attempt based on the error type and initial backoff.
-/// Returns `None` if the error is not retryable.
 pub(crate) fn get_retry_delay_with_initial(
     error: &LlmError,
     attempt: usize,

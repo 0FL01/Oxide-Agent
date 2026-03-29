@@ -15,7 +15,7 @@
 
 use crate::config::MISTRAL_CHAT_TEMPERATURE;
 use crate::llm::{
-    openai_compat, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
+    support::openai_compat, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
 };
 use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;

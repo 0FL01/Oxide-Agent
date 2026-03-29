@@ -9,7 +9,7 @@
 //! - voxtral-mini-realtime-26-02 (streaming)
 
 use crate::config::MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE;
-use crate::llm::http_utils::parse_retry_after;
+use crate::llm::support::http_utils::parse_retry_after;
 use crate::llm::LlmError;
 use reqwest::{
     multipart::{Form, Part},
