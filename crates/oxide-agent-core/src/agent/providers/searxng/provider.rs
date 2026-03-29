@@ -108,7 +108,7 @@ impl ToolProvider for SearxngProvider {
             TOOL_NAME => {
                 let args: SearxngSearchArgs = match serde_json::from_str(arguments) {
                     Ok(args) => args,
-                    Err(error) => return Ok(format!("Invalid arguments: {error}")),
+                    Err(_) => return Ok("Invalid search arguments".to_string()),
                 };
 
                 debug!(

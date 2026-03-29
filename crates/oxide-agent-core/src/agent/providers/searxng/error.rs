@@ -32,12 +32,29 @@ impl SearxngError {
     }
 
     /// Returns a short, agent-friendly error message (no HTTP bodies or status codes).
+    ///
+    /// - Transient errors (429, 5xx, timeouts) → retry suggestion
+    /// - Client errors (4xx) → configuration hint  
+    /// - Other failures → generic message
     #[must_use]
     pub fn agent_message(&self) -> &'static str {
-        if self.is_retryable() {
-            "Search temporarily unavailable, please try again in a moment"
-        } else {
-            "Search request failed"
+        match self {
+            Self::EmptyQuery => "Search query cannot be empty",
+            Self::HttpStatus { status, .. } => {
+                if status.is_client_error() {
+                    "Search configuration error"
+                } else {
+                    // 5xx, 429, or other server-side issues
+                    "Search temporarily unavailable, please try again in a moment"
+                }
+            }
+            Self::Request(err) => {
+                if err.is_timeout() || err.is_connect() {
+                    "Search temporarily unavailable, please try again in a moment"
+                } else {
+                    "Search request failed"
+                }
+            }
         }
     }
 }
