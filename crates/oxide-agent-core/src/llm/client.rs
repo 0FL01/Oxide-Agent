@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tracing::{debug, info, instrument, trace, warn};
 
 use super::{
-    capabilities, embeddings, providers, retry, validation, ChatResponse, ChatWithToolsRequest,
-    LlmError, LlmProvider, Message, ProviderCapabilities, ToolDefinition,
+    capabilities, embeddings, providers, support, ChatResponse, ChatWithToolsRequest, LlmError,
+    LlmProvider, Message, ProviderCapabilities, ToolDefinition,
 };
 
 /// Unified client for interacting with multiple LLM providers
@@ -321,7 +321,7 @@ impl LlmClient {
             )));
         }
 
-        validation::validate_tool_history(messages, capabilities)?;
+        support::validation::validate_tool_history(messages, capabilities)?;
 
         debug!(
             model = model_info.id,
@@ -398,7 +398,7 @@ impl LlmClient {
             )));
         }
 
-        validation::validate_tool_history(messages, capabilities)?;
+        support::validation::validate_tool_history(messages, capabilities)?;
 
         let provider = self.get_provider(&model_info.provider)?;
 
@@ -480,27 +480,27 @@ impl LlmClient {
     }
 
     /// Maximum number of retry attempts for LLM calls.
-    pub const MAX_RETRIES: usize = retry::MAX_RETRIES;
+    pub const MAX_RETRIES: usize = support::retry::MAX_RETRIES;
 
     /// Calculates the delay before the next retry attempt based on the error type.
     /// Returns `None` if the error is not retryable.
     pub fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<std::time::Duration> {
-        retry::get_retry_delay(error, attempt)
+        support::retry::get_retry_delay(error, attempt)
     }
 
     /// Returns true if the error is retryable.
     pub fn is_retryable_error(error: &LlmError) -> bool {
-        retry::is_retryable_error(error)
+        support::retry::is_retryable_error(error)
     }
 
     /// Returns true if the error is a rate limit (429 or RateLimit variant).
     pub fn is_rate_limit_error(error: &LlmError) -> bool {
-        retry::is_rate_limit_error(error)
+        support::retry::is_rate_limit_error(error)
     }
 
     /// Returns the wait time in seconds from a rate limit error, if available.
     pub fn get_rate_limit_wait_secs(error: &LlmError) -> Option<u64> {
-        retry::get_rate_limit_wait_secs(error)
+        support::retry::get_rate_limit_wait_secs(error)
     }
 
     /// Generate an embedding vector using configured provider.
@@ -653,9 +653,11 @@ impl LlmClient {
                 }
                 Err(e) => {
                     if attempt < Self::MAX_RETRIES {
-                        if let Some(backoff) =
-                            retry::get_retry_delay_with_initial(&e, attempt, initial_backoff_ms)
-                        {
+                        if let Some(backoff) = support::retry::get_retry_delay_with_initial(
+                            &e,
+                            attempt,
+                            initial_backoff_ms,
+                        ) {
                             warn!(
                                 "{} failed (attempt {}/{}): {}, retrying after {:?}",
                                 context,

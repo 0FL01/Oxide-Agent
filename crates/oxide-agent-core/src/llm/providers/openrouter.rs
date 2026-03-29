@@ -4,7 +4,7 @@ use crate::config::{
     OPENROUTER_AUDIO_TRANSCRIBE_PROMPT, OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE,
     OPENROUTER_CHAT_TEMPERATURE, OPENROUTER_IMAGE_TEMPERATURE,
 };
-use crate::llm::http_utils::{extract_text_content, send_json_request};
+use crate::llm::support::http_utils::{extract_text_content, send_json_request};
 use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -26,7 +26,7 @@ impl OpenRouterProvider {
     #[must_use]
     pub fn new(api_key: String, site_url: String, site_name: String) -> Self {
         Self {
-            http_client: crate::llm::http_utils::create_http_client(),
+            http_client: crate::llm::support::http_utils::create_http_client(),
             api_key,
             site_url,
             site_name,

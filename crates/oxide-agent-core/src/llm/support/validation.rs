@@ -1,8 +1,7 @@
 use std::collections::HashSet;
 
-use super::{InvocationId, LlmError, Message, ProviderCapabilities, ToolCallCorrelation};
+use super::super::{InvocationId, LlmError, Message, ProviderCapabilities, ToolCallCorrelation};
 
-/// Extract and validate invocation IDs from an assistant message's tool calls.
 fn extract_expected_invocation_ids(message: &Message) -> Result<HashSet<InvocationId>, LlmError> {
     let mut expected_ids = HashSet::new();
 
@@ -33,7 +32,6 @@ fn extract_expected_invocation_ids(message: &Message) -> Result<HashSet<Invocati
     Ok(expected_ids)
 }
 
-/// Validate a sequence of tool result messages following an assistant batch.
 fn validate_tool_result_sequence(
     messages: &[Message],
     start_index: usize,
@@ -83,7 +81,6 @@ fn validate_tool_result_sequence(
     Ok((cursor, seen_results))
 }
 
-/// Check batch completion policy and return error if incomplete.
 fn check_batch_completion(
     cursor: usize,
     messages_len: usize,
@@ -106,7 +103,6 @@ fn check_batch_completion(
     Ok(())
 }
 
-/// Generate error detail for an orphaned tool result message.
 fn orphaned_tool_result_error(message: &Message) -> LlmError {
     let detail = message
         .resolved_tool_call_correlation()
