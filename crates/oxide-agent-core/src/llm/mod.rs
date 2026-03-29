@@ -667,6 +667,7 @@ pub struct LlmClient {
     minimax: Option<providers::MiniMaxProvider>,
     zai: Option<providers::ZaiProvider>,
     gemini: Option<providers::GeminiProvider>,
+    nvidia: Option<providers::NvidiaProvider>,
     openrouter: Option<providers::OpenRouterProvider>,
     embedding: Option<(embeddings::EmbeddingProvider, String)>,
     custom_providers: HashMap<String, Arc<dyn LlmProvider>>,
@@ -751,6 +752,13 @@ impl LlmClient {
                 .gemini_api_key
                 .as_ref()
                 .map(|k| providers::GeminiProvider::new(k.clone())),
+            nvidia: settings.nvidia_api_key.as_ref().map(|k| {
+                providers::NvidiaProvider::new_with_client(
+                    k.clone(),
+                    settings.nvidia_api_base.clone(),
+                    http_client.clone(),
+                )
+            }),
             openrouter: settings.openrouter_api_key.as_ref().map(|k| {
                 providers::OpenRouterProvider::new_with_client(
                     k.clone(),
@@ -810,6 +818,9 @@ impl LlmClient {
         if name.eq_ignore_ascii_case("gemini") {
             return self.gemini.is_some();
         }
+        if name.eq_ignore_ascii_case("nvidia") {
+            return self.nvidia.is_some();
+        }
         if name.eq_ignore_ascii_case("openrouter") {
             return self.openrouter.is_some();
         }
@@ -831,6 +842,7 @@ impl LlmClient {
             "minimax" => self.minimax.as_ref().map(|p| p as &dyn LlmProvider),
             "zai" => self.zai.as_ref().map(|p| p as &dyn LlmProvider),
             "gemini" => self.gemini.as_ref().map(|p| p as &dyn LlmProvider),
+            "nvidia" => self.nvidia.as_ref().map(|p| p as &dyn LlmProvider),
             "openrouter" => self.openrouter.as_ref().map(|p| p as &dyn LlmProvider),
             _ => None,
         }

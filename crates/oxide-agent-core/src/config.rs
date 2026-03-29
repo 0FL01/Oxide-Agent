@@ -30,6 +30,8 @@ pub const GEMINI_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 pub const GEMINI_IMAGE_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for OpenRouter chat completions.
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
+/// Default temperature used for NVIDIA NIM chat completions.
+pub const NVIDIA_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for MiniMax chat completions.
 pub const MINIMAX_CHAT_TEMPERATURE: f32 = 1.0;
 /// Temperature used when MiniMax runs tool-enabled chat requests.
@@ -73,6 +75,8 @@ pub struct AgentSettings {
     pub gemini_api_key: Option<String>,
     /// `OpenRouter` API key
     pub openrouter_api_key: Option<String>,
+    /// `NVIDIA NIM` API key
+    pub nvidia_api_key: Option<String>,
     /// Tavily API key
     pub tavily_api_key: Option<String>,
     /// Enable Tavily tool provider registration.
@@ -111,6 +115,9 @@ pub struct AgentSettings {
     /// Site name for `OpenRouter` identification
     #[serde(default = "default_openrouter_site_name")]
     pub openrouter_site_name: String,
+    /// `NVIDIA NIM` API base URL
+    #[serde(default = "default_nvidia_api_base")]
+    pub nvidia_api_base: String,
 
     /// Default system message
     pub system_message: Option<String>,
@@ -195,6 +202,10 @@ fn default_r2_region() -> String {
 
 fn default_zai_api_base() -> String {
     "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string()
+}
+
+fn default_nvidia_api_base() -> String {
+    "https://integrate.api.nvidia.com/v1".to_string()
 }
 
 fn default_openrouter_site_name() -> String {
