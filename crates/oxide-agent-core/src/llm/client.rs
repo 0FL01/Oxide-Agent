@@ -321,7 +321,7 @@ impl LlmClient {
             )));
         }
 
-        support::validation::validate_tool_history(messages, capabilities)?;
+        support::history::validate_tool_history(messages, capabilities)?;
 
         debug!(
             model = model_info.id,
@@ -398,7 +398,7 @@ impl LlmClient {
             )));
         }
 
-        support::validation::validate_tool_history(messages, capabilities)?;
+        support::history::validate_tool_history(messages, capabilities)?;
 
         let provider = self.get_provider(&model_info.provider)?;
 
@@ -480,27 +480,27 @@ impl LlmClient {
     }
 
     /// Maximum number of retry attempts for LLM calls.
-    pub const MAX_RETRIES: usize = support::retry::MAX_RETRIES;
+    pub const MAX_RETRIES: usize = support::backoff::MAX_RETRIES;
 
     /// Calculates the delay before the next retry attempt based on the error type.
     /// Returns `None` if the error is not retryable.
     pub fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<std::time::Duration> {
-        support::retry::get_retry_delay(error, attempt)
+        support::backoff::get_retry_delay(error, attempt)
     }
 
     /// Returns true if the error is retryable.
     pub fn is_retryable_error(error: &LlmError) -> bool {
-        support::retry::is_retryable_error(error)
+        support::backoff::is_retryable_error(error)
     }
 
     /// Returns true if the error is a rate limit (429 or RateLimit variant).
     pub fn is_rate_limit_error(error: &LlmError) -> bool {
-        support::retry::is_rate_limit_error(error)
+        support::backoff::is_rate_limit_error(error)
     }
 
     /// Returns the wait time in seconds from a rate limit error, if available.
     pub fn get_rate_limit_wait_secs(error: &LlmError) -> Option<u64> {
-        support::retry::get_rate_limit_wait_secs(error)
+        support::backoff::get_rate_limit_wait_secs(error)
     }
 
     /// Generate an embedding vector using configured provider.
@@ -653,7 +653,7 @@ impl LlmClient {
                 }
                 Err(e) => {
                     if attempt < Self::MAX_RETRIES {
-                        if let Some(backoff) = support::retry::get_retry_delay_with_initial(
+                        if let Some(backoff) = support::backoff::get_retry_delay_with_initial(
                             &e,
                             attempt,
                             initial_backoff_ms,
