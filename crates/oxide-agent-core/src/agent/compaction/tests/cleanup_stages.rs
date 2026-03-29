@@ -2,6 +2,7 @@ use super::fixtures::{
     cleanup_policy, manual_request, pre_iteration_request, ErrorPayloadSink, RecordingArchiveSink,
     RecordingPayloadSink,
 };
+use crate::agent::compaction::CompactionPolicy;
 use crate::agent::memory::AgentMessage;
 use crate::agent::{AgentContext, CompactionService, EphemeralSession};
 use crate::llm::{ToolCall, ToolCallFunction};
@@ -270,4 +271,68 @@ async fn cleanup_leaves_message_untouched_when_payload_sink_errors() {
     assert!(!tool_message.is_externalized());
     assert!(!tool_message.is_pruned());
     assert!(archive_sink.records().is_empty());
+}
+
+#[tokio::test]
+async fn cleanup_collapses_failed_retry_chain_before_success() {
+    let service = CompactionService::new(CompactionPolicy {
+        externalize_threshold_tokens: usize::MAX,
+        externalize_threshold_chars: usize::MAX,
+        prune_min_tokens: usize::MAX,
+        prune_min_chars: usize::MAX,
+        protected_tool_window_tokens: 1,
+        ..CompactionPolicy::default()
+    });
+    let mut session = EphemeralSession::new(20_000);
+
+    for message in [
+        AgentMessage::assistant_with_tools(
+            "Call grep attempt 1",
+            vec![tool_call("call-1", "execute_command")],
+        ),
+        AgentMessage::tool(
+            "call-1",
+            "execute_command",
+            "Command failed (exit code 2): grep: invalid option -- 'Q'",
+        ),
+        AgentMessage::assistant_with_tools(
+            "Call grep attempt 2",
+            vec![tool_call("call-2", "execute_command")],
+        ),
+        AgentMessage::tool(
+            "call-2",
+            "execute_command",
+            "Command failed (exit code 2): grep: invalid option -- 'P'",
+        ),
+        AgentMessage::assistant_with_tools(
+            "Call grep attempt 3",
+            vec![tool_call("call-3", "execute_command")],
+        ),
+        AgentMessage::tool("call-3", "execute_command", "src/main.rs\nsrc/lib.rs"),
+        AgentMessage::assistant_with_tools(
+            "Keep recent raw window",
+            vec![tool_call("call-4", "search")],
+        ),
+        AgentMessage::tool("call-4", "search", "recent result"),
+    ] {
+        session.memory_mut().add_message(message);
+    }
+
+    let outcome = service
+        .prepare_for_run(&manual_request("Collapse stale retries"), &mut session)
+        .await
+        .expect("cleanup succeeds");
+
+    assert!(outcome.applied);
+    assert!(outcome.error_retry_collapse.applied);
+    assert_eq!(outcome.error_retry_collapse.collapsed_attempt_count, 2);
+    assert_eq!(
+        outcome.error_retry_collapse.dropped_indices,
+        vec![0, 1, 2, 3]
+    );
+
+    let messages = session.memory().get_messages();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0].content, "Call grep attempt 3");
+    assert_eq!(messages[1].content, "src/main.rs\nsrc/lib.rs");
 }
