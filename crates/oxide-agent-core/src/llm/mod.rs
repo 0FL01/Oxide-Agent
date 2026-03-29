@@ -596,9 +596,27 @@ pub enum ToolHistoryMode {
 pub struct ProviderCapabilities {
     /// Tool history matching mode enforced before a request is sent.
     pub tool_history_mode: ToolHistoryMode,
+    /// Whether the model/provider supports tool-enabled agent calls.
+    pub supports_tool_calling: bool,
+    /// Whether structured output should be enabled for this route.
+    pub supports_structured_output: bool,
 }
 
 impl ProviderCapabilities {
+    #[must_use]
+    /// Build capabilities for one provider/model route.
+    pub const fn new(
+        tool_history_mode: ToolHistoryMode,
+        supports_tool_calling: bool,
+        supports_structured_output: bool,
+    ) -> Self {
+        Self {
+            tool_history_mode,
+            supports_tool_calling,
+            supports_structured_output,
+        }
+    }
+
     #[must_use]
     /// Returns true when the provider expects exact tool-call/result matching.
     pub const fn strict_tool_history(self) -> bool {
@@ -612,6 +630,18 @@ impl ProviderCapabilities {
             ToolHistoryMode::BestEffort => "best_effort",
             ToolHistoryMode::Strict => "strict",
         }
+    }
+
+    #[must_use]
+    /// Returns true when the route can participate in the agent tool loop.
+    pub const fn can_run_agent_tools(self) -> bool {
+        self.supports_tool_calling
+    }
+
+    #[must_use]
+    /// Returns true when structured-output prompts and parsing should stay enabled.
+    pub const fn should_use_structured_output(self) -> bool {
+        self.supports_structured_output
     }
 }
 
@@ -963,7 +993,14 @@ impl LlmClient {
     ) -> Result<ChatResponse, LlmError> {
         // Get provider and call its chat_with_tools method (via trait)
         let provider = self.get_provider(&model_info.provider)?;
-        let capabilities = Self::provider_capabilities(&model_info.provider);
+        let capabilities = Self::provider_capabilities_for_model(model_info);
+
+        if !capabilities.can_run_agent_tools() {
+            return Err(LlmError::ApiError(format!(
+                "Tool-enabled agent calls are not supported for {} model `{}`",
+                model_info.provider, model_info.id
+            )));
+        }
 
         validate_tool_history(messages, capabilities)?;
 
@@ -996,12 +1033,36 @@ impl LlmClient {
     /// Returns request-side capabilities for the named provider.
     #[must_use]
     pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
-        let tool_history_mode = match provider_name.to_ascii_lowercase().as_str() {
-            "minimax" | "mistral" => ToolHistoryMode::Strict,
-            _ => ToolHistoryMode::BestEffort,
-        };
+        match provider_name.to_ascii_lowercase().as_str() {
+            "minimax" | "mistral" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
+            "zai" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
+            "groq" | "gemini" => {
+                ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, true)
+            }
+            _ => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
+        }
+    }
 
-        ProviderCapabilities { tool_history_mode }
+    #[must_use]
+    /// Returns capabilities for a specific configured model route.
+    pub fn provider_capabilities_for_model(
+        model_info: &crate::config::ModelInfo,
+    ) -> ProviderCapabilities {
+        let mut capabilities = Self::provider_capabilities(&model_info.provider);
+
+        if model_info.provider.eq_ignore_ascii_case("nvidia") {
+            let model_capabilities = providers::nvidia::model_capabilities(&model_info.id);
+            capabilities.supports_tool_calling = model_capabilities.supports_tool_calling;
+            capabilities.supports_structured_output = model_capabilities.supports_structured_output;
+        }
+
+        capabilities
+    }
+
+    #[must_use]
+    /// Returns whether structured output should be used for a specific model route.
+    pub fn supports_structured_output_for_model(model_info: &crate::config::ModelInfo) -> bool {
+        Self::provider_capabilities_for_model(model_info).should_use_structured_output()
     }
 
     /// Chat completion with tool calling support (for agent mode)
@@ -1027,7 +1088,14 @@ impl LlmClient {
         const MAX_RETRIES: usize = 5;
 
         let model_info = self.get_model_info(model_name)?;
-        let capabilities = Self::provider_capabilities(&model_info.provider);
+        let capabilities = Self::provider_capabilities_for_model(&model_info);
+
+        if !capabilities.can_run_agent_tools() {
+            return Err(LlmError::ApiError(format!(
+                "Tool-enabled agent calls are not supported for {} model `{}`",
+                model_info.provider, model_info.id
+            )));
+        }
 
         validate_tool_history(messages, capabilities)?;
 
@@ -1141,9 +1209,14 @@ impl LlmClient {
                 }
 
                 if msg_lower.contains("500")
+                    || msg_lower.contains("internal server error")
                     || msg_lower.contains("502")
+                    || msg_lower.contains("bad gateway")
                     || msg_lower.contains("503")
+                    || msg_lower.contains("service unavailable")
                     || msg_lower.contains("504")
+                    || msg_lower.contains("gateway timeout")
+                    || msg_lower.contains("temporarily unavailable")
                     || msg_lower.contains("timeout")
                     || msg_lower.contains("overloaded")
                 {
@@ -1617,7 +1690,7 @@ fn has_empty_explicit_provider_tool_call_id(correlation: &ToolCallCorrelation) -
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_tool_history, InvocationId, LlmError, Message, ProviderCapabilities,
+        validate_tool_history, InvocationId, LlmClient, LlmError, Message, ProviderCapabilities,
         ProviderItemId, ProviderToolCallId, ToolCall, ToolCallCorrelation, ToolCallFunction,
         ToolHistoryMode, ToolProtocol, ToolTransport,
     };
@@ -1643,9 +1716,7 @@ mod tests {
 
         let error = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::Strict,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         )
         .expect_err("history must be rejected");
         assert!(matches!(error, LlmError::RepairableHistory(_)));
@@ -1666,9 +1737,7 @@ mod tests {
 
         let error = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::Strict,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         )
         .expect_err("history must be rejected");
         assert!(matches!(error, LlmError::RepairableHistory(_)));
@@ -1686,9 +1755,7 @@ mod tests {
 
         let error = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::Strict,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         )
         .expect_err("history must be rejected");
 
@@ -1705,9 +1772,7 @@ mod tests {
 
         let error = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::Strict,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         )
         .expect_err("history must be rejected");
 
@@ -1729,9 +1794,7 @@ mod tests {
 
         let result = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::BestEffort,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
         );
 
         assert!(
@@ -1756,9 +1819,7 @@ mod tests {
 
         let error = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::BestEffort,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
         )
         .expect_err("history must be rejected");
         assert!(matches!(error, LlmError::RepairableHistory(_)));
@@ -1942,9 +2003,7 @@ mod tests {
 
         let result = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::Strict,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         );
 
         assert!(
@@ -1969,9 +2028,7 @@ mod tests {
 
         let error = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::Strict,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         )
         .expect_err("history must be rejected");
 
@@ -2007,12 +2064,44 @@ mod tests {
 
         let error = validate_tool_history(
             &messages,
-            ProviderCapabilities {
-                tool_history_mode: ToolHistoryMode::Strict,
-            },
+            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         )
         .expect_err("history must be rejected");
 
         assert!(matches!(error, LlmError::RepairableHistory(_)));
+    }
+
+    #[test]
+    fn provider_capabilities_for_nvidia_model_apply_model_specific_overrides() {
+        let supported = crate::config::ModelInfo {
+            id: "meta/llama-3.1-70b-instruct".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "nvidia".to_string(),
+            weight: 1,
+        };
+        let unsupported = crate::config::ModelInfo {
+            id: "deepseek-ai/deepseek-r1".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "nvidia".to_string(),
+            weight: 1,
+        };
+
+        let supported_capabilities = LlmClient::provider_capabilities_for_model(&supported);
+        let unsupported_capabilities = LlmClient::provider_capabilities_for_model(&unsupported);
+
+        assert!(supported_capabilities.supports_tool_calling);
+        assert!(supported_capabilities.supports_structured_output);
+        assert!(!unsupported_capabilities.supports_tool_calling);
+        assert!(!unsupported_capabilities.supports_structured_output);
+    }
+
+    #[test]
+    fn retry_delay_treats_service_unavailable_text_as_retryable() {
+        let error = LlmError::ApiError("NVIDIA NIM API error: service unavailable".to_string());
+        let delay = LlmClient::get_retry_delay(&error, 2).expect("retry delay");
+
+        assert_eq!(delay, std::time::Duration::from_millis(2000));
     }
 }

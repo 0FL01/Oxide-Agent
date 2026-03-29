@@ -388,7 +388,7 @@ impl DelegationProvider {
         let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
         let registry = self.build_registry(&allowed, providers);
         let tools = registry.all_tools();
-        let structured_output = !model.provider.eq_ignore_ascii_case("zai");
+        let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
         let system_prompt = create_sub_agent_system_prompt(
             task.as_str(),
             &tools,

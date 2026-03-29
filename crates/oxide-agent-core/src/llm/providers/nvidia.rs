@@ -40,6 +40,53 @@ impl NvidiaProvider {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NvidiaModelCapabilities {
+    pub supports_tool_calling: bool,
+    pub supports_structured_output: bool,
+}
+
+const TOOL_CALLING_SUPPORTED_MODELS: &[&str] = &[
+    "meta/llama-3.1-8b-base",
+    "meta/llama-3.1-8b-instruct",
+    "meta/llama-3.1-70b-instruct",
+    "meta/llama-3.1-405b-instruct",
+    "meta/llama-3.2-1b-instruct",
+    "meta/llama-3.2-3b-instruct",
+    "meta/llama-3.3-70b-instruct",
+    "nvidia/llama3.1-nemotron-nano-4b-v1.1",
+    "nvidia/llama-3.1-nemotron-nano-8b-v1",
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    "nvidia/llama-3.3-nemotron-super-49b-v1",
+    "mistralai/mistral-7b-instruct-v0.3",
+    "mistralai/mixtral-8x22b-instruct-v01",
+    "kakaocorp/kanana-1.5-8b-instruct-2505",
+    "scb10x/llama3.1-typhoon2-8b-instruct",
+    "scb10x/llama-3.1-typhoon2-70b-instruct",
+];
+
+const STRUCTURED_OUTPUT_UNSUPPORTED_PREFIXES: &[&str] =
+    &["deepseek-ai/", "mistralai/mixtral-8x7b-instruct-v01"];
+
+#[must_use]
+pub(crate) fn model_capabilities(model_id: &str) -> NvidiaModelCapabilities {
+    let model_id = model_id.trim().to_ascii_lowercase();
+
+    let supports_tool_calling = TOOL_CALLING_SUPPORTED_MODELS
+        .iter()
+        .any(|candidate| model_id == *candidate)
+        || model_id.contains("gpt-oss");
+
+    let supports_structured_output = !STRUCTURED_OUTPUT_UNSUPPORTED_PREFIXES
+        .iter()
+        .any(|prefix| model_id.starts_with(prefix));
+
+    NvidiaModelCapabilities {
+        supports_tool_calling,
+        supports_structured_output,
+    }
+}
+
 fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<Value> {
     let mut messages = vec![json!({
         "role": "system",
@@ -147,6 +194,7 @@ fn build_tool_chat_body(
 ) -> Value {
     let messages = prepare_structured_messages(system_prompt, history);
     let nvidia_tools = prepare_tools_json(tools);
+    let model_capabilities = model_capabilities(model_id);
 
     let mut body = json!({
         "model": model_id,
@@ -162,7 +210,9 @@ fn build_tool_chat_body(
         body["parallel_tool_calls"] = json!(false);
     }
 
-    maybe_apply_json_mode(&mut body, json_mode, !tools.is_empty());
+    if model_capabilities.supports_structured_output {
+        maybe_apply_json_mode(&mut body, json_mode, !tools.is_empty());
+    }
 
     body
 }
@@ -366,6 +416,13 @@ impl LlmProvider for NvidiaProvider {
             json_mode,
         } = request;
 
+        let model_capabilities = model_capabilities(model_id);
+        if !model_capabilities.supports_tool_calling {
+            return Err(LlmError::ApiError(format!(
+                "NVIDIA NIM tool calling is not supported for model `{model_id}`"
+            )));
+        }
+
         let url = self.chat_completions_url();
         let body = build_tool_chat_body(
             system_prompt,
@@ -385,8 +442,8 @@ impl LlmProvider for NvidiaProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_tool_chat_body, normalize_tool_arguments_str, parse_chat_response, parse_tool_calls,
-        NvidiaProvider,
+        build_tool_chat_body, model_capabilities, normalize_tool_arguments_str,
+        parse_chat_response, parse_tool_calls, NvidiaProvider,
     };
     use crate::llm::{Message, ToolDefinition};
     use serde_json::json;
@@ -540,5 +597,21 @@ mod tests {
         assert!(body["messages"][1].get("tool_calls").is_some());
         assert_eq!(body["messages"][2]["role"], json!("tool"));
         assert_eq!(body["messages"][2]["tool_call_id"], json!("invoke-1"));
+    }
+
+    #[test]
+    fn model_capabilities_allow_known_tool_models() {
+        let capabilities = model_capabilities("meta/llama-3.1-70b-instruct");
+
+        assert!(capabilities.supports_tool_calling);
+        assert!(capabilities.supports_structured_output);
+    }
+
+    #[test]
+    fn model_capabilities_block_known_bad_structured_models() {
+        let capabilities = model_capabilities("deepseek-ai/deepseek-r1");
+
+        assert!(!capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
     }
 }
