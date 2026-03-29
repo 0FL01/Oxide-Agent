@@ -340,6 +340,23 @@ pub struct ExternalizationOutcome {
     pub archive_refs: Vec<ArchiveRef>,
 }
 
+/// Result of collapsing stale tool retry chains down to the final successful attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ErrorRetryCollapseOutcome {
+    /// Whether any retry-chain messages were removed.
+    pub applied: bool,
+    /// Number of failed attempts collapsed away.
+    pub collapsed_attempt_count: usize,
+    /// Number of hot-memory messages removed during collapse.
+    pub dropped_message_count: usize,
+    /// Hot-memory token estimate removed from dropped retries.
+    pub reclaimed_tokens: usize,
+    /// Total visible characters removed from hot memory.
+    pub reclaimed_chars: usize,
+    /// Stable indices dropped from the pre-collapse memory ordering.
+    pub dropped_indices: Vec<usize>,
+}
+
 /// Result of archiving displaced hot-memory chunks for future retrieval features.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ArchivePersistenceOutcome {
@@ -483,6 +500,8 @@ pub struct CompactionOutcome {
     pub snapshot: CompactionSnapshot,
     /// Result of payload externalization applied before later stages.
     pub externalization: ExternalizationOutcome,
+    /// Result of collapsing redundant failed tool retries before later stages.
+    pub error_retry_collapse: ErrorRetryCollapseOutcome,
     /// Result of archive persistence for displaced compacted history chunks.
     pub archive_persistence: ArchivePersistenceOutcome,
     /// Result of old artifact pruning applied before summary compaction.
@@ -510,6 +529,7 @@ impl CompactionOutcome {
             budget,
             snapshot,
             externalization: ExternalizationOutcome::default(),
+            error_retry_collapse: ErrorRetryCollapseOutcome::default(),
             archive_persistence: ArchivePersistenceOutcome::default(),
             pruning: PruneOutcome::default(),
             summary_generation: SummaryGenerationOutcome::default(),
@@ -540,8 +560,9 @@ impl CompactionOutcome {
     /// Returns the estimated reclaimed tokens from deterministic cleanup stages only.
     #[must_use]
     pub fn reclaimed_cleanup_tokens(&self) -> usize {
-        self.externalization
+        self.error_retry_collapse
             .reclaimed_tokens
+            .saturating_add(self.externalization.reclaimed_tokens)
             .saturating_add(self.pruning.reclaimed_tokens)
     }
 }

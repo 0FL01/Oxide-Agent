@@ -914,6 +914,8 @@ impl AgentRunner {
             budget_state = ?outcome.budget.state,
             hot_memory_tokens_before = outcome.token_count_before,
             hot_memory_tokens_after = outcome.token_count_after,
+            collapsed_retry_attempts = outcome.error_retry_collapse.collapsed_attempt_count,
+            collapsed_retry_messages = outcome.error_retry_collapse.dropped_message_count,
             externalized_count = outcome.externalization.externalized_count,
             pruned_count = outcome.pruning.pruned_count,
             reclaimed_tokens = outcome.reclaimed_hot_memory_tokens(),
@@ -956,7 +958,10 @@ impl AgentRunner {
             return;
         }
 
-        if outcome.externalization.applied || outcome.pruning.applied {
+        if outcome.error_retry_collapse.applied
+            || outcome.externalization.applied
+            || outcome.pruning.applied
+        {
             state.cleanup_count = state.cleanup_count.saturating_add(1);
             if state.cleanup_count > 1 {
                 Self::log_repeated_compaction(
