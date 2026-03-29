@@ -9,15 +9,21 @@ use reqwest::Client as HttpClient;
 use serde_json::Value;
 use std::time::Duration;
 
+/// Application name and version for User-Agent and provider attribution headers.
+pub const APP_USER_AGENT: &str = "Oxide-Agent/0.1.0";
+
 /// Creates an HTTP client configured with the standard LLM timeout.
 ///
 /// Uses `LLM_HTTP_TIMEOUT_SECS` environment variable or default configuration.
 /// This keeps long-running responses alive while preventing infinite hangs.
+/// Sets User-Agent header to identify the application to LLM providers.
 #[must_use]
 pub fn create_http_client() -> HttpClient {
     let timeout = Duration::from_secs(get_llm_http_timeout_secs());
     HttpClient::builder()
+        .pool_max_idle_per_host(10)
         .timeout(timeout)
+        .user_agent(APP_USER_AGENT)
         .build()
         .unwrap_or_else(|_| HttpClient::new())
 }
@@ -51,6 +57,9 @@ pub async fn send_json_request(
     extra_headers: &[(&str, &str)],
 ) -> Result<Value, LlmError> {
     let mut request = client.post(url).json(body);
+
+    // Always include User-Agent for provider identification
+    request = request.header("User-Agent", APP_USER_AGENT);
 
     if let Some(auth) = auth_header {
         request = request.header("Authorization", auth);
