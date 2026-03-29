@@ -216,6 +216,9 @@ const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
 const TOPIC_AGENT_JIRA_TOOLS: &[&str] = &["jira_read", "jira_write", "jira_schema"];
 #[cfg(feature = "mattermost")]
 const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
+    "mattermost_list_teams",
+    "mattermost_get_team",
+    "mattermost_get_team_members",
     "mattermost_list_channels",
     "mattermost_get_channel",
     "mattermost_get_channel_by_name",
