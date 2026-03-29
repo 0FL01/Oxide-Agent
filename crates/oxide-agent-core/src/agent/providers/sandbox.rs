@@ -20,8 +20,8 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use super::file_delivery::{
-    deliver_file_via_progress, format_generic_delivery_report, FileDeliveryRequest,
-    FileDeliveryReport, FileDeliveryStatus, CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
+    deliver_file_via_progress, format_generic_delivery_report, FileDeliveryReport,
+    FileDeliveryRequest, FileDeliveryStatus, CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
 };
 use super::path::resolve_file_path;
 
@@ -396,9 +396,18 @@ mod tests {
         );
 
         assert_eq!(payload["ok"], Value::Bool(false));
-        assert_eq!(payload["status"], Value::String("delivery_failed".to_string()));
-        assert_eq!(payload["error"], Value::String("upload refused".to_string()));
-        assert_eq!(payload["file_name"], Value::String("report.txt".to_string()));
+        assert_eq!(
+            payload["status"],
+            Value::String("delivery_failed".to_string())
+        );
+        assert_eq!(
+            payload["error"],
+            Value::String("upload refused".to_string())
+        );
+        assert_eq!(
+            payload["file_name"],
+            Value::String("report.txt".to_string())
+        );
     }
 
     #[test]
