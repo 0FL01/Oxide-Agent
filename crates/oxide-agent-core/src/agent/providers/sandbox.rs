@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 
 use super::file_delivery::{
     deliver_file_via_progress, format_generic_delivery_report, FileDeliveryRequest,
-    CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
+    FileDeliveryReport, FileDeliveryStatus, CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
 };
 use super::path::resolve_file_path;
 
@@ -103,22 +103,18 @@ impl SandboxProvider {
             .exec_command(&args.command, cancellation_token)
             .await
         {
-            Ok(result) => {
-                if result.success() {
-                    if result.stdout.is_empty() {
-                        Ok("(command executed successfully, output is empty)".to_string())
-                    } else {
-                        Ok(result.stdout)
-                    }
-                } else {
-                    Ok(format!(
-                        "Command failed (exit code {}): {}",
-                        result.exit_code,
-                        result.combined_output()
-                    ))
-                }
-            }
-            Err(e) => Ok(format!("Command execution failed: {e}")),
+            Ok(result) => serialize_json(json!({
+                "ok": result.success(),
+                "command": args.command,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.exit_code,
+            })),
+            Err(error) => serialize_json(json!({
+                "ok": false,
+                "command": args.command,
+                "error": error.to_string(),
+            })),
         }
     }
 
@@ -128,16 +124,32 @@ impl SandboxProvider {
             .write_file(&args.path, args.content.as_bytes())
             .await
         {
-            Ok(()) => Ok(format!("File {} successfully written", args.path)),
-            Err(e) => Ok(format!("Error writing file: {e}")),
+            Ok(()) => serialize_json(json!({
+                "ok": true,
+                "path": args.path,
+                "bytes_written": args.content.len(),
+            })),
+            Err(error) => serialize_json(json!({
+                "ok": false,
+                "path": args.path,
+                "error": error.to_string(),
+            })),
         }
     }
 
     async fn handle_read_file(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
         let args: ReadFileArgs = serde_json::from_str(arguments)?;
         match sandbox.read_file(&args.path).await {
-            Ok(content) => Ok(String::from_utf8_lossy(&content).to_string()),
-            Err(e) => Ok(format!("Error reading file: {e}")),
+            Ok(content) => serialize_json(json!({
+                "ok": true,
+                "path": args.path,
+                "content": String::from_utf8_lossy(&content).to_string(),
+            })),
+            Err(error) => serialize_json(json!({
+                "ok": false,
+                "path": args.path,
+                "error": error.to_string(),
+            })),
         }
     }
 
@@ -153,7 +165,12 @@ impl SandboxProvider {
             Ok(p) => p,
             Err(e) => {
                 warn!(path = %args.path, error = %e, "Failed to resolve file path");
-                return Ok(format!("❌ {e}"));
+                return serialize_json(json!({
+                    "ok": false,
+                    "path": args.path,
+                    "status": "resolve_failed",
+                    "error": e.to_string(),
+                }));
             }
         };
 
@@ -165,22 +182,37 @@ impl SandboxProvider {
             Ok(size) => size,
             Err(e) => {
                 error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
-                return Ok(format!("❌ Error checking file size: {e}"));
+                return serialize_json(json!({
+                    "ok": false,
+                    "path": resolved_path,
+                    "status": "size_check_failed",
+                    "error": e.to_string(),
+                }));
             }
         };
 
         if file_size == 0 {
-            return Ok(format!(
-                "❌ ERROR: File '{file_name}' is empty (0 bytes) and cannot be sent.\n\
-                 Source path: {resolved_path}"
-            ));
+            return serialize_json(json!({
+                "ok": false,
+                "path": resolved_path,
+                "file_name": file_name,
+                "size_bytes": file_size,
+                "status": "empty_content",
+                "message": format!(
+                    "❌ ERROR: File '{file_name}' is empty (0 bytes) and cannot be sent.\nSource path: {resolved_path}"
+                ),
+            }));
         }
 
         if file_size > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
-            return Ok(
-                "⚠️ ERROR: File too large for chat delivery (>50 MB). Please use the upload_file tool to upload it to the cloud."
-                    .to_string(),
-            );
+            return serialize_json(json!({
+                "ok": false,
+                "path": resolved_path,
+                "file_name": file_name,
+                "size_bytes": file_size,
+                "status": "too_large",
+                "message": "⚠️ ERROR: File too large for chat delivery (>50 MB). Please use the upload_file tool to upload it to the cloud.",
+            }));
         }
 
         match sandbox.download_file(&resolved_path).await {
@@ -195,11 +227,17 @@ impl SandboxProvider {
                     },
                 )
                 .await;
-                Ok(format_generic_delivery_report(&report))
+                serialize_json(build_send_file_response(&resolved_path, &report))
             }
             Err(e) => {
                 error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
-                Ok(format!("❌ Error downloading file: {e}"))
+                serialize_json(json!({
+                    "ok": false,
+                    "path": resolved_path,
+                    "file_name": file_name,
+                    "status": "download_failed",
+                    "error": e.to_string(),
+                }))
             }
         }
     }
@@ -225,22 +263,29 @@ impl SandboxProvider {
         match sandbox.exec_command(&cmd, None).await {
             Ok(result) => {
                 if result.success() {
-                    if result.stdout.is_empty() {
-                        Ok(format!(
-                            "Directory '{}' is empty or does not exist",
-                            args.path
-                        ))
-                    } else {
-                        Ok(format!(
-                            "📁 Directory '{}':\n\n```\n{}\n```",
-                            args.path, result.stdout
-                        ))
-                    }
+                    serialize_json(json!({
+                        "ok": true,
+                        "path": args.path,
+                        "listing": result.stdout,
+                        "stderr": result.stderr,
+                        "exit_code": result.exit_code,
+                        "is_empty": result.stdout.is_empty(),
+                    }))
                 } else {
-                    Ok(format!("❌ Error reading directory: {}", result.stderr))
+                    serialize_json(json!({
+                        "ok": false,
+                        "path": args.path,
+                        "listing": result.stdout,
+                        "stderr": result.stderr,
+                        "exit_code": result.exit_code,
+                    }))
                 }
             }
-            Err(e) => Ok(format!("❌ Error executing command: {e}")),
+            Err(error) => serialize_json(json!({
+                "ok": false,
+                "path": args.path,
+                "error": error.to_string(),
+            })),
         }
     }
 
@@ -255,18 +300,65 @@ impl SandboxProvider {
         };
 
         match sandbox.recreate().await {
-            Ok(()) => Ok(
-                "Sandbox recreated successfully. Previous workspace contents were removed."
-                    .to_string(),
-            ),
-            Err(e) => Ok(format!("Error recreating sandbox: {e}")),
+            Ok(()) => serialize_json(json!({
+                "ok": true,
+                "status": "recreated",
+                "message": "Sandbox recreated successfully. Previous workspace contents were removed.",
+            })),
+            Err(error) => serialize_json(json!({
+                "ok": false,
+                "status": "recreate_failed",
+                "error": error.to_string(),
+            })),
         }
     }
+}
+
+fn serialize_json(value: serde_json::Value) -> Result<String> {
+    serde_json::to_string(&value).map_err(Into::into)
+}
+
+fn file_delivery_status_code(status: &FileDeliveryStatus) -> &'static str {
+    match status {
+        FileDeliveryStatus::Delivered => "delivered",
+        FileDeliveryStatus::DeliveryFailed(_) => "delivery_failed",
+        FileDeliveryStatus::ConfirmationChannelClosed => "confirmation_channel_closed",
+        FileDeliveryStatus::TimedOut => "timed_out",
+        FileDeliveryStatus::QueueUnavailable(_) => "queue_unavailable",
+        FileDeliveryStatus::EmptyContent => "empty_content",
+    }
+}
+
+fn build_send_file_response(path: &str, report: &FileDeliveryReport) -> serde_json::Value {
+    let mut payload = json!({
+        "ok": matches!(report.status, FileDeliveryStatus::Delivered),
+        "status": file_delivery_status_code(&report.status),
+        "path": path,
+        "file_name": report.file_name,
+        "size_bytes": report.size_bytes,
+        "message": format_generic_delivery_report(report),
+    });
+
+    if let Some(object) = payload.as_object_mut() {
+        match &report.status {
+            FileDeliveryStatus::DeliveryFailed(error)
+            | FileDeliveryStatus::QueueUnavailable(error) => {
+                object.insert("error".to_string(), json!(error));
+            }
+            FileDeliveryStatus::ConfirmationChannelClosed
+            | FileDeliveryStatus::TimedOut
+            | FileDeliveryStatus::Delivered
+            | FileDeliveryStatus::EmptyContent => {}
+        }
+    }
+
+    payload
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn recreate_sandbox_is_registered() {
@@ -275,6 +367,55 @@ mod tests {
 
         assert!(tools.iter().any(|tool| tool.name == "recreate_sandbox"));
         assert!(provider.can_handle("recreate_sandbox"));
+    }
+
+    #[test]
+    fn execute_command_tool_description_mentions_json_response() {
+        let provider = SandboxProvider::new(1);
+        let tools = provider.tools();
+        let execute_command = tools
+            .iter()
+            .find(|tool| tool.name == "execute_command")
+            .expect("execute_command registered");
+
+        assert!(execute_command.description.contains("JSON"));
+        assert!(execute_command.description.contains("stdout"));
+        assert!(execute_command.description.contains("exit_code"));
+    }
+
+    #[test]
+    fn build_send_file_response_serializes_delivery_status() {
+        let payload = build_send_file_response(
+            "/workspace/report.txt",
+            &FileDeliveryReport {
+                file_name: "report.txt".to_string(),
+                source_path: "/workspace/report.txt".to_string(),
+                size_bytes: 12,
+                status: FileDeliveryStatus::DeliveryFailed("upload refused".to_string()),
+            },
+        );
+
+        assert_eq!(payload["ok"], Value::Bool(false));
+        assert_eq!(payload["status"], Value::String("delivery_failed".to_string()));
+        assert_eq!(payload["error"], Value::String("upload refused".to_string()));
+        assert_eq!(payload["file_name"], Value::String("report.txt".to_string()));
+    }
+
+    #[test]
+    fn serialize_json_preserves_command_fields() {
+        let payload = serialize_json(json!({
+            "ok": true,
+            "command": "pwd",
+            "stdout": "/workspace\n",
+            "stderr": "",
+            "exit_code": 0,
+        }))
+        .expect("json serialization succeeds");
+        let parsed: Value = serde_json::from_str(&payload).expect("valid json payload");
+
+        assert_eq!(parsed["ok"], Value::Bool(true));
+        assert_eq!(parsed["command"], Value::String("pwd".to_string()));
+        assert_eq!(parsed["exit_code"], Value::Number(0.into()));
     }
 }
 
@@ -317,7 +458,7 @@ impl ToolProvider for SandboxProvider {
         vec![
             ToolDefinition {
                 name: "execute_command".to_string(),
-                description: "Execute a bash command in the isolated sandbox environment. Available commands include: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
+                description: "Execute a bash command in the isolated sandbox environment. Returns JSON with ok, stdout, stderr, and exit_code. Available commands include: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -331,7 +472,7 @@ impl ToolProvider for SandboxProvider {
             },
             ToolDefinition {
                 name: "write_file".to_string(),
-                description: "Write content to a file in the sandbox. Creates parent directories if needed.".to_string(),
+                description: "Write content to a file in the sandbox. Creates parent directories if needed. Returns JSON with ok, path, and bytes_written or error.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -349,7 +490,7 @@ impl ToolProvider for SandboxProvider {
             },
             ToolDefinition {
                 name: "read_file".to_string(),
-                description: "Read content from a file in the sandbox.".to_string(),
+                description: "Read content from a file in the sandbox. Returns JSON with ok, path, and content or error.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -363,7 +504,7 @@ impl ToolProvider for SandboxProvider {
             },
             ToolDefinition {
                 name: "send_file_to_user".to_string(),
-                description: "Send a file from the sandbox to the user via the chat transport. Use this when you need to deliver generated files, images, documents, or any output to the user. Supports both absolute paths (/workspace/file.txt) and relative paths (file.txt) - will automatically search in /workspace if not found.".to_string(),
+                description: "Send a file from the sandbox to the user via the chat transport. Returns JSON with ok, status, file_name, size_bytes, and message. Supports both absolute paths (/workspace/file.txt) and relative paths (file.txt) - will automatically search in /workspace if not found.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -377,7 +518,7 @@ impl ToolProvider for SandboxProvider {
             },
             ToolDefinition {
                 name: "list_files".to_string(),
-                description: "List files in the sandbox workspace. Returns a tree-like structure of files and directories. Useful for finding file paths before using send_file_to_user.".to_string(),
+                description: "List files in the sandbox workspace. Returns JSON with ok, path, listing, and exit_code. Useful for finding file paths before using send_file_to_user.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -390,7 +531,7 @@ impl ToolProvider for SandboxProvider {
             },
             ToolDefinition {
                 name: "recreate_sandbox".to_string(),
-                description: "Recreate the sandbox container from scratch, wiping all previous workspace contents. Use this when the sandbox state is corrupted or you need a completely clean environment.".to_string(),
+                description: "Recreate the sandbox container from scratch, wiping all previous workspace contents. Returns JSON with ok, status, and message or error.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {}
