@@ -1,6 +1,9 @@
 //! Hot-context rebuild after pruning and summary compaction.
 
 use super::archive::ArchiveRef;
+use super::summary::{
+    collect_existing_structured_summaries, merge_summaries_bounded, normalize_summary,
+};
 use super::types::{
     AgentMessageKind, CompactionRetention, CompactionSnapshot, CompactionSummary, RebuildOutcome,
 };
@@ -16,14 +19,10 @@ pub fn rebuild_hot_context(
     new_summary: Option<CompactionSummary>,
     archive_ref: Option<ArchiveRef>,
 ) -> (Vec<AgentMessage>, RebuildOutcome) {
-    let existing_structured_summaries: Vec<CompactionSummary> = snapshot
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == AgentMessageKind::Summary)
-        .filter_map(|entry| messages.get(entry.index))
-        .filter_map(|message| message.summary_payload().cloned())
-        .collect();
-    let summary = merge_summaries(existing_structured_summaries, new_summary);
+    let existing_structured_summaries = collect_existing_structured_summaries(snapshot, messages);
+    let summary = new_summary
+        .and_then(normalize_summary)
+        .or_else(|| merge_summaries_bounded(existing_structured_summaries, None));
     let has_old_history = snapshot.entries.iter().any(|entry| {
         !entry.preserve_in_raw_window
             && matches!(
@@ -214,67 +213,6 @@ fn append_matching_messages(
     }
 }
 
-fn merge_summaries(
-    existing_summaries: Vec<CompactionSummary>,
-    new_summary: Option<CompactionSummary>,
-) -> Option<CompactionSummary> {
-    let mut summaries: Vec<CompactionSummary> = existing_summaries
-        .into_iter()
-        .filter(summary_has_signal)
-        .collect();
-    if let Some(summary) = new_summary.filter(summary_has_signal) {
-        summaries.push(summary);
-    }
-    if summaries.is_empty() {
-        return None;
-    }
-
-    let mut merged = CompactionSummary {
-        goal: summaries
-            .iter()
-            .rev()
-            .find_map(|summary| {
-                let goal = summary.goal.trim();
-                (!goal.is_empty()).then(|| goal.to_string())
-            })
-            .unwrap_or_default(),
-        ..CompactionSummary::default()
-    };
-    for summary in summaries {
-        push_unique(&mut merged.constraints, summary.constraints);
-        push_unique(&mut merged.decisions, summary.decisions);
-        push_unique(&mut merged.discoveries, summary.discoveries);
-        push_unique(
-            &mut merged.relevant_files_entities,
-            summary.relevant_files_entities,
-        );
-        push_unique(&mut merged.remaining_work, summary.remaining_work);
-        push_unique(&mut merged.risks, summary.risks);
-    }
-
-    summary_has_signal(&merged).then_some(merged)
-}
-
-fn summary_has_signal(summary: &CompactionSummary) -> bool {
-    !summary.goal.trim().is_empty()
-        || !summary.constraints.is_empty()
-        || !summary.decisions.is_empty()
-        || !summary.discoveries.is_empty()
-        || !summary.relevant_files_entities.is_empty()
-        || !summary.remaining_work.is_empty()
-        || !summary.risks.is_empty()
-}
-
-fn push_unique(target: &mut Vec<String>, items: Vec<String>) {
-    for item in items {
-        let trimmed = item.trim();
-        if trimmed.is_empty() || target.iter().any(|existing| existing == trimmed) {
-            continue;
-        }
-        target.push(trimmed.to_string());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{rebuild_hot_context, remove_orphaned_tool_results};
@@ -342,11 +280,12 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_hot_context_merges_existing_structured_summary() {
+    fn rebuild_hot_context_replaces_existing_structured_summary_with_authoritative_update() {
         let existing = CompactionSummary {
             goal: "Ship stage 7".to_string(),
             constraints: vec!["Keep AGENTS.md pinned.".to_string()],
             discoveries: vec!["Compaction moved out of memory.rs.".to_string()],
+            risks: vec!["Old risk".to_string()],
             ..CompactionSummary::default()
         };
         let messages = vec![
@@ -371,20 +310,19 @@ mod tests {
 
         assert!(outcome.applied);
         assert_eq!(outcome.dropped_indices, vec![0, 2, 3]);
-        let merged_summary = rebuilt[1].summary_payload().expect("merged summary");
-        assert_eq!(merged_summary.goal, "Ship stage 8");
-        assert!(merged_summary
-            .constraints
-            .iter()
-            .any(|item| item.contains("AGENTS.md")));
-        assert!(merged_summary
-            .discoveries
-            .iter()
-            .any(|item| item.contains("memory.rs")));
-        assert!(merged_summary
-            .decisions
-            .iter()
-            .any(|item| item.contains("first-class summary")));
+        let summary = rebuilt[1].summary_payload().expect("replacement summary");
+        assert_eq!(summary.goal, "Ship stage 8");
+        assert_eq!(
+            summary.decisions,
+            vec!["Use a first-class summary entry.".to_string()]
+        );
+        assert_eq!(
+            summary.remaining_work,
+            vec!["Integrate pre-iteration compaction.".to_string()]
+        );
+        assert!(summary.constraints.is_empty());
+        assert!(summary.discoveries.is_empty());
+        assert!(summary.risks.is_empty());
     }
 
     #[test]
