@@ -2,6 +2,7 @@
 //!
 //! Provides a unified interface to various LLM providers (Groq, Mistral, Gemini, OpenRouter).
 
+mod capabilities;
 mod common;
 pub mod embeddings;
 mod error;
@@ -9,83 +10,22 @@ pub mod http_utils;
 mod openai_compat;
 /// Implementations of specific LLM providers
 pub mod providers;
+mod retry;
 mod types;
+mod validation;
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use tracing::{debug, info, instrument, trace, warn};
 
+pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
 pub use error::LlmError;
 pub use types::{
     ChatResponse, ChatWithToolsRequest, InvocationId, Message, ProviderItemId, ProviderToolCallId,
     TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition, ToolProtocol,
     ToolTransport,
 };
-
-/// How strictly a provider enforces tool-call history consistency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolHistoryMode {
-    /// Reject only clearly invalid references such as orphaned tool results.
-    BestEffort,
-    /// Require every tool call batch to have a fully matching set of tool results.
-    Strict,
-}
-
-/// Provider-specific request behavior relevant to history validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProviderCapabilities {
-    /// Tool history matching mode enforced before a request is sent.
-    pub tool_history_mode: ToolHistoryMode,
-    /// Whether the model/provider supports tool-enabled agent calls.
-    pub supports_tool_calling: bool,
-    /// Whether structured output should be enabled for this route.
-    pub supports_structured_output: bool,
-}
-
-impl ProviderCapabilities {
-    #[must_use]
-    /// Build capabilities for one provider/model route.
-    pub const fn new(
-        tool_history_mode: ToolHistoryMode,
-        supports_tool_calling: bool,
-        supports_structured_output: bool,
-    ) -> Self {
-        Self {
-            tool_history_mode,
-            supports_tool_calling,
-            supports_structured_output,
-        }
-    }
-
-    #[must_use]
-    /// Returns true when the provider expects exact tool-call/result matching.
-    pub const fn strict_tool_history(self) -> bool {
-        matches!(self.tool_history_mode, ToolHistoryMode::Strict)
-    }
-
-    #[must_use]
-    /// Returns a short label for logs and progress updates.
-    pub const fn tool_history_label(self) -> &'static str {
-        match self.tool_history_mode {
-            ToolHistoryMode::BestEffort => "best_effort",
-            ToolHistoryMode::Strict => "strict",
-        }
-    }
-
-    #[must_use]
-    /// Returns true when the route can participate in the agent tool loop.
-    pub const fn can_run_agent_tools(self) -> bool {
-        self.supports_tool_calling
-    }
-
-    #[must_use]
-    /// Returns true when structured-output prompts and parsing should stay enabled.
-    pub const fn should_use_structured_output(self) -> bool {
-        self.supports_structured_output
-    }
-}
 
 /// Interface for all LLM providers
 #[cfg_attr(test, mockall::automock)]
@@ -444,7 +384,7 @@ impl LlmClient {
             )));
         }
 
-        validate_tool_history(messages, capabilities)?;
+        validation::validate_tool_history(messages, capabilities)?;
 
         debug!(
             model = model_info.id,
@@ -475,14 +415,7 @@ impl LlmClient {
     /// Returns request-side capabilities for the named provider.
     #[must_use]
     pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
-        match provider_name.to_ascii_lowercase().as_str() {
-            "minimax" | "mistral" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-            "zai" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
-            "groq" | "gemini" => {
-                ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, true)
-            }
-            _ => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
-        }
+        capabilities::provider_capabilities(provider_name)
     }
 
     #[must_use]
@@ -490,21 +423,13 @@ impl LlmClient {
     pub fn provider_capabilities_for_model(
         model_info: &crate::config::ModelInfo,
     ) -> ProviderCapabilities {
-        let mut capabilities = Self::provider_capabilities(&model_info.provider);
-
-        if model_info.provider.eq_ignore_ascii_case("nvidia") {
-            let model_capabilities = providers::nvidia::model_capabilities(&model_info.id);
-            capabilities.supports_tool_calling = model_capabilities.supports_tool_calling;
-            capabilities.supports_structured_output = model_capabilities.supports_structured_output;
-        }
-
-        capabilities
+        capabilities::provider_capabilities_for_model(model_info)
     }
 
     #[must_use]
     /// Returns whether structured output should be used for a specific model route.
     pub fn supports_structured_output_for_model(model_info: &crate::config::ModelInfo) -> bool {
-        Self::provider_capabilities_for_model(model_info).should_use_structured_output()
+        capabilities::supports_structured_output_for_model(model_info)
     }
 
     /// Chat completion with tool calling support (for agent mode)
@@ -539,7 +464,7 @@ impl LlmClient {
             )));
         }
 
-        validate_tool_history(messages, capabilities)?;
+        validation::validate_tool_history(messages, capabilities)?;
 
         // Get provider and call its chat_with_tools method (via trait)
         let provider = self.get_provider(&model_info.provider)?;
@@ -624,87 +549,27 @@ impl LlmClient {
     }
 
     /// Maximum number of retry attempts for LLM calls.
-    pub const MAX_RETRIES: usize = 5;
+    pub const MAX_RETRIES: usize = retry::MAX_RETRIES;
 
     /// Calculates the delay before the next retry attempt based on the error type.
     /// Returns `None` if the error is not retryable.
     pub fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<std::time::Duration> {
-        const INITIAL_BACKOFF_MS: u64 = 1000;
-
-        match error {
-            LlmError::RateLimit { wait_secs, .. } => {
-                // If the server provided a wait time, use it (plus a small buffer)
-                if let Some(secs) = wait_secs {
-                    return Some(std::time::Duration::from_secs(*secs + 1));
-                }
-                // Otherwise use a more aggressive backoff for rate limits: 10s, 20s, 40s...
-                // attempt starts at 1
-                let backoff_secs = 10u64 * 2u64.pow((attempt - 1) as u32);
-                Some(std::time::Duration::from_secs(backoff_secs))
-            }
-            LlmError::ApiError(msg) => {
-                let msg_lower = msg.to_lowercase();
-                if msg_lower.contains("429") {
-                    // Treat as rate limit without explicit wait time
-                    let backoff_secs = 10u64 * 2u64.pow((attempt - 1) as u32);
-                    return Some(std::time::Duration::from_secs(backoff_secs));
-                }
-
-                if msg_lower.contains("500")
-                    || msg_lower.contains("internal server error")
-                    || msg_lower.contains("502")
-                    || msg_lower.contains("bad gateway")
-                    || msg_lower.contains("503")
-                    || msg_lower.contains("service unavailable")
-                    || msg_lower.contains("504")
-                    || msg_lower.contains("gateway timeout")
-                    || msg_lower.contains("temporarily unavailable")
-                    || msg_lower.contains("timeout")
-                    || msg_lower.contains("overloaded")
-                {
-                    let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
-                    return Some(std::time::Duration::from_millis(backoff_ms));
-                }
-                None
-            }
-            LlmError::NetworkError(msg) => {
-                // "builder" errors indicate a configuration/endpoint problem, not a transient failure.
-                if msg.to_lowercase().contains("builder") {
-                    return None;
-                }
-                let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
-                Some(std::time::Duration::from_millis(backoff_ms))
-            }
-            LlmError::JsonError(_) => {
-                // JSON parsing errors can be transient (bad proxy, network issues,
-                // malformed response). Retry with exponential backoff.
-                let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
-                Some(std::time::Duration::from_millis(backoff_ms))
-            }
-            _ => None,
-        }
+        retry::get_retry_delay(error, attempt)
     }
 
     /// Returns true if the error is retryable.
     pub fn is_retryable_error(error: &LlmError) -> bool {
-        Self::get_retry_delay(error, 1).is_some()
+        retry::is_retryable_error(error)
     }
 
     /// Returns true if the error is a rate limit (429 or RateLimit variant).
     pub fn is_rate_limit_error(error: &LlmError) -> bool {
-        match error {
-            LlmError::RateLimit { .. } => true,
-            LlmError::ApiError(msg) => msg.to_lowercase().contains("429"),
-            _ => false,
-        }
+        retry::is_rate_limit_error(error)
     }
 
     /// Returns the wait time in seconds from a rate limit error, if available.
     pub fn get_rate_limit_wait_secs(error: &LlmError) -> Option<u64> {
-        match error {
-            LlmError::RateLimit { wait_secs, .. } => *wait_secs,
-            _ => None,
-        }
+        retry::get_rate_limit_wait_secs(error)
     }
 
     /// Generate an embedding vector using configured provider.
@@ -864,7 +729,7 @@ impl LlmClient {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
     {
-        const MAX_RETRIES: usize = 5;
+        const MAX_RETRIES: usize = retry::MAX_RETRIES;
 
         for attempt in 1..=MAX_RETRIES {
             match operation().await {
@@ -877,7 +742,7 @@ impl LlmClient {
                 Err(e) => {
                     if attempt < MAX_RETRIES {
                         if let Some(backoff) =
-                            Self::get_retry_delay_with_initial(&e, attempt, initial_backoff_ms)
+                            retry::get_retry_delay_with_initial(&e, attempt, initial_backoff_ms)
                         {
                             warn!(
                                 "{} failed (attempt {}/{}): {}, retrying after {:?}",
@@ -898,243 +763,13 @@ impl LlmClient {
             "All retry attempts exhausted".to_string(),
         ))
     }
-
-    /// Calculates the delay before the next retry attempt based on the error type and initial backoff.
-    /// Returns `None` if the error is not retryable.
-    fn get_retry_delay_with_initial(
-        error: &LlmError,
-        attempt: usize,
-        initial_backoff_ms: u64,
-    ) -> Option<std::time::Duration> {
-        match error {
-            LlmError::RateLimit { wait_secs, .. } => {
-                // If the server provided a wait time, use it (plus a small buffer)
-                if let Some(secs) = wait_secs {
-                    return Some(std::time::Duration::from_secs(*secs + 1));
-                }
-                // Otherwise use exponential backoff based on initial value
-                let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
-                Some(std::time::Duration::from_millis(backoff_ms))
-            }
-            LlmError::ApiError(msg) => {
-                let msg_lower = msg.to_lowercase();
-                if msg_lower.contains("429") {
-                    let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
-                    return Some(std::time::Duration::from_millis(backoff_ms));
-                }
-                if msg_lower.contains("500")
-                    || msg_lower.contains("502")
-                    || msg_lower.contains("503")
-                    || msg_lower.contains("504")
-                    || msg_lower.contains("timeout")
-                    || msg_lower.contains("overloaded")
-                {
-                    let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
-                    return Some(std::time::Duration::from_millis(backoff_ms));
-                }
-                None
-            }
-            LlmError::NetworkError(msg) => {
-                // Don't retry DNS or connection refused errors immediately
-                let msg_lower = msg.to_lowercase();
-                if msg_lower.contains("dns")
-                    || msg_lower.contains("refused")
-                    || msg_lower.contains("reset")
-                {
-                    let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
-                    return Some(std::time::Duration::from_millis(backoff_ms));
-                }
-                // Retry other network errors with backoff
-                let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
-                Some(std::time::Duration::from_millis(backoff_ms))
-            }
-            LlmError::JsonError(_) => {
-                // JSON errors might be transient, retry with backoff
-                let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
-                Some(std::time::Duration::from_millis(backoff_ms))
-            }
-            _ => None,
-        }
-    }
-}
-
-/// Extract and validate invocation IDs from an assistant message's tool calls.
-fn extract_expected_invocation_ids(message: &Message) -> Result<HashSet<InvocationId>, LlmError> {
-    let mut expected_ids = HashSet::new();
-
-    for correlation in message
-        .resolved_tool_call_correlations()
-        .unwrap_or_default()
-    {
-        let invocation_id = correlation.invocation_id.as_str().trim();
-        if invocation_id.is_empty() {
-            return Err(LlmError::RepairableHistory(
-                "assistant tool call has an empty invocation_id".to_string(),
-            ));
-        }
-        if !expected_ids.insert(correlation.invocation_id.clone()) {
-            return Err(LlmError::RepairableHistory(format!(
-                "assistant tool call batch contains duplicate invocation_id `{}`",
-                correlation.invocation_id
-            )));
-        }
-        if has_empty_explicit_provider_tool_call_id(&correlation) {
-            return Err(LlmError::RepairableHistory(format!(
-                "assistant tool call `{}` has an empty provider_tool_call_id",
-                correlation.invocation_id
-            )));
-        }
-    }
-
-    Ok(expected_ids)
-}
-
-/// Validate a sequence of tool result messages following an assistant batch.
-fn validate_tool_result_sequence(
-    messages: &[Message],
-    start_index: usize,
-    expected_ids: &HashSet<InvocationId>,
-) -> Result<(usize, HashSet<InvocationId>), LlmError> {
-    let mut seen_results = HashSet::new();
-    let mut cursor = start_index;
-
-    while cursor < messages.len() && messages[cursor].role == "tool" {
-        let result = &messages[cursor];
-        let Some(result_correlation) = result.resolved_tool_call_correlation() else {
-            return Err(LlmError::RepairableHistory(
-                "tool result is missing invocation_id".to_string(),
-            ));
-        };
-
-        if has_empty_explicit_provider_tool_call_id(&result_correlation) {
-            return Err(LlmError::RepairableHistory(format!(
-                "tool result for invocation_id `{}` has an empty provider_tool_call_id",
-                result_correlation.invocation_id
-            )));
-        }
-
-        let Some(invocation_id) = Some(result_correlation.invocation_id.clone())
-            .filter(|id| !id.as_str().trim().is_empty())
-        else {
-            return Err(LlmError::RepairableHistory(
-                "tool result is missing invocation_id".to_string(),
-            ));
-        };
-
-        if !expected_ids.contains(&invocation_id) {
-            return Err(LlmError::RepairableHistory(format!(
-                "tool result references unknown invocation_id `{invocation_id}`"
-            )));
-        }
-
-        if !seen_results.insert(invocation_id.clone()) {
-            return Err(LlmError::RepairableHistory(format!(
-                "tool result for invocation_id `{invocation_id}` is duplicated"
-            )));
-        }
-
-        cursor += 1;
-    }
-
-    Ok((cursor, seen_results))
-}
-
-/// Check batch completion policy and return error if incomplete.
-fn check_batch_completion(
-    cursor: usize,
-    messages_len: usize,
-    expected_ids: &HashSet<InvocationId>,
-    seen_results: &HashSet<InvocationId>,
-    capabilities: ProviderCapabilities,
-) -> Result<(), LlmError> {
-    let batch_is_terminal = cursor == messages_len;
-    let should_require_complete_batch = capabilities.strict_tool_history() || !batch_is_terminal;
-
-    if should_require_complete_batch && seen_results.len() != expected_ids.len() {
-        return Err(LlmError::RepairableHistory(format!(
-            "assistant tool call batch is incomplete for {} tool history: {} tool calls but {} tool results",
-            capabilities.tool_history_label(),
-            expected_ids.len(),
-            seen_results.len()
-        )));
-    }
-
-    Ok(())
-}
-
-/// Generate error detail for an orphaned tool result message.
-fn orphaned_tool_result_error(message: &Message) -> LlmError {
-    let detail = message
-        .resolved_tool_call_correlation()
-        .map(|correlation| correlation.invocation_id)
-        .filter(|id| !id.as_str().trim().is_empty())
-        .map_or_else(
-            || "orphaned tool result without invocation_id".to_string(),
-            |invocation_id| {
-                format!(
-                    "orphaned tool result references missing assistant tool call `{invocation_id}`"
-                )
-            },
-        );
-    LlmError::RepairableHistory(detail)
-}
-
-fn validate_tool_history(
-    messages: &[Message],
-    capabilities: ProviderCapabilities,
-) -> Result<(), LlmError> {
-    let mut index = 0;
-
-    while index < messages.len() {
-        let message = &messages[index];
-
-        if message.role == "assistant" {
-            if let Some(tool_calls) = &message.tool_calls {
-                if tool_calls.is_empty() {
-                    return Err(LlmError::RepairableHistory(
-                        "assistant tool call batch is empty".to_string(),
-                    ));
-                }
-
-                let expected_ids = extract_expected_invocation_ids(message)?;
-                let (cursor, seen_results) =
-                    validate_tool_result_sequence(messages, index + 1, &expected_ids)?;
-                check_batch_completion(
-                    cursor,
-                    messages.len(),
-                    &expected_ids,
-                    &seen_results,
-                    capabilities,
-                )?;
-
-                index = cursor;
-                continue;
-            }
-        }
-
-        if message.role == "tool" {
-            return Err(orphaned_tool_result_error(message));
-        }
-
-        index += 1;
-    }
-
-    Ok(())
-}
-
-fn has_empty_explicit_provider_tool_call_id(correlation: &ToolCallCorrelation) -> bool {
-    correlation
-        .provider_tool_call_id
-        .as_ref()
-        .is_some_and(|provider_tool_call_id| provider_tool_call_id.as_str().trim().is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_tool_history, InvocationId, LlmClient, LlmError, Message, ProviderCapabilities,
-        ProviderItemId, ProviderToolCallId, ToolCall, ToolCallCorrelation, ToolCallFunction,
-        ToolHistoryMode, ToolProtocol, ToolTransport,
+        InvocationId, Message, ProviderItemId, ProviderToolCallId, ToolCall, ToolCallCorrelation,
+        ToolCallFunction, ToolProtocol, ToolTransport,
     };
     use serde_json::json;
 
@@ -1147,124 +782,6 @@ mod tests {
             },
             false,
         )
-    }
-
-    #[test]
-    fn validate_tool_history_rejects_orphaned_tool_result() {
-        let messages = vec![
-            Message::user("hi"),
-            Message::tool("call-1", "search", "result"),
-        ];
-
-        let error = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-        )
-        .expect_err("history must be rejected");
-        assert!(matches!(error, LlmError::RepairableHistory(_)));
-    }
-
-    #[test]
-    fn validate_tool_history_rejects_incomplete_parallel_batch() {
-        let messages = vec![
-            Message::assistant_with_tools(
-                "calling tools",
-                vec![
-                    tool_call("call-1", "search"),
-                    tool_call("call-2", "read_file"),
-                ],
-            ),
-            Message::tool("call-1", "search", "result"),
-        ];
-
-        let error = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-        )
-        .expect_err("history must be rejected");
-        assert!(matches!(error, LlmError::RepairableHistory(_)));
-    }
-
-    #[test]
-    fn validate_tool_history_rejects_duplicate_tool_call_ids_in_assistant_batch() {
-        let messages = vec![Message::assistant_with_tools(
-            "calling tools",
-            vec![
-                tool_call("call-1", "search"),
-                tool_call("call-1", "read_file"),
-            ],
-        )];
-
-        let error = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-        )
-        .expect_err("history must be rejected");
-
-        assert!(matches!(error, LlmError::RepairableHistory(_)));
-    }
-
-    #[test]
-    fn validate_tool_history_rejects_duplicate_tool_results_for_same_call() {
-        let messages = vec![
-            Message::assistant_with_tools("calling tools", vec![tool_call("call-1", "search")]),
-            Message::tool("call-1", "search", "result-1"),
-            Message::tool("call-1", "search", "result-2"),
-        ];
-
-        let error = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-        )
-        .expect_err("history must be rejected");
-
-        assert!(matches!(error, LlmError::RepairableHistory(_)));
-    }
-
-    #[test]
-    fn validate_tool_history_allows_terminal_open_batch_for_best_effort_provider() {
-        let messages = vec![
-            Message::assistant_with_tools(
-                "calling tools",
-                vec![
-                    tool_call("call-1", "search"),
-                    tool_call("call-2", "read_file"),
-                ],
-            ),
-            Message::tool("call-1", "search", "result"),
-        ];
-
-        let result = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
-        );
-
-        assert!(
-            result.is_ok(),
-            "best-effort providers should allow an open terminal batch"
-        );
-    }
-
-    #[test]
-    fn validate_tool_history_rejects_nonterminal_open_batch_even_for_best_effort_provider() {
-        let messages = vec![
-            Message::assistant_with_tools(
-                "calling tools",
-                vec![
-                    tool_call("call-1", "search"),
-                    tool_call("call-2", "read_file"),
-                ],
-            ),
-            Message::tool("call-1", "search", "result"),
-            Message::user("follow up"),
-        ];
-
-        let error = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
-        )
-        .expect_err("history must be rejected");
-        assert!(matches!(error, LlmError::RepairableHistory(_)));
     }
 
     #[test]
@@ -1416,134 +933,5 @@ mod tests {
                 "call-legacy"
             )])
         );
-    }
-
-    #[test]
-    fn validate_tool_history_matches_on_invocation_id_not_raw_wire_id() {
-        let correlation =
-            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1");
-        let messages = vec![
-            Message {
-                role: "assistant".to_string(),
-                content: "calling tools".to_string(),
-                tool_call_id: None,
-                tool_call_correlation: None,
-                name: None,
-                tool_calls: Some(vec![tool_call("provider-a", "search")]),
-                tool_call_correlations: Some(vec![correlation.clone()]),
-            },
-            Message {
-                role: "tool".to_string(),
-                content: "result".to_string(),
-                tool_call_id: Some("provider-b".to_string()),
-                tool_call_correlation: Some(correlation),
-                name: Some("search".to_string()),
-                tool_calls: None,
-                tool_call_correlations: None,
-            },
-        ];
-
-        let result = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-        );
-
-        assert!(
-            result.is_ok(),
-            "canonical invocation ids should drive matching"
-        );
-    }
-
-    #[test]
-    fn validate_tool_history_rejects_empty_explicit_provider_tool_call_id_in_assistant_batch() {
-        let messages = vec![Message {
-            role: "assistant".to_string(),
-            content: "calling tools".to_string(),
-            tool_call_id: None,
-            tool_call_correlation: None,
-            name: None,
-            tool_calls: Some(vec![tool_call("call-1", "search")]),
-            tool_call_correlations: Some(vec![
-                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("")
-            ]),
-        }];
-
-        let error = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-        )
-        .expect_err("history must be rejected");
-
-        assert!(matches!(error, LlmError::RepairableHistory(_)));
-    }
-
-    #[test]
-    fn validate_tool_history_rejects_empty_explicit_provider_tool_call_id_in_tool_result() {
-        let assistant_correlation =
-            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1");
-        let tool_result_correlation =
-            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("");
-        let messages = vec![
-            Message {
-                role: "assistant".to_string(),
-                content: "calling tools".to_string(),
-                tool_call_id: None,
-                tool_call_correlation: None,
-                name: None,
-                tool_calls: Some(vec![tool_call("call-1", "search")]),
-                tool_call_correlations: Some(vec![assistant_correlation]),
-            },
-            Message {
-                role: "tool".to_string(),
-                content: "result".to_string(),
-                tool_call_id: Some("invoke-1".to_string()),
-                tool_call_correlation: Some(tool_result_correlation),
-                name: Some("search".to_string()),
-                tool_calls: None,
-                tool_call_correlations: None,
-            },
-        ];
-
-        let error = validate_tool_history(
-            &messages,
-            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-        )
-        .expect_err("history must be rejected");
-
-        assert!(matches!(error, LlmError::RepairableHistory(_)));
-    }
-
-    #[test]
-    fn provider_capabilities_for_nvidia_model_apply_model_specific_overrides() {
-        let supported = crate::config::ModelInfo {
-            id: "meta/llama-3.1-70b-instruct".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "nvidia".to_string(),
-            weight: 1,
-        };
-        let unsupported = crate::config::ModelInfo {
-            id: "deepseek-ai/deepseek-r1".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "nvidia".to_string(),
-            weight: 1,
-        };
-
-        let supported_capabilities = LlmClient::provider_capabilities_for_model(&supported);
-        let unsupported_capabilities = LlmClient::provider_capabilities_for_model(&unsupported);
-
-        assert!(supported_capabilities.supports_tool_calling);
-        assert!(supported_capabilities.supports_structured_output);
-        assert!(!unsupported_capabilities.supports_tool_calling);
-        assert!(!unsupported_capabilities.supports_structured_output);
-    }
-
-    #[test]
-    fn retry_delay_treats_service_unavailable_text_as_retryable() {
-        let error = LlmError::ApiError("NVIDIA NIM API error: service unavailable".to_string());
-        let delay = LlmClient::get_retry_delay(&error, 2).expect("retry delay");
-
-        assert_eq!(delay, std::time::Duration::from_millis(2000));
     }
 }
