@@ -7,6 +7,8 @@ pub mod minimax;
 #[allow(missing_docs)]
 pub mod mistral;
 #[allow(missing_docs)]
+pub mod nvidia;
+#[allow(missing_docs)]
 pub mod openrouter;
 #[allow(missing_docs)]
 pub mod protocol_profiles;
@@ -25,5 +27,6 @@ pub use gemini::GeminiProvider;
 pub use groq::GroqProvider;
 pub use minimax::MiniMaxProvider;
 pub use mistral::MistralProvider;
+pub use nvidia::NvidiaProvider;
 pub use openrouter::OpenRouterProvider;
 pub use zai::{parse_zai_flush_time, ZaiProvider};
