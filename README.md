@@ -11,7 +11,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **5 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenRouter, Mistral, Google Gemini), along with Groq support.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, NVIDIA NIM, OpenRouter, Mistral, Google Gemini), along with Groq support.
 
 ### Architecture Highlights
 
@@ -65,7 +65,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **🗣️ Narrator:** Separate model for summarizing agent thoughts and actions in chat.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 5 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
+*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, NVIDIA NIM, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Multimedia Processing:**
     *   Voice and video messages (speech recognition via Gemini or Voxtral).
@@ -260,16 +260,17 @@ Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or
 
 ## Available LLM Providers
 
-| Name | Provider | Features |
-| :--- | :--- | :--- |
-| **OR Gemini 3 Flash** | OpenRouter | Multimodal, default chat model |
-| **ZAI GLM-4.7** | ZAI (Zhipu AI) | Default agent model, GLM Coding Plan |
-| **MiniMax M2.7** | MiniMax | Claude SDK-compatible, high context |
-| **Mistral Large** | Mistral | Free and generous, includes Voxtral audio transcription |
-| **Gemini 2.5 Flash Lite** | Google | Cheap and efficient |
-| **Devstral 2512** | Mistral | Top free for coding and agent work |
+| Provider | Description |
+| :--- | :--- |
+| **ZAI (Zhipu AI)** | Default agent model, native tool-aware chat |
+| **MiniMax** | Claude SDK-compatible, high context |
+| **NVIDIA NIM** | Tool calling support, hosted inference |
+| **Mistral** | Generous free tier, includes Voxtral audio transcription |
+| **Google Gemini** | Multimodal, efficient |
+| **OpenRouter** | Aggregator for various models |
+| **Groq** | Fast inference (Chat Mode only) |
 
-> **Note:** The models listed above are recommended configurations. Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
+> **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
 
 ## New Tool Providers
 
@@ -352,7 +353,7 @@ Topic-scoped SSH tools with approval flow for sensitive operations.
 OXIDE_SSH_MCP_BINARY=/usr/local/bin/ssh-mcp
 ```
 
-**Tools:** `ssh_exec`, `ssh_sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_check_process`
+**Tools:** `ssh_exec`, `ssh_sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_check_process`, `ssh_send_file_to_user`
 
 **Features:**
 - Approval flow with TTL 600s
