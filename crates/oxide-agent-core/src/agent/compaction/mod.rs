@@ -10,6 +10,7 @@ pub mod prune;
 pub mod rebuild;
 pub mod service;
 pub mod summarizer;
+mod summary;
 pub mod types;
 
 pub use archive::{

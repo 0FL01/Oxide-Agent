@@ -61,6 +61,7 @@ struct ProbeProvider {
     calls: Arc<AtomicUsize>,
     behaviors: Mutex<VecDeque<ProbeBehavior>>,
     default_behavior: ProbeBehavior,
+    user_messages: Option<Arc<Mutex<Vec<String>>>>,
 }
 
 #[async_trait]
@@ -69,11 +70,17 @@ impl LlmProvider for ProbeProvider {
         &self,
         _system_prompt: &str,
         _history: &[crate::llm::Message],
-        _user_message: &str,
+        user_message: &str,
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(user_messages) = &self.user_messages {
+            user_messages
+                .lock()
+                .expect("probe user messages lock")
+                .push(user_message.to_string());
+        }
         let behavior = self
             .behaviors
             .lock()
@@ -128,7 +135,21 @@ fn probe_summarizer(
     behaviors: Vec<ProbeBehavior>,
     timeout_secs: u64,
 ) -> (CompactionSummarizer, Arc<AtomicUsize>) {
+    let (summarizer, calls, _user_messages) =
+        probe_summarizer_with_capture(behaviors, timeout_secs);
+    (summarizer, calls)
+}
+
+fn probe_summarizer_with_capture(
+    behaviors: Vec<ProbeBehavior>,
+    timeout_secs: u64,
+) -> (
+    CompactionSummarizer,
+    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<String>>>,
+) {
     let calls = Arc::new(AtomicUsize::new(0));
+    let user_messages = Arc::new(Mutex::new(Vec::new()));
     let mut llm_client = LlmClient::new(&AgentSettings {
         compaction_model_id: Some("compact-model".to_string()),
         compaction_model_provider: Some("probe".to_string()),
@@ -145,22 +166,21 @@ fn probe_summarizer(
                 .cloned()
                 .unwrap_or(ProbeBehavior::UnknownError("probe behavior missing")),
             behaviors: Mutex::new(VecDeque::from(behaviors)),
+            user_messages: Some(Arc::clone(&user_messages)),
         }),
     );
 
-    (
-        CompactionSummarizer::new(
-            Arc::new(llm_client),
-            CompactionSummarizerConfig {
-                model_routes: vec![route("compact-model", "probe", 256)],
-                timeout_secs,
-                initial_backoff_ms: 0,
-                max_backoff_ms: 12_000,
-                ..CompactionSummarizerConfig::default()
-            },
-        ),
-        calls,
-    )
+    let summarizer = CompactionSummarizer::new(
+        Arc::new(llm_client),
+        CompactionSummarizerConfig {
+            model_routes: vec![route("compact-model", "probe", 256)],
+            timeout_secs,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 12_000,
+            ..CompactionSummarizerConfig::default()
+        },
+    );
+    (summarizer, calls, user_messages)
 }
 
 #[tokio::test]
@@ -337,6 +357,7 @@ async fn summary_uses_next_route_when_primary_route_fails() {
             behaviors: Mutex::new(VecDeque::from(vec![ProbeBehavior::UnknownError(
                 "primary failed",
             )])),
+            user_messages: None,
         }),
     );
     llm_client.register_provider(
@@ -349,6 +370,7 @@ async fn summary_uses_next_route_when_primary_route_fails() {
             behaviors: Mutex::new(VecDeque::from(vec![ProbeBehavior::Return(
                 r#"{"goal":"fallback","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":["continue"],"risks":[]}"#,
             )])),
+            user_messages: None,
         }),
     );
     let summarizer = CompactionSummarizer::new(
@@ -401,6 +423,7 @@ async fn summary_skips_retry_when_rate_limit_wait_exceeds_max_backoff() {
             calls: Arc::clone(&primary_calls),
             default_behavior: ProbeBehavior::RateLimit(Some(30)),
             behaviors: Mutex::new(VecDeque::from(vec![ProbeBehavior::RateLimit(Some(30))])),
+            user_messages: None,
         }),
     );
     llm_client.register_provider(
@@ -413,6 +436,7 @@ async fn summary_skips_retry_when_rate_limit_wait_exceeds_max_backoff() {
             behaviors: Mutex::new(VecDeque::from(vec![ProbeBehavior::Return(
                 r#"{"goal":"fallback","constraints":[],"decisions":[],"discoveries":[],"relevant_files_entities":[],"remaining_work":["continue"],"risks":[]}"#,
             )])),
+            user_messages: None,
         }),
     );
     let summarizer = CompactionSummarizer::new(
@@ -476,4 +500,71 @@ async fn service_invalid_summary_response_uses_fallback_and_rebuilds() {
         .iter()
         .any(|message| message.summary_payload().is_some()));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn service_second_compaction_uses_previous_summary_and_replaces_stale_fields() {
+    let (summarizer, calls, user_messages) = probe_summarizer_with_capture(
+        vec![
+            ProbeBehavior::Return(
+                r#"{"goal":"Ship stage 21","constraints":["Keep AGENTS.md pinned"],"decisions":["Use summary replacement semantics"],"discoveries":[],"relevant_files_entities":[],"remaining_work":["Finish migration"],"risks":["Old risk"]}"#,
+            ),
+            ProbeBehavior::Return(
+                r#"{"goal":"Ship stage 21","constraints":["Keep AGENTS.md pinned"],"decisions":["Use summary replacement semantics"],"discoveries":["Migration completed safely"],"relevant_files_entities":["crates/oxide-agent-core/src/agent/compaction/summarizer.rs"],"remaining_work":["Validate final cleanup"],"risks":[]}"#,
+            ),
+        ],
+        5,
+    );
+    let service = CompactionService::default().with_summarizer(summarizer);
+    let request = manual_request("Ship stage 21");
+    let mut session = EphemeralSession::new(20_000);
+    for message in compactable_history_messages() {
+        session.memory_mut().add_message(message);
+    }
+
+    let first = service
+        .prepare_for_run(&request, &mut session)
+        .await
+        .expect("first compaction succeeds");
+    assert!(first.rebuild.applied);
+
+    session.memory_mut().add_message(AgentMessage::user(
+        "Follow-up request: migration is done, validate cleanup.",
+    ));
+    session.memory_mut().add_message(AgentMessage::assistant(
+        "Follow-up response: migration completed, old risk resolved.",
+    ));
+
+    let second = service
+        .prepare_for_run(&request, &mut session)
+        .await
+        .expect("second compaction succeeds");
+
+    assert!(second.summary_generation.attempted);
+    assert!(second.rebuild.applied);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    let captured_messages = user_messages.lock().expect("captured prompts lock");
+    assert_eq!(captured_messages.len(), 2);
+    assert!(captured_messages[1].contains("## Previous Structured Summary"));
+    assert!(captured_messages[1].contains("\"remaining_work\": [\n    \"Finish migration\""));
+    assert!(captured_messages[1].contains("\"risks\": [\n    \"Old risk\""));
+
+    let summaries: Vec<_> = session
+        .memory()
+        .get_messages()
+        .iter()
+        .filter_map(|message| message.summary_payload())
+        .collect();
+    assert_eq!(summaries.len(), 1);
+    let summary = summaries[0];
+    assert_eq!(
+        summary.remaining_work,
+        vec!["Validate final cleanup".to_string()]
+    );
+    assert!(summary.risks.is_empty());
+    assert!(summary
+        .discoveries
+        .iter()
+        .any(|item| item == "Migration completed safely"));
 }

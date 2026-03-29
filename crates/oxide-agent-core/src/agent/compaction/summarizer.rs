@@ -1,6 +1,9 @@
 //! Sidecar summarizer for compactable Agent Mode history.
 
 use super::prompt::{build_compaction_user_message, compaction_system_prompt};
+use super::summary::{
+    collect_existing_structured_summaries, merge_summaries_bounded, normalize_summary,
+};
 use super::types::{
     BudgetState, CompactionRequest, CompactionSnapshot, CompactionSummary, SummaryGenerationOutcome,
 };
@@ -71,8 +74,14 @@ impl CompactionSummarizer {
             return SummaryGenerationOutcome::default();
         }
 
-        let user_message = build_compaction_user_message(snapshot, messages);
-        let fallback = deterministic_fallback_summary(request, snapshot, messages);
+        let previous_summary = merge_summaries_bounded(
+            collect_existing_structured_summaries(snapshot, messages),
+            None,
+        );
+        let user_message =
+            build_compaction_user_message(previous_summary.as_ref(), snapshot, messages);
+        let fallback =
+            deterministic_fallback_summary(request, previous_summary.as_ref(), snapshot, messages);
         let compactable_entries = snapshot.compactable_history.message_count;
 
         let mut attempted_model_name = None;
@@ -290,30 +299,6 @@ fn parse_summary_response(response: &str) -> Option<CompactionSummary> {
     }
 }
 
-fn normalize_summary(summary: CompactionSummary) -> Option<CompactionSummary> {
-    let normalized = CompactionSummary {
-        goal: normalize_scalar(summary.goal, 240),
-        constraints: normalize_items(summary.constraints, 8, 240),
-        decisions: normalize_items(summary.decisions, 8, 240),
-        discoveries: normalize_items(summary.discoveries, 8, 240),
-        relevant_files_entities: normalize_items(summary.relevant_files_entities, 10, 240),
-        remaining_work: normalize_items(summary.remaining_work, 8, 240),
-        risks: normalize_items(summary.risks, 8, 240),
-    };
-
-    summary_has_signal(&normalized).then_some(normalized)
-}
-
-fn summary_has_signal(summary: &CompactionSummary) -> bool {
-    !summary.goal.trim().is_empty()
-        || !summary.constraints.is_empty()
-        || !summary.decisions.is_empty()
-        || !summary.discoveries.is_empty()
-        || !summary.relevant_files_entities.is_empty()
-        || !summary.remaining_work.is_empty()
-        || !summary.risks.is_empty()
-}
-
 fn extract_json(response: &str) -> &str {
     let trimmed = response.trim();
     if let Some(start) = trimmed.find('{') {
@@ -326,6 +311,7 @@ fn extract_json(response: &str) -> &str {
 
 fn deterministic_fallback_summary(
     request: &CompactionRequest<'_>,
+    previous_summary: Option<&CompactionSummary>,
     snapshot: &CompactionSnapshot,
     messages: &[AgentMessage],
 ) -> CompactionSummary {
@@ -346,7 +332,7 @@ fn deterministic_fallback_summary(
             |message| first_sentence(&message.content),
         );
 
-    CompactionSummary {
+    let delta = CompactionSummary {
         goal,
         constraints: dedupe_limit(
             extract_lines(
@@ -400,7 +386,9 @@ fn deterministic_fallback_summary(
             ),
             5,
         ),
-    }
+    };
+
+    merge_summaries_bounded(previous_summary.cloned(), Some(delta)).unwrap_or_default()
 }
 
 fn extract_lines(
@@ -454,20 +442,6 @@ fn dedupe_limit(items: Vec<String>, limit: usize) -> Vec<String> {
         }
     }
     deduped
-}
-
-fn normalize_items(items: Vec<String>, limit: usize, max_chars: usize) -> Vec<String> {
-    dedupe_limit(
-        items
-            .into_iter()
-            .map(|item| normalize_scalar(item, max_chars))
-            .collect(),
-        limit,
-    )
-}
-
-fn normalize_scalar(value: String, max_chars: usize) -> String {
-    value.trim().chars().take(max_chars).collect()
 }
 
 fn first_sentence(text: &str) -> String {
@@ -733,6 +707,8 @@ mod tests {
             .withf(|system_prompt, history, user_message, model_name, max_tokens| {
                 system_prompt.contains("Return ONLY valid JSON")
                     && history.is_empty()
+                    && user_message.contains("## Previous Structured Summary")
+                    && user_message.contains("## New Compactable History")
                     && user_message.contains("## Entry")
                     && !user_message.trim().is_empty()
                     && user_message.contains("Older request")
