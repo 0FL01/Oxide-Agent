@@ -1,3 +1,4 @@
+use super::backoff::MAX_RETRIES;
 use super::client::SearxngClient;
 use super::format::format_search_results;
 use super::types::{SearxngSearchArgs, TOOL_NAME};
@@ -9,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::time::Duration;
 use tracing::debug;
+use tracing::error;
 
 #[derive(Debug, Clone)]
 /// Tool provider for self-hosted SearXNG web search.
@@ -124,7 +126,15 @@ impl ToolProvider for SearxngProvider {
                         &response,
                         args.normalized_max_results(),
                     )),
-                    Err(error) => Ok(format!("SearXNG search error: {error}")),
+                    Err(error) => {
+                        error!(
+                            query = %args.query,
+                            error = %error,
+                            "SearXNG search failed after {} attempts",
+                            MAX_RETRIES + 1,
+                        );
+                        Ok(error.agent_message().to_string())
+                    }
                 }
             }
             _ => anyhow::bail!("Unknown SearXNG tool: {tool_name}"),
