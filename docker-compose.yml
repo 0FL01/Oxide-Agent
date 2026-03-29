@@ -69,6 +69,8 @@ services:
     container_name: crawl4ai
     restart: unless-stopped
     shm_size: '2gb'
+    ports:
+      - "127.0.0.1:11235:11235"
     deploy:
       resources:
         limits:
