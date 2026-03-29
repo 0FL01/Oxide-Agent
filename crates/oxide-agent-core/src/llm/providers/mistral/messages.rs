@@ -45,7 +45,7 @@ pub fn prepare_structured_messages(
                                     .and_then(|call| call.into_chat_like())
                                     .map(|call| {
                                         // Transform ID to Mistral-compatible format
-                                        let mistral_id = id_mapper.to_mistral(&call.id);
+                                        let mistral_id = id_mapper.mistral_id_for(&call.id);
                                         json!({
                                             "id": mistral_id,
                                             "type": "function",
@@ -72,7 +72,7 @@ pub fn prepare_structured_messages(
                         "content": result.content
                     });
                     // Transform ID to Mistral-compatible format
-                    let mistral_id = id_mapper.to_mistral(&result.tool_call_id);
+                    let mistral_id = id_mapper.mistral_id_for(&result.tool_call_id);
                     tool_msg["tool_call_id"] = json!(mistral_id);
                     if let Some(name) = result.name {
                         tool_msg["name"] = json!(name);

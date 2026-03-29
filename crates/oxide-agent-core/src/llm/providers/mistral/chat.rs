@@ -10,10 +10,9 @@ use crate::llm::providers::mistral::{
     types::{MISTRAL_REASONING_EFFORT, MISTRAL_REASONING_MODEL_ID},
 };
 use crate::llm::{
-    support::{http::parse_retry_after, openai_compat},
-    ChatResponse, ChatWithToolsRequest, LlmError, Message, ToolDefinition,
+    support::http::parse_retry_after, ChatResponse, ChatWithToolsRequest, LlmError, Message,
+    ToolDefinition,
 };
-use async_openai::Client;
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -107,15 +106,6 @@ fn chat_temperature(model_id: &str) -> f32 {
     }
 }
 
-/// Parameters for plain chat completion.
-pub struct ChatCompletionRequest<'a> {
-    pub system_prompt: &'a str,
-    pub history: &'a [Message],
-    pub user_message: &'a str,
-    pub model_id: &'a str,
-    pub max_tokens: u32,
-}
-
 /// Send chat request to Mistral API
 ///
 /// Legacy version without ID mapping. Use `send_chat_request_with_mapping` for tool calling.
@@ -179,42 +169,6 @@ pub async fn send_chat_request_with_mapping(
     // Take lock for parsing (maps Mistral IDs back to original)
     let mapper = id_mapper.lock().expect("ID mapper lock poisoned");
     parse_chat_response(response_json, &mapper)
-}
-
-/// Chat completion implementation
-pub async fn chat_completion(
-    client: &Client<async_openai::config::OpenAIConfig>,
-    http_client: &HttpClient,
-    api_key: &str,
-    request: ChatCompletionRequest<'_>,
-) -> Result<String, LlmError> {
-    let ChatCompletionRequest {
-        system_prompt,
-        history,
-        user_message,
-        model_id,
-        max_tokens,
-    } = request;
-
-    if is_reasoning_model(model_id) {
-        let body =
-            build_chat_completion_body(system_prompt, history, user_message, model_id, max_tokens);
-        let response = send_chat_request(http_client, api_key, body).await?;
-        return response
-            .content
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()));
-    }
-
-    openai_compat::chat_completion(
-        client,
-        system_prompt,
-        history,
-        user_message,
-        model_id,
-        max_tokens,
-        MISTRAL_CHAT_TEMPERATURE,
-    )
-    .await
 }
 
 /// Chat with tools implementation

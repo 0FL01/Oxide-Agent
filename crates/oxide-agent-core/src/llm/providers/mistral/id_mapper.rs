@@ -52,10 +52,10 @@ impl ToolCallIdMapper {
         mistral_id
     }
 
-    /// Get Mistral-compatible ID for an original ID
+    /// Get or register the Mistral-compatible ID for an original ID.
     ///
-    /// If not registered, creates and registers the mapping
-    pub fn to_mistral(&mut self, original_id: &str) -> String {
+    /// If not registered, creates and registers the mapping.
+    pub fn mistral_id_for(&mut self, original_id: &str) -> String {
         if let Some(mistral_id) = self.original_to_mistral.get(original_id) {
             return mistral_id.clone();
         }
@@ -138,7 +138,7 @@ mod tests {
         let mistral = mapper.register(original.to_string());
 
         assert_eq!(mistral, "43acb9e14");
-        assert_eq!(mapper.to_mistral(original), "43acb9e14");
+        assert_eq!(mapper.mistral_id_for(original), "43acb9e14");
         assert_eq!(mapper.to_original(&mistral), original);
     }
 

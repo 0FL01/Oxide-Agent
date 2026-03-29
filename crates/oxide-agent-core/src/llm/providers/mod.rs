@@ -10,16 +10,11 @@ pub mod mistral;
 pub mod nvidia;
 #[allow(missing_docs)]
 pub mod openrouter;
-#[allow(missing_docs)]
-pub mod protocol_profiles;
-#[allow(missing_docs)]
-pub mod tool_call_adapter;
-#[allow(missing_docs)]
-pub mod tool_call_encoder;
-#[allow(missing_docs)]
-pub mod tool_correlation;
-#[allow(missing_docs)]
-pub mod tool_result_encoder;
+mod protocol_profiles;
+mod tool_call_adapter;
+mod tool_call_encoder;
+mod tool_correlation;
+mod tool_result_encoder;
 #[allow(missing_docs)]
 pub mod zai;
 

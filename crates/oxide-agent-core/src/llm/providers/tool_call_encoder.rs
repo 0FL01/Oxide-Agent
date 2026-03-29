@@ -24,6 +24,7 @@ impl EncodedAssistantToolCall {
     }
 
     /// Extract the responses-style payload when available.
+    #[cfg(test)]
     #[must_use]
     pub fn into_responses_like(self) -> Option<ResponsesLikeAssistantToolCall> {
         match self {

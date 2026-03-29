@@ -33,6 +33,7 @@ impl EncodedToolResult {
     }
 
     /// Extract the Responses-style envelope when available.
+    #[cfg(test)]
     #[must_use]
     pub fn into_responses_like(self) -> Option<ResponsesLikeToolResult> {
         match self {
