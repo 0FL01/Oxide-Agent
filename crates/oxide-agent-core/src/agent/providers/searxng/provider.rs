@@ -63,7 +63,7 @@ impl ToolProvider for SearxngProvider {
                     },
                     "time_range": {
                         "type": "string",
-                        "enum": ["day", "month", "year"],
+                        "enum": ["day", "week", "month", "year"],
                         "description": "Optional recency filter"
                     },
                     "safe_search": {

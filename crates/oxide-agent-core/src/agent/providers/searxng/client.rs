@@ -186,7 +186,7 @@ impl SearxngClient {
         }
 
         if let Some(safe_search) = args.normalized_safe_search() {
-            params.push(("safe_search", safe_search.to_string()));
+            params.push(("safesearch", safe_search.to_string()));
         }
 
         if let Some(categories) = join_csv(args.categories.as_deref()) {
