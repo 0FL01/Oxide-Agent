@@ -27,6 +27,8 @@ enum AttemptOutcome {
 #[derive(Clone, Copy)]
 struct LlmAttemptMetadata<'a> {
     provider_name: &'a str,
+    model_name: &'a str,
+    route_index: Option<usize>,
     capabilities: ProviderCapabilities,
     attempt: usize,
     max_retries: usize,
@@ -186,8 +188,18 @@ impl AgentRunner {
                     .ok()
             })
             .unwrap_or_else(|| "unknown".to_string());
+        let model_name = ctx.config.model_name.clone();
         let model_info = self.llm_client.get_model_info(&ctx.config.model_name)?;
         let capabilities = LlmClient::provider_capabilities_for_model(&model_info);
+
+        Self::log_llm_route_selected(
+            ctx,
+            state,
+            0,
+            provider_name.as_str(),
+            model_name.as_str(),
+            json_mode,
+        );
 
         if !capabilities.can_run_agent_tools() {
             let error = LlmError::ApiError(format!(
@@ -200,6 +212,15 @@ impl AgentRunner {
 
         for attempt in 1..=max_retries {
             Self::refresh_messages_from_memory(ctx);
+            Self::log_llm_route_attempt_started(
+                ctx,
+                state,
+                attempt,
+                max_retries,
+                Some(0),
+                provider_name.as_str(),
+                model_name.as_str(),
+            );
             let result = self
                 .llm_client
                 .chat_with_tools_single_attempt(
@@ -217,6 +238,8 @@ impl AgentRunner {
                     state,
                     LlmAttemptMetadata {
                         provider_name: &provider_name,
+                        model_name: &model_name,
+                        route_index: Some(0),
                         capabilities,
                         attempt,
                         max_retries,
@@ -267,6 +290,15 @@ impl AgentRunner {
             let provider_name = route.provider.clone();
             let capabilities = LlmClient::provider_capabilities_for_model(&route);
 
+            Self::log_llm_route_selected(
+                ctx,
+                state,
+                route_index,
+                route.provider.as_str(),
+                route.id.as_str(),
+                json_mode,
+            );
+
             if !capabilities.can_run_agent_tools() {
                 let error = LlmError::ApiError(format!(
                     "Tool-enabled agent calls are not supported for {} model `{}`",
@@ -285,6 +317,15 @@ impl AgentRunner {
 
             for attempt in 1..=max_retries {
                 Self::refresh_messages_from_memory(ctx);
+                Self::log_llm_route_attempt_started(
+                    ctx,
+                    state,
+                    attempt,
+                    max_retries,
+                    Some(route_index),
+                    route.provider.as_str(),
+                    route.id.as_str(),
+                );
                 let result = self
                     .llm_client
                     .chat_with_tools_single_attempt_for_model_info(
@@ -302,6 +343,8 @@ impl AgentRunner {
                         state,
                         LlmAttemptMetadata {
                             provider_name: &provider_name,
+                            model_name: &route.id,
+                            route_index: Some(route_index),
                             capabilities,
                             attempt,
                             max_retries,
@@ -335,6 +378,7 @@ impl AgentRunner {
     ) -> Result<AttemptOutcome> {
         match result {
             Ok(response) => {
+                Self::log_llm_route_attempt_success(ctx, state, &metadata);
                 if metadata.attempt > 1 {
                     info!(
                         attempt = metadata.attempt,
@@ -346,6 +390,7 @@ impl AgentRunner {
                 Ok(AttemptOutcome::Return(response))
             }
             Err(error) => {
+                Self::log_llm_route_attempt_error(ctx, state, &metadata, &error);
                 if let LlmError::RepairableHistory(reason) = &error {
                     if self
                         .repair_history_before_retry(
@@ -1283,16 +1328,114 @@ impl AgentRunner {
         let _ = tx.send(AgentEvent::TokenSnapshotUpdated { snapshot }).await;
     }
 
+    fn log_llm_route_selected(
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        route_index: usize,
+        provider: &str,
+        model: &str,
+        json_mode: bool,
+    ) {
+        info!(
+            task_id = %ctx.task_id,
+            iteration = state.iteration,
+            route_index,
+            provider,
+            model,
+            is_sub_agent = ctx.config.is_sub_agent,
+            json_mode,
+            "LLM route selected"
+        );
+    }
+
+    fn log_llm_route_attempt_started(
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        attempt: usize,
+        max_attempts: usize,
+        route_index: Option<usize>,
+        provider: &str,
+        model: &str,
+    ) {
+        debug!(
+            task_id = %ctx.task_id,
+            iteration = state.iteration,
+            attempt,
+            max_attempts,
+            route_index,
+            provider,
+            model,
+            is_sub_agent = ctx.config.is_sub_agent,
+            "LLM route attempt started"
+        );
+    }
+
+    fn log_llm_route_attempt_success(
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        metadata: &LlmAttemptMetadata<'_>,
+    ) {
+        info!(
+            task_id = %ctx.task_id,
+            iteration = state.iteration,
+            attempt = metadata.attempt,
+            max_attempts = metadata.max_retries,
+            route_index = metadata.route_index,
+            provider = metadata.provider_name,
+            model = metadata.model_name,
+            is_sub_agent = ctx.config.is_sub_agent,
+            outcome = "success",
+            "LLM route attempt finished"
+        );
+    }
+
+    fn log_llm_route_attempt_error(
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        metadata: &LlmAttemptMetadata<'_>,
+        error: &LlmError,
+    ) {
+        let outcome = if LlmClient::is_rate_limit_error(error) {
+            "rate_limit"
+        } else if LlmClient::is_retryable_error(error) {
+            "retryable_error"
+        } else {
+            "error"
+        };
+
+        warn!(
+            task_id = %ctx.task_id,
+            iteration = state.iteration,
+            attempt = metadata.attempt,
+            max_attempts = metadata.max_retries,
+            route_index = metadata.route_index,
+            provider = metadata.provider_name,
+            model = metadata.model_name,
+            is_sub_agent = ctx.config.is_sub_agent,
+            error = %error,
+            outcome,
+            "LLM route attempt finished"
+        );
+    }
+
     fn log_token_snapshot(
         ctx: &AgentRunnerContext<'_>,
         iteration: usize,
         phase: &str,
         snapshot: &TokenSnapshot,
     ) {
+        let planned_provider = ctx
+            .config
+            .model_provider
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
         info!(
             task_id = %ctx.task_id,
             iteration,
             phase,
+            planned_provider = planned_provider,
+            planned_model = %ctx.config.model_name,
+            is_sub_agent = ctx.config.is_sub_agent,
             hot_memory_tokens = snapshot.hot_memory_tokens,
             system_prompt_tokens = snapshot.system_prompt_tokens,
             tool_schema_tokens = snapshot.tool_schema_tokens,
