@@ -2291,6 +2291,95 @@ mod tests {
             .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) }));
     }
 
+    #[tokio::test]
+    async fn run_skips_unsupported_nvidia_route_and_uses_backup() {
+        let mut unsupported_nvidia = MockLlmProvider::new();
+        unsupported_nvidia.expect_chat_with_tools().times(0);
+        stub_non_chat_methods(&mut unsupported_nvidia);
+
+        let mut backup = MockLlmProvider::new();
+        backup
+            .expect_chat_with_tools()
+            .times(1)
+            .return_once(|_| Ok(final_structured_response()));
+        stub_non_chat_methods(&mut backup);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-ai/deepseek-r1".to_string()),
+            agent_model_provider: Some("nvidia".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("nvidia".to_string(), Arc::new(unsupported_nvidia));
+        llm_client.register_provider("backup".to_string(), Arc::new(backup));
+        let llm_client = Arc::new(llm_client);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Skip unsupported NVIDIA route"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = AgentRunnerContext {
+            task: "Skip unsupported NVIDIA route",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-nvidia-capability-skip",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            config: AgentRunnerConfig::new("deepseek-ai/deepseek-r1".to_string(), 1, 1, 30, 256)
+                .with_model_provider("nvidia")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "deepseek-ai/deepseek-r1".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "nvidia".to_string(),
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "backup-model".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "backup".to_string(),
+                        weight: 1,
+                    },
+                ]),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::ProviderFailoverActivated {
+                    from_provider,
+                    from_model,
+                    to_provider,
+                    to_model,
+                } if from_provider == "nvidia"
+                    && from_model == "deepseek-ai/deepseek-r1"
+                    && to_provider == "backup"
+                    && to_model == "backup-model"
+            )
+        }));
+    }
+
     fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {
         let settings = AgentSettings {
             agent_model_id: Some("mock-model".to_string()),
