@@ -12,14 +12,20 @@ const MAX_ENGINE_ROTATIONS: usize = 2;
 pub struct SearxngClient {
     base_url: String,
     http: reqwest::Client,
+    rotation_seed_engines: Vec<String>,
 }
 
 impl SearxngClient {
-    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, SearxngError> {
+    pub fn new(
+        base_url: &str,
+        timeout: Duration,
+        rotation_seed_engines: Vec<String>,
+    ) -> Result<Self, SearxngError> {
         let http = reqwest::Client::builder().timeout(timeout).build()?;
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http,
+            rotation_seed_engines,
         })
     }
 
@@ -43,8 +49,11 @@ impl SearxngClient {
             } else {
                 // Subsequent attempts — exclude unresponsive engines.
                 let mut modified = args.clone();
-                modified.engines =
-                    build_engine_list_excluding(args.engines.as_deref(), &excluded_engines);
+                modified.engines = build_engine_list_excluding(
+                    args.engines.as_deref(),
+                    &self.rotation_seed_engines,
+                    &excluded_engines,
+                );
                 modified
             };
 
@@ -216,36 +225,39 @@ impl SearxngClient {
 ///
 /// Logic:
 /// - If user explicitly specified engines: return those engines MINUS excluded ones
-/// - If user didn't specify engines (use all): return None (let SearXNG decide)
-///
-/// Note: When engines param is None/empty, SearXNG uses all configured engines.
-/// We cannot easily exclude engines without knowing the full list, so we retry
-/// hoping SearXNG will route to responsive ones.
+/// - If user didn't specify engines: use configured fallback engine list MINUS excluded ones
+/// - If user list becomes empty after exclusion: fallback to configured engine list
 fn build_engine_list_excluding(
     user_engines: Option<&[String]>,
+    fallback_engines: &[String],
     excluded: &[String],
 ) -> Option<Vec<String>> {
     match user_engines {
-        None => {
-            // User didn't specify engines — let SearXNG use all (exclude none explicitly).
-            // The engine rotation happens by retrying and hoping SearXNG routes better.
-            None
-        }
+        None => build_filtered_engine_list(fallback_engines, excluded),
         Some(engines) => {
             // User specified engines — filter out excluded ones.
-            let filtered: Vec<String> = engines
-                .iter()
-                .filter(|e| !excluded.contains(e))
-                .cloned()
-                .collect();
-
-            if filtered.is_empty() {
-                // All user-specified engines are excluded — return None to use defaults.
-                None
+            let filtered = build_filtered_engine_list(engines, excluded);
+            if filtered.is_some() {
+                filtered
             } else {
-                Some(filtered)
+                // All user engines are unavailable — fallback to configured rotation engines.
+                build_filtered_engine_list(fallback_engines, excluded)
             }
         }
+    }
+}
+
+fn build_filtered_engine_list(engines: &[String], excluded: &[String]) -> Option<Vec<String>> {
+    let filtered: Vec<String> = engines
+        .iter()
+        .filter(|e| !excluded.contains(e))
+        .cloned()
+        .collect();
+
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered)
     }
 }
 
@@ -291,9 +303,10 @@ mod tests {
             "bing".to_string(),
             "duckduckgo".to_string(),
         ];
+        let fallback = vec!["qwant".to_string(), "yandex".to_string()];
         let excluded = vec!["bing".to_string()];
 
-        let result = build_engine_list_excluding(Some(&user), &excluded);
+        let result = build_engine_list_excluding(Some(&user), &fallback, &excluded);
 
         assert_eq!(
             result,
@@ -302,21 +315,26 @@ mod tests {
     }
 
     #[test]
-    fn build_engine_list_returns_none_when_all_user_engines_excluded() {
+    fn build_engine_list_falls_back_when_all_user_engines_excluded() {
         let user = vec!["google".to_string(), "bing".to_string()];
+        let fallback = vec!["qwant".to_string(), "yandex".to_string()];
         let excluded = vec!["google".to_string(), "bing".to_string()];
 
-        let result = build_engine_list_excluding(Some(&user), &excluded);
+        let result = build_engine_list_excluding(Some(&user), &fallback, &excluded);
 
-        assert_eq!(result, None);
+        assert_eq!(
+            result,
+            Some(vec!["qwant".to_string(), "yandex".to_string()])
+        );
     }
 
     #[test]
-    fn build_engine_list_returns_none_when_no_user_engines() {
+    fn build_engine_list_uses_fallback_when_no_user_engines() {
+        let fallback = vec!["google".to_string(), "qwant".to_string()];
         let excluded = vec!["google".to_string()];
 
-        let result = build_engine_list_excluding(None, &excluded);
+        let result = build_engine_list_excluding(None, &fallback, &excluded);
 
-        assert_eq!(result, None);
+        assert_eq!(result, Some(vec!["qwant".to_string()]));
     }
 }

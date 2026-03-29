@@ -3,7 +3,7 @@ use super::client::SearxngClient;
 use super::format::format_search_results;
 use super::types::{SearxngSearchArgs, TOOL_NAME};
 use crate::agent::provider::ToolProvider;
-use crate::config::get_searxng_timeout;
+use crate::config::{get_searxng_rotation_engines, get_searxng_timeout};
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -27,7 +27,7 @@ impl SearxngProvider {
     /// Create a provider with an explicit HTTP timeout.
     pub fn new_with_timeout(base_url: &str, timeout: Duration) -> Result<Self> {
         Ok(Self {
-            client: SearxngClient::new(base_url, timeout)?,
+            client: SearxngClient::new(base_url, timeout, get_searxng_rotation_engines())?,
         })
     }
 }
@@ -133,7 +133,7 @@ impl ToolProvider for SearxngProvider {
                             "SearXNG search failed after {} attempts",
                             MAX_RETRIES + 1,
                         );
-                        Ok(error.agent_message().to_string())
+                        Ok(error.agent_message())
                     }
                 }
             }
