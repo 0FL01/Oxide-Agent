@@ -1,7 +1,9 @@
+use super::backoff::{self, MAX_RETRIES};
 use super::error::SearxngError;
 use super::types::{SearxngSearchArgs, SearxngSearchResponse};
 use reqwest::header::ACCEPT;
 use std::time::Duration;
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct SearxngClient {
@@ -18,7 +20,42 @@ impl SearxngClient {
         })
     }
 
+    /// Search with automatic retry on transient errors.
+    ///
+    /// Makes up to `MAX_RETRIES + 1` attempts with exponential backoff + jitter.
+    /// Only retryable errors trigger a retry; non-retryable errors are returned immediately.
     pub async fn search(
+        &self,
+        args: &SearxngSearchArgs,
+    ) -> Result<SearxngSearchResponse, SearxngError> {
+        let mut last_error = None;
+
+        for attempt in 0..=MAX_RETRIES {
+            match self.search_once(args).await {
+                Ok(response) => return Ok(response),
+                Err(error) if error.is_retryable() && attempt < MAX_RETRIES => {
+                    let delay = backoff::retry_delay(attempt + 1);
+                    warn!(
+                        query = %args.query.trim(),
+                        attempt = attempt + 1,
+                        max_retries = MAX_RETRIES,
+                        error = %error,
+                        retry_after_ms = delay.as_millis() as u64,
+                        "SearXNG transient error, retrying"
+                    );
+                    tokio::time::sleep(delay).await;
+                    last_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        // All retries exhausted — return the last error.
+        Err(last_error.expect("loop ran at least once"))
+    }
+
+    /// Single HTTP request without retry logic.
+    async fn search_once(
         &self,
         args: &SearxngSearchArgs,
     ) -> Result<SearxngSearchResponse, SearxngError> {

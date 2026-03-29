@@ -3268,6 +3268,7 @@ dependencies = [
  "config",
  "cron",
  "dotenvy",
+ "fastrand",
  "futures-util",
  "html-escape",
  "http-body-util",
