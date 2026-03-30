@@ -410,6 +410,21 @@ impl AgentExecutor {
             .push_runtime_context(RuntimeContextInjection { content });
     }
 
+    /// Resume a paused task that is waiting for explicit user input.
+    ///
+    /// Returns `true` when a pending user-input request was consumed and the
+    /// provided content was queued for the next execution attempt.
+    #[must_use]
+    pub fn resume_with_user_input(&mut self, content: String) -> bool {
+        if self.session.pending_user_input().is_none() {
+            return false;
+        }
+
+        self.session.clear_pending_user_input();
+        self.enqueue_runtime_context(content);
+        true
+    }
+
     /// Build the currently exposed tool definitions for this executor state.
     #[must_use]
     pub fn current_tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -1163,7 +1178,7 @@ mod tests {
         ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
         ManagerTopicLifecycle,
     };
-    use crate::agent::session::AgentSession;
+    use crate::agent::session::{AgentSession, PendingUserInput};
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use crate::storage::{
@@ -1331,6 +1346,32 @@ mod tests {
 
         executor.reset();
         assert!(!executor.is_timed_out());
+    }
+
+    #[test]
+    fn resume_with_user_input_clears_pending_request_and_queues_context() {
+        let mut executor = build_executor();
+        executor
+            .session_mut()
+            .set_pending_user_input(PendingUserInput {
+                kind: crate::agent::UserInputKind::Text,
+                prompt: "Reply with details".to_string(),
+            });
+
+        assert!(executor.resume_with_user_input("Here are the details".to_string()));
+        assert!(executor.session().pending_user_input().is_none());
+
+        let pending = executor.session().drain_runtime_context();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].content, "Here are the details");
+    }
+
+    #[test]
+    fn resume_with_user_input_is_noop_without_pending_request() {
+        let mut executor = build_executor();
+
+        assert!(!executor.resume_with_user_input("ignored".to_string()));
+        assert!(executor.session().drain_runtime_context().is_empty());
     }
 
     #[tokio::test]
