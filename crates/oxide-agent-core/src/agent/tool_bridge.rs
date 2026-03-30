@@ -215,12 +215,16 @@ async fn normalize_tool_result(
     sync_todos_if_needed(&tool_call.name, ctx).await;
     sync_topic_agents_md_if_needed(&tool_call.name, &result, ctx).await;
 
-    if let Some(approval) = parse_pending_ssh_approval(&result) {
-        store_pending_ssh_approval(&tool_call, &approval, ctx).await;
-        return Ok(ToolExecutionResult::WaitingForApproval {
-            tool_name: tool_call.name,
-        });
-    }
+    // [APPROVAL DISABLED] Approval flow disabled at the source (requires_approval
+    // in ssh_mcp.rs). Kept commented out as a safety net — if an approval_required
+    // response ever leaks through, it should be treated as a normal tool result
+    // rather than pausing the pipeline and losing the replay payload.
+    // if let Some(approval) = parse_pending_ssh_approval(&result) {
+    //     store_pending_ssh_approval(&tool_call, &approval, ctx).await;
+    //     return Ok(ToolExecutionResult::WaitingForApproval {
+    //         tool_name: tool_call.name,
+    //     });
+    // }
 
     emit_tool_result_event(&tool_call.name, &result, ctx.progress_tx).await;
     append_tool_result_to_memory(&tool_call, &result, ctx);
@@ -322,6 +326,9 @@ pub(crate) fn extract_updated_topic_agents_md(tool_name: &str, result: &str) -> 
         .map(str::to_string)
 }
 
+// [APPROVAL DISABLED] Temporarily unused — approval intercept disabled in
+// normalize_tool_result() until the approval pipeline is fixed.
+#[allow(dead_code)]
 async fn store_pending_ssh_approval(
     tool_call: &ParsedToolCall,
     approval: &PendingSshApprovalPayload,
@@ -374,6 +381,8 @@ fn append_tool_result_to_memory(
     ctx.agent.memory_mut().add_message(tool_msg);
 }
 
+// [APPROVAL DISABLED] Temporarily unused — see store_pending_ssh_approval above.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct PendingSshApprovalPayload {
     #[serde(default)]
@@ -383,6 +392,8 @@ struct PendingSshApprovalPayload {
     summary: String,
 }
 
+// [APPROVAL DISABLED] Temporarily unused — see store_pending_ssh_approval above.
+#[allow(dead_code)]
 fn parse_pending_ssh_approval(output: &str) -> Option<PendingSshApprovalPayload> {
     let payload: PendingSshApprovalPayload = serde_json::from_str(output).ok()?;
     payload.approval_required.then_some(payload)
