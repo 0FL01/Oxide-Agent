@@ -69,6 +69,7 @@ Rules:
 - If answer is ready: `tool_call` = null, `final_answer` = string, `awaiting_user_input` = null
 - If the task is blocked on the user: `tool_call` = null, `final_answer` = null, `awaiting_user_input` = object
 - Use `awaiting_user_input` when you need the user to provide missing text, a link, a file, or either a link/file before the task can continue
+- If you maintain a todo list and the remaining work is blocked on the user, mark the relevant todo as `blocked_on_user` before returning `awaiting_user_input`
 - `awaiting_user_input.kind` must be exactly one of: `text`, `url`, `file`, `url_or_file`
 - `awaiting_user_input.prompt` must be a short, direct request telling the user what to send next
 - `tool_call.arguments` is always a JSON object
@@ -251,6 +252,7 @@ mod tests {
         let prompt = build_structured_output_instructions(&[]);
 
         assert!(prompt.contains("awaiting_user_input"));
+        assert!(prompt.contains("blocked_on_user"));
         assert!(prompt.contains("url_or_file"));
         assert!(
             prompt.contains("EXACTLY one of `tool_call`, `final_answer`, or `awaiting_user_input`")

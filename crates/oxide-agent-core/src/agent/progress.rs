@@ -571,17 +571,25 @@ impl ProgressState {
     }
 
     fn handle_todos_update(&mut self, todos: TodoList) {
-        let current_task = todos.current_task().map(|t| t.description.clone());
+        let current_task = todos
+            .current_task()
+            .map(|t| (t.description.clone(), false))
+            .or_else(|| todos.blocked_task().map(|t| (t.description.clone(), true)));
         let completed = todos.completed_count();
         let total = todos.items.len();
 
         self.current_todos = Some(todos);
 
-        if let Some(task) = current_task {
+        if let Some((task, blocked_on_user)) = current_task {
             // Update step description with current task
             if let Some(last) = self.steps.last_mut() {
                 if last.status == StepStatus::InProgress {
-                    last.description = format!("📋 {task} ({completed}/{total})");
+                    let prefix = if blocked_on_user {
+                        "📋 Waiting on user"
+                    } else {
+                        "📋"
+                    };
+                    last.description = format!("{prefix} {task} ({completed}/{total})");
                 }
             }
         }

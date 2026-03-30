@@ -105,6 +105,7 @@ fn push_todos(lines: &mut Vec<String>, state: &ProgressState) {
         let status_icon = match item.status {
             oxide_agent_core::agent::providers::TodoStatus::Completed => "✅",
             oxide_agent_core::agent::providers::TodoStatus::InProgress => "🔄",
+            oxide_agent_core::agent::providers::TodoStatus::BlockedOnUser => "⏸️",
             oxide_agent_core::agent::providers::TodoStatus::Pending => "⏳",
             oxide_agent_core::agent::providers::TodoStatus::Cancelled => "❌",
         };
