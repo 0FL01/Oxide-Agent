@@ -56,13 +56,21 @@ You MUST respond ONLY with a valid JSON object strictly following the schema:
     "name": "tool_name",
     "arguments": {{}}
   }},
-  "final_answer": "Final answer to the user"
+  "final_answer": "Final answer to the user",
+  "awaiting_user_input": {{
+    "kind": "text|url|file|url_or_file",
+    "prompt": "Question or request for the user"
+  }}
 }}
 
 Rules:
-- EXACTLY one of `tool_call` or `final_answer` must be filled (the other = null)
-- If a tool is needed: `tool_call` = object, `final_answer` = null
-- If answer is ready: `tool_call` = null, `final_answer` = string
+- EXACTLY one of `tool_call`, `final_answer`, or `awaiting_user_input` must be filled (the others = null)
+- If a tool is needed: `tool_call` = object, `final_answer` = null, `awaiting_user_input` = null
+- If answer is ready: `tool_call` = null, `final_answer` = string, `awaiting_user_input` = null
+- If the task is blocked on the user: `tool_call` = null, `final_answer` = null, `awaiting_user_input` = object
+- Use `awaiting_user_input` when you need the user to provide missing text, a link, a file, or either a link/file before the task can continue
+- `awaiting_user_input.kind` must be exactly one of: `text`, `url`, `file`, `url_or_file`
+- `awaiting_user_input.prompt` must be a short, direct request telling the user what to send next
 - `tool_call.arguments` is always a JSON object
 - No extra keys, markdown, XML, explanations, or text outside JSON
 - Tool results arrive in messages with role `tool`
@@ -70,10 +78,13 @@ Rules:
 - Use backticks (`) for inline code, such as file paths, variables, and short commands
 
 ### Example Tool Call
-{{"thought":"Need to read a file","tool_call":{{"name":"read_file","arguments":{{"filePath":"/abs/path/to/file.txt"}}}},"final_answer":null}}
+{{"thought":"Need to read a file","tool_call":{{"name":"read_file","arguments":{{"filePath":"/abs/path/to/file.txt"}}}},"final_answer":null,"awaiting_user_input":null}}
 
 ### Example Final Answer
-{{"thought":"File read, answer ready","tool_call":null,"final_answer":"Here is the content of `file.txt`:\n\n```rust\nfn main() {{\n    println!(\"Hello world\");\n}}\n```"}}
+{{"thought":"File read, answer ready","tool_call":null,"final_answer":"Here is the content of `file.txt`:\n\n```rust\nfn main() {{\n    println!(\"Hello world\");\n}}\n```","awaiting_user_input":null}}
+
+### Example Awaiting User Input
+{{"thought":"Need the APK source before continuing","tool_call":null,"final_answer":null,"awaiting_user_input":{{"kind":"url_or_file","prompt":"Send a direct download link for the APK or upload the APK file so I can continue."}}}}
 
 ## Available Tools (JSON schema)
 {tools_json}"#,
@@ -233,5 +244,16 @@ mod tests {
 
         assert!(prompt.contains("## Reminder Scheduling"));
         assert!(prompt.contains("Do not compute unix timestamps by hand for reminders"));
+    }
+
+    #[test]
+    fn test_structured_output_instructions_include_awaiting_user_input() {
+        let prompt = build_structured_output_instructions(&[]);
+
+        assert!(prompt.contains("awaiting_user_input"));
+        assert!(prompt.contains("url_or_file"));
+        assert!(
+            prompt.contains("EXACTLY one of `tool_call`, `final_answer`, or `awaiting_user_input`")
+        );
     }
 }

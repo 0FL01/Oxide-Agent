@@ -4,6 +4,7 @@
 //! that it conforms to the expected schema.
 
 use crate::agent::recovery::{extract_fenced_json, extract_first_json};
+use crate::agent::session::{PendingUserInput, UserInputKind};
 use crate::llm::ToolDefinition;
 use serde::Deserialize;
 use std::fmt;
@@ -42,12 +43,19 @@ struct StructuredOutput {
     thought: String,
     tool_call: Option<StructuredToolCall>,
     final_answer: Option<String>,
+    awaiting_user_input: Option<StructuredAwaitingUserInput>,
 }
 
 #[derive(Debug, Deserialize)]
 struct StructuredToolCall {
     name: String,
     arguments: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct StructuredAwaitingUserInput {
+    kind: UserInputKind,
+    prompt: String,
 }
 
 /// Parsed and validated structured output from the agent model.
@@ -59,6 +67,8 @@ pub struct ValidatedStructuredOutput {
     pub tool_call: Option<ValidatedToolCall>,
     /// Final answer payload if the task is complete.
     pub final_answer: Option<String>,
+    /// User input request payload if the task is blocked on the user.
+    pub awaiting_user_input: Option<PendingUserInput>,
 }
 
 /// Validated tool call payload extracted from the structured response.
@@ -180,10 +190,16 @@ fn validate_structured_output(
 
     let has_tool_call = output.tool_call.is_some();
     let has_final_answer = output.final_answer.is_some();
+    let has_awaiting_user_input = output.awaiting_user_input.is_some();
 
-    if has_tool_call == has_final_answer {
+    if [has_tool_call, has_final_answer, has_awaiting_user_input]
+        .into_iter()
+        .filter(|value| *value)
+        .count()
+        != 1
+    {
         return Err(StructuredOutputError::new(
-            "Exactly one of 'tool_call' or 'final_answer' must be set",
+            "Exactly one of 'tool_call', 'final_answer', or 'awaiting_user_input' must be set",
         ));
     }
 
@@ -229,10 +245,27 @@ fn validate_structured_output(
         });
     }
 
+    let awaiting_user_input = output.awaiting_user_input.map(|request| {
+        let prompt = request.prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err(StructuredOutputError::new(
+                "Field 'awaiting_user_input.prompt' must be a non-empty string when provided",
+            ));
+        }
+
+        Ok(PendingUserInput {
+            kind: request.kind,
+            prompt,
+        })
+    });
+
+    let awaiting_user_input = awaiting_user_input.transpose()?;
+
     Ok(ValidatedStructuredOutput {
         thought: output.thought,
         tool_call: validated_tool_call,
         final_answer: output.final_answer,
+        awaiting_user_input,
     })
 }
 
@@ -251,11 +284,13 @@ mod tests {
 
     #[test]
     fn parses_valid_final_answer() {
-        let raw = r#"{"thought":"done","tool_call":null,"final_answer":"ok"}"#;
+        let raw =
+            r#"{"thought":"done","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#;
         let result = parse_structured_output(raw, &tools_fixture());
         if let Ok(parsed) = result {
             assert_eq!(parsed.final_answer.as_deref(), Some("ok"));
             assert!(parsed.tool_call.is_none());
+            assert!(parsed.awaiting_user_input.is_none());
         } else {
             panic!("Expected valid structured output");
         }
@@ -263,7 +298,7 @@ mod tests {
 
     #[test]
     fn parses_valid_tool_call() {
-        let raw = r#"{"thought":"need file","tool_call":{"name":"read_file","arguments":{"path":"test.txt"}},"final_answer":null}"#;
+        let raw = r#"{"thought":"need file","tool_call":{"name":"read_file","arguments":{"path":"test.txt"}},"final_answer":null,"awaiting_user_input":null}"#;
         let result = parse_structured_output(raw, &tools_fixture());
         if let Ok(parsed) = result {
             if let Some(tool_call) = parsed.tool_call {
@@ -272,6 +307,26 @@ mod tests {
             } else {
                 panic!("tool_call should be present");
             }
+            assert!(parsed.awaiting_user_input.is_none());
+        } else {
+            panic!("Expected valid structured output");
+        }
+    }
+
+    #[test]
+    fn parses_valid_awaiting_user_input() {
+        let raw = r#"{"thought":"need apk source","tool_call":null,"final_answer":null,"awaiting_user_input":{"kind":"url_or_file","prompt":"Пришли прямую ссылку или файл APK."}}"#;
+        let result = parse_structured_output(raw, &tools_fixture());
+        if let Ok(parsed) = result {
+            assert!(parsed.tool_call.is_none());
+            assert!(parsed.final_answer.is_none());
+            assert_eq!(
+                parsed.awaiting_user_input,
+                Some(PendingUserInput {
+                    kind: UserInputKind::UrlOrFile,
+                    prompt: "Пришли прямую ссылку или файл APK.".to_string(),
+                })
+            );
         } else {
             panic!("Expected valid structured output");
         }
@@ -279,42 +334,58 @@ mod tests {
 
     #[test]
     fn rejects_missing_both() {
-        let raw = r#"{"thought":"none","tool_call":null,"final_answer":null}"#;
+        let raw =
+            r#"{"thought":"none","tool_call":null,"final_answer":null,"awaiting_user_input":null}"#;
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(result.is_err());
     }
 
     #[test]
     fn rejects_both_set() {
-        let raw = r#"{"thought":"bad","tool_call":{"name":"read_file","arguments":{}},"final_answer":"nope"}"#;
+        let raw = r#"{"thought":"bad","tool_call":{"name":"read_file","arguments":{}},"final_answer":"nope","awaiting_user_input":null}"#;
+        let result = parse_structured_output(raw, &tools_fixture());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_when_multiple_terminal_fields_are_set() {
+        let raw = r#"{"thought":"bad","tool_call":null,"final_answer":"nope","awaiting_user_input":{"kind":"text","prompt":"reply"}}"#;
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(result.is_err());
     }
 
     #[test]
     fn rejects_unknown_tool() {
-        let raw = r#"{"thought":"bad","tool_call":{"name":"missing","arguments":{}},"final_answer":null}"#;
+        let raw = r#"{"thought":"bad","tool_call":{"name":"missing","arguments":{}},"final_answer":null,"awaiting_user_input":null}"#;
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(result.is_err());
     }
 
     #[test]
     fn rejects_non_object_arguments() {
-        let raw = r#"{"thought":"bad","tool_call":{"name":"read_file","arguments":"no"},"final_answer":null}"#;
+        let raw = r#"{"thought":"bad","tool_call":{"name":"read_file","arguments":"no"},"final_answer":null,"awaiting_user_input":null}"#;
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(result.is_err());
     }
 
     #[test]
     fn rejects_empty_thought() {
-        let raw = r#"{"thought":" ","tool_call":null,"final_answer":"ok"}"#;
+        let raw =
+            r#"{"thought":" ","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#;
+        let result = parse_structured_output(raw, &tools_fixture());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_empty_awaiting_user_input_prompt() {
+        let raw = r#"{"thought":"blocked","tool_call":null,"final_answer":null,"awaiting_user_input":{"kind":"file","prompt":"   "}}"#;
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(result.is_err());
     }
 
     #[test]
     fn parses_json_inside_code_fence() {
-        let raw = "```json\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\"}\n```";
+        let raw = "```json\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}\n```";
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(matches!(
             result,
@@ -325,7 +396,7 @@ mod tests {
     #[test]
     fn parses_json_with_leading_text() {
         let raw =
-            "Answer:\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\"}\nThank you";
+            "Answer:\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}\nThank you";
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(matches!(
             result,
@@ -336,7 +407,7 @@ mod tests {
     #[test]
     fn parses_json_with_control_chars() {
         let raw = format!(
-            "{{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok{}\"}}",
+            "{{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok{}\",\"awaiting_user_input\":null}}",
             '\u{0001}'
         );
         let result = parse_structured_output(&raw, &tools_fixture());

@@ -6,6 +6,7 @@ use super::types::{
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::progress::AgentEvent;
+use crate::agent::session::PendingUserInput;
 use crate::agent::tool_bridge::sync_todos_from_arc;
 use tracing::warn;
 
@@ -171,5 +172,29 @@ impl AgentRunner {
             }
         }
         Ok(Some(AgentRunResult::Final(final_response)))
+    }
+
+    /// Handle a blocked response that requires more user input.
+    pub(super) async fn handle_waiting_for_user_input(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+        raw_json: String,
+        reasoning: Option<String>,
+        request: PendingUserInput,
+    ) -> anyhow::Result<Option<AgentRunResult>> {
+        if ctx.agent.cancellation_token().is_cancelled() {
+            return Err(self.cancelled_error(ctx).await);
+        }
+
+        sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
+        self.save_final_response(ctx, &raw_json, reasoning);
+        let _ = self
+            .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
+            .await?;
+        let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+        Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
+
+        Ok(Some(AgentRunResult::WaitingForUserInput(request)))
     }
 }
