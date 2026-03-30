@@ -971,6 +971,25 @@ impl AgentExecutor {
             .await
     }
 
+    /// Resume a paused task after receiving the user input it requested.
+    pub async fn resume_after_user_input(
+        &mut self,
+        content: String,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentExecutionOutcome> {
+        let task = self
+            .last_task()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("no saved task to resume"))?;
+
+        if !self.resume_with_user_input(content) {
+            return Err(anyhow!("session is not waiting for user input"));
+        }
+
+        self.run_execution(&task, progress_tx, false, None, None)
+            .await
+    }
+
     /// Manually compact the current Agent Mode hot context without running a task iteration.
     pub async fn compact_current_context(
         &mut self,
@@ -1178,7 +1197,7 @@ mod tests {
         ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
         ManagerTopicLifecycle,
     };
-    use crate::agent::session::{AgentSession, PendingUserInput};
+    use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use crate::storage::{
@@ -1272,6 +1291,39 @@ mod tests {
         let llm = Arc::new(LlmClient::new(settings.as_ref()));
         let session = AgentSession::new(9_i64.into());
         AgentExecutor::new(llm, session, settings)
+    }
+
+    fn build_executor_with_mock_response(response_text: &'static str) -> AgentExecutor {
+        let settings = Arc::new(crate::config::AgentSettings {
+            agent_model_id: Some("mock-model".to_string()),
+            agent_model_provider: Some("mock".to_string()),
+            ..crate::config::AgentSettings::default()
+        });
+        let mut provider = crate::llm::MockLlmProvider::new();
+        provider.expect_chat_with_tools().return_once(move |_| {
+            Ok(crate::llm::ChatResponse {
+                content: Some(response_text.to_string()),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+                usage: None,
+            })
+        });
+        provider
+            .expect_chat_completion()
+            .returning(|_, _, _, _, _| {
+                Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
+            });
+        provider
+            .expect_transcribe_audio()
+            .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        provider.expect_analyze_image().returning(|_, _, _, _| {
+            Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
+        });
+        let mut llm = LlmClient::new(settings.as_ref());
+        llm.register_provider("mock".to_string(), Arc::new(provider));
+        let session = AgentSession::new(9_i64.into());
+        AgentExecutor::new(Arc::new(llm), session, settings)
     }
 
     fn build_audit_record(options: AppendAuditEventOptions) -> AuditEventRecord {
@@ -1372,6 +1424,64 @@ mod tests {
 
         assert!(!executor.resume_with_user_input("ignored".to_string()));
         assert!(executor.session().drain_runtime_context().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resume_after_user_input_continues_saved_task_without_new_user_task() {
+        let mut executor = build_executor_with_mock_response(
+            r#"{"thought":"done","tool_call":null,"final_answer":"resumed ok","awaiting_user_input":null}"#,
+        );
+        executor.session_mut().remember_task("original task");
+        executor
+            .session_mut()
+            .memory
+            .add_message(crate::agent::memory::AgentMessage::user_task(
+                "original task",
+            ));
+        executor
+            .session_mut()
+            .set_pending_user_input(PendingUserInput {
+                kind: UserInputKind::Text,
+                prompt: "Need more details".to_string(),
+            });
+
+        let result = executor
+            .resume_after_user_input("extra details".to_string(), None)
+            .await;
+
+        assert!(matches!(
+            result,
+            Ok(super::AgentExecutionOutcome::Completed(ref answer)) if answer == "resumed ok"
+        ));
+        assert!(executor.session().pending_user_input().is_none());
+
+        let user_task_count = executor
+            .session()
+            .memory
+            .get_messages()
+            .iter()
+            .filter(|message| message.kind == crate::agent::compaction::AgentMessageKind::UserTask)
+            .count();
+        assert_eq!(user_task_count, 1);
+
+        let runtime_context = executor.session().drain_runtime_context();
+        assert!(runtime_context.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resume_after_user_input_rejects_sessions_without_pending_request() {
+        let mut executor = build_executor();
+        executor.session_mut().remember_task("original task");
+
+        let error = match executor
+            .resume_after_user_input("extra details".to_string(), None)
+            .await
+        {
+            Ok(_) => panic!("resume should fail without pending request"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("not waiting for user input"));
     }
 
     #[tokio::test]
