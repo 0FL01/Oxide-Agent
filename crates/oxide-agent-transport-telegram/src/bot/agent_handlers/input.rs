@@ -1,7 +1,8 @@
 use super::{
     automatic_agent_control_markup, renew_cancellation_token, run_agent_task_with_text,
-    use_inline_flow_controls, use_inline_topic_controls, ActiveSessionConfig,
-    RunAgentTaskTextContext, PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
+    run_user_input_resume, use_inline_flow_controls, use_inline_topic_controls,
+    ActiveSessionConfig, RunAgentTaskTextContext, RunUserInputResumeContext,
+    PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
 };
 use crate::bot::agent::extract_agent_input;
 use crate::bot::context::{current_context_state, ensure_current_agent_flow_id};
@@ -342,7 +343,32 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         return Ok(());
     }
 
+    let should_resume_pending_input = match SESSION_REGISTRY.get(&ctx.session_id).await {
+        Some(executor_arc) => {
+            let executor = executor_arc.read().await;
+            executor.session().pending_user_input().is_some() && executor.last_task().is_some()
+        }
+        None => false,
+    };
+
     renew_cancellation_token(ctx.session_id).await;
+
+    if should_resume_pending_input {
+        return run_user_input_resume(RunUserInputResumeContext {
+            bot: ctx.bot,
+            chat_id: ctx.chat_id,
+            session_id: ctx.session_id,
+            user_id: ctx.user_id,
+            user_input: task_text,
+            storage: ctx.storage,
+            context_key: ctx.context_key,
+            agent_flow_id: ctx.agent_flow_id,
+            message_thread_id: ctx.message_thread_id,
+            use_inline_progress_controls: ctx.use_inline_progress_controls,
+            use_inline_flow_controls: ctx.use_inline_flow_controls,
+        })
+        .await;
+    }
 
     run_agent_task_with_text(RunAgentTaskTextContext {
         bot: ctx.bot,

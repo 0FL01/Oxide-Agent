@@ -70,6 +70,21 @@ pub(crate) struct RunApprovedSshResumeContext {
 }
 
 #[derive(Clone)]
+pub(crate) struct RunUserInputResumeContext {
+    pub(crate) bot: Bot,
+    pub(crate) chat_id: ChatId,
+    pub(crate) session_id: SessionId,
+    pub(crate) user_id: i64,
+    pub(crate) user_input: String,
+    pub(crate) storage: Arc<dyn StorageProvider>,
+    pub(crate) context_key: String,
+    pub(crate) agent_flow_id: String,
+    pub(crate) message_thread_id: Option<ThreadId>,
+    pub(crate) use_inline_progress_controls: bool,
+    pub(crate) use_inline_flow_controls: bool,
+}
+
+#[derive(Clone)]
 pub(crate) struct RunManualCompactionContext {
     pub(crate) bot: Bot,
     pub(crate) chat_id: ChatId,
@@ -124,6 +139,23 @@ impl From<&RunAgentTaskTextContext> for TaskDeliveryContext {
 
 impl From<&RunApprovedSshResumeContext> for TaskDeliveryContext {
     fn from(value: &RunApprovedSshResumeContext) -> Self {
+        Self {
+            bot: value.bot.clone(),
+            chat_id: value.chat_id,
+            session_id: value.session_id,
+            user_id: value.user_id,
+            storage: value.storage.clone(),
+            context_key: value.context_key.clone(),
+            agent_flow_id: value.agent_flow_id.clone(),
+            message_thread_id: value.message_thread_id,
+            use_inline_progress_controls: value.use_inline_progress_controls,
+            use_inline_flow_controls: value.use_inline_flow_controls,
+        }
+    }
+}
+
+impl From<&RunUserInputResumeContext> for TaskDeliveryContext {
+    fn from(value: &RunUserInputResumeContext) -> Self {
         Self {
             bot: value.bot.clone(),
             chat_id: value.chat_id,
@@ -232,6 +264,16 @@ pub(crate) async fn run_approved_ssh_resume(ctx: RunApprovedSshResumeContext) ->
     let request_id = ctx.request_id;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
         execute_ssh_approval_resume(session_id, &request_id, Some(progress_tx)).await
+    })
+    .await
+}
+
+pub(crate) async fn run_user_input_resume(ctx: RunUserInputResumeContext) -> Result<()> {
+    let delivery_ctx = TaskDeliveryContext::from(&ctx);
+    let session_id = ctx.session_id;
+    let user_input = ctx.user_input;
+    run_task_execution(delivery_ctx, move |progress_tx| async move {
+        execute_user_input_resume(session_id, user_input, Some(progress_tx)).await
     })
     .await
 }
@@ -583,6 +625,34 @@ pub(crate) async fn execute_ssh_approval_resume(
 
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
     executor.resume_ssh_approval(request_id, progress_tx).await
+}
+
+pub(crate) async fn execute_user_input_resume(
+    session_id: SessionId,
+    user_input: String,
+    progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+) -> Result<AgentExecutionOutcome> {
+    let executor_arc = SESSION_REGISTRY
+        .get(&session_id)
+        .await
+        .ok_or_else(|| anyhow!("No agent session found"))?;
+    let cancellation_token = SESSION_REGISTRY
+        .get_cancellation_token(&session_id)
+        .await
+        .ok_or_else(|| anyhow!("No cancellation token found"))?;
+
+    let mut executor = executor_arc.write().await;
+    if executor.is_timed_out() {
+        executor.reset();
+        return Err(anyhow!(
+            "Previous session timed out. Starting a new session."
+        ));
+    }
+
+    executor.session_mut().cancellation_token = (*cancellation_token).clone();
+    executor
+        .resume_after_user_input(user_input, progress_tx)
+        .await
 }
 
 pub(crate) async fn execute_manual_compaction(
