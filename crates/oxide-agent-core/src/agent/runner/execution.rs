@@ -708,6 +708,8 @@ impl AgentRunner {
             }
         };
 
+        let awaiting_user_input = parsed.awaiting_user_input;
+        let final_answer = parsed.final_answer;
         let tool_calls = parsed
             .tool_call
             .map(|tool_call| vec![self.build_tool_call(tool_call)])
@@ -719,10 +721,21 @@ impl AgentRunner {
             ctx.progress_tx,
         );
 
+        if let Some(request) = awaiting_user_input {
+            return self
+                .handle_waiting_for_user_input(
+                    ctx,
+                    state,
+                    raw_json,
+                    response.reasoning_content,
+                    request,
+                )
+                .await;
+        }
+
         if tool_calls.is_empty() {
-            let final_answer = parsed
-                .final_answer
-                .unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
+            let final_answer =
+                final_answer.unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
 
             if self.content_loop_detected(final_answer.as_str()).await {
                 return Err(self
