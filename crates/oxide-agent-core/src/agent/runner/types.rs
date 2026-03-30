@@ -5,6 +5,7 @@ use crate::agent::context::AgentContext;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
+use crate::agent::session::PendingUserInput;
 use crate::agent::skills::SkillRegistry;
 use crate::config::{
     get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
@@ -124,6 +125,8 @@ pub enum AgentRunResult {
     Final(String),
     /// The agent paused because an external approval is required.
     WaitingForApproval,
+    /// The agent paused because it requires additional user input.
+    WaitingForUserInput(PendingUserInput),
 }
 
 /// Internal run state for the current loop execution.

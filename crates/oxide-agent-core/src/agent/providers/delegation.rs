@@ -439,6 +439,9 @@ impl DelegationProvider {
         match timeout(self.sub_agent_timeout_duration(), runner.run(ctx)).await {
             Ok(Ok(AgentRunResult::Final(result))) => SubAgentRunOutcome::Final(result),
             Ok(Ok(AgentRunResult::WaitingForApproval)) => SubAgentRunOutcome::WaitingForApproval,
+            Ok(Ok(AgentRunResult::WaitingForUserInput(_))) => {
+                SubAgentRunOutcome::WaitingForApproval
+            }
             Ok(Err(error)) => SubAgentRunOutcome::Failed(error),
             Err(_) => SubAgentRunOutcome::TimedOut,
         }

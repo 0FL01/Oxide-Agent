@@ -483,6 +483,24 @@ async fn deliver_task_result(
             )
             .await?;
         }
+        Ok(AgentExecutionOutcome::WaitingForUserInput(request)) => {
+            crate::bot::resilient::edit_message_safe_resilient_with_markup(
+                &ctx.bot,
+                ctx.chat_id,
+                progress_message_id,
+                progress_text,
+                terminal_progress_reply_markup,
+            )
+            .await;
+            send_long_message_in_thread_with_final_markup(
+                &ctx.bot,
+                ctx.chat_id,
+                &request.prompt,
+                ctx.message_thread_id,
+                None,
+            )
+            .await?;
+        }
         Err(error) => {
             let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&error.to_string());
             let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");

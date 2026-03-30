@@ -42,6 +42,29 @@ pub struct PendingSshReplay {
     pub arguments: String,
 }
 
+/// Type of user input required before the task can continue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UserInputKind {
+    /// Free-form text response.
+    Text,
+    /// Single URL or direct link.
+    Url,
+    /// File upload or attachment.
+    File,
+    /// Either a URL or a file upload can resume the task.
+    UrlOrFile,
+}
+
+/// Pending user input required to resume a paused task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingUserInput {
+    /// Kind of input expected from the user.
+    pub kind: UserInputKind,
+    /// Human-readable prompt shown to the user.
+    pub prompt: String,
+}
+
 #[async_trait]
 /// Persistence hook for saving in-flight agent memory snapshots.
 pub trait AgentMemoryCheckpoint: Send + Sync {
@@ -248,6 +271,8 @@ pub struct AgentSession {
     runtime_context_inbox: RuntimeContextInbox,
     /// Exact SSH tool calls paused pending operator approval.
     pending_ssh_replays: Vec<PendingSshReplay>,
+    /// Pending user input required before the task can resume.
+    pending_user_input: Option<PendingUserInput>,
     /// Optional sink used to persist memory snapshots during long-running tasks.
     memory_checkpoint: Option<Arc<dyn AgentMemoryCheckpoint>>,
     /// Shared state for coalescing and deduplicating checkpoint writes.
@@ -280,6 +305,7 @@ impl AgentSession {
             skill_token_count: 0,
             runtime_context_inbox: RuntimeContextInbox::new(),
             pending_ssh_replays: Vec::new(),
+            pending_user_input: None,
             memory_checkpoint: None,
             checkpoint_state: Arc::new(AsyncMutex::new(MemoryCheckpointState::default())),
             checkpoint_persist_lock: Arc::new(AsyncMutex::new(())),
@@ -460,6 +486,22 @@ impl AgentSession {
         Some(self.pending_ssh_replays.remove(index))
     }
 
+    /// Store or replace the pending user input request.
+    pub fn set_pending_user_input(&mut self, request: PendingUserInput) {
+        self.pending_user_input = Some(request);
+    }
+
+    /// Clear the pending user input request.
+    pub fn clear_pending_user_input(&mut self) {
+        self.pending_user_input = None;
+    }
+
+    /// Return the current pending user input request, if any.
+    #[must_use]
+    pub fn pending_user_input(&self) -> Option<&PendingUserInput> {
+        self.pending_user_input.as_ref()
+    }
+
     /// Stable sandbox scope for this session.
     #[must_use]
     pub fn sandbox_scope(&self) -> &SandboxScope {
@@ -476,6 +518,7 @@ impl AgentSession {
     pub fn start_task(&mut self) {
         self.started_at = Some(Instant::now());
         self.current_task_id = Some(uuid::Uuid::new_v4().to_string());
+        self.pending_user_input = None;
         self.status = AgentStatus::Processing {
             step: "Initializing...".to_string(),
             progress_percent: 0,
@@ -526,6 +569,7 @@ impl AgentSession {
         self.skill_token_count = 0;
         let _ = self.runtime_context_inbox.drain();
         self.pending_ssh_replays.clear();
+        self.pending_user_input = None;
         if let Ok(mut state) = self.checkpoint_state.try_lock() {
             *state = MemoryCheckpointState::default();
         }
@@ -656,7 +700,9 @@ mod tests {
     // Allow clone_on_ref_ptr in tests due to trait object coercion requirements
     #![allow(clippy::clone_on_ref_ptr)]
 
-    use super::{AgentMemoryCheckpoint, AgentSession, PendingSshReplay};
+    use super::{
+        AgentMemoryCheckpoint, AgentSession, PendingSshReplay, PendingUserInput, UserInputKind,
+    };
     use crate::agent::memory::AgentMessage;
     use crate::llm::InvocationId;
     use anyhow::Result;
@@ -711,6 +757,19 @@ mod tests {
         session.reset();
 
         assert!(session.pending_ssh_replay("req-1").is_none());
+    }
+
+    #[test]
+    fn start_task_clears_pending_user_input() {
+        let mut session = AgentSession::new(42_i64.into());
+        session.set_pending_user_input(PendingUserInput {
+            kind: UserInputKind::UrlOrFile,
+            prompt: "Send the APK link or file".to_string(),
+        });
+
+        session.start_task();
+
+        assert!(session.pending_user_input().is_none());
     }
 
     #[tokio::test]

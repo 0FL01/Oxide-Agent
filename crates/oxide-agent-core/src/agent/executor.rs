@@ -23,7 +23,9 @@ use super::providers::{
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
-use super::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
+use super::session::{
+    AgentSession, PendingUserInput, RuntimeContextInbox, RuntimeContextInjection,
+};
 use super::skills::SkillRegistry;
 use super::tool_bridge::{execute_single_tool_call, ToolExecutionContext, ToolExecutionResult};
 use crate::agent::progress::AgentEvent;
@@ -71,6 +73,8 @@ pub enum AgentExecutionOutcome {
     Completed(String),
     /// Agent paused because it is waiting for an external approval.
     WaitingForApproval,
+    /// Agent paused because it is waiting for additional user input.
+    WaitingForUserInput(PendingUserInput),
 }
 
 #[derive(Clone)]
@@ -108,6 +112,7 @@ struct PreparedExecution {
 enum TimedRunResult {
     Final(String),
     WaitingForApproval,
+    WaitingForUserInput(PendingUserInput),
     Failed(anyhow::Error),
     TimedOut,
 }
@@ -749,6 +754,11 @@ impl AgentExecutor {
                 self.session.complete();
                 Ok(AgentExecutionOutcome::WaitingForApproval)
             }
+            TimedRunResult::WaitingForUserInput(request) => {
+                self.session.complete();
+                self.session.set_pending_user_input(request.clone());
+                Ok(AgentExecutionOutcome::WaitingForUserInput(request))
+            }
             TimedRunResult::Failed(error) => {
                 self.session.fail(error.to_string());
                 Err(error)
@@ -872,6 +882,9 @@ impl AgentExecutor {
         match timeout(timeout_duration, runner.run(ctx)).await {
             Ok(Ok(AgentRunResult::Final(res))) => TimedRunResult::Final(res),
             Ok(Ok(AgentRunResult::WaitingForApproval)) => TimedRunResult::WaitingForApproval,
+            Ok(Ok(AgentRunResult::WaitingForUserInput(request))) => {
+                TimedRunResult::WaitingForUserInput(request)
+            }
             Ok(Err(error)) => TimedRunResult::Failed(error),
             Err(_) => TimedRunResult::TimedOut,
         }
