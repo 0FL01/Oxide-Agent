@@ -23,6 +23,8 @@ pub enum TodoStatus {
     Pending,
     /// Task is currently being worked on
     InProgress,
+    /// Task is blocked until the user provides more input
+    BlockedOnUser,
     /// Task has been completed successfully
     Completed,
     /// Task has been cancelled
@@ -34,6 +36,7 @@ impl std::fmt::Display for TodoStatus {
         match self {
             Self::Pending => write!(f, "⏳"),
             Self::InProgress => write!(f, "🔄"),
+            Self::BlockedOnUser => write!(f, "⏸️"),
             Self::Completed => write!(f, "✅"),
             Self::Cancelled => write!(f, "❌"),
         }
@@ -96,6 +99,14 @@ impl TodoList {
             .find(|item| item.status == TodoStatus::InProgress)
     }
 
+    /// Get the current task blocked on user input.
+    #[must_use]
+    pub fn blocked_task(&self) -> Option<&TodoItem> {
+        self.items
+            .iter()
+            .find(|item| item.status == TodoStatus::BlockedOnUser)
+    }
+
     /// Count pending and in-progress items
     #[must_use]
     pub fn pending_count(&self) -> usize {
@@ -109,6 +120,27 @@ impl TodoList {
             .iter()
             .filter(|item| item.status == TodoStatus::Completed)
             .count()
+    }
+
+    /// Count blocked-on-user items.
+    #[must_use]
+    pub fn blocked_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.status == TodoStatus::BlockedOnUser)
+            .count()
+    }
+
+    /// Returns true when every incomplete item is blocked on user input.
+    #[must_use]
+    pub fn all_incomplete_items_blocked_on_user(&self) -> bool {
+        !self.items.is_empty()
+            && self.items.iter().any(|item| !item.is_done())
+            && self
+                .items
+                .iter()
+                .filter(|item| !item.is_done())
+                .all(|item| item.status == TodoStatus::BlockedOnUser)
     }
 
     /// Format todos as a context string for injection into prompts
@@ -203,8 +235,8 @@ impl ToolProvider for TodosProvider {
                                 },
                                 "status": {
                                     "type": "string",
-                                    "enum": ["pending", "in_progress", "completed", "cancelled"],
-                                    "description": "Task status. Only ONE task can be in_progress."
+                                    "enum": ["pending", "in_progress", "blocked_on_user", "completed", "cancelled"],
+                                    "description": "Task status. Only ONE task can be in_progress. Use blocked_on_user when waiting for the user before work can continue."
                                 }
                             },
                             "required": ["description", "status"]
@@ -247,25 +279,28 @@ impl ToolProvider for TodosProvider {
             .collect();
 
         // Update the shared todo list and get state for response
-        let (completed, total, current, is_all_complete) = {
+        let (completed, total, active_task, is_all_complete) = {
             let mut todos = self.todos.lock().await;
             todos.update(items);
             let completed = todos.completed_count();
             let total = todos.items.len();
-            let current = todos.current_task().map(|t| t.description.clone());
+            let active_task = todos
+                .current_task()
+                .map(|t| (t.description.clone(), false))
+                .or_else(|| todos.blocked_task().map(|t| (t.description.clone(), true)));
             let is_all_complete = todos.is_complete();
             drop(todos);
-            (completed, total, current, is_all_complete)
+            (completed, total, active_task, is_all_complete)
         };
 
         info!(
             completed = completed,
             total = total,
-            current = ?current,
+            active_task = ?active_task,
             "Todos updated"
         );
 
-        let response = current.map_or_else(
+        let response = active_task.map_or_else(
             || {
                 if is_all_complete {
                     format!("✅ All tasks completed! ({completed}/{total})")
@@ -273,9 +308,14 @@ impl ToolProvider for TodosProvider {
                     format!("✅ Task list updated ({completed}/{total} completed)")
                 }
             },
-            |current_task| {
+            |(active_task, blocked_on_user)| {
+                let prefix = if blocked_on_user {
+                    "⏸️ Waiting on user"
+                } else {
+                    "🔄 Current task"
+                };
                 format!(
-                    "✅ Task list updated ({completed}/{total} completed)\n🔄 Current task: {current_task}"
+                    "✅ Task list updated ({completed}/{total} completed)\n{prefix}: {active_task}"
                 )
             },
         );
@@ -292,6 +332,7 @@ mod tests {
     fn test_todo_status_display() {
         assert_eq!(format!("{}", TodoStatus::Pending), "⏳");
         assert_eq!(format!("{}", TodoStatus::InProgress), "🔄");
+        assert_eq!(format!("{}", TodoStatus::BlockedOnUser), "⏸️");
         assert_eq!(format!("{}", TodoStatus::Completed), "✅");
         assert_eq!(format!("{}", TodoStatus::Cancelled), "❌");
     }
@@ -300,6 +341,10 @@ mod tests {
     fn test_todo_item_is_done() {
         let pending = TodoItem::new("test");
         assert!(!pending.is_done());
+
+        let mut blocked = TodoItem::new("test");
+        blocked.status = TodoStatus::BlockedOnUser;
+        assert!(!blocked.is_done());
 
         let mut completed = TodoItem::new("test");
         completed.status = TodoStatus::Completed;
@@ -348,9 +393,14 @@ mod tests {
             description: "In Progress".to_string(),
             status: TodoStatus::InProgress,
         });
+        list.items.push(TodoItem {
+            description: "Blocked".to_string(),
+            status: TodoStatus::BlockedOnUser,
+        });
 
-        assert_eq!(list.pending_count(), 2);
+        assert_eq!(list.pending_count(), 3);
         assert_eq!(list.completed_count(), 1);
+        assert_eq!(list.blocked_count(), 1);
     }
 
     #[test]
@@ -370,6 +420,37 @@ mod tests {
         assert!(context.contains("✅ Search for information"));
         assert!(context.contains("🔄 Analyze data"));
         assert!(context.contains("1/2 completed"));
+    }
+
+    #[test]
+    fn test_all_incomplete_items_blocked_on_user() {
+        let mut list = TodoList::new();
+        list.items.push(TodoItem {
+            description: "Need APK link".to_string(),
+            status: TodoStatus::BlockedOnUser,
+        });
+        list.items.push(TodoItem {
+            description: "Previous work done".to_string(),
+            status: TodoStatus::Completed,
+        });
+
+        assert!(list.all_incomplete_items_blocked_on_user());
+    }
+
+    #[tokio::test]
+    async fn test_todos_write_reports_blocked_task() -> Result<(), Box<dyn std::error::Error>> {
+        let todos = Arc::new(Mutex::new(TodoList::new()));
+        let provider = TodosProvider::new(Arc::clone(&todos));
+
+        let args = r#"{
+            "todos": [
+                {"description": "Need APK link", "status": "blocked_on_user"}
+            ]
+        }"#;
+
+        let result = provider.execute("write_todos", args, None, None).await?;
+        assert!(result.contains("Waiting on user"));
+        Ok(())
     }
 
     #[tokio::test]

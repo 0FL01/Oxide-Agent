@@ -1,7 +1,7 @@
 //! Completion Check Hook - ensures all todos are completed before finishing
 //!
 //! This hook forces the agent to continue iterating if there are
-//! incomplete todos in the list.
+//! incomplete todos in the list, unless the remaining work is blocked on user input.
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
@@ -66,6 +66,15 @@ impl Hook for CompletionCheckHook {
                 completed = context.todos.completed_count(),
                 total = context.todos.items.len(),
                 "All todos completed"
+            );
+            return HookResult::Continue;
+        }
+
+        if context.todos.all_incomplete_items_blocked_on_user() {
+            info!(
+                blocked = context.todos.blocked_count(),
+                total = context.todos.items.len(),
+                "Allowing completion because remaining todos are blocked on user input"
             );
             return HookResult::Continue;
         }
@@ -192,6 +201,46 @@ mod tests {
 
         let result = hook.handle(&event, &context);
         assert!(matches!(result, HookResult::Continue)); // Should allow despite incomplete
+    }
+
+    #[test]
+    fn test_only_blocked_on_user_todos_allow_completion() {
+        let hook = CompletionCheckHook::new();
+        let mut todos = TodoList::new();
+        todos.items.push(TodoItem {
+            description: "Need APK link from user".to_string(),
+            status: TodoStatus::BlockedOnUser,
+        });
+
+        let context = create_context(&todos, 0);
+        let event = HookEvent::AfterAgent {
+            response: "Waiting for the user".to_string(),
+        };
+
+        let result = hook.handle(&event, &context);
+        assert!(matches!(result, HookResult::Continue));
+    }
+
+    #[test]
+    fn test_pending_and_blocked_todos_still_force_iteration() {
+        let hook = CompletionCheckHook::new();
+        let mut todos = TodoList::new();
+        todos.items.push(TodoItem {
+            description: "Need APK link from user".to_string(),
+            status: TodoStatus::BlockedOnUser,
+        });
+        todos.items.push(TodoItem {
+            description: "Repack APK".to_string(),
+            status: TodoStatus::Pending,
+        });
+
+        let context = create_context(&todos, 0);
+        let event = HookEvent::AfterAgent {
+            response: "Done".to_string(),
+        };
+
+        let result = hook.handle(&event, &context);
+        assert!(matches!(result, HookResult::ForceIteration { .. }));
     }
 
     #[test]
