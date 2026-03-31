@@ -32,7 +32,7 @@ impl HookRegistry {
 
     /// Register a new hook
     pub fn register(&mut self, hook: Box<dyn Hook>) {
-        info!(hook = hook.name(), "Registered hook");
+        debug!(hook = hook.name(), "Registered hook");
         self.hooks.push(hook);
     }
 

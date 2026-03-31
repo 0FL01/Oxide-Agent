@@ -678,7 +678,7 @@ impl AgentExecutor {
 
         let base_url = provider.base_url().to_string();
         registry.register(Box::new(provider));
-        tracing::info!(url = %base_url, "Kokoro TTS provider registered");
+        tracing::debug!(url = %base_url, "Kokoro TTS provider registered");
     }
 
     fn register_silero_tts_provider(
@@ -711,7 +711,7 @@ impl AgentExecutor {
 
         let base_url = provider.base_url().to_string();
         registry.register(Box::new(provider));
-        tracing::info!(url = %base_url, "Silero TTS provider registered");
+        tracing::debug!(url = %base_url, "Silero TTS provider registered");
     }
 
     async fn run_execution(
