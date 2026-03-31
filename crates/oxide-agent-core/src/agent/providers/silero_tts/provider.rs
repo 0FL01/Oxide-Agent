@@ -14,7 +14,7 @@ use crate::agent::providers::file_delivery::{
 };
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
 use shell_escape::escape;
@@ -260,9 +260,11 @@ impl SileroTtsProvider {
 
         let output_path =
             build_output_path(args.output_path.as_deref(), "speech_ru", &request.format);
-        if let Err(error) = self.write_audio_file(&output_path, &audio_bytes).await {
-            return Ok(format!("Failed to write Russian speech file: {error}"));
-        }
+        self.write_audio_file(&output_path, &audio_bytes)
+            .await
+            .with_context(|| {
+                format!("Failed to write Russian speech file to sandbox path {output_path}")
+            })?;
 
         Ok(serde_json::to_string(&json!({
             "ok": true,

@@ -184,6 +184,7 @@ mod progress_integration_tests {
         state.update(AgentEvent::ToolResult {
             name: "web_search".to_string(),
             output: "result1".to_string(),
+            success: true,
         });
 
         state.update(AgentEvent::ToolCall {
@@ -194,6 +195,7 @@ mod progress_integration_tests {
         state.update(AgentEvent::ToolResult {
             name: "web_search".to_string(),
             output: "result2".to_string(),
+            success: true,
         });
 
         state.update(AgentEvent::ToolCall {

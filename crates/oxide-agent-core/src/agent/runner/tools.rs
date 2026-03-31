@@ -178,8 +178,8 @@ impl AgentRunner {
         tool_call: ToolCall,
         result: anyhow::Result<String>,
     ) -> anyhow::Result<bool> {
-        let output = match result {
-            Ok(output) => output,
+        let (output, success) = match result {
+            Ok(output) => (output, true),
             Err(e) => {
                 warn!(
                     tool = %tool_call.function.name,
@@ -187,7 +187,7 @@ impl AgentRunner {
                     error_chain = %format_error_chain(&e),
                     "Tool execution failed"
                 );
-                format!("Tool execution error: {e}")
+                (format!("Tool execution error: {e}"), false)
             }
         };
 
@@ -201,6 +201,7 @@ impl AgentRunner {
                 .send(AgentEvent::ToolResult {
                     name: sanitized_name,
                     output: output.clone(),
+                    success,
                 })
                 .await;
         }
@@ -296,6 +297,7 @@ impl AgentRunner {
                 .send(AgentEvent::ToolResult {
                     name: sanitized_name,
                     output: output.clone(),
+                    success: false,
                 })
                 .await;
         }

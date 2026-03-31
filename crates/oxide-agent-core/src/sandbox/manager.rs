@@ -5,7 +5,6 @@
 //! Manages Docker containers for isolated code execution.
 
 use anyhow::{anyhow, Context, Result};
-use base64::Engine;
 use bollard::errors::Error as DockerError;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig};
@@ -1114,27 +1113,7 @@ impl DockerSandboxManager {
     /// Returns an error if sandbox is not running or file writing fails.
     #[instrument(skip(self, content), fields(path = %path, content_len = content.len()))]
     pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
-        if self.container_id.is_none() {
-            return Err(anyhow!("Sandbox not running"));
-        }
-
-        // Use base64 to safely transfer binary content
-        let encoded = base64::engine::general_purpose::STANDARD.encode(content);
-
-        let cmd = format!(
-            "echo '{}' | base64 -d > {}",
-            encoded,
-            shell_escape::escape(path.into())
-        );
-
-        let result = self.exec_command(&cmd, None).await?;
-
-        if !result.success() {
-            return Err(anyhow!("Failed to write file: {}", result.stderr));
-        }
-
-        debug!(path = %path, "File written to sandbox");
-        Ok(())
+        self.upload_file(path, content).await
     }
 
     /// Read content from a file in the sandbox.
@@ -1544,6 +1523,29 @@ mod tests {
             .await?;
 
         let content = sandbox.read_file("/workspace/binary-roundtrip.bin").await?;
+        assert_eq!(content, payload);
+
+        sandbox.destroy().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_write_file_round_trips_large_binary_content(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut sandbox = DockerSandboxManager::new(12349).await?;
+        sandbox.create_sandbox().await?;
+
+        let payload = (0..200_000)
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<_>>();
+        sandbox
+            .write_file("/workspace/large-binary-roundtrip.bin", &payload)
+            .await?;
+
+        let content = sandbox
+            .read_file("/workspace/large-binary-roundtrip.bin")
+            .await?;
         assert_eq!(content, payload);
 
         sandbox.destroy().await?;

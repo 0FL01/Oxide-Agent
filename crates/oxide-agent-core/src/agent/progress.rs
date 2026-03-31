@@ -79,6 +79,8 @@ pub enum AgentEvent {
         name: String,
         /// Tool execution output
         output: String,
+        /// Whether the tool finished successfully.
+        success: bool,
     },
     /// Agent is waiting for operator approval before continuing a tool call.
     WaitingForApproval {
@@ -375,7 +377,7 @@ impl ProgressState {
                 input,
                 command_preview,
             } => self.handle_tool_call(name, input, command_preview),
-            AgentEvent::ToolResult { .. } => self.complete_last_step(),
+            AgentEvent::ToolResult { success, .. } => self.handle_tool_result(success),
             AgentEvent::WaitingForApproval {
                 tool_name,
                 target_name,
@@ -533,6 +535,14 @@ impl ProgressState {
             tokens: None,
             tool_name: Some(name),
         });
+    }
+
+    fn handle_tool_result(&mut self, success: bool) {
+        if success {
+            self.complete_last_step();
+        } else {
+            self.fail_last_step();
+        }
     }
 
     fn handle_continuation(&mut self, reason: String, count: usize) {

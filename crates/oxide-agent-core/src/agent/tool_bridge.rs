@@ -24,6 +24,11 @@ struct ParsedToolCall {
     args: String,
 }
 
+struct ExecutedToolOutput {
+    output: String,
+    success: bool,
+}
+
 /// Context for tool execution
 pub struct ToolExecutionContext<'a> {
     /// Tool registry for executing tools
@@ -149,7 +154,7 @@ async fn emit_tool_call_event(
 async fn execute_tool_with_timeout(
     tool_call: &ParsedToolCall,
     ctx: &mut ToolExecutionContext<'_>,
-) -> Result<String> {
+) -> Result<ExecutedToolOutput> {
     let tool_timeout = Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS);
 
     use tokio::select;
@@ -189,31 +194,41 @@ async fn handle_tool_cancellation(
 fn map_tool_execution_result(
     tool_name: &str,
     result: Result<Result<String, anyhow::Error>, tokio::time::error::Elapsed>,
-) -> String {
+) -> ExecutedToolOutput {
     match result {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => format!("Tool execution error: {error}"),
+        Ok(Ok(output)) => ExecutedToolOutput {
+            output,
+            success: true,
+        },
+        Ok(Err(error)) => ExecutedToolOutput {
+            output: format!("Tool execution error: {error}"),
+            success: false,
+        },
         Err(_) => {
             warn!(
                 tool_name = %tool_name,
                 timeout_secs = AGENT_TOOL_TIMEOUT_SECS,
                 "Tool execution timed out"
             );
-            format!(
-                "Tool '{tool_name}' timed out ({} seconds)",
-                AGENT_TOOL_TIMEOUT_SECS
-            )
+            ExecutedToolOutput {
+                output: format!(
+                    "Tool '{tool_name}' timed out ({} seconds)",
+                    AGENT_TOOL_TIMEOUT_SECS
+                ),
+                success: false,
+            }
         }
     }
 }
 
 async fn normalize_tool_result(
     tool_call: ParsedToolCall,
-    result: String,
+    result: ExecutedToolOutput,
     ctx: &mut ToolExecutionContext<'_>,
 ) -> Result<ToolExecutionResult> {
+    let ExecutedToolOutput { output, success } = result;
     sync_todos_if_needed(&tool_call.name, ctx).await;
-    sync_topic_agents_md_if_needed(&tool_call.name, &result, ctx).await;
+    sync_topic_agents_md_if_needed(&tool_call.name, &output, ctx).await;
 
     // [APPROVAL DISABLED] Approval flow disabled at the source (requires_approval
     // in ssh_mcp.rs). Kept commented out as a safety net — if an approval_required
@@ -226,11 +241,11 @@ async fn normalize_tool_result(
     //     });
     // }
 
-    emit_tool_result_event(&tool_call.name, &result, ctx.progress_tx).await;
-    append_tool_result_to_memory(&tool_call, &result, ctx);
+    emit_tool_result_event(&tool_call.name, &output, success, ctx.progress_tx).await;
+    append_tool_result_to_memory(&tool_call, &output, ctx);
     Ok(ToolExecutionResult::Completed {
         tool_name: tool_call.name,
-        output: result,
+        output,
     })
 }
 
@@ -355,6 +370,7 @@ async fn store_pending_ssh_approval(
 async fn emit_tool_result_event(
     tool_name: &str,
     result: &str,
+    success: bool,
     progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
 ) {
     if let Some(tx) = progress_tx {
@@ -362,6 +378,7 @@ async fn emit_tool_result_event(
             .send(AgentEvent::ToolResult {
                 name: tool_name.to_string(),
                 output: result.to_string(),
+                success,
             })
             .await;
     }
