@@ -204,6 +204,22 @@ impl LlmProvider for OpenRouterProvider {
         _mime_type: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
+        self.transcribe_audio_with_prompt(
+            audio_bytes,
+            "audio/wav",
+            OPENROUTER_AUDIO_TRANSCRIBE_PROMPT,
+            model_id,
+        )
+        .await
+    }
+
+    async fn transcribe_audio_with_prompt(
+        &self,
+        audio_bytes: Vec<u8>,
+        _mime_type: &str,
+        text_prompt: &str,
+        model_id: &str,
+    ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
         let audio_base64 = BASE64.encode(&audio_bytes);
 
@@ -213,7 +229,7 @@ impl LlmProvider for OpenRouterProvider {
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": OPENROUTER_AUDIO_TRANSCRIBE_PROMPT},
+                        {"type": "text", "text": text_prompt},
                         {
                             "type": "input_audio",
                             "input_audio": {
@@ -386,6 +402,7 @@ impl LlmProvider for OpenRouterProvider {
 #[cfg(test)]
 mod tests {
     use super::OpenRouterProvider;
+    use base64::Engine;
     use serde_json::json;
 
     #[test]
@@ -409,6 +426,34 @@ mod tests {
         assert_eq!(
             body["messages"][1]["content"][1]["video_url"]["url"],
             json!("data:video/mp4;base64,dmlkZW8tYnl0ZXM=")
+        );
+    }
+
+    #[test]
+    fn audio_transcription_prompt_is_embedded_in_request() {
+        let audio_base64 = base64::prelude::BASE64_STANDARD.encode(b"audio-bytes");
+        let body = json!({
+            "model": "google/gemini-3.1-flash-lite-preview",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Extract timestamps and speakers"},
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": audio_base64,
+                                "format": "wav"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+
+        assert_eq!(
+            body["messages"][0]["content"][0]["text"],
+            json!("Extract timestamps and speakers")
         );
     }
 }
