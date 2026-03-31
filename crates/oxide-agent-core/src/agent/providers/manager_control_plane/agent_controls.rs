@@ -1414,6 +1414,39 @@ impl ManagerControlPlaneProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn topic_agent_tool_catalog_includes_media_file_tools() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_infra_config()
+            .returning(|_, _| Ok(None));
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let catalog = provider
+            .topic_agent_tool_catalog("topic-a")
+            .await
+            .expect("catalog should build");
+
+        let media_group = catalog
+            .groups
+            .iter()
+            .find(|group| group.provider == "media_file")
+            .expect("media_file group should be present");
+
+        assert_eq!(media_group.aliases, &["media", "media_file"]);
+        assert_eq!(
+            media_group.tools,
+            &[
+                "transcribe_audio_file",
+                "describe_image_file",
+                "describe_video_file"
+            ]
+        );
+        assert!(catalog.tool_names.contains("transcribe_audio_file"));
+        assert!(catalog.tool_names.contains("describe_image_file"));
+        assert!(catalog.tool_names.contains("describe_video_file"));
+    }
 
     #[test]
     fn search_alias_expands_all_matching_search_groups() {
