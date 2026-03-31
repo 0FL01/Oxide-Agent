@@ -236,6 +236,8 @@ const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_search_users",
     "mattermost_upload_file",
 ];
+const TOPIC_AGENT_TTS_EN_TOOLS: &[&str] = &["text_to_speech_en"];
+const TOPIC_AGENT_TTS_RU_TOOLS: &[&str] = &["text_to_speech_ru"];
 
 /// Transport-agnostic request for forum topic creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
