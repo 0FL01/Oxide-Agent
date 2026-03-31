@@ -25,6 +25,25 @@ fn build_reminder_guidance(tools: &[ToolDefinition]) -> Option<&'static str> {
     )
 }
 
+fn build_file_workflow_guidance(tools: &[ToolDefinition]) -> Option<&'static str> {
+    let has_media_file_tools = tools.iter().any(|tool| {
+        matches!(
+            tool.name.as_str(),
+            "transcribe_audio_file" | "describe_image_file" | "describe_video_file"
+        )
+    });
+    let has_tts_file_tools = tools.iter().any(|tool| {
+        matches!(
+            tool.name.as_str(),
+            "text_to_speech_en_file" | "text_to_speech_ru_file"
+        )
+    });
+
+    (has_media_file_tools || has_tts_file_tools).then_some(
+        "## File Workflows\n- Uploaded files provided for file workflows are preserved in the sandbox and remain directly manipulable\n- When the user wants editing, transcoding, muxing, translation dubbing, or other file transformations, operate on the sandbox file instead of summarizing it\n- Use `describe_image_file`, `describe_video_file`, or `transcribe_audio_file` only when you actually need multimodal understanding before acting on the file\n- Use `text_to_speech_en_file` or `text_to_speech_ru_file` when another tool such as `ffmpeg` needs an audio file path instead of an immediate voice message"
+    )
+}
+
 /// Get the built-in fallback prompt for the main agent.
 #[must_use]
 pub fn get_fallback_prompt() -> String {
@@ -134,12 +153,15 @@ pub async fn create_agent_system_prompt(
     };
 
     let reminder_guidance = build_reminder_guidance(tools).unwrap_or_default();
+    let file_workflow_guidance = build_file_workflow_guidance(tools).unwrap_or_default();
 
     if structured_output {
         let structured_output = build_structured_output_instructions(tools);
-        format!("{date_context}{base_prompt}\n\n{reminder_guidance}\n\n{structured_output}")
+        format!(
+            "{date_context}{base_prompt}\n\n{reminder_guidance}\n\n{file_workflow_guidance}\n\n{structured_output}"
+        )
     } else {
-        format!("{date_context}{base_prompt}\n\n{reminder_guidance}")
+        format!("{date_context}{base_prompt}\n\n{reminder_guidance}\n\n{file_workflow_guidance}")
     }
 }
 
@@ -245,6 +267,32 @@ mod tests {
 
         assert!(prompt.contains("## Reminder Scheduling"));
         assert!(prompt.contains("Do not compute unix timestamps by hand for reminders"));
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_system_prompt_adds_file_workflow_guidance() {
+        let tools = [
+            ToolDefinition {
+                name: "describe_video_file".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "text_to_speech_en_file".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+        ];
+        let mut session = AgentSession::new(1_i64.into());
+
+        let prompt =
+            create_agent_system_prompt("demo task", &tools, true, None, &mut session, None).await;
+
+        assert!(prompt.contains("## File Workflows"));
+        assert!(prompt.contains("operate on the sandbox file instead of summarizing it"));
+        assert!(prompt
+            .contains("`describe_image_file`, `describe_video_file`, or `transcribe_audio_file`"));
+        assert!(prompt.contains("`text_to_speech_en_file` or `text_to_speech_ru_file`"));
     }
 
     #[test]
