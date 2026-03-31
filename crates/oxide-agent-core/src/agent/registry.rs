@@ -6,7 +6,7 @@ use super::provider::ToolProvider;
 use crate::agent::progress::AgentEvent;
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Registry that manages multiple tool providers
 pub struct ToolRegistry {
@@ -24,7 +24,7 @@ impl ToolRegistry {
 
     /// Register a new tool provider
     pub fn register(&mut self, provider: Box<dyn ToolProvider>) {
-        info!(provider = provider.name(), "Registered tool provider");
+        debug!(provider = provider.name(), "Registered tool provider");
         self.providers.push(provider);
     }
 
