@@ -336,6 +336,18 @@ impl ManagerControlPlaneProvider {
             }
         }
 
+        // TTS groups - always added as they're conditionally enabled via env vars at runtime
+        groups.push(TopicAgentToolGroup {
+            provider: "tts_en",
+            aliases: &["tts", "tts_en", "kokoro"],
+            tools: TOPIC_AGENT_TTS_EN_TOOLS,
+        });
+        groups.push(TopicAgentToolGroup {
+            provider: "tts_ru",
+            aliases: &["tts_ru", "silero"],
+            tools: TOPIC_AGENT_TTS_RU_TOOLS,
+        });
+
         let mut tool_names = BTreeSet::new();
         for group in &groups {
             for tool in group.tools {
