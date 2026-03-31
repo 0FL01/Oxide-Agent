@@ -534,7 +534,7 @@ impl AgentExecutor {
     fn register_jira_mcp_provider(registry: &mut ToolRegistry) {
         if let Some(config) = crate::agent::providers::JiraMcpConfig::from_env() {
             let binary_path = config.binary_path.clone();
-            tracing::info!(
+            tracing::debug!(
                 binary_path = %binary_path,
                 jira_url_present = !config.jira_url.is_empty(),
                 jira_email_present = !config.jira_email.is_empty(),
@@ -544,7 +544,7 @@ impl AgentExecutor {
             registry.register(Box::new(crate::agent::providers::JiraMcpProvider::new(
                 config,
             )));
-            tracing::info!(binary_path = %binary_path, "Jira MCP provider registered");
+            tracing::debug!(binary_path = %binary_path, "Jira MCP provider registered");
         } else {
             tracing::warn!(
                 "jira feature is enabled but JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN is not set; \
@@ -557,7 +557,7 @@ impl AgentExecutor {
     fn register_mattermost_mcp_provider(registry: &mut ToolRegistry) {
         if let Some(config) = crate::agent::providers::MattermostMcpConfig::from_env() {
             let binary_path = config.binary_path.clone();
-            tracing::info!(
+            tracing::debug!(
                 binary_path = %binary_path,
                 mattermost_url_present = !config.mattermost_url.is_empty(),
                 mattermost_token_present = !config.mattermost_token.is_empty(),
@@ -569,7 +569,7 @@ impl AgentExecutor {
             registry.register(Box::new(
                 crate::agent::providers::MattermostMcpProvider::new(config),
             ));
-            tracing::info!(binary_path = %binary_path, "Mattermost MCP provider registered");
+            tracing::debug!(binary_path = %binary_path, "Mattermost MCP provider registered");
         } else {
             tracing::warn!(
                 "mattermost feature is enabled but MATTERMOST_URL or MATTERMOST_TOKEN is not set; \
