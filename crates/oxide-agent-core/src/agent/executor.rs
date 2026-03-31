@@ -1544,6 +1544,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn main_agent_registry_includes_explicit_media_and_tts_file_tools() {
+        let executor = build_executor();
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        for tool in [
+            "transcribe_audio_file",
+            "describe_image_file",
+            "describe_video_file",
+            "text_to_speech_en_file",
+            "text_to_speech_ru_file",
+        ] {
+            assert!(registry.can_handle(tool), "missing registry tool: {tool}");
+        }
+
+        let tool_names = registry
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(tool_names.contains("transcribe_audio_file"));
+        assert!(tool_names.contains("describe_video_file"));
+        assert!(tool_names.contains("text_to_speech_en_file"));
+        assert!(tool_names.contains("text_to_speech_ru_file"));
+    }
+
+    #[tokio::test]
     async fn agents_md_context_enables_self_editing_tools() {
         let mut mock = MockStorageProvider::new();
         mock.expect_get_topic_agents_md()
