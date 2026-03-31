@@ -1,6 +1,7 @@
 use super::{
     cancel_status_inline_markup, finalize_cancel_status_if_needed, is_task_cancelled_error,
-    save_memory_after_task, send_agent_message, SESSION_REGISTRY,
+    save_memory_after_task, send_agent_message, should_preserve_pending_file_input,
+    SESSION_REGISTRY,
 };
 use crate::bot::agent_handlers::{
     preprocess_agent_message_input, send_multimodal_unavailable_message,
@@ -208,11 +209,13 @@ pub(crate) fn spawn_agent_task(ctx: AgentTaskContext) {
 pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     let user_id = ctx.msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let chat_id = ctx.msg.chat.id;
+    let preserve_binary_uploads = should_preserve_pending_file_input(&ctx.session_id).await;
     let task_text = match preprocess_agent_message_input(
         &ctx.bot,
         &ctx.msg,
         &ctx.llm,
         &ctx.sandbox_scope,
+        preserve_binary_uploads,
     )
     .await
     {

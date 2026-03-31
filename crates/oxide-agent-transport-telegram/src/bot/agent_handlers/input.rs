@@ -4,12 +4,14 @@ use super::{
     ActiveSessionConfig, RunAgentTaskTextContext, RunUserInputResumeContext,
     PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
 };
-use crate::bot::agent::extract_agent_input;
+use crate::bot::agent::{extract_agent_file_input, extract_agent_input};
 use crate::bot::context::{current_context_state, ensure_current_agent_flow_id};
 use crate::bot::topic_route::{touch_dynamic_binding_activity_if_needed, TopicRouteDecision};
 use crate::bot::{OutboundThreadParams, TelegramThreadSpec};
 use anyhow::Result;
-use oxide_agent_core::agent::{preprocessor::Preprocessor, SessionId};
+use oxide_agent_core::agent::{
+    preprocessor::Preprocessor, PendingUserInput, SessionId, UserInputKind,
+};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
@@ -233,12 +235,15 @@ fn spawn_deferred_agent_input(ctx: DeferredAgentInputContext) {
     tokio::spawn(async move {
         let chat_id = ctx.dispatch.chat_id;
         let thread_id = ctx.dispatch.message_thread_id;
+        let preserve_binary_uploads =
+            should_preserve_pending_file_input(&ctx.dispatch.session_id).await;
 
         match preprocess_agent_message_input(
             &ctx.dispatch.bot,
             &ctx.msg,
             &ctx.llm,
             &ctx.sandbox_scope,
+            preserve_binary_uploads,
         )
         .await
         {
@@ -285,10 +290,73 @@ pub(crate) async fn preprocess_agent_message_input(
     msg: &Message,
     llm: &Arc<LlmClient>,
     sandbox_scope: &SandboxScope,
+    preserve_binary_uploads: bool,
 ) -> Result<String> {
     let preprocessor = Preprocessor::new(llm.clone(), sandbox_scope.clone());
-    let input = extract_agent_input(bot, msg).await?;
+    let input = if preserve_binary_uploads {
+        extract_agent_file_input(bot, msg).await?
+    } else {
+        extract_agent_input(bot, msg).await?
+    };
     preprocessor.preprocess_input(input).await
+}
+
+pub(crate) fn pending_user_input_requires_file(request: Option<&PendingUserInput>) -> bool {
+    matches!(
+        request.map(|request| &request.kind),
+        Some(UserInputKind::File | UserInputKind::UrlOrFile)
+    )
+}
+
+pub(crate) async fn should_preserve_pending_file_input(session_id: &SessionId) -> bool {
+    let Some(executor_arc) = SESSION_REGISTRY.get(session_id).await else {
+        return false;
+    };
+
+    let executor = executor_arc.read().await;
+    pending_user_input_requires_file(executor.session().pending_user_input())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_user_input_requires_file;
+    use oxide_agent_core::agent::{PendingUserInput, UserInputKind};
+
+    #[test]
+    fn pending_file_request_requires_preserving_attachments() {
+        let request = PendingUserInput {
+            kind: UserInputKind::File,
+            prompt: "upload file".to_string(),
+        };
+
+        assert!(pending_user_input_requires_file(Some(&request)));
+    }
+
+    #[test]
+    fn pending_url_or_file_request_requires_preserving_attachments() {
+        let request = PendingUserInput {
+            kind: UserInputKind::UrlOrFile,
+            prompt: "upload or paste".to_string(),
+        };
+
+        assert!(pending_user_input_requires_file(Some(&request)));
+    }
+
+    #[test]
+    fn text_and_url_requests_keep_default_media_preprocessing() {
+        let text = PendingUserInput {
+            kind: UserInputKind::Text,
+            prompt: "reply".to_string(),
+        };
+        let url = PendingUserInput {
+            kind: UserInputKind::Url,
+            prompt: "paste url".to_string(),
+        };
+
+        assert!(!pending_user_input_requires_file(Some(&text)));
+        assert!(!pending_user_input_requires_file(Some(&url)));
+        assert!(!pending_user_input_requires_file(None));
+    }
 }
 
 pub(crate) async fn send_multimodal_unavailable_message(
