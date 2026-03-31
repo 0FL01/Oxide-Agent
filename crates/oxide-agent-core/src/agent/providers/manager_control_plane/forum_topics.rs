@@ -19,8 +19,13 @@ fn default_ssh_agent_allowed_tools() -> Vec<String> {
         "reminder_pause".to_string(),
         "reminder_resume".to_string(),
         "reminder_retry".to_string(),
+        "transcribe_audio_file".to_string(),
+        "describe_image_file".to_string(),
+        "describe_video_file".to_string(),
         "text_to_speech_en".to_string(),
+        "text_to_speech_en_file".to_string(),
         "text_to_speech_ru".to_string(),
+        "text_to_speech_ru_file".to_string(),
     ]
 }
 

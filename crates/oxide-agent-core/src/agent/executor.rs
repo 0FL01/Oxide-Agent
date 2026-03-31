@@ -16,8 +16,8 @@ use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
     inject_approval_credentials, AgentsMdProvider, DelegationProvider, FileHosterProvider,
-    KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle, ReminderContext,
-    ReminderProvider, SandboxProvider, SshApprovalGrant, SshApprovalRegistry,
+    KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle, MediaFileProvider,
+    ReminderContext, ReminderProvider, SandboxProvider, SshApprovalGrant, SshApprovalRegistry,
     SshApprovalRequestView, SshMcpProvider, TodoList, TodosProvider, TopicInfraPreflightReport,
     YtdlpProvider,
 };
@@ -442,7 +442,7 @@ impl AgentExecutor {
     ) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
 
-        // Core providers: todos, sandbox, filehoster, ytdlp, delegation
+        // Core providers: todos, sandbox, filehoster, media file analysis, ytdlp, delegation
         self.register_core_providers(&mut registry, todos_arc, progress_tx);
 
         // Topic-scoped providers: agents_md, manager, ssh, reminders
@@ -475,6 +475,10 @@ impl AgentExecutor {
         };
         registry.register(Box::new(sandbox_provider));
         registry.register(Box::new(FileHosterProvider::new(sandbox_scope.clone())));
+        registry.register(Box::new(MediaFileProvider::new(
+            self.runner.llm_client(),
+            sandbox_scope.clone(),
+        )));
 
         let ytdlp_provider = if let Some(tx) = progress_tx {
             YtdlpProvider::new(sandbox_scope.clone()).with_progress_tx(tx.clone())
@@ -661,12 +665,15 @@ impl AgentExecutor {
         }
 
         tracing::debug!(url = %config.base_url, "Registering TTS provider");
+        let sandbox_scope = self.session.sandbox_scope().clone();
 
         // Register the TTS provider (health check is done lazily on first use)
         let provider = if let Some(tx) = progress_tx {
-            KokoroTtsProvider::from_config(config).with_progress_tx(tx.clone())
-        } else {
             KokoroTtsProvider::from_config(config)
+                .with_sandbox_scope(sandbox_scope)
+                .with_progress_tx(tx.clone())
+        } else {
+            KokoroTtsProvider::from_config(config).with_sandbox_scope(sandbox_scope)
         };
 
         let base_url = provider.base_url().to_string();
@@ -691,12 +698,15 @@ impl AgentExecutor {
         }
 
         tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");
+        let sandbox_scope = self.session.sandbox_scope().clone();
 
         let provider = if let Some(tx) = progress_tx {
             crate::agent::providers::silero_tts::SileroTtsProvider::from_config(config)
+                .with_sandbox_scope(sandbox_scope)
                 .with_progress_tx(tx.clone())
         } else {
             crate::agent::providers::silero_tts::SileroTtsProvider::from_config(config)
+                .with_sandbox_scope(sandbox_scope)
         };
 
         let base_url = provider.base_url().to_string();

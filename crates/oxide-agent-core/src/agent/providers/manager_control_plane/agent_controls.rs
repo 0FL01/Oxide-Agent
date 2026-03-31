@@ -338,6 +338,11 @@ impl ManagerControlPlaneProvider {
 
         // TTS groups - always added as they're conditionally enabled via env vars at runtime
         groups.push(TopicAgentToolGroup {
+            provider: "media_file",
+            aliases: &["media", "media_file"],
+            tools: TOPIC_AGENT_MEDIA_FILE_TOOLS,
+        });
+        groups.push(TopicAgentToolGroup {
             provider: "tts_en",
             aliases: &["tts", "tts_en", "kokoro"],
             tools: TOPIC_AGENT_TTS_EN_TOOLS,

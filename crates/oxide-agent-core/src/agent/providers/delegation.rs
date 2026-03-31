@@ -49,8 +49,13 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "delegate_to_sub_agent",
     "send_file_to_user",
     "ssh_send_file_to_user",
+    "transcribe_audio_file",
+    "describe_image_file",
+    "describe_video_file",
     "text_to_speech_en",
+    "text_to_speech_en_file",
     "text_to_speech_ru",
+    "text_to_speech_ru_file",
     "recreate_sandbox",
     "topic_binding_set",
     "topic_binding_get",
@@ -777,8 +782,13 @@ mod tests {
         let blocked = DelegationProvider::blocked_tool_set();
 
         for tool in [
+            "transcribe_audio_file",
+            "describe_image_file",
+            "describe_video_file",
             "text_to_speech_en",
+            "text_to_speech_en_file",
             "text_to_speech_ru",
+            "text_to_speech_ru_file",
             "recreate_sandbox",
             "topic_binding_set",
             "topic_binding_get",
@@ -822,8 +832,11 @@ mod tests {
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let available_tools = HashSet::from([
             "write_todos".to_string(),
+            "transcribe_audio_file".to_string(),
             "text_to_speech_en".to_string(),
+            "text_to_speech_en_file".to_string(),
             "text_to_speech_ru".to_string(),
+            "text_to_speech_ru_file".to_string(),
             "forum_topic_create".to_string(),
             "topic_binding_set".to_string(),
             "topic_infra_upsert".to_string(),
@@ -833,8 +846,11 @@ mod tests {
             .filter_allowed_tools(
                 vec![
                     "write_todos".to_string(),
+                    "transcribe_audio_file".to_string(),
                     "text_to_speech_en".to_string(),
+                    "text_to_speech_en_file".to_string(),
                     "text_to_speech_ru".to_string(),
+                    "text_to_speech_ru_file".to_string(),
                     "forum_topic_create".to_string(),
                     "topic_binding_set".to_string(),
                     "topic_infra_upsert".to_string(),

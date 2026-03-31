@@ -257,6 +257,8 @@ pub struct TextToSpeechRuArgs {
     pub format: Option<String>,
     /// Whether text is SSML.
     pub ssml: Option<bool>,
+    /// Optional sandbox output path for file-writing workflows.
+    pub output_path: Option<String>,
 }
 
 impl TextToSpeechRuArgs {
@@ -384,6 +386,7 @@ mod tests {
             sample_rate: None,
             format: None,
             ssml: None,
+            output_path: None,
         };
 
         let req = args
@@ -404,6 +407,7 @@ mod tests {
             sample_rate: Some(24000),
             format: Some("wav".to_string()),
             ssml: Some(true),
+            output_path: None,
         };
 
         let req = args
@@ -424,6 +428,7 @@ mod tests {
             sample_rate: None,
             format: None,
             ssml: None,
+            output_path: None,
         };
 
         assert!(args.to_request(&config).is_err());
