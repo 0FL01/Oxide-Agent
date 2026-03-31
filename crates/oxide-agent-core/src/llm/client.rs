@@ -538,6 +538,25 @@ impl LlmClient {
             .await
     }
 
+    /// Transcribe audio to text with a task-specific prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from the provider.
+    pub async fn transcribe_audio_with_prompt(
+        &self,
+        audio_bytes: Vec<u8>,
+        mime_type: &str,
+        text_prompt: &str,
+        model_name: &str,
+    ) -> Result<String, LlmError> {
+        let model_info = self.get_model_info(model_name)?;
+        let provider = self.get_provider(&model_info.provider)?;
+        provider
+            .transcribe_audio_with_prompt(audio_bytes, mime_type, text_prompt, &model_info.id)
+            .await
+    }
+
     /// Transcribe audio with automatic fallback for text-only providers and retry logic.
     ///
     /// If the provider returns `ZAI_FALLBACK_TO_GEMINI` error, uses `media_model_provider` instead.

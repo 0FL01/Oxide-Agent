@@ -86,6 +86,22 @@ impl LlmProvider for GeminiProvider {
         mime_type: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
+        self.transcribe_audio_with_prompt(
+            audio_bytes,
+            mime_type,
+            GEMINI_AUDIO_TRANSCRIBE_PROMPT,
+            model_id,
+        )
+        .await
+    }
+
+    async fn transcribe_audio_with_prompt(
+        &self,
+        audio_bytes: Vec<u8>,
+        mime_type: &str,
+        text_prompt: &str,
+        model_id: &str,
+    ) -> Result<String, LlmError> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={}",
             self.api_key
@@ -94,7 +110,7 @@ impl LlmProvider for GeminiProvider {
         let body = json!({
             "contents": [{
                 "parts": [
-                    {"text": GEMINI_AUDIO_TRANSCRIBE_PROMPT},
+                    {"text": text_prompt},
                     {
                         "inline_data": {
                             "mime_type": mime_type,

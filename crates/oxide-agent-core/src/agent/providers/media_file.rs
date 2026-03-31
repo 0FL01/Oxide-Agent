@@ -30,6 +30,8 @@ struct AudioFileArgs {
     path: String,
     #[serde(default)]
     mime_type: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,12 +117,15 @@ impl MediaFileProvider {
         let mime_type = args
             .mime_type
             .unwrap_or_else(|| infer_audio_mime_type(&resolved_path).to_string());
+        let prompt = args.prompt.unwrap_or_else(|| {
+            "Transcribe this audio accurately for an AI agent. Preserve the spoken content faithfully and include timestamps, speaker turns, or structure only when they are clearly available or explicitly relevant.".to_string()
+        });
         let model_name = self.media_model_name();
 
         info!(path = %resolved_path, mime_type = %mime_type, model = %model_name, "Transcribing sandbox audio file");
         let transcription = self
             .llm_client
-            .transcribe_audio(audio_bytes, &mime_type, model_name)
+            .transcribe_audio_with_prompt(audio_bytes, &mime_type, &prompt, model_name)
             .await
             .map_err(|error| anyhow!("Audio transcription failed: {error}"))?;
 
@@ -189,7 +194,7 @@ impl MediaFileProvider {
 }
 
 fn infer_audio_mime_type(path: &str) -> &'static str {
-    match extension(path) {
+    match extension(path).as_deref() {
         Some(ext) if ext.eq_ignore_ascii_case("wav") => "audio/wav",
         Some(ext) if ext.eq_ignore_ascii_case("mp3") => "audio/mpeg",
         Some(ext) if ext.eq_ignore_ascii_case("ogg") || ext.eq_ignore_ascii_case("opus") => {
@@ -203,7 +208,7 @@ fn infer_audio_mime_type(path: &str) -> &'static str {
 }
 
 fn infer_video_mime_type(path: &str) -> &'static str {
-    match extension(path) {
+    match extension(path).as_deref() {
         Some(ext) if ext.eq_ignore_ascii_case("mov") => "video/mov",
         Some(ext) if ext.eq_ignore_ascii_case("mpeg") || ext.eq_ignore_ascii_case("mpg") => {
             "video/mpeg"
@@ -213,8 +218,11 @@ fn infer_video_mime_type(path: &str) -> &'static str {
     }
 }
 
-fn extension(path: &str) -> Option<&str> {
-    Path::new(path).extension().and_then(|ext| ext.to_str())
+fn extension(path: &str) -> Option<String> {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(ToString::to_string)
 }
 
 #[async_trait]
@@ -238,6 +246,10 @@ impl ToolProvider for MediaFileProvider {
                         "mime_type": {
                             "type": "string",
                             "description": "Optional MIME type override, for example audio/ogg or audio/wav"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Optional task-specific prompt that explains what transcription format or details you need, for example timestamps, speakers, or translation-ready text"
                         }
                     },
                     "required": ["path"]
@@ -313,6 +325,8 @@ impl ToolProvider for MediaFileProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentSettings;
+    use crate::llm::LlmClient;
 
     #[test]
     fn infers_audio_mime_type_from_extension() {
@@ -326,5 +340,23 @@ mod tests {
         assert_eq!(infer_video_mime_type("movie.webm"), "video/webm");
         assert_eq!(infer_video_mime_type("clip.mov"), "video/mov");
         assert_eq!(infer_video_mime_type("clip.bin"), "video/mp4");
+    }
+
+    #[test]
+    fn transcribe_audio_tool_accepts_custom_prompt() {
+        let provider = MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        );
+        let tool = provider
+            .tools()
+            .into_iter()
+            .find(|tool| tool.name == TOOL_TRANSCRIBE_AUDIO_FILE)
+            .expect("transcribe_audio_file tool must exist");
+
+        assert_eq!(
+            tool.parameters["properties"]["prompt"]["type"],
+            serde_json::json!("string")
+        );
     }
 }
