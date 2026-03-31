@@ -31,6 +31,22 @@ pub trait LlmProvider: Send + Sync {
         model_id: &str,
     ) -> Result<String, LlmError>;
 
+    /// Analyze a video clip
+    ///
+    /// Default implementation returns an error indicating video analysis is not supported.
+    async fn analyze_video(
+        &self,
+        _video_bytes: Vec<u8>,
+        _mime_type: &str,
+        _text_prompt: &str,
+        _system_prompt: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown(
+            "Video analysis not supported by this provider".to_string(),
+        ))
+    }
+
     /// Chat completion with tool calling support (optional, not all providers support it)
     ///
     /// Default implementation returns an error indicating tool calling is not supported.

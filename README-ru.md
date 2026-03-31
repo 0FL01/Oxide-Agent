@@ -183,7 +183,7 @@ SUB_AGENT_MODEL_PROVIDER="zai"
 
 ### Медиа и Нарратор
 ```dotenv
-MEDIA_MODEL_ID="google/gemini-3-flash-preview"
+MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
 MEDIA_MODEL_PROVIDER="openrouter"
 
 NARRATOR_MODEL_ID="labs-mistral-small-creative"

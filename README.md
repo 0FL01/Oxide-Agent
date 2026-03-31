@@ -204,7 +204,7 @@ Omitting the sub-agent block falls back to the agent model settings.
 
 ### Optional overrides
 ```dotenv
-MEDIA_MODEL_ID="google/gemini-3-flash-preview"
+MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
 MEDIA_MODEL_PROVIDER="openrouter"
 
 NARRATOR_MODEL_ID="labs-mistral-small-creative"

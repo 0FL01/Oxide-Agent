@@ -51,6 +51,39 @@ impl OpenRouterProvider {
             site_name,
         }
     }
+
+    fn data_url(mime_type: &str, bytes: &[u8]) -> String {
+        format!("data:{mime_type};base64,{}", BASE64.encode(bytes))
+    }
+
+    fn build_video_request_body(
+        model_id: &str,
+        video_bytes: &[u8],
+        mime_type: &str,
+        text_prompt: &str,
+        system_prompt: &str,
+    ) -> serde_json::Value {
+        let data_url = Self::data_url(mime_type, video_bytes);
+
+        json!({
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": text_prompt},
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": data_url}
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 4000,
+            "temperature": OPENROUTER_IMAGE_TEMPERATURE
+        })
+    }
 }
 
 /// Parse OpenRouter rate limit reset time from error body.
@@ -208,8 +241,7 @@ impl LlmProvider for OpenRouterProvider {
         model_id: &str,
     ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
-        let image_base64 = BASE64.encode(&image_bytes);
-        let data_url = format!("data:image/jpeg;base64,{image_base64}");
+        let data_url = Self::data_url("image/jpeg", &image_bytes);
 
         let body = json!({
             "model": model_id,
@@ -229,6 +261,28 @@ impl LlmProvider for OpenRouterProvider {
             "max_tokens": 4000,
             "temperature": OPENROUTER_IMAGE_TEMPERATURE
         });
+
+        let auth = format!("Bearer {}", self.api_key);
+        let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
+        extract_text_content(&res_json, &["choices", "0", "message", "content"])
+    }
+
+    async fn analyze_video(
+        &self,
+        video_bytes: Vec<u8>,
+        mime_type: &str,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_id: &str,
+    ) -> Result<String, LlmError> {
+        let url = "https://openrouter.ai/api/v1/chat/completions";
+        let body = Self::build_video_request_body(
+            model_id,
+            &video_bytes,
+            mime_type,
+            text_prompt,
+            system_prompt,
+        );
 
         let auth = format!("Bearer {}", self.api_key);
         let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
@@ -326,5 +380,35 @@ impl LlmProvider for OpenRouterProvider {
             reasoning_content: None,
             usage,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpenRouterProvider;
+    use serde_json::json;
+
+    #[test]
+    fn build_video_request_body_uses_video_url_data_part() {
+        let body = OpenRouterProvider::build_video_request_body(
+            "google/gemini-3.1-flash-lite-preview",
+            b"video-bytes",
+            "video/mp4",
+            "Describe this clip",
+            "System",
+        );
+
+        assert_eq!(body["model"], json!("google/gemini-3.1-flash-lite-preview"));
+        assert_eq!(body["messages"][0]["role"], json!("system"));
+        assert_eq!(body["messages"][0]["content"], json!("System"));
+        assert_eq!(body["messages"][1]["content"][0]["type"], json!("text"));
+        assert_eq!(
+            body["messages"][1]["content"][1]["type"],
+            json!("video_url")
+        );
+        assert_eq!(
+            body["messages"][1]["content"][1]["video_url"]["url"],
+            json!("data:video/mp4;base64,dmlkZW8tYnl0ZXM=")
+        );
     }
 }

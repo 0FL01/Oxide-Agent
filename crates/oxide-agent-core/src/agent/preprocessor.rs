@@ -1,6 +1,6 @@
 //! Input preprocessor for multimodal content
 //!
-//! Handles voice and image preprocessing using the configured
+//! Handles voice, image, and video preprocessing using the configured
 //! multimodal model before passing to the agent for execution.
 
 use crate::llm::LlmClient;
@@ -159,6 +159,56 @@ impl Preprocessor {
         Ok(description)
     }
 
+    /// Describe a video for the agent context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the video analysis fails.
+    pub async fn describe_video(
+        &self,
+        video_bytes: Vec<u8>,
+        mime_type: &str,
+        user_context: Option<&str>,
+    ) -> Result<String> {
+        if !self.llm_client.is_multimodal_available() {
+            return Err(anyhow::anyhow!("MULTIMODAL_DISABLED"));
+        }
+
+        info!(
+            "Describing video: {} bytes, mime: {mime_type}",
+            video_bytes.len()
+        );
+
+        let prompt = user_context.map_or_else(
+            || {
+                "Describe this video in detail for an AI agent. Summarize the sequence of events, any visible text, spoken or implied context, and the important objects or actions frame-to-frame."
+                    .to_string()
+            },
+            |ctx| {
+                format!(
+                    "Describe this video in detail for an AI agent that will perform a task. User context: {ctx}"
+                )
+            },
+        );
+
+        let system_prompt = "You are a video analyzer for an AI agent. Your task is to create a detailed text description of the clip so the agent can understand the timeline, important visual details, and any visible text without accessing the video itself.";
+
+        let model_name = self
+            .llm_client
+            .media_model_name
+            .as_deref()
+            .unwrap_or(&self.llm_client.chat_model_name);
+
+        let description = self
+            .llm_client
+            .analyze_video(video_bytes, mime_type, &prompt, system_prompt, model_name)
+            .await
+            .map_err(|e| anyhow::anyhow!("Video analysis failed: {e}"))?;
+
+        info!("Video description: {} chars", description.len());
+        Ok(description)
+    }
+
     /// Process a document uploaded by the user
     ///
     /// Uploads the file to the sandbox and returns a formatted description
@@ -307,7 +357,7 @@ impl Preprocessor {
     ///
     /// # Errors
     ///
-    /// Returns an error if transcription or image analysis fails.
+    /// Returns an error if transcription or media analysis fails.
     pub async fn preprocess_input(&self, input: AgentInput) -> Result<String> {
         match input {
             AgentInput::Text(text) => Ok(text),
@@ -316,6 +366,14 @@ impl Preprocessor {
             }
             AgentInput::Image { bytes, context } => {
                 self.describe_image(bytes, context.as_deref()).await
+            }
+            AgentInput::Video {
+                bytes,
+                mime_type,
+                context,
+            } => {
+                self.describe_video(bytes, &mime_type, context.as_deref())
+                    .await
             }
             AgentInput::ImageWithText { image_bytes, text } => {
                 let description = self.describe_image(image_bytes, Some(&text)).await?;
@@ -354,6 +412,15 @@ pub enum AgentInput {
         /// Optional context from the user (caption)
         context: Option<String>,
     },
+    /// Video clip to be described
+    Video {
+        /// Raw video bytes
+        bytes: Vec<u8>,
+        /// MIME type of the video
+        mime_type: String,
+        /// Optional context from the user (caption)
+        context: Option<String>,
+    },
     /// Image with accompanying text
     ImageWithText {
         /// Raw image bytes
@@ -377,6 +444,9 @@ pub enum AgentInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentSettings;
+    use crate::llm::MockLlmProvider;
+    use std::sync::Arc;
 
     #[test]
     fn test_sanitize_filename_basic() {
@@ -450,5 +520,43 @@ mod tests {
         assert!(Preprocessor::get_file_type_hint("archive.zip").contains("Archive"));
         assert!(Preprocessor::get_file_type_hint("image.png").contains("PIL"));
         assert!(Preprocessor::get_file_type_hint("unknown.xyz").contains("tools"));
+    }
+
+    #[tokio::test]
+    async fn preprocess_video_uses_media_model() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-model".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("video-model".to_string()),
+            media_model_provider: Some("openrouter".to_string()),
+            openrouter_api_key: Some("test-key".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_analyze_video()
+            .withf(|bytes, mime_type, prompt, system_prompt, model_id| {
+                bytes == &b"video".to_vec()
+                    && mime_type == "video/mp4"
+                    && prompt.contains("release demo")
+                    && system_prompt.contains("video analyzer")
+                    && model_id == "video-model"
+            })
+            .return_once(|_, _, _, _, _| Ok("timeline".to_string()));
+
+        let mut llm = crate::llm::LlmClient::new(&settings);
+        llm.register_provider("openrouter".to_string(), Arc::new(provider));
+
+        let preprocessor = Preprocessor::new(Arc::new(llm), 42_i64);
+        let result = preprocessor
+            .preprocess_input(AgentInput::Video {
+                bytes: b"video".to_vec(),
+                mime_type: "video/mp4".to_string(),
+                context: Some("release demo".to_string()),
+            })
+            .await
+            .expect("video preprocess succeeds");
+
+        assert_eq!(result, "timeline");
     }
 }

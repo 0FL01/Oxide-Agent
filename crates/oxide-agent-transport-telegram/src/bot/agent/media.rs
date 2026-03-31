@@ -1,6 +1,6 @@
 //! Media extraction from Telegram messages
 //!
-//! Converts Telegram message types (voice, photo, document) to `AgentInput`.
+//! Converts Telegram message types (voice, photo, video, document) to `AgentInput`.
 
 use anyhow::Result;
 use oxide_agent_core::agent::preprocessor::AgentInput;
@@ -8,14 +8,15 @@ use teloxide::net::Download;
 use teloxide::prelude::*;
 use tracing::info;
 
-/// Maximum file size for document uploads (20 MB)
-const MAX_FILE_SIZE: u32 = 20 * 1024 * 1024;
+/// Maximum inline media size for multimodal uploads (20 MB)
+pub(crate) const MAX_INLINE_MEDIA_SIZE: u32 = 20 * 1024 * 1024;
 
 /// Extract agent input from a Telegram message
 ///
 /// Handles:
 /// - Voice messages → `AgentInput::Voice`
 /// - Photos → `AgentInput::Image`
+/// - Videos → `AgentInput::Video`
 /// - Documents → `AgentInput::Document`
 /// - Text/Caption → `AgentInput::Text`
 ///
@@ -63,9 +64,38 @@ pub async fn extract_agent_input(bot: &Bot, msg: &Message) -> Result<AgentInput>
         }
     }
 
+    // Video
+    if let Some(video) = msg.video() {
+        if video.file.size > MAX_INLINE_MEDIA_SIZE {
+            anyhow::bail!(
+                "Video too large: {:.1} MB (max 20 MB)",
+                f64::from(video.file.size) / 1024.0 / 1024.0
+            );
+        }
+
+        let buffer = oxide_agent_core::utils::retry_transport_operation(|| async {
+            let file = bot.get_file(video.file.id.clone()).await?;
+            let mut buf = Vec::new();
+            bot.download_file(&file.path, &mut buf).await?;
+            Ok(buf)
+        })
+        .await?;
+
+        let mime_type = video
+            .mime_type
+            .as_ref()
+            .map_or_else(|| "video/mp4".to_string(), ToString::to_string);
+
+        return Ok(AgentInput::Video {
+            bytes: buffer,
+            mime_type,
+            context: msg.caption().map(ToString::to_string),
+        });
+    }
+
     // Document
     if let Some(doc) = msg.document() {
-        if doc.file.size > MAX_FILE_SIZE {
+        if doc.file.size > MAX_INLINE_MEDIA_SIZE {
             anyhow::bail!(
                 "File too large: {:.1} MB (max 20 MB)",
                 f64::from(doc.file.size) / 1024.0 / 1024.0

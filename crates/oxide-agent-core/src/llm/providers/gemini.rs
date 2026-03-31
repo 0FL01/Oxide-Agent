@@ -154,4 +154,45 @@ impl LlmProvider for GeminiProvider {
             &["candidates", "0", "content", "parts", "0", "text"],
         )
     }
+
+    async fn analyze_video(
+        &self,
+        video_bytes: Vec<u8>,
+        mime_type: &str,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_id: &str,
+    ) -> Result<String, LlmError> {
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={}",
+            self.api_key
+        );
+
+        let body = json!({
+            "contents": [{
+                "parts": [
+                    {"text": text_prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": BASE64.encode(&video_bytes)
+                        }
+                    }
+                ]
+            }],
+            "system_instruction": {
+                "parts": [{"text": system_prompt}]
+            },
+            "generationConfig": {
+                "temperature": GEMINI_IMAGE_TEMPERATURE,
+                "maxOutputTokens": 4000
+            }
+        });
+
+        let res_json = send_json_request(&self.http_client, &url, &body, None, &[]).await?;
+        extract_text_content(
+            &res_json,
+            &["candidates", "0", "content", "parts", "0", "text"],
+        )
+    }
 }

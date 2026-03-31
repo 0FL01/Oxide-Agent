@@ -139,6 +139,11 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                                 .endpoint(handle_start_photo),
                         )
                         .branch(
+                            Update::filter_message()
+                                .filter(|msg: Message| msg.video().is_some())
+                                .endpoint(handle_start_video),
+                        )
+                        .branch(
                             dptree::filter(|msg: Message| msg.document().is_some())
                                 .endpoint(handle_start_document),
                         ),
@@ -159,6 +164,11 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                             Update::filter_message()
                                 .filter(|msg: Message| msg.photo().is_some())
                                 .endpoint(handle_start_photo),
+                        )
+                        .branch(
+                            Update::filter_message()
+                                .filter(|msg: Message| msg.video().is_some())
+                                .endpoint(handle_start_video),
                         )
                         .branch(
                             dptree::filter(|msg: Message| msg.document().is_some())
@@ -286,6 +296,20 @@ async fn handle_start_photo(
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings).await {
         error!("Photo handler error: {}", e);
+    }
+    respond(())
+}
+
+async fn handle_start_video(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<dyn storage::StorageProvider>,
+    llm: Arc<llm::LlmClient>,
+    dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<BotSettings>,
+) -> Result<(), teloxide::RequestError> {
+    if let Err(e) = bot::handlers::handle_video(bot, msg, storage, llm, dialogue, settings).await {
+        error!("Video handler error: {}", e);
     }
     respond(())
 }

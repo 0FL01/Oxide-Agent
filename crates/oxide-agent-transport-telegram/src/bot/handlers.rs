@@ -39,6 +39,7 @@ const MENU_CALLBACK_EXTRA_FUNCTIONS: &str = "menu:extra";
 const MENU_CALLBACK_EDIT_PROMPT: &str = "menu:prompt";
 const MENU_CALLBACK_BACK: &str = "menu:back";
 const MENU_CALLBACK_MODEL_PREFIX: &str = "menu:model:";
+const MAX_INLINE_VIDEO_SIZE: u32 = crate::bot::agent::media::MAX_INLINE_MEDIA_SIZE;
 
 // Helper function to get user name from Message
 fn get_user_name(msg: &Message) -> String {
@@ -61,6 +62,38 @@ fn resolve_chat_model(settings: &BotSettings, stored_model: Option<String>) -> S
         }
     }
     settings.agent.get_default_chat_model_name()
+}
+
+fn resolve_multimodal_model(llm: &LlmClient, chat_model: String) -> String {
+    llm.media_model_name.clone().unwrap_or(chat_model)
+}
+
+fn ensure_inline_video_size(size: u32) -> Result<()> {
+    if size > MAX_INLINE_VIDEO_SIZE {
+        anyhow::bail!(
+            "Video too large: {:.1} MB (max 20 MB)",
+            f64::from(size) / 1024.0 / 1024.0
+        );
+    }
+
+    Ok(())
+}
+
+fn resolve_video_mime_type(video: &teloxide::types::Video) -> String {
+    video
+        .mime_type
+        .as_ref()
+        .map_or_else(|| "video/mp4".to_string(), ToString::to_string)
+}
+
+async fn download_telegram_file(bot: &Bot, file_id: teloxide::types::FileId) -> Result<Vec<u8>> {
+    oxide_agent_core::utils::retry_transport_operation(|| async {
+        let file = bot.get_file(file_id.clone()).await?;
+        let mut buf = Vec::new();
+        bot.download_file(&file.path, &mut buf).await?;
+        Ok(buf)
+    })
+    .await
 }
 
 /// Safe extraction of user ID from a message.
@@ -1050,7 +1083,7 @@ async fn send_multimodal_unavailable_message(
 ) -> Result<()> {
     let mut req = bot.send_message(
         msg.chat.id,
-        "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
+        "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured for image, audio, and video requests.",
     );
     if let Some(thread_id) = outbound_thread.message_thread_id {
         req = req.message_thread_id(thread_id);
@@ -1457,7 +1490,8 @@ pub async fn handle_photo(
         .ok_or_else(|| anyhow!("No photo found"))?;
     let caption = msg.caption().unwrap_or("Describe this image.");
     let saved_model = storage.get_user_model(user_id).await?;
-    let model = resolve_chat_model(&settings, saved_model);
+    let chat_model = resolve_chat_model(&settings, saved_model);
+    let model = resolve_multimodal_model(&llm, chat_model);
     let system_prompt =
         resolve_system_prompt(&storage, user_id, route.system_prompt_override.as_deref()).await?;
 
@@ -1512,6 +1546,122 @@ pub async fn handle_photo(
         }
         Err(e) => {
             let mut req = bot.send_message(msg.chat.id, format!("Image analysis error: {e}"));
+            if let Some(thread_id) = outbound_thread.message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            req.await?;
+        }
+    }
+    Ok(())
+}
+
+/// Video message handler
+///
+/// # Errors
+///
+/// Returns an error if the video cannot be processed.
+pub async fn handle_video(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<dyn StorageProvider>,
+    llm: Arc<LlmClient>,
+    dialogue: Dialogue<State, InMemStorage<State>>,
+    settings: Arc<BotSettings>,
+) -> Result<()> {
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
+    let user_id = get_user_id_safe(&msg);
+    let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
+
+    if !route.allows_processing() {
+        info!(
+            "Skipping video message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
+            route.enabled, route.require_mention, route.mention_satisfied
+        );
+        return Ok(());
+    }
+
+    if Box::pin(check_state_and_redirect(
+        &bot, &msg, &storage, &llm, &dialogue, &settings,
+    ))
+    .await?
+    {
+        return Ok(());
+    }
+
+    let state = current_context_state(&storage, user_id, msg.chat.id, thread_spec).await?;
+    if state.as_deref() != Some("chat_mode") {
+        let mut req = bot.send_message(msg.chat.id, "Please select a mode:");
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(main_menu_markup(thread_spec)).await?;
+        return Ok(());
+    }
+
+    if !llm.is_multimodal_available() {
+        send_multimodal_unavailable_message(&bot, &msg, outbound_thread).await?;
+        return Ok(());
+    }
+
+    let video = msg.video().ok_or_else(|| anyhow!("No video found"))?;
+    ensure_inline_video_size(video.file.size)?;
+
+    let caption = msg.caption().unwrap_or("Describe this video in detail.");
+    let saved_model = storage.get_user_model(user_id).await?;
+    let chat_model = resolve_chat_model(&settings, saved_model);
+    let model = resolve_multimodal_model(&llm, chat_model);
+    let system_prompt =
+        resolve_system_prompt(&storage, user_id, route.system_prompt_override.as_deref()).await?;
+
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadVideo)
+        .await?;
+
+    let buffer = download_telegram_file(&bot, video.file.id.clone()).await?;
+    let mime_type = resolve_video_mime_type(video);
+
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
+    match llm
+        .analyze_video(buffer, &mime_type, caption, &system_prompt, &model)
+        .await
+    {
+        Ok(response) => {
+            let context_key = storage_context_key(msg.chat.id, thread_spec);
+            let chat_uuid =
+                ensure_scoped_chat_uuid(&storage, user_id, msg.chat.id, thread_spec).await?;
+            let scoped_chat_id = scoped_chat_storage_id(&context_key, &chat_uuid);
+            storage
+                .save_message_for_chat(
+                    user_id,
+                    scoped_chat_id.clone(),
+                    "user".to_string(),
+                    format!("[Video] {caption}"),
+                )
+                .await?;
+            storage
+                .save_message_for_chat(
+                    user_id,
+                    scoped_chat_id.clone(),
+                    "assistant".to_string(),
+                    response.clone(),
+                )
+                .await?;
+            send_long_message_in_thread(
+                &bot,
+                msg.chat.id,
+                &response,
+                outbound_thread.message_thread_id,
+            )
+            .await?;
+            send_chat_flow_controls_in_thread(&bot, msg.chat.id, &chat_uuid, outbound_thread)
+                .await?;
+            touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
+        }
+        Err(e) => {
+            let mut req = bot.send_message(msg.chat.id, format!("Video analysis error: {e}"));
             if let Some(thread_id) = outbound_thread.message_thread_id {
                 req = req.message_thread_id(thread_id);
             }
