@@ -236,8 +236,13 @@ const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_search_users",
     "mattermost_upload_file",
 ];
-const TOPIC_AGENT_TTS_EN_TOOLS: &[&str] = &["text_to_speech_en"];
-const TOPIC_AGENT_TTS_RU_TOOLS: &[&str] = &["text_to_speech_ru"];
+const TOPIC_AGENT_MEDIA_FILE_TOOLS: &[&str] = &[
+    "transcribe_audio_file",
+    "describe_image_file",
+    "describe_video_file",
+];
+const TOPIC_AGENT_TTS_EN_TOOLS: &[&str] = &["text_to_speech_en", "text_to_speech_en_file"];
+const TOPIC_AGENT_TTS_RU_TOOLS: &[&str] = &["text_to_speech_ru", "text_to_speech_ru_file"];
 
 /// Transport-agnostic request for forum topic creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

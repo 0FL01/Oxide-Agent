@@ -236,6 +236,8 @@ pub struct TextToSpeechArgs {
     pub format: Option<String>,
     /// Speech speed 0.5-2.0 (optional, default: 1.0)
     pub speed: Option<f32>,
+    /// Optional sandbox output path for file-writing workflows
+    pub output_path: Option<String>,
 }
 
 impl TextToSpeechArgs {
@@ -339,6 +341,7 @@ mod tests {
             voice: Some("af_bella".to_string()),
             format: Some("mp3".to_string()),
             speed: Some(1.2),
+            output_path: None,
         };
 
         let req = args
