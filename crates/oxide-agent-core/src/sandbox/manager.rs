@@ -1137,27 +1137,14 @@ impl DockerSandboxManager {
         Ok(())
     }
 
-    /// Read content from a file in the sandbox
+    /// Read content from a file in the sandbox.
     ///
     /// # Errors
     ///
-    /// Returns an error if file reading or decoding fails.
+    /// Returns an error if file reading fails.
     #[instrument(skip(self), fields(path = %path))]
     pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
-        let cmd = format!("base64 {}", shell_escape::escape(path.into()));
-
-        let result = self.exec_command(&cmd, None).await?;
-
-        if !result.success() {
-            return Err(anyhow!("Failed to read file: {}", result.stderr));
-        }
-
-        let content = base64::engine::general_purpose::STANDARD
-            .decode(result.stdout.trim())
-            .context("Failed to decode file content")?;
-
-        debug!(path = %path, size = content.len(), "File read from sandbox");
-        Ok(content)
+        self.download_file_via_docker_api(path, None).await
     }
 
     /// Upload a file to the container using Docker's copy API
@@ -1240,25 +1227,35 @@ impl DockerSandboxManager {
     /// Returns an error if sandbox is not running, file doesn't exist, file is too large, or download/extraction fails.
     #[instrument(skip(self), fields(path = %container_path))]
     pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>> {
+        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
+        self.download_file_via_docker_api(container_path, Some(MAX_FILE_SIZE))
+            .await
+    }
+
+    async fn download_file_via_docker_api(
+        &mut self,
+        container_path: &str,
+        max_file_size: Option<u64>,
+    ) -> Result<Vec<u8>> {
+        // Reuse the existing size check to self-heal stale container IDs and verify the path exists.
+        let file_size = self.file_size_bytes(container_path, None).await?;
+
+        if let Some(max_file_size) = max_file_size {
+            if file_size > max_file_size {
+                anyhow::bail!(
+                    "File too large: {} bytes (max {} MB)",
+                    file_size,
+                    max_file_size / 1024 / 1024
+                );
+            }
+        }
+
         let container_id = self
             .container_id
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow!("Sandbox not running"))?;
 
-        // Get file size to check limits (50MB max for transport delivery)
-        let file_size = self.file_size_bytes(container_path, None).await?;
-
-        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
-        if file_size > MAX_FILE_SIZE {
-            anyhow::bail!(
-                "File too large: {} bytes (max {} MB)",
-                file_size,
-                MAX_FILE_SIZE / 1024 / 1024
-            );
-        }
-
-        // Download file as tar archive
         let stream = self
             .docker
             .download_from_container(
@@ -1271,10 +1268,7 @@ impl DockerSandboxManager {
             .await
             .context("Failed to download file from container")?;
 
-        // Combine chunks into single buffer
         let tar_data: Vec<u8> = stream.into_iter().flatten().collect();
-
-        // Extract file from tar
         let mut archive = tar::Archive::new(tar_data.as_slice());
         let mut entries = archive.entries()?;
 
@@ -1533,6 +1527,24 @@ mod tests {
             after.is_err(),
             "workspace file should be removed after recreate"
         );
+
+        sandbox.destroy().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_read_file_round_trips_binary_content() -> Result<(), Box<dyn std::error::Error>> {
+        let mut sandbox = DockerSandboxManager::new(12348).await?;
+        sandbox.create_sandbox().await?;
+
+        let payload = (0..128).map(|value| value as u8).collect::<Vec<_>>();
+        sandbox
+            .upload_file("/workspace/binary-roundtrip.bin", &payload)
+            .await?;
+
+        let content = sandbox.read_file("/workspace/binary-roundtrip.bin").await?;
+        assert_eq!(content, payload);
 
         sandbox.destroy().await?;
         Ok(())

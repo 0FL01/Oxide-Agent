@@ -344,10 +344,8 @@ mod tests {
 
     #[test]
     fn transcribe_audio_tool_accepts_custom_prompt() {
-        let provider = MediaFileProvider::new(
-            Arc::new(LlmClient::new(&AgentSettings::default())),
-            42_i64,
-        );
+        let provider =
+            MediaFileProvider::new(Arc::new(LlmClient::new(&AgentSettings::default())), 42_i64);
         let tool = provider
             .tools()
             .into_iter()
