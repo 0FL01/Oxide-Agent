@@ -169,20 +169,30 @@ fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
 fn format_grouped_steps(state: &ProgressState) -> Vec<String> {
     use std::collections::HashMap;
 
-    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut completed_counts: HashMap<&str, usize> = HashMap::new();
+    let mut failed_counts: HashMap<&str, usize> = HashMap::new();
 
     for step in &state.steps {
-        if step.status == StepStatus::Completed {
-            if let Some(ref tool_name) = step.tool_name {
-                *counts.entry(tool_name.as_str()).or_insert(0) += 1;
+        if let Some(ref tool_name) = step.tool_name {
+            match step.status {
+                StepStatus::Completed => {
+                    *completed_counts.entry(tool_name.as_str()).or_insert(0) += 1;
+                }
+                StepStatus::Failed => {
+                    *failed_counts.entry(tool_name.as_str()).or_insert(0) += 1;
+                }
+                StepStatus::Pending | StepStatus::InProgress => {}
             }
         }
     }
 
-    let mut sorted: Vec<_> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut sorted_completed: Vec<_> = completed_counts.into_iter().collect();
+    sorted_completed.sort_by(|a, b| b.1.cmp(&a.1));
 
-    sorted
+    let mut sorted_failed: Vec<_> = failed_counts.into_iter().collect();
+    sorted_failed.sort_by(|a, b| b.1.cmp(&a.1));
+
+    sorted_completed
         .into_iter()
         .map(|(name, count)| {
             if count > 1 {
@@ -191,6 +201,13 @@ fn format_grouped_steps(state: &ProgressState) -> Vec<String> {
                 format!("  ✅ {}", name)
             }
         })
+        .chain(sorted_failed.into_iter().map(|(name, count)| {
+            if count > 1 {
+                format!("  ❌ {} ×{}", name, count)
+            } else {
+                format!("  ❌ {}", name)
+            }
+        }))
         .collect()
 }
 
@@ -323,6 +340,7 @@ mod tests {
         state.update(AgentEvent::ToolResult {
             name: "web_search".to_string(),
             output: "result1".to_string(),
+            success: true,
         });
         state.update(AgentEvent::ToolCall {
             name: "web_search".to_string(),
@@ -332,6 +350,7 @@ mod tests {
         state.update(AgentEvent::ToolResult {
             name: "web_search".to_string(),
             output: "result2".to_string(),
+            success: true,
         });
         state.update(AgentEvent::ToolCall {
             name: "execute_command".to_string(),
@@ -343,6 +362,27 @@ mod tests {
 
         assert!(output.contains("✅ web_search ×2"));
         assert!(output.contains("⏳ 🔧 ls -la"));
+    }
+
+    #[test]
+    fn renders_failed_tools_separately() {
+        let mut state = ProgressState::new(100);
+
+        state.update(AgentEvent::ToolCall {
+            name: "text_to_speech_en_file".to_string(),
+            input: "{}".to_string(),
+            command_preview: None,
+        });
+        state.update(AgentEvent::ToolResult {
+            name: "text_to_speech_en_file".to_string(),
+            output: "Tool execution error: boom".to_string(),
+            success: false,
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("❌ text_to_speech_en_file"));
+        assert!(!output.contains("✅ text_to_speech_en_file"));
     }
 
     #[test]
