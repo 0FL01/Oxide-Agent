@@ -131,6 +131,10 @@ async fn delegate_non_agent_context_message(
         return crate::bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings)
             .await;
     }
+    if msg.video().is_some() {
+        return crate::bot::handlers::handle_video(bot, msg, storage, llm, dialogue, settings)
+            .await;
+    }
     if msg.document().is_some() {
         return crate::bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings)
             .await;

@@ -22,9 +22,9 @@ pub struct LlmClient {
     pub chat_model_name: String,
     /// Optional media model name for multimodal requests
     pub media_model_name: Option<String>,
-    /// Optional media model ID for audio/image fallbacks
+    /// Optional media model ID for audio/image/video fallbacks
     pub media_model_id: Option<String>,
-    /// Optional media model provider for audio/image fallbacks
+    /// Optional media model provider for audio/image/video fallbacks
     pub media_model_provider: Option<String>,
 }
 
@@ -612,6 +612,32 @@ impl LlmClient {
         let provider = self.get_provider(&model_info.provider)?;
         provider
             .analyze_image(image_bytes, text_prompt, system_prompt, &model_info.id)
+            .await
+    }
+
+    /// Analyze a video with a text prompt
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from the provider.
+    pub async fn analyze_video(
+        &self,
+        video_bytes: Vec<u8>,
+        mime_type: &str,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_name: &str,
+    ) -> Result<String, LlmError> {
+        let model_info = self.get_model_info(model_name)?;
+        let provider = self.get_provider(&model_info.provider)?;
+        provider
+            .analyze_video(
+                video_bytes,
+                mime_type,
+                text_prompt,
+                system_prompt,
+                &model_info.id,
+            )
             .await
     }
 

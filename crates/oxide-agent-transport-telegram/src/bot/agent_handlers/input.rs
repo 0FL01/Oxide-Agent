@@ -223,7 +223,10 @@ pub(crate) fn route_allows_agent_processing(route: &TopicRouteDecision, user_id:
 }
 
 fn has_deferred_agent_input_candidate(msg: &Message) -> bool {
-    msg.voice().is_some() || msg.photo().is_some() || msg.document().is_some()
+    msg.voice().is_some()
+        || msg.photo().is_some()
+        || msg.video().is_some()
+        || msg.document().is_some()
 }
 
 fn spawn_deferred_agent_input(ctx: DeferredAgentInputContext) {
@@ -296,7 +299,7 @@ pub(crate) async fn send_multimodal_unavailable_message(
     crate::bot::resilient::send_message_resilient_with_thread(
         bot,
         chat_id,
-        "🚫 Agent cannot process this input right now.\nGemini/OpenRouter connection required for vision and audio capabilities.",
+        "🚫 Agent cannot process this input right now.\nGemini/OpenRouter connection required for image, audio, and video capabilities.",
         None,
         thread_id,
     )
