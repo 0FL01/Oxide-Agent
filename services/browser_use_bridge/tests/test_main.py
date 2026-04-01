@@ -132,6 +132,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 payload["profile_scope_mode"], "runtime_injected_preferred"
             )
             self.assertEqual(payload["max_profiles_per_scope"], 3)
+            self.assertEqual(payload["profile_idle_ttl_secs"], 604800)
+            self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
             self.assertIn("browser_use", payload["supported_legacy_env_providers"])
 
@@ -397,6 +399,83 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(metadata["status"], "idle")
             self.assertIsNone(metadata["current_session_id"])
 
+    async def test_shutdown_detaches_profile_without_deleting_it(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage", reuse_profile=True),
+                None,
+            )
+            await manager.shutdown()
+
+            metadata = json.loads(
+                (
+                    Path(tmpdir)
+                    / "profiles"
+                    / run_response.profile_id
+                    / "metadata.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["status"], "idle")
+            self.assertIsNone(metadata["current_session_id"])
+
+    async def test_run_task_recovers_orphaned_profile_after_restart(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            first_manager = module.SessionManager(
+                Path(tmpdir), max_concurrent_sessions=1
+            )
+
+            first = await first_manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the homepage",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+
+            metadata_path = (
+                Path(tmpdir) / "profiles" / first.profile_id / "metadata.json"
+            )
+            initial_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(initial_metadata["status"], "active")
+            self.assertEqual(initial_metadata["current_session_id"], first.session_id)
+
+            restarted_manager = module.SessionManager(
+                Path(tmpdir), max_concurrent_sessions=1
+            )
+            second = await restarted_manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the docs page",
+                    profile_id=first.profile_id,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+
+            self.assertEqual(second.status, "completed")
+            self.assertEqual(second.profile_id, first.profile_id)
+            self.assertTrue(second.profile_reused)
+
+            healed_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(healed_metadata["status"], "active")
+            self.assertEqual(healed_metadata["current_session_id"], second.session_id)
+
     async def test_run_task_rejects_cross_scope_profile_reuse(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
@@ -464,6 +543,57 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(response.status, "failed")
             self.assertIn("already has 1 retained profiles", response.error)
+
+    async def test_profile_ttl_prunes_idle_profile_and_frees_quota(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS": "60",
+                }
+            )
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                max_profiles_per_scope=1,
+                profile_idle_ttl_secs=60,
+            )
+
+            first = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the homepage",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+            await manager.close_session(first.session_id)
+
+            metadata_path = (
+                Path(tmpdir) / "profiles" / first.profile_id / "metadata.json"
+            )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["updated_at"] = "2000-01-01T00:00:00+00:00"
+            metadata["last_used_at"] = "2000-01-01T00:00:00+00:00"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=True, indent=2),
+                encoding="utf-8",
+            )
+
+            second = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the docs page",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+
+            self.assertEqual(second.status, "completed")
+            self.assertNotEqual(second.profile_id, first.profile_id)
+            self.assertFalse(metadata_path.exists())
 
 
 if __name__ == "__main__":  # pragma: no cover
