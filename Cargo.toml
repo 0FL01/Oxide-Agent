@@ -7,4 +7,8 @@ members = [
     "crates/oxide-agent-telegram-bot",
     "crates/oxide-agent-sandboxd",
 ]
+exclude = ["vendor/gemini-rust"]
 resolver = "2"
+
+[patch.crates-io]
+gemini-rust = { path = "vendor/gemini-rust" }

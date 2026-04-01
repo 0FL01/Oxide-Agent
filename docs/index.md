@@ -24,6 +24,7 @@
 - [**MiniMax**](./minimax/index.md) - MiniMax OpenAI-compatible provider with native tool calling
   - [SPEC](./minimax/SPEC.md) - Implementation specification
   - [API Reference](./minimax/reference.md) - API details
+- [**Gemini SDK Migration**](./gemini-rust-migration.md) - approved migration contract and vendored SDK patch plan
 
 ### Саб-агенты (Sub-Agents)
 - [**Обзор саб-агентов**](./hooks/sub-agents/index.md)
