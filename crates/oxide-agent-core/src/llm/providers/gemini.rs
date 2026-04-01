@@ -716,6 +716,56 @@ mod tests {
     }
 
     #[test]
+    fn maps_generic_sdk_api_errors() {
+        let mapped = GeminiProvider::map_sdk_error(ClientError::BadResponse {
+            code: 500,
+            description: Some("internal failure".to_string()),
+        });
+
+        assert!(matches!(
+            mapped,
+            LlmError::ApiError(message)
+                if message.contains("Gemini API error [500]")
+                    && message.contains("internal failure")
+        ));
+    }
+
+    #[test]
+    fn safety_settings_disable_expected_categories() {
+        let settings = GeminiProvider::safety_settings();
+
+        assert_eq!(settings.len(), 4);
+        assert!(settings.iter().any(|setting| {
+            setting.category == gemini_rust::HarmCategory::Harassment
+                && matches!(
+                    setting.threshold,
+                    gemini_rust::HarmBlockThreshold::BlockNone
+                )
+        }));
+        assert!(settings.iter().any(|setting| {
+            setting.category == gemini_rust::HarmCategory::HateSpeech
+                && matches!(
+                    setting.threshold,
+                    gemini_rust::HarmBlockThreshold::BlockNone
+                )
+        }));
+        assert!(settings.iter().any(|setting| {
+            setting.category == gemini_rust::HarmCategory::SexuallyExplicit
+                && matches!(
+                    setting.threshold,
+                    gemini_rust::HarmBlockThreshold::BlockNone
+                )
+        }));
+        assert!(settings.iter().any(|setting| {
+            setting.category == gemini_rust::HarmCategory::DangerousContent
+                && matches!(
+                    setting.threshold,
+                    gemini_rust::HarmBlockThreshold::BlockNone
+                )
+        }));
+    }
+
+    #[test]
     fn surfaces_blocked_prompt_when_no_text() {
         let response = GenerationResponse {
             candidates: vec![Candidate {
@@ -997,6 +1047,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_chat_response_surfaces_blocked_prompt_before_other_content() {
+        let response = GenerationResponse {
+            candidates: vec![Candidate {
+                content: Content {
+                    parts: Some(vec![Part::Text {
+                        text: "hidden by prompt block".to_string(),
+                        thought: None,
+                        thought_signature: None,
+                    }]),
+                    role: None,
+                },
+                safety_ratings: None,
+                citation_metadata: None,
+                grounding_metadata: None,
+                finish_reason: Some(FinishReason::Safety),
+                index: Some(0),
+            }],
+            prompt_feedback: Some(PromptFeedback {
+                safety_ratings: Vec::new(),
+                block_reason: Some(BlockReason::Safety),
+            }),
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let err = GeminiProvider::parse_chat_response(&response).unwrap_err();
+        assert!(matches!(
+            err,
+            LlmError::ApiError(message) if message.contains("Gemini blocked prompt: SAFETY")
+        ));
+    }
+
+    #[test]
     fn preserves_visible_text_alongside_tool_calls_in_chat_response() {
         let response = GenerationResponse {
             candidates: vec![Candidate {
@@ -1101,6 +1185,16 @@ mod tests {
             tool_call.wire_tool_call_id(),
             tool_call.invocation_id().as_str()
         );
+    }
+
+    #[test]
+    fn unwraps_double_encoded_tool_argument_json_strings() {
+        let tool_call = GeminiProvider::parse_tool_call(&FunctionCall::new(
+            "lookup_weather",
+            json!("{\"city\":\"Paris\"}"),
+        ));
+
+        assert_eq!(tool_call.function.arguments, r#"{"city":"Paris"}"#);
     }
 
     #[test]
