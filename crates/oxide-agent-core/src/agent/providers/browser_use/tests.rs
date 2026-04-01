@@ -7,7 +7,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 fn test_settings() -> Arc<crate::config::AgentSettings> {
-    Arc::new(crate::config::AgentSettings::default())
+    let mut settings = crate::config::AgentSettings::default();
+    settings.gemini_api_key = Some("gemini-secret".to_string());
+    settings.minimax_api_key = Some("minimax-secret".to_string());
+    settings.zai_api_key = Some("zai-secret".to_string());
+    settings.openrouter_api_key = Some("openrouter-secret".to_string());
+    Arc::new(settings)
 }
 
 #[test]
@@ -122,16 +127,40 @@ fn browser_llm_config_maps_minimax_route() {
         weight: 1,
     };
 
-    let config = provider
+    let (config, api_key) = provider
         .browser_llm_config_for_route(&route)
         .expect("minimax route config");
 
     assert_eq!(config.provider, "minimax");
     assert_eq!(config.model, "MiniMax-M2.7");
     assert_eq!(config.api_base.as_deref(), Some(MINIMAX_DEFAULT_API_BASE));
-    assert_eq!(config.api_key_ref.as_deref(), Some("env:MINIMAX_API_KEY"));
+    assert_eq!(config.api_key_ref, None);
+    assert_eq!(api_key, "minimax-secret");
     assert!(!config.supports_vision);
     assert!(config.supports_tools);
+}
+
+#[test]
+fn browser_llm_config_requires_configured_secret() {
+    let provider = BrowserUseProvider::new(
+        "http://localhost:8002",
+        Arc::new(crate::config::AgentSettings::default()),
+    );
+    let route = crate::config::ModelInfo {
+        id: "glm-5-turbo".to_string(),
+        provider: "zai".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let error = provider
+        .browser_llm_config_for_route(&route)
+        .expect_err("missing key should fail");
+
+    assert!(error.to_string().contains(
+        "Browser Use route inheritance requires configured credential for provider `zai`"
+    ));
 }
 
 #[tokio::test]
@@ -169,7 +198,11 @@ async fn run_task_posts_inherited_browser_llm_config() {
     assert!(request_body.contains("\"browser_llm_config\":"));
     assert!(request_body.contains("\"provider\":\"zai\""));
     assert!(request_body.contains("\"model\":\"glm-5-turbo\""));
-    assert!(request_body.contains("\"api_key_ref\":\"env:ZAI_API_KEY\""));
+    assert!(!request_body.contains("api_key_ref"));
+    assert_eq!(
+        state.header_value(OXIDE_BROWSER_LLM_API_KEY_HEADER).await,
+        Some("zai-secret".to_string())
+    );
 }
 
 #[tokio::test]
@@ -223,6 +256,19 @@ impl TestServerState {
             .nth(1)
             .unwrap_or_default()
             .to_string()
+    }
+
+    async fn header_value(&self, name: &str) -> Option<String> {
+        let prefix = format!("{}:", name.to_ascii_lowercase());
+        self.request.lock().await.lines().find_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if lower.starts_with(&prefix) {
+                line.split_once(':')
+                    .map(|(_, value)| value.trim().to_string())
+            } else {
+                None
+            }
+        })
     }
 }
 

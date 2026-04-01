@@ -27,6 +27,8 @@
 
 Bridge автоматически устанавливает `BROWSER_USE_HOME` в `BROWSER_USE_BRIDGE_DATA_DIR`, если он не задан явно.
 
+Для route inheritance Oxide Agent теперь может передавать provider secret server-to-server через header `X-Oxide-Browser-Llm-Api-Key`, не сохраняя его в request body и без обязательного env passthrough в sidecar.
+
 ## Request-Level `browser_llm_config`
 
 Bridge принимает нормализованный `browser_llm_config` в `POST /sessions/run`.
@@ -70,7 +72,10 @@ Bridge принимает нормализованный `browser_llm_config` в
 - `openrouter`
 - `openai_compatible`
 
-Секреты пока разрешаются только через `api_key_ref` формата `env:KEY`.
+Секреты могут приходить двумя способами:
+
+- server-to-server header `X-Oxide-Browser-Llm-Api-Key` для inherited route из Oxide Agent
+- `api_key_ref` формата `env:KEY` для ручного request-level режима
 
 ## Run Locally
 
@@ -85,7 +90,8 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 
 - Stage 2 wiring publishes the service on `127.0.0.1:8002` and keeps browser state in the `browser-use-data` volume.
 - The bridge container only receives explicit Browser Use / LLM variables from compose. Legacy env fallback still uses `BROWSER_USE_BRIDGE_LLM_PROVIDER`, `BROWSER_USE_BRIDGE_LLM_MODEL`, and the matching API keys.
-- Stage C Rust provider now automatically injects `browser_llm_config` from the active Oxide route for `gemini`, `minimax`, `zai`, and `openrouter`.
+- Stage C Rust provider automatically injects `browser_llm_config` from the active Oxide route for `gemini`, `minimax`, `zai`, and `openrouter`.
+- Stage D secret handling sends inherited-route API keys via `X-Oxide-Browser-Llm-Api-Key`, so `minimax`, `zai`, and `openrouter` do not require dedicated sidecar env passthrough in the default compose setup.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
 - Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
 

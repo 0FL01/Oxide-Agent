@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -86,6 +86,7 @@ os.environ.setdefault("BROWSER_USE_HOME", str(settings.data_dir))
 MINIMAX_DEFAULT_API_BASE = "https://api.minimax.io/anthropic"
 ZAI_DEFAULT_API_BASE = "https://api.z.ai/api/coding/paas/v4/chat/completions"
 OPENAI_CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+OXIDE_BROWSER_LLM_API_KEY_HEADER = "X-Oxide-Browser-Llm-Api-Key"
 
 
 class BrowserLlmConfig(BaseModel):
@@ -333,7 +334,9 @@ def infer_transport(provider: str, api_base: str | None, transport: str | None) 
     raise RuntimeError(f"unsupported browser_llm_config.provider '{provider}'")
 
 
-def resolve_requested_llm_config(config: BrowserLlmConfig) -> ResolvedBrowserLlmConfig:
+def resolve_requested_llm_config(
+    config: BrowserLlmConfig, browser_llm_api_key: str | None
+) -> ResolvedBrowserLlmConfig:
     provider = normalize_name(config.provider)
     if not provider:
         raise RuntimeError("browser_llm_config.provider is required")
@@ -351,8 +354,8 @@ def resolve_requested_llm_config(config: BrowserLlmConfig) -> ResolvedBrowserLlm
     if transport == "openai_compatible":
         api_base = normalize_openai_api_base(api_base)
 
-    api_key = None
-    if clean_optional(config.api_key_ref) is not None:
+    api_key = clean_optional(browser_llm_api_key)
+    if api_key is None and clean_optional(config.api_key_ref) is not None:
         api_key = resolve_api_key_ref(config.api_key_ref)
 
     return ResolvedBrowserLlmConfig(
@@ -391,9 +394,13 @@ def resolve_legacy_llm_config() -> ResolvedBrowserLlmConfig:
     )
 
 
-def resolve_llm_config(request: RunTaskRequest) -> ResolvedBrowserLlmConfig:
+def resolve_llm_config(
+    request: RunTaskRequest, browser_llm_api_key: str | None
+) -> ResolvedBrowserLlmConfig:
     if request.browser_llm_config is not None:
-        return resolve_requested_llm_config(request.browser_llm_config)
+        return resolve_requested_llm_config(
+            request.browser_llm_config, browser_llm_api_key
+        )
     return resolve_legacy_llm_config()
 
 
@@ -489,7 +496,9 @@ class SessionManager:
             return await self.create_session()
         return await self.get_session(session_id)
 
-    async def run_task(self, request: RunTaskRequest) -> RunTaskResponse:
+    async def run_task(
+        self, request: RunTaskRequest, browser_llm_api_key: str | None
+    ) -> RunTaskResponse:
         await self.ensure_runtime_ready()
         session = await self.get_or_create_session(request.session_id)
 
@@ -516,7 +525,7 @@ class SessionManager:
                     if session.browser is None:
                         session.browser = Browser()
 
-                    llm_config = resolve_llm_config(request)
+                    llm_config = resolve_llm_config(request, browser_llm_api_key)
                     agent = Agent(
                         task=build_agent_task(request),
                         llm=create_llm_from_config(llm_config),
@@ -604,6 +613,8 @@ async def health() -> JSONResponse:
         "data_dir": str(settings.data_dir),
         "max_concurrent_sessions": settings.max_concurrent_sessions,
         "request_browser_llm_config_supported": True,
+        "request_browser_llm_api_key_header_supported": True,
+        "browser_llm_api_key_header": OXIDE_BROWSER_LLM_API_KEY_HEADER,
         "legacy_env_llm_provider": clean_optional(settings.llm_provider),
         "supported_browser_llm_providers": [
             "browser_use",
@@ -620,8 +631,13 @@ async def health() -> JSONResponse:
 
 
 @app.post("/sessions/run", response_model=RunTaskResponse)
-async def run_session(request: RunTaskRequest) -> RunTaskResponse:
-    return await manager.run_task(request)
+async def run_session(
+    request: RunTaskRequest,
+    browser_llm_api_key: str | None = Header(
+        default=None, alias=OXIDE_BROWSER_LLM_API_KEY_HEADER
+    ),
+) -> RunTaskResponse:
+    return await manager.run_task(request, browser_llm_api_key)
 
 
 @app.get("/sessions/{session_id}", response_model=SessionResponse)

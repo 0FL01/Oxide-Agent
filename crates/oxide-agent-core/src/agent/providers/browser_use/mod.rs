@@ -37,6 +37,7 @@ const TOOL_GET_SESSION: &str = "browser_use_get_session";
 const TOOL_CLOSE_SESSION: &str = "browser_use_close_session";
 const MINIMAX_DEFAULT_API_BASE: &str = "https://api.minimax.io/anthropic";
 const OPENROUTER_DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
+const OXIDE_BROWSER_LLM_API_KEY_HEADER: &str = "x-oxide-browser-llm-api-key";
 
 /// Provider for Browser Use bridge tools.
 pub struct BrowserUseProvider {
@@ -156,7 +157,7 @@ impl BrowserUseProvider {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
 
-    fn browser_llm_config_for_active_route(&self) -> Result<Option<BrowserLlmConfig>> {
+    fn browser_llm_config_for_active_route(&self) -> Result<Option<(BrowserLlmConfig, String)>> {
         current_tool_model_route()
             .map(|route| self.browser_llm_config_for_route(&route))
             .transpose()
@@ -165,27 +166,34 @@ impl BrowserUseProvider {
     fn browser_llm_config_for_route(
         &self,
         route: &crate::config::ModelInfo,
-    ) -> Result<BrowserLlmConfig> {
+    ) -> Result<(BrowserLlmConfig, String)> {
         let provider = route.provider.to_ascii_lowercase();
         let supports_vision = matches!(provider.as_str(), "gemini" | "openrouter");
         let supports_tools = !matches!(provider.as_str(), "groq");
 
-        let (bridge_provider, api_base, api_key_ref) = match provider.as_str() {
-            "gemini" => ("google", None, Some("env:GEMINI_API_KEY".to_string())),
+        let (bridge_provider, api_base, api_key) = match provider.as_str() {
+            "gemini" => (
+                "google",
+                None,
+                self.require_route_api_key("gemini", self.settings.gemini_api_key.as_deref())?,
+            ),
             "minimax" => (
                 "minimax",
                 Some(MINIMAX_DEFAULT_API_BASE.to_string()),
-                Some("env:MINIMAX_API_KEY".to_string()),
+                self.require_route_api_key("minimax", self.settings.minimax_api_key.as_deref())?,
             ),
             "zai" => (
                 "zai",
                 Some(self.settings.zai_api_base.clone()),
-                Some("env:ZAI_API_KEY".to_string()),
+                self.require_route_api_key("zai", self.settings.zai_api_key.as_deref())?,
             ),
             "openrouter" => (
                 "openrouter",
                 Some(OPENROUTER_DEFAULT_API_BASE.to_string()),
-                Some("env:OPENROUTER_API_KEY".to_string()),
+                self.require_route_api_key(
+                    "openrouter",
+                    self.settings.openrouter_api_key.as_deref(),
+                )?,
             ),
             unsupported => {
                 return Err(anyhow!(
@@ -194,14 +202,29 @@ impl BrowserUseProvider {
             }
         };
 
-        Ok(BrowserLlmConfig {
-            provider: bridge_provider.to_string(),
-            model: route.id.clone(),
-            api_base,
-            api_key_ref,
-            supports_vision,
-            supports_tools,
-        })
+        Ok((
+            BrowserLlmConfig {
+                provider: bridge_provider.to_string(),
+                model: route.id.clone(),
+                api_base,
+                api_key_ref: None,
+                supports_vision,
+                supports_tools,
+            },
+            api_key,
+        ))
+    }
+
+    fn require_route_api_key(&self, provider: &str, api_key: Option<&str>) -> Result<String> {
+        let api_key = api_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Browser Use route inheritance requires configured credential for provider `{provider}`"
+                )
+            })?;
+        Ok(api_key.to_string())
     }
 
     async fn request(
@@ -209,6 +232,7 @@ impl BrowserUseProvider {
         method: Method,
         path: &str,
         body: Option<Value>,
+        browser_llm_api_key: Option<&str>,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<ResponsePayload> {
         let url = self.endpoint_url(path);
@@ -233,7 +257,13 @@ impl BrowserUseProvider {
             }
 
             match self
-                .do_request(method.clone(), &url, body.as_ref(), cancellation_token)
+                .do_request(
+                    method.clone(),
+                    &url,
+                    body.as_ref(),
+                    browser_llm_api_key,
+                    cancellation_token,
+                )
                 .await
             {
                 Ok(payload) => return Ok(payload),
@@ -261,6 +291,7 @@ impl BrowserUseProvider {
         method: Method,
         url: &str,
         body: Option<&Value>,
+        browser_llm_api_key: Option<&str>,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<ResponsePayload> {
         debug!(
@@ -273,6 +304,9 @@ impl BrowserUseProvider {
         let mut request = self.client.request(method, url);
         if let Some(body) = body {
             request = request.json(body);
+        }
+        if let Some(api_key) = browser_llm_api_key {
+            request = request.header(OXIDE_BROWSER_LLM_API_KEY_HEADER, api_key);
         }
 
         let response = await_with_cancellation(
@@ -476,18 +510,24 @@ impl ToolProvider for BrowserUseProvider {
                     return Err(anyhow!("browser_use_run_task requires a non-empty task"));
                 }
 
+                let inherited_llm = self.browser_llm_config_for_active_route()?;
+                let (browser_llm_config, browser_llm_api_key) = match inherited_llm {
+                    Some((config, api_key)) => (Some(config), Some(api_key)),
+                    None => (None, None),
+                };
                 let body = serde_json::to_value(RunTaskRequestBody {
                     task: args.task,
                     start_url: args.start_url,
                     session_id: args.session_id,
                     timeout_secs: args.timeout_secs,
-                    browser_llm_config: self.browser_llm_config_for_active_route()?,
+                    browser_llm_config,
                 })?;
                 let payload = self
                     .request(
                         Method::POST,
                         "/sessions/run",
                         Some(body),
+                        browser_llm_api_key.as_deref(),
                         cancellation_token,
                     )
                     .await?;
@@ -505,6 +545,7 @@ impl ToolProvider for BrowserUseProvider {
                         Method::GET,
                         &format!("/sessions/{session_id}"),
                         None,
+                        None,
                         cancellation_token,
                     )
                     .await?;
@@ -521,6 +562,7 @@ impl ToolProvider for BrowserUseProvider {
                     .request(
                         Method::DELETE,
                         &format!("/sessions/{session_id}"),
+                        None,
                         None,
                         cancellation_token,
                     )
