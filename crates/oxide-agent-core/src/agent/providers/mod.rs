@@ -28,6 +28,9 @@ pub mod searxng;
 #[cfg(feature = "crawl4ai")]
 pub mod crawl4ai;
 
+#[cfg(feature = "browser_use")]
+pub mod browser_use;
+
 #[cfg(feature = "jira")]
 pub mod jira_mcp;
 
@@ -71,6 +74,9 @@ pub use searxng::SearxngProvider;
 
 #[cfg(feature = "crawl4ai")]
 pub use crawl4ai::Crawl4aiProvider;
+
+#[cfg(feature = "browser_use")]
+pub use browser_use::BrowserUseProvider;
 
 #[cfg(feature = "jira")]
 pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};
