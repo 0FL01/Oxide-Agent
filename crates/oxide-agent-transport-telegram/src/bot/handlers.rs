@@ -64,10 +64,6 @@ fn resolve_chat_model(settings: &BotSettings, stored_model: Option<String>) -> S
     settings.agent.get_default_chat_model_name()
 }
 
-fn resolve_multimodal_model(llm: &LlmClient, chat_model: String) -> String {
-    llm.media_model_name.clone().unwrap_or(chat_model)
-}
-
 fn ensure_inline_video_size(size: u32) -> Result<()> {
     if size > MAX_INLINE_VIDEO_SIZE {
         anyhow::bail!(
@@ -84,6 +80,13 @@ fn resolve_video_mime_type(video: &teloxide::types::Video) -> String {
         .mime_type
         .as_ref()
         .map_or_else(|| "video/mp4".to_string(), ToString::to_string)
+}
+
+fn resolve_voice_mime_type(voice: &teloxide::types::Voice) -> String {
+    voice
+        .mime_type
+        .as_ref()
+        .map_or_else(|| "audio/ogg".to_string(), ToString::to_string)
 }
 
 async fn download_telegram_file(bot: &Bot, file_id: teloxide::types::FileId) -> Result<Vec<u8>> {
@@ -1080,10 +1083,13 @@ async fn send_multimodal_unavailable_message(
     bot: &Bot,
     msg: &Message,
     outbound_thread: OutboundThreadParams,
+    feature: &str,
 ) -> Result<()> {
     let mut req = bot.send_message(
         msg.chat.id,
-        "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured for image, audio, and video requests.",
+        format!(
+            "🚫 Feature unavailable.\nNo configured media route supports {feature}. Configure Gemini/OpenRouter for image+video or Mistral for audio STT."
+        ),
     );
     if let Some(thread_id) = outbound_thread.message_thread_id {
         req = req.message_thread_id(thread_id);
@@ -1358,17 +1364,16 @@ pub async fn handle_voice(
         return Ok(());
     }
 
-    if !llm.is_multimodal_available() {
-        send_multimodal_unavailable_message(&bot, &msg, outbound_thread).await?;
-        return Ok(());
-    }
-
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
-    let saved_model = storage.get_user_model(user_id).await?;
-    let model = resolve_chat_model(&settings, saved_model);
-
-    let provider_info = settings.agent.get_model_info_by_name(&model);
-    let provider_name = provider_info.as_ref().map_or("unknown", |p| &p.provider);
+    let media_route = match llm.resolve_media_model_for_audio_stt() {
+        Ok(route) => route,
+        Err(_) => {
+            send_multimodal_unavailable_message(&bot, &msg, outbound_thread, "audio transcription")
+                .await?;
+            return Ok(());
+        }
+    };
+    let mime_type = resolve_voice_mime_type(voice);
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
@@ -1382,9 +1387,8 @@ pub async fn handle_voice(
     })
     .await?;
 
-    let model_id = provider_info.as_ref().map_or("unknown", |p| &p.id);
     match llm
-        .transcribe_audio_with_fallback(provider_name, buffer, "audio/wav", model_id)
+        .transcribe_audio_with_fallback(&media_route.provider, buffer, &mime_type, &media_route.id)
         .await
     {
         Ok(text) => {
@@ -1479,19 +1483,19 @@ pub async fn handle_photo(
         return Ok(());
     }
 
-    if !llm.is_multimodal_available() {
-        send_multimodal_unavailable_message(&bot, &msg, outbound_thread).await?;
-        return Ok(());
-    }
-
     let photo = msg
         .photo()
         .and_then(|p| p.last())
         .ok_or_else(|| anyhow!("No photo found"))?;
     let caption = msg.caption().unwrap_or("Describe this image.");
-    let saved_model = storage.get_user_model(user_id).await?;
-    let chat_model = resolve_chat_model(&settings, saved_model);
-    let model = resolve_multimodal_model(&llm, chat_model);
+    let model = match llm.resolve_media_model_name_for_image() {
+        Ok(name) => name,
+        Err(_) => {
+            send_multimodal_unavailable_message(&bot, &msg, outbound_thread, "image understanding")
+                .await?;
+            return Ok(());
+        }
+    };
     let system_prompt =
         resolve_system_prompt(&storage, user_id, route.system_prompt_override.as_deref()).await?;
 
@@ -1601,18 +1605,18 @@ pub async fn handle_video(
         return Ok(());
     }
 
-    if !llm.is_multimodal_available() {
-        send_multimodal_unavailable_message(&bot, &msg, outbound_thread).await?;
-        return Ok(());
-    }
-
     let video = msg.video().ok_or_else(|| anyhow!("No video found"))?;
     ensure_inline_video_size(video.file.size)?;
 
     let caption = msg.caption().unwrap_or("Describe this video in detail.");
-    let saved_model = storage.get_user_model(user_id).await?;
-    let chat_model = resolve_chat_model(&settings, saved_model);
-    let model = resolve_multimodal_model(&llm, chat_model);
+    let model = match llm.resolve_media_model_name_for_video() {
+        Ok(name) => name,
+        Err(_) => {
+            send_multimodal_unavailable_message(&bot, &msg, outbound_thread, "video understanding")
+                .await?;
+            return Ok(());
+        }
+    };
     let system_prompt =
         resolve_system_prompt(&storage, user_id, route.system_prompt_override.as_deref()).await?;
 

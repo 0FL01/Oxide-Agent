@@ -87,10 +87,10 @@ impl LlmClient {
         }
     }
 
-    fn resolve_media_model_for_modality(
+    fn resolve_media_route_for_modality(
         &self,
         modality: MediaModality,
-    ) -> Result<crate::config::ModelInfo, LlmError> {
+    ) -> Result<(String, crate::config::ModelInfo), LlmError> {
         let mut candidates = Vec::with_capacity(2);
         if let Some(name) = self.media_model_name.as_deref() {
             if !name.is_empty() {
@@ -116,7 +116,7 @@ impl LlmClient {
             }
 
             if Self::provider_supports_media_modality(&model_info.provider, modality) {
-                return Ok(model_info);
+                return Ok((model_name.to_string(), model_info));
             }
         }
 
@@ -135,7 +135,8 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports audio transcription.
     pub fn resolve_media_model_for_audio_stt(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_model_for_modality(MediaModality::AudioTranscription)
+        self.resolve_media_route_for_modality(MediaModality::AudioTranscription)
+            .map(|(_, info)| info)
     }
 
     /// Resolve the model route for image understanding.
@@ -147,7 +148,8 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports image understanding.
     pub fn resolve_media_model_for_image(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_model_for_modality(MediaModality::ImageUnderstanding)
+        self.resolve_media_route_for_modality(MediaModality::ImageUnderstanding)
+            .map(|(_, info)| info)
     }
 
     /// Resolve the model route for video understanding.
@@ -159,7 +161,38 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports video understanding.
     pub fn resolve_media_model_for_video(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_model_for_modality(MediaModality::VideoUnderstanding)
+        self.resolve_media_route_for_modality(MediaModality::VideoUnderstanding)
+            .map(|(_, info)| info)
+    }
+
+    /// Resolve the configured model name for audio transcription.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` when no route supports audio transcription.
+    pub fn resolve_media_model_name_for_audio_stt(&self) -> Result<String, LlmError> {
+        self.resolve_media_route_for_modality(MediaModality::AudioTranscription)
+            .map(|(name, _)| name)
+    }
+
+    /// Resolve the configured model name for image understanding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` when no route supports image understanding.
+    pub fn resolve_media_model_name_for_image(&self) -> Result<String, LlmError> {
+        self.resolve_media_route_for_modality(MediaModality::ImageUnderstanding)
+            .map(|(name, _)| name)
+    }
+
+    /// Resolve the configured model name for video understanding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` when no route supports video understanding.
+    pub fn resolve_media_model_name_for_video(&self) -> Result<String, LlmError> {
+        self.resolve_media_route_for_modality(MediaModality::VideoUnderstanding)
+            .map(|(name, _)| name)
     }
 
     /// Returns true when at least one configured route supports audio transcription.
