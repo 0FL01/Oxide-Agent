@@ -2,6 +2,8 @@
 
 Операторский runbook для self-hosted интеграции Browser Use в Oxide Agent.
 
+Следующий архитектурный этап зафиксирован отдельно в [Browser Use Stage A](./browser-use-stage-a.md): там описан переход от bridge-side LLM env к inheritance route из Oxide Agent для `MiniMax`, `ZAI` и других основных provider-ов.
+
 ## Что уже входит в rollout
 
 - `browser_use` sidecar в `docker-compose.yml`
@@ -18,7 +20,8 @@
 - `oxide_agent` обращается к `browser_use` по `BROWSER_USE_URL`
 - `browser_use` публикуется только на loopback `127.0.0.1:8002`
 - browser state и session metadata сохраняются в volume `browser-use-data`
-- bridge использует собственный LLM provider, заданный через `BROWSER_USE_BRIDGE_LLM_PROVIDER`
+- в текущем v1 bridge использует собственный LLM provider, заданный через `BROWSER_USE_BRIDGE_LLM_PROVIDER`
+- Stage A переводит этот механизм в legacy fallback и фиксирует целевую модель через route inheritance из Oxide Agent
 
 ## Важные переменные окружения
 
@@ -30,6 +33,8 @@
 - `BROWSER_USE_MAX_CONCURRENT=2`
 
 ### В `browser_use` sidecar
+
+Ниже перечислены текущие v1 переменные. После реализации Stage A они останутся fallback-механизмом, а основным путем станет inheritance активного route из Oxide Agent.
 
 - `BROWSER_USE_BRIDGE_HOST=0.0.0.0`
 - `BROWSER_USE_BRIDGE_PORT=8000`
@@ -111,9 +116,10 @@ Browser Use не включается через alias `search`. Для него
 
 1. Убедиться, что compose healthcheck зеленый для `browser_use`.
 2. Убедиться, что `BROWSER_USE_ENABLED=true` и `BROWSER_USE_URL` видны контейнеру `oxide_agent`.
-3. Убедиться, что bridge-side LLM provider и его API key переданы в контейнер `browser_use`.
-4. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
-5. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
+3. Для текущего v1 убедиться, что bridge-side LLM provider и его API key переданы в контейнер `browser_use`.
+4. Для следующего inheritance path сверяться с `Browser Use Stage A`, а не вводить отдельную модель вручную без необходимости.
+5. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
+6. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
 
 ## Типичные сбои
 
@@ -138,11 +144,13 @@ Browser Use не включается через alias `search`. Для него
 
 ### `browser_use_run_task` падает сразу
 
-Частые причины:
+Частые причины для текущего v1:
 
 - не задан `BROWSER_USE_BRIDGE_LLM_PROVIDER`
 - не передан API key для выбранного provider
 - bridge не может создать Browser Use LLM wrapper
+
+После перехода на Stage A основным классом ошибок станет уже не отсутствие bridge env, а несовместимость inherited route или его credentials.
 
 ### Session создается, но браузерные задачи нестабильны
 
