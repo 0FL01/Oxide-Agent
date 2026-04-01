@@ -141,6 +141,42 @@ fn browser_llm_config_maps_minimax_route() {
 }
 
 #[test]
+fn browser_llm_config_marks_text_only_openrouter_models_without_vision() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "deepseek/deepseek-chat".to_string(),
+        provider: "openrouter".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, _) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("openrouter route config");
+
+    assert!(!config.supports_vision);
+}
+
+#[test]
+fn browser_llm_config_marks_vision_openrouter_models() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "google/gemini-3-flash-preview".to_string(),
+        provider: "openrouter".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, _) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("openrouter route config");
+
+    assert!(config.supports_vision);
+}
+
+#[test]
 fn browser_llm_config_requires_configured_secret() {
     let provider = BrowserUseProvider::new(
         "http://localhost:8002",
@@ -203,6 +239,74 @@ async fn run_task_posts_inherited_browser_llm_config() {
         state.header_value(OXIDE_BROWSER_LLM_API_KEY_HEADER).await,
         Some("zai-secret".to_string())
     );
+}
+
+#[tokio::test]
+async fn run_task_warns_for_ui_heavy_text_only_route() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Done"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+    let route = crate::config::ModelInfo {
+        id: "MiniMax-M2.7".to_string(),
+        provider: "minimax".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let output = scope_tool_model_route(
+        route,
+        provider.execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Click the login button and submit the form"}"#,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("ui-heavy task should still run");
+
+    assert!(output.contains("Warning: Browser Use is running with text-only route"));
+    assert!(output.contains("browser-use-123"));
+}
+
+#[tokio::test]
+async fn run_task_rejects_visual_analysis_on_text_only_route() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "glm-5-turbo".to_string(),
+        provider: "zai".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let error = scope_tool_model_route(
+        route,
+        provider.execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Describe the visual layout and colors of the homepage"}"#,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect_err("visual analysis should fail on text-only route");
+
+    assert!(error
+        .to_string()
+        .contains("Browser Use task appears to require visual grounding"));
 }
 
 #[tokio::test]

@@ -24,7 +24,17 @@
 - legacy env path через `BROWSER_USE_BRIDGE_LLM_PROVIDER` остается временным fallback
 - Stage C уже прокидывает active Oxide route в bridge `browser_llm_config` для совместимых provider-ов
 - Stage D передает inherited-route API key server-to-server через внутренний header, а не через request body
+- Stage E вводит capability policy для text-only vs vision-capable routes
 - legacy env path остается fallback, когда route inheritance недоступен
+
+## Capability Matrix
+
+- `gemini` route считается vision-capable
+- `openrouter` route считается vision-capable только для моделей, которые выглядят мультимодальными по model id, например `gemini`, `gpt-4o`, `claude-3`, `vision`, `vl`, `pixtral`
+- `minimax` и `zai` в текущем inheritance path считаются text-only route
+- text-only route допустимы для summary/extraction/browsing задач
+- для interactive UI задач Browser Use теперь возвращает warning о degraded mode
+- для задач, явно требующих visual grounding, Browser Use завершает tool вызов понятной ошибкой до запуска sidecar session
 
 ## Важные переменные окружения
 
@@ -163,6 +173,7 @@ Browser Use не включается через alias `search`. Для него
 
 - активный inherited route использует пока неподдерживаемый provider, например `groq`, `mistral` или `nvidia`
 - для inherited route отсутствует нужный provider key в `oxide_agent`, поэтому Rust provider не может передать secret в bridge
+- inherited route text-only, а задача явно просит visual analysis, screenshot-like reasoning или оценку layout/colors
 - не задан `BROWSER_USE_BRIDGE_LLM_PROVIDER` для legacy env path
 - не передан API key для выбранного provider
 - `browser_llm_config.api_key_ref` указывает на отсутствующий env

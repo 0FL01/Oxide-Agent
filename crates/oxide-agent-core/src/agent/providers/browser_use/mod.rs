@@ -39,6 +39,13 @@ const MINIMAX_DEFAULT_API_BASE: &str = "https://api.minimax.io/anthropic";
 const OPENROUTER_DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
 const OXIDE_BROWSER_LLM_API_KEY_HEADER: &str = "x-oxide-browser-llm-api-key";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisionRequirement {
+    NotNeeded,
+    Recommended,
+    Required,
+}
+
 /// Provider for Browser Use bridge tools.
 pub struct BrowserUseProvider {
     base_url: String,
@@ -168,7 +175,7 @@ impl BrowserUseProvider {
         route: &crate::config::ModelInfo,
     ) -> Result<(BrowserLlmConfig, String)> {
         let provider = route.provider.to_ascii_lowercase();
-        let supports_vision = matches!(provider.as_str(), "gemini" | "openrouter");
+        let supports_vision = route_supports_vision(&provider, &route.id);
         let supports_tools = !matches!(provider.as_str(), "groq");
 
         let (bridge_provider, api_base, api_key) = match provider.as_str() {
@@ -225,6 +232,30 @@ impl BrowserUseProvider {
                 )
             })?;
         Ok(api_key.to_string())
+    }
+
+    fn vision_policy_warning(
+        &self,
+        task: &str,
+        browser_llm_config: Option<&BrowserLlmConfig>,
+    ) -> Result<Option<String>> {
+        let Some(config) = browser_llm_config else {
+            return Ok(None);
+        };
+        if config.supports_vision {
+            return Ok(None);
+        }
+
+        let route_label = format!("{}/{}", config.provider, config.model);
+        match classify_vision_requirement(task) {
+            VisionRequirement::NotNeeded => Ok(None),
+            VisionRequirement::Recommended => Ok(Some(format!(
+                "Warning: Browser Use is running with text-only route `{route_label}`. This task looks UI-heavy, so execution may run in degraded mode without visual grounding."
+            ))),
+            VisionRequirement::Required => Err(anyhow!(
+                "Browser Use task appears to require visual grounding, but inherited route `{route_label}` is text-only. Switch to a vision-capable route such as Gemini or a vision-capable OpenRouter model, or simplify the task to text-only browsing/extraction."
+            )),
+        }
     }
 
     async fn request(
@@ -388,6 +419,81 @@ struct RunTaskRequestBody {
     browser_llm_config: Option<BrowserLlmConfig>,
 }
 
+fn route_supports_vision(provider: &str, model: &str) -> bool {
+    match provider {
+        "gemini" => true,
+        "openrouter" => is_openrouter_vision_model(model),
+        _ => false,
+    }
+}
+
+fn is_openrouter_vision_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    [
+        "gemini",
+        "gpt-4o",
+        "gpt-4.1",
+        "claude-3",
+        "claude-sonnet-4",
+        "claude-opus-4",
+        "vision",
+        "vl",
+        "pixtral",
+        "llama-4",
+        "qwen-vl",
+    ]
+    .iter()
+    .any(|needle| model.contains(needle))
+}
+
+fn classify_vision_requirement(task: &str) -> VisionRequirement {
+    let task = task.to_ascii_lowercase();
+
+    let required_keywords = [
+        "visual",
+        "visually",
+        "appearance",
+        "layout",
+        "look like",
+        "on screen",
+        "screenshot",
+        "color",
+        "colour",
+        "icon",
+        "captcha",
+    ];
+    if required_keywords.iter().any(|needle| task.contains(needle)) {
+        return VisionRequirement::Required;
+    }
+
+    let recommended_keywords = [
+        "click",
+        "button",
+        "dropdown",
+        "menu",
+        "modal",
+        "dialog",
+        "form",
+        "checkbox",
+        "radio",
+        "tab",
+        "sign in",
+        "log in",
+        "upload",
+        "drag",
+        "interactive",
+        "wizard",
+    ];
+    if recommended_keywords
+        .iter()
+        .any(|needle| task.contains(needle))
+    {
+        return VisionRequirement::Recommended;
+    }
+
+    VisionRequirement::NotNeeded
+}
+
 #[derive(Debug, Deserialize)]
 struct SessionArgs {
     session_id: String,
@@ -515,6 +621,8 @@ impl ToolProvider for BrowserUseProvider {
                     Some((config, api_key)) => (Some(config), Some(api_key)),
                     None => (None, None),
                 };
+                let vision_warning =
+                    self.vision_policy_warning(&args.task, browser_llm_config.as_ref())?;
                 let body = serde_json::to_value(RunTaskRequestBody {
                     task: args.task,
                     start_url: args.start_url,
@@ -531,7 +639,12 @@ impl ToolProvider for BrowserUseProvider {
                         cancellation_token,
                     )
                     .await?;
-                Ok(format_tool_output(payload))
+                let output = format_tool_output(payload);
+                if let Some(warning) = vision_warning {
+                    Ok(format!("{warning}\n\n{output}"))
+                } else {
+                    Ok(output)
+                }
             }
             TOOL_GET_SESSION => {
                 let args: SessionArgs = serde_json::from_str(arguments)?;
