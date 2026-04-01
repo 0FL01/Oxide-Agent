@@ -40,6 +40,8 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 
+#[cfg(feature = "browser_use")]
+use super::providers::BrowserUseProvider;
 #[cfg(feature = "crawl4ai")]
 use super::providers::Crawl4aiProvider;
 #[cfg(feature = "searxng")]
@@ -448,9 +450,10 @@ impl AgentExecutor {
         // Topic-scoped providers: agents_md, manager, ssh, reminders
         self.register_topic_providers(&mut registry);
 
-        // Feature-gated MCP and search providers
+        // Feature-gated MCP, search, and browser automation providers
         self.register_mcp_providers(&mut registry);
         self.register_search_providers(&mut registry);
+        self.register_browser_providers(&mut registry);
 
         // Optional TTS providers.
         self.register_kokoro_tts_provider(&mut registry, progress_tx);
@@ -643,6 +646,29 @@ impl AgentExecutor {
         #[cfg(not(feature = "crawl4ai"))]
         if crate::config::is_crawl4ai_enabled() {
             tracing::warn!("Crawl4AI enabled but feature not compiled in");
+        }
+    }
+
+    fn register_browser_providers(&self, registry: &mut ToolRegistry) {
+        #[cfg(feature = "browser_use")]
+        if crate::config::is_browser_use_enabled() {
+            if let Some(url) = crate::config::get_browser_use_url() {
+                if !url.trim().is_empty() {
+                    registry.register(Box::new(BrowserUseProvider::new(&url)));
+                } else {
+                    warn!(
+                        "Browser Use enabled but BROWSER_USE_URL is empty; provider not registered"
+                    );
+                }
+            } else {
+                warn!(
+                    "Browser Use enabled but BROWSER_USE_URL is not set; provider not registered"
+                );
+            }
+        }
+        #[cfg(not(feature = "browser_use"))]
+        if crate::config::is_browser_use_enabled() {
+            tracing::warn!("Browser Use enabled but feature not compiled in");
         }
     }
 
@@ -1567,6 +1593,46 @@ mod tests {
         assert!(tool_names.contains("describe_video_file"));
         assert!(tool_names.contains("text_to_speech_en_file"));
         assert!(tool_names.contains("text_to_speech_ru_file"));
+    }
+
+    #[cfg(feature = "browser_use")]
+    #[tokio::test]
+    async fn browser_use_enabled_registry_registers_browser_tools() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+        std::env::set_var("BROWSER_USE_ENABLED", "true");
+
+        let executor = build_executor();
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        assert!(registry.can_handle("browser_use_run_task"));
+        assert!(registry.can_handle("browser_use_get_session"));
+        assert!(registry.can_handle("browser_use_close_session"));
+
+        std::env::remove_var("BROWSER_USE_ENABLED");
+        std::env::remove_var("BROWSER_USE_URL");
+    }
+
+    #[cfg(feature = "browser_use")]
+    #[tokio::test]
+    async fn browser_use_disabled_registry_skips_browser_tools() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+        std::env::set_var("BROWSER_USE_ENABLED", "false");
+
+        let executor = build_executor();
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        assert!(!registry.can_handle("browser_use_run_task"));
+        assert!(!registry.can_handle("browser_use_get_session"));
+        assert!(!registry.can_handle("browser_use_close_session"));
+
+        std::env::remove_var("BROWSER_USE_ENABLED");
+        std::env::remove_var("BROWSER_USE_URL");
     }
 
     #[tokio::test]
