@@ -176,6 +176,7 @@ CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
 BROWSER_USE_URL=http://127.0.0.1:8002 # Browser Use self-hosted bridge
 BROWSER_USE_ENABLED=true        # Enable Browser Use browser automation provider
 # BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3 # Optional retained reusable profiles per topic/context scope
+# BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=604800 # Optional idle/stale reusable profile TTL in the bridge
 # BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Legacy browser_use sidecar fallback, not used by default compose
 # BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional legacy fallback model override
 ```

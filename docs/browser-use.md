@@ -33,6 +33,7 @@
 - Stage F делает route inheritance основным operator path в дефолтном `docker-compose` и добавляет runtime observability по `llm_source` / `vision_mode`
 - Stage 1 reuse slice добавляет optional `reuse_profile` / `profile_id` в `browser_use_run_task` и отдельные profile records в bridge storage
 - Stage 2 reuse wiring прокидывает hidden `profile_scope` из реального `context_key` и вводит quota на retained profiles per scope
+- Stage 3 lifecycle cleanup теперь detaches reusable profiles на graceful shutdown bridge, auto-recovers orphaned `active` profiles после restart/crash и TTL-prune-ит старые idle/stale profiles до quota check
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
@@ -67,6 +68,7 @@
 - `BROWSER_USE_BRIDGE_MAX_TIMEOUT_SECS=300`
 - `BROWSER_USE_BRIDGE_MAX_CONCURRENT_SESSIONS=2`
 - `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3`
+- `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=604800` - idle/stale profile TTL; `0` disables pruning
 - `BROWSER_USE_BRIDGE_LLM_PROVIDER=google|anthropic|browser_use`
 - `BROWSER_USE_BRIDGE_LLM_MODEL=<optional-model-id>`
 
@@ -125,6 +127,8 @@ curl -f http://127.0.0.1:8002/health
 - `legacy_env_fallback_configured` показывает, включен ли старый env fallback на этом sidecar
 - `supported_inherited_route_providers` показывает, какие route provider-ы Rust provider умеет прокидывать автоматически
 - `supported_legacy_env_providers` показывает, какие bridge-local adapter-ы еще остаются для fallback-сценариев
+- `profile_idle_ttl_secs` показывает, через сколько bridge auto-prune-ит idle/stale profiles
+- `orphan_profile_recovery_supported` показывает, что bridge умеет self-heal-ить `active` profiles, оставшиеся после рестарта
 
 ## Topic-Agent UX
 
@@ -170,7 +174,8 @@ Browser Use не включается через alias `search`. Для него
 8. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
 9. Если нужен reuse, запустить `browser_use_run_task` с `reuse_profile=true` и сохранить возвращенный `profile_id`.
 10. При reuse убедиться, что вызов идет из того же topic/context: Stage 2 теперь шьет hidden `profile_scope` из runtime context и не даст reuse-ить profile из другого topic.
-11. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, `profile_id`, `profile_scope`, `profile_status` и `profile_attached`, чтобы убедиться, что реально используется inherited route и при необходимости привязан reusable profile.
+11. После restart bridge не очищать metadata вручную: Stage 3 сам переведет orphaned `active` profile в recoverable state при следующем reuse.
+12. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, `profile_id`, `profile_scope`, `profile_status` и `profile_attached`, чтобы убедиться, что реально используется inherited route и при необходимости привязан reusable profile.
 
 ## Типичные сбои
 
@@ -202,6 +207,7 @@ Browser Use не включается через alias `search`. Для него
 - inherited route text-only, а задача явно просит visual analysis, screenshot-like reasoning или оценку layout/colors
 - `profile_id` пытаются reuse-ить из другого topic/context, и bridge режет запрос по injected `profile_scope`
 - в текущем topic/context уже достигнут quota `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE`, и bridge не создает новый retained profile
+- quota не освобождается так быстро, как ожидается: проверить `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS` и помнить, что prune применяется к idle/stale profiles, а не к активно прикрепленным
 - не задан `BROWSER_USE_BRIDGE_LLM_PROVIDER` для legacy env path
 - не передан API key для выбранного provider
 - `browser_llm_config.api_key_ref` указывает на отсутствующий env
@@ -227,5 +233,6 @@ Browser Use не включается через alias `search`. Для него
 - не расширять без необходимости tool surface до raw click/type/eval action-ов; это отложено отдельным post-v1 decision slice
 - не рассматривать его как замену `searxng` или `crawl4ai`
 - закрывать долгоживущие сессии через `browser_use_close_session`, если reuse больше не нужен
+- не держать бесконечно много idle profiles в одном topic: Stage 3 чистит их по TTL, поэтому для реально долгого reuse TTL нужно держать осознанно настроенным
 - включать Browser Use topic-by-topic, а не глобально для всех профилей без необходимости
 - рассчитывать на то, что persistent profile reuse теперь topic/context-scoped: reuse одного `profile_id` из другого topic будет отвергнут bridge-ом

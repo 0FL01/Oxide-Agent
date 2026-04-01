@@ -4,8 +4,9 @@ import asyncio
 import inspect
 import json
 import os
+import shutil
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -75,6 +76,11 @@ class Settings:
     max_profiles_per_scope: int = field(
         default_factory=lambda: parse_int_env(
             "BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE", 3
+        )
+    )
+    profile_idle_ttl_secs: int = field(
+        default_factory=lambda: parse_int_env(
+            "BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS", 604800
         )
     )
     llm_provider: str = field(
@@ -372,6 +378,21 @@ def clean_optional(value: str | None) -> str | None:
     return cleaned or None
 
 
+def parse_timestamp(value: str | None) -> datetime | None:
+    cleaned = clean_optional(value)
+    if cleaned is None:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def resolve_api_key_ref(secret_ref: str) -> str:
     secret_ref = secret_ref.strip()
     if not secret_ref:
@@ -603,6 +624,7 @@ class SessionManager:
         data_dir: Path,
         max_concurrent_sessions: int,
         max_profiles_per_scope: int = 3,
+        profile_idle_ttl_secs: int = 604800,
     ) -> None:
         self._data_dir = data_dir
         self._sessions_dir = data_dir / "sessions"
@@ -613,6 +635,7 @@ class SessionManager:
         self._registry_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max(1, max_concurrent_sessions))
         self._max_profiles_per_scope = max(1, max_profiles_per_scope)
+        self._profile_idle_ttl_secs = max(0, profile_idle_ttl_secs)
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
         self._profiles_dir.mkdir(parents=True, exist_ok=True)
@@ -640,6 +663,8 @@ class SessionManager:
         profile_id = profile_id.strip()
         if not profile_id:
             raise HTTPException(status_code=404, detail="unknown profile ''")
+
+        await self._housekeep_profiles()
 
         async with self._registry_lock:
             profile = self._profiles.get(profile_id)
@@ -689,6 +714,7 @@ class SessionManager:
     async def create_profile(
         self, profile_scope: str = "bridge_local"
     ) -> ProfileRecord:
+        await self._housekeep_profiles()
         await self._enforce_profile_scope_quota(profile_scope)
         profile_id = f"browser-profile-{uuid4().hex}"
         profile_root = self._profile_root(profile_id)
@@ -794,13 +820,7 @@ class SessionManager:
 
     async def close_session(self, session_id: str) -> CloseSessionResponse:
         session = await self.get_session(session_id)
-        async with session.lock:
-            await self._close_browser(session.browser)
-            session.browser = None
-            session.status = "closed"
-            await self._detach_profile(session)
-            session.updated_at = utc_now()
-            await self._persist(session)
+        await self._close_session_record(session)
         return CloseSessionResponse(
             session_id=session_id,
             closed=True,
@@ -863,9 +883,146 @@ class SessionManager:
     async def shutdown(self) -> None:
         async with self._registry_lock:
             sessions = list(self._sessions.values())
-        await asyncio.gather(
-            *(self._close_browser(session.browser) for session in sessions)
+        for session in sessions:
+            await self._close_session_record(session)
+
+    async def _close_session_record(self, session: SessionRecord) -> None:
+        async with session.lock:
+            await self._close_browser(session.browser)
+            session.browser = None
+            session.status = "closed"
+            await self._detach_profile(session)
+            session.updated_at = utc_now()
+            await self._persist(session)
+
+    async def _housekeep_profiles(self) -> None:
+        await self._reconcile_orphaned_profiles()
+        await self._prune_expired_profiles()
+
+    async def _reconcile_orphaned_profiles(self) -> None:
+        async with self._registry_lock:
+            live_sessions = {
+                session_id: session.snapshot()
+                for session_id, session in self._sessions.items()
+            }
+
+        for metadata_path in self._profiles_dir.glob("*/metadata.json"):
+            payload = self._load_profile_payload(metadata_path)
+            if payload is None or payload.get("status") != "active":
+                continue
+
+            current_session_id = clean_optional(payload.get("current_session_id"))
+            profile_id = payload.get("profile_id")
+            if not isinstance(profile_id, str) or not profile_id.strip():
+                continue
+
+            if (
+                current_session_id is not None
+                and self._session_snapshot_matches_profile(
+                    live_sessions.get(current_session_id), profile_id
+                )
+            ):
+                continue
+
+            payload["status"] = "stale"
+            payload["current_session_id"] = None
+            payload["updated_at"] = utc_now()
+            self._write_profile_payload(metadata_path, payload)
+            await self._sync_cached_profile_payload(payload)
+
+    async def _prune_expired_profiles(self) -> None:
+        if self._profile_idle_ttl_secs <= 0:
+            return
+
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self._profile_idle_ttl_secs
         )
+        for metadata_path in self._profiles_dir.glob("*/metadata.json"):
+            payload = self._load_profile_payload(metadata_path)
+            if payload is None:
+                continue
+
+            status = payload.get("status")
+            if status == "active":
+                continue
+
+            if not self._profile_payload_is_expired(payload, cutoff):
+                continue
+
+            profile_id = payload.get("profile_id")
+            if not isinstance(profile_id, str) or not profile_id.strip():
+                continue
+
+            try:
+                shutil.rmtree(metadata_path.parent)
+            except OSError:
+                continue
+
+            async with self._registry_lock:
+                self._profiles.pop(profile_id, None)
+
+    def _load_profile_payload(self, metadata_path: Path) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def _write_profile_payload(
+        self, metadata_path: Path, payload: dict[str, Any]
+    ) -> None:
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+
+    def _session_snapshot_matches_profile(
+        self, snapshot: dict[str, Any] | None, profile_id: str
+    ) -> bool:
+        if snapshot is None:
+            return False
+        if snapshot.get("profile_id") != profile_id:
+            return False
+        if not snapshot.get("profile_attached"):
+            return False
+        return snapshot.get("status") != "closed"
+
+    def _profile_payload_is_expired(
+        self, payload: dict[str, Any], cutoff: datetime
+    ) -> bool:
+        if payload.get("status") == "deleted":
+            return True
+
+        for key in ("last_used_at", "updated_at", "created_at"):
+            parsed = parse_timestamp(payload.get(key))
+            if parsed is not None:
+                return parsed <= cutoff
+        return False
+
+    async def _sync_cached_profile_payload(self, payload: dict[str, Any]) -> None:
+        profile_id = payload.get("profile_id")
+        if not isinstance(profile_id, str) or not profile_id.strip():
+            return
+
+        async with self._registry_lock:
+            profile = self._profiles.get(profile_id)
+        if profile is None:
+            return
+
+        profile.profile_scope = payload.get("profile_scope", profile.profile_scope)
+        profile.status = payload.get("status", profile.status)
+        profile.current_session_id = payload.get("current_session_id")
+        profile.profile_dir = payload.get("profile_dir", profile.profile_dir)
+        profile.browser_data_dir = payload.get(
+            "browser_data_dir", profile.browser_data_dir
+        )
+        profile.created_at = payload.get("created_at", profile.created_at)
+        profile.updated_at = payload.get("updated_at", profile.updated_at)
+        profile.last_used_at = payload.get("last_used_at")
 
     async def _close_browser(self, browser: Any) -> None:
         if browser is None:
@@ -1245,6 +1402,7 @@ manager = SessionManager(
     data_dir=settings.data_dir,
     max_concurrent_sessions=settings.max_concurrent_sessions,
     max_profiles_per_scope=settings.max_profiles_per_scope,
+    profile_idle_ttl_secs=settings.profile_idle_ttl_secs,
 )
 app = FastAPI(title="browser_use_bridge", version="0.1.0")
 
@@ -1289,6 +1447,8 @@ async def health() -> JSONResponse:
         "profile_reuse_supported": True,
         "profile_scope_mode": "runtime_injected_preferred",
         "max_profiles_per_scope": settings.max_profiles_per_scope,
+        "profile_idle_ttl_secs": settings.profile_idle_ttl_secs,
+        "orphan_profile_recovery_supported": True,
     }
     status_code = 200 if BROWSER_USE_IMPORT_ERROR is None else 503
     return JSONResponse(content=payload, status_code=status_code)
