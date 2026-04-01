@@ -13,11 +13,21 @@ use serde_json::json;
 
 use helpers::{parse_tool_calls, prepare_structured_messages, prepare_tools_json};
 
+/// Hardcoded OpenRouter app attribution headers
+const OPENROUTER_HEADERS: [(&str, &str); 3] = [
+    ("HTTP-Referer", "https://github.com/0FL01/Oxide-Agent"),
+    ("X-Title", "Oxide Agent"),
+    ("X-OpenRouter-Title", "Oxide Agent"),
+];
+
 /// LLM provider implementation for `OpenRouter`
 pub struct OpenRouterProvider {
     http_client: HttpClient,
     api_key: String,
+    // Deprecated: App attribution headers are now hardcoded
+    #[allow(dead_code)]
     site_url: String,
+    #[allow(dead_code)]
     site_name: String,
 }
 
@@ -153,14 +163,10 @@ impl LlmProvider for OpenRouterProvider {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json");
 
-        if !self.site_url.is_empty() {
-            request = request.header("HTTP-Referer", &self.site_url);
+        // Hardcoded app attribution headers for OpenRouter identification
+        for (key, value) in &OPENROUTER_HEADERS {
+            request = request.header(*key, *value);
         }
-        if !self.site_name.is_empty() {
-            request = request.header("X-Title", &self.site_name);
-        }
-        // OpenRouter-specific app attribution (2025 header)
-        request = request.header("X-OpenRouter-Title", "Oxide Agent");
 
         let response = request
             .json(&body)
@@ -245,7 +251,14 @@ impl LlmProvider for OpenRouterProvider {
         });
 
         let auth = format!("Bearer {}", self.api_key);
-        let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
+        let res_json = send_json_request(
+            &self.http_client,
+            url,
+            &body,
+            Some(&auth),
+            &OPENROUTER_HEADERS,
+        )
+        .await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -279,7 +292,14 @@ impl LlmProvider for OpenRouterProvider {
         });
 
         let auth = format!("Bearer {}", self.api_key);
-        let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
+        let res_json = send_json_request(
+            &self.http_client,
+            url,
+            &body,
+            Some(&auth),
+            &OPENROUTER_HEADERS,
+        )
+        .await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -301,7 +321,14 @@ impl LlmProvider for OpenRouterProvider {
         );
 
         let auth = format!("Bearer {}", self.api_key);
-        let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
+        let res_json = send_json_request(
+            &self.http_client,
+            url,
+            &body,
+            Some(&auth),
+            &OPENROUTER_HEADERS,
+        )
+        .await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -333,15 +360,8 @@ impl LlmProvider for OpenRouterProvider {
             body["tools"] = json!(openai_tools);
         }
 
-        let mut extra_headers = Vec::new();
-        if !self.site_url.is_empty() {
-            extra_headers.push(("HTTP-Referer", self.site_url.as_str()));
-        }
-        if !self.site_name.is_empty() {
-            extra_headers.push(("X-Title", self.site_name.as_str()));
-        }
-        // OpenRouter-specific app attribution (2025 header)
-        extra_headers.push(("X-OpenRouter-Title", "Oxide Agent"));
+        // Hardcoded app attribution headers for OpenRouter identification
+        let extra_headers: Vec<(&str, &str)> = OPENROUTER_HEADERS.to_vec();
 
         let auth = format!("Bearer {}", self.api_key);
         let res_json =
