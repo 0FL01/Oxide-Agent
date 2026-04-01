@@ -936,4 +936,98 @@ mod tests {
         assert_eq!(route.id, "chat-openrouter");
         assert_eq!(route.provider, "openrouter");
     }
+
+    #[test]
+    fn media_model_name_resolvers_return_selected_route_names() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-openrouter".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("media-gemini".to_string()),
+            media_model_provider: Some("gemini".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            gemini_api_key: Some("test-gemini-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        assert_eq!(
+            llm.resolve_media_model_name_for_audio_stt().unwrap(),
+            "media-gemini"
+        );
+        assert_eq!(
+            llm.resolve_media_model_name_for_image().unwrap(),
+            "media-gemini"
+        );
+        assert_eq!(
+            llm.resolve_media_model_name_for_video().unwrap(),
+            "media-gemini"
+        );
+    }
+
+    #[test]
+    fn media_name_resolver_falls_back_to_chat_for_non_stt_modalities() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-openrouter".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("media-mistral".to_string()),
+            media_model_provider: Some("mistral".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            mistral_api_key: Some("test-mistral-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        assert_eq!(
+            llm.resolve_media_model_name_for_audio_stt().unwrap(),
+            "media-mistral"
+        );
+        assert_eq!(
+            llm.resolve_media_model_name_for_image().unwrap(),
+            "chat-openrouter"
+        );
+        assert_eq!(
+            llm.resolve_media_model_name_for_video().unwrap(),
+            "chat-openrouter"
+        );
+    }
+
+    #[test]
+    fn multimodal_availability_is_modality_specific() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-mistral".to_string()),
+            chat_model_provider: Some("mistral".to_string()),
+            mistral_api_key: Some("test-mistral-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        assert!(llm.is_multimodal_available());
+        assert!(llm.is_audio_transcription_available());
+        assert!(!llm.is_image_understanding_available());
+        assert!(!llm.is_video_understanding_available());
+    }
+
+    #[test]
+    fn multimodal_is_unavailable_when_no_supported_media_routes_exist() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-groq".to_string()),
+            chat_model_provider: Some("groq".to_string()),
+            groq_api_key: Some("test-groq-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        assert!(!llm.is_multimodal_available());
+        assert!(!llm.is_audio_transcription_available());
+        assert!(!llm.is_image_understanding_available());
+        assert!(!llm.is_video_understanding_available());
+
+        let error = llm.resolve_media_model_for_video().unwrap_err();
+        assert!(matches!(
+            error,
+            crate::llm::LlmError::MissingConfig(message)
+                if message.contains("video understanding")
+                    && message.contains("gemini/openrouter")
+        ));
+    }
 }
