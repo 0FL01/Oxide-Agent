@@ -5,7 +5,7 @@
 
 use crate::config::get_llm_http_timeout_secs;
 use crate::llm::LlmError;
-use reqwest::Client as HttpClient;
+use reqwest::{Client as HttpClient, ClientBuilder as HttpClientBuilder};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -17,13 +17,18 @@ pub const APP_USER_AGENT: &str = "Oxide-Agent/0.1.0";
 /// Uses `LLM_HTTP_TIMEOUT_SECS` environment variable or default configuration.
 /// This keeps long-running responses alive while preventing infinite hangs.
 /// Sets User-Agent header to identify the application to LLM providers.
-#[must_use]
-pub fn create_http_client() -> HttpClient {
+pub fn create_http_client_builder() -> HttpClientBuilder {
     let timeout = Duration::from_secs(get_llm_http_timeout_secs());
     HttpClient::builder()
         .pool_max_idle_per_host(10)
         .timeout(timeout)
         .user_agent(APP_USER_AGENT)
+}
+
+/// Creates an HTTP client configured with the standard LLM timeout.
+#[must_use]
+pub fn create_http_client() -> HttpClient {
+    create_http_client_builder()
         .build()
         .unwrap_or_else(|_| HttpClient::new())
 }
