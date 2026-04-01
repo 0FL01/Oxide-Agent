@@ -462,6 +462,26 @@ impl GeminiProvider {
         i32::try_from(max_tokens).unwrap_or(i32::MAX)
     }
 
+    fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
+        if image_bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']) {
+            return "image/png";
+        }
+
+        if image_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return "image/jpeg";
+        }
+
+        if image_bytes.starts_with(b"GIF87a") || image_bytes.starts_with(b"GIF89a") {
+            return "image/gif";
+        }
+
+        if image_bytes.starts_with(b"RIFF") && image_bytes.get(8..12) == Some(b"WEBP") {
+            return "image/webp";
+        }
+
+        "image/jpeg"
+    }
+
     fn finish_reason(response: &GenerationResponse) -> String {
         response
             .candidates
@@ -596,12 +616,13 @@ impl LlmProvider for GeminiProvider {
         system_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
+        let image_mime_type = Self::infer_image_mime_type(&image_bytes);
         let client = self.sdk_client(model_id)?;
         let response = client
             .generate_content()
             .with_system_prompt(system_prompt)
             .with_user_message(text_prompt)
-            .with_inline_data(BASE64.encode(&image_bytes), "image/jpeg")
+            .with_inline_data(BASE64.encode(&image_bytes), image_mime_type)
             .with_temperature(GEMINI_IMAGE_TEMPERATURE)
             .with_max_output_tokens(4000)
             .execute()
@@ -1304,6 +1325,24 @@ mod tests {
         assert_eq!(
             GeminiProvider::tool_result_value("[1,2,3]"),
             json!({ "output": [1, 2, 3] })
+        );
+    }
+
+    #[test]
+    fn infers_image_mime_type_from_magic_bytes() {
+        let png = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n', 0x00];
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xDB];
+        let gif = *b"GIF89a";
+        let webp = [b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P'];
+        let unknown = [0x00, 0x11, 0x22, 0x33];
+
+        assert_eq!(GeminiProvider::infer_image_mime_type(&png), "image/png");
+        assert_eq!(GeminiProvider::infer_image_mime_type(&jpeg), "image/jpeg");
+        assert_eq!(GeminiProvider::infer_image_mime_type(&gif), "image/gif");
+        assert_eq!(GeminiProvider::infer_image_mime_type(&webp), "image/webp");
+        assert_eq!(
+            GeminiProvider::infer_image_mime_type(&unknown),
+            "image/jpeg"
         );
     }
 }
