@@ -23,6 +23,7 @@
 - bridge уже поддерживает request-level `browser_llm_config` для нормализованного выбора LLM
 - legacy env path через `BROWSER_USE_BRIDGE_LLM_PROVIDER` остается временным fallback
 - Stage C уже прокидывает active Oxide route в bridge `browser_llm_config` для совместимых provider-ов
+- Stage D передает inherited-route API key server-to-server через внутренний header, а не через request body
 - legacy env path остается fallback, когда route inheritance недоступен
 
 ## Важные переменные окружения
@@ -47,6 +48,8 @@
 - `BROWSER_USE_BRIDGE_LLM_PROVIDER=google|anthropic|browser_use`
 - `BROWSER_USE_BRIDGE_LLM_MODEL=<optional-model-id>`
 
+Для inherited route отдельные sidecar env c ключами `MINIMAX_API_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY` больше не обязательны в дефолтном compose: Oxide Agent отправляет нужный key во внутреннем запросе к bridge через `X-Oxide-Browser-Llm-Api-Key`.
+
 ### Upstream credentials
 
 Нужно передать API key для выбранного bridge LLM provider:
@@ -55,13 +58,13 @@
 - `ANTHROPIC_API_KEY` для `BROWSER_USE_BRIDGE_LLM_PROVIDER=anthropic`
 - provider-specific key для `BROWSER_USE_BRIDGE_LLM_PROVIDER=browser_use`, если этот режим используется
 
-Если используется request-level `browser_llm_config` с `api_key_ref=env:...`, соответствующий env должен существовать внутри контейнера `browser_use`.
+Если используется ручной request-level `browser_llm_config` с `api_key_ref=env:...`, соответствующий env должен существовать внутри контейнера `browser_use`.
 
 Минимально важные случаи:
 
-- `MINIMAX_API_KEY` для `provider=minimax`
-- `ZAI_API_KEY` для `provider=zai`
-- `OPENROUTER_API_KEY` для `provider=openrouter`
+- `MINIMAX_API_KEY` в `oxide_agent` для inherited route `provider=minimax`
+- `ZAI_API_KEY` в `oxide_agent` для inherited route `provider=zai`
+- `OPENROUTER_API_KEY` в `oxide_agent` для inherited route `provider=openrouter`
 
 Если ключа нет, bridge поднимется, но `browser_use_run_task` будет завершаться ошибкой на этапе создания LLM.
 
@@ -128,9 +131,10 @@ Browser Use не включается через alias `search`. Для него
 2. Убедиться, что `BROWSER_USE_ENABLED=true` и `BROWSER_USE_URL` видны контейнеру `oxide_agent`.
 3. Для legacy env path убедиться, что bridge-side LLM provider и его API key переданы в контейнер `browser_use`.
 4. Для Stage C inheritance path убедиться, что активный route агента использует совместимый provider: `gemini`, `minimax`, `zai` или `openrouter`.
-5. Если используется fallback/request-level path вручную, убедиться, что `browser_llm_config` содержит совместимый provider/model и корректный `api_key_ref`.
-6. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
-7. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
+5. Для inherited route убедиться, что нужный provider key задан в `oxide_agent`, а не только в `browser_use` sidecar.
+6. Если используется fallback/request-level path вручную, убедиться, что `browser_llm_config` содержит совместимый provider/model и корректный `api_key_ref`.
+7. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
+8. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
 
 ## Типичные сбои
 
@@ -158,6 +162,7 @@ Browser Use не включается через alias `search`. Для него
 Частые причины:
 
 - активный inherited route использует пока неподдерживаемый provider, например `groq`, `mistral` или `nvidia`
+- для inherited route отсутствует нужный provider key в `oxide_agent`, поэтому Rust provider не может передать secret в bridge
 - не задан `BROWSER_USE_BRIDGE_LLM_PROVIDER` для legacy env path
 - не передан API key для выбранного provider
 - `browser_llm_config.api_key_ref` указывает на отсутствующий env
