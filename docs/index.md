@@ -29,6 +29,7 @@
 ### Tooling Integrations
 - [**Browser Use Stage 0**](./browser-use-stage0.md) - approved integration contract for self-hosted Browser Use sidecar
 - [**Browser Use Stage A**](./browser-use-stage-a.md) - approved contract for route inheritance from Oxide Agent models including MiniMax and ZAI
+- [**Browser Use Post-v1 Decisions**](./browser-use-post-v1.md) - low-level surface deferral and priority decision for topic-scoped persistent profile reuse
 - [**Browser Use Operations**](./browser-use.md) - operator runbook, env setup, health checks, and topic-agent enablement
 
 ### Саб-агенты (Sub-Agents)
