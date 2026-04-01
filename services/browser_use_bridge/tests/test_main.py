@@ -20,7 +20,29 @@ warnings.filterwarnings(
 
 
 class FakeBrowser:
+    def __init__(self):
+        self.page = FakePage()
+
     async def close(self) -> None:
+        return None
+
+    async def get_state(self):
+        return {"url": "https://example.com/current"}
+
+
+class FakePage:
+    async def content(self):
+        return "<html><body><h1>Example</h1></body></html>"
+
+    async def evaluate(self, script):
+        if "innerText" in script:
+            return "Example page text"
+        if "outerHTML" in script:
+            return "<html><body>Evaluated HTML</body></html>"
+        return ""
+
+    async def screenshot(self, path, full_page=False):
+        Path(path).write_bytes(b"fake-png")
         return None
 
 
@@ -182,6 +204,59 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 FakeAgent.instances[-1].llm.kwargs["model"], "gemini-2.5-flash"
             )
+
+    async def test_extract_content_reads_active_session_page(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"), None
+            )
+
+            response = await manager.extract_content(
+                run_response.session_id,
+                module.ExtractContentRequest(format="text", max_chars=7),
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.format, "text")
+            self.assertEqual(response.content, "Example")
+            self.assertTrue(response.truncated)
+            self.assertEqual(response.total_chars, len("Example page text"))
+            self.assertEqual(response.current_url, "https://example.com/current")
+
+    async def test_screenshot_persists_artifact_for_active_session(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"), None
+            )
+
+            response = await manager.screenshot(
+                run_response.session_id,
+                module.ScreenshotRequest(full_page=True),
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.artifact["kind"], "screenshot")
+            self.assertTrue(response.artifact["full_page"])
+            self.assertTrue(Path(response.artifact["path"]).exists())
+            self.assertGreater(response.artifact["size_bytes"], 0)
+            session = await manager.get_session(run_response.session_id)
+            self.assertEqual(len(session.artifacts), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

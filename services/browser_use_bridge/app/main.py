@@ -138,6 +138,32 @@ class CloseSessionResponse(BaseModel):
     status: Literal["closed"]
 
 
+class ExtractContentRequest(BaseModel):
+    format: Literal["text", "html"] = "text"
+    max_chars: int | None = Field(default=12000, ge=1, le=100000)
+
+
+class ExtractContentResponse(BaseModel):
+    session_id: str
+    status: Literal["completed"]
+    current_url: str | None = None
+    format: Literal["text", "html"]
+    content: str
+    truncated: bool
+    total_chars: int
+
+
+class ScreenshotRequest(BaseModel):
+    full_page: bool = False
+
+
+class ScreenshotResponse(BaseModel):
+    session_id: str
+    status: Literal["completed"]
+    current_url: str | None = None
+    artifact: dict[str, Any]
+
+
 @dataclass(frozen=True)
 class ResolvedBrowserLlmConfig:
     provider: str
@@ -268,6 +294,13 @@ def build_agent_task(request: RunTaskRequest) -> str:
     if request.start_url:
         task_parts.append(f"Start from this URL: {request.start_url.strip()}")
     return "\n\n".join(task_parts)
+
+
+def maybe_truncate(content: str, max_chars: int | None) -> tuple[str, bool, int]:
+    total_chars = len(content)
+    if max_chars is None or total_chars <= max_chars:
+        return content, False, total_chars
+    return content[:max_chars], True, total_chars
 
 
 def normalize_name(value: str | None) -> str:
@@ -478,14 +511,46 @@ def vision_mode_label(config: ResolvedBrowserLlmConfig) -> Literal["auto", "disa
     return "auto"
 
 
+async def resolve_browser_page(browser: Any) -> Any | None:
+    for attr in ("page", "current_page"):
+        candidate = getattr(browser, attr, None)
+        if candidate is None:
+            continue
+        if callable(candidate):
+            candidate = await maybe_await(candidate())
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def invoke_with_supported_kwargs(method: Any, **kwargs: Any) -> Any:
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        return method(**kwargs)
+
+    if any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    ):
+        return method(**kwargs)
+
+    filtered = {
+        name: value for name, value in kwargs.items() if name in signature.parameters
+    }
+    return method(**filtered)
+
+
 class SessionManager:
     def __init__(self, data_dir: Path, max_concurrent_sessions: int) -> None:
         self._data_dir = data_dir
         self._sessions_dir = data_dir / "sessions"
+        self._artifacts_dir = data_dir / "artifacts"
         self._sessions: dict[str, SessionRecord] = {}
         self._registry_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max(1, max_concurrent_sessions))
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     async def ensure_runtime_ready(self) -> None:
         if Agent is None or Browser is None:
@@ -595,6 +660,55 @@ class SessionManager:
             await self._persist(session)
         return CloseSessionResponse(session_id=session_id, closed=True, status="closed")
 
+    async def extract_content(
+        self, session_id: str, request: ExtractContentRequest
+    ) -> ExtractContentResponse:
+        await self.ensure_runtime_ready()
+        session = await self.get_session(session_id)
+
+        async with session.lock:
+            browser = self._require_active_browser(session)
+            content = await self._extract_content(browser, request.format)
+            content, truncated, total_chars = maybe_truncate(content, request.max_chars)
+            current_url = await infer_url(browser, None)
+            session.current_url = current_url
+            session.updated_at = utc_now()
+            await self._persist(session)
+
+        return ExtractContentResponse(
+            session_id=session.session_id,
+            status="completed",
+            current_url=current_url,
+            format=request.format,
+            content=content,
+            truncated=truncated,
+            total_chars=total_chars,
+        )
+
+    async def screenshot(
+        self, session_id: str, request: ScreenshotRequest
+    ) -> ScreenshotResponse:
+        await self.ensure_runtime_ready()
+        session = await self.get_session(session_id)
+
+        async with session.lock:
+            browser = self._require_active_browser(session)
+            artifact = await self._take_screenshot(
+                session.session_id, browser, request.full_page
+            )
+            session.artifacts.append(artifact)
+            current_url = await infer_url(browser, None)
+            session.current_url = current_url
+            session.updated_at = utc_now()
+            await self._persist(session)
+
+        return ScreenshotResponse(
+            session_id=session.session_id,
+            status="completed",
+            current_url=current_url,
+            artifact=artifact,
+        )
+
     async def shutdown(self) -> None:
         async with self._registry_lock:
             sessions = list(self._sessions.values())
@@ -613,6 +727,154 @@ class SessionManager:
                 except Exception:
                     pass
                 return
+
+    def _require_active_browser(self, session: SessionRecord) -> Any:
+        if session.browser is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"session '{session.session_id}' has no active browser; run "
+                    "browser_use_run_task first"
+                ),
+            )
+        return session.browser
+
+    async def _extract_content(self, browser: Any, content_format: str) -> str:
+        page = await resolve_browser_page(browser)
+
+        if content_format == "html":
+            if page is not None:
+                content_method = getattr(page, "content", None)
+                if callable(content_method):
+                    result = await maybe_await(content_method())
+                    if isinstance(result, str) and result.strip():
+                        return result
+
+            browser_html = getattr(browser, "get_html", None)
+            if callable(browser_html):
+                result = await maybe_await(browser_html())
+                if isinstance(result, str) and result.strip():
+                    return result
+
+            state = await self._browser_state(browser)
+            for key in ("html", "page_html", "content"):
+                value = state.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+
+            if page is not None:
+                evaluate = getattr(page, "evaluate", None)
+                if callable(evaluate):
+                    result = await maybe_await(
+                        evaluate("document.documentElement.outerHTML")
+                    )
+                    if isinstance(result, str) and result.strip():
+                        return result
+
+            raise HTTPException(
+                status_code=500,
+                detail="browser_use bridge could not extract HTML from active session",
+            )
+
+        if page is not None:
+            inner_text = getattr(page, "inner_text", None)
+            if callable(inner_text):
+                result = await maybe_await(inner_text("body"))
+                if isinstance(result, str) and result.strip():
+                    return result
+
+            evaluate = getattr(page, "evaluate", None)
+            if callable(evaluate):
+                result = await maybe_await(
+                    evaluate(
+                        "document.body ? document.body.innerText : document.documentElement.innerText"
+                    )
+                )
+                if isinstance(result, str) and result.strip():
+                    return result
+
+        browser_text = getattr(browser, "get_text", None)
+        if callable(browser_text):
+            result = await maybe_await(browser_text())
+            if isinstance(result, str) and result.strip():
+                return result
+
+        state = await self._browser_state(browser)
+        for key in ("text", "page_text", "content"):
+            value = state.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+
+        raise HTTPException(
+            status_code=500,
+            detail="browser_use bridge could not extract page content from active session",
+        )
+
+    async def _browser_state(self, browser: Any) -> dict[str, Any]:
+        get_state = getattr(browser, "get_state", None)
+        if callable(get_state):
+            try:
+                state = await maybe_await(get_state())
+            except Exception:
+                return {}
+            safe_state = json_safe(state)
+            if isinstance(safe_state, dict):
+                return safe_state
+        return {}
+
+    async def _take_screenshot(
+        self, session_id: str, browser: Any, full_page: bool
+    ) -> dict[str, Any]:
+        session_artifacts_dir = self._artifacts_dir / session_id
+        session_artifacts_dir.mkdir(parents=True, exist_ok=True)
+        file_name = (
+            f"screenshot-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.png"
+        )
+        path = session_artifacts_dir / file_name
+        page = await resolve_browser_page(browser)
+
+        screenshot_methods = []
+        browser_screenshot = getattr(browser, "screenshot", None)
+        if callable(browser_screenshot):
+            screenshot_methods.append(browser_screenshot)
+        browser_take_screenshot = getattr(browser, "take_screenshot", None)
+        if callable(browser_take_screenshot):
+            screenshot_methods.append(browser_take_screenshot)
+        if page is not None:
+            page_screenshot = getattr(page, "screenshot", None)
+            if callable(page_screenshot):
+                screenshot_methods.append(page_screenshot)
+
+        for method in screenshot_methods:
+            try:
+                result = await maybe_await(
+                    invoke_with_supported_kwargs(
+                        method, path=str(path), full_page=full_page
+                    )
+                )
+            except Exception:
+                continue
+
+            if path.exists():
+                break
+            if isinstance(result, (bytes, bytearray)):
+                path.write_bytes(bytes(result))
+                break
+
+        if not path.exists():
+            raise HTTPException(
+                status_code=500,
+                detail="browser_use bridge could not create screenshot from active session",
+            )
+
+        artifact = {
+            "kind": "screenshot",
+            "path": str(path),
+            "full_page": full_page,
+            "size_bytes": path.stat().st_size,
+            "created_at": utc_now(),
+        }
+        return artifact
 
     async def _persist(self, session: SessionRecord) -> None:
         session_file = self._sessions_dir / f"{session.session_id}.json"
@@ -700,3 +962,17 @@ async def get_session(session_id: str) -> SessionResponse:
 @app.delete("/sessions/{session_id}", response_model=CloseSessionResponse)
 async def delete_session(session_id: str) -> CloseSessionResponse:
     return await manager.close_session(session_id)
+
+
+@app.post(
+    "/sessions/{session_id}/extract_content", response_model=ExtractContentResponse
+)
+async def extract_content(
+    session_id: str, request: ExtractContentRequest
+) -> ExtractContentResponse:
+    return await manager.extract_content(session_id, request)
+
+
+@app.post("/sessions/{session_id}/screenshot", response_model=ScreenshotResponse)
+async def screenshot(session_id: str, request: ScreenshotRequest) -> ScreenshotResponse:
+    return await manager.screenshot(session_id, request)

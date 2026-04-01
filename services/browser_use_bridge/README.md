@@ -8,6 +8,8 @@
 - `POST /sessions/run`
 - `GET /sessions/{id}`
 - `DELETE /sessions/{id}`
+- `POST /sessions/{id}/extract_content`
+- `POST /sessions/{id}/screenshot`
 
 `POST /sessions/run` поддерживает два режима выбора LLM:
 
@@ -101,6 +103,8 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 
 - `POST /sessions/run` создает новую сессию, если `session_id` не передан.
 - При передаче существующего `session_id` bridge пытается reuse уже открытый browser runtime.
+- `POST /sessions/{id}/extract_content` читает текущую страницу активной сессии и возвращает `text` или `html` с optional truncation.
+- `POST /sessions/{id}/screenshot` сохраняет PNG artifact в `BROWSER_USE_BRIDGE_DATA_DIR/artifacts/<session_id>/` и возвращает metadata с путем к файлу.
 - Метаданные сессий сохраняются в `BROWSER_USE_BRIDGE_DATA_DIR/sessions/`.
 - `POST /sessions/run` и `GET /sessions/{id}` теперь возвращают `llm_source`, `llm_provider`, `llm_transport` и `vision_mode`, чтобы было видно, исполнялся ли запрос через inherited route или legacy fallback.
 - Реальная успешность `run_task` зависит от доступности `browser-use`, выбранного adapter-а и корректного secret resolution.

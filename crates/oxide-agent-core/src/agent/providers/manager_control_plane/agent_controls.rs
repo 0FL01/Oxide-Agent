@@ -1495,12 +1495,16 @@ mod tests {
             &[
                 "browser_use_run_task",
                 "browser_use_get_session",
-                "browser_use_close_session"
+                "browser_use_close_session",
+                "browser_use_extract_content",
+                "browser_use_screenshot"
             ]
         );
         assert!(catalog.tool_names.contains("browser_use_run_task"));
         assert!(catalog.tool_names.contains("browser_use_get_session"));
         assert!(catalog.tool_names.contains("browser_use_close_session"));
+        assert!(catalog.tool_names.contains("browser_use_extract_content"));
+        assert!(catalog.tool_names.contains("browser_use_screenshot"));
 
         std::env::remove_var("BROWSER_USE_ENABLED");
         std::env::remove_var("BROWSER_USE_URL");
@@ -1516,12 +1520,16 @@ mod tests {
                     "browser_use_run_task",
                     "browser_use_get_session",
                     "browser_use_close_session",
+                    "browser_use_extract_content",
+                    "browser_use_screenshot",
                 ],
             }],
             tool_names: [
                 "browser_use_run_task",
                 "browser_use_get_session",
                 "browser_use_close_session",
+                "browser_use_extract_content",
+                "browser_use_screenshot",
             ]
             .into_iter()
             .map(str::to_string)
@@ -1538,8 +1546,10 @@ mod tests {
             expanded,
             vec![
                 "browser_use_close_session".to_string(),
+                "browser_use_extract_content".to_string(),
                 "browser_use_get_session".to_string(),
                 "browser_use_run_task".to_string(),
+                "browser_use_screenshot".to_string(),
             ]
         );
     }
