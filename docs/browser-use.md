@@ -25,6 +25,7 @@
 - Stage C уже прокидывает active Oxide route в bridge `browser_llm_config` для совместимых provider-ов
 - Stage D передает inherited-route API key server-to-server через внутренний header, а не через request body
 - Stage E вводит capability policy для text-only vs vision-capable routes
+- Stage F делает route inheritance основным operator path в дефолтном `docker-compose` и добавляет runtime observability по `llm_source` / `vision_mode`
 - legacy env path остается fallback, когда route inheritance недоступен
 
 ## Capability Matrix
@@ -48,6 +49,8 @@
 ### В `browser_use` sidecar
 
 Ниже перечислены fallback-переменные sidecar. Начиная со Stage C основной Rust provider уже сам прокидывает request-level `browser_llm_config` из активного Oxide route для `gemini`, `minimax`, `zai` и `openrouter`.
+
+Начиная со Stage F дефолтный `docker-compose.yml` больше не прокидывает `BROWSER_USE_BRIDGE_LLM_PROVIDER` и `BROWSER_USE_BRIDGE_LLM_MODEL` в sidecar. Если legacy env path все еще нужен, его надо включать через compose override или отдельное runtime env для контейнера `browser_use`.
 
 - `BROWSER_USE_BRIDGE_HOST=0.0.0.0`
 - `BROWSER_USE_BRIDGE_PORT=8000`
@@ -101,9 +104,18 @@ curl -f http://127.0.0.1:8002/health
 {
   "status": "ok",
   "browser_use_available": true,
-  "import_error": null
+  "import_error": null,
+  "preferred_browser_llm_source": "request_browser_llm_config",
+  "legacy_env_fallback_configured": false
 }
 ```
+
+Полезные поля в `/health`:
+
+- `preferred_browser_llm_source` показывает, что primary path идет через request-level `browser_llm_config`
+- `legacy_env_fallback_configured` показывает, включен ли старый env fallback на этом sidecar
+- `supported_inherited_route_providers` показывает, какие route provider-ы Rust provider умеет прокидывать автоматически
+- `supported_legacy_env_providers` показывает, какие bridge-local adapter-ы еще остаются для fallback-сценариев
 
 ## Topic-Agent UX
 
@@ -145,6 +157,7 @@ Browser Use не включается через alias `search`. Для него
 6. Если используется fallback/request-level path вручную, убедиться, что `browser_llm_config` содержит совместимый provider/model и корректный `api_key_ref`.
 7. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
 8. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
+9. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport` и `vision_mode`, чтобы убедиться, что реально используется inherited route, а не неожиданный fallback.
 
 ## Типичные сбои
 
@@ -178,6 +191,8 @@ Browser Use не включается через alias `search`. Для него
 - не передан API key для выбранного provider
 - `browser_llm_config.api_key_ref` указывает на отсутствующий env
 - bridge не может создать совместимый Browser Use LLM wrapper для выбранного transport-а
+
+Если в ответе видно `llm_source=legacy_env`, хотя ожидался inheritance path, это операторский сигнал, что route context не был передан или запрос шел вне обычного agent execution path.
 
 После перехода на Stage A основным классом ошибок станет уже не отсутствие bridge env, а несовместимость inherited route или его credentials.
 

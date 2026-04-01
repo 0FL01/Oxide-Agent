@@ -11,8 +11,8 @@
 
 `POST /sessions/run` поддерживает два режима выбора LLM:
 
+- request-level `browser_llm_config`, который уже используется Rust provider-ом для Stage C route inheritance и является основным режимом
 - legacy fallback через `BROWSER_USE_BRIDGE_LLM_PROVIDER` / `BROWSER_USE_BRIDGE_LLM_MODEL`
-- request-level `browser_llm_config`, который уже используется Rust provider-ом для Stage C route inheritance
 
 ## Environment
 
@@ -89,15 +89,18 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 ## Run In Docker Compose
 
 - Stage 2 wiring publishes the service on `127.0.0.1:8002` and keeps browser state in the `browser-use-data` volume.
-- The bridge container only receives explicit Browser Use / LLM variables from compose. Legacy env fallback still uses `BROWSER_USE_BRIDGE_LLM_PROVIDER`, `BROWSER_USE_BRIDGE_LLM_MODEL`, and the matching API keys.
+- Default compose now assumes route inheritance as the primary path and no longer passes `BROWSER_USE_BRIDGE_LLM_PROVIDER` / `BROWSER_USE_BRIDGE_LLM_MODEL` into the sidecar.
+- If you need the legacy env fallback, inject `BROWSER_USE_BRIDGE_LLM_PROVIDER`, `BROWSER_USE_BRIDGE_LLM_MODEL`, and the matching API key through a compose override or direct container environment.
 - Stage C Rust provider automatically injects `browser_llm_config` from the active Oxide route for `gemini`, `minimax`, `zai`, and `openrouter`.
 - Stage D secret handling sends inherited-route API keys via `X-Oxide-Browser-Llm-Api-Key`, so `minimax`, `zai`, and `openrouter` do not require dedicated sidecar env passthrough in the default compose setup.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
 - Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
+- `GET /health` also shows whether legacy env fallback is configured and which LLM source is preferred.
 
 ## Notes
 
 - `POST /sessions/run` создает новую сессию, если `session_id` не передан.
 - При передаче существующего `session_id` bridge пытается reuse уже открытый browser runtime.
 - Метаданные сессий сохраняются в `BROWSER_USE_BRIDGE_DATA_DIR/sessions/`.
+- `POST /sessions/run` и `GET /sessions/{id}` теперь возвращают `llm_source`, `llm_provider`, `llm_transport` и `vision_mode`, чтобы было видно, исполнялся ли запрос через inherited route или legacy fallback.
 - Реальная успешность `run_task` зависит от доступности `browser-use`, выбранного adapter-а и корректного secret resolution.

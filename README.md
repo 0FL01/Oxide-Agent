@@ -175,8 +175,8 @@ SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
 CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
 BROWSER_USE_URL=http://127.0.0.1:8002 # Browser Use self-hosted bridge
 BROWSER_USE_ENABLED=true        # Enable Browser Use browser automation provider
-BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Bridge-side LLM provider: browser_use, google, anthropic
-BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional model override for the bridge
+# BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Legacy browser_use sidecar fallback, not used by default compose
+# BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional legacy fallback model override
 ```
 </details>
 
