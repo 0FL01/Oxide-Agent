@@ -43,6 +43,8 @@ pub mod skills;
 pub mod structured_output;
 /// Tool execution bridge with timeout and cancellation
 pub mod tool_bridge;
+/// Task-local tool execution runtime metadata
+pub(crate) mod tool_runtime;
 
 /// Agent thought inference from tool calls
 pub mod thoughts;

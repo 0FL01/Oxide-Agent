@@ -321,7 +321,14 @@ def infer_transport(provider: str, api_base: str | None, transport: str | None) 
         if api_base and "anthropic" not in api_base.lower():
             return "openai_compatible"
         return "anthropic_compatible"
-    if provider in {"openai", "openai_compatible", "zai", "zhipuai", "glm"}:
+    if provider in {
+        "openai",
+        "openai_compatible",
+        "openrouter",
+        "zai",
+        "zhipuai",
+        "glm",
+    }:
         return "openai_compatible"
     raise RuntimeError(f"unsupported browser_llm_config.provider '{provider}'")
 
@@ -604,6 +611,7 @@ async def health() -> JSONResponse:
             "anthropic",
             "minimax",
             "zai",
+            "openrouter",
             "openai_compatible",
         ],
     }

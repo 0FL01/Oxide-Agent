@@ -9,6 +9,7 @@ mod response;
 mod tests;
 
 use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::current_tool_model_route;
 use crate::config::{
     get_browser_use_initial_backoff, get_browser_use_max_backoff, get_browser_use_max_concurrent,
     get_browser_use_max_retries, get_browser_use_timeout,
@@ -17,7 +18,7 @@ use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::{header::CONTENT_TYPE, Method};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::sync::Arc;
@@ -34,11 +35,14 @@ use response::{
 const TOOL_RUN_TASK: &str = "browser_use_run_task";
 const TOOL_GET_SESSION: &str = "browser_use_get_session";
 const TOOL_CLOSE_SESSION: &str = "browser_use_close_session";
+const MINIMAX_DEFAULT_API_BASE: &str = "https://api.minimax.io/anthropic";
+const OPENROUTER_DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
 
 /// Provider for Browser Use bridge tools.
 pub struct BrowserUseProvider {
     base_url: String,
     client: reqwest::Client,
+    settings: Arc<crate::config::AgentSettings>,
     timeout: Duration,
     max_retries: usize,
     initial_backoff: Duration,
@@ -49,13 +53,18 @@ pub struct BrowserUseProvider {
 impl BrowserUseProvider {
     /// Create a new Browser Use provider with default config and shared semaphore.
     #[must_use]
-    pub fn new_with_semaphore(base_url: &str, semaphore: Arc<Semaphore>) -> Self {
+    pub fn new_with_semaphore(
+        base_url: &str,
+        settings: Arc<crate::config::AgentSettings>,
+        semaphore: Arc<Semaphore>,
+    ) -> Self {
         let timeout = Duration::from_secs(get_browser_use_timeout());
         let max_retries = get_browser_use_max_retries();
         let initial_backoff = Duration::from_secs(get_browser_use_initial_backoff());
         let max_backoff = Duration::from_secs(get_browser_use_max_backoff());
         Self::with_config_and_semaphore(
             base_url,
+            settings,
             timeout,
             max_retries,
             initial_backoff,
@@ -66,13 +75,14 @@ impl BrowserUseProvider {
 
     /// Create a new Browser Use provider with default config and no semaphore.
     #[must_use]
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str, settings: Arc<crate::config::AgentSettings>) -> Self {
         let timeout = Duration::from_secs(get_browser_use_timeout());
         let max_retries = get_browser_use_max_retries();
         let initial_backoff = Duration::from_secs(get_browser_use_initial_backoff());
         let max_backoff = Duration::from_secs(get_browser_use_max_backoff());
         Self::with_config_and_semaphore(
             base_url,
+            settings,
             timeout,
             max_retries,
             initial_backoff,
@@ -85,6 +95,7 @@ impl BrowserUseProvider {
     #[must_use]
     pub fn with_config_and_semaphore(
         base_url: &str,
+        settings: Arc<crate::config::AgentSettings>,
         timeout: Duration,
         max_retries: usize,
         initial_backoff: Duration,
@@ -99,6 +110,7 @@ impl BrowserUseProvider {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
+            settings,
             timeout,
             max_retries,
             initial_backoff,
@@ -111,6 +123,7 @@ impl BrowserUseProvider {
     #[must_use]
     pub fn with_config(
         base_url: &str,
+        settings: Arc<crate::config::AgentSettings>,
         timeout: Duration,
         max_retries: usize,
         initial_backoff: Duration,
@@ -118,6 +131,7 @@ impl BrowserUseProvider {
     ) -> Self {
         Self::with_config_and_semaphore(
             base_url,
+            settings,
             timeout,
             max_retries,
             initial_backoff,
@@ -140,6 +154,54 @@ impl BrowserUseProvider {
 
     fn endpoint_url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
+    }
+
+    fn browser_llm_config_for_active_route(&self) -> Result<Option<BrowserLlmConfig>> {
+        current_tool_model_route()
+            .map(|route| self.browser_llm_config_for_route(&route))
+            .transpose()
+    }
+
+    fn browser_llm_config_for_route(
+        &self,
+        route: &crate::config::ModelInfo,
+    ) -> Result<BrowserLlmConfig> {
+        let provider = route.provider.to_ascii_lowercase();
+        let supports_vision = matches!(provider.as_str(), "gemini" | "openrouter");
+        let supports_tools = !matches!(provider.as_str(), "groq");
+
+        let (bridge_provider, api_base, api_key_ref) = match provider.as_str() {
+            "gemini" => ("google", None, Some("env:GEMINI_API_KEY".to_string())),
+            "minimax" => (
+                "minimax",
+                Some(MINIMAX_DEFAULT_API_BASE.to_string()),
+                Some("env:MINIMAX_API_KEY".to_string()),
+            ),
+            "zai" => (
+                "zai",
+                Some(self.settings.zai_api_base.clone()),
+                Some("env:ZAI_API_KEY".to_string()),
+            ),
+            "openrouter" => (
+                "openrouter",
+                Some(OPENROUTER_DEFAULT_API_BASE.to_string()),
+                Some("env:OPENROUTER_API_KEY".to_string()),
+            ),
+            unsupported => {
+                return Err(anyhow!(
+                    "Browser Use route inheritance does not support provider `{unsupported}` yet; supported routes: gemini, minimax, zai, openrouter"
+                ));
+            }
+        };
+
+        Ok(BrowserLlmConfig {
+            provider: bridge_provider.to_string(),
+            model: route.id.clone(),
+            api_base,
+            api_key_ref,
+            supports_vision,
+            supports_tools,
+        })
     }
 
     async fn request(
@@ -267,6 +329,31 @@ struct RunTaskArgs {
     timeout_secs: Option<u64>,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct BrowserLlmConfig {
+    provider: String,
+    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_base: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key_ref: Option<String>,
+    supports_vision: bool,
+    supports_tools: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct RunTaskRequestBody {
+    task: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    browser_llm_config: Option<BrowserLlmConfig>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SessionArgs {
     session_id: String,
@@ -389,12 +476,13 @@ impl ToolProvider for BrowserUseProvider {
                     return Err(anyhow!("browser_use_run_task requires a non-empty task"));
                 }
 
-                let body = json!({
-                    "task": args.task,
-                    "start_url": args.start_url,
-                    "session_id": args.session_id,
-                    "timeout_secs": args.timeout_secs,
-                });
+                let body = serde_json::to_value(RunTaskRequestBody {
+                    task: args.task,
+                    start_url: args.start_url,
+                    session_id: args.session_id,
+                    timeout_secs: args.timeout_secs,
+                    browser_llm_config: self.browser_llm_config_for_active_route()?,
+                })?;
                 let payload = self
                     .request(
                         Method::POST,

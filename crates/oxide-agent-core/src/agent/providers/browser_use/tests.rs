@@ -1,9 +1,14 @@
 use super::response::format_http_error;
 use super::*;
+use crate::agent::tool_runtime::scope_tool_model_route;
 use reqwest::StatusCode;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+
+fn test_settings() -> Arc<crate::config::AgentSettings> {
+    Arc::new(crate::config::AgentSettings::default())
+}
 
 #[test]
 fn test_args_deserialize() {
@@ -20,6 +25,7 @@ fn test_args_deserialize() {
 fn test_url_building() {
     let provider = BrowserUseProvider::with_config(
         "http://localhost:8002/",
+        test_settings(),
         Duration::from_secs(1),
         0,
         Duration::from_secs(1),
@@ -48,6 +54,7 @@ async fn run_task_posts_to_bridge() {
     .await;
     let provider = BrowserUseProvider::with_config(
         &server.base_url,
+        test_settings(),
         Duration::from_secs(3),
         0,
         Duration::from_secs(1),
@@ -79,6 +86,7 @@ async fn get_session_reads_bridge_json() {
     .await;
     let provider = BrowserUseProvider::with_config(
         &server.base_url,
+        test_settings(),
         Duration::from_secs(3),
         0,
         Duration::from_secs(1),
@@ -103,6 +111,90 @@ async fn get_session_reads_bridge_json() {
         .contains("GET /sessions/browser-use-123 HTTP/1.1"));
 }
 
+#[test]
+fn browser_llm_config_maps_minimax_route() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "MiniMax-M2.7".to_string(),
+        provider: "minimax".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let config = provider
+        .browser_llm_config_for_route(&route)
+        .expect("minimax route config");
+
+    assert_eq!(config.provider, "minimax");
+    assert_eq!(config.model, "MiniMax-M2.7");
+    assert_eq!(config.api_base.as_deref(), Some(MINIMAX_DEFAULT_API_BASE));
+    assert_eq!(config.api_key_ref.as_deref(), Some("env:MINIMAX_API_KEY"));
+    assert!(!config.supports_vision);
+    assert!(config.supports_tools);
+}
+
+#[tokio::test]
+async fn run_task_posts_inherited_browser_llm_config() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Done"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+    let route = crate::config::ModelInfo {
+        id: "glm-5-turbo".to_string(),
+        provider: "zai".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let result = scope_tool_model_route(
+        route,
+        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+    )
+    .await;
+
+    assert!(result.is_ok());
+    let request_body = state.request_body().await;
+    assert!(request_body.contains("\"browser_llm_config\":"));
+    assert!(request_body.contains("\"provider\":\"zai\""));
+    assert!(request_body.contains("\"model\":\"glm-5-turbo\""));
+    assert!(request_body.contains("\"api_key_ref\":\"env:ZAI_API_KEY\""));
+}
+
+#[tokio::test]
+async fn run_task_rejects_unsupported_inherited_route() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "llama-3.3".to_string(),
+        provider: "groq".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let error = scope_tool_model_route(
+        route,
+        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+    )
+    .await
+    .expect_err("unsupported route should fail");
+
+    assert!(error
+        .to_string()
+        .contains("Browser Use route inheritance does not support provider `groq` yet"));
+}
+
 #[derive(Default)]
 struct TestServerState {
     request: tokio::sync::Mutex<String>,
@@ -119,6 +211,16 @@ impl TestServerState {
             .await
             .lines()
             .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    async fn request_body(&self) -> String {
+        self.request
+            .lock()
+            .await
+            .split("\r\n\r\n")
+            .nth(1)
             .unwrap_or_default()
             .to_string()
     }
