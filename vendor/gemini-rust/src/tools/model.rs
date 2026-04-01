@@ -247,6 +247,12 @@ impl FunctionDeclaration {
         self
     }
 
+    /// Set the parameters for the function using a raw JSON schema value.
+    pub fn with_parameters_schema(mut self, parameters: Value) -> Self {
+        self.parameters = Some(parameters);
+        self
+    }
+
     /// Set the response schema for the function using a struct that implements `JsonSchema`
     pub fn with_response<Response>(mut self) -> Self
     where

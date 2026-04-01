@@ -2,20 +2,28 @@ use crate::config::{
     GEMINI_AUDIO_TRANSCRIBE_PROMPT, GEMINI_AUDIO_TRANSCRIBE_TEMPERATURE, GEMINI_CHAT_TEMPERATURE,
     GEMINI_IMAGE_TEMPERATURE,
 };
+use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::create_http_client_builder;
-use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage};
+use crate::llm::{
+    ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage, ToolCall,
+    ToolDefinition,
+};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use gemini_rust::{
     generation::{BlockReason, FinishReason, GenerationResponse},
     safety::{HarmBlockThreshold, HarmCategory, SafetySetting},
-    ClientError as GeminiClientError, Gemini, GeminiBuilder, Message as GeminiMessage, Model, Part,
+    ClientError as GeminiClientError, FunctionCall as GeminiFunctionCall, FunctionCallingMode,
+    FunctionDeclaration, Gemini, GeminiBuilder, Message as GeminiMessage, Model, Part, Tool,
 };
 use reqwest::StatusCode;
+use serde_json::Value;
 
 #[derive(Default)]
 struct ResponsePartsSummary {
     text_parts: Vec<String>,
+    thought_parts: Vec<String>,
+    tool_calls: Vec<ToolCall>,
     thought_count: usize,
     function_call_count: usize,
     function_response_count: usize,
@@ -127,37 +135,7 @@ impl GeminiProvider {
     }
 
     fn extract_text_response(response: &GenerationResponse) -> Result<String, LlmError> {
-        let mut summary = ResponsePartsSummary::default();
-
-        for candidate in &response.candidates {
-            if let Some(finish_reason) = candidate.finish_reason.as_ref() {
-                summary
-                    .finish_reasons
-                    .push(Self::finish_reason_name(finish_reason));
-            }
-
-            if let Some(parts) = candidate.content.parts.as_ref() {
-                for part in parts {
-                    match part {
-                        Part::Text { text, thought, .. } => {
-                            if thought.unwrap_or(false) {
-                                summary.thought_count += 1;
-                            } else if !text.is_empty() {
-                                summary.text_parts.push(text.clone());
-                            }
-                        }
-                        Part::FunctionCall { .. } => summary.function_call_count += 1,
-                        Part::FunctionResponse { .. } => summary.function_response_count += 1,
-                        Part::InlineData { .. } => summary.inline_data_count += 1,
-                        Part::FileData { .. } => summary.file_data_count += 1,
-                        Part::ExecutableCode { .. } => summary.executable_code_count += 1,
-                        Part::CodeExecutionResult { .. } => {
-                            summary.code_execution_result_count += 1;
-                        }
-                    }
-                }
-            }
-        }
+        let summary = Self::summarize_response_parts(response);
 
         let text = summary.text_parts.join("\n");
 
@@ -188,6 +166,50 @@ impl GeminiProvider {
         }
 
         Err(LlmError::ApiError("Empty response".to_string()))
+    }
+
+    fn summarize_response_parts(response: &GenerationResponse) -> ResponsePartsSummary {
+        let mut summary = ResponsePartsSummary::default();
+
+        for candidate in &response.candidates {
+            if let Some(finish_reason) = candidate.finish_reason.as_ref() {
+                summary
+                    .finish_reasons
+                    .push(Self::finish_reason_name(finish_reason));
+            }
+
+            if let Some(parts) = candidate.content.parts.as_ref() {
+                for part in parts {
+                    match part {
+                        Part::Text { text, thought, .. } => {
+                            if thought.unwrap_or(false) {
+                                summary.thought_count += 1;
+                                if !text.is_empty() {
+                                    summary.thought_parts.push(text.clone());
+                                }
+                            } else if !text.is_empty() {
+                                summary.text_parts.push(text.clone());
+                            }
+                        }
+                        Part::FunctionCall { function_call, .. } => {
+                            summary.function_call_count += 1;
+                            summary
+                                .tool_calls
+                                .push(Self::parse_tool_call(function_call));
+                        }
+                        Part::FunctionResponse { .. } => summary.function_response_count += 1,
+                        Part::InlineData { .. } => summary.inline_data_count += 1,
+                        Part::FileData { .. } => summary.file_data_count += 1,
+                        Part::ExecutableCode { .. } => summary.executable_code_count += 1,
+                        Part::CodeExecutionResult { .. } => {
+                            summary.code_execution_result_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        summary
     }
 
     fn response_details(summary: &ResponsePartsSummary) -> String {
@@ -268,6 +290,58 @@ impl GeminiProvider {
             .collect()
     }
 
+    fn function_declarations(tools: &[ToolDefinition]) -> Vec<FunctionDeclaration> {
+        tools
+            .iter()
+            .map(|tool| {
+                FunctionDeclaration::new(tool.name.clone(), tool.description.clone(), None)
+                    .with_parameters_schema(tool.parameters.clone())
+            })
+            .collect()
+    }
+
+    fn normalize_tool_arguments(value: &Value) -> String {
+        match value {
+            Value::Null => "{}".to_string(),
+            Value::String(raw) => Self::normalize_tool_arguments_str(raw),
+            other => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
+        }
+    }
+
+    fn normalize_tool_arguments_str(raw: &str) -> String {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return "{}".to_string();
+        }
+
+        let Ok(parsed) = serde_json::from_str::<Value>(trimmed) else {
+            return trimmed.to_string();
+        };
+
+        match parsed {
+            Value::String(inner) => match serde_json::from_str::<Value>(&inner) {
+                Ok(inner_parsed) => serde_json::to_string(&inner_parsed).unwrap_or(inner),
+                Err(_) => inner,
+            },
+            other => serde_json::to_string(&other).unwrap_or_else(|_| trimmed.to_string()),
+        }
+    }
+
+    fn parse_tool_call(function_call: &GeminiFunctionCall) -> ToolCall {
+        let arguments = Self::normalize_tool_arguments(&function_call.args);
+        match function_call.id.as_deref().map(str::trim) {
+            Some(provider_id) if !provider_id.is_empty() => CHAT_LIKE_TOOL_PROFILE
+                .inbound_provider_tool_call(
+                    provider_id,
+                    None,
+                    function_call.name.clone(),
+                    arguments,
+                ),
+            _ => CHAT_LIKE_TOOL_PROFILE
+                .inbound_uncorrelated_tool_call(function_call.name.clone(), arguments),
+        }
+    }
+
     fn max_output_tokens(max_tokens: u32) -> i32 {
         i32::try_from(max_tokens).unwrap_or(i32::MAX)
     }
@@ -293,6 +367,47 @@ impl GeminiProvider {
             prompt_tokens: Self::token_count(usage.prompt_token_count)?,
             completion_tokens: Self::token_count(usage.candidates_token_count)?,
             total_tokens: Self::token_count(usage.total_token_count)?,
+        })
+    }
+
+    fn parse_chat_response(response: &GenerationResponse) -> Result<ChatResponse, LlmError> {
+        if let Some(prompt_feedback) = &response.prompt_feedback {
+            if let Some(block_reason) = &prompt_feedback.block_reason {
+                return Err(LlmError::ApiError(format!(
+                    "Gemini blocked prompt: {}",
+                    Self::block_reason_name(block_reason)
+                )));
+            }
+        }
+
+        let summary = Self::summarize_response_parts(response);
+        let content = (!summary.text_parts.is_empty()).then(|| summary.text_parts.join("\n"));
+        let reasoning_content =
+            (!summary.thought_parts.is_empty()).then(|| summary.thought_parts.join("\n"));
+
+        if content.is_none() && reasoning_content.is_none() && summary.tool_calls.is_empty() {
+            let response_details = Self::response_details(&summary);
+            if let Some(finish_reason) = summary.finish_reasons.first() {
+                return Err(LlmError::ApiError(format!(
+                    "Gemini returned empty chat response ({finish_reason}; {response_details})"
+                )));
+            }
+
+            if !response_details.is_empty() {
+                return Err(LlmError::ApiError(format!(
+                    "Gemini returned empty chat response ({response_details})"
+                )));
+            }
+
+            return Err(LlmError::ApiError("Empty response".to_string()));
+        }
+
+        Ok(ChatResponse {
+            content,
+            tool_calls: summary.tool_calls,
+            finish_reason: Self::finish_reason(response),
+            reasoning_content,
+            usage: Self::usage(response),
         })
     }
 }
@@ -416,46 +531,44 @@ impl LlmProvider for GeminiProvider {
             json_mode,
         } = request;
 
-        if !tools.is_empty() {
-            return Err(LlmError::Unknown(
-                "Gemini tool calling is not implemented yet".to_string(),
-            ));
-        }
-
-        if !json_mode {
-            return Err(LlmError::Unknown(
-                "Gemini structured chat requests require json_mode".to_string(),
-            ));
-        }
-
         let client = self.sdk_client(model_id)?;
-        let response = client
+        let mut request_builder = client
             .generate_content()
             .with_system_prompt(system_prompt)
             .with_messages(Self::history_to_sdk_messages(messages))
             .with_temperature(GEMINI_CHAT_TEMPERATURE)
             .with_max_output_tokens(Self::max_output_tokens(max_tokens))
-            .with_safety_settings(Self::safety_settings())
-            .with_response_mime_type("application/json")
+            .with_safety_settings(Self::safety_settings());
+
+        if tools.is_empty() {
+            if !json_mode {
+                return Err(LlmError::Unknown(
+                    "Gemini structured chat requests require json_mode".to_string(),
+                ));
+            }
+
+            request_builder = request_builder.with_response_mime_type("application/json");
+        } else {
+            request_builder = request_builder
+                .with_tool(Tool::with_functions(Self::function_declarations(tools)))
+                .with_function_calling_mode(FunctionCallingMode::Auto)
+                .with_allowed_function_names(tools.iter().map(|tool| tool.name.clone()));
+        }
+
+        let response = request_builder
             .execute()
             .await
             .map_err(Self::map_sdk_error)?;
 
-        Ok(ChatResponse {
-            content: Some(Self::extract_text_response(&response)?),
-            tool_calls: Vec::new(),
-            finish_reason: Self::finish_reason(&response),
-            reasoning_content: None,
-            usage: Self::usage(&response),
-        })
+        Self::parse_chat_response(&response)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::GeminiProvider;
-    use crate::llm::LlmError;
     use crate::llm::TokenUsage;
+    use crate::llm::{LlmError, ToolDefinition};
     use gemini_rust::{
         generation::{FinishReason, UsageMetadata},
         BlockReason, Candidate, ClientError, Content, FunctionCall, GenerationResponse, Part,
@@ -698,6 +811,88 @@ mod tests {
                 completion_tokens: 34,
                 total_tokens: 46,
             })
+        );
+    }
+
+    #[test]
+    fn builds_function_declarations_from_tool_definitions() {
+        let declarations = GeminiProvider::function_declarations(&[ToolDefinition {
+            name: "lookup_weather".to_string(),
+            description: "Look up weather by city".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "city": { "type": "string" }
+                },
+                "required": ["city"]
+            }),
+        }]);
+
+        let serialized = serde_json::to_value(&declarations[0]).expect("serialize declaration");
+        assert_eq!(serialized["name"], json!("lookup_weather"));
+        assert_eq!(serialized["description"], json!("Look up weather by city"));
+        assert_eq!(serialized["parameters"]["required"], json!(["city"]));
+    }
+
+    #[test]
+    fn parses_tool_calls_into_chat_response() {
+        let response = GenerationResponse {
+            candidates: vec![Candidate {
+                content: Content {
+                    parts: Some(vec![
+                        Part::Text {
+                            text: "thinking".to_string(),
+                            thought: Some(true),
+                            thought_signature: None,
+                        },
+                        Part::FunctionCall {
+                            function_call: FunctionCall::with_id(
+                                "lookup_weather",
+                                json!({"city": "Paris"}),
+                                "call_123",
+                            ),
+                            thought_signature: None,
+                        },
+                    ]),
+                    role: None,
+                },
+                safety_ratings: None,
+                citation_metadata: None,
+                grounding_metadata: None,
+                finish_reason: Some(FinishReason::Stop),
+                index: Some(0),
+            }],
+            prompt_feedback: None,
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let parsed = GeminiProvider::parse_chat_response(&response).expect("chat response parse");
+
+        assert!(parsed.content.is_none());
+        assert_eq!(parsed.reasoning_content.as_deref(), Some("thinking"));
+        assert_eq!(parsed.finish_reason, "stop");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].function.name, "lookup_weather");
+        assert_eq!(
+            parsed.tool_calls[0].function.arguments,
+            r#"{"city":"Paris"}"#
+        );
+        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "call_123");
+    }
+
+    #[test]
+    fn tool_calls_without_provider_ids_become_uncorrelated() {
+        let tool_call = GeminiProvider::parse_tool_call(&FunctionCall::new(
+            "lookup_weather",
+            json!({"city": "Paris"}),
+        ));
+
+        assert_eq!(tool_call.function.arguments, r#"{"city":"Paris"}"#);
+        assert_eq!(
+            tool_call.wire_tool_call_id(),
+            tool_call.invocation_id().as_str()
         );
     }
 }

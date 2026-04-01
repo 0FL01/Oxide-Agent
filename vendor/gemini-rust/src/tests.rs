@@ -1,6 +1,6 @@
 use crate::{
-    FinishReason, FunctionCall, FunctionCallingConfig, FunctionCallingMode, FunctionResponse,
-    GenerationResponse, Model, Part,
+    FinishReason, FunctionCall, FunctionCallingConfig, FunctionCallingMode, FunctionDeclaration,
+    FunctionResponse, GenerationResponse, Model, Part,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -174,6 +174,24 @@ fn test_function_calling_config_allowed_names_serialization() {
 
     let deserialized: FunctionCallingConfig = serde_json::from_value(serialized).unwrap();
     assert_eq!(deserialized, config);
+}
+
+#[test]
+fn test_function_declaration_raw_parameters_schema_serialization() {
+    let declaration = FunctionDeclaration::new("get_weather", "Get the weather", None)
+        .with_parameters_schema(json!({
+            "type": "object",
+            "properties": {
+                "city": { "type": "string" }
+            },
+            "required": ["city"]
+        }));
+
+    let serialized = serde_json::to_value(&declaration).unwrap();
+    assert_eq!(serialized["name"], "get_weather");
+    assert_eq!(serialized["description"], "Get the weather");
+    assert_eq!(serialized["parameters"]["type"], "object");
+    assert_eq!(serialized["parameters"]["required"], json!(["city"]));
 }
 
 #[test]
