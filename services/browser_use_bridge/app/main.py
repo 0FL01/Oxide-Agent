@@ -27,6 +27,7 @@ Browser = getattr(browser_use_module, "Browser", None)
 ChatAnthropic = getattr(browser_use_module, "ChatAnthropic", None)
 ChatBrowserUse = getattr(browser_use_module, "ChatBrowserUse", None)
 ChatGoogle = getattr(browser_use_module, "ChatGoogle", None)
+ChatOpenAI = getattr(browser_use_module, "ChatOpenAI", None)
 
 
 def utc_now() -> str:
@@ -82,12 +83,27 @@ class Settings:
 settings = Settings()
 os.environ.setdefault("BROWSER_USE_HOME", str(settings.data_dir))
 
+MINIMAX_DEFAULT_API_BASE = "https://api.minimax.io/anthropic"
+ZAI_DEFAULT_API_BASE = "https://api.z.ai/api/coding/paas/v4/chat/completions"
+OPENAI_CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+
+
+class BrowserLlmConfig(BaseModel):
+    provider: str = Field(min_length=1)
+    model: str | None = None
+    api_base: str | None = None
+    api_key_ref: str | None = None
+    supports_vision: bool | None = None
+    supports_tools: bool | None = None
+    transport: str | None = None
+
 
 class RunTaskRequest(BaseModel):
     task: str = Field(min_length=1)
     start_url: str | None = None
     session_id: str | None = None
     timeout_secs: int | None = Field(default=None, ge=1)
+    browser_llm_config: BrowserLlmConfig | None = None
 
 
 class RunTaskResponse(BaseModel):
@@ -111,6 +127,18 @@ class CloseSessionResponse(BaseModel):
     session_id: str
     closed: bool
     status: Literal["closed"]
+
+
+@dataclass(frozen=True)
+class ResolvedBrowserLlmConfig:
+    provider: str
+    transport: str
+    model: str | None
+    api_base: str | None
+    api_key: str | None
+    supports_vision: bool | None
+    supports_tools: bool | None
+    source: Literal["request_config", "legacy_env"]
 
 
 @dataclass
@@ -225,41 +253,193 @@ def build_agent_task(request: RunTaskRequest) -> str:
     return "\n\n".join(task_parts)
 
 
-def create_llm() -> Any:
-    provider = settings.llm_provider.lower()
+def normalize_name(value: str | None) -> str:
+    if value is None:
+        return ""
+    return value.strip().lower().replace("-", "_")
+
+
+def clean_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def resolve_api_key_ref(secret_ref: str) -> str:
+    secret_ref = secret_ref.strip()
+    if not secret_ref:
+        raise RuntimeError("browser_llm_config.api_key_ref must not be empty")
+
+    if not secret_ref.startswith("env:"):
+        raise RuntimeError(
+            "browser_llm_config.api_key_ref currently supports only env:KEY"
+        )
+
+    env_name = secret_ref.removeprefix("env:").strip()
+    if not env_name:
+        raise RuntimeError("browser_llm_config.api_key_ref missing env name")
+
+    value = os.getenv(env_name)
+    if value is None or not value.strip():
+        raise RuntimeError(
+            f"browser_llm_config.api_key_ref points to missing env '{env_name}'"
+        )
+    return value.strip()
+
+
+def normalize_openai_api_base(api_base: str | None) -> str | None:
+    cleaned = clean_optional(api_base)
+    if cleaned is None:
+        return None
+    trimmed = cleaned.rstrip("/")
+    if trimmed.endswith(OPENAI_CHAT_COMPLETIONS_SUFFIX):
+        trimmed = trimmed[: -len(OPENAI_CHAT_COMPLETIONS_SUFFIX)]
+    return trimmed or None
+
+
+def infer_transport(provider: str, api_base: str | None, transport: str | None) -> str:
+    normalized_transport = normalize_name(transport)
+    if normalized_transport:
+        if normalized_transport in {
+            "browser_use",
+            "google",
+            "anthropic",
+            "anthropic_compatible",
+            "openai_compatible",
+        }:
+            return normalized_transport
+        raise RuntimeError(f"unsupported browser_llm_config.transport '{transport}'")
+
+    if provider in {"browser_use"}:
+        return "browser_use"
+    if provider in {"google", "gemini"}:
+        return "google"
+    if provider in {"anthropic"}:
+        return "anthropic"
+    if provider in {"minimax"}:
+        if api_base and "anthropic" not in api_base.lower():
+            return "openai_compatible"
+        return "anthropic_compatible"
+    if provider in {"openai", "openai_compatible", "zai", "zhipuai", "glm"}:
+        return "openai_compatible"
+    raise RuntimeError(f"unsupported browser_llm_config.provider '{provider}'")
+
+
+def resolve_requested_llm_config(config: BrowserLlmConfig) -> ResolvedBrowserLlmConfig:
+    provider = normalize_name(config.provider)
+    if not provider:
+        raise RuntimeError("browser_llm_config.provider is required")
+
+    transport = infer_transport(provider, config.api_base, config.transport)
+    model = clean_optional(config.model)
+    if model is None:
+        raise RuntimeError("browser_llm_config.model is required")
+
+    api_base = clean_optional(config.api_base)
+    if provider == "minimax" and api_base is None:
+        api_base = MINIMAX_DEFAULT_API_BASE
+    if provider in {"zai", "zhipuai", "glm"} and api_base is None:
+        api_base = ZAI_DEFAULT_API_BASE
+    if transport == "openai_compatible":
+        api_base = normalize_openai_api_base(api_base)
+
+    api_key = None
+    if clean_optional(config.api_key_ref) is not None:
+        api_key = resolve_api_key_ref(config.api_key_ref)
+
+    return ResolvedBrowserLlmConfig(
+        provider=provider,
+        transport=transport,
+        model=model,
+        api_base=api_base,
+        api_key=api_key,
+        supports_vision=config.supports_vision,
+        supports_tools=config.supports_tools,
+        source="request_config",
+    )
+
+
+def resolve_legacy_llm_config() -> ResolvedBrowserLlmConfig:
+    provider = normalize_name(settings.llm_provider)
     if not provider:
         raise RuntimeError(
             "BROWSER_USE_BRIDGE_LLM_PROVIDER is required for browser task execution"
         )
 
-    kwargs: dict[str, Any] = {}
-    if settings.llm_model:
-        kwargs["model"] = settings.llm_model
+    if provider not in {"browser_use", "google", "anthropic"}:
+        raise RuntimeError(
+            f"unsupported BROWSER_USE_BRIDGE_LLM_PROVIDER '{settings.llm_provider}'"
+        )
 
-    if provider == "browser_use":
+    return ResolvedBrowserLlmConfig(
+        provider=provider,
+        transport=provider,
+        model=clean_optional(settings.llm_model),
+        api_base=None,
+        api_key=None,
+        supports_vision=None,
+        supports_tools=None,
+        source="legacy_env",
+    )
+
+
+def resolve_llm_config(request: RunTaskRequest) -> ResolvedBrowserLlmConfig:
+    if request.browser_llm_config is not None:
+        return resolve_requested_llm_config(request.browser_llm_config)
+    return resolve_legacy_llm_config()
+
+
+def create_llm_from_config(config: ResolvedBrowserLlmConfig) -> Any:
+    kwargs: dict[str, Any] = {}
+    if config.model:
+        kwargs["model"] = config.model
+
+    if config.transport == "browser_use":
         if ChatBrowserUse is None:
             raise RuntimeError(
                 "ChatBrowserUse is unavailable in installed browser_use package"
             )
         return ChatBrowserUse(**kwargs)
 
-    if provider == "google":
+    if config.transport == "google":
         if ChatGoogle is None:
             raise RuntimeError(
                 "ChatGoogle is unavailable in installed browser_use package"
             )
         return ChatGoogle(**kwargs)
 
-    if provider == "anthropic":
+    if config.transport in {"anthropic", "anthropic_compatible"}:
         if ChatAnthropic is None:
             raise RuntimeError(
                 "ChatAnthropic is unavailable in installed browser_use package"
             )
-        return ChatAnthropic(**kwargs)
+        anthropic_kwargs = dict(kwargs)
+        if config.api_key:
+            anthropic_kwargs["api_key"] = config.api_key
+        if config.api_base:
+            anthropic_kwargs["base_url"] = config.api_base
+        return ChatAnthropic(**anthropic_kwargs)
 
-    raise RuntimeError(
-        f"unsupported BROWSER_USE_BRIDGE_LLM_PROVIDER '{settings.llm_provider}'"
-    )
+    if config.transport == "openai_compatible":
+        if ChatOpenAI is None:
+            raise RuntimeError(
+                "ChatOpenAI is unavailable in installed browser_use package"
+            )
+        openai_kwargs = dict(kwargs)
+        if config.api_key:
+            openai_kwargs["api_key"] = config.api_key
+        if config.api_base:
+            openai_kwargs["base_url"] = config.api_base
+        return ChatOpenAI(**openai_kwargs)
+
+    raise RuntimeError(f"unsupported browser_llm transport '{config.transport}'")
+
+
+def use_vision_mode(config: ResolvedBrowserLlmConfig) -> bool | Literal["auto"]:
+    if config.supports_vision is False:
+        return False
+    return "auto"
 
 
 class SessionManager:
@@ -329,10 +509,12 @@ class SessionManager:
                     if session.browser is None:
                         session.browser = Browser()
 
+                    llm_config = resolve_llm_config(request)
                     agent = Agent(
                         task=build_agent_task(request),
-                        llm=create_llm(),
+                        llm=create_llm_from_config(llm_config),
                         browser=session.browser,
+                        use_vision=use_vision_mode(llm_config),
                     )
                     result = await asyncio.wait_for(agent.run(), timeout=timeout_secs)
                     session.summary = stringify_result(result)
@@ -414,6 +596,16 @@ async def health() -> JSONResponse:
         "import_error": BROWSER_USE_IMPORT_ERROR,
         "data_dir": str(settings.data_dir),
         "max_concurrent_sessions": settings.max_concurrent_sessions,
+        "request_browser_llm_config_supported": True,
+        "legacy_env_llm_provider": clean_optional(settings.llm_provider),
+        "supported_browser_llm_providers": [
+            "browser_use",
+            "google",
+            "anthropic",
+            "minimax",
+            "zai",
+            "openai_compatible",
+        ],
     }
     status_code = 200 if BROWSER_USE_IMPORT_ERROR is None else 503
     return JSONResponse(content=payload, status_code=status_code)

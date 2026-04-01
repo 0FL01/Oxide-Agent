@@ -20,8 +20,9 @@
 - `oxide_agent` обращается к `browser_use` по `BROWSER_USE_URL`
 - `browser_use` публикуется только на loopback `127.0.0.1:8002`
 - browser state и session metadata сохраняются в volume `browser-use-data`
-- в текущем v1 bridge использует собственный LLM provider, заданный через `BROWSER_USE_BRIDGE_LLM_PROVIDER`
-- Stage A переводит этот механизм в legacy fallback и фиксирует целевую модель через route inheritance из Oxide Agent
+- bridge уже поддерживает request-level `browser_llm_config` для нормализованного выбора LLM
+- legacy env path через `BROWSER_USE_BRIDGE_LLM_PROVIDER` остается временным fallback
+- Stage A фиксирует целевую модель через route inheritance из Oxide Agent
 
 ## Важные переменные окружения
 
@@ -34,7 +35,7 @@
 
 ### В `browser_use` sidecar
 
-Ниже перечислены текущие v1 переменные. После реализации Stage A они останутся fallback-механизмом, а основным путем станет inheritance активного route из Oxide Agent.
+Ниже перечислены fallback-переменные sidecar. Начиная со Stage B bridge также умеет принимать request-level `browser_llm_config`, в том числе для `minimax` и `zai`.
 
 - `BROWSER_USE_BRIDGE_HOST=0.0.0.0`
 - `BROWSER_USE_BRIDGE_PORT=8000`
@@ -52,6 +53,13 @@
 - `GEMINI_API_KEY` для `BROWSER_USE_BRIDGE_LLM_PROVIDER=google`
 - `ANTHROPIC_API_KEY` для `BROWSER_USE_BRIDGE_LLM_PROVIDER=anthropic`
 - provider-specific key для `BROWSER_USE_BRIDGE_LLM_PROVIDER=browser_use`, если этот режим используется
+
+Если используется request-level `browser_llm_config` с `api_key_ref=env:...`, соответствующий env должен существовать внутри контейнера `browser_use`.
+
+Минимально важные случаи:
+
+- `MINIMAX_API_KEY` для `provider=minimax`
+- `ZAI_API_KEY` для `provider=zai`
 
 Если ключа нет, bridge поднимется, но `browser_use_run_task` будет завершаться ошибкой на этапе создания LLM.
 
@@ -116,10 +124,11 @@ Browser Use не включается через alias `search`. Для него
 
 1. Убедиться, что compose healthcheck зеленый для `browser_use`.
 2. Убедиться, что `BROWSER_USE_ENABLED=true` и `BROWSER_USE_URL` видны контейнеру `oxide_agent`.
-3. Для текущего v1 убедиться, что bridge-side LLM provider и его API key переданы в контейнер `browser_use`.
-4. Для следующего inheritance path сверяться с `Browser Use Stage A`, а не вводить отдельную модель вручную без необходимости.
-5. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
-6. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
+3. Для legacy env path убедиться, что bridge-side LLM provider и его API key переданы в контейнер `browser_use`.
+4. Для Stage B request-level path убедиться, что `browser_llm_config` содержит совместимый provider/model и корректный `api_key_ref`.
+5. Для следующего inheritance path сверяться с `Browser Use Stage A`, а не вводить отдельную модель вручную без необходимости.
+6. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
+7. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
 
 ## Типичные сбои
 
@@ -144,11 +153,12 @@ Browser Use не включается через alias `search`. Для него
 
 ### `browser_use_run_task` падает сразу
 
-Частые причины для текущего v1:
+Частые причины:
 
-- не задан `BROWSER_USE_BRIDGE_LLM_PROVIDER`
+- не задан `BROWSER_USE_BRIDGE_LLM_PROVIDER` для legacy env path
 - не передан API key для выбранного provider
-- bridge не может создать Browser Use LLM wrapper
+- `browser_llm_config.api_key_ref` указывает на отсутствующий env
+- bridge не может создать совместимый Browser Use LLM wrapper для выбранного transport-а
 
 После перехода на Stage A основным классом ошибок станет уже не отсутствие bridge env, а несовместимость inherited route или его credentials.
 
