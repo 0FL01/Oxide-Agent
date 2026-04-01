@@ -73,6 +73,7 @@ default = ["tavily", "searxng"]
 tavily = ["dep:tavily"]
 searxng = []
 crawl4ai = []
+browser_use = []
 jira = []
 mattermost = []
 
