@@ -904,16 +904,18 @@ impl AgentSettings {
 }
 
 #[cfg(test)]
+pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
+    use std::sync::OnceLock;
+
+    static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use std::env;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_mutex() -> &'static Mutex<()> {
-        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_MUTEX.get_or_init(|| Mutex::new(()))
-    }
 
     // Tests run sequentially to avoid environment variable race conditions
     #[test]
@@ -1161,7 +1163,9 @@ mod tests {
 
     #[test]
     fn browser_use_enabled_falls_back_to_url_presence() {
-        let _guard = env_mutex().lock().expect("env mutex poisoned");
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         env::remove_var("BROWSER_USE_ENABLED");
         env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
 
@@ -1172,7 +1176,9 @@ mod tests {
 
     #[test]
     fn browser_use_enabled_flag_overrides_url_fallback() {
-        let _guard = env_mutex().lock().expect("env mutex poisoned");
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
         env::set_var("BROWSER_USE_ENABLED", "false");
 
@@ -1194,7 +1200,9 @@ mod tests {
 
     #[test]
     fn searxng_rotation_engines_use_defaults_when_env_missing() {
-        let _guard = env_mutex().lock().expect("env mutex poisoned");
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         env::remove_var("SEARXNG_ROTATION_ENGINES");
 
         assert_eq!(
@@ -1211,7 +1219,9 @@ mod tests {
 
     #[test]
     fn searxng_rotation_engines_parse_csv() {
-        let _guard = env_mutex().lock().expect("env mutex poisoned");
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         env::set_var("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
 
         assert_eq!(
