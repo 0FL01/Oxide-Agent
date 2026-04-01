@@ -31,6 +31,12 @@ pip install -r services/browser_use_bridge/requirements.txt
 uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 ```
 
+## Run In Docker Compose
+
+- Stage 2 wiring publishes the service on `127.0.0.1:8002` and keeps browser state in the `browser-use-data` volume.
+- The bridge container only receives explicit Browser Use / LLM variables from compose, so `BROWSER_USE_BRIDGE_LLM_PROVIDER`, `BROWSER_USE_BRIDGE_LLM_MODEL`, and the matching API keys must be present in `.env` for real task execution.
+- Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
+
 ## Notes
 
 - `POST /sessions/run` создает новую сессию, если `session_id` не передан.
