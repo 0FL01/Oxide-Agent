@@ -361,48 +361,54 @@ mod tests {
 
         #[test]
         fn resolve_audio_model_name_supports_mistral_stt_route() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-mistral".to_string()),
-            chat_model_provider: Some("mistral".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
-        let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
+            let settings = AgentSettings {
+                chat_model_id: Some("chat-mistral".to_string()),
+                chat_model_provider: Some("mistral".to_string()),
+                mistral_api_key: Some("test-mistral-key".to_string()),
+                ..AgentSettings::default()
+            };
+            let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
-        assert_eq!(provider.resolve_audio_model_name().expect("audio model"), "chat-mistral");
+            assert_eq!(
+                provider.resolve_audio_model_name().expect("audio model"),
+                "chat-mistral"
+            );
+        }
+
+        #[test]
+        fn resolve_video_model_name_falls_back_to_chat_route() {
+            let settings = AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                media_model_id: Some("media-mistral".to_string()),
+                media_model_provider: Some("mistral".to_string()),
+                openrouter_api_key: Some("test-openrouter-key".to_string()),
+                mistral_api_key: Some("test-mistral-key".to_string()),
+                ..AgentSettings::default()
+            };
+            let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
+
+            assert_eq!(
+                provider.resolve_video_model_name().expect("video model"),
+                "chat-openrouter"
+            );
+        }
+
+        #[test]
+        fn resolve_image_model_name_reports_unavailable_route() {
+            let settings = AgentSettings {
+                chat_model_id: Some("chat-mistral".to_string()),
+                chat_model_provider: Some("mistral".to_string()),
+                mistral_api_key: Some("test-mistral-key".to_string()),
+                ..AgentSettings::default()
+            };
+            let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
+
+            let error = provider
+                .resolve_image_model_name()
+                .expect_err("image model unavailable")
+                .to_string();
+            assert!(error.contains("Image understanding route unavailable"));
+        }
     }
-
-    #[test]
-    fn resolve_video_model_name_falls_back_to_chat_route() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-mistral".to_string()),
-            media_model_provider: Some("mistral".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
-        let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
-
-        assert_eq!(
-            provider.resolve_video_model_name().expect("video model"),
-            "chat-openrouter"
-        );
-    }
-
-    #[test]
-    fn resolve_image_model_name_reports_unavailable_route() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-mistral".to_string()),
-            chat_model_provider: Some("mistral".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
-        let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
-
-        let error = provider.resolve_image_model_name().expect_err("image model unavailable").to_string();
-        assert!(error.contains("Image understanding route unavailable"));
-    }
-}
 }
