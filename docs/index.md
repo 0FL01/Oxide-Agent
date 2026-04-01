@@ -28,6 +28,7 @@
 
 ### Tooling Integrations
 - [**Browser Use Stage 0**](./browser-use-stage0.md) - approved integration contract for self-hosted Browser Use sidecar
+- [**Browser Use Operations**](./browser-use.md) - operator runbook, env setup, health checks, and topic-agent enablement
 
 ### Саб-агенты (Sub-Agents)
 - [**Обзор саб-агентов**](./hooks/sub-agents/index.md)

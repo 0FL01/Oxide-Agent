@@ -57,6 +57,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         - Soft Timeout Report Hook - provides detailed timeout reporting
         - Sub-Agent Safety - ensures safe execution environments
         - Registry - centralized hook management
+    *   **🌐 Browser Automation:** Self-hosted Browser Use bridge for high-level browser tasks with reusable sessions.
     *   **🔄 Loop Detection:** Three levels of protection (Content Detector, Tool Detector, LLM Detector) to prevent infinite loops.
     *   **⏱️ Universal Runtime:** Transport-agnostic progress rendering system that can be adapted for Discord, Slack, and other transports.
     *   **👥 Hierarchical Delegation:** The Main Agent acts as an orchestrator, delegating heavy retrieval and mechanical tasks (git clone, searching) to Sub-Agents to maximize efficiency and context preservation.
@@ -109,6 +110,7 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 *   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
 *   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
 *   **Crawl4AI** — deep web crawling provider with markdown extraction and PDF parsing capabilities
+*   **Browser Use Bridge** — self-hosted browser automation sidecar for high-level browser tasks (`BROWSER_USE_URL`)
 *   **Kokoro TTS Server** — optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** — optional for Russian voice message synthesis (`SILERO_TTS_URL`)
 </details>
@@ -173,8 +175,12 @@ SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
 CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
 BROWSER_USE_URL=http://127.0.0.1:8002 # Browser Use self-hosted bridge
 BROWSER_USE_ENABLED=true        # Enable Browser Use browser automation provider
+BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Bridge-side LLM provider: browser_use, google, anthropic
+BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional model override for the bridge
 ```
 </details>
+
+For Browser Use task execution, the bridge container also needs the matching upstream API key for the selected provider, for example `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`.
 
 ## Model Configuration
 
