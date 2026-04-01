@@ -9,9 +9,22 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use gemini_rust::{
     generation::{BlockReason, FinishReason, GenerationResponse},
     safety::{HarmBlockThreshold, HarmCategory, SafetySetting},
-    ClientError as GeminiClientError, Gemini, GeminiBuilder, Message as GeminiMessage, Model,
+    ClientError as GeminiClientError, Gemini, GeminiBuilder, Message as GeminiMessage, Model, Part,
 };
 use reqwest::StatusCode;
+
+#[derive(Default)]
+struct ResponsePartsSummary {
+    text_parts: Vec<String>,
+    thought_count: usize,
+    function_call_count: usize,
+    function_response_count: usize,
+    inline_data_count: usize,
+    file_data_count: usize,
+    executable_code_count: usize,
+    code_execution_result_count: usize,
+    finish_reasons: Vec<&'static str>,
+}
 
 /// LLM provider implementation for Google Gemini.
 pub struct GeminiProvider {
@@ -114,12 +127,39 @@ impl GeminiProvider {
     }
 
     fn extract_text_response(response: &GenerationResponse) -> Result<String, LlmError> {
-        let text = response
-            .all_text()
-            .into_iter()
-            .filter_map(|(text, is_thought)| (!is_thought && !text.is_empty()).then_some(text))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let mut summary = ResponsePartsSummary::default();
+
+        for candidate in &response.candidates {
+            if let Some(finish_reason) = candidate.finish_reason.as_ref() {
+                summary
+                    .finish_reasons
+                    .push(Self::finish_reason_name(finish_reason));
+            }
+
+            if let Some(parts) = candidate.content.parts.as_ref() {
+                for part in parts {
+                    match part {
+                        Part::Text { text, thought, .. } => {
+                            if thought.unwrap_or(false) {
+                                summary.thought_count += 1;
+                            } else if !text.is_empty() {
+                                summary.text_parts.push(text.clone());
+                            }
+                        }
+                        Part::FunctionCall { .. } => summary.function_call_count += 1,
+                        Part::FunctionResponse { .. } => summary.function_response_count += 1,
+                        Part::InlineData { .. } => summary.inline_data_count += 1,
+                        Part::FileData { .. } => summary.file_data_count += 1,
+                        Part::ExecutableCode { .. } => summary.executable_code_count += 1,
+                        Part::CodeExecutionResult { .. } => {
+                            summary.code_execution_result_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let text = summary.text_parts.join("\n");
 
         if !text.is_empty() {
             return Ok(text);
@@ -134,18 +174,54 @@ impl GeminiProvider {
             }
         }
 
-        if let Some(finish_reason) = response
-            .candidates
-            .iter()
-            .find_map(|candidate| candidate.finish_reason.as_ref())
-        {
+        let response_details = Self::response_details(&summary);
+        if let Some(finish_reason) = summary.finish_reasons.first() {
             return Err(LlmError::ApiError(format!(
-                "Gemini returned no text output ({})",
-                Self::finish_reason_name(finish_reason)
+                "Gemini returned no text output ({finish_reason}; {response_details})"
+            )));
+        }
+
+        if !response_details.is_empty() {
+            return Err(LlmError::ApiError(format!(
+                "Gemini returned no text output ({response_details})"
             )));
         }
 
         Err(LlmError::ApiError("Empty response".to_string()))
+    }
+
+    fn response_details(summary: &ResponsePartsSummary) -> String {
+        let mut details = Vec::new();
+
+        if summary.thought_count > 0 {
+            details.push(format!("thoughts={}", summary.thought_count));
+        }
+        if summary.function_call_count > 0 {
+            details.push(format!("function_calls={}", summary.function_call_count));
+        }
+        if summary.function_response_count > 0 {
+            details.push(format!(
+                "function_responses={}",
+                summary.function_response_count
+            ));
+        }
+        if summary.inline_data_count > 0 {
+            details.push(format!("inline_data={}", summary.inline_data_count));
+        }
+        if summary.file_data_count > 0 {
+            details.push(format!("file_data={}", summary.file_data_count));
+        }
+        if summary.executable_code_count > 0 {
+            details.push(format!("executable_code={}", summary.executable_code_count));
+        }
+        if summary.code_execution_result_count > 0 {
+            details.push(format!(
+                "code_execution_results={}",
+                summary.code_execution_result_count
+            ));
+        }
+
+        details.join(", ")
     }
 
     fn finish_reason_name(reason: &FinishReason) -> &'static str {
@@ -309,9 +385,10 @@ mod tests {
     use super::GeminiProvider;
     use crate::llm::LlmError;
     use gemini_rust::{
-        generation::FinishReason, BlockReason, Candidate, ClientError, Content, GenerationResponse,
-        PromptFeedback,
+        generation::FinishReason, BlockReason, Candidate, ClientError, Content, FunctionCall,
+        GenerationResponse, Part, PromptFeedback,
     };
+    use serde_json::json;
 
     #[test]
     fn normalizes_sdk_model_ids() {
@@ -362,5 +439,144 @@ mod tests {
         assert!(
             matches!(err, LlmError::ApiError(message) if message.contains("Gemini blocked prompt: SAFETY"))
         );
+    }
+
+    #[test]
+    fn extracts_only_non_thought_text_from_mixed_parts() {
+        let response = GenerationResponse {
+            candidates: vec![Candidate {
+                content: Content {
+                    parts: Some(vec![
+                        Part::Text {
+                            text: "visible answer".to_string(),
+                            thought: None,
+                            thought_signature: None,
+                        },
+                        Part::Text {
+                            text: "hidden reasoning".to_string(),
+                            thought: Some(true),
+                            thought_signature: None,
+                        },
+                        Part::FunctionCall {
+                            function_call: FunctionCall::with_id(
+                                "lookup_weather",
+                                json!({"city": "Paris"}),
+                                "call_123",
+                            ),
+                            thought_signature: None,
+                        },
+                    ]),
+                    role: None,
+                },
+                safety_ratings: None,
+                citation_metadata: None,
+                grounding_metadata: None,
+                finish_reason: Some(FinishReason::Stop),
+                index: Some(0),
+            }],
+            prompt_feedback: None,
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let text = GeminiProvider::extract_text_response(&response).unwrap();
+        assert_eq!(text, "visible answer");
+    }
+
+    #[test]
+    fn joins_text_across_candidates_and_parts() {
+        let response = GenerationResponse {
+            candidates: vec![
+                Candidate {
+                    content: Content {
+                        parts: Some(vec![
+                            Part::Text {
+                                text: "first".to_string(),
+                                thought: None,
+                                thought_signature: None,
+                            },
+                            Part::Text {
+                                text: "second".to_string(),
+                                thought: None,
+                                thought_signature: None,
+                            },
+                        ]),
+                        role: None,
+                    },
+                    safety_ratings: None,
+                    citation_metadata: None,
+                    grounding_metadata: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    index: Some(0),
+                },
+                Candidate {
+                    content: Content {
+                        parts: Some(vec![Part::Text {
+                            text: "third".to_string(),
+                            thought: None,
+                            thought_signature: None,
+                        }]),
+                        role: None,
+                    },
+                    safety_ratings: None,
+                    citation_metadata: None,
+                    grounding_metadata: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    index: Some(1),
+                },
+            ],
+            prompt_feedback: None,
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let text = GeminiProvider::extract_text_response(&response).unwrap();
+        assert_eq!(text, "first\nsecond\nthird");
+    }
+
+    #[test]
+    fn surfaces_non_text_response_details() {
+        let response = GenerationResponse {
+            candidates: vec![Candidate {
+                content: Content {
+                    parts: Some(vec![
+                        Part::Text {
+                            text: "reasoning only".to_string(),
+                            thought: Some(true),
+                            thought_signature: None,
+                        },
+                        Part::FunctionCall {
+                            function_call: FunctionCall::with_id(
+                                "lookup_weather",
+                                json!({"city": "Paris"}),
+                                "call_123",
+                            ),
+                            thought_signature: None,
+                        },
+                    ]),
+                    role: None,
+                },
+                safety_ratings: None,
+                citation_metadata: None,
+                grounding_metadata: None,
+                finish_reason: Some(FinishReason::Stop),
+                index: Some(0),
+            }],
+            prompt_feedback: None,
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let err = GeminiProvider::extract_text_response(&response).unwrap_err();
+        assert!(matches!(
+            err,
+            LlmError::ApiError(message)
+                if message.contains("STOP")
+                    && message.contains("thoughts=1")
+                    && message.contains("function_calls=1")
+        ));
     }
 }
