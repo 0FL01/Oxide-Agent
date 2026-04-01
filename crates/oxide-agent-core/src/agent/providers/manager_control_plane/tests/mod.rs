@@ -1277,6 +1277,10 @@ async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled(
             tools.iter().any(|tool| tool == "browser_use_run_task")
                 && tools.iter().any(|tool| tool == "browser_use_get_session")
                 && tools.iter().any(|tool| tool == "browser_use_close_session")
+                && tools
+                    .iter()
+                    .any(|tool| tool == "browser_use_extract_content")
+                && tools.iter().any(|tool| tool == "browser_use_screenshot")
         }));
 
     std::env::remove_var("BROWSER_USE_ENABLED");
@@ -1329,6 +1333,8 @@ async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
                             "browser_use_run_task",
                             "browser_use_get_session",
                             "browser_use_close_session",
+                            "browser_use_extract_content",
+                            "browser_use_screenshot",
                         ]
                         .iter()
                         .all(|tool| tools.iter().any(|value| value.as_str() == Some(*tool)))
@@ -1371,7 +1377,7 @@ async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
     let blocked_tools = parsed["profile"]["profile"]["blockedTools"]
         .as_array()
         .expect("blockedTools must be present");
-    assert_eq!(blocked_tools.len(), 3);
+    assert_eq!(blocked_tools.len(), 5);
 
     let browser_status = parsed["tools"]["provider_statuses"]
         .as_array()

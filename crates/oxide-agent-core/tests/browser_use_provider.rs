@@ -13,6 +13,8 @@ mod browser_use_tests {
         assert!(provider.can_handle("browser_use_run_task"));
         assert!(provider.can_handle("browser_use_get_session"));
         assert!(provider.can_handle("browser_use_close_session"));
+        assert!(provider.can_handle("browser_use_extract_content"));
+        assert!(provider.can_handle("browser_use_screenshot"));
         assert!(!provider.can_handle("web_search"));
     }
 
@@ -23,11 +25,13 @@ mod browser_use_tests {
             std::sync::Arc::new(oxide_agent_core::config::AgentSettings::default()),
         );
         let tools = provider.tools();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 5);
 
         let names: HashSet<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(names.contains("browser_use_run_task"));
         assert!(names.contains("browser_use_get_session"));
         assert!(names.contains("browser_use_close_session"));
+        assert!(names.contains("browser_use_extract_content"));
+        assert!(names.contains("browser_use_screenshot"));
     }
 }

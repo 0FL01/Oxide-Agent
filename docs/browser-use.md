@@ -12,6 +12,8 @@
   - `browser_use_run_task`
   - `browser_use_get_session`
   - `browser_use_close_session`
+  - `browser_use_extract_content`
+  - `browser_use_screenshot`
 - регистрация tools в main agent, sub-agent и manager control plane
 - manager alias-ы `browser` и `browser_use` для topic-level enable/disable
 
@@ -144,6 +146,8 @@ Browser Use не включается через alias `search`. Для него
 - `browser_use_run_task`
 - `browser_use_get_session`
 - `browser_use_close_session`
+- `browser_use_extract_content`
+- `browser_use_screenshot`
 
 Если нужен точечный контроль, можно включать и блокировать отдельные инструменты по именам.
 
@@ -207,6 +211,7 @@ Browser Use не включается через alias `search`. Для него
 ## Рекомендуемый v1 usage pattern
 
 - использовать Browser Use для задач уровня “открой сайт, пройди пару шагов, собери summary”
+- после `browser_use_run_task` можно дочитать страницу через `browser_use_extract_content` или снять PNG через `browser_use_screenshot`
 - не рассматривать его как замену `searxng` или `crawl4ai`
 - закрывать долгоживущие сессии через `browser_use_close_session`, если reuse больше не нужен
 - включать Browser Use topic-by-topic, а не глобально для всех профилей без необходимости

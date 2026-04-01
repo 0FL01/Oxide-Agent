@@ -1016,6 +1016,8 @@ mod tests {
         assert!(tools.contains("browser_use_run_task"));
         assert!(tools.contains("browser_use_get_session"));
         assert!(tools.contains("browser_use_close_session"));
+        assert!(tools.contains("browser_use_extract_content"));
+        assert!(tools.contains("browser_use_screenshot"));
 
         std::env::remove_var("BROWSER_USE_ENABLED");
         std::env::remove_var("BROWSER_USE_URL");

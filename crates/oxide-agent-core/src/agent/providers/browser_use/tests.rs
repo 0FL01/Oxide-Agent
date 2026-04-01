@@ -24,6 +24,14 @@ fn test_args_deserialize() {
 
     let session: Result<SessionArgs, _> = serde_json::from_str(r#"{"session_id":"s1"}"#);
     assert!(session.is_ok());
+
+    let extract: Result<ExtractContentArgs, _> =
+        serde_json::from_str(r#"{"session_id":"s1","format":"html","max_chars":4000}"#);
+    assert!(extract.is_ok());
+
+    let screenshot: Result<ScreenshotArgs, _> =
+        serde_json::from_str(r#"{"session_id":"s1","full_page":true}"#);
+    assert!(screenshot.is_ok());
 }
 
 #[test]
@@ -114,6 +122,81 @@ async fn get_session_reads_bridge_json() {
         .request_line()
         .await
         .contains("GET /sessions/browser-use-123 HTTP/1.1"));
+}
+
+#[tokio::test]
+async fn extract_content_posts_to_bridge() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(
+            r#"{"session_id":"browser-use-123","status":"completed","format":"text","content":"hello","truncated":false,"total_chars":5}"#,
+        ),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+
+    let result = provider
+        .execute(
+            TOOL_EXTRACT_CONTENT,
+            r#"{"session_id":"browser-use-123","format":"html","max_chars":2048}"#,
+            None,
+            None,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    assert!(state
+        .request_line()
+        .await
+        .contains("POST /sessions/browser-use-123/extract_content HTTP/1.1"));
+    let body = state.request_body().await;
+    assert!(body.contains(r#""format":"html""#));
+    assert!(body.contains(r#""max_chars":2048"#));
+}
+
+#[tokio::test]
+async fn screenshot_posts_to_bridge() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(
+            r#"{"session_id":"browser-use-123","status":"completed","artifact":{"kind":"screenshot","path":"/tmp/test.png"}}"#,
+        ),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+
+    let result = provider
+        .execute(
+            TOOL_SCREENSHOT,
+            r#"{"session_id":"browser-use-123","full_page":true}"#,
+            None,
+            None,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    assert!(state
+        .request_line()
+        .await
+        .contains("POST /sessions/browser-use-123/screenshot HTTP/1.1"));
+    let body = state.request_body().await;
+    assert!(body.contains(r#""full_page":true"#));
 }
 
 #[test]

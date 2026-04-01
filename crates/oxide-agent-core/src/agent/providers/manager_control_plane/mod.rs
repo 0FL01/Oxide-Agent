@@ -209,6 +209,8 @@ const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
     "browser_use_run_task",
     "browser_use_get_session",
     "browser_use_close_session",
+    "browser_use_extract_content",
+    "browser_use_screenshot",
 ];
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",

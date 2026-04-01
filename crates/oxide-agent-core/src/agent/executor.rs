@@ -1641,6 +1641,8 @@ mod tests {
         assert!(registry.can_handle("browser_use_run_task"));
         assert!(registry.can_handle("browser_use_get_session"));
         assert!(registry.can_handle("browser_use_close_session"));
+        assert!(registry.can_handle("browser_use_extract_content"));
+        assert!(registry.can_handle("browser_use_screenshot"));
 
         std::env::remove_var("BROWSER_USE_ENABLED");
         std::env::remove_var("BROWSER_USE_URL");
@@ -1661,6 +1663,8 @@ mod tests {
         assert!(!registry.can_handle("browser_use_run_task"));
         assert!(!registry.can_handle("browser_use_get_session"));
         assert!(!registry.can_handle("browser_use_close_session"));
+        assert!(!registry.can_handle("browser_use_extract_content"));
+        assert!(!registry.can_handle("browser_use_screenshot"));
 
         std::env::remove_var("BROWSER_USE_ENABLED");
         std::env::remove_var("BROWSER_USE_URL");

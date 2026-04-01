@@ -1,7 +1,6 @@
 //! Browser Use provider - high-level browser automation via a self-hosted HTTP bridge.
 //!
-//! Provides `browser_use_run_task`, `browser_use_get_session`, and
-//! `browser_use_close_session` tools via the Browser Use bridge sidecar.
+//! Provides Browser Use session automation and inspection tools via the bridge sidecar.
 
 mod response;
 
@@ -35,6 +34,8 @@ use response::{
 const TOOL_RUN_TASK: &str = "browser_use_run_task";
 const TOOL_GET_SESSION: &str = "browser_use_get_session";
 const TOOL_CLOSE_SESSION: &str = "browser_use_close_session";
+const TOOL_EXTRACT_CONTENT: &str = "browser_use_extract_content";
+const TOOL_SCREENSHOT: &str = "browser_use_screenshot";
 const MINIMAX_DEFAULT_API_BASE: &str = "https://api.minimax.io/anthropic";
 const OPENROUTER_DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
 const OXIDE_BROWSER_LLM_API_KEY_HEADER: &str = "x-oxide-browser-llm-api-key";
@@ -384,6 +385,154 @@ impl BrowserUseProvider {
             Ok(ResponsePayload::Text(text))
         }
     }
+
+    async fn execute_run_task(
+        &self,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let args: RunTaskArgs = serde_json::from_str(arguments)?;
+        if args.task.trim().is_empty() {
+            return Err(anyhow!("browser_use_run_task requires a non-empty task"));
+        }
+
+        let inherited_llm = self.browser_llm_config_for_active_route()?;
+        let (browser_llm_config, browser_llm_api_key) = match inherited_llm {
+            Some((config, api_key)) => (Some(config), Some(api_key)),
+            None => (None, None),
+        };
+        let vision_warning = self.vision_policy_warning(&args.task, browser_llm_config.as_ref())?;
+        let body = serde_json::to_value(RunTaskRequestBody {
+            task: args.task,
+            start_url: args.start_url,
+            session_id: args.session_id,
+            timeout_secs: args.timeout_secs,
+            browser_llm_config,
+        })?;
+        let payload = self
+            .request(
+                Method::POST,
+                "/sessions/run",
+                Some(body),
+                browser_llm_api_key.as_deref(),
+                cancellation_token,
+            )
+            .await?;
+        let output = format_tool_output(payload);
+        if let Some(warning) = vision_warning {
+            Ok(format!("{warning}\n\n{output}"))
+        } else {
+            Ok(output)
+        }
+    }
+
+    async fn execute_get_session(
+        &self,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let args: SessionArgs = serde_json::from_str(arguments)?;
+        let session_id = args.session_id.trim();
+        if session_id.is_empty() {
+            return Err(anyhow!("browser_use_get_session requires a session_id"));
+        }
+
+        let payload = self
+            .request(
+                Method::GET,
+                &format!("/sessions/{session_id}"),
+                None,
+                None,
+                cancellation_token,
+            )
+            .await?;
+        Ok(format_tool_output(payload))
+    }
+
+    async fn execute_close_session(
+        &self,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let args: SessionArgs = serde_json::from_str(arguments)?;
+        let session_id = args.session_id.trim();
+        if session_id.is_empty() {
+            return Err(anyhow!("browser_use_close_session requires a session_id"));
+        }
+
+        let payload = self
+            .request(
+                Method::DELETE,
+                &format!("/sessions/{session_id}"),
+                None,
+                None,
+                cancellation_token,
+            )
+            .await?;
+        Ok(format_tool_output(payload))
+    }
+
+    async fn execute_extract_content(
+        &self,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let args: ExtractContentArgs = serde_json::from_str(arguments)?;
+        let session_id = args.session_id.trim();
+        if session_id.is_empty() {
+            return Err(anyhow!("browser_use_extract_content requires a session_id"));
+        }
+        let format = args
+            .format
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("text");
+        if !matches!(format, "text" | "html") {
+            return Err(anyhow!(
+                "browser_use_extract_content format must be either 'text' or 'html'"
+            ));
+        }
+
+        let payload = self
+            .request(
+                Method::POST,
+                &format!("/sessions/{session_id}/extract_content"),
+                Some(serde_json::to_value(ExtractContentRequestBody {
+                    format: format.to_string(),
+                    max_chars: args.max_chars,
+                })?),
+                None,
+                cancellation_token,
+            )
+            .await?;
+        Ok(format_tool_output(payload))
+    }
+
+    async fn execute_screenshot(
+        &self,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let args: ScreenshotArgs = serde_json::from_str(arguments)?;
+        let session_id = args.session_id.trim();
+        if session_id.is_empty() {
+            return Err(anyhow!("browser_use_screenshot requires a session_id"));
+        }
+
+        let payload = self
+            .request(
+                Method::POST,
+                &format!("/sessions/{session_id}/screenshot"),
+                Some(serde_json::to_value(ScreenshotRequestBody {
+                    full_page: args.full_page.unwrap_or(false),
+                })?),
+                None,
+                cancellation_token,
+            )
+            .await?;
+        Ok(format_tool_output(payload))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -417,6 +566,31 @@ struct RunTaskRequestBody {
     timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     browser_llm_config: Option<BrowserLlmConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtractContentArgs {
+    session_id: String,
+    format: Option<String>,
+    max_chars: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExtractContentRequestBody {
+    format: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_chars: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScreenshotArgs {
+    session_id: String,
+    full_page: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct ScreenshotRequestBody {
+    full_page: bool,
 }
 
 fn route_supports_vision(provider: &str, model: &str) -> bool {
@@ -579,13 +753,58 @@ impl ToolProvider for BrowserUseProvider {
                     "required": ["session_id"]
                 }),
             },
+            ToolDefinition {
+                name: TOOL_EXTRACT_CONTENT.to_string(),
+                description: "Extract text or HTML from the current page of an active Browser Use session.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": "Browser Use session ID"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "html"],
+                            "description": "Content format to extract, defaults to text"
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "description": "Optional truncation limit for extracted content"
+                        }
+                    },
+                    "required": ["session_id"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_SCREENSHOT.to_string(),
+                description: "Capture a screenshot from the current page of an active Browser Use session.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": "Browser Use session ID"
+                        },
+                        "full_page": {
+                            "type": "boolean",
+                            "description": "Capture the full page when supported by the browser runtime"
+                        }
+                    },
+                    "required": ["session_id"]
+                }),
+            },
         ]
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            TOOL_RUN_TASK | TOOL_GET_SESSION | TOOL_CLOSE_SESSION
+            TOOL_RUN_TASK
+                | TOOL_GET_SESSION
+                | TOOL_CLOSE_SESSION
+                | TOOL_EXTRACT_CONTENT
+                | TOOL_SCREENSHOT
         )
     }
 
@@ -610,78 +829,20 @@ impl ToolProvider for BrowserUseProvider {
         };
 
         match tool_name {
-            TOOL_RUN_TASK => {
-                let args: RunTaskArgs = serde_json::from_str(arguments)?;
-                if args.task.trim().is_empty() {
-                    return Err(anyhow!("browser_use_run_task requires a non-empty task"));
-                }
-
-                let inherited_llm = self.browser_llm_config_for_active_route()?;
-                let (browser_llm_config, browser_llm_api_key) = match inherited_llm {
-                    Some((config, api_key)) => (Some(config), Some(api_key)),
-                    None => (None, None),
-                };
-                let vision_warning =
-                    self.vision_policy_warning(&args.task, browser_llm_config.as_ref())?;
-                let body = serde_json::to_value(RunTaskRequestBody {
-                    task: args.task,
-                    start_url: args.start_url,
-                    session_id: args.session_id,
-                    timeout_secs: args.timeout_secs,
-                    browser_llm_config,
-                })?;
-                let payload = self
-                    .request(
-                        Method::POST,
-                        "/sessions/run",
-                        Some(body),
-                        browser_llm_api_key.as_deref(),
-                        cancellation_token,
-                    )
-                    .await?;
-                let output = format_tool_output(payload);
-                if let Some(warning) = vision_warning {
-                    Ok(format!("{warning}\n\n{output}"))
-                } else {
-                    Ok(output)
-                }
-            }
+            TOOL_RUN_TASK => self.execute_run_task(arguments, cancellation_token).await,
             TOOL_GET_SESSION => {
-                let args: SessionArgs = serde_json::from_str(arguments)?;
-                let session_id = args.session_id.trim();
-                if session_id.is_empty() {
-                    return Err(anyhow!("browser_use_get_session requires a session_id"));
-                }
-
-                let payload = self
-                    .request(
-                        Method::GET,
-                        &format!("/sessions/{session_id}"),
-                        None,
-                        None,
-                        cancellation_token,
-                    )
-                    .await?;
-                Ok(format_tool_output(payload))
+                self.execute_get_session(arguments, cancellation_token)
+                    .await
             }
             TOOL_CLOSE_SESSION => {
-                let args: SessionArgs = serde_json::from_str(arguments)?;
-                let session_id = args.session_id.trim();
-                if session_id.is_empty() {
-                    return Err(anyhow!("browser_use_close_session requires a session_id"));
-                }
-
-                let payload = self
-                    .request(
-                        Method::DELETE,
-                        &format!("/sessions/{session_id}"),
-                        None,
-                        None,
-                        cancellation_token,
-                    )
-                    .await?;
-                Ok(format_tool_output(payload))
+                self.execute_close_session(arguments, cancellation_token)
+                    .await
             }
+            TOOL_EXTRACT_CONTENT => {
+                self.execute_extract_content(arguments, cancellation_token)
+                    .await
+            }
+            TOOL_SCREENSHOT => self.execute_screenshot(arguments, cancellation_token).await,
             _ => Err(anyhow!("Unknown Browser Use tool: {tool_name}")),
         }
     }
