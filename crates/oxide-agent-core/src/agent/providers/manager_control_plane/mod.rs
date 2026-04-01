@@ -204,6 +204,12 @@ const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
 const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
 #[cfg(feature = "crawl4ai")]
 const TOPIC_AGENT_CRAWL4AI_TOOLS: &[&str] = &["deep_crawl", "web_markdown", "web_pdf"];
+#[cfg(feature = "browser_use")]
+const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
+    "browser_use_run_task",
+    "browser_use_get_session",
+    "browser_use_close_session",
+];
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",
     "ssh_sudo_exec",

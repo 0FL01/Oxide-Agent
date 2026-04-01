@@ -144,7 +144,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, reminder"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, browser, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -163,7 +163,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, reminder"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, browser, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -259,6 +259,21 @@ impl ManagerControlPlaneProvider {
         groups
     }
 
+    fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
+        let mut groups = Vec::new();
+
+        #[cfg(feature = "browser_use")]
+        if crate::config::is_browser_use_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "browser_use",
+                aliases: &["browser", "browser_use"],
+                tools: TOPIC_AGENT_BROWSER_USE_TOOLS,
+            });
+        }
+
+        groups
+    }
+
     pub(super) async fn topic_agent_tool_catalog(
         &self,
         topic_id: &str,
@@ -302,6 +317,7 @@ impl ManagerControlPlaneProvider {
         ];
 
         groups.extend(Self::configured_search_tool_groups());
+        groups.extend(Self::configured_browser_tool_groups());
 
         let topic_infra = self
             .storage
@@ -1446,6 +1462,86 @@ mod tests {
         assert!(catalog.tool_names.contains("transcribe_audio_file"));
         assert!(catalog.tool_names.contains("describe_image_file"));
         assert!(catalog.tool_names.contains("describe_video_file"));
+    }
+
+    #[cfg(feature = "browser_use")]
+    #[tokio::test]
+    async fn topic_agent_tool_catalog_includes_browser_use_tools_when_enabled() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("BROWSER_USE_ENABLED", "true");
+        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_infra_config()
+            .returning(|_, _| Ok(None));
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let catalog = provider
+            .topic_agent_tool_catalog("topic-a")
+            .await
+            .expect("catalog should build");
+
+        let browser_group = catalog
+            .groups
+            .iter()
+            .find(|group| group.provider == "browser_use")
+            .expect("browser_use group should be present");
+
+        assert_eq!(browser_group.aliases, &["browser", "browser_use"]);
+        assert_eq!(
+            browser_group.tools,
+            &[
+                "browser_use_run_task",
+                "browser_use_get_session",
+                "browser_use_close_session"
+            ]
+        );
+        assert!(catalog.tool_names.contains("browser_use_run_task"));
+        assert!(catalog.tool_names.contains("browser_use_get_session"));
+        assert!(catalog.tool_names.contains("browser_use_close_session"));
+
+        std::env::remove_var("BROWSER_USE_ENABLED");
+        std::env::remove_var("BROWSER_USE_URL");
+    }
+
+    #[test]
+    fn browser_alias_expands_browser_use_group() {
+        let catalog = TopicAgentToolCatalog {
+            groups: vec![TopicAgentToolGroup {
+                provider: "browser_use",
+                aliases: &["browser", "browser_use"],
+                tools: &[
+                    "browser_use_run_task",
+                    "browser_use_get_session",
+                    "browser_use_close_session",
+                ],
+            }],
+            tool_names: [
+                "browser_use_run_task",
+                "browser_use_get_session",
+                "browser_use_close_session",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        };
+
+        let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
+            &catalog,
+            vec!["browser".to_string()],
+        )
+        .expect("browser alias should expand the browser-use provider group");
+
+        assert_eq!(
+            expanded,
+            vec![
+                "browser_use_close_session".to_string(),
+                "browser_use_get_session".to_string(),
+                "browser_use_run_task".to_string(),
+            ]
+        );
     }
 
     #[test]
