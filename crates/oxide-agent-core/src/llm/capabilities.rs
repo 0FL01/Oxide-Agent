@@ -2,6 +2,53 @@ use crate::config::ModelInfo;
 
 use super::providers;
 
+/// Media modality types used for capability-based route resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaModality {
+    AudioTranscription,
+    ImageUnderstanding,
+    VideoUnderstanding,
+}
+
+impl MediaModality {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::AudioTranscription => "audio transcription",
+            Self::ImageUnderstanding => "image understanding",
+            Self::VideoUnderstanding => "video understanding",
+        }
+    }
+}
+
+/// Provider support matrix for media modalities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaCapabilities {
+    pub supports_audio_transcription: bool,
+    pub supports_image_understanding: bool,
+    pub supports_video_understanding: bool,
+}
+
+impl MediaCapabilities {
+    #[must_use]
+    pub const fn new(audio: bool, image: bool, video: bool) -> Self {
+        Self {
+            supports_audio_transcription: audio,
+            supports_image_understanding: image,
+            supports_video_understanding: video,
+        }
+    }
+
+    #[must_use]
+    pub const fn supports(self, modality: MediaModality) -> bool {
+        match modality {
+            MediaModality::AudioTranscription => self.supports_audio_transcription,
+            MediaModality::ImageUnderstanding => self.supports_image_understanding,
+            MediaModality::VideoUnderstanding => self.supports_video_understanding,
+        }
+    }
+}
+
 /// How strictly a provider enforces tool-call history consistency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolHistoryMode {
@@ -91,6 +138,22 @@ pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
 }
 
 #[must_use]
+/// Returns media modality support for a provider.
+pub fn provider_media_capabilities(provider_name: &str) -> MediaCapabilities {
+    match provider_name.to_ascii_lowercase().as_str() {
+        "gemini" | "openrouter" => MediaCapabilities::new(true, true, true),
+        "mistral" => MediaCapabilities::new(true, false, false),
+        _ => MediaCapabilities::new(false, false, false),
+    }
+}
+
+#[must_use]
+/// Returns media modality support for a specific configured model route.
+pub fn provider_media_capabilities_for_model(model_info: &ModelInfo) -> MediaCapabilities {
+    provider_media_capabilities(&model_info.provider)
+}
+
+#[must_use]
 /// Returns capabilities for a specific configured model route.
 pub fn provider_capabilities_for_model(model_info: &ModelInfo) -> ProviderCapabilities {
     let mut capabilities = provider_capabilities(&model_info.provider);
@@ -157,5 +220,29 @@ mod tests {
         assert!(capabilities.supports_tool_calling);
         assert!(capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "best_effort");
+    }
+
+    #[test]
+    fn media_capabilities_are_modality_specific() {
+        let gemini = super::provider_media_capabilities("gemini");
+        let openrouter = super::provider_media_capabilities("openrouter");
+        let mistral = super::provider_media_capabilities("mistral");
+        let groq = super::provider_media_capabilities("groq");
+
+        assert!(gemini.supports(super::MediaModality::AudioTranscription));
+        assert!(gemini.supports(super::MediaModality::ImageUnderstanding));
+        assert!(gemini.supports(super::MediaModality::VideoUnderstanding));
+
+        assert!(openrouter.supports(super::MediaModality::AudioTranscription));
+        assert!(openrouter.supports(super::MediaModality::ImageUnderstanding));
+        assert!(openrouter.supports(super::MediaModality::VideoUnderstanding));
+
+        assert!(mistral.supports(super::MediaModality::AudioTranscription));
+        assert!(!mistral.supports(super::MediaModality::ImageUnderstanding));
+        assert!(!mistral.supports(super::MediaModality::VideoUnderstanding));
+
+        assert!(!groq.supports(super::MediaModality::AudioTranscription));
+        assert!(!groq.supports(super::MediaModality::ImageUnderstanding));
+        assert!(!groq.supports(super::MediaModality::VideoUnderstanding));
     }
 }

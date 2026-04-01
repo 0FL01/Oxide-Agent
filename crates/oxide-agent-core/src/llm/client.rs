@@ -8,23 +8,6 @@ use super::{
     LlmProvider, Message, ProviderCapabilities, ToolDefinition,
 };
 
-#[derive(Clone, Copy)]
-enum MediaModality {
-    AudioTranscription,
-    ImageUnderstanding,
-    VideoUnderstanding,
-}
-
-impl MediaModality {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::AudioTranscription => "audio transcription",
-            Self::ImageUnderstanding => "image understanding",
-            Self::VideoUnderstanding => "video understanding",
-        }
-    }
-}
-
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
@@ -78,18 +61,9 @@ impl LlmClient {
         providers.insert(Self::provider_key(name), provider);
     }
 
-    fn provider_supports_media_modality(provider_name: &str, modality: MediaModality) -> bool {
-        let provider = provider_name.to_ascii_lowercase();
-        match provider.as_str() {
-            "gemini" | "openrouter" => true,
-            "mistral" => matches!(modality, MediaModality::AudioTranscription),
-            _ => false,
-        }
-    }
-
     fn resolve_media_route_for_modality(
         &self,
-        modality: MediaModality,
+        modality: capabilities::MediaModality,
     ) -> Result<(String, crate::config::ModelInfo), LlmError> {
         let mut candidates = Vec::with_capacity(2);
         if let Some(name) = self.media_model_name.as_deref() {
@@ -115,7 +89,7 @@ impl LlmClient {
                 continue;
             }
 
-            if Self::provider_supports_media_modality(&model_info.provider, modality) {
+            if capabilities::provider_media_capabilities_for_model(&model_info).supports(modality) {
                 return Ok((model_name.to_string(), model_info));
             }
         }
@@ -135,7 +109,7 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports audio transcription.
     pub fn resolve_media_model_for_audio_stt(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_route_for_modality(MediaModality::AudioTranscription)
+        self.resolve_media_route_for_modality(capabilities::MediaModality::AudioTranscription)
             .map(|(_, info)| info)
     }
 
@@ -148,7 +122,7 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports image understanding.
     pub fn resolve_media_model_for_image(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_route_for_modality(MediaModality::ImageUnderstanding)
+        self.resolve_media_route_for_modality(capabilities::MediaModality::ImageUnderstanding)
             .map(|(_, info)| info)
     }
 
@@ -161,7 +135,7 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports video understanding.
     pub fn resolve_media_model_for_video(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_route_for_modality(MediaModality::VideoUnderstanding)
+        self.resolve_media_route_for_modality(capabilities::MediaModality::VideoUnderstanding)
             .map(|(_, info)| info)
     }
 
@@ -171,7 +145,7 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports audio transcription.
     pub fn resolve_media_model_name_for_audio_stt(&self) -> Result<String, LlmError> {
-        self.resolve_media_route_for_modality(MediaModality::AudioTranscription)
+        self.resolve_media_route_for_modality(capabilities::MediaModality::AudioTranscription)
             .map(|(name, _)| name)
     }
 
@@ -181,7 +155,7 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports image understanding.
     pub fn resolve_media_model_name_for_image(&self) -> Result<String, LlmError> {
-        self.resolve_media_route_for_modality(MediaModality::ImageUnderstanding)
+        self.resolve_media_route_for_modality(capabilities::MediaModality::ImageUnderstanding)
             .map(|(name, _)| name)
     }
 
@@ -191,7 +165,7 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` when no route supports video understanding.
     pub fn resolve_media_model_name_for_video(&self) -> Result<String, LlmError> {
-        self.resolve_media_route_for_modality(MediaModality::VideoUnderstanding)
+        self.resolve_media_route_for_modality(capabilities::MediaModality::VideoUnderstanding)
             .map(|(name, _)| name)
     }
 
@@ -320,7 +294,9 @@ impl LlmClient {
     /// Returns true if at least one multimodal provider is configured.
     #[must_use]
     pub fn is_multimodal_available(&self) -> bool {
-        self.is_provider_available("gemini") || self.is_provider_available("openrouter")
+        self.is_audio_transcription_available()
+            || self.is_image_understanding_available()
+            || self.is_video_understanding_available()
     }
 
     /// Returns true if embedding provider is configured.
