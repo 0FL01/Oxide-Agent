@@ -201,7 +201,7 @@ impl AgentRunner {
             json_mode,
         );
 
-        if !capabilities.can_run_agent_tools() {
+        if !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode) {
             let error = LlmError::ApiError(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
@@ -299,7 +299,7 @@ impl AgentRunner {
                 json_mode,
             );
 
-            if !capabilities.can_run_agent_tools() {
+            if !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode) {
                 let error = LlmError::ApiError(format!(
                     "Tool-enabled agent calls are not supported for {} model `{}`",
                     route.provider, route.id

@@ -3,7 +3,7 @@ use crate::config::{
     GEMINI_IMAGE_TEMPERATURE,
 };
 use crate::llm::support::http::create_http_client_builder;
-use crate::llm::{LlmError, LlmProvider, Message};
+use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use gemini_rust::{
@@ -271,6 +271,30 @@ impl GeminiProvider {
     fn max_output_tokens(max_tokens: u32) -> i32 {
         i32::try_from(max_tokens).unwrap_or(i32::MAX)
     }
+
+    fn finish_reason(response: &GenerationResponse) -> String {
+        response
+            .candidates
+            .iter()
+            .find_map(|candidate| candidate.finish_reason.as_ref())
+            .map(Self::finish_reason_name)
+            .map(|reason| reason.to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    fn token_count(count: Option<i32>) -> Option<u32> {
+        count.and_then(|value| u32::try_from(value).ok())
+    }
+
+    fn usage(response: &GenerationResponse) -> Option<TokenUsage> {
+        let usage = response.usage_metadata.as_ref()?;
+
+        Some(TokenUsage {
+            prompt_tokens: Self::token_count(usage.prompt_token_count)?,
+            completion_tokens: Self::token_count(usage.candidates_token_count)?,
+            total_tokens: Self::token_count(usage.total_token_count)?,
+        })
+    }
 }
 
 #[async_trait]
@@ -378,15 +402,64 @@ impl LlmProvider for GeminiProvider {
 
         Self::extract_text_response(&response)
     }
+
+    async fn chat_with_tools<'a>(
+        &self,
+        request: ChatWithToolsRequest<'a>,
+    ) -> Result<ChatResponse, LlmError> {
+        let ChatWithToolsRequest {
+            system_prompt,
+            messages,
+            tools,
+            model_id,
+            max_tokens,
+            json_mode,
+        } = request;
+
+        if !tools.is_empty() {
+            return Err(LlmError::Unknown(
+                "Gemini tool calling is not implemented yet".to_string(),
+            ));
+        }
+
+        if !json_mode {
+            return Err(LlmError::Unknown(
+                "Gemini structured chat requests require json_mode".to_string(),
+            ));
+        }
+
+        let client = self.sdk_client(model_id)?;
+        let response = client
+            .generate_content()
+            .with_system_prompt(system_prompt)
+            .with_messages(Self::history_to_sdk_messages(messages))
+            .with_temperature(GEMINI_CHAT_TEMPERATURE)
+            .with_max_output_tokens(Self::max_output_tokens(max_tokens))
+            .with_safety_settings(Self::safety_settings())
+            .with_response_mime_type("application/json")
+            .execute()
+            .await
+            .map_err(Self::map_sdk_error)?;
+
+        Ok(ChatResponse {
+            content: Some(Self::extract_text_response(&response)?),
+            tool_calls: Vec::new(),
+            finish_reason: Self::finish_reason(&response),
+            reasoning_content: None,
+            usage: Self::usage(&response),
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::GeminiProvider;
     use crate::llm::LlmError;
+    use crate::llm::TokenUsage;
     use gemini_rust::{
-        generation::FinishReason, BlockReason, Candidate, ClientError, Content, FunctionCall,
-        GenerationResponse, Part, PromptFeedback,
+        generation::{FinishReason, UsageMetadata},
+        BlockReason, Candidate, ClientError, Content, FunctionCall, GenerationResponse, Part,
+        PromptFeedback,
     };
     use serde_json::json;
 
@@ -578,5 +651,53 @@ mod tests {
                     && message.contains("thoughts=1")
                     && message.contains("function_calls=1")
         ));
+    }
+
+    #[test]
+    fn finish_reason_is_lowercased_for_chat_responses() {
+        let response = GenerationResponse {
+            candidates: vec![Candidate {
+                content: Content::default(),
+                safety_ratings: None,
+                citation_metadata: None,
+                grounding_metadata: None,
+                finish_reason: Some(FinishReason::MaxTokens),
+                index: Some(0),
+            }],
+            prompt_feedback: None,
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        assert_eq!(GeminiProvider::finish_reason(&response), "max_tokens");
+    }
+
+    #[test]
+    fn maps_usage_metadata_to_token_usage() {
+        let response = GenerationResponse {
+            candidates: Vec::new(),
+            prompt_feedback: None,
+            usage_metadata: Some(UsageMetadata {
+                prompt_token_count: Some(12),
+                candidates_token_count: Some(34),
+                total_token_count: Some(46),
+                thoughts_token_count: Some(3),
+                prompt_tokens_details: None,
+                cached_content_token_count: None,
+                cache_tokens_details: None,
+            }),
+            model_version: None,
+            response_id: None,
+        };
+
+        assert_eq!(
+            GeminiProvider::usage(&response),
+            Some(TokenUsage {
+                prompt_tokens: 12,
+                completion_tokens: 34,
+                total_tokens: 46,
+            })
+        );
     }
 }
