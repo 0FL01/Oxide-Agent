@@ -1230,6 +1230,161 @@ async fn topic_agent_tools_enable_accepts_reminder_provider_alias() {
     assert_eq!(reminder_status["enabled"], true);
 }
 
+#[cfg(feature = "browser_use")]
+#[tokio::test]
+async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+    std::env::set_var("BROWSER_USE_ENABLED", "true");
+
+    let mut mock = crate::storage::MockStorageProvider::new();
+    mock.expect_get_topic_binding()
+        .with(eq(77_i64), eq("topic-a".to_string()))
+        .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+    mock.expect_get_topic_infra_config()
+        .with(eq(77_i64), eq("topic-a".to_string()))
+        .returning(|_, _| Ok(None));
+    mock.expect_get_agent_profile()
+        .with(eq(77_i64), eq("agent-a".to_string()))
+        .returning(|_, _| Ok(None));
+
+    let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+    let response = provider
+        .execute(
+            TOOL_TOPIC_AGENT_TOOLS_GET,
+            r#"{"topic_id":"topic-a"}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("topic agent tools get should succeed");
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&response).expect("response must be valid json");
+    let browser_status = parsed["tools"]["provider_statuses"]
+        .as_array()
+        .expect("provider_statuses must be an array")
+        .iter()
+        .find(|entry| entry["provider"] == "browser_use")
+        .expect("browser_use provider status must be present");
+
+    assert_eq!(browser_status["enabled"], true);
+    assert!(browser_status["available_tools"]
+        .as_array()
+        .is_some_and(|tools| {
+            tools.iter().any(|tool| tool == "browser_use_run_task")
+                && tools.iter().any(|tool| tool == "browser_use_get_session")
+                && tools.iter().any(|tool| tool == "browser_use_close_session")
+        }));
+
+    std::env::remove_var("BROWSER_USE_ENABLED");
+    std::env::remove_var("BROWSER_USE_URL");
+}
+
+#[cfg(feature = "browser_use")]
+#[tokio::test]
+async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+    std::env::set_var("BROWSER_USE_ENABLED", "true");
+
+    let mut mock = crate::storage::MockStorageProvider::new();
+    mock.expect_get_user_config()
+        .returning(|_| Ok(crate::storage::UserConfig::default()));
+    mock.expect_get_topic_binding()
+        .with(eq(77_i64), eq("topic-a".to_string()))
+        .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+    mock.expect_get_topic_infra_config()
+        .with(eq(77_i64), eq("topic-a".to_string()))
+        .returning(|_, _| Ok(None));
+    mock.expect_get_agent_profile()
+        .with(eq(77_i64), eq("agent-a".to_string()))
+        .returning(|_, _| {
+            Ok(Some(AgentProfileRecord {
+                schema_version: 1,
+                version: 3,
+                user_id: 77,
+                agent_id: "agent-a".to_string(),
+                profile: json!({
+                    "systemPrompt": "browser agent",
+                }),
+                created_at: 10,
+                updated_at: 20,
+            }))
+        });
+    mock.expect_upsert_agent_profile()
+        .withf(|options| {
+            options.agent_id == "agent-a"
+                && options.profile["systemPrompt"] == "browser agent"
+                && options
+                    .profile
+                    .get("blockedTools")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|tools| {
+                        [
+                            "browser_use_run_task",
+                            "browser_use_get_session",
+                            "browser_use_close_session",
+                        ]
+                        .iter()
+                        .all(|tool| tools.iter().any(|value| value.as_str() == Some(*tool)))
+                    })
+        })
+        .returning(|options| {
+            Ok(AgentProfileRecord {
+                schema_version: 1,
+                version: 4,
+                user_id: options.user_id,
+                agent_id: options.agent_id,
+                profile: options.profile,
+                created_at: 10,
+                updated_at: 30,
+            })
+        });
+    mock.expect_append_audit_event().returning(|options| {
+        Ok(audit_event(
+            1,
+            options.topic_id.as_deref(),
+            options.agent_id.as_deref(),
+            &options.action,
+            options.payload,
+        ))
+    });
+
+    let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+    let response = provider
+        .execute(
+            TOOL_TOPIC_AGENT_TOOLS_DISABLE,
+            r#"{"topic_id":"topic-a","tools":["browser"]}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("topic agent tools disable should accept browser alias");
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&response).expect("response must be valid json");
+    let blocked_tools = parsed["profile"]["profile"]["blockedTools"]
+        .as_array()
+        .expect("blockedTools must be present");
+    assert_eq!(blocked_tools.len(), 3);
+
+    let browser_status = parsed["tools"]["provider_statuses"]
+        .as_array()
+        .expect("provider_statuses must be an array")
+        .iter()
+        .find(|entry| entry["provider"] == "browser_use")
+        .expect("browser_use provider status must be present");
+    assert_eq!(browser_status["enabled"], false);
+
+    std::env::remove_var("BROWSER_USE_ENABLED");
+    std::env::remove_var("BROWSER_USE_URL");
+}
+
 #[tokio::test]
 async fn topic_agent_tools_enable_accepts_ssh_send_file_to_user_when_topic_has_infra() {
     let mut mock = crate::storage::MockStorageProvider::new();
