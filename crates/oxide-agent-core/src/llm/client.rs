@@ -8,6 +8,23 @@ use super::{
     LlmProvider, Message, ProviderCapabilities, ToolDefinition,
 };
 
+#[derive(Clone, Copy)]
+enum MediaModality {
+    AudioTranscription,
+    ImageUnderstanding,
+    VideoUnderstanding,
+}
+
+impl MediaModality {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::AudioTranscription => "audio transcription",
+            Self::ImageUnderstanding => "image understanding",
+            Self::VideoUnderstanding => "video understanding",
+        }
+    }
+}
+
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
@@ -59,6 +76,108 @@ impl LlmClient {
         provider: Arc<dyn LlmProvider>,
     ) {
         providers.insert(Self::provider_key(name), provider);
+    }
+
+    fn provider_supports_media_modality(provider_name: &str, modality: MediaModality) -> bool {
+        let provider = provider_name.to_ascii_lowercase();
+        match provider.as_str() {
+            "gemini" | "openrouter" => true,
+            "mistral" => matches!(modality, MediaModality::AudioTranscription),
+            _ => false,
+        }
+    }
+
+    fn resolve_media_model_for_modality(
+        &self,
+        modality: MediaModality,
+    ) -> Result<crate::config::ModelInfo, LlmError> {
+        let mut candidates = Vec::with_capacity(2);
+        if let Some(name) = self.media_model_name.as_deref() {
+            if !name.is_empty() {
+                candidates.push(name);
+            }
+        }
+
+        if !self.chat_model_name.is_empty()
+            && !candidates
+                .iter()
+                .any(|candidate| *candidate == self.chat_model_name)
+        {
+            candidates.push(&self.chat_model_name);
+        }
+
+        for model_name in candidates {
+            let Ok(model_info) = self.get_model_info(model_name) else {
+                continue;
+            };
+
+            if !self.is_provider_available(&model_info.provider) {
+                continue;
+            }
+
+            if Self::provider_supports_media_modality(&model_info.provider, modality) {
+                return Ok(model_info);
+            }
+        }
+
+        Err(LlmError::MissingConfig(format!(
+            "No configured route supports {} (expected providers: gemini/openrouter, mistral for STT)",
+            modality.label()
+        )))
+    }
+
+    /// Resolve the model route for audio transcription.
+    ///
+    /// Prefers explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER` and falls back to chat model
+    /// when it supports audio transcription.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` when no route supports audio transcription.
+    pub fn resolve_media_model_for_audio_stt(&self) -> Result<crate::config::ModelInfo, LlmError> {
+        self.resolve_media_model_for_modality(MediaModality::AudioTranscription)
+    }
+
+    /// Resolve the model route for image understanding.
+    ///
+    /// Prefers explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER` and falls back to chat model
+    /// when it supports image understanding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` when no route supports image understanding.
+    pub fn resolve_media_model_for_image(&self) -> Result<crate::config::ModelInfo, LlmError> {
+        self.resolve_media_model_for_modality(MediaModality::ImageUnderstanding)
+    }
+
+    /// Resolve the model route for video understanding.
+    ///
+    /// Prefers explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER` and falls back to chat model
+    /// when it supports video understanding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError::MissingConfig` when no route supports video understanding.
+    pub fn resolve_media_model_for_video(&self) -> Result<crate::config::ModelInfo, LlmError> {
+        self.resolve_media_model_for_modality(MediaModality::VideoUnderstanding)
+    }
+
+    /// Returns true when at least one configured route supports audio transcription.
+    #[must_use]
+    pub fn is_audio_transcription_available(&self) -> bool {
+        self.resolve_media_model_for_audio_stt().is_ok()
+    }
+
+    /// Returns true when at least one configured route supports image understanding.
+    #[must_use]
+    pub fn is_image_understanding_available(&self) -> bool {
+        self.resolve_media_model_for_image().is_ok()
+    }
+
+    /// Returns true when at least one configured route supports video understanding.
+    #[must_use]
+    pub fn is_video_understanding_available(&self) -> bool {
+        self.resolve_media_model_for_video().is_ok()
     }
 
     /// Create a new LLM client with providers configured from settings
@@ -720,5 +839,92 @@ impl LlmClient {
         Err(LlmError::ApiError(
             "All retry attempts exhausted".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LlmClient;
+    use crate::config::AgentSettings;
+
+    #[test]
+    fn media_resolver_prefers_explicit_media_route_for_video() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-openrouter".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("media-gemini".to_string()),
+            media_model_provider: Some("gemini".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            gemini_api_key: Some("test-gemini-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        let route = llm
+            .resolve_media_model_for_video()
+            .expect("media route should resolve");
+
+        assert_eq!(route.id, "media-gemini");
+        assert_eq!(route.provider, "gemini");
+    }
+
+    #[test]
+    fn media_resolver_falls_back_to_chat_route_when_media_is_stt_only() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-openrouter".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("media-mistral".to_string()),
+            media_model_provider: Some("mistral".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            mistral_api_key: Some("test-mistral-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        let image_route = llm
+            .resolve_media_model_for_image()
+            .expect("chat route should be used for image modality");
+
+        assert_eq!(image_route.id, "chat-openrouter");
+        assert_eq!(image_route.provider, "openrouter");
+    }
+
+    #[test]
+    fn media_resolver_allows_mistral_for_audio_stt_only() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-mistral".to_string()),
+            chat_model_provider: Some("mistral".to_string()),
+            mistral_api_key: Some("test-mistral-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        let audio_route = llm
+            .resolve_media_model_for_audio_stt()
+            .expect("mistral should support stt route");
+
+        assert_eq!(audio_route.id, "chat-mistral");
+        assert_eq!(audio_route.provider, "mistral");
+        assert!(llm.resolve_media_model_for_video().is_err());
+    }
+
+    #[test]
+    fn media_resolver_skips_unconfigured_provider_routes() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-openrouter".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("media-gemini".to_string()),
+            media_model_provider: Some("gemini".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        let route = llm
+            .resolve_media_model_for_image()
+            .expect("chat route should be used when media provider is unavailable");
+
+        assert_eq!(route.id, "chat-openrouter");
+        assert_eq!(route.provider, "openrouter");
     }
 }
