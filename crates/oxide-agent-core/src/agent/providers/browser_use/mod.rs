@@ -52,6 +52,7 @@ pub struct BrowserUseProvider {
     base_url: String,
     client: reqwest::Client,
     settings: Arc<crate::config::AgentSettings>,
+    profile_scope: Option<String>,
     timeout: Duration,
     max_retries: usize,
     initial_backoff: Duration,
@@ -243,6 +244,7 @@ impl BrowserUseProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
             settings,
+            profile_scope: None,
             timeout,
             max_retries,
             initial_backoff,
@@ -284,8 +286,38 @@ impl BrowserUseProvider {
         Arc::new(Semaphore::new(get_browser_use_max_concurrent()))
     }
 
+    /// Attach a runtime-injected profile scope for persistent profile reuse.
+    #[must_use]
+    pub fn with_profile_scope(mut self, profile_scope: impl Into<String>) -> Self {
+        let profile_scope = profile_scope.into();
+        if !profile_scope.trim().is_empty() {
+            self.profile_scope = Some(profile_scope);
+        }
+        self
+    }
+
     fn endpoint_url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
+    }
+
+    fn runtime_profile_scope(&self) -> Option<&str> {
+        self.profile_scope
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    }
+
+    fn request_profile_scope(&self, args: &RunTaskArgs) -> Result<Option<String>> {
+        if args.reuse_profile.unwrap_or(false) || args.profile_id.is_some() {
+            let profile_scope = self.runtime_profile_scope().ok_or_else(|| {
+                anyhow!(
+                    "Browser Use profile reuse requires a topic-scoped runtime context; retry from a topic-bound session or omit reuse_profile/profile_id"
+                )
+            })?;
+            return Ok(Some(profile_scope.to_string()));
+        }
+
+        Ok(None)
     }
 
     fn browser_llm_config_for_active_route(&self) -> Result<Option<(BrowserLlmConfig, String)>> {
@@ -525,6 +557,7 @@ impl BrowserUseProvider {
             None => (None, None),
         };
         let vision_warning = self.vision_policy_warning(&args.task, browser_llm_config.as_ref())?;
+        let profile_scope = self.request_profile_scope(&args)?;
         let body = serde_json::to_value(RunTaskRequestBody {
             task: args.task,
             start_url: args.start_url,
@@ -532,6 +565,7 @@ impl BrowserUseProvider {
             timeout_secs: args.timeout_secs,
             reuse_profile: args.reuse_profile.unwrap_or(false),
             profile_id: args.profile_id,
+            profile_scope,
             browser_llm_config,
         })?;
         let payload = self
@@ -695,6 +729,8 @@ struct RunTaskRequestBody {
     reuse_profile: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     browser_llm_config: Option<BrowserLlmConfig>,
 }

@@ -128,6 +128,10 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "request_browser_llm_config",
             )
             self.assertFalse(payload["legacy_env_fallback_configured"])
+            self.assertEqual(
+                payload["profile_scope_mode"], "runtime_injected_preferred"
+            )
+            self.assertEqual(payload["max_profiles_per_scope"], 3)
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
             self.assertIn("browser_use", payload["supported_legacy_env_providers"])
 
@@ -292,6 +296,34 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((profile_root / "metadata.json").exists())
             self.assertTrue((profile_root / "browser").exists())
 
+    async def test_run_task_creates_runtime_scoped_profile_metadata(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the homepage and summarize it",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+
+            self.assertEqual(response.profile_scope, "topic-a")
+            metadata = json.loads(
+                (
+                    (Path(tmpdir) / "profiles" / response.profile_id) / "metadata.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["profile_scope"], "topic-a")
+
     async def test_run_task_reuses_profile_on_new_session(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
@@ -364,6 +396,74 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(metadata["status"], "idle")
             self.assertIsNone(metadata["current_session_id"])
+
+    async def test_run_task_rejects_cross_scope_profile_reuse(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            first = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the homepage",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+            await manager.close_session(first.session_id)
+
+            response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open docs",
+                    profile_id=first.profile_id,
+                    profile_scope="topic-b",
+                ),
+                None,
+            )
+
+            self.assertEqual(response.status, "failed")
+            self.assertIn("belongs to scope 'topic-a'", response.error)
+
+    async def test_profile_scope_quota_rejects_extra_retained_profiles(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(
+                Path(tmpdir), max_concurrent_sessions=1, max_profiles_per_scope=1
+            )
+
+            first = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the homepage",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+            await manager.close_session(first.session_id)
+
+            response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the docs page",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+
+            self.assertEqual(response.status, "failed")
+            self.assertIn("already has 1 retained profiles", response.error)
 
 
 if __name__ == "__main__":  # pragma: no cover
