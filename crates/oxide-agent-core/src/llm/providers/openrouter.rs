@@ -66,6 +66,45 @@ impl OpenRouterProvider {
         format!("data:{mime_type};base64,{}", BASE64.encode(bytes))
     }
 
+    fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
+        if image_bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']) {
+            return "image/png";
+        }
+
+        if image_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return "image/jpeg";
+        }
+
+        if image_bytes.starts_with(b"GIF87a") || image_bytes.starts_with(b"GIF89a") {
+            return "image/gif";
+        }
+
+        if image_bytes.starts_with(b"RIFF") && image_bytes.get(8..12) == Some(b"WEBP") {
+            return "image/webp";
+        }
+
+        "image/jpeg"
+    }
+
+    fn audio_input_format(mime_type: &str) -> &'static str {
+        let normalized = mime_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+
+        match normalized.as_str() {
+            "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+            "audio/mpeg" | "audio/mp3" => "mp3",
+            "audio/ogg" | "audio/opus" | "audio/vorbis" => "ogg",
+            "audio/flac" => "flac",
+            "audio/mp4" | "audio/x-m4a" => "m4a",
+            "audio/webm" => "webm",
+            _ => "wav",
+        }
+    }
+
     fn build_video_request_body(
         model_id: &str,
         video_bytes: &[u8],
@@ -207,12 +246,12 @@ impl LlmProvider for OpenRouterProvider {
     async fn transcribe_audio(
         &self,
         audio_bytes: Vec<u8>,
-        _mime_type: &str,
+        mime_type: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
         self.transcribe_audio_with_prompt(
             audio_bytes,
-            "audio/wav",
+            mime_type,
             OPENROUTER_AUDIO_TRANSCRIBE_PROMPT,
             model_id,
         )
@@ -222,12 +261,13 @@ impl LlmProvider for OpenRouterProvider {
     async fn transcribe_audio_with_prompt(
         &self,
         audio_bytes: Vec<u8>,
-        _mime_type: &str,
+        mime_type: &str,
         text_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
         let audio_base64 = BASE64.encode(&audio_bytes);
+        let audio_format = Self::audio_input_format(mime_type);
 
         let body = json!({
             "model": model_id,
@@ -240,7 +280,7 @@ impl LlmProvider for OpenRouterProvider {
                             "type": "input_audio",
                             "input_audio": {
                                 "data": audio_base64,
-                                "format": "wav"
+                                "format": audio_format
                             }
                         }
                     ]
@@ -270,7 +310,7 @@ impl LlmProvider for OpenRouterProvider {
         model_id: &str,
     ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
-        let data_url = Self::data_url("image/jpeg", &image_bytes);
+        let data_url = Self::data_url(Self::infer_image_mime_type(&image_bytes), &image_bytes);
 
         let body = json!({
             "model": model_id,
@@ -474,6 +514,43 @@ mod tests {
         assert_eq!(
             body["messages"][0]["content"][0]["text"],
             json!("Extract timestamps and speakers")
+        );
+    }
+
+    #[test]
+    fn audio_input_format_tracks_common_mime_types() {
+        assert_eq!(OpenRouterProvider::audio_input_format("audio/wav"), "wav");
+        assert_eq!(OpenRouterProvider::audio_input_format("audio/mpeg"), "mp3");
+        assert_eq!(OpenRouterProvider::audio_input_format("audio/ogg"), "ogg");
+        assert_eq!(OpenRouterProvider::audio_input_format("audio/flac"), "flac");
+        assert_eq!(
+            OpenRouterProvider::audio_input_format("audio/wav; codecs=1"),
+            "wav"
+        );
+        assert_eq!(OpenRouterProvider::audio_input_format("unknown"), "wav");
+    }
+
+    #[test]
+    fn infer_image_mime_type_from_magic_bytes() {
+        let png = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n', 0x00];
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xDB];
+        let gif = *b"GIF89a";
+        let webp = [b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P'];
+        let unknown = [0x00, 0x11, 0x22, 0x33];
+
+        assert_eq!(OpenRouterProvider::infer_image_mime_type(&png), "image/png");
+        assert_eq!(
+            OpenRouterProvider::infer_image_mime_type(&jpeg),
+            "image/jpeg"
+        );
+        assert_eq!(OpenRouterProvider::infer_image_mime_type(&gif), "image/gif");
+        assert_eq!(
+            OpenRouterProvider::infer_image_mime_type(&webp),
+            "image/webp"
+        );
+        assert_eq!(
+            OpenRouterProvider::infer_image_mime_type(&unknown),
+            "image/jpeg"
         );
     }
 }
