@@ -657,13 +657,9 @@ impl LlmProvider for GeminiProvider {
             .with_safety_settings(Self::safety_settings());
 
         if tools.is_empty() {
-            if !json_mode {
-                return Err(LlmError::Unknown(
-                    "Gemini structured chat requests require json_mode".to_string(),
-                ));
+            if json_mode {
+                request_builder = request_builder.with_response_mime_type("application/json");
             }
-
-            request_builder = request_builder.with_response_mime_type("application/json");
         } else {
             request_builder = request_builder
                 .with_tool(Tool::with_functions(Self::function_declarations(tools)))

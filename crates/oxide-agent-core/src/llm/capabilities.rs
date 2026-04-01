@@ -84,7 +84,8 @@ pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
     match provider_name.to_ascii_lowercase().as_str() {
         "minimax" | "mistral" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         "zai" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
-        "groq" | "gemini" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, true),
+        "gemini" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
+        "groq" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, true),
         _ => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
     }
 }
@@ -144,7 +145,17 @@ mod tests {
         let capabilities = super::provider_capabilities("gemini");
 
         assert!(capabilities.can_run_chat_with_tools_request(false, true));
-        assert!(!capabilities.can_run_chat_with_tools_request(false, false));
-        assert!(!capabilities.can_run_chat_with_tools_request(true, true));
+        assert!(capabilities.can_run_chat_with_tools_request(false, false));
+        assert!(capabilities.can_run_chat_with_tools_request(true, true));
+        assert!(capabilities.can_run_agent_tools());
+    }
+
+    #[test]
+    fn gemini_capabilities_enable_tool_loop_and_structured_output() {
+        let capabilities = super::provider_capabilities("gemini");
+
+        assert!(capabilities.supports_tool_calling);
+        assert!(capabilities.supports_structured_output);
+        assert_eq!(capabilities.tool_history_label(), "best_effort");
     }
 }
