@@ -127,12 +127,7 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 2.  **Configure environment variables:**
     Create `.env` based on `.env.example`.
 
-3.  **Build sandbox image:**
-    ```bash
-    docker build -t agent-sandbox:latest -f sandbox/Dockerfile.sandbox ..
-    ```
-
-4.  **Build and run the bot:**
+3.  **Build and run the bot:**
     ```bash
     docker-compose up --build -d
     ```
@@ -574,9 +569,9 @@ Enhanced reminder scheduling with pause/resume/retry support.
 
 ### Services
 
-1. **sandbox_image** (profile: "build")
-   - Builds agent-sandbox image from `sandbox/Dockerfile.sandbox`
-   - Used for pre-warming sandbox containers
+1. **sandbox_image**
+    - Builds agent-sandbox image from `sandbox/Dockerfile.sandbox`
+    - One-shot build service used during `docker compose up --build`
 
 2. **oxide_agent** (main bot)
    - Builds from root Dockerfile

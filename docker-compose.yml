@@ -1,10 +1,11 @@
 services:
   sandbox_image:
-    profiles: ["build"]
     build:
       context: .
       dockerfile: sandbox/Dockerfile.sandbox
     image: ${SANDBOX_IMAGE:-agent-sandbox:latest}
+    command: ["true"]
+    restart: "no"
     environment:
       - TZ=Europe/Moscow
 
@@ -31,10 +32,12 @@ services:
       - sandboxd-run:/run/sandboxd
     network_mode: host
     depends_on:
-       crawl4ai:
-         condition: service_healthy
-       searxng:
-         condition: service_healthy
+      sandboxd:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
     logging:
       driver: json-file
       options:
@@ -54,10 +57,19 @@ services:
       - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+    depends_on:
+      sandbox_image:
+        condition: service_completed_successfully
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - sandboxd-run:/run/sandboxd
     network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/sandboxd/sandboxd.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     logging:
       driver: json-file
       options:
@@ -95,6 +107,8 @@ services:
     environment:
       - TZ=Europe/Moscow
       - SEARXNG_BASE_URL=http://127.0.0.1:8081/
+      - GRANIAN_HOST=0.0.0.0
+      - GRANIAN_PORT=8080
     ports:
       - "127.0.0.1:8081:8080"
     volumes:
@@ -113,4 +127,3 @@ services:
 
 volumes:
   sandboxd-run:
-
