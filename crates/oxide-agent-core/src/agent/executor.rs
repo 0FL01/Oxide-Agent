@@ -28,6 +28,7 @@ use super::session::{
 };
 use super::skills::SkillRegistry;
 use super::tool_bridge::{execute_single_tool_call, ToolExecutionContext, ToolExecutionResult};
+use super::tool_runtime::scope_tool_model_route;
 use crate::agent::progress::AgentEvent;
 use crate::config::{get_agent_max_iterations, get_agent_search_limit};
 use crate::llm::{LlmClient, Message, ToolCall, ToolCallFunction, ToolDefinition};
@@ -109,6 +110,27 @@ struct PreparedExecution {
     system_prompt: String,
     messages: Vec<Message>,
     runner_config: AgentRunnerConfig,
+}
+
+fn current_model_route(config: &AgentRunnerConfig) -> Option<crate::config::ModelInfo> {
+    if let Some(route) = config.model_routes.iter().find(|route| {
+        route.id == config.model_name
+            && config
+                .model_provider
+                .as_deref()
+                .is_none_or(|provider| route.provider == provider)
+    }) {
+        return Some(route.clone());
+    }
+
+    let provider = config.model_provider.clone()?;
+    Some(crate::config::ModelInfo {
+        id: config.model_name.clone(),
+        provider,
+        max_output_tokens: config.model_max_output_tokens,
+        context_window_tokens: 0,
+        weight: 1,
+    })
 }
 
 enum TimedRunResult {
@@ -654,7 +676,10 @@ impl AgentExecutor {
         if crate::config::is_browser_use_enabled() {
             if let Some(url) = crate::config::get_browser_use_url() {
                 if !url.trim().is_empty() {
-                    registry.register(Box::new(BrowserUseProvider::new(&url)));
+                    registry.register(Box::new(BrowserUseProvider::new(
+                        &url,
+                        Arc::clone(&self.settings),
+                    )));
                 } else {
                     warn!(
                         "Browser Use enabled but BROWSER_USE_URL is empty; provider not registered"
@@ -878,6 +903,7 @@ impl AgentExecutor {
         };
 
         let cancellation_token = self.session.cancellation_token.clone();
+        let active_route = current_model_route(&prepared.runner_config);
         let tool_result = {
             let mut tool_ctx = ToolExecutionContext {
                 registry: &prepared.registry,
@@ -887,7 +913,12 @@ impl AgentExecutor {
                 agent: &mut self.session,
                 cancellation_token,
             };
-            execute_single_tool_call(tool_call, &mut tool_ctx).await?
+            let execution = execute_single_tool_call(tool_call, &mut tool_ctx);
+            if let Some(route) = active_route {
+                scope_tool_model_route(route, execution).await?
+            } else {
+                execution.await?
+            }
         };
 
         if let Some(request_id) = clear_pending_request_id {

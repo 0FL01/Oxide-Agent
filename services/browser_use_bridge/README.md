@@ -12,7 +12,7 @@
 `POST /sessions/run` поддерживает два режима выбора LLM:
 
 - legacy fallback через `BROWSER_USE_BRIDGE_LLM_PROVIDER` / `BROWSER_USE_BRIDGE_LLM_MODEL`
-- request-level `browser_llm_config`, который будет основным путем для следующего route-inheritance этапа
+- request-level `browser_llm_config`, который уже используется Rust provider-ом для Stage C route inheritance
 
 ## Environment
 
@@ -67,6 +67,7 @@ Bridge принимает нормализованный `browser_llm_config` в
 - `anthropic`
 - `minimax`
 - `zai`
+- `openrouter`
 - `openai_compatible`
 
 Секреты пока разрешаются только через `api_key_ref` формата `env:KEY`.
@@ -84,6 +85,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 
 - Stage 2 wiring publishes the service on `127.0.0.1:8002` and keeps browser state in the `browser-use-data` volume.
 - The bridge container only receives explicit Browser Use / LLM variables from compose. Legacy env fallback still uses `BROWSER_USE_BRIDGE_LLM_PROVIDER`, `BROWSER_USE_BRIDGE_LLM_MODEL`, and the matching API keys.
+- Stage C Rust provider now automatically injects `browser_llm_config` from the active Oxide route for `gemini`, `minimax`, `zai`, and `openrouter`.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
 - Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
 

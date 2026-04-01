@@ -6,7 +6,10 @@ mod browser_use_tests {
 
     #[test]
     fn browser_use_can_handle_tools() {
-        let provider = BrowserUseProvider::new("http://localhost:8002");
+        let provider = BrowserUseProvider::new(
+            "http://localhost:8002",
+            std::sync::Arc::new(oxide_agent_core::config::AgentSettings::default()),
+        );
         assert!(provider.can_handle("browser_use_run_task"));
         assert!(provider.can_handle("browser_use_get_session"));
         assert!(provider.can_handle("browser_use_close_session"));
@@ -15,7 +18,10 @@ mod browser_use_tests {
 
     #[test]
     fn browser_use_tools_listed() {
-        let provider = BrowserUseProvider::new("http://localhost:8002");
+        let provider = BrowserUseProvider::new(
+            "http://localhost:8002",
+            std::sync::Arc::new(oxide_agent_core::config::AgentSettings::default()),
+        );
         let tools = provider.tools();
         assert_eq!(tools.len(), 3);
 

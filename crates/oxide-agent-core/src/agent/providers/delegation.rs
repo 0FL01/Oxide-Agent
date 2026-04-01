@@ -255,7 +255,11 @@ impl DelegationProvider {
             if let Some(url) = crate::config::get_browser_use_url() {
                 if !url.trim().is_empty() {
                     let sem = Arc::clone(&self.browser_use_semaphore);
-                    providers.push(Box::new(BrowserUseProvider::new_with_semaphore(&url, sem)));
+                    providers.push(Box::new(BrowserUseProvider::new_with_semaphore(
+                        &url,
+                        Arc::clone(&self.settings),
+                        sem,
+                    )));
                 } else {
                     warn!("Browser Use enabled but BROWSER_USE_URL is empty; sub-agent provider not registered");
                 }

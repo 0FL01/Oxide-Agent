@@ -8,6 +8,8 @@ use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_bridge::extract_updated_topic_agents_md;
+use crate::agent::tool_runtime::scope_tool_model_route;
+use crate::config::ModelInfo;
 
 use crate::llm::{InvocationId, Message, ToolCall, ToolCallFunction};
 use std::fmt::Write as _;
@@ -23,6 +25,28 @@ fn format_error_chain(error: &anyhow::Error) -> String {
         let _ = write!(&mut output, "{cause}");
     }
     output
+}
+
+fn current_execution_model_route(ctx: &AgentRunnerContext<'_>) -> Option<ModelInfo> {
+    if let Some(route) = ctx.config.model_routes.iter().find(|route| {
+        route.id == ctx.config.model_name
+            && ctx
+                .config
+                .model_provider
+                .as_deref()
+                .is_none_or(|provider| route.provider == provider)
+    }) {
+        return Some(route.clone());
+    }
+
+    let provider = ctx.config.model_provider.clone()?;
+    Some(ModelInfo {
+        id: ctx.config.model_name.clone(),
+        provider,
+        max_output_tokens: ctx.config.model_max_output_tokens,
+        context_window_tokens: 0,
+        weight: 1,
+    })
 }
 
 impl AgentRunner {
@@ -115,12 +139,14 @@ impl AgentRunner {
         // Phase 2: Parallel execution of approved tools
         // Execute raw tool calls in parallel through the registry
         let cancellation_token = ctx.agent.cancellation_token().clone();
+        let active_route = current_execution_model_route(ctx);
         let tool_futures: Vec<_> = approved_tools
             .into_iter()
             .map(|(idx, tool_call)| {
                 let registry = ctx.registry;
                 let progress_tx = ctx.progress_tx.cloned();
                 let cancellation_token = cancellation_token.clone();
+                let active_route = active_route.clone();
                 async move {
                     // Emit tool call event
                     if let Some(tx) = &progress_tx {
@@ -136,14 +162,17 @@ impl AgentRunner {
                     }
 
                     // Execute the tool
-                    let result = registry
-                        .execute(
-                            &tool_call.function.name,
-                            &tool_call.function.arguments,
-                            progress_tx.as_ref(),
-                            Some(&cancellation_token),
-                        )
-                        .await;
+                    let execution = registry.execute(
+                        &tool_call.function.name,
+                        &tool_call.function.arguments,
+                        progress_tx.as_ref(),
+                        Some(&cancellation_token),
+                    );
+                    let result = if let Some(route) = active_route {
+                        scope_tool_model_route(route, execution).await
+                    } else {
+                        execution.await
+                    };
 
                     (idx, tool_call, result)
                 }
