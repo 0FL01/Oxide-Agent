@@ -310,7 +310,7 @@ impl LlmClient {
         let provider = self.get_provider(&model_info.provider)?;
         let capabilities = Self::provider_capabilities_for_model(model_info);
 
-        if !capabilities.can_run_agent_tools() {
+        if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
             return Err(LlmError::ApiError(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
@@ -387,7 +387,7 @@ impl LlmClient {
         let model_info = self.get_model_info(model_name)?;
         let capabilities = Self::provider_capabilities_for_model(&model_info);
 
-        if !capabilities.can_run_agent_tools() {
+        if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
             return Err(LlmError::ApiError(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id

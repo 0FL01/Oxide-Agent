@@ -59,6 +59,19 @@ impl ProviderCapabilities {
     }
 
     #[must_use]
+    /// Returns true when the route can accept a `chat_with_tools` style request.
+    ///
+    /// Structured-output requests without tools are allowed on routes that do not support
+    /// client tool calling but do support structured JSON responses.
+    pub const fn can_run_chat_with_tools_request(self, has_tools: bool, json_mode: bool) -> bool {
+        if has_tools {
+            self.supports_tool_calling
+        } else {
+            self.supports_tool_calling || (json_mode && self.supports_structured_output)
+        }
+    }
+
+    #[must_use]
     /// Returns true when structured-output prompts and parsing should stay enabled.
     pub const fn should_use_structured_output(self) -> bool {
         self.supports_structured_output
@@ -124,5 +137,14 @@ mod tests {
         assert!(supported_capabilities.supports_structured_output);
         assert!(!unsupported_capabilities.supports_tool_calling);
         assert!(!unsupported_capabilities.supports_structured_output);
+    }
+
+    #[test]
+    fn structured_only_requests_are_allowed_without_tools() {
+        let capabilities = super::provider_capabilities("gemini");
+
+        assert!(capabilities.can_run_chat_with_tools_request(false, true));
+        assert!(!capabilities.can_run_chat_with_tools_request(false, false));
+        assert!(!capabilities.can_run_chat_with_tools_request(true, true));
     }
 }
