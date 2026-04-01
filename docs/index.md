@@ -26,6 +26,9 @@
   - [API Reference](./minimax/reference.md) - API details
 - [**Gemini SDK Migration**](./gemini-rust-migration.md) - approved migration contract and vendored SDK patch plan
 
+### Tooling Integrations
+- [**Browser Use Stage 0**](./browser-use-stage0.md) - approved integration contract for self-hosted Browser Use sidecar
+
 ### Саб-агенты (Sub-Agents)
 - [**Обзор саб-агентов**](./hooks/sub-agents/index.md)
   - [Жизненный цикл](./hooks/sub-agents/lifecycle.md)
