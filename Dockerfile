@@ -16,6 +16,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
+COPY --from=planner /app/vendor/gemini-rust /app/vendor/gemini-rust
 # Build dependencies - this layer is cached unless dependencies change
 RUN cargo chef cook --release --workspace --features oxide-agent-core/crawl4ai,oxide-agent-core/jira,oxide-agent-core/mattermost --recipe-path recipe.json
 
