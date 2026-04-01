@@ -93,25 +93,25 @@ impl MediaFileProvider {
         Ok((sandbox, resolved_path, bytes))
     }
 
-    fn media_model_name(&self) -> &str {
+    fn resolve_audio_model_name(&self) -> Result<String> {
         self.llm_client
-            .media_model_name
-            .as_deref()
-            .unwrap_or(&self.llm_client.chat_model_name)
+            .resolve_media_model_name_for_audio_stt()
+            .map_err(|error| anyhow!("Audio transcription route unavailable: {error}"))
     }
 
-    fn require_multimodal(&self) -> Result<()> {
-        if self.llm_client.is_multimodal_available() {
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "Multimodal provider unavailable. Configure Gemini or OpenRouter media support first."
-            ))
-        }
+    fn resolve_image_model_name(&self) -> Result<String> {
+        self.llm_client
+            .resolve_media_model_name_for_image()
+            .map_err(|error| anyhow!("Image understanding route unavailable: {error}"))
+    }
+
+    fn resolve_video_model_name(&self) -> Result<String> {
+        self.llm_client
+            .resolve_media_model_name_for_video()
+            .map_err(|error| anyhow!("Video understanding route unavailable: {error}"))
     }
 
     async fn handle_transcribe_audio_file(&self, arguments: &str) -> Result<String> {
-        self.require_multimodal()?;
         let args: AudioFileArgs = serde_json::from_str(arguments)?;
         let (_sandbox, resolved_path, audio_bytes) = self.read_media_file(&args.path).await?;
         let mime_type = args
@@ -120,12 +120,12 @@ impl MediaFileProvider {
         let prompt = args.prompt.unwrap_or_else(|| {
             "Transcribe this audio accurately for an AI agent. Preserve the spoken content faithfully and include timestamps, speaker turns, or structure only when they are clearly available or explicitly relevant.".to_string()
         });
-        let model_name = self.media_model_name();
+        let model_name = self.resolve_audio_model_name()?;
 
         info!(path = %resolved_path, mime_type = %mime_type, model = %model_name, "Transcribing sandbox audio file");
         let transcription = self
             .llm_client
-            .transcribe_audio_with_prompt(audio_bytes, &mime_type, &prompt, model_name)
+            .transcribe_audio_with_prompt(audio_bytes, &mime_type, &prompt, &model_name)
             .await
             .map_err(|error| anyhow!("Audio transcription failed: {error}"))?;
 
@@ -139,19 +139,18 @@ impl MediaFileProvider {
     }
 
     async fn handle_describe_image_file(&self, arguments: &str) -> Result<String> {
-        self.require_multimodal()?;
         let args: ImageFileArgs = serde_json::from_str(arguments)?;
         let (_sandbox, resolved_path, image_bytes) = self.read_media_file(&args.path).await?;
         let prompt = args.prompt.unwrap_or_else(|| {
             "Describe this image in detail for an AI agent. Include all important details, text, objects and their locations.".to_string()
         });
         let system_prompt = "You are a visual analyzer for an AI agent. Your task is to create a detailed text description of the image that allows the agent to understand its content without accessing the image itself.";
-        let model_name = self.media_model_name();
+        let model_name = self.resolve_image_model_name()?;
 
         info!(path = %resolved_path, model = %model_name, "Describing sandbox image file");
         let description = self
             .llm_client
-            .analyze_image(image_bytes, &prompt, system_prompt, model_name)
+            .analyze_image(image_bytes, &prompt, system_prompt, &model_name)
             .await
             .map_err(|error| anyhow!("Image analysis failed: {error}"))?;
 
@@ -164,7 +163,6 @@ impl MediaFileProvider {
     }
 
     async fn handle_describe_video_file(&self, arguments: &str) -> Result<String> {
-        self.require_multimodal()?;
         let args: VideoFileArgs = serde_json::from_str(arguments)?;
         let (_sandbox, resolved_path, video_bytes) = self.read_media_file(&args.path).await?;
         let mime_type = args
@@ -174,12 +172,12 @@ impl MediaFileProvider {
             "Describe this video in detail for an AI agent. Summarize the sequence of events, any visible text, spoken or implied context, and the important objects or actions frame-to-frame.".to_string()
         });
         let system_prompt = "You are a video analyzer for an AI agent. Your task is to create a detailed text description of the clip so the agent can understand the timeline, important visual details, and any visible text without accessing the video itself.";
-        let model_name = self.media_model_name();
+        let model_name = self.resolve_video_model_name()?;
 
         info!(path = %resolved_path, mime_type = %mime_type, model = %model_name, "Describing sandbox video file");
         let description = self
             .llm_client
-            .analyze_video(video_bytes, &mime_type, &prompt, system_prompt, model_name)
+            .analyze_video(video_bytes, &mime_type, &prompt, system_prompt, &model_name)
             .await
             .map_err(|error| anyhow!("Video analysis failed: {error}"))?;
 
