@@ -13,10 +13,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use gemini_rust::{
     generation::{BlockReason, FinishReason, GenerationResponse},
     safety::{HarmBlockThreshold, HarmCategory, SafetySetting},
-    ClientError as GeminiClientError, FunctionCall as GeminiFunctionCall, FunctionCallingMode,
-    FunctionDeclaration, Gemini, GeminiBuilder, Message as GeminiMessage, Model, Part, Tool,
+    ClientError as GeminiClientError, Content, FunctionCall as GeminiFunctionCall,
+    FunctionCallingMode, FunctionDeclaration, FunctionResponse as GeminiFunctionResponse, Gemini,
+    GeminiBuilder, Message as GeminiMessage, Model, Part, Role, Tool,
 };
 use reqwest::StatusCode;
+use serde_json::json;
 use serde_json::Value;
 
 #[derive(Default)]
@@ -279,15 +281,81 @@ impl GeminiProvider {
     fn history_to_sdk_messages(history: &[Message]) -> Vec<GeminiMessage> {
         history
             .iter()
-            .filter(|msg| msg.role != "system")
-            .map(|msg| {
-                if msg.role == "user" {
-                    GeminiMessage::user(msg.content.clone())
-                } else {
-                    GeminiMessage::model(msg.content.clone())
-                }
-            })
+            .filter_map(Self::history_message_to_sdk_message)
             .collect()
+    }
+
+    fn history_message_to_sdk_message(message: &Message) -> Option<GeminiMessage> {
+        match message.role.as_str() {
+            "system" => None,
+            "assistant" => Self::assistant_history_message(message),
+            "tool" => Self::tool_history_message(message),
+            "user" => Some(GeminiMessage::user(message.content.clone())),
+            _ => Some(GeminiMessage::model(message.content.clone())),
+        }
+    }
+
+    fn assistant_history_message(message: &Message) -> Option<GeminiMessage> {
+        let Some(tool_calls) = &message.tool_calls else {
+            return Some(GeminiMessage::model(message.content.clone()));
+        };
+
+        let mut parts = Vec::new();
+        let text = message.content.trim();
+        if !text.is_empty() {
+            parts.push(Part::Text {
+                text: text.to_string(),
+                thought: None,
+                thought_signature: None,
+            });
+        }
+
+        for tool_call in tool_calls {
+            let Some(encoded_tool_call) = CHAT_LIKE_TOOL_PROFILE
+                .encode_tool_call(tool_call)
+                .and_then(|call| call.into_chat_like())
+            else {
+                continue;
+            };
+
+            parts.push(Part::FunctionCall {
+                function_call: Self::sdk_function_call(
+                    encoded_tool_call.name,
+                    &encoded_tool_call.arguments,
+                    Some(encoded_tool_call.id),
+                ),
+                thought_signature: None,
+            });
+        }
+
+        if parts.is_empty() {
+            return None;
+        }
+
+        Some(GeminiMessage {
+            content: Content {
+                parts: Some(parts),
+                role: Some(Role::Model),
+            },
+            role: Role::Model,
+        })
+    }
+
+    fn tool_history_message(message: &Message) -> Option<GeminiMessage> {
+        let encoded_tool_result = CHAT_LIKE_TOOL_PROFILE
+            .encode_tool_result(message)
+            .and_then(|result| result.into_chat_like())?;
+        let name = encoded_tool_result.name?;
+
+        Some(GeminiMessage {
+            content: Content::function_response(Self::sdk_function_response(
+                name,
+                &encoded_tool_result.content,
+                Some(encoded_tool_result.tool_call_id),
+            ))
+            .with_role(Role::User),
+            role: Role::User,
+        })
     }
 
     fn function_declarations(tools: &[ToolDefinition]) -> Vec<FunctionDeclaration> {
@@ -324,6 +392,54 @@ impl GeminiProvider {
                 Err(_) => inner,
             },
             other => serde_json::to_string(&other).unwrap_or_else(|_| trimmed.to_string()),
+        }
+    }
+
+    fn sdk_function_call(
+        name: impl Into<String>,
+        arguments: &str,
+        provider_id: Option<String>,
+    ) -> GeminiFunctionCall {
+        let name = name.into();
+        let args = Self::tool_arguments_value(arguments);
+
+        match provider_id.as_deref().map(str::trim) {
+            Some(provider_id) if !provider_id.is_empty() => {
+                GeminiFunctionCall::with_id(name, args, provider_id)
+            }
+            _ => GeminiFunctionCall::new(name, args),
+        }
+    }
+
+    fn tool_arguments_value(arguments: &str) -> Value {
+        match serde_json::from_str::<Value>(&Self::normalize_tool_arguments_str(arguments)) {
+            Ok(Value::Object(map)) => Value::Object(map),
+            Ok(other) => json!({ "input": other }),
+            Err(_) => json!({ "input": arguments }),
+        }
+    }
+
+    fn sdk_function_response(
+        name: impl Into<String>,
+        content: &str,
+        provider_id: Option<String>,
+    ) -> GeminiFunctionResponse {
+        let name = name.into();
+        let response = Self::tool_result_value(content);
+
+        match provider_id.as_deref().map(str::trim) {
+            Some(provider_id) if !provider_id.is_empty() => {
+                GeminiFunctionResponse::with_id(name, response, provider_id)
+            }
+            _ => GeminiFunctionResponse::new(name, response),
+        }
+    }
+
+    fn tool_result_value(content: &str) -> Value {
+        match serde_json::from_str::<Value>(content) {
+            Ok(Value::Object(map)) => Value::Object(map),
+            Ok(other) => json!({ "output": other }),
+            Err(_) => json!({ "output": content }),
         }
     }
 
@@ -568,11 +684,13 @@ impl LlmProvider for GeminiProvider {
 mod tests {
     use super::GeminiProvider;
     use crate::llm::TokenUsage;
-    use crate::llm::{LlmError, ToolDefinition};
+    use crate::llm::{
+        LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
+    };
     use gemini_rust::{
         generation::{FinishReason, UsageMetadata},
         BlockReason, Candidate, ClientError, Content, FunctionCall, GenerationResponse, Part,
-        PromptFeedback,
+        PromptFeedback, Role,
     };
     use serde_json::json;
 
@@ -893,6 +1011,77 @@ mod tests {
         assert_eq!(
             tool_call.wire_tool_call_id(),
             tool_call.invocation_id().as_str()
+        );
+    }
+
+    #[test]
+    fn replays_assistant_tool_calls_with_provider_ids() {
+        let history = vec![Message::assistant_with_tools(
+            "Calling weather tool",
+            vec![ToolCall::new(
+                "invoke-1",
+                ToolCallFunction {
+                    name: "lookup_weather".to_string(),
+                    arguments: r#"{"city":"Paris"}"#.to_string(),
+                },
+                false,
+            )
+            .with_correlation(
+                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("call_123"),
+            )],
+        )];
+
+        let messages = GeminiProvider::history_to_sdk_messages(&history);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::Model);
+
+        let parts = messages[0].content.parts.as_ref().expect("assistant parts");
+        assert!(matches!(&parts[0], Part::Text { text, .. } if text == "Calling weather tool"));
+        assert!(matches!(
+            &parts[1],
+            Part::FunctionCall { function_call, .. }
+                if function_call.name == "lookup_weather"
+                    && function_call.id.as_deref() == Some("call_123")
+                    && function_call.args == json!({"city": "Paris"})
+        ));
+    }
+
+    #[test]
+    fn replays_tool_results_as_user_function_responses_with_same_provider_id() {
+        let history = vec![Message::tool_with_correlation(
+            "invoke-1",
+            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("call_123"),
+            "lookup_weather",
+            r#"{"temperature":22,"condition":"sunny"}"#,
+        )];
+
+        let messages = GeminiProvider::history_to_sdk_messages(&history);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::User);
+
+        let parts = messages[0]
+            .content
+            .parts
+            .as_ref()
+            .expect("tool result parts");
+        assert!(matches!(
+            &parts[0],
+            Part::FunctionResponse { function_response }
+                if function_response.name == "lookup_weather"
+                    && function_response.id.as_deref() == Some("call_123")
+                    && function_response.response.as_ref() == Some(&json!({"temperature":22,"condition":"sunny"}))
+        ));
+    }
+
+    #[test]
+    fn wraps_plain_text_tool_results_into_json_object() {
+        assert_eq!(
+            GeminiProvider::tool_result_value("done"),
+            json!({ "output": "done" })
+        );
+        assert_eq!(
+            GeminiProvider::tool_result_value("[1,2,3]"),
+            json!({ "output": [1, 2, 3] })
         );
     }
 }
