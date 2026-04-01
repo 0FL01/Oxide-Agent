@@ -93,6 +93,12 @@ pub struct AgentSettings {
     pub crawl4ai_enabled: Option<bool>,
     /// Crawl4AI request timeout (seconds)
     pub crawl4ai_timeout_secs: Option<u64>,
+    /// Browser Use bridge base URL.
+    pub browser_use_url: Option<String>,
+    /// Enable Browser Use tool provider registration.
+    pub browser_use_enabled: Option<bool>,
+    /// Browser Use request timeout (seconds).
+    pub browser_use_timeout_secs: Option<u64>,
 
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
@@ -294,7 +300,7 @@ impl AgentSettings {
             }
         }
 
-        settings.apply_search_provider_env_fallbacks();
+        settings.apply_tool_provider_env_fallbacks();
 
         if settings
             .zai_api_key
@@ -365,7 +371,7 @@ impl AgentSettings {
         }
     }
 
-    fn apply_search_provider_env_fallbacks(&mut self) {
+    fn apply_tool_provider_env_fallbacks(&mut self) {
         if self.tavily_api_key.is_none() {
             if let Ok(val) = std::env::var("TAVILY_API_KEY") {
                 if !val.is_empty() {
@@ -400,6 +406,18 @@ impl AgentSettings {
 
         if self.crawl4ai_enabled.is_none() {
             self.crawl4ai_enabled = parse_optional_env_bool("CRAWL4AI_ENABLED");
+        }
+
+        if self.browser_use_url.is_none() {
+            if let Ok(val) = std::env::var("BROWSER_USE_URL") {
+                if !val.is_empty() {
+                    self.browser_use_url = Some(val);
+                }
+            }
+        }
+
+        if self.browser_use_enabled.is_none() {
+            self.browser_use_enabled = parse_optional_env_bool("BROWSER_USE_ENABLED");
         }
     }
 
@@ -1142,6 +1160,29 @@ mod tests {
     }
 
     #[test]
+    fn browser_use_enabled_falls_back_to_url_presence() {
+        let _guard = env_mutex().lock().expect("env mutex poisoned");
+        env::remove_var("BROWSER_USE_ENABLED");
+        env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+
+        assert!(is_browser_use_enabled());
+
+        env::remove_var("BROWSER_USE_URL");
+    }
+
+    #[test]
+    fn browser_use_enabled_flag_overrides_url_fallback() {
+        let _guard = env_mutex().lock().expect("env mutex poisoned");
+        env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+        env::set_var("BROWSER_USE_ENABLED", "false");
+
+        assert!(!is_browser_use_enabled());
+
+        env::remove_var("BROWSER_USE_ENABLED");
+        env::remove_var("BROWSER_USE_URL");
+    }
+
+    #[test]
     fn searxng_enabled_flag_falls_back_to_url_presence() {
         env::remove_var("SEARXNG_ENABLED");
         env::set_var("SEARXNG_URL", "http://searxng:8080");
@@ -1467,7 +1508,7 @@ pub const TRANSPORT_API_INITIAL_BACKOFF_MS: u64 = 500;
 /// Maximum backoff delay in milliseconds for transport retries.
 pub const TRANSPORT_API_MAX_BACKOFF_MS: u64 = 4000;
 
-// Crawl4AI HTTP client configuration
+// Self-hosted tool provider HTTP client configuration
 /// Default timeout for SearXNG requests (seconds)
 pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Default engines used for SearXNG rotation fallback.
@@ -1488,6 +1529,21 @@ pub const CRAWL4AI_DEFAULT_INITIAL_BACKOFF_SECS: u64 = 2;
 
 /// Default max backoff delay in seconds
 pub const CRAWL4AI_DEFAULT_MAX_BACKOFF_SECS: u64 = 30;
+
+/// Default timeout for Browser Use bridge requests (seconds)
+pub const BROWSER_USE_DEFAULT_TIMEOUT_SECS: u64 = 300;
+
+/// Default max concurrent Browser Use requests per sub-agent.
+pub const BROWSER_USE_DEFAULT_MAX_CONCURRENT: usize = 2;
+
+/// Default max retries for Browser Use bridge requests.
+pub const BROWSER_USE_DEFAULT_MAX_RETRIES: usize = 3;
+
+/// Default initial backoff delay for Browser Use bridge retries (seconds).
+pub const BROWSER_USE_DEFAULT_INITIAL_BACKOFF_SECS: u64 = 2;
+
+/// Default max backoff delay for Browser Use bridge retries (seconds).
+pub const BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS: u64 = 20;
 
 /// Get SearXNG base URL from env.
 ///
@@ -1598,6 +1654,71 @@ pub fn get_crawl4ai_max_backoff() -> u64 {
         .unwrap_or(CRAWL4AI_DEFAULT_MAX_BACKOFF_SECS)
 }
 
+/// Get Browser Use bridge base URL from env.
+///
+/// Environment variable: `BROWSER_USE_URL`
+#[must_use]
+pub fn get_browser_use_url() -> Option<String> {
+    std::env::var("BROWSER_USE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Get Browser Use bridge timeout from env or default.
+///
+/// Environment variable: `BROWSER_USE_TIMEOUT_SECS`
+#[must_use]
+pub fn get_browser_use_timeout() -> u64 {
+    std::env::var("BROWSER_USE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get max concurrent Browser Use requests from env or default.
+///
+/// Environment variable: `BROWSER_USE_MAX_CONCURRENT`
+#[must_use]
+pub fn get_browser_use_max_concurrent() -> usize {
+    std::env::var("BROWSER_USE_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_MAX_CONCURRENT)
+}
+
+/// Get max retries for Browser Use bridge requests from env or default.
+///
+/// Environment variable: `BROWSER_USE_MAX_RETRIES`
+#[must_use]
+pub fn get_browser_use_max_retries() -> usize {
+    std::env::var("BROWSER_USE_MAX_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_MAX_RETRIES)
+}
+
+/// Get initial backoff delay for Browser Use bridge retries from env or default.
+///
+/// Environment variable: `BROWSER_USE_INITIAL_BACKOFF_SECS`
+#[must_use]
+pub fn get_browser_use_initial_backoff() -> u64 {
+    std::env::var("BROWSER_USE_INITIAL_BACKOFF_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_INITIAL_BACKOFF_SECS)
+}
+
+/// Get max backoff delay for Browser Use bridge retries from env or default.
+///
+/// Environment variable: `BROWSER_USE_MAX_BACKOFF_SECS`
+#[must_use]
+pub fn get_browser_use_max_backoff() -> u64 {
+    std::env::var("BROWSER_USE_MAX_BACKOFF_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS)
+}
+
 fn parse_optional_env_bool(name: &str) -> Option<bool> {
     std::env::var(name)
         .ok()
@@ -1636,6 +1757,15 @@ pub fn is_crawl4ai_enabled() -> bool {
 pub fn is_searxng_enabled() -> bool {
     parse_optional_env_bool("SEARXNG_ENABLED")
         .unwrap_or_else(|| get_searxng_url().is_some_and(|value| !value.trim().is_empty()))
+}
+
+/// Determine whether Browser Use tools should be registered.
+///
+/// Environment variable: `BROWSER_USE_ENABLED`
+#[must_use]
+pub fn is_browser_use_enabled() -> bool {
+    parse_optional_env_bool("BROWSER_USE_ENABLED")
+        .unwrap_or_else(|| get_browser_use_url().is_some_and(|value| !value.trim().is_empty()))
 }
 
 // LLM HTTP client configuration

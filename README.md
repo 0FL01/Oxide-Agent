@@ -171,6 +171,8 @@ TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enab
 SEARXNG_URL=http://127.0.0.1:8081  # SearXNG self-hosted search (auto-enabled when set)
 SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
 CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
+BROWSER_USE_URL=http://127.0.0.1:8002 # Browser Use self-hosted bridge
+BROWSER_USE_ENABLED=true        # Enable Browser Use browser automation provider
 ```
 </details>
 
