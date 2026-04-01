@@ -20,8 +20,12 @@ warnings.filterwarnings(
 
 
 class FakeBrowser:
-    def __init__(self):
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
         self.page = FakePage()
+        type(self).instances.append(self)
 
     async def close(self) -> None:
         return None
@@ -96,6 +100,7 @@ def import_bridge_module(extra_env: dict[str, str]):
     module_name = "services.browser_use_bridge.app.main"
     sys.modules.pop(module_name, None)
     FakeAgent.instances = []
+    FakeBrowser.instances = []
 
     browser_use_stub = make_browser_use_module()
     with mock.patch.dict(sys.modules, {"browser_use": browser_use_stub}):
@@ -257,6 +262,108 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(response.artifact["size_bytes"], 0)
             session = await manager.get_session(run_response.session_id)
             self.assertEqual(len(session.artifacts), 1)
+
+    async def test_run_task_creates_and_returns_profile_metadata(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the homepage and summarize it", reuse_profile=True
+                ),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertIsNotNone(response.profile_id)
+            self.assertEqual(response.profile_scope, "bridge_local")
+            self.assertEqual(response.profile_status, "active")
+            self.assertTrue(response.profile_attached)
+            self.assertFalse(response.profile_reused)
+            self.assertIn("user_data_dir", FakeBrowser.instances[-1].kwargs)
+            profile_root = Path(tmpdir) / "profiles" / response.profile_id
+            self.assertTrue((profile_root / "metadata.json").exists())
+            self.assertTrue((profile_root / "browser").exists())
+
+    async def test_run_task_reuses_profile_on_new_session(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            first = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage", reuse_profile=True),
+                None,
+            )
+            await manager.close_session(first.session_id)
+
+            second = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the docs page",
+                    profile_id=first.profile_id,
+                ),
+                None,
+            )
+
+            self.assertEqual(second.status, "completed")
+            self.assertEqual(second.profile_id, first.profile_id)
+            self.assertTrue(second.profile_reused)
+            self.assertEqual(second.profile_status, "active")
+            self.assertTrue(second.profile_attached)
+            self.assertEqual(
+                FakeBrowser.instances[-1].kwargs.get("user_data_dir"),
+                str(Path(tmpdir) / "profiles" / first.profile_id / "browser"),
+            )
+
+    async def test_close_session_detaches_profile_without_deleting_it(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage", reuse_profile=True),
+                None,
+            )
+            close_response = await manager.close_session(run_response.session_id)
+
+            self.assertEqual(close_response.status, "closed")
+            self.assertEqual(close_response.profile_id, run_response.profile_id)
+            self.assertEqual(close_response.profile_status, "idle")
+            self.assertFalse(close_response.profile_attached)
+
+            session = await manager.get_session(run_response.session_id)
+            self.assertEqual(session.profile_id, run_response.profile_id)
+            self.assertEqual(session.profile_status, "idle")
+            self.assertFalse(session.profile_attached)
+
+            metadata = json.loads(
+                (
+                    Path(tmpdir)
+                    / "profiles"
+                    / run_response.profile_id
+                    / "metadata.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["status"], "idle")
+            self.assertIsNone(metadata["current_session_id"])
 
 
 if __name__ == "__main__":  # pragma: no cover

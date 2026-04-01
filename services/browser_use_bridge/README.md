@@ -16,6 +16,13 @@
 - request-level `browser_llm_config`, который уже используется Rust provider-ом для Stage C route inheritance и является основным режимом
 - legacy fallback через `BROWSER_USE_BRIDGE_LLM_PROVIDER` / `BROWSER_USE_BRIDGE_LLM_MODEL`
 
+Минимальный reuse slice добавляет в `POST /sessions/run` optional hints:
+
+- `reuse_profile=true` - создать reusable profile и привязать его к новой browser session
+- `profile_id` - reuse уже существующего profile
+
+`profile_scope` на этом этапе остается внутренним значением bridge (`bridge_local`), пока следующий stage не прокинет реальный topic/context scope из Oxide Agent.
+
 ## Environment
 
 - `BROWSER_USE_BRIDGE_HOST` - bind host, default `0.0.0.0`
@@ -96,6 +103,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Stage C Rust provider automatically injects `browser_llm_config` from the active Oxide route for `gemini`, `minimax`, `zai`, and `openrouter`.
 - Stage D secret handling sends inherited-route API keys via `X-Oxide-Browser-Llm-Api-Key`, so `minimax`, `zai`, and `openrouter` do not require dedicated sidecar env passthrough in the default compose setup.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
+- Reusable profile metadata lives under `BROWSER_USE_BRIDGE_DATA_DIR/profiles/<profile_id>/metadata.json`, browser state under `.../profiles/<profile_id>/browser/`.
 - Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
 - `GET /health` also shows whether legacy env fallback is configured and which LLM source is preferred.
 
@@ -103,8 +111,10 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 
 - `POST /sessions/run` создает новую сессию, если `session_id` не передан.
 - При передаче существующего `session_id` bridge пытается reuse уже открытый browser runtime.
+- Если `reuse_profile=true`, bridge создает отдельный reusable profile и возвращает `profile_id`, `profile_scope`, `profile_status`, `profile_attached`, `profile_reused`.
+- Если передан `profile_id`, bridge пытается поднять новую browser session поверх сохраненного profile state.
 - `POST /sessions/{id}/extract_content` читает текущую страницу активной сессии и возвращает `text` или `html` с optional truncation.
 - `POST /sessions/{id}/screenshot` сохраняет PNG artifact в `BROWSER_USE_BRIDGE_DATA_DIR/artifacts/<session_id>/` и возвращает metadata с путем к файлу.
 - Метаданные сессий сохраняются в `BROWSER_USE_BRIDGE_DATA_DIR/sessions/`.
-- `POST /sessions/run` и `GET /sessions/{id}` теперь возвращают `llm_source`, `llm_provider`, `llm_transport` и `vision_mode`, чтобы было видно, исполнялся ли запрос через inherited route или legacy fallback.
+- `POST /sessions/run` и `GET /sessions/{id}` теперь возвращают `llm_source`, `llm_provider`, `llm_transport`, `vision_mode` и profile metadata, чтобы было видно, исполнялся ли запрос через inherited route или legacy fallback и был ли привязан reusable profile.
 - Реальная успешность `run_task` зависит от доступности `browser-use`, выбранного adapter-а и корректного secret resolution.

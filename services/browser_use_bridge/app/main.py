@@ -104,6 +104,8 @@ class RunTaskRequest(BaseModel):
     start_url: str | None = None
     session_id: str | None = None
     timeout_secs: int | None = Field(default=None, ge=1)
+    reuse_profile: bool = False
+    profile_id: str | None = Field(default=None, min_length=1)
     browser_llm_config: BrowserLlmConfig | None = None
 
 
@@ -118,6 +120,11 @@ class RunTaskResponse(BaseModel):
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None
+    profile_id: str | None = None
+    profile_scope: str | None = None
+    profile_status: str | None = None
+    profile_attached: bool = False
+    profile_reused: bool = False
 
 
 class SessionResponse(BaseModel):
@@ -130,12 +137,20 @@ class SessionResponse(BaseModel):
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None
+    profile_id: str | None = None
+    profile_scope: str | None = None
+    profile_status: str | None = None
+    profile_attached: bool = False
 
 
 class CloseSessionResponse(BaseModel):
     session_id: str
     closed: bool
     status: Literal["closed"]
+    profile_id: str | None = None
+    profile_scope: str | None = None
+    profile_status: str | None = None
+    profile_attached: bool = False
 
 
 class ExtractContentRequest(BaseModel):
@@ -192,6 +207,10 @@ class SessionRecord:
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None
+    profile_id: str | None = None
+    profile_scope: str | None = None
+    profile_status: str | None = None
+    profile_attached: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def snapshot(self) -> dict[str, Any]:
@@ -209,6 +228,37 @@ class SessionRecord:
             "llm_provider": self.llm_provider,
             "llm_transport": self.llm_transport,
             "vision_mode": self.vision_mode,
+            "profile_id": self.profile_id,
+            "profile_scope": self.profile_scope,
+            "profile_status": self.profile_status,
+            "profile_attached": self.profile_attached,
+        }
+
+
+@dataclass
+class ProfileRecord:
+    profile_id: str
+    profile_scope: str
+    status: Literal["active", "idle", "stale", "deleted"] = "idle"
+    current_session_id: str | None = None
+    profile_dir: str = ""
+    browser_data_dir: str = ""
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+    last_used_at: str | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "profile_id": self.profile_id,
+            "profile_scope": self.profile_scope,
+            "status": self.status,
+            "current_session_id": self.current_session_id,
+            "profile_dir": self.profile_dir,
+            "browser_data_dir": self.browser_data_dir,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "last_used_at": self.last_used_at,
         }
 
 
@@ -546,11 +596,14 @@ class SessionManager:
         self._data_dir = data_dir
         self._sessions_dir = data_dir / "sessions"
         self._artifacts_dir = data_dir / "artifacts"
+        self._profiles_dir = data_dir / "profiles"
         self._sessions: dict[str, SessionRecord] = {}
+        self._profiles: dict[str, ProfileRecord] = {}
         self._registry_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max(1, max_concurrent_sessions))
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self._profiles_dir.mkdir(parents=True, exist_ok=True)
 
     async def ensure_runtime_ready(self) -> None:
         if Agent is None or Browser is None:
@@ -571,12 +624,75 @@ class SessionManager:
             )
         return session
 
+    async def get_profile(self, profile_id: str) -> ProfileRecord:
+        profile_id = profile_id.strip()
+        if not profile_id:
+            raise HTTPException(status_code=404, detail="unknown profile ''")
+
+        async with self._registry_lock:
+            profile = self._profiles.get(profile_id)
+        if profile is not None:
+            return profile
+
+        metadata_path = self._profile_metadata_path(profile_id)
+        if not metadata_path.exists():
+            raise HTTPException(
+                status_code=404, detail=f"unknown profile '{profile_id}'"
+            )
+
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"failed to load profile '{profile_id}': {error}",
+            ) from error
+
+        profile = ProfileRecord(
+            profile_id=payload["profile_id"],
+            profile_scope=payload.get("profile_scope", "bridge_local"),
+            status=payload.get("status", "idle"),
+            current_session_id=payload.get("current_session_id"),
+            profile_dir=payload.get(
+                "profile_dir", str(self._profile_root(profile_id).resolve())
+            ),
+            browser_data_dir=payload.get(
+                "browser_data_dir", str(self._profile_browser_dir(profile_id).resolve())
+            ),
+            created_at=payload.get("created_at", utc_now()),
+            updated_at=payload.get("updated_at", utc_now()),
+            last_used_at=payload.get("last_used_at"),
+        )
+        async with self._registry_lock:
+            self._profiles[profile.profile_id] = profile
+        return profile
+
     async def create_session(self) -> SessionRecord:
         session = SessionRecord(session_id=f"browser-use-{uuid4().hex}")
         async with self._registry_lock:
             self._sessions[session.session_id] = session
         await self._persist(session)
         return session
+
+    async def create_profile(
+        self, profile_scope: str = "bridge_local"
+    ) -> ProfileRecord:
+        profile_id = f"browser-profile-{uuid4().hex}"
+        profile_root = self._profile_root(profile_id)
+        browser_data_dir = self._profile_browser_dir(profile_id)
+        profile_root.mkdir(parents=True, exist_ok=True)
+        browser_data_dir.mkdir(parents=True, exist_ok=True)
+
+        profile = ProfileRecord(
+            profile_id=profile_id,
+            profile_scope=profile_scope,
+            profile_dir=str(profile_root.resolve()),
+            browser_data_dir=str(browser_data_dir.resolve()),
+        )
+        async with self._registry_lock:
+            self._profiles[profile.profile_id] = profile
+        await self._persist_profile(profile)
+        return profile
 
     async def get_or_create_session(self, session_id: str | None) -> SessionRecord:
         if session_id is None:
@@ -588,6 +704,7 @@ class SessionManager:
     ) -> RunTaskResponse:
         await self.ensure_runtime_ready()
         session = await self.get_or_create_session(request.session_id)
+        profile_reused = False
 
         async with session.lock:
             if session.status == "running":
@@ -609,8 +726,15 @@ class SessionManager:
 
             async with self._semaphore:
                 try:
+                    profile, profile_reused = await self._resolve_profile_for_run(
+                        session, request
+                    )
                     if session.browser is None:
-                        session.browser = Browser()
+                        session.browser = self._create_browser(profile)
+                    if profile is not None:
+                        await self._attach_profile(session, profile)
+                    else:
+                        session.profile_attached = False
 
                     llm_config = resolve_llm_config(request, browser_llm_api_key)
                     session.llm_source = llm_config.source
@@ -648,6 +772,11 @@ class SessionManager:
             llm_provider=session.llm_provider,
             llm_transport=session.llm_transport,
             vision_mode=session.vision_mode,
+            profile_id=session.profile_id,
+            profile_scope=session.profile_scope,
+            profile_status=session.profile_status,
+            profile_attached=session.profile_attached,
+            profile_reused=profile_reused,
         )
 
     async def close_session(self, session_id: str) -> CloseSessionResponse:
@@ -656,9 +785,18 @@ class SessionManager:
             await self._close_browser(session.browser)
             session.browser = None
             session.status = "closed"
+            await self._detach_profile(session)
             session.updated_at = utc_now()
             await self._persist(session)
-        return CloseSessionResponse(session_id=session_id, closed=True, status="closed")
+        return CloseSessionResponse(
+            session_id=session_id,
+            closed=True,
+            status="closed",
+            profile_id=session.profile_id,
+            profile_scope=session.profile_scope,
+            profile_status=session.profile_status,
+            profile_attached=session.profile_attached,
+        )
 
     async def extract_content(
         self, session_id: str, request: ExtractContentRequest
@@ -727,6 +865,153 @@ class SessionManager:
                 except Exception:
                     pass
                 return
+
+    async def _resolve_profile_for_run(
+        self, session: SessionRecord, request: RunTaskRequest
+    ) -> tuple[ProfileRecord | None, bool]:
+        requested_profile_id = clean_optional(request.profile_id)
+
+        if session.browser is not None:
+            if requested_profile_id is not None:
+                if session.profile_id is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "cannot attach persistent profile to an already active "
+                            "ephemeral session; close the session or start a new one"
+                        ),
+                    )
+                if session.profile_id != requested_profile_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"session '{session.session_id}' is already attached to "
+                            f"profile '{session.profile_id}'"
+                        ),
+                    )
+            elif request.reuse_profile and session.profile_id is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "cannot enable persistent profile reuse for an already active "
+                        "ephemeral session; close the session or start a new one"
+                    ),
+                )
+
+            if session.profile_id is not None:
+                return await self.get_profile(session.profile_id), True
+            return None, False
+
+        if requested_profile_id is not None:
+            return await self.get_profile(requested_profile_id), True
+        if request.reuse_profile:
+            return await self.create_profile(), False
+        return None, False
+
+    async def _attach_profile(
+        self, session: SessionRecord, profile: ProfileRecord
+    ) -> None:
+        async with profile.lock:
+            if (
+                profile.current_session_id is not None
+                and profile.current_session_id != session.session_id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"profile '{profile.profile_id}' is already attached to "
+                        f"session '{profile.current_session_id}'"
+                    ),
+                )
+            profile.current_session_id = session.session_id
+            profile.status = "active"
+            profile.last_used_at = utc_now()
+            profile.updated_at = utc_now()
+            await self._persist_profile(profile)
+
+        session.profile_id = profile.profile_id
+        session.profile_scope = profile.profile_scope
+        session.profile_status = profile.status
+        session.profile_attached = True
+
+    async def _detach_profile(self, session: SessionRecord) -> None:
+        if session.profile_id is None:
+            session.profile_attached = False
+            return
+
+        try:
+            profile = await self.get_profile(session.profile_id)
+        except HTTPException:
+            session.profile_attached = False
+            session.profile_status = "idle"
+            return
+
+        async with profile.lock:
+            if profile.current_session_id == session.session_id:
+                profile.current_session_id = None
+            profile.status = "idle"
+            profile.updated_at = utc_now()
+            await self._persist_profile(profile)
+
+        session.profile_scope = profile.profile_scope
+        session.profile_status = profile.status
+        session.profile_attached = False
+
+    def _create_browser(self, profile: ProfileRecord | None) -> Any:
+        if profile is None:
+            return Browser()
+
+        profile_path = profile.browser_data_dir
+        try:
+            signature = inspect.signature(Browser)
+        except (TypeError, ValueError):
+            signature = None
+
+        if signature is not None:
+            if any(
+                param.kind == inspect.Parameter.VAR_KEYWORD
+                for param in signature.parameters.values()
+            ):
+                return Browser(user_data_dir=profile_path)
+
+            for candidate in (
+                "user_data_dir",
+                "profile_path",
+                "profile_dir",
+                "browser_profile_path",
+                "browser_user_data_dir",
+            ):
+                if candidate in signature.parameters:
+                    return Browser(**{candidate: profile_path})
+
+            raise RuntimeError(
+                "installed browser_use Browser constructor does not expose a supported persistent profile path argument"
+            )
+
+        for candidate in (
+            "user_data_dir",
+            "profile_path",
+            "profile_dir",
+            "browser_profile_path",
+            "browser_user_data_dir",
+        ):
+            try:
+                return Browser(**{candidate: profile_path})
+            except TypeError:
+                continue
+
+        raise RuntimeError(
+            "installed browser_use Browser constructor does not expose a supported persistent profile path argument"
+        )
+
+    def _profile_root(self, profile_id: str) -> Path:
+        return self._profiles_dir / profile_id
+
+    def _profile_browser_dir(self, profile_id: str) -> Path:
+        return self._profile_root(profile_id) / "browser"
+
+    def _profile_metadata_path(self, profile_id: str) -> Path:
+        return self._profile_root(profile_id) / "metadata.json"
 
     def _require_active_browser(self, session: SessionRecord) -> Any:
         if session.browser is None:
@@ -883,6 +1168,14 @@ class SessionManager:
             encoding="utf-8",
         )
 
+    async def _persist_profile(self, profile: ProfileRecord) -> None:
+        metadata_path = self._profile_metadata_path(profile.profile_id)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(
+            json.dumps(profile.snapshot(), ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+
 
 manager = SessionManager(
     data_dir=settings.data_dir,
@@ -928,6 +1221,8 @@ async def health() -> JSONResponse:
             "openrouter",
             "openai_compatible",
         ],
+        "profile_reuse_supported": True,
+        "profile_scope_mode": "bridge_local",
     }
     status_code = 200 if BROWSER_USE_IMPORT_ERROR is None else 503
     return JSONResponse(content=payload, status_code=status_code)
@@ -956,6 +1251,10 @@ async def get_session(session_id: str) -> SessionResponse:
         llm_provider=session.llm_provider,
         llm_transport=session.llm_transport,
         vision_mode=session.vision_mode,
+        profile_id=session.profile_id,
+        profile_scope=session.profile_scope,
+        profile_status=session.profile_status,
+        profile_attached=session.profile_attached,
     )
 
 
