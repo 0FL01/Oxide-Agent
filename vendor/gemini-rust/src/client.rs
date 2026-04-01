@@ -32,6 +32,9 @@ use url::Url;
 use crate::batch::model::*;
 use crate::cache::model::*;
 
+const X_GOOG_API_CLIENT_HEADER: &str = "x-goog-api-client";
+const X_GOOG_API_CLIENT_VALUE: &str = "oxide-agent/0.1.0";
+
 /// Type alias for streaming generation responses
 ///
 /// A pinned, boxed stream that yields `GenerationResponse` chunks as they arrive
@@ -324,7 +327,8 @@ impl GeminiClient {
         builder: B,
         deserializer: D,
     ) -> Result<T, Error> {
-        let request = builder(&self.http_client);
+        let request =
+            builder(&self.http_client).header(X_GOOG_API_CLIENT_HEADER, X_GOOG_API_CLIENT_VALUE);
         tracing::debug!("request built successfully");
         let response = request.send().await.context(PerformRequestNewSnafu)?;
         tracing::debug!("response received successfully");
@@ -637,6 +641,7 @@ impl GeminiClient {
         let upload_response = self
             .http_client
             .post(upload_url.clone())
+            .header(X_GOOG_API_CLIENT_HEADER, X_GOOG_API_CLIENT_VALUE)
             .header("X-Goog-Upload-Command", "upload, finalize")
             .header("X-Goog-Upload-Offset", "0")
             .body(file_bytes)
