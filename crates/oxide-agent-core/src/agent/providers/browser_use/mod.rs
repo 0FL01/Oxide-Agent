@@ -60,6 +60,129 @@ pub struct BrowserUseProvider {
 }
 
 impl BrowserUseProvider {
+    fn run_task_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_RUN_TASK.to_string(),
+            description: "Run a high-level browser automation task via the self-hosted Browser Use bridge. Use when a real browser is needed for dynamic pages, navigation, or interactive flows.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Browser task instruction"
+                    },
+                    "start_url": {
+                        "type": "string",
+                        "description": "Optional starting page URL"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional existing session ID to reuse"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Optional timeout override in seconds"
+                    },
+                    "reuse_profile": {
+                        "type": "boolean",
+                        "description": "Create and attach a reusable browser profile when starting a new profiled session"
+                    },
+                    "profile_id": {
+                        "type": "string",
+                        "description": "Reuse a previously returned Browser Use profile ID"
+                    }
+                },
+                "required": ["task"]
+            }),
+        }
+    }
+
+    fn get_session_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_GET_SESSION.to_string(),
+            description: "Get the current state of a Browser Use session by session ID."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Browser Use session ID"
+                    }
+                },
+                "required": ["session_id"]
+            }),
+        }
+    }
+
+    fn close_session_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_CLOSE_SESSION.to_string(),
+            description: "Close a Browser Use session and free browser resources.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Browser Use session ID"
+                    }
+                },
+                "required": ["session_id"]
+            }),
+        }
+    }
+
+    fn extract_content_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_EXTRACT_CONTENT.to_string(),
+            description:
+                "Extract text or HTML from the current page of an active Browser Use session."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Browser Use session ID"
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "html"],
+                        "description": "Content format to extract, defaults to text"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Optional truncation limit for extracted content"
+                    }
+                },
+                "required": ["session_id"]
+            }),
+        }
+    }
+
+    fn screenshot_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_SCREENSHOT.to_string(),
+            description:
+                "Capture a screenshot from the current page of an active Browser Use session."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Browser Use session ID"
+                    },
+                    "full_page": {
+                        "type": "boolean",
+                        "description": "Capture the full page when supported by the browser runtime"
+                    }
+                },
+                "required": ["session_id"]
+            }),
+        }
+    }
+
     /// Create a new Browser Use provider with default config and shared semaphore.
     #[must_use]
     pub fn new_with_semaphore(
@@ -407,6 +530,8 @@ impl BrowserUseProvider {
             start_url: args.start_url,
             session_id: args.session_id,
             timeout_secs: args.timeout_secs,
+            reuse_profile: args.reuse_profile.unwrap_or(false),
+            profile_id: args.profile_id,
             browser_llm_config,
         })?;
         let payload = self
@@ -541,6 +666,8 @@ struct RunTaskArgs {
     start_url: Option<String>,
     session_id: Option<String>,
     timeout_secs: Option<u64>,
+    reuse_profile: Option<bool>,
+    profile_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -564,6 +691,10 @@ struct RunTaskRequestBody {
     session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reuse_profile: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     browser_llm_config: Option<BrowserLlmConfig>,
 }
@@ -699,101 +830,11 @@ impl ToolProvider for BrowserUseProvider {
 
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
-            ToolDefinition {
-                name: TOOL_RUN_TASK.to_string(),
-                description: "Run a high-level browser automation task via the self-hosted Browser Use bridge. Use when a real browser is needed for dynamic pages, navigation, or interactive flows.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "task": {
-                            "type": "string",
-                            "description": "Browser task instruction"
-                        },
-                        "start_url": {
-                            "type": "string",
-                            "description": "Optional starting page URL"
-                        },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Optional existing session ID to reuse"
-                        },
-                        "timeout_secs": {
-                            "type": "integer",
-                            "description": "Optional timeout override in seconds"
-                        }
-                    },
-                    "required": ["task"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_GET_SESSION.to_string(),
-                description: "Get the current state of a Browser Use session by session ID.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "session_id": {
-                            "type": "string",
-                            "description": "Browser Use session ID"
-                        }
-                    },
-                    "required": ["session_id"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_CLOSE_SESSION.to_string(),
-                description: "Close a Browser Use session and free browser resources.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "session_id": {
-                            "type": "string",
-                            "description": "Browser Use session ID"
-                        }
-                    },
-                    "required": ["session_id"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_EXTRACT_CONTENT.to_string(),
-                description: "Extract text or HTML from the current page of an active Browser Use session.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "session_id": {
-                            "type": "string",
-                            "description": "Browser Use session ID"
-                        },
-                        "format": {
-                            "type": "string",
-                            "enum": ["text", "html"],
-                            "description": "Content format to extract, defaults to text"
-                        },
-                        "max_chars": {
-                            "type": "integer",
-                            "description": "Optional truncation limit for extracted content"
-                        }
-                    },
-                    "required": ["session_id"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_SCREENSHOT.to_string(),
-                description: "Capture a screenshot from the current page of an active Browser Use session.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "session_id": {
-                            "type": "string",
-                            "description": "Browser Use session ID"
-                        },
-                        "full_page": {
-                            "type": "boolean",
-                            "description": "Capture the full page when supported by the browser runtime"
-                        }
-                    },
-                    "required": ["session_id"]
-                }),
-            },
+            Self::run_task_definition(),
+            Self::get_session_definition(),
+            Self::close_session_definition(),
+            Self::extract_content_definition(),
+            Self::screenshot_definition(),
         ]
     }
 

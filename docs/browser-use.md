@@ -24,12 +24,14 @@
 - `oxide_agent` обращается к `browser_use` по `BROWSER_USE_URL`
 - `browser_use` публикуется только на loopback `127.0.0.1:8002`
 - browser state и session metadata сохраняются в volume `browser-use-data`
+- reusable profile metadata и browser state теперь хранятся отдельно под `profiles/`, а не смешиваются с `sessions/` и `artifacts/`
 - bridge уже поддерживает request-level `browser_llm_config` для нормализованного выбора LLM
 - legacy env path через `BROWSER_USE_BRIDGE_LLM_PROVIDER` остается временным fallback
 - Stage C уже прокидывает active Oxide route в bridge `browser_llm_config` для совместимых provider-ов
 - Stage D передает inherited-route API key server-to-server через внутренний header, а не через request body
 - Stage E вводит capability policy для text-only vs vision-capable routes
 - Stage F делает route inheritance основным operator path в дефолтном `docker-compose` и добавляет runtime observability по `llm_source` / `vision_mode`
+- Stage 1 reuse slice добавляет optional `reuse_profile` / `profile_id` в `browser_use_run_task` и отдельные profile records в bridge storage
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
@@ -164,7 +166,8 @@ Browser Use не включается через alias `search`. Для него
 6. Если используется fallback/request-level path вручную, убедиться, что `browser_llm_config` содержит совместимый provider/model и корректный `api_key_ref`.
 7. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
 8. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
-9. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport` и `vision_mode`, чтобы убедиться, что реально используется inherited route, а не неожиданный fallback.
+9. Если нужен reuse, запустить `browser_use_run_task` с `reuse_profile=true` и сохранить возвращенный `profile_id`.
+10. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, `profile_id`, `profile_status` и `profile_attached`, чтобы убедиться, что реально используется inherited route и при необходимости привязан reusable profile.
 
 ## Типичные сбои
 
@@ -215,6 +218,7 @@ Browser Use не включается через alias `search`. Для него
 
 - использовать Browser Use для задач уровня “открой сайт, пройди пару шагов, собери summary”
 - после `browser_use_run_task` можно дочитать страницу через `browser_use_extract_content` или снять PNG через `browser_use_screenshot`
+- если нужен controlled reuse login/cookie state между задачами, сначала вызвать `browser_use_run_task` с `reuse_profile=true`, а затем переиспользовать возвращенный `profile_id` в следующем `browser_use_run_task`
 - не расширять без необходимости tool surface до raw click/type/eval action-ов; это отложено отдельным post-v1 decision slice
 - не рассматривать его как замену `searxng` или `crawl4ai`
 - закрывать долгоживущие сессии через `browser_use_close_session`, если reuse больше не нужен

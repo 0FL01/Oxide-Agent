@@ -18,7 +18,7 @@ fn test_settings() -> Arc<crate::config::AgentSettings> {
 #[test]
 fn test_args_deserialize() {
     let run: Result<RunTaskArgs, _> = serde_json::from_str(
-        r#"{"task":"Open docs","start_url":"https://example.com","session_id":"s1","timeout_secs":120}"#,
+        r#"{"task":"Open docs","start_url":"https://example.com","session_id":"s1","timeout_secs":120,"reuse_profile":true,"profile_id":"browser-profile-1"}"#,
     );
     assert!(run.is_ok());
 
@@ -32,6 +32,23 @@ fn test_args_deserialize() {
     let screenshot: Result<ScreenshotArgs, _> =
         serde_json::from_str(r#"{"session_id":"s1","full_page":true}"#);
     assert!(screenshot.is_ok());
+}
+
+#[test]
+fn run_task_request_body_serializes_profile_reuse_hints() {
+    let payload = serde_json::to_value(RunTaskRequestBody {
+        task: "Open docs".to_string(),
+        start_url: None,
+        session_id: None,
+        timeout_secs: None,
+        reuse_profile: true,
+        profile_id: Some("browser-profile-1".to_string()),
+        browser_llm_config: None,
+    })
+    .expect("serialize request body");
+
+    assert_eq!(payload["reuse_profile"], serde_json::Value::Bool(true));
+    assert_eq!(payload["profile_id"], "browser-profile-1");
 }
 
 #[test]
