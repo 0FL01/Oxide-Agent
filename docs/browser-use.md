@@ -4,6 +4,8 @@
 
 Следующий архитектурный этап зафиксирован отдельно в [Browser Use Stage A](./browser-use-stage-a.md): там описан переход от bridge-side LLM env к inheritance route из Oxide Agent для `MiniMax`, `ZAI` и других основных provider-ов.
 
+Следующий post-v1 decision slice зафиксирован в [Browser Use Post-v1 Decisions](./browser-use-post-v1.md): low-level browser surface отложен, а следующим implementation priority выбран topic-scoped persistent profile reuse.
+
 ## Что уже входит в rollout
 
 - `browser_use` sidecar в `docker-compose.yml`
@@ -28,6 +30,7 @@
 - Stage D передает inherited-route API key server-to-server через внутренний header, а не через request body
 - Stage E вводит capability policy для text-only vs vision-capable routes
 - Stage F делает route inheritance основным operator path в дефолтном `docker-compose` и добавляет runtime observability по `llm_source` / `vision_mode`
+- post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
 ## Capability Matrix
@@ -212,6 +215,7 @@ Browser Use не включается через alias `search`. Для него
 
 - использовать Browser Use для задач уровня “открой сайт, пройди пару шагов, собери summary”
 - после `browser_use_run_task` можно дочитать страницу через `browser_use_extract_content` или снять PNG через `browser_use_screenshot`
+- не расширять без необходимости tool surface до raw click/type/eval action-ов; это отложено отдельным post-v1 decision slice
 - не рассматривать его как замену `searxng` или `crawl4ai`
 - закрывать долгоживущие сессии через `browser_use_close_session`, если reuse больше не нужен
 - включать Browser Use topic-by-topic, а не глобально для всех профилей без необходимости
