@@ -356,8 +356,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_audio_model_name_supports_mistral_stt_route() {
+    mod media_resolver_tests {
+        use super::*;
+
+        #[test]
+        fn resolve_audio_model_name_supports_mistral_stt_route() {
         let settings = AgentSettings {
             chat_model_id: Some("chat-mistral".to_string()),
             chat_model_provider: Some("mistral".to_string()),
@@ -366,7 +369,7 @@ mod tests {
         };
         let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
-        assert_eq!(provider.resolve_audio_model_name().unwrap(), "chat-mistral");
+        assert_eq!(provider.resolve_audio_model_name().expect("audio model"), "chat-mistral");
     }
 
     #[test]
@@ -383,7 +386,7 @@ mod tests {
         let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
         assert_eq!(
-            provider.resolve_video_model_name().unwrap(),
+            provider.resolve_video_model_name().expect("video model"),
             "chat-openrouter"
         );
     }
@@ -398,7 +401,8 @@ mod tests {
         };
         let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
-        let error = provider.resolve_image_model_name().unwrap_err().to_string();
+        let error = provider.resolve_image_model_name().expect_err("image model unavailable").to_string();
         assert!(error.contains("Image understanding route unavailable"));
     }
+}
 }

@@ -214,12 +214,30 @@ mod tests {
     fn transient_backoff_sequence() {
         let error = LlmError::NetworkError("timeout".to_string());
 
-        assert_eq!(get_retry_delay(&error, 1).unwrap(), Duration::from_secs(1));
-        assert_eq!(get_retry_delay(&error, 2).unwrap(), Duration::from_secs(2));
-        assert_eq!(get_retry_delay(&error, 3).unwrap(), Duration::from_secs(4));
-        assert_eq!(get_retry_delay(&error, 4).unwrap(), Duration::from_secs(8));
-        assert_eq!(get_retry_delay(&error, 5).unwrap(), Duration::from_secs(16));
-        assert_eq!(get_retry_delay(&error, 6).unwrap(), Duration::from_secs(30));
+        assert_eq!(
+            get_retry_delay(&error, 1).expect("retry delay exists"),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            get_retry_delay(&error, 2).expect("retry delay exists"),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            get_retry_delay(&error, 3).expect("retry delay exists"),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            get_retry_delay(&error, 4).expect("retry delay exists"),
+            Duration::from_secs(8)
+        );
+        assert_eq!(
+            get_retry_delay(&error, 5).expect("retry delay exists"),
+            Duration::from_secs(16)
+        );
+        assert_eq!(
+            get_retry_delay(&error, 6).expect("retry delay exists"),
+            Duration::from_secs(30)
+        );
         // capped
     }
 }
