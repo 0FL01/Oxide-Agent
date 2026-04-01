@@ -512,11 +512,33 @@ impl AgentExecutor {
         };
         registry.register(Box::new(ytdlp_provider));
 
-        registry.register(Box::new(DelegationProvider::new(
+        let mut delegation_provider = DelegationProvider::new(
             self.runner.llm_client(),
             sandbox_scope,
             Arc::clone(&self.settings),
-        )));
+        );
+        if let Some(profile_scope) = self.browser_use_profile_scope() {
+            delegation_provider = delegation_provider.with_browser_use_profile_scope(profile_scope);
+        }
+        registry.register(Box::new(delegation_provider));
+    }
+
+    fn browser_use_profile_scope(&self) -> Option<String> {
+        self.reminder_context
+            .as_ref()
+            .map(|context| context.context_key.clone())
+            .or_else(|| {
+                self.agents_md
+                    .as_ref()
+                    .map(|context| context.topic_id.clone())
+            })
+            .or_else(|| {
+                self.topic_infra
+                    .as_ref()
+                    .map(|context| context.topic_id.clone())
+            })
+            .map(|scope| scope.trim().to_string())
+            .filter(|scope| !scope.is_empty())
     }
 
     fn register_topic_providers(&self, registry: &mut ToolRegistry) {
@@ -676,10 +698,11 @@ impl AgentExecutor {
         if crate::config::is_browser_use_enabled() {
             if let Some(url) = crate::config::get_browser_use_url() {
                 if !url.trim().is_empty() {
-                    registry.register(Box::new(BrowserUseProvider::new(
-                        &url,
-                        Arc::clone(&self.settings),
-                    )));
+                    let mut provider = BrowserUseProvider::new(&url, Arc::clone(&self.settings));
+                    if let Some(profile_scope) = self.browser_use_profile_scope() {
+                        provider = provider.with_profile_scope(profile_scope);
+                    }
+                    registry.register(Box::new(provider));
                 } else {
                     warn!(
                         "Browser Use enabled but BROWSER_USE_URL is empty; provider not registered"
@@ -1262,7 +1285,7 @@ mod tests {
     use crate::agent::providers::{
         ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult,
         ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
-        ManagerTopicLifecycle,
+        ManagerTopicLifecycle, ReminderContext,
     };
     use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
     use crate::config::AgentSettings;
@@ -1668,6 +1691,48 @@ mod tests {
 
         std::env::remove_var("BROWSER_USE_ENABLED");
         std::env::remove_var("BROWSER_USE_URL");
+    }
+
+    #[cfg(feature = "browser_use")]
+    #[test]
+    fn browser_use_profile_scope_uses_agents_md_topic() {
+        let mut executor = build_executor();
+        executor.set_agents_md_context(
+            Arc::new(MockStorageProvider::new()),
+            77,
+            "topic-a".to_string(),
+        );
+
+        assert_eq!(
+            executor.browser_use_profile_scope().as_deref(),
+            Some("topic-a")
+        );
+    }
+
+    #[cfg(feature = "browser_use")]
+    #[test]
+    fn browser_use_profile_scope_prefers_reminder_context() {
+        let mut executor = build_executor();
+        executor.set_agents_md_context(
+            Arc::new(MockStorageProvider::new()),
+            77,
+            "topic-a".to_string(),
+        );
+        executor.set_reminder_context(ReminderContext {
+            storage: Arc::new(MockStorageProvider::new()),
+            user_id: 77,
+            context_key: "topic-reminder".to_string(),
+            flow_id: "flow-1".to_string(),
+            chat_id: 77,
+            thread_id: None,
+            thread_kind: crate::storage::ReminderThreadKind::None,
+            notifier: None,
+        });
+
+        assert_eq!(
+            executor.browser_use_profile_scope().as_deref(),
+            Some("topic-reminder")
+        );
     }
 
     #[tokio::test]

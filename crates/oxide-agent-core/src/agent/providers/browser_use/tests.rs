@@ -43,12 +43,33 @@ fn run_task_request_body_serializes_profile_reuse_hints() {
         timeout_secs: None,
         reuse_profile: true,
         profile_id: Some("browser-profile-1".to_string()),
+        profile_scope: Some("topic-a".to_string()),
         browser_llm_config: None,
     })
     .expect("serialize request body");
 
     assert_eq!(payload["reuse_profile"], serde_json::Value::Bool(true));
     assert_eq!(payload["profile_id"], "browser-profile-1");
+    assert_eq!(payload["profile_scope"], "topic-a");
+}
+
+#[tokio::test]
+async fn run_task_rejects_profile_reuse_without_runtime_scope() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+
+    let error = provider
+        .execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Open docs","reuse_profile":true}"#,
+            None,
+            None,
+        )
+        .await
+        .expect_err("profile reuse without runtime scope should fail");
+
+    assert!(error
+        .to_string()
+        .contains("Browser Use profile reuse requires a topic-scoped runtime context"));
 }
 
 #[test]
@@ -339,6 +360,39 @@ async fn run_task_posts_inherited_browser_llm_config() {
         state.header_value(OXIDE_BROWSER_LLM_API_KEY_HEADER).await,
         Some("zai-secret".to_string())
     );
+}
+
+#[tokio::test]
+async fn run_task_posts_runtime_profile_scope_for_reuse() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Done"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    )
+    .with_profile_scope("topic-a");
+
+    provider
+        .execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Open example","reuse_profile":true}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("scoped reuse run should succeed");
+
+    let request_body = state.request_body().await;
+    assert!(request_body.contains(r#""reuse_profile":true"#));
+    assert!(request_body.contains(r#""profile_scope":"topic-a""#));
 }
 
 #[tokio::test]

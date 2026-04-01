@@ -72,6 +72,11 @@ class Settings:
             "BROWSER_USE_BRIDGE_MAX_CONCURRENT_SESSIONS", 2
         )
     )
+    max_profiles_per_scope: int = field(
+        default_factory=lambda: parse_int_env(
+            "BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE", 3
+        )
+    )
     llm_provider: str = field(
         default_factory=lambda: os.getenv("BROWSER_USE_BRIDGE_LLM_PROVIDER", "").strip()
     )
@@ -106,6 +111,7 @@ class RunTaskRequest(BaseModel):
     timeout_secs: int | None = Field(default=None, ge=1)
     reuse_profile: bool = False
     profile_id: str | None = Field(default=None, min_length=1)
+    profile_scope: str | None = Field(default=None, min_length=1)
     browser_llm_config: BrowserLlmConfig | None = None
 
 
@@ -592,7 +598,12 @@ def invoke_with_supported_kwargs(method: Any, **kwargs: Any) -> Any:
 
 
 class SessionManager:
-    def __init__(self, data_dir: Path, max_concurrent_sessions: int) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        max_concurrent_sessions: int,
+        max_profiles_per_scope: int = 3,
+    ) -> None:
         self._data_dir = data_dir
         self._sessions_dir = data_dir / "sessions"
         self._artifacts_dir = data_dir / "artifacts"
@@ -601,6 +612,7 @@ class SessionManager:
         self._profiles: dict[str, ProfileRecord] = {}
         self._registry_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max(1, max_concurrent_sessions))
+        self._max_profiles_per_scope = max(1, max_profiles_per_scope)
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
         self._profiles_dir.mkdir(parents=True, exist_ok=True)
@@ -677,6 +689,7 @@ class SessionManager:
     async def create_profile(
         self, profile_scope: str = "bridge_local"
     ) -> ProfileRecord:
+        await self._enforce_profile_scope_quota(profile_scope)
         profile_id = f"browser-profile-{uuid4().hex}"
         profile_root = self._profile_root(profile_id)
         browser_data_dir = self._profile_browser_dir(profile_id)
@@ -870,6 +883,7 @@ class SessionManager:
         self, session: SessionRecord, request: RunTaskRequest
     ) -> tuple[ProfileRecord | None, bool]:
         requested_profile_id = clean_optional(request.profile_id)
+        requested_profile_scope = clean_optional(request.profile_scope)
 
         if session.browser is not None:
             if requested_profile_id is not None:
@@ -899,14 +913,64 @@ class SessionManager:
                 )
 
             if session.profile_id is not None:
+                if (
+                    requested_profile_scope is not None
+                    and session.profile_scope != requested_profile_scope
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"session '{session.session_id}' is already attached to "
+                            f"profile scope '{session.profile_scope}'"
+                        ),
+                    )
                 return await self.get_profile(session.profile_id), True
             return None, False
 
         if requested_profile_id is not None:
-            return await self.get_profile(requested_profile_id), True
+            profile = await self.get_profile(requested_profile_id)
+            if (
+                requested_profile_scope is not None
+                and profile.profile_scope != requested_profile_scope
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"profile '{profile.profile_id}' belongs to scope "
+                        f"'{profile.profile_scope}', not '{requested_profile_scope}'"
+                    ),
+                )
+            return profile, True
         if request.reuse_profile:
-            return await self.create_profile(), False
+            return await self.create_profile(
+                requested_profile_scope or "bridge_local"
+            ), False
         return None, False
+
+    async def _enforce_profile_scope_quota(self, profile_scope: str) -> None:
+        retained = await self._count_profiles_for_scope(profile_scope)
+        if retained >= self._max_profiles_per_scope:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"profile scope '{profile_scope}' already has "
+                    f"{retained} retained profiles; max is {self._max_profiles_per_scope}"
+                ),
+            )
+
+    async def _count_profiles_for_scope(self, profile_scope: str) -> int:
+        count = 0
+        for metadata_path in self._profiles_dir.glob("*/metadata.json"):
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if payload.get("profile_scope") != profile_scope:
+                continue
+            if payload.get("status") == "deleted":
+                continue
+            count += 1
+        return count
 
     async def _attach_profile(
         self, session: SessionRecord, profile: ProfileRecord
@@ -1180,6 +1244,7 @@ class SessionManager:
 manager = SessionManager(
     data_dir=settings.data_dir,
     max_concurrent_sessions=settings.max_concurrent_sessions,
+    max_profiles_per_scope=settings.max_profiles_per_scope,
 )
 app = FastAPI(title="browser_use_bridge", version="0.1.0")
 
@@ -1222,7 +1287,8 @@ async def health() -> JSONResponse:
             "openai_compatible",
         ],
         "profile_reuse_supported": True,
-        "profile_scope_mode": "bridge_local",
+        "profile_scope_mode": "runtime_injected_preferred",
+        "max_profiles_per_scope": settings.max_profiles_per_scope,
     }
     status_code = 200 if BROWSER_USE_IMPORT_ERROR is None else 503
     return JSONResponse(content=payload, status_code=status_code)

@@ -106,6 +106,7 @@ pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
+    browser_use_profile_scope: Option<String>,
     /// Semaphore to limit concurrent crawl4ai requests per sub-agent.
     /// Used via Arc::clone() in build_sub_agent_providers().
     #[allow(dead_code)]
@@ -150,6 +151,7 @@ impl DelegationProvider {
             llm_client,
             sandbox_scope: sandbox_scope.into(),
             settings,
+            browser_use_profile_scope: None,
             crawl4ai_semaphore: Arc::new(Semaphore::new(
                 crate::config::get_crawl4ai_max_concurrent(),
             )),
@@ -157,6 +159,16 @@ impl DelegationProvider {
                 crate::config::get_browser_use_max_concurrent(),
             )),
         }
+    }
+
+    /// Inherit a topic/context profile scope for Browser Use sub-agent reuse.
+    #[must_use]
+    pub fn with_browser_use_profile_scope(mut self, profile_scope: impl Into<String>) -> Self {
+        let profile_scope = profile_scope.into();
+        if !profile_scope.trim().is_empty() {
+            self.browser_use_profile_scope = Some(profile_scope);
+        }
+        self
     }
 
     fn blocked_tool_set() -> HashSet<String> {
@@ -255,11 +267,15 @@ impl DelegationProvider {
             if let Some(url) = crate::config::get_browser_use_url() {
                 if !url.trim().is_empty() {
                     let sem = Arc::clone(&self.browser_use_semaphore);
-                    providers.push(Box::new(BrowserUseProvider::new_with_semaphore(
+                    let mut provider = BrowserUseProvider::new_with_semaphore(
                         &url,
                         Arc::clone(&self.settings),
                         sem,
-                    )));
+                    );
+                    if let Some(profile_scope) = &self.browser_use_profile_scope {
+                        provider = provider.with_profile_scope(profile_scope.clone());
+                    }
+                    providers.push(Box::new(provider));
                 } else {
                     warn!("Browser Use enabled but BROWSER_USE_URL is empty; sub-agent provider not registered");
                 }

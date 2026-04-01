@@ -32,6 +32,7 @@
 - Stage E вводит capability policy для text-only vs vision-capable routes
 - Stage F делает route inheritance основным operator path в дефолтном `docker-compose` и добавляет runtime observability по `llm_source` / `vision_mode`
 - Stage 1 reuse slice добавляет optional `reuse_profile` / `profile_id` в `browser_use_run_task` и отдельные profile records в bridge storage
+- Stage 2 reuse wiring прокидывает hidden `profile_scope` из реального `context_key` и вводит quota на retained profiles per scope
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
@@ -65,6 +66,7 @@
 - `BROWSER_USE_BRIDGE_DEFAULT_TIMEOUT_SECS=120`
 - `BROWSER_USE_BRIDGE_MAX_TIMEOUT_SECS=300`
 - `BROWSER_USE_BRIDGE_MAX_CONCURRENT_SESSIONS=2`
+- `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3`
 - `BROWSER_USE_BRIDGE_LLM_PROVIDER=google|anthropic|browser_use`
 - `BROWSER_USE_BRIDGE_LLM_MODEL=<optional-model-id>`
 
@@ -167,7 +169,8 @@ Browser Use не включается через alias `search`. Для него
 7. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
 8. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
 9. Если нужен reuse, запустить `browser_use_run_task` с `reuse_profile=true` и сохранить возвращенный `profile_id`.
-10. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, `profile_id`, `profile_status` и `profile_attached`, чтобы убедиться, что реально используется inherited route и при необходимости привязан reusable profile.
+10. При reuse убедиться, что вызов идет из того же topic/context: Stage 2 теперь шьет hidden `profile_scope` из runtime context и не даст reuse-ить profile из другого topic.
+11. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, `profile_id`, `profile_scope`, `profile_status` и `profile_attached`, чтобы убедиться, что реально используется inherited route и при необходимости привязан reusable profile.
 
 ## Типичные сбои
 
@@ -197,6 +200,8 @@ Browser Use не включается через alias `search`. Для него
 - активный inherited route использует пока неподдерживаемый provider, например `groq`, `mistral` или `nvidia`
 - для inherited route отсутствует нужный provider key в `oxide_agent`, поэтому Rust provider не может передать secret в bridge
 - inherited route text-only, а задача явно просит visual analysis, screenshot-like reasoning или оценку layout/colors
+- `profile_id` пытаются reuse-ить из другого topic/context, и bridge режет запрос по injected `profile_scope`
+- в текущем topic/context уже достигнут quota `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE`, и bridge не создает новый retained profile
 - не задан `BROWSER_USE_BRIDGE_LLM_PROVIDER` для legacy env path
 - не передан API key для выбранного provider
 - `browser_llm_config.api_key_ref` указывает на отсутствующий env
@@ -223,3 +228,4 @@ Browser Use не включается через alias `search`. Для него
 - не рассматривать его как замену `searxng` или `crawl4ai`
 - закрывать долгоживущие сессии через `browser_use_close_session`, если reuse больше не нужен
 - включать Browser Use topic-by-topic, а не глобально для всех профилей без необходимости
+- рассчитывать на то, что persistent profile reuse теперь topic/context-scoped: reuse одного `profile_id` из другого topic будет отвергнут bridge-ом
