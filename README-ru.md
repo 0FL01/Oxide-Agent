@@ -112,12 +112,7 @@
 2.  **Настройте переменные окружения:**
     Создайте `.env` на основе `.env.example`.
 
-3.  **Соберите образ песочницы:**
-    ```bash
-    docker build -t agent-sandbox:latest -f sandbox/Dockerfile.sandbox ..
-    ```
-
-4.  **Соберите и запустите бота:**
+3.  **Соберите и запустите бота:**
     ```bash
     docker-compose up --build -d
     ```

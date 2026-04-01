@@ -933,7 +933,7 @@ impl DockerSandboxManager {
             Err(error) if Self::is_image_not_found_error(&error, &self.image_name) => {
                 return Err(error).with_context(|| {
                     format!(
-                        "Sandbox image '{}' not found. Build it with `docker compose --profile build build sandbox_image`",
+                        "Sandbox image '{}' not found. Build it with `docker compose build sandbox_image` or start the full stack with `docker compose up --build -d`",
                         self.image_name
                     )
                 });
