@@ -951,15 +951,18 @@ mod tests {
 
         let llm = LlmClient::new(&settings);
         assert_eq!(
-            llm.resolve_media_model_name_for_audio_stt().expect("audio stt route"),
+            llm.resolve_media_model_name_for_audio_stt()
+                .expect("audio stt route"),
             "media-gemini"
         );
         assert_eq!(
-            llm.resolve_media_model_name_for_image().expect("image route"),
+            llm.resolve_media_model_name_for_image()
+                .expect("image route"),
             "media-gemini"
         );
         assert_eq!(
-            llm.resolve_media_model_name_for_video().expect("video route"),
+            llm.resolve_media_model_name_for_video()
+                .expect("video route"),
             "media-gemini"
         );
     }
@@ -978,15 +981,18 @@ mod tests {
 
         let llm = LlmClient::new(&settings);
         assert_eq!(
-            llm.resolve_media_model_name_for_audio_stt().expect("audio stt route"),
+            llm.resolve_media_model_name_for_audio_stt()
+                .expect("audio stt route"),
             "media-mistral"
         );
         assert_eq!(
-            llm.resolve_media_model_name_for_image().expect("image route"),
+            llm.resolve_media_model_name_for_image()
+                .expect("image route"),
             "chat-openrouter"
         );
         assert_eq!(
-            llm.resolve_media_model_name_for_video().expect("video route"),
+            llm.resolve_media_model_name_for_video()
+                .expect("video route"),
             "chat-openrouter"
         );
     }
@@ -1022,7 +1028,9 @@ mod tests {
         assert!(!llm.is_image_understanding_available());
         assert!(!llm.is_video_understanding_available());
 
-        let error = llm.resolve_media_model_for_video().expect_err("video route missing");
+        let error = llm
+            .resolve_media_model_for_video()
+            .expect_err("video route missing");
         assert!(matches!(
             error,
             crate::llm::LlmError::MissingConfig(message)
