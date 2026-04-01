@@ -37,6 +37,8 @@ use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+#[cfg(feature = "browser_use")]
+use crate::agent::providers::BrowserUseProvider;
 #[cfg(feature = "crawl4ai")]
 use crate::agent::providers::Crawl4aiProvider;
 #[cfg(feature = "searxng")]
@@ -108,6 +110,10 @@ pub struct DelegationProvider {
     /// Used via Arc::clone() in build_sub_agent_providers().
     #[allow(dead_code)]
     crawl4ai_semaphore: Arc<Semaphore>,
+    /// Semaphore to limit concurrent Browser Use requests per sub-agent.
+    /// Used via Arc::clone() in build_sub_agent_providers().
+    #[allow(dead_code)]
+    browser_use_semaphore: Arc<Semaphore>,
 }
 
 struct PreparedSubAgentExecution {
@@ -146,6 +152,9 @@ impl DelegationProvider {
             settings,
             crawl4ai_semaphore: Arc::new(Semaphore::new(
                 crate::config::get_crawl4ai_max_concurrent(),
+            )),
+            browser_use_semaphore: Arc::new(Semaphore::new(
+                crate::config::get_browser_use_max_concurrent(),
             )),
         }
     }
@@ -239,6 +248,24 @@ impl DelegationProvider {
         #[cfg(not(feature = "crawl4ai"))]
         if crate::config::is_crawl4ai_enabled() {
             warn!("Crawl4AI enabled but feature not compiled in");
+        }
+
+        #[cfg(feature = "browser_use")]
+        if crate::config::is_browser_use_enabled() {
+            if let Some(url) = crate::config::get_browser_use_url() {
+                if !url.trim().is_empty() {
+                    let sem = Arc::clone(&self.browser_use_semaphore);
+                    providers.push(Box::new(BrowserUseProvider::new_with_semaphore(&url, sem)));
+                } else {
+                    warn!("Browser Use enabled but BROWSER_USE_URL is empty; sub-agent provider not registered");
+                }
+            } else {
+                warn!("Browser Use enabled but BROWSER_USE_URL is not set; sub-agent provider not registered");
+            }
+        }
+        #[cfg(not(feature = "browser_use"))]
+        if crate::config::is_browser_use_enabled() {
+            warn!("Browser Use enabled but feature not compiled in");
         }
 
         providers
@@ -770,6 +797,7 @@ mod tests {
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::AgentContext;
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
+    use crate::agent::providers::TodoList;
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use serde_json::json;
@@ -959,6 +987,34 @@ mod tests {
         assert_eq!(prepared.runner_config.model_name, "sub-model");
         assert_eq!(prepared.runner_config.model_max_output_tokens, 12_345);
         assert_eq!(prepared.sub_session.memory().max_tokens(), 96_000);
+    }
+
+    #[cfg(feature = "browser_use")]
+    #[test]
+    fn build_sub_agent_providers_registers_browser_use_when_enabled() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+        std::env::set_var("BROWSER_USE_ENABLED", "true");
+
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
+        let providers = provider.build_sub_agent_providers(todos, None);
+        let tools: HashSet<String> = providers
+            .iter()
+            .flat_map(|provider| provider.tools())
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(tools.contains("browser_use_run_task"));
+        assert!(tools.contains("browser_use_get_session"));
+        assert!(tools.contains("browser_use_close_session"));
+
+        std::env::remove_var("BROWSER_USE_ENABLED");
+        std::env::remove_var("BROWSER_USE_URL");
     }
 
     fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {
