@@ -11,6 +11,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 try:
@@ -406,14 +407,16 @@ async def on_shutdown() -> None:
 
 
 @app.get("/health")
-async def health() -> dict[str, Any]:
-    return {
-        "status": "ok",
+async def health() -> JSONResponse:
+    payload = {
+        "status": "ok" if BROWSER_USE_IMPORT_ERROR is None else "unavailable",
         "browser_use_available": BROWSER_USE_IMPORT_ERROR is None,
         "import_error": BROWSER_USE_IMPORT_ERROR,
         "data_dir": str(settings.data_dir),
         "max_concurrent_sessions": settings.max_concurrent_sessions,
     }
+    status_code = 200 if BROWSER_USE_IMPORT_ERROR is None else 503
+    return JSONResponse(content=payload, status_code=status_code)
 
 
 @app.post("/sessions/run", response_model=RunTaskResponse)
