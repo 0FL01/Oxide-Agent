@@ -65,10 +65,6 @@ impl Preprocessor {
     ///
     /// Returns an error if the transcription fails.
     pub async fn transcribe_voice(&self, audio_bytes: Vec<u8>, mime_type: &str) -> Result<String> {
-        if !self.llm_client.is_multimodal_available() {
-            return Err(anyhow::anyhow!("MULTIMODAL_DISABLED"));
-        }
-
         info!(
             "Transcribing voice message: {} bytes, mime: {mime_type}",
             audio_bytes.len()
@@ -76,13 +72,12 @@ impl Preprocessor {
 
         let model_name = self
             .llm_client
-            .media_model_name
-            .as_deref()
-            .unwrap_or(&self.llm_client.chat_model_name);
+            .resolve_media_model_name_for_audio_stt()
+            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
 
         let transcription = self
             .llm_client
-            .transcribe_audio(audio_bytes, mime_type, model_name)
+            .transcribe_audio(audio_bytes, mime_type, &model_name)
             .await
             .map_err(|e| anyhow::anyhow!("Transcription failed: {e}"))?;
 
@@ -120,10 +115,6 @@ impl Preprocessor {
         image_bytes: Vec<u8>,
         user_context: Option<&str>,
     ) -> Result<String> {
-        if !self.llm_client.is_multimodal_available() {
-            return Err(anyhow::anyhow!("MULTIMODAL_DISABLED"));
-        }
-
         info!("Describing image: {} bytes", image_bytes.len());
 
         let prompt = user_context.map_or_else(
@@ -145,13 +136,12 @@ impl Preprocessor {
 
         let model_name = self
             .llm_client
-            .media_model_name
-            .as_deref()
-            .unwrap_or(&self.llm_client.chat_model_name);
+            .resolve_media_model_name_for_image()
+            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
 
         let description = self
             .llm_client
-            .analyze_image(image_bytes, &prompt, system_prompt, model_name)
+            .analyze_image(image_bytes, &prompt, system_prompt, &model_name)
             .await
             .map_err(|e| anyhow::anyhow!("Image analysis failed: {e}"))?;
 
@@ -170,10 +160,6 @@ impl Preprocessor {
         mime_type: &str,
         user_context: Option<&str>,
     ) -> Result<String> {
-        if !self.llm_client.is_multimodal_available() {
-            return Err(anyhow::anyhow!("MULTIMODAL_DISABLED"));
-        }
-
         info!(
             "Describing video: {} bytes, mime: {mime_type}",
             video_bytes.len()
@@ -195,13 +181,12 @@ impl Preprocessor {
 
         let model_name = self
             .llm_client
-            .media_model_name
-            .as_deref()
-            .unwrap_or(&self.llm_client.chat_model_name);
+            .resolve_media_model_name_for_video()
+            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
 
         let description = self
             .llm_client
-            .analyze_video(video_bytes, mime_type, &prompt, system_prompt, model_name)
+            .analyze_video(video_bytes, mime_type, &prompt, system_prompt, &model_name)
             .await
             .map_err(|e| anyhow::anyhow!("Video analysis failed: {e}"))?;
 
