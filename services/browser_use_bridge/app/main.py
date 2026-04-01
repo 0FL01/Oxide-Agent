@@ -114,6 +114,10 @@ class RunTaskResponse(BaseModel):
     summary: str | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
+    llm_source: Literal["request_config", "legacy_env"] | None = None
+    llm_provider: str | None = None
+    llm_transport: str | None = None
+    vision_mode: Literal["auto", "disabled"] | None = None
 
 
 class SessionResponse(BaseModel):
@@ -122,6 +126,10 @@ class SessionResponse(BaseModel):
     current_url: str | None = None
     summary: str | None = None
     last_error: str | None = None
+    llm_source: Literal["request_config", "legacy_env"] | None = None
+    llm_provider: str | None = None
+    llm_transport: str | None = None
+    vision_mode: Literal["auto", "disabled"] | None = None
 
 
 class CloseSessionResponse(BaseModel):
@@ -154,6 +162,10 @@ class SessionRecord:
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    llm_source: Literal["request_config", "legacy_env"] | None = None
+    llm_provider: str | None = None
+    llm_transport: str | None = None
+    vision_mode: Literal["auto", "disabled"] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def snapshot(self) -> dict[str, Any]:
@@ -167,6 +179,10 @@ class SessionRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "artifacts": self.artifacts,
+            "llm_source": self.llm_source,
+            "llm_provider": self.llm_provider,
+            "llm_transport": self.llm_transport,
+            "vision_mode": self.vision_mode,
         }
 
 
@@ -456,6 +472,12 @@ def use_vision_mode(config: ResolvedBrowserLlmConfig) -> bool | Literal["auto"]:
     return "auto"
 
 
+def vision_mode_label(config: ResolvedBrowserLlmConfig) -> Literal["auto", "disabled"]:
+    if config.supports_vision is False:
+        return "disabled"
+    return "auto"
+
+
 class SessionManager:
     def __init__(self, data_dir: Path, max_concurrent_sessions: int) -> None:
         self._data_dir = data_dir
@@ -526,6 +548,10 @@ class SessionManager:
                         session.browser = Browser()
 
                     llm_config = resolve_llm_config(request, browser_llm_api_key)
+                    session.llm_source = llm_config.source
+                    session.llm_provider = llm_config.provider
+                    session.llm_transport = llm_config.transport
+                    session.vision_mode = vision_mode_label(llm_config)
                     agent = Agent(
                         task=build_agent_task(request),
                         llm=create_llm_from_config(llm_config),
@@ -553,6 +579,10 @@ class SessionManager:
             summary=session.summary,
             artifacts=session.artifacts,
             error=session.last_error,
+            llm_source=session.llm_source,
+            llm_provider=session.llm_provider,
+            llm_transport=session.llm_transport,
+            vision_mode=session.vision_mode,
         )
 
     async def close_session(self, session_id: str) -> CloseSessionResponse:
@@ -612,10 +642,21 @@ async def health() -> JSONResponse:
         "import_error": BROWSER_USE_IMPORT_ERROR,
         "data_dir": str(settings.data_dir),
         "max_concurrent_sessions": settings.max_concurrent_sessions,
+        "preferred_browser_llm_source": "request_browser_llm_config",
         "request_browser_llm_config_supported": True,
         "request_browser_llm_api_key_header_supported": True,
         "browser_llm_api_key_header": OXIDE_BROWSER_LLM_API_KEY_HEADER,
+        "legacy_env_fallback_configured": clean_optional(settings.llm_provider)
+        is not None,
         "legacy_env_llm_provider": clean_optional(settings.llm_provider),
+        "legacy_env_llm_model": clean_optional(settings.llm_model),
+        "supported_legacy_env_providers": ["browser_use", "google", "anthropic"],
+        "supported_inherited_route_providers": [
+            "gemini",
+            "minimax",
+            "zai",
+            "openrouter",
+        ],
         "supported_browser_llm_providers": [
             "browser_use",
             "google",
@@ -649,6 +690,10 @@ async def get_session(session_id: str) -> SessionResponse:
         current_url=session.current_url,
         summary=session.summary,
         last_error=session.last_error,
+        llm_source=session.llm_source,
+        llm_provider=session.llm_provider,
+        llm_transport=session.llm_transport,
+        vision_mode=session.vision_mode,
     )
 
 
