@@ -997,6 +997,99 @@ mod tests {
     }
 
     #[test]
+    fn preserves_visible_text_alongside_tool_calls_in_chat_response() {
+        let response = GenerationResponse {
+            candidates: vec![Candidate {
+                content: Content {
+                    parts: Some(vec![
+                        Part::Text {
+                            text: "Calling weather tool".to_string(),
+                            thought: None,
+                            thought_signature: None,
+                        },
+                        Part::FunctionCall {
+                            function_call: FunctionCall::with_id(
+                                "lookup_weather",
+                                json!({"city": "Paris"}),
+                                "call_123",
+                            ),
+                            thought_signature: None,
+                        },
+                    ]),
+                    role: None,
+                },
+                safety_ratings: None,
+                citation_metadata: None,
+                grounding_metadata: None,
+                finish_reason: Some(FinishReason::Stop),
+                index: Some(0),
+            }],
+            prompt_feedback: None,
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let parsed = GeminiProvider::parse_chat_response(&response).expect("chat response parse");
+
+        assert_eq!(parsed.content.as_deref(), Some("Calling weather tool"));
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "call_123");
+    }
+
+    #[test]
+    fn parses_multiple_same_name_tool_calls_with_distinct_provider_ids() {
+        let response = GenerationResponse {
+            candidates: vec![Candidate {
+                content: Content {
+                    parts: Some(vec![
+                        Part::FunctionCall {
+                            function_call: FunctionCall::with_id(
+                                "lookup_weather",
+                                json!({"city": "Paris"}),
+                                "call_paris",
+                            ),
+                            thought_signature: None,
+                        },
+                        Part::FunctionCall {
+                            function_call: FunctionCall::with_id(
+                                "lookup_weather",
+                                json!({"city": "Berlin"}),
+                                "call_berlin",
+                            ),
+                            thought_signature: None,
+                        },
+                    ]),
+                    role: None,
+                },
+                safety_ratings: None,
+                citation_metadata: None,
+                grounding_metadata: None,
+                finish_reason: Some(FinishReason::Stop),
+                index: Some(0),
+            }],
+            prompt_feedback: None,
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let parsed = GeminiProvider::parse_chat_response(&response).expect("chat response parse");
+
+        assert_eq!(parsed.tool_calls.len(), 2);
+        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "call_paris");
+        assert_eq!(
+            parsed.tool_calls[0].function.arguments,
+            r#"{"city":"Paris"}"#
+        );
+        assert_eq!(parsed.tool_calls[1].wire_tool_call_id(), "call_berlin");
+        assert_eq!(
+            parsed.tool_calls[1].function.arguments,
+            r#"{"city":"Berlin"}"#
+        );
+    }
+
+    #[test]
     fn tool_calls_without_provider_ids_become_uncorrelated() {
         let tool_call = GeminiProvider::parse_tool_call(&FunctionCall::new(
             "lookup_weather",
@@ -1066,6 +1159,45 @@ mod tests {
                 if function_response.name == "lookup_weather"
                     && function_response.id.as_deref() == Some("call_123")
                     && function_response.response.as_ref() == Some(&json!({"temperature":22,"condition":"sunny"}))
+        ));
+    }
+
+    #[test]
+    fn replays_legacy_tool_results_with_invocation_id_as_function_response_id() {
+        let history = vec![Message::tool(
+            "legacy-call-1",
+            "lookup_weather",
+            r#"{"temperature":22}"#,
+        )];
+
+        let messages = GeminiProvider::history_to_sdk_messages(&history);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::User);
+
+        let parts = messages[0]
+            .content
+            .parts
+            .as_ref()
+            .expect("tool result parts");
+        assert!(matches!(
+            &parts[0],
+            Part::FunctionResponse { function_response }
+                if function_response.name == "lookup_weather"
+                    && function_response.id.as_deref() == Some("legacy-call-1")
+                    && function_response.response.as_ref() == Some(&json!({"temperature":22}))
+        ));
+    }
+
+    #[test]
+    fn keeps_plain_assistant_history_as_model_text_message() {
+        let history = vec![Message::assistant("plain assistant reply")];
+
+        let messages = GeminiProvider::history_to_sdk_messages(&history);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::Model);
+        assert!(matches!(
+            messages[0].content.parts.as_ref().and_then(|parts| parts.first()),
+            Some(Part::Text { text, .. }) if text == "plain assistant reply"
         ));
     }
 
