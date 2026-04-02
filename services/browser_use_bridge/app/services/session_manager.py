@@ -304,8 +304,11 @@ class SessionManager:
             session.status = "closed"
 
             if session.profile_id is not None:
+                live_sessions = await self._live_session_snapshots()
                 profile = await self._profile_manager.detach_profile(
-                    session.session_id, session.profile_id
+                    session.session_id,
+                    session.profile_id,
+                    live_sessions=live_sessions,
                 )
                 session.profile_scope = profile.profile_scope
                 session.profile_status = profile.status
@@ -410,13 +413,19 @@ class SessionManager:
                             f"profile scope '{session.profile_scope}'"
                         ),
                     )
-                profile = await self._profile_manager.get_profile(session.profile_id)
+                profile = await self._profile_manager.get_profile(
+                    session.profile_id,
+                    live_sessions=await self._live_session_snapshots(),
+                )
                 return profile, True
             return None, False
 
         # No active browser - resolve from request
         if requested_profile_id is not None:
-            profile = await self._profile_manager.get_profile(requested_profile_id)
+            profile = await self._profile_manager.get_profile(
+                requested_profile_id,
+                live_sessions=await self._live_session_snapshots(),
+            )
             if (
                 requested_profile_scope is not None
                 and profile.profile_scope != requested_profile_scope
@@ -432,7 +441,8 @@ class SessionManager:
 
         if request.reuse_profile:
             profile = await self._profile_manager.create_profile(
-                requested_profile_scope or "bridge_local"
+                requested_profile_scope or "bridge_local",
+                live_sessions=await self._live_session_snapshots(),
             )
             return profile, False
 
@@ -484,6 +494,12 @@ class SessionManager:
         session.last_error = reason
         session.updated_at = utc_now()
         await self._persist(session)
+
+    async def _live_session_snapshots(self) -> dict[str, dict[str, Any]]:
+        """Return current session snapshots keyed by session_id."""
+        async with self._registry_lock:
+            sessions = list(self._sessions.values())
+        return {session.session_id: session.snapshot() for session in sessions}
 
     def _browser_session_not_alive_error(self, session: SessionRecord) -> HTTPException:
         return HTTPException(

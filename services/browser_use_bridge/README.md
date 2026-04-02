@@ -110,6 +110,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Stage 3 lifecycle cleanup detaches reusable profiles on graceful shutdown, auto-recovers orphaned `active` profiles left after bridge restarts/crashes, and prunes expired idle/stale profiles by TTL before quota checks.
 - Stage 4 browser readiness hardening retries a narrow set of transient startup/runtime errors by recreating the browser before failing the session.
 - Stage 5 verification adds focused test coverage for readiness retry budget exhaustion and health/env observability for retry knobs.
+- P1 housekeeping now reconciles orphaned profiles against live session snapshots, so unrelated profile create/reuse/close operations do not accidentally mark an actually attached profile as `stale`.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
 - Reusable profile metadata lives under `BROWSER_USE_BRIDGE_DATA_DIR/profiles/<profile_id>/metadata.json`, browser state under `.../profiles/<profile_id>/browser/`.
 - Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
