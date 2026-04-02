@@ -58,6 +58,27 @@ Agent = getattr(browser_use_module, "Agent", None)
 
 logger = logging.getLogger(__name__)
 
+STEERING_TASK_PREFIX = "Browser Use execution rules for this run:"
+NAVIGATION_ONLY_SYSTEM_MESSAGE = (
+    "This run is navigation-only. Success means the browser is left on the target "
+    "page or UI state for Oxide follow-up tools. Do not take screenshots, save PDFs, "
+    "download files, or perform final content extraction in this run. Stop once the "
+    "requested page or UI state is ready and return a short readiness summary."
+)
+
+
+def navigation_only_agent_kwargs(task: str) -> dict[str, Any]:
+    """Return stricter Agent kwargs for steering tasks that should stay navigation-only."""
+    if not task.lstrip().startswith(STEERING_TASK_PREFIX):
+        return {}
+
+    return {
+        "enable_planning": False,
+        "use_judge": False,
+        "max_actions_per_step": 1,
+        "extend_system_message": NAVIGATION_ONLY_SYSTEM_MESSAGE,
+    }
+
 
 class SessionManager:
     """Manages browser sessions and task execution."""
@@ -366,11 +387,15 @@ class SessionManager:
 
                 await self._warmup_browser_before_run(session)
 
+                task = build_agent_task(request)
+                agent_kwargs = navigation_only_agent_kwargs(task)
+
                 agent = Agent(
-                    task=build_agent_task(request),
+                    task=task,
                     llm=create_llm_from_config(llm_config),
                     browser=session.browser,
                     use_vision=use_vision_mode(llm_config),
+                    **agent_kwargs,
                 )
                 result = await asyncio.wait_for(agent.run(), timeout=timeout_secs)
                 success, run_error = classify_run_result(result)
