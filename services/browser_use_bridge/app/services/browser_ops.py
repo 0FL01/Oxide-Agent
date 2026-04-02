@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import base64
 import inspect
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,11 +12,11 @@ from fastapi import HTTPException
 
 from app.models.internal import ProfileRecord
 from app.utils.browser_utils import (
+    browser_state_snapshot,
+    invoke_with_supported_kwargs,
     maybe_await,
     resolve_browser_page,
-    invoke_with_supported_kwargs,
 )
-from app.utils.json_safe import json_safe
 
 try:
     import browser_use as browser_use_module
@@ -138,6 +138,14 @@ async def extract_content(
 async def _extract_html(browser: Any, page: Any) -> str:
     """Extract HTML content from page."""
     if page is not None:
+        evaluate = getattr(page, "evaluate", None)
+        if callable(evaluate):
+            result = await maybe_await(
+                evaluate("() => document.documentElement.outerHTML")
+            )
+            if isinstance(result, str) and result.strip():
+                return result
+
         content_method = getattr(page, "content", None)
         if callable(content_method):
             result = await maybe_await(content_method())
@@ -150,18 +158,11 @@ async def _extract_html(browser: Any, page: Any) -> str:
         if isinstance(result, str) and result.strip():
             return result
 
-    state = await _browser_state(browser)
+    state = await browser_state_snapshot(browser, include_screenshot=False)
     for key in ("html", "page_html", "content"):
         value = state.get(key)
         if isinstance(value, str) and value.strip():
             return value
-
-    if page is not None:
-        evaluate = getattr(page, "evaluate", None)
-        if callable(evaluate):
-            result = await maybe_await(evaluate("document.documentElement.outerHTML"))
-            if isinstance(result, str) and result.strip():
-                return result
 
     raise HTTPException(
         status_code=500,
@@ -172,19 +173,19 @@ async def _extract_html(browser: Any, page: Any) -> str:
 async def _extract_text(browser: Any, page: Any) -> str:
     """Extract text content from page."""
     if page is not None:
-        inner_text = getattr(page, "inner_text", None)
-        if callable(inner_text):
-            result = await maybe_await(inner_text("body"))
-            if isinstance(result, str) and result.strip():
-                return result
-
         evaluate = getattr(page, "evaluate", None)
         if callable(evaluate):
             result = await maybe_await(
                 evaluate(
-                    "document.body ? document.body.innerText : document.documentElement.innerText"
+                    "() => document.body ? document.body.innerText : document.documentElement.innerText"
                 )
             )
+            if isinstance(result, str) and result.strip():
+                return result
+
+        inner_text = getattr(page, "inner_text", None)
+        if callable(inner_text):
+            result = await maybe_await(inner_text("body"))
             if isinstance(result, str) and result.strip():
                 return result
 
@@ -194,7 +195,13 @@ async def _extract_text(browser: Any, page: Any) -> str:
         if isinstance(result, str) and result.strip():
             return result
 
-    state = await _browser_state(browser)
+    browser_state_text = getattr(browser, "get_state_as_text", None)
+    if callable(browser_state_text):
+        result = await maybe_await(browser_state_text())
+        if isinstance(result, str) and result.strip():
+            return result
+
+    state = await browser_state_snapshot(browser, include_screenshot=False)
     for key in ("text", "page_text", "content"):
         value = state.get(key)
         if isinstance(value, str) and value.strip():
@@ -204,20 +211,6 @@ async def _extract_text(browser: Any, page: Any) -> str:
         status_code=500,
         detail="browser_use bridge could not extract page content from active session",
     )
-
-
-async def _browser_state(browser: Any) -> dict[str, Any]:
-    """Get browser state as dict."""
-    get_state = getattr(browser, "get_state", None)
-    if callable(get_state):
-        try:
-            state = await maybe_await(get_state())
-        except Exception:
-            return {}
-        safe_state = json_safe(state)
-        if isinstance(safe_state, dict):
-            return safe_state
-    return {}
 
 
 async def take_screenshot(
@@ -231,14 +224,14 @@ async def take_screenshot(
     )
     path = session_artifacts_dir / file_name
     page = await resolve_browser_page(browser)
-
     screenshot_methods = []
-    browser_screenshot = getattr(browser, "screenshot", None)
-    if callable(browser_screenshot):
-        screenshot_methods.append(browser_screenshot)
+
     browser_take_screenshot = getattr(browser, "take_screenshot", None)
     if callable(browser_take_screenshot):
         screenshot_methods.append(browser_take_screenshot)
+    browser_screenshot = getattr(browser, "screenshot", None)
+    if callable(browser_screenshot):
+        screenshot_methods.append(browser_screenshot)
     if page is not None:
         page_screenshot = getattr(page, "screenshot", None)
         if callable(page_screenshot):
@@ -259,6 +252,12 @@ async def take_screenshot(
         if isinstance(result, (bytes, bytearray)):
             path.write_bytes(bytes(result))
             break
+        if isinstance(result, str) and result.strip():
+            try:
+                path.write_bytes(base64.b64decode(result))
+                break
+            except Exception:
+                pass
 
     if not path.exists():
         raise HTTPException(

@@ -103,8 +103,10 @@ def browser_keep_alive_enabled(execution_mode: ExecutionMode) -> bool:
 
 def detect_browser_keep_alive_effective(browser: Any) -> bool:
     """Detect whether keep-alive is effectively enabled on the live browser object."""
-    value = getattr(browser, "keep_alive", None)
-    return value is True
+    profile = getattr(browser, "browser_profile", None)
+    if profile is not None:
+        return getattr(profile, "keep_alive", None) is True
+    return getattr(browser, "keep_alive", None) is True
 
 
 class SessionManager:

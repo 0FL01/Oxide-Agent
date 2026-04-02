@@ -15,43 +15,98 @@ from fastapi import HTTPException
 
 class FakeBrowser:
     instances = []
-    initial_state_failures = 0
+    initial_start_failures = 0
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
-        self.keep_alive = kwargs.get("keep_alive")
+        self.browser_profile = types.SimpleNamespace(
+            keep_alive=kwargs.get("keep_alive", False)
+        )
         self.closed = False
+        self.started = False
+        self.start_calls = 0
         self.stop_calls = 0
         self.kill_calls = 0
-        self.page = FakePage()
-        self.remaining_state_failures = type(self).initial_state_failures
+        self.current_url = "https://example.com/current"
+        self.current_page = None
+        self.session_manager = None
+        self._cdp_client_root = None
+        self.remaining_start_failures = type(self).initial_start_failures
         type(self).instances.append(self)
+
+    async def start(self) -> None:
+        self.start_calls += 1
+        if self.closed:
+            raise RuntimeError("browser has been closed")
+        if self.remaining_start_failures > 0:
+            self.remaining_start_failures -= 1
+            raise RuntimeError(
+                "CDP client not initialized - browser may not be connected yet"
+            )
+        self.started = True
+        self.session_manager = object()
+        self._cdp_client_root = object()
+        if self.current_page is None:
+            self.current_page = FakePage()
 
     async def close(self) -> None:
         self.kill_calls += 1
         self.closed = True
-        self.page = None
+        self.current_page = None
+        self.session_manager = None
+        self._cdp_client_root = None
         return None
 
     async def stop(self) -> None:
         self.stop_calls += 1
+        self.session_manager = None
+        self._cdp_client_root = None
+        self.current_page = None
         return None
 
     async def kill(self) -> None:
         self.kill_calls += 1
         self.closed = True
-        self.page = None
+        self.current_page = None
+        self.session_manager = None
+        self._cdp_client_root = None
         return None
 
-    async def get_state(self):
+    async def get_current_page(self):
         if self.closed:
             raise RuntimeError("browser has been closed")
-        if self.remaining_state_failures > 0:
-            self.remaining_state_failures -= 1
-            raise RuntimeError(
-                "CDP client not initialized - browser may not be connected yet"
-            )
-        return {"url": "https://example.com/current"}
+        return self.current_page
+
+    async def get_current_page_url(self):
+        if self.closed:
+            raise RuntimeError("browser has been closed")
+        if self.session_manager is None:
+            raise RuntimeError("SessionManager not initialized")
+        return self.current_url
+
+    async def get_browser_state_summary(self, include_screenshot=False):
+        if self.closed:
+            raise RuntimeError("browser has been closed")
+        if self.session_manager is None:
+            raise RuntimeError("SessionManager not initialized")
+        return {
+            "url": self.current_url,
+            "text": "Example page text",
+            "screenshot": "ZmFrZS1wbmc=" if include_screenshot else None,
+        }
+
+    async def get_state_as_text(self):
+        if self.closed:
+            raise RuntimeError("browser has been closed")
+        if self.session_manager is None:
+            raise RuntimeError("SessionManager not initialized")
+        return "Example page text"
+
+    async def take_screenshot(self, path=None, full_page=False):
+        payload = b"fake-png"
+        if path is not None:
+            Path(path).write_bytes(payload)
+        return payload
 
     def is_closed(self):
         return self.closed
@@ -61,19 +116,14 @@ class FakePage:
     def __init__(self):
         self.closed = False
 
-    async def content(self):
-        return "<html><body><h1>Example</h1></body></html>"
-
     async def evaluate(self, script):
+        if "=>" not in script:
+            raise ValueError("JavaScript code must start with (...args) => format")
         if "innerText" in script:
             return "Example page text"
         if "outerHTML" in script:
             return "<html><body>Evaluated HTML</body></html>"
         return ""
-
-    async def screenshot(self, path, full_page=False):
-        Path(path).write_bytes(b"fake-png")
-        return None
 
     def is_closed(self):
         return self.closed
@@ -122,9 +172,7 @@ class FakeAgent:
             outcome = "Task completed from fake agent"
 
         if type(self).auto_close_after_run:
-            if getattr(self.browser, "keep_alive", False):
-                await self.browser.stop()
-            else:
+            if not getattr(self.browser.browser_profile, "keep_alive", False):
                 await self.browser.kill()
 
         return outcome
@@ -175,7 +223,7 @@ def import_bridge_module(extra_env: dict[str, str]):
     FakeAgent.run_outcomes = []
     FakeAgent.auto_close_after_run = False
     FakeBrowser.instances = []
-    FakeBrowser.initial_state_failures = 0
+    FakeBrowser.initial_start_failures = 0
 
     browser_use_stub = make_browser_use_module()
     with mock.patch.dict(sys.modules, {"browser_use": browser_use_stub}):
@@ -424,7 +472,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(run_response.browser_keep_alive_requested)
             self.assertTrue(run_response.browser_keep_alive_effective)
             self.assertTrue(FakeBrowser.instances[-1].kwargs["keep_alive"])
-            self.assertEqual(FakeBrowser.instances[-1].stop_calls, 1)
+            self.assertEqual(FakeBrowser.instances[-1].stop_calls, 0)
             self.assertEqual(FakeBrowser.instances[-1].kill_calls, 0)
 
             screenshot = await manager.screenshot(
@@ -433,6 +481,34 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(screenshot.status, "completed")
+
+    async def test_navigation_only_mode_keeps_runtime_alive_for_extract_follow_up(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            FakeAgent.auto_close_after_run = True
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            run_response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the dashboard",
+                    execution_mode="navigation_only",
+                ),
+                None,
+            )
+
+            response = await manager.extract_content(
+                run_response.session_id,
+                module.ExtractContentRequest(format="text"),
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.content, "Example page text")
 
     async def test_autonomous_mode_allows_upstream_to_close_runtime(self):
         with TemporaryDirectory() as tmpdir:
@@ -589,7 +665,9 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
             session = await manager.get_session(run_response.session_id)
             session.browser.closed = True
-            session.browser.page = None
+            session.browser.current_page = None
+            session.browser.session_manager = None
+            session.browser._cdp_client_root = None
 
             with self.assertRaises(HTTPException) as context:
                 await manager.extract_content(
@@ -625,7 +703,9 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
             session = await manager.get_session(run_response.session_id)
             session.browser.closed = True
-            session.browser.page = None
+            session.browser.current_page = None
+            session.browser.session_manager = None
+            session.browser._cdp_client_root = None
 
             with self.assertRaises(HTTPException) as context:
                 await manager.screenshot(
@@ -883,7 +963,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                     "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
                 }
             )
-            FakeBrowser.initial_state_failures = 1
+            FakeBrowser.initial_start_failures = 1
             manager = module.SessionManager(
                 Path(tmpdir),
                 max_concurrent_sessions=1,
@@ -899,6 +979,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, "completed")
             self.assertEqual(len(FakeBrowser.instances), 1)
             self.assertEqual(len(FakeAgent.instances), 1)
+            self.assertEqual(FakeBrowser.instances[-1].start_calls, 2)
             self.assertTrue(response.browser_runtime_alive)
 
     async def test_run_task_reads_final_result_from_browser_history(self):
@@ -938,7 +1019,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                     "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
                 }
             )
-            FakeBrowser.initial_state_failures = 3
+            FakeBrowser.initial_start_failures = 3
             manager = module.SessionManager(
                 Path(tmpdir),
                 max_concurrent_sessions=1,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 from typing import Any
 
@@ -13,10 +12,15 @@ BROWSER_RUNTIME_UNAVAILABLE_PATTERNS = [
     "cdp client not initialized",
     "browser is not initialized",
     "browser not initialized",
+    "root cdp client not initialized",
     "page is not initialized",
     "page not initialized",
     "context is not initialized",
     "context not initialized",
+    "sessionmanager not initialized",
+    "session manager not initialized",
+    "no valid agent focus available",
+    "no current target found",
     "target page, context or browser has been closed",
     "target closed",
     "browser has been closed",
@@ -52,15 +56,29 @@ def invoke_with_supported_kwargs(method: Any, **kwargs: Any) -> Any:
 
 async def resolve_browser_page(browser: Any) -> Any | None:
     """Resolve page object from browser instance."""
-    for attr in ("page", "current_page"):
+    for attr in ("get_current_page", "page", "current_page"):
         candidate = getattr(browser, attr, None)
         if candidate is None:
             continue
         if callable(candidate):
-            candidate = await maybe_await(candidate())
+            try:
+                candidate = await maybe_await(candidate())
+            except Exception as error:
+                if is_browser_session_unavailable_error(error):
+                    raise RuntimeError(
+                        f"browser session is not alive: {error}"
+                    ) from error
+                return None
         if candidate is not None:
             return candidate
     return None
+
+
+async def start_browser_runtime(browser: Any) -> None:
+    """Start browser runtime if the installed browser_use surface exposes it."""
+    start = getattr(browser, "start", None)
+    if callable(start):
+        await maybe_await(start())
 
 
 async def ensure_browser_session_alive(browser: Any) -> None:
@@ -87,26 +105,43 @@ async def probe_browser_runtime_ready(browser: Any) -> tuple[bool, str | None]:
     if await _object_is_closed(browser):
         return False, "browser runtime is not ready: browser runtime is closed"
 
-    page = await resolve_browser_page(browser)
+    try:
+        await start_browser_runtime(browser)
+    except Exception as error:
+        if is_transient_browser_ready_error(error):
+            return False, f"browser runtime is not ready: {error}"
+        raise
+
+    if await _has_live_runtime_handle(browser):
+        return True, None
+
+    try:
+        page = await resolve_browser_page(browser)
+    except RuntimeError as error:
+        return False, str(error)
     if await _object_is_closed(page):
         return False, "browser runtime is not ready: browser page is closed"
+    if page is not None:
+        return True, None
 
-    state_method = getattr(browser, "get_state", None)
-    if callable(state_method):
+    current_url = getattr(browser, "get_current_page_url", None)
+    if callable(current_url):
         try:
-            await maybe_await(state_method())
+            await maybe_await(current_url())
             return True, None
         except Exception as error:
             if is_transient_browser_ready_error(error):
                 return False, f"browser runtime is not ready: {error}"
-            if page is not None:
-                return True, None
             raise
 
-    if page is not None:
+    try:
+        state = await browser_state_snapshot(browser, include_screenshot=False)
+    except RuntimeError as error:
+        return False, str(error)
+    if state:
         return True, None
 
-    return False, "browser runtime is not ready: browser state is unavailable"
+    return False, "browser runtime is not ready: browser runtime handle is unavailable"
 
 
 async def probe_browser_session_state(browser: Any) -> tuple[bool, str | None]:
@@ -117,17 +152,30 @@ async def probe_browser_session_state(browser: Any) -> tuple[bool, str | None]:
     if await _object_is_closed(browser):
         return False, "browser session is not alive: browser runtime is closed"
 
-    page = await resolve_browser_page(browser)
+    try:
+        page = await resolve_browser_page(browser)
+    except RuntimeError as error:
+        return False, str(error)
     if await _object_is_closed(page):
         return False, "browser session is not alive: browser page is closed"
+    if page is not None:
+        return True, None
+
+    if await _has_live_runtime_handle(browser):
+        return True, None
 
     try:
-        state = await _browser_state(browser)
+        current_url = getattr(browser, "get_current_page_url", None)
+        if callable(current_url):
+            url = await maybe_await(current_url())
+            if isinstance(url, str) and url.strip():
+                return True, None
+        state = await browser_state_snapshot(browser, include_screenshot=False)
     except RuntimeError as error:
         return False, str(error)
 
-    if page is None and not state:
-        return False, "browser session is not alive: browser page is unavailable"
+    if not state:
+        return False, "browser session is not alive: browser runtime is unavailable"
 
     return True, None
 
@@ -147,18 +195,24 @@ async def infer_url(browser: Any, result: Any) -> str | None:
                     return value.strip()
 
     if browser is not None:
-        state_method = getattr(browser, "get_state", None)
-        if callable(state_method):
+        current_url = getattr(browser, "get_current_page_url", None)
+        if callable(current_url):
             try:
-                state = await maybe_await(state_method())
+                value = await maybe_await(current_url())
             except Exception:
-                return None
-            safe_state = json_safe(state)
-            if isinstance(safe_state, dict):
-                for key in ("url", "current_url", "page_url"):
-                    value = safe_state.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return value.strip()
+                value = None
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        try:
+            state = await browser_state_snapshot(browser, include_screenshot=False)
+        except RuntimeError:
+            return None
+
+        for key in ("url", "current_url", "page_url"):
+            value = state.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return None
 
 
@@ -200,7 +254,34 @@ async def _object_is_closed(candidate: Any) -> bool:
     return False
 
 
-async def _browser_state(browser: Any) -> dict[str, Any]:
+async def _has_live_runtime_handle(browser: Any) -> bool:
+    return any(
+        getattr(browser, attr, None) is not None
+        for attr in ("session_manager", "_cdp_client_root")
+    )
+
+
+async def browser_state_snapshot(
+    browser: Any, *, include_screenshot: bool = False
+) -> dict[str, Any]:
+    """Read browser state summary if the runtime exposes it."""
+    get_browser_state_summary = getattr(browser, "get_browser_state_summary", None)
+    if callable(get_browser_state_summary):
+        try:
+            state = await maybe_await(
+                invoke_with_supported_kwargs(
+                    get_browser_state_summary,
+                    include_screenshot=include_screenshot,
+                )
+            )
+        except Exception as error:
+            if is_browser_session_unavailable_error(error):
+                raise RuntimeError(f"browser session is not alive: {error}") from error
+            return {}
+
+        safe_state = json_safe(state)
+        return safe_state if isinstance(safe_state, dict) else {}
+
     get_state = getattr(browser, "get_state", None)
     if not callable(get_state):
         return {}
