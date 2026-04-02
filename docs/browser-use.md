@@ -36,6 +36,7 @@
 - Stage 3 lifecycle cleanup теперь detaches reusable profiles на graceful shutdown bridge, auto-recovers orphaned `active` profiles после restart/crash и TTL-prune-ит старые idle/stale profiles до quota check
 - Stage 1 dedicated browser route добавляет отдельный Oxide-side override для Browser Use, чтобы browser automation можно было держать на `zai / GLM-4.6V`, даже если main/sub-agent идут по другому route
 - Stage 2 vision classification расширяет policy для `zai / GLM-4.6V` и добавляет распознавание русскоязычных UI/vision задач до запуска sidecar session
+- Stage 3 run-task steering усиливает guidance: screenshot/content-oriented задачи теперь подталкиваются к схеме `browser_use_run_task` для navigation only, затем `browser_use_screenshot` / `browser_use_extract_content` для финального артефакта
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
@@ -49,6 +50,7 @@
 - для interactive UI задач Browser Use теперь возвращает warning о degraded mode
 - для задач, явно требующих visual grounding, Browser Use завершает tool вызов понятной ошибкой до запуска sidecar session
 - policy теперь учитывает и англоязычные, и русскоязычные формулировки вроде `click button` / `нажми кнопку` и `describe layout` / `опиши визуально`
+- если задача просит screenshot или raw page extraction, `browser_use_run_task` теперь дописывает bridge-side instruction не делать PDF/screenshot/extract в агентном шаге и возвращает follow-up hint с `session_id`
 
 ## Важные переменные окружения
 
@@ -236,7 +238,8 @@ Browser Use не включается через alias `search`. Для него
 ## Рекомендуемый v1 usage pattern
 
 - использовать Browser Use для задач уровня “открой сайт, пройди пару шагов, собери summary”
-- после `browser_use_run_task` можно дочитать страницу через `browser_use_extract_content` или снять PNG через `browser_use_screenshot`
+- если конечная цель - PNG или raw page text/HTML, использовать `browser_use_run_task` только чтобы довести сессию до нужного состояния, а затем вызывать `browser_use_screenshot` или `browser_use_extract_content`
+- `browser_use_run_task` теперь сам подсказывает follow-up tool, когда видит screenshot/content-oriented задачу
 - если нужен controlled reuse login/cookie state между задачами, сначала вызвать `browser_use_run_task` с `reuse_profile=true`, а затем переиспользовать возвращенный `profile_id` в следующем `browser_use_run_task`
 - не расширять без необходимости tool surface до raw click/type/eval action-ов; это отложено отдельным post-v1 decision slice
 - не рассматривать его как замену `searxng` или `crawl4ai`
