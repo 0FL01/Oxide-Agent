@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 const TOPIC_AGENT_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
+    "stack_logs_list_sources",
+    "stack_logs_fetch",
     "ytdlp_get_video_metadata",
     "ytdlp_download_transcript",
     "ytdlp_search_videos",
@@ -529,10 +531,14 @@ mod tests {
     }
 
     #[test]
-    fn topic_agent_default_blocklist_contains_ytdlp_jira_mattermost_tools() {
+    fn topic_agent_default_blocklist_contains_restricted_provider_tools() {
         let blocked = topic_agent_default_blocked_tools();
 
-        // All blocked tools should be from restricted categories
+        // All blocked tools should be from restricted categories.
+        let stack_logs_count = blocked
+            .iter()
+            .filter(|t| t.starts_with("stack_logs_"))
+            .count();
         let ytdlp_count = blocked.iter().filter(|t| t.starts_with("ytdlp_")).count();
         let jira_count = blocked.iter().filter(|t| t.starts_with("jira_")).count();
         let mattermost_count = blocked
@@ -540,13 +546,14 @@ mod tests {
             .filter(|t| t.starts_with("mattermost_"))
             .count();
 
+        assert!(stack_logs_count > 0, "Should block stack_logs tools");
         assert!(ytdlp_count > 0, "Should block ytdlp tools");
         assert!(jira_count > 0, "Should block jira tools");
         assert!(mattermost_count > 0, "Should block mattermost tools");
         assert_eq!(
-            ytdlp_count + jira_count + mattermost_count,
+            stack_logs_count + ytdlp_count + jira_count + mattermost_count,
             blocked.len(),
-            "All blocked tools should be from ytdlp/jira/mattermost categories"
+            "All blocked tools should be from stack_logs/ytdlp/jira/mattermost categories"
         );
         assert!(!blocked.iter().any(|tool| tool == "delegate_to_sub_agent"));
     }
