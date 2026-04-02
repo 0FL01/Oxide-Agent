@@ -37,6 +37,7 @@
 - Stage 1 dedicated browser route добавляет отдельный Oxide-side override для Browser Use, чтобы browser automation можно было держать на `zai / GLM-4.6V`, даже если main/sub-agent идут по другому route
 - Stage 2 vision classification расширяет policy для `zai / GLM-4.6V` и добавляет распознавание русскоязычных UI/vision задач до запуска sidecar session
 - Stage 3 run-task steering усиливает guidance: screenshot/content-oriented задачи теперь подталкиваются к схеме `browser_use_run_task` для navigation only, затем `browser_use_screenshot` / `browser_use_extract_content` для финального артефакта
+- Stage 4 browser readiness hardening добавляет узкий retry на ранние transient browser/runtime ошибки вроде `CDP client not initialized` с пересозданием browser между попытками
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
@@ -79,6 +80,8 @@
 - `BROWSER_USE_BRIDGE_MAX_CONCURRENT_SESSIONS=2`
 - `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3`
 - `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=604800` - idle/stale profile TTL; `0` disables pruning
+- `BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=2` - retry count for narrow transient browser readiness failures
+- `BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750` - delay between readiness retries in milliseconds
 - `BROWSER_USE_BRIDGE_LLM_PROVIDER=google|anthropic|browser_use`
 - `BROWSER_USE_BRIDGE_LLM_MODEL=<optional-model-id>`
 
@@ -138,6 +141,8 @@ curl -f http://127.0.0.1:8002/health
 - `supported_inherited_route_providers` показывает, какие route provider-ы Rust provider умеет прокидывать автоматически
 - `supported_legacy_env_providers` показывает, какие bridge-local adapter-ы еще остаются для fallback-сценариев
 - `profile_idle_ttl_secs` показывает, через сколько bridge auto-prune-ит idle/stale profiles
+- `browser_ready_retries` и `browser_ready_retry_delay_ms` показывают активный Stage 4 retry policy для transient readiness failures
+- `browser_ready_retry_supported` показывает, что bridge умеет автоматически пересоздавать browser после раннего readiness failure
 - `orphan_profile_recovery_supported` показывает, что bridge умеет self-heal-ить `active` profiles, оставшиеся после рестарта
 
 ## Topic-Agent UX
@@ -234,6 +239,9 @@ Browser Use не включается через alias `search`. Для него
 - хватает ли `shm_size` для Chromium
 - не слишком ли низкий `timeout_secs`
 - нет ли перегруза по `BROWSER_USE_MAX_CONCURRENT` или `BROWSER_USE_BRIDGE_MAX_CONCURRENT_SESSIONS`
+- не слишком ли агрессивно уменьшены `BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES` или `BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS`
+
+Bridge теперь сам делает узкий retry только для ранних transient readiness ошибок вроде `CDP client not initialized`; если ошибка повторяется или выглядит как обычный task/browser failure, сессия по-прежнему завершится `failed` без бесконечных повторов.
 
 ## Рекомендуемый v1 usage pattern
 

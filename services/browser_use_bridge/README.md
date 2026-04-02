@@ -33,6 +33,8 @@
 - `BROWSER_USE_BRIDGE_MAX_CONCURRENT_SESSIONS` - max parallel runs, default `2`
 - `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE` - max retained profiles per scope before bridge rejects creation of a new one, default `3`
 - `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS` - idle/stale profile retention TTL in seconds, default `604800` (7 days), `0` disables TTL pruning
+- `BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES` - retry count for early transient browser readiness failures such as `CDP client not initialized`, default `2`
+- `BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS` - delay between readiness retries in milliseconds, default `750`
 - `BROWSER_USE_BRIDGE_LLM_PROVIDER` - legacy fallback: `browser_use`, `google`, or `anthropic`
 - `BROWSER_USE_BRIDGE_LLM_MODEL` - legacy fallback model override for selected provider
 
@@ -106,10 +108,11 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Stage D secret handling sends inherited-route API keys via `X-Oxide-Browser-Llm-Api-Key`, so `minimax`, `zai`, and `openrouter` do not require dedicated sidecar env passthrough in the default compose setup.
 - Stage 2 profile reuse injects `profile_scope` from runtime context; bridge enforces scope match on `profile_id` reuse and rejects creating more than `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE` retained profiles in one scope.
 - Stage 3 lifecycle cleanup detaches reusable profiles on graceful shutdown, auto-recovers orphaned `active` profiles left after bridge restarts/crashes, and prunes expired idle/stale profiles by TTL before quota checks.
+- Stage 4 browser readiness hardening retries a narrow set of transient startup/runtime errors by recreating the browser before failing the session.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
 - Reusable profile metadata lives under `BROWSER_USE_BRIDGE_DATA_DIR/profiles/<profile_id>/metadata.json`, browser state under `.../profiles/<profile_id>/browser/`.
 - Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
-- `GET /health` also shows whether legacy env fallback is configured, which LLM source is preferred, the profile idle TTL, and whether orphan recovery is enabled.
+- `GET /health` also shows whether legacy env fallback is configured, which LLM source is preferred, the profile idle TTL, readiness retry settings, and whether orphan recovery is enabled.
 
 ## Notes
 
@@ -118,6 +121,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Если `reuse_profile=true`, bridge создает отдельный reusable profile и возвращает `profile_id`, `profile_scope`, `profile_status`, `profile_attached`, `profile_reused`.
 - Если передан `profile_id`, bridge пытается поднять новую browser session поверх сохраненного profile state и проверяет совпадение injected `profile_scope`.
 - Если bridge был перезапущен с незакрытой profiled session, следующий reuse автоматически переведет orphaned profile из `active` в recoverable state и переиспользует его без ручной правки metadata.
+- Если `browser_use` падает на раннем transient browser error вроде `CDP client not initialized`, bridge пытается пересоздать browser и повторить run вместо немедленного `failed`.
 - `POST /sessions/{id}/extract_content` читает текущую страницу активной сессии и возвращает `text` или `html` с optional truncation.
 - `POST /sessions/{id}/screenshot` сохраняет PNG artifact в `BROWSER_USE_BRIDGE_DATA_DIR/artifacts/<session_id>/` и возвращает metadata с путем к файлу.
 - Метаданные сессий сохраняются в `BROWSER_USE_BRIDGE_DATA_DIR/sessions/`.
