@@ -876,6 +876,7 @@ async fn run_task_allows_autonomous_visual_task_when_unstable_routes_disabled() 
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     env::set_var(BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV, "off");
+    drop(_guard);
 
     let state = Arc::new(TestServerState::default());
     let server = TestServer::spawn(
