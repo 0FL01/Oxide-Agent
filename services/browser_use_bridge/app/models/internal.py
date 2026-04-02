@@ -45,6 +45,9 @@ class SessionRecord:
     profile_scope: str | None = None
     profile_status: str | None = None
     profile_attached: bool = False
+    browser_runtime_alive: bool | None = None
+    browser_runtime_last_check_at: str | None = None
+    browser_runtime_dead_reason: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def snapshot(self) -> dict[str, Any]:
@@ -67,6 +70,9 @@ class SessionRecord:
             "profile_scope": self.profile_scope,
             "profile_status": self.profile_status,
             "profile_attached": self.profile_attached,
+            "browser_runtime_alive": self.browser_runtime_alive,
+            "browser_runtime_last_check_at": self.browser_runtime_last_check_at,
+            "browser_runtime_dead_reason": self.browser_runtime_dead_reason,
         }
 
 

@@ -65,19 +65,33 @@ async def resolve_browser_page(browser: Any) -> Any | None:
 
 async def ensure_browser_session_alive(browser: Any) -> None:
     """Verify that a browser session still has a usable runtime/page."""
+    alive, reason = await probe_browser_session_state(browser)
+    if alive:
+        return
+    raise RuntimeError(reason or "browser session is not alive")
+
+
+async def probe_browser_session_state(browser: Any) -> tuple[bool, str | None]:
+    """Probe browser runtime liveness without raising on ordinary dead-session cases."""
     if browser is None:
-        raise RuntimeError("browser session is not alive: browser handle is missing")
+        return False, "browser session is not alive: browser handle is missing"
 
     if await _object_is_closed(browser):
-        raise RuntimeError("browser session is not alive: browser runtime is closed")
+        return False, "browser session is not alive: browser runtime is closed"
 
     page = await resolve_browser_page(browser)
     if await _object_is_closed(page):
-        raise RuntimeError("browser session is not alive: browser page is closed")
+        return False, "browser session is not alive: browser page is closed"
 
-    state = await _browser_state(browser)
+    try:
+        state = await _browser_state(browser)
+    except RuntimeError as error:
+        return False, str(error)
+
     if page is None and not state:
-        raise RuntimeError("browser session is not alive: browser page is unavailable")
+        return False, "browser session is not alive: browser page is unavailable"
+
+    return True, None
 
 
 async def infer_url(browser: Any, result: Any) -> str | None:

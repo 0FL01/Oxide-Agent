@@ -146,7 +146,14 @@ curl -f http://127.0.0.1:8002/health
 - `profile_idle_ttl_secs` показывает, через сколько bridge auto-prune-ит idle/stale profiles
 - `browser_ready_retries` и `browser_ready_retry_delay_ms` показывают активный Stage 4 retry policy для transient readiness failures
 - `browser_ready_retry_supported` показывает, что bridge умеет автоматически пересоздавать browser после раннего readiness failure
+- `browser_runtime_observability_supported` показывает, что session responses публикуют runtime liveness/dead-reason поля
 - `orphan_profile_recovery_supported` показывает, что bridge умеет self-heal-ить `active` profiles, оставшиеся после рестарта
+
+Полезные поля в `POST /sessions/run` и `GET /sessions/{id}`:
+
+- `browser_runtime_alive` показывает, был ли browser runtime жив на последней bridge-side проверке
+- `browser_runtime_last_check_at` показывает timestamp последней liveness проверки
+- `browser_runtime_dead_reason` показывает последнюю зафиксированную причину, почему runtime считается мертвым или закрытым
 
 ## Topic-Agent UX
 

@@ -99,6 +99,7 @@ async def health() -> JSONResponse:
         "browser_ready_retries": settings.browser_ready_retries,
         "browser_ready_retry_delay_ms": settings.browser_ready_retry_delay_ms,
         "browser_ready_retry_supported": True,
+        "browser_runtime_observability_supported": True,
         "orphan_profile_recovery_supported": True,
     }
     status_code = 200 if BROWSER_USE_IMPORT_ERROR is None else 503
@@ -134,6 +135,9 @@ async def get_session(session_id: str) -> SessionResponse:
         profile_scope=session.profile_scope,
         profile_status=session.profile_status,
         profile_attached=session.profile_attached,
+        browser_runtime_alive=session.browser_runtime_alive,
+        browser_runtime_last_check_at=session.browser_runtime_last_check_at,
+        browser_runtime_dead_reason=session.browser_runtime_dead_reason,
     )
 
 

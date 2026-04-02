@@ -150,6 +150,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["browser_ready_retries"], 2)
             self.assertEqual(payload["browser_ready_retry_delay_ms"], 750)
             self.assertTrue(payload["browser_ready_retry_supported"])
+            self.assertTrue(payload["browser_runtime_observability_supported"])
             self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
             self.assertIn("browser_use", payload["supported_legacy_env_providers"])
@@ -216,6 +217,9 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.llm_provider, "zai")
             self.assertEqual(response.llm_transport, "openai_compatible")
             self.assertEqual(response.vision_mode, "disabled")
+            self.assertTrue(response.browser_runtime_alive)
+            self.assertIsNotNone(response.browser_runtime_last_check_at)
+            self.assertIsNone(response.browser_runtime_dead_reason)
             self.assertEqual(FakeAgent.instances[-1].use_vision, False)
             self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatOpenAI)
             self.assertEqual(
@@ -245,6 +249,9 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.llm_provider, "google")
             self.assertEqual(response.llm_transport, "google")
             self.assertEqual(response.vision_mode, "auto")
+            self.assertTrue(response.browser_runtime_alive)
+            self.assertIsNotNone(response.browser_runtime_last_check_at)
+            self.assertIsNone(response.browser_runtime_dead_reason)
             self.assertEqual(FakeAgent.instances[-1].use_vision, "auto")
             self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatGoogle)
             self.assertEqual(
@@ -333,6 +340,11 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
             refreshed = await manager.get_session(run_response.session_id)
             self.assertIsNone(refreshed.browser)
+            self.assertFalse(refreshed.browser_runtime_alive)
+            self.assertIsNotNone(refreshed.browser_runtime_last_check_at)
+            self.assertIn(
+                "browser runtime is closed", refreshed.browser_runtime_dead_reason
+            )
             self.assertIn("browser runtime is closed", refreshed.last_error)
 
     async def test_screenshot_reports_dead_browser_session_as_terminal_error(self):
@@ -364,6 +376,34 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
             refreshed = await manager.get_session(run_response.session_id)
             self.assertIsNone(refreshed.browser)
+            self.assertFalse(refreshed.browser_runtime_alive)
+            self.assertIsNotNone(refreshed.browser_runtime_last_check_at)
+            self.assertIn(
+                "browser runtime is closed", refreshed.browser_runtime_dead_reason
+            )
+
+    async def test_get_session_endpoint_reports_browser_runtime_observability(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"), None
+            )
+            module.manager = manager
+
+            response = await module.get_session(run_response.session_id)
+
+            self.assertEqual(response.session_id, run_response.session_id)
+            self.assertEqual(response.status, "completed")
+            self.assertTrue(response.browser_runtime_alive)
+            self.assertIsNotNone(response.browser_runtime_last_check_at)
+            self.assertIsNone(response.browser_runtime_dead_reason)
 
     async def test_run_task_creates_and_returns_profile_metadata(self):
         with TemporaryDirectory() as tmpdir:
@@ -646,11 +686,18 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(close_response.profile_id, run_response.profile_id)
             self.assertEqual(close_response.profile_status, "idle")
             self.assertFalse(close_response.profile_attached)
+            self.assertFalse(close_response.browser_runtime_alive)
+            self.assertIsNotNone(close_response.browser_runtime_last_check_at)
+            self.assertEqual(
+                close_response.browser_runtime_dead_reason,
+                "browser session was closed by bridge",
+            )
 
             session = await manager.get_session(run_response.session_id)
             self.assertEqual(session.profile_id, run_response.profile_id)
             self.assertEqual(session.profile_status, "idle")
             self.assertFalse(session.profile_attached)
+            self.assertFalse(session.browser_runtime_alive)
 
             metadata = json.loads(
                 (
