@@ -2,6 +2,7 @@ use super::response::{format_http_error, is_retryable_error};
 use super::*;
 use crate::agent::tool_runtime::scope_tool_model_route;
 use reqwest::StatusCode;
+use std::env;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -864,6 +865,69 @@ async fn run_task_fast_fails_autonomous_visual_task_on_unstable_glm_4_6v_route()
     assert!(message.contains("zai/GLM-4.6V"));
     assert!(message.contains("browser_use_screenshot"));
     assert!(message.contains("describe_image_file"));
+}
+
+#[tokio::test]
+async fn run_task_allows_autonomous_visual_task_when_unstable_routes_disabled() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    env::set_var(BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV, "off");
+
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Done"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings_with_dedicated_browser_use_model(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+
+    let output = provider
+        .execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Open the login page and solve the captcha to continue"}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("route blocklist disabled should allow autonomous visual task");
+
+    assert!(output.contains("browser-use-123"));
+    let request_body = state.request_body().await;
+    assert!(request_body.contains(r#""execution_mode":"autonomous""#));
+
+    env::remove_var(BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV);
+}
+
+#[test]
+fn unstable_visual_route_patterns_parse_csv_and_model_only_entries() {
+    let patterns =
+        parse_unstable_visual_route_patterns(" zai/glm-4.6v, glm-4.7 , openrouter/qwen-vl ");
+    assert_eq!(
+        patterns,
+        vec![
+            "zai/glm-4.6v".to_string(),
+            "glm-4.7".to_string(),
+            "openrouter/qwen-vl".to_string()
+        ]
+    );
+}
+
+#[test]
+fn route_matches_pattern_supports_provider_and_model_patterns() {
+    assert!(route_matches_pattern("zai/glm-4.6v", "zai/glm-4.6v"));
+    assert!(route_matches_pattern("zai/glm-4.7", "glm-4.7"));
+    assert!(!route_matches_pattern(
+        "openrouter/gpt-4o-mini",
+        "zai/glm-4.6v"
+    ));
 }
 
 #[tokio::test]

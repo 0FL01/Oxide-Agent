@@ -43,6 +43,7 @@ const TOOL_SCREENSHOT: &str = "browser_use_screenshot";
 const MINIMAX_DEFAULT_API_BASE: &str = "https://api.minimax.io/anthropic";
 const OPENROUTER_DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
 const OXIDE_BROWSER_LLM_API_KEY_HEADER: &str = "x-oxide-browser-llm-api-key";
+const BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV: &str = "BROWSER_USE_UNSTABLE_VISUAL_ROUTES";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VisionRequirement {
@@ -789,6 +790,14 @@ impl BrowserUseProvider {
         let steering = classify_run_task_steering(&args.task);
         let vision_task = vision_policy_task(&args.task, steering);
         let rewritten_task = rewrite_run_task_instruction(&args.task, steering);
+        if !steering.is_empty() {
+            debug!(
+                prefer_screenshot_tool = steering.prefer_screenshot_tool,
+                prefer_extract_tool = steering.prefer_extract_tool,
+                prefer_visual_description = steering.prefer_visual_description,
+                "Browser Use run_task split into navigation-only with follow-up guidance"
+            );
+        }
 
         let inherited_llm = self.browser_llm_config_for_request()?;
         let (browser_llm_config, browser_llm_api_key) = match inherited_llm {
@@ -802,6 +811,12 @@ impl BrowserUseProvider {
         )?;
         let vision_warning =
             self.vision_policy_warning(&vision_task, browser_llm_config.as_ref())?;
+        if let Some(warning) = vision_warning.as_ref() {
+            warn!(
+                warning = %warning,
+                "Browser Use run_task proceeds on text-only route in degraded mode"
+            );
+        }
         let profile_scope = self.request_profile_scope(&args)?;
         let body = serde_json::to_value(RunTaskRequestBody {
             task: rewritten_task,
@@ -856,6 +871,13 @@ impl BrowserUseProvider {
         if !is_unstable_autonomous_visual_route(config) {
             return Ok(());
         }
+
+        warn!(
+            provider = %config.provider,
+            model = %config.model,
+            task = %task,
+            "Browser Use autonomous visual task blocked on unstable route"
+        );
 
         Err(anyhow!(
             "Browser Use autonomous visual tasks are disabled on route `{}/{}` because this route is unstable for strict structured browser-use outputs and can stall on expensive retries. Run navigation-only first, then use `browser_use_screenshot` + `describe_image_file` (or `browser_use_extract_content`) for the final result.",
@@ -1104,8 +1126,51 @@ fn is_openrouter_vision_model(model: &str) -> bool {
 }
 
 fn is_unstable_autonomous_visual_route(config: &BrowserLlmConfig) -> bool {
-    config.provider.eq_ignore_ascii_case("zai")
-        && config.model.to_ascii_lowercase().contains("glm-4.6v")
+    let route = format!(
+        "{}/{}",
+        config.provider.to_ascii_lowercase(),
+        config.model.to_ascii_lowercase()
+    );
+
+    unstable_visual_route_patterns()
+        .iter()
+        .any(|pattern| route_matches_pattern(&route, pattern))
+}
+
+fn unstable_visual_route_patterns() -> Vec<String> {
+    let parsed = std::env::var(BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV)
+        .ok()
+        .map(|raw| parse_unstable_visual_route_patterns(&raw));
+
+    match parsed {
+        Some(patterns) if !patterns.is_empty() => patterns,
+        Some(_) => Vec::new(),
+        None => vec!["zai/glm-4.6v".to_string()],
+    }
+}
+
+fn parse_unstable_visual_route_patterns(raw: &str) -> Vec<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "off" | "none" | "disabled") {
+        return Vec::new();
+    }
+
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .collect()
+}
+
+fn route_matches_pattern(route: &str, pattern: &str) -> bool {
+    if pattern.contains('/') {
+        route.contains(pattern)
+    } else {
+        route
+            .split('/')
+            .nth(1)
+            .is_some_and(|model| model.contains(pattern))
+    }
 }
 
 fn classify_vision_requirement(task: &str) -> VisionRequirement {
