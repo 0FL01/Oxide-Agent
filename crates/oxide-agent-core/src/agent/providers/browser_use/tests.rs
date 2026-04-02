@@ -173,7 +173,7 @@ async fn run_task_rewrites_screenshot_focused_requests_and_adds_follow_up_guidan
     let server = TestServer::spawn(
         Arc::clone(&state),
         json_response(
-            r#"{"session_id":"browser-use-123","status":"completed","final_url":"https://example.com/dashboard","summary":"Ready"}"#,
+            r#"{"session_id":"browser-use-123","status":"completed","final_url":"https://example.com/dashboard","summary":"Ready","browser_runtime_alive":true,"browser_runtime_dead_reason":null}"#,
         ),
     )
     .await;
@@ -203,6 +203,49 @@ async fn run_task_rewrites_screenshot_focused_requests_and_adds_follow_up_guidan
     let body = state.request_body().await;
     assert!(body.contains("Original task:\\nOpen the dashboard and take a screenshot"));
     assert!(body.contains("Do not take screenshots, save PDFs, or perform final page-content extraction in this step."));
+}
+
+#[tokio::test]
+async fn run_task_replaces_follow_up_guidance_when_bridge_reports_dead_runtime() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(
+            r#"{"session_id":"browser-use-123","status":"completed","final_url":"https://example.com/dashboard","summary":"Ready","browser_runtime_alive":false,"browser_runtime_dead_reason":"browser session is not alive: browser runtime is closed"}"#,
+        ),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+
+    let output = provider
+        .execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Open the dashboard and take a screenshot"}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("dead-runtime run should still return output");
+
+    assert!(output.contains("browser-use-123"));
+    assert!(output.contains(
+        "Follow-up note: Browser Use reported that this session runtime with `session_id` `browser-use-123` is no longer alive."
+    ));
+    assert!(output.contains(
+        "Re-run `browser_use_run_task` before calling `browser_use_screenshot` or `browser_use_extract_content`."
+    ));
+    assert!(output
+        .contains("Reported reason: `browser session is not alive: browser runtime is closed`."));
+    assert!(!output.contains(
+        "Follow-up guidance: use `browser_use_screenshot` with `session_id` `browser-use-123`"
+    ));
 }
 
 #[tokio::test]
