@@ -118,6 +118,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - The next post-run slice classifies returned `browser_use` history objects, so a run no longer counts as success merely because `Agent.run()` returned without a Python exception.
 - The next navigation-only slice applies a stricter `Agent` preset for Rust steering tasks, so screenshot/extract-oriented runs get `enable_planning=False`, `use_judge=False`, `max_actions_per_step=1`, and an extra system-level navigation-only contract inside the bridge.
 - The next execution-mode slice makes that split explicit: Rust provider now sends `execution_mode=autonomous|navigation_only`, and bridge persists the resolved mode into session metadata.
+- The next keep-alive slice requests upstream `keep_alive=True` for `navigation_only` runs, so follow-up screenshot/extract tools can reuse the same live browser runtime after `Agent.run()` returns.
 - Stage 5 verification adds focused test coverage for readiness retry budget exhaustion and health/env observability for retry knobs.
 - P1 housekeeping now reconciles orphaned profiles against live session snapshots, so unrelated profile create/reuse/close operations do not accidentally mark an actually attached profile as `stale`.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
@@ -137,7 +138,9 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Если `browser_use` вернул internal failed history без Python exception, bridge теперь помечает run как `failed`; readiness-like history errors все еще могут получить bridge-side retry.
 - Если Rust provider уже переписал task в navigation-only steering form, bridge теперь не ограничивается prompt rewrite и дополнительно сужает upstream `Agent` preset, чтобы тот реже уходил в screenshot/PDF/extract overreach.
 - `POST /sessions/run`, `GET /sessions/{id}`, и `DELETE /sessions/{id}` теперь также возвращают `execution_mode`, чтобы было видно, шла ли задача как full autonomous run или как strict navigation-only run.
+- Для `navigation_only` bridge теперь дополнительно просит upstream browser runtime остаться живым после `Agent.run()`, поэтому follow-up `extract_content` / `screenshot` должны чаще работать без немедленного rerun.
 - Если follow-up tool вызывается после того, как upstream runtime уже умер или reset-нулся, bridge возвращает terminal `browser_session_not_alive` и очищает stale browser handle из session metadata in-memory state.
+- При `close_session`, shutdown bridge и retry-reset такой kept-alive runtime теперь убивается принудительно, чтобы не оставлять фоновые browser processes.
 - `POST /sessions/{id}/extract_content` читает текущую страницу активной сессии и возвращает `text` или `html` с optional truncation.
 - `POST /sessions/{id}/screenshot` сохраняет PNG artifact в `BROWSER_USE_BRIDGE_DATA_DIR/artifacts/<session_id>/` и возвращает metadata с путем к файлу.
 - Метаданные сессий сохраняются в `BROWSER_USE_BRIDGE_DATA_DIR/sessions/`.
