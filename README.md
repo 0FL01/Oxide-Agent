@@ -177,6 +177,8 @@ BROWSER_USE_URL=http://127.0.0.1:8002 # Browser Use self-hosted bridge
 BROWSER_USE_ENABLED=true        # Enable Browser Use browser automation provider
 # BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3 # Optional retained reusable profiles per topic/context scope
 # BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=604800 # Optional idle/stale reusable profile TTL in the bridge
+# BROWSER_USE_MODEL_ID="GLM-4.6V" # Optional dedicated Browser Use route
+# BROWSER_USE_MODEL_PROVIDER="zai" # Keep browser automation on ZAI vision while main/sub-agent stay elsewhere
 # BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Legacy browser_use sidecar fallback, not used by default compose
 # BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional legacy fallback model override
 ```
@@ -251,6 +253,16 @@ AGENT_MODEL_ROUTES__1__WEIGHT=5
 ```
 
 The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
+
+### Dedicated Browser Use route
+If the main agent and sub-agent stay on `MiniMax-M2.7`, you can pin browser automation to a separate vision-capable route:
+
+```dotenv
+BROWSER_USE_MODEL_ID="GLM-4.6V"
+BROWSER_USE_MODEL_PROVIDER="zai"
+```
+
+When set, Browser Use prefers this dedicated route over the currently active main/sub-agent route and falls back to the inherited route only when the dedicated override is absent.
 
 ### Alternate provider example
 ```

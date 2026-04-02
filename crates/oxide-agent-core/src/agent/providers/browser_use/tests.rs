@@ -7,12 +7,25 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 fn test_settings() -> Arc<crate::config::AgentSettings> {
-    let mut settings = crate::config::AgentSettings::default();
-    settings.gemini_api_key = Some("gemini-secret".to_string());
-    settings.minimax_api_key = Some("minimax-secret".to_string());
-    settings.zai_api_key = Some("zai-secret".to_string());
-    settings.openrouter_api_key = Some("openrouter-secret".to_string());
-    Arc::new(settings)
+    Arc::new(crate::config::AgentSettings {
+        gemini_api_key: Some("gemini-secret".to_string()),
+        minimax_api_key: Some("minimax-secret".to_string()),
+        zai_api_key: Some("zai-secret".to_string()),
+        openrouter_api_key: Some("openrouter-secret".to_string()),
+        ..crate::config::AgentSettings::default()
+    })
+}
+
+fn test_settings_with_dedicated_browser_use_model() -> Arc<crate::config::AgentSettings> {
+    Arc::new(crate::config::AgentSettings {
+        gemini_api_key: Some("gemini-secret".to_string()),
+        minimax_api_key: Some("minimax-secret".to_string()),
+        zai_api_key: Some("zai-secret".to_string()),
+        openrouter_api_key: Some("openrouter-secret".to_string()),
+        browser_use_model_id: Some("GLM-4.6V".to_string()),
+        browser_use_model_provider: Some("zai".to_string()),
+        ..crate::config::AgentSettings::default()
+    })
 }
 
 #[test]
@@ -298,6 +311,24 @@ fn browser_llm_config_marks_vision_openrouter_models() {
 }
 
 #[test]
+fn browser_llm_config_marks_glm_4_6v_as_vision_capable() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "GLM-4.6V".to_string(),
+        provider: "zai".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, _) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("zai route config");
+
+    assert!(config.supports_vision);
+}
+
+#[test]
 fn browser_llm_config_requires_configured_secret() {
     let provider = BrowserUseProvider::new(
         "http://localhost:8002",
@@ -356,6 +387,48 @@ async fn run_task_posts_inherited_browser_llm_config() {
     assert!(request_body.contains("\"provider\":\"zai\""));
     assert!(request_body.contains("\"model\":\"glm-5-turbo\""));
     assert!(!request_body.contains("api_key_ref"));
+    assert_eq!(
+        state.header_value(OXIDE_BROWSER_LLM_API_KEY_HEADER).await,
+        Some("zai-secret".to_string())
+    );
+}
+
+#[tokio::test]
+async fn run_task_prefers_dedicated_browser_use_model_over_active_route() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Done"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings_with_dedicated_browser_use_model(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+    let active_route = crate::config::ModelInfo {
+        id: "MiniMax-M2.7".to_string(),
+        provider: "minimax".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let result = scope_tool_model_route(
+        active_route,
+        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+    )
+    .await;
+
+    assert!(result.is_ok());
+    let request_body = state.request_body().await;
+    assert!(request_body.contains("\"browser_llm_config\":"));
+    assert!(request_body.contains("\"provider\":\"zai\""));
+    assert!(request_body.contains("\"model\":\"GLM-4.6V\""));
+    assert!(!request_body.contains("MiniMax-M2.7"));
     assert_eq!(
         state.header_value(OXIDE_BROWSER_LLM_API_KEY_HEADER).await,
         Some("zai-secret".to_string())
