@@ -8,6 +8,14 @@ Oxide Agent - Telegram-бот с Agent Mode поверх нескольких LL
 
 Default branch: `testing`.
 
+## External Services
+
+### browser_use_bridge
+- Python/FastAPI сервис в `services/browser_use_bridge/` для browser automation через browser_use.
+- Структура: модульная, разбита на slices (`config/`, `models/`, `services/`, `utils/`).
+- Основной код: `app/` - FastAPI endpoints, session manager, profile management, LLM resolution.
+- Конфигурация через env vars с префиксом `BROWSER_USE_BRIDGE_*`.
+
 ## Workspace Overview
 
 ### Основные crate'ы
