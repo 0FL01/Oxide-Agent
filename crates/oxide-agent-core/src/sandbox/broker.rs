@@ -26,7 +26,7 @@ const fn default_stack_logs_include_stderr() -> bool {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StackLogsSelector {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub compose_project: Option<String>,
 }
 
@@ -39,7 +39,7 @@ pub struct ResolvedStackLogsSelector {
 pub struct StackLogsListSourcesRequest {
     #[serde(default)]
     pub selector: StackLogsSelector,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub services: Vec<String>,
     #[serde(default)]
     pub include_stopped: bool,
@@ -72,13 +72,13 @@ pub struct StackLogCursor {
 pub struct StackLogsFetchRequest {
     #[serde(default)]
     pub selector: StackLogsSelector,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub services: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub since: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub until: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cursor: Option<StackLogCursor>,
     #[serde(default = "default_stack_logs_max_entries")]
     pub max_entries: u32,
@@ -121,9 +121,9 @@ pub struct StackLogSuppression {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StackLogsWindow {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub since: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub until: Option<DateTime<Utc>>,
 }
 
@@ -133,9 +133,9 @@ pub struct StackLogsFetchResponse {
     pub entries: Vec<StackLogEntry>,
     pub suppressed: Vec<StackLogSuppression>,
     pub truncated: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub next_cursor: Option<StackLogCursor>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
@@ -1010,7 +1010,8 @@ mod tests {
         ResolvedStackLogsSelector, SandboxBrokerClient, SandboxBrokerRequest,
         SandboxBrokerResponse, SandboxBrokerServer, StackLogCursor, StackLogEntry, StackLogSource,
         StackLogSuppression, StackLogsFetchRequest, StackLogsFetchResponse,
-        StackLogsListSourcesResponse, StackLogsSelector, StackLogsWindow,
+        StackLogsListSourcesRequest, StackLogsListSourcesResponse, StackLogsSelector,
+        StackLogsWindow,
     };
     use crate::config::get_sandbox_image;
     use crate::sandbox::scope::SandboxScope;
@@ -1111,6 +1112,27 @@ mod tests {
     }
 
     #[test]
+    fn stack_logs_default_requests_roundtrip_with_bincode() {
+        let list_request = SandboxBrokerRequest::ListStackLogSources {
+            request: StackLogsListSourcesRequest::default(),
+        };
+        let list_bytes = bincode::serialize(&list_request).expect("serialize list request");
+        let decoded_list: SandboxBrokerRequest =
+            bincode::deserialize(&list_bytes).expect("deserialize list request");
+
+        assert_eq!(decoded_list, list_request);
+
+        let fetch_request = SandboxBrokerRequest::FetchStackLogs {
+            request: StackLogsFetchRequest::default(),
+        };
+        let fetch_bytes = bincode::serialize(&fetch_request).expect("serialize fetch request");
+        let decoded_fetch: SandboxBrokerRequest =
+            bincode::deserialize(&fetch_bytes).expect("deserialize fetch request");
+
+        assert_eq!(decoded_fetch, fetch_request);
+    }
+
+    #[test]
     fn stack_logs_list_sources_payload_roundtrip_preserves_source_records() {
         let started_at = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
         let response = SandboxBrokerResponse::StackLogSources(StackLogsListSourcesResponse {
@@ -1130,6 +1152,46 @@ mod tests {
             bincode::deserialize(&bytes).expect("deserialize response");
 
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn stack_logs_optional_fields_roundtrip_with_bincode() {
+        let response = SandboxBrokerResponse::StackLogs(StackLogsFetchResponse {
+            window: StackLogsWindow {
+                since: None,
+                until: None,
+            },
+            entries: Vec::new(),
+            suppressed: Vec::new(),
+            truncated: false,
+            next_cursor: None,
+            warnings: Vec::new(),
+        });
+        let response_bytes = bincode::serialize(&response).expect("serialize optional response");
+        let decoded_response: SandboxBrokerResponse =
+            bincode::deserialize(&response_bytes).expect("deserialize optional response");
+
+        assert_eq!(decoded_response, response);
+
+        let sources_response =
+            SandboxBrokerResponse::StackLogSources(StackLogsListSourcesResponse {
+                stack_selector: ResolvedStackLogsSelector {
+                    compose_project: "oxide-agent".to_string(),
+                },
+                containers: vec![StackLogSource {
+                    service: "oxide_agent".to_string(),
+                    container_name: "oxide_agent".to_string(),
+                    container_id: "abc123def456".to_string(),
+                    state: "running".to_string(),
+                    started_at: None,
+                }],
+            });
+        let sources_bytes = bincode::serialize(&sources_response)
+            .expect("serialize list sources response with None started_at");
+        let decoded_sources: SandboxBrokerResponse = bincode::deserialize(&sources_bytes)
+            .expect("deserialize list sources response with None started_at");
+
+        assert_eq!(decoded_sources, sources_response);
     }
 
     #[tokio::test]
