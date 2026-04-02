@@ -260,7 +260,7 @@ impl ManagerControlPlaneProvider {
     }
 
     fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
-        let groups = Vec::new();
+        let mut groups = Vec::new();
 
         #[cfg(feature = "browser_use")]
         if crate::config::is_browser_use_enabled() {
