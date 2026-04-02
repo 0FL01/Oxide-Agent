@@ -598,8 +598,9 @@ impl BrowserUseProvider {
                 cancellation_token,
             )
             .await?;
+        let follow_up_guidance = run_task_follow_up_guidance(steering, &payload);
         let mut output = format_tool_output(payload);
-        if let Some(guidance) = run_task_follow_up_guidance(steering, extract_session_id(&output)) {
+        if let Some(guidance) = follow_up_guidance {
             output = format!("{output}\n\n{guidance}");
         }
         if let Some(warning) = vision_warning {
@@ -948,15 +949,30 @@ fn rewrite_run_task_instruction(task: &str, steering: RunTaskSteering) -> String
 
 fn run_task_follow_up_guidance(
     steering: RunTaskSteering,
-    session_id: Option<&str>,
+    payload: &ResponsePayload,
 ) -> Option<String> {
     if steering.is_empty() {
         return None;
     }
 
+    let session_id = match payload {
+        ResponsePayload::Json(value) => extract_session_id_from_value(value),
+        ResponsePayload::Text(text) => extract_session_id(text),
+    };
     let session_ref = session_id
         .map(|id| format!(" with `session_id` `{id}`"))
         .unwrap_or_default();
+
+    if let Some((false, dead_reason)) = extract_browser_runtime_state(payload) {
+        let dead_reason_suffix = dead_reason
+            .filter(|reason| !reason.trim().is_empty())
+            .map(|reason| format!(" Reported reason: `{reason}`."))
+            .unwrap_or_default();
+        return Some(format!(
+            "Follow-up note: Browser Use reported that this session runtime{session_ref} is no longer alive. Re-run `browser_use_run_task` before calling `browser_use_screenshot` or `browser_use_extract_content`.{dead_reason_suffix}"
+        ));
+    }
+
     let mut hints = Vec::new();
     if steering.prefer_screenshot_tool {
         hints.push(format!(
@@ -969,6 +985,22 @@ fn run_task_follow_up_guidance(
         ));
     }
     Some(hints.join("\n"))
+}
+
+fn extract_browser_runtime_state(payload: &ResponsePayload) -> Option<(bool, Option<&str>)> {
+    let ResponsePayload::Json(value) = payload else {
+        return None;
+    };
+
+    let alive = value.get("browser_runtime_alive")?.as_bool()?;
+    let dead_reason = value
+        .get("browser_runtime_dead_reason")
+        .and_then(Value::as_str);
+    Some((alive, dead_reason))
+}
+
+fn extract_session_id_from_value(value: &Value) -> Option<&str> {
+    value.get("session_id").and_then(Value::as_str)
 }
 
 fn extract_session_id(output: &str) -> Option<&str> {
