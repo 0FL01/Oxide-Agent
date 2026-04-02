@@ -71,6 +71,44 @@ async def ensure_browser_session_alive(browser: Any) -> None:
     raise RuntimeError(reason or "browser session is not alive")
 
 
+async def ensure_browser_runtime_ready(browser: Any) -> None:
+    """Verify that a browser runtime is connected enough to start an agent run."""
+    ready, reason = await probe_browser_runtime_ready(browser)
+    if ready:
+        return
+    raise RuntimeError(reason or "browser runtime is not ready")
+
+
+async def probe_browser_runtime_ready(browser: Any) -> tuple[bool, str | None]:
+    """Probe startup readiness before the first agent step runs."""
+    if browser is None:
+        return False, "browser runtime is not ready: browser handle is missing"
+
+    if await _object_is_closed(browser):
+        return False, "browser runtime is not ready: browser runtime is closed"
+
+    page = await resolve_browser_page(browser)
+    if await _object_is_closed(page):
+        return False, "browser runtime is not ready: browser page is closed"
+
+    state_method = getattr(browser, "get_state", None)
+    if callable(state_method):
+        try:
+            await maybe_await(state_method())
+            return True, None
+        except Exception as error:
+            if is_transient_browser_ready_error(error):
+                return False, f"browser runtime is not ready: {error}"
+            if page is not None:
+                return True, None
+            raise
+
+    if page is not None:
+        return True, None
+
+    return False, "browser runtime is not ready: browser state is unavailable"
+
+
 async def probe_browser_session_state(browser: Any) -> tuple[bool, str | None]:
     """Probe browser runtime liveness without raising on ordinary dead-session cases."""
     if browser is None:
