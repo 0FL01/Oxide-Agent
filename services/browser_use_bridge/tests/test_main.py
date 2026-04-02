@@ -263,6 +263,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload["navigation_only_keep_alive_supported"])
             self.assertTrue(payload["browser_runtime_observability_supported"])
             self.assertTrue(payload["browser_keep_alive_observability_supported"])
+            self.assertTrue(payload["browser_runtime_reconnect_supported"])
             self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
             self.assertIn("browser_use", payload["supported_legacy_env_providers"])
@@ -509,6 +510,92 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(response.status, "completed")
             self.assertEqual(response.content, "Example page text")
+
+    async def test_navigation_only_follow_up_reconnects_detached_runtime(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            FakeAgent.auto_close_after_run = True
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            run_response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the dashboard",
+                    execution_mode="navigation_only",
+                ),
+                None,
+            )
+            session = await manager.get_session(run_response.session_id)
+            browser = session.browser
+            self.assertIsNotNone(browser)
+            browser.current_page = None
+            browser.session_manager = None
+            browser._cdp_client_root = None
+            start_calls_before = browser.start_calls
+
+            screenshot = await manager.screenshot(
+                run_response.session_id,
+                module.ScreenshotRequest(full_page=False),
+            )
+
+            self.assertEqual(screenshot.status, "completed")
+            refreshed = await manager.get_session(run_response.session_id)
+            self.assertTrue(refreshed.browser_runtime_alive)
+            self.assertTrue(refreshed.browser_reconnect_attempted)
+            self.assertTrue(refreshed.browser_reconnect_succeeded)
+            self.assertIsNone(refreshed.browser_reconnect_error)
+            self.assertEqual(browser.start_calls, start_calls_before + 1)
+
+    async def test_navigation_only_follow_up_returns_409_when_reconnect_fails(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            FakeAgent.auto_close_after_run = True
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            run_response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the dashboard",
+                    execution_mode="navigation_only",
+                ),
+                None,
+            )
+            session = await manager.get_session(run_response.session_id)
+            browser = session.browser
+            self.assertIsNotNone(browser)
+            browser.current_page = None
+            browser.session_manager = None
+            browser._cdp_client_root = None
+            browser.remaining_start_failures = 1
+
+            with self.assertRaises(HTTPException) as context:
+                await manager.screenshot(
+                    run_response.session_id,
+                    module.ScreenshotRequest(full_page=False),
+                )
+
+            self.assertEqual(context.exception.status_code, 409)
+            self.assertEqual(
+                context.exception.detail["error"], "browser_session_not_alive"
+            )
+            refreshed = await manager.get_session(run_response.session_id)
+            self.assertIsNone(refreshed.browser)
+            self.assertTrue(refreshed.browser_reconnect_attempted)
+            self.assertFalse(refreshed.browser_reconnect_succeeded)
+            self.assertIn(
+                "CDP client not initialized", refreshed.browser_reconnect_error
+            )
+            self.assertIn("CDP client not initialized", refreshed.last_error)
 
     async def test_autonomous_mode_allows_upstream_to_close_runtime(self):
         with TemporaryDirectory() as tmpdir:
