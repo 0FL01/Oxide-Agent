@@ -37,6 +37,7 @@ from app.services.llm_resolver import (
 from app.utils.json_safe import stringify_result, extract_artifacts
 from app.utils.browser_utils import (
     infer_url,
+    ensure_browser_runtime_ready,
     ensure_browser_session_alive,
     is_browser_session_unavailable_error,
     probe_browser_session_state,
@@ -355,6 +356,8 @@ class SessionManager:
                 if session.browser is None:
                     session.browser = create_browser(profile)
 
+                await self._warmup_browser_before_run(session)
+
                 agent = Agent(
                     task=build_agent_task(request),
                     llm=create_llm_from_config(llm_config),
@@ -388,6 +391,35 @@ class SessionManager:
         """Reset browser for retry attempt."""
         await close_browser(session.browser)
         session.browser = None
+
+    async def _warmup_browser_before_run(self, session: SessionRecord) -> None:
+        """Wait briefly for a fresh browser runtime before the first agent step."""
+        browser = session.browser
+        if browser is None:
+            return
+
+        max_checks = 2
+        for warmup_attempt in range(1, max_checks + 1):
+            try:
+                await ensure_browser_runtime_ready(browser)
+                return
+            except Exception as error:
+                if warmup_attempt >= max_checks or not is_transient_browser_ready_error(
+                    error
+                ):
+                    raise
+
+                logger.info(
+                    "Waiting for Browser Use runtime before agent start",
+                    extra={
+                        "session_id": session.session_id,
+                        "warmup_attempt": warmup_attempt,
+                        "max_checks": max_checks,
+                        "error": str(error),
+                    },
+                )
+                if self._browser_ready_retry_delay_ms > 0:
+                    await asyncio.sleep(self._browser_ready_retry_delay_ms / 1000)
 
     async def _resolve_profile_for_run(
         self, session: SessionRecord, request: RunTaskRequest

@@ -15,11 +15,13 @@ from fastapi import HTTPException
 
 class FakeBrowser:
     instances = []
+    initial_state_failures = 0
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.closed = False
         self.page = FakePage()
+        self.remaining_state_failures = type(self).initial_state_failures
         type(self).instances.append(self)
 
     async def close(self) -> None:
@@ -29,6 +31,11 @@ class FakeBrowser:
     async def get_state(self):
         if self.closed:
             raise RuntimeError("browser has been closed")
+        if self.remaining_state_failures > 0:
+            self.remaining_state_failures -= 1
+            raise RuntimeError(
+                "CDP client not initialized - browser may not be connected yet"
+            )
         return {"url": "https://example.com/current"}
 
     def is_closed(self):
@@ -115,6 +122,7 @@ def import_bridge_module(extra_env: dict[str, str]):
     FakeAgent.instances = []
     FakeAgent.run_outcomes = []
     FakeBrowser.instances = []
+    FakeBrowser.initial_state_failures = 0
 
     browser_use_stub = make_browser_use_module()
     with mock.patch.dict(sys.modules, {"browser_use": browser_use_stub}):
@@ -648,6 +656,62 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(response.error)
             self.assertEqual(len(FakeAgent.instances), 2)
             self.assertEqual(len(FakeBrowser.instances), 2)
+
+    async def test_run_task_waits_for_browser_runtime_before_agent_start(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            FakeBrowser.initial_state_failures = 1
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                browser_ready_retries=1,
+                browser_ready_retry_delay_ms=0,
+            )
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(len(FakeBrowser.instances), 1)
+            self.assertEqual(len(FakeAgent.instances), 1)
+            self.assertTrue(response.browser_runtime_alive)
+
+    async def test_run_task_fails_before_agent_start_when_browser_warmup_never_recovers(
+        self,
+    ):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            FakeBrowser.initial_state_failures = 3
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                browser_ready_retries=0,
+                browser_ready_retry_delay_ms=0,
+            )
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "failed")
+            self.assertIn("CDP client not initialized", response.error)
+            self.assertEqual(len(FakeBrowser.instances), 1)
+            self.assertEqual(len(FakeAgent.instances), 0)
 
     async def test_run_task_does_not_retry_non_readiness_error(self):
         with TemporaryDirectory() as tmpdir:

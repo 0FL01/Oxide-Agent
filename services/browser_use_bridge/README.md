@@ -109,6 +109,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Stage 2 profile reuse injects `profile_scope` from runtime context; bridge enforces scope match on `profile_id` reuse and rejects creating more than `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE` retained profiles in one scope.
 - Stage 3 lifecycle cleanup detaches reusable profiles on graceful shutdown, auto-recovers orphaned `active` profiles left after bridge restarts/crashes, and prunes expired idle/stale profiles by TTL before quota checks.
 - Stage 4 browser readiness hardening retries a narrow set of transient startup/runtime errors by recreating the browser before failing the session.
+- The next warmup slice adds a short preflight wait before `Agent.run()`, so freshly created browser runtimes get a chance to connect before the first navigation step starts.
 - Stage 5 verification adds focused test coverage for readiness retry budget exhaustion and health/env observability for retry knobs.
 - P1 housekeeping now reconciles orphaned profiles against live session snapshots, so unrelated profile create/reuse/close operations do not accidentally mark an actually attached profile as `stale`.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
@@ -124,6 +125,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Если передан `profile_id`, bridge пытается поднять новую browser session поверх сохраненного profile state и проверяет совпадение injected `profile_scope`.
 - Если bridge был перезапущен с незакрытой profiled session, следующий reuse автоматически переведет orphaned profile из `active` в recoverable state и переиспользует его без ручной правки metadata.
 - Если `browser_use` падает на раннем transient browser error вроде `CDP client not initialized`, bridge пытается пересоздать browser и повторить run вместо немедленного `failed`.
+- Даже до старта первого agent step bridge теперь делает короткий readiness preflight, чтобы initial navigation реже упиралась в freshly-started CDP race.
 - Если follow-up tool вызывается после того, как upstream runtime уже умер или reset-нулся, bridge возвращает terminal `browser_session_not_alive` и очищает stale browser handle из session metadata in-memory state.
 - `POST /sessions/{id}/extract_content` читает текущую страницу активной сессии и возвращает `text` или `html` с optional truncation.
 - `POST /sessions/{id}/screenshot` сохраняет PNG artifact в `BROWSER_USE_BRIDGE_DATA_DIR/artifacts/<session_id>/` и возвращает metadata с путем к файлу.
