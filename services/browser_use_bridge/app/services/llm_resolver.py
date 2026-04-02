@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.config import settings
@@ -169,6 +170,24 @@ def resolve_llm_config(
     return resolve_legacy_llm_config()
 
 
+if ChatOpenAI is not None:
+
+    @dataclass
+    class ConfigurableProviderChatOpenAI(ChatOpenAI):
+        """ChatOpenAI wrapper that allows setting a custom provider name for logging."""
+
+        _custom_provider: str = field(default="openai")
+
+        @property
+        def provider(self) -> str:
+            return self._custom_provider
+
+else:
+
+    class ConfigurableProviderChatOpenAI:  # pragma: no cover - unavailable without browser_use
+        """Fallback placeholder when browser_use ChatOpenAI is unavailable."""
+
+
 def create_llm_from_config(config: ResolvedBrowserLlmConfig) -> Any:
     """Create LLM client instance from resolved config."""
     kwargs: dict[str, Any] = {}
@@ -212,7 +231,10 @@ def create_llm_from_config(config: ResolvedBrowserLlmConfig) -> Any:
         if config.api_base:
             openai_kwargs["base_url"] = config.api_base
         openai_kwargs.update(openai_compatible_schema_compat_kwargs(config))
-        return ChatOpenAI(**openai_kwargs)
+        return ConfigurableProviderChatOpenAI(
+            _custom_provider=config.provider,
+            **openai_kwargs,
+        )
 
     raise RuntimeError(f"unsupported browser_llm transport '{config.transport}'")
 
