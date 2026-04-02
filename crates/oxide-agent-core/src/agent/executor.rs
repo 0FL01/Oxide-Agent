@@ -702,6 +702,7 @@ impl AgentExecutor {
                     if let Some(profile_scope) = self.browser_use_profile_scope() {
                         provider = provider.with_profile_scope(profile_scope);
                     }
+                    provider = provider.with_sandbox_scope(self.session.sandbox_scope().clone());
                     registry.register(Box::new(provider));
                 } else {
                     warn!(

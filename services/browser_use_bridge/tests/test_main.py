@@ -731,11 +731,47 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(response.status, "completed")
             self.assertEqual(response.artifact["kind"], "screenshot")
+            self.assertEqual(
+                response.artifact["artifact_id"], response.artifact["file_name"]
+            )
+            self.assertEqual(response.artifact["content_type"], "image/png")
+            self.assertTrue(
+                response.artifact["download_path"].endswith(
+                    f"/sessions/{run_response.session_id}/artifacts/{response.artifact['artifact_id']}"
+                )
+            )
             self.assertTrue(response.artifact["full_page"])
             self.assertTrue(Path(response.artifact["path"]).exists())
             self.assertGreater(response.artifact["size_bytes"], 0)
             session = await manager.get_session(run_response.session_id)
             self.assertEqual(len(session.artifacts), 1)
+
+    async def test_artifact_endpoint_serves_saved_screenshot(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"), None
+            )
+            screenshot = await manager.screenshot(
+                run_response.session_id,
+                module.ScreenshotRequest(full_page=False),
+            )
+            module.manager = manager
+
+            response = await module.download_artifact(
+                run_response.session_id, screenshot.artifact["artifact_id"]
+            )
+
+            self.assertEqual(response.media_type, "image/png")
+            self.assertTrue(Path(response.path).exists())
+            self.assertEqual(Path(response.path).read_bytes(), b"fake-png")
 
     async def test_extract_content_reports_dead_browser_session_as_terminal_error(self):
         with TemporaryDirectory() as tmpdir:

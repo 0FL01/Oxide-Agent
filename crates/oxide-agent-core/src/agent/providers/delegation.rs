@@ -263,32 +263,37 @@ impl DelegationProvider {
         }
 
         #[cfg(feature = "browser_use")]
-        if crate::config::is_browser_use_enabled() {
-            if let Some(url) = crate::config::get_browser_use_url() {
-                if !url.trim().is_empty() {
-                    let sem = Arc::clone(&self.browser_use_semaphore);
-                    let mut provider = BrowserUseProvider::new_with_semaphore(
-                        &url,
-                        Arc::clone(&self.settings),
-                        sem,
-                    );
-                    if let Some(profile_scope) = &self.browser_use_profile_scope {
-                        provider = provider.with_profile_scope(profile_scope.clone());
-                    }
-                    providers.push(Box::new(provider));
-                } else {
-                    warn!("Browser Use enabled but BROWSER_USE_URL is empty; sub-agent provider not registered");
-                }
-            } else {
-                warn!("Browser Use enabled but BROWSER_USE_URL is not set; sub-agent provider not registered");
-            }
-        }
+        self.maybe_push_browser_use_provider(&mut providers);
         #[cfg(not(feature = "browser_use"))]
         if crate::config::is_browser_use_enabled() {
             warn!("Browser Use enabled but feature not compiled in");
         }
 
         providers
+    }
+
+    #[cfg(feature = "browser_use")]
+    fn maybe_push_browser_use_provider(&self, providers: &mut Vec<Box<dyn ToolProvider>>) {
+        if !crate::config::is_browser_use_enabled() {
+            return;
+        }
+
+        if let Some(url) = crate::config::get_browser_use_url() {
+            if !url.trim().is_empty() {
+                let sem = Arc::clone(&self.browser_use_semaphore);
+                let mut provider =
+                    BrowserUseProvider::new_with_semaphore(&url, Arc::clone(&self.settings), sem);
+                if let Some(profile_scope) = &self.browser_use_profile_scope {
+                    provider = provider.with_profile_scope(profile_scope.clone());
+                }
+                provider = provider.with_sandbox_scope(self.sandbox_scope.clone());
+                providers.push(Box::new(provider));
+            } else {
+                warn!("Browser Use enabled but BROWSER_USE_URL is empty; sub-agent provider not registered");
+            }
+        } else {
+            warn!("Browser Use enabled but BROWSER_USE_URL is not set; sub-agent provider not registered");
+        }
     }
 
     fn build_registry(
