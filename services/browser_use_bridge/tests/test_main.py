@@ -10,23 +10,35 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+from fastapi import HTTPException
+
 
 class FakeBrowser:
     instances = []
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
+        self.closed = False
         self.page = FakePage()
         type(self).instances.append(self)
 
     async def close(self) -> None:
+        self.closed = True
         return None
 
     async def get_state(self):
+        if self.closed:
+            raise RuntimeError("browser has been closed")
         return {"url": "https://example.com/current"}
+
+    def is_closed(self):
+        return self.closed
 
 
 class FakePage:
+    def __init__(self):
+        self.closed = False
+
     async def content(self):
         return "<html><body><h1>Example</h1></body></html>"
 
@@ -40,6 +52,9 @@ class FakePage:
     async def screenshot(self, path, full_page=False):
         Path(path).write_bytes(b"fake-png")
         return None
+
+    def is_closed(self):
+        return self.closed
 
 
 class _BaseChat:
@@ -186,12 +201,12 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
             request = module.RunTaskRequest(
                 task="Open the docs page and summarize it",
-                browser_llm_config=module.BrowserLlmConfig(
-                    provider="zai",
-                    model="glm-5-turbo",
-                    api_base="https://api.z.ai/api/coding/paas/v4/chat/completions",
-                    supports_vision=False,
-                ),
+                browser_llm_config={
+                    "provider": "zai",
+                    "model": "glm-5-turbo",
+                    "api_base": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+                    "supports_vision": False,
+                },
             )
 
             response = await manager.run_task(request, "zai-secret")
@@ -288,6 +303,67 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(response.artifact["size_bytes"], 0)
             session = await manager.get_session(run_response.session_id)
             self.assertEqual(len(session.artifacts), 1)
+
+    async def test_extract_content_reports_dead_browser_session_as_terminal_error(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"), None
+            )
+            session = await manager.get_session(run_response.session_id)
+            session.browser.closed = True
+            session.browser.page = None
+
+            with self.assertRaises(HTTPException) as context:
+                await manager.extract_content(
+                    run_response.session_id,
+                    module.ExtractContentRequest(format="text"),
+                )
+
+            self.assertEqual(context.exception.status_code, 409)
+            self.assertEqual(
+                context.exception.detail["error"], "browser_session_not_alive"
+            )
+            refreshed = await manager.get_session(run_response.session_id)
+            self.assertIsNone(refreshed.browser)
+            self.assertIn("browser runtime is closed", refreshed.last_error)
+
+    async def test_screenshot_reports_dead_browser_session_as_terminal_error(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"), None
+            )
+            session = await manager.get_session(run_response.session_id)
+            session.browser.closed = True
+            session.browser.page = None
+
+            with self.assertRaises(HTTPException) as context:
+                await manager.screenshot(
+                    run_response.session_id,
+                    module.ScreenshotRequest(full_page=False),
+                )
+
+            self.assertEqual(context.exception.status_code, 409)
+            self.assertEqual(
+                context.exception.detail["error"], "browser_session_not_alive"
+            )
+            refreshed = await manager.get_session(run_response.session_id)
+            self.assertIsNone(refreshed.browser)
 
     async def test_run_task_creates_and_returns_profile_metadata(self):
         with TemporaryDirectory() as tmpdir:

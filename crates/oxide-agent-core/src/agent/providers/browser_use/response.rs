@@ -66,6 +66,10 @@ fn truncate_output(text: String) -> String {
 
 pub(super) fn is_retryable_error(error: &str) -> bool {
     let error = error.to_lowercase();
+    if error.contains("browser_session_not_alive") {
+        return false;
+    }
+
     let transient_patterns = [
         "connection refused",
         "connection reset",
@@ -85,5 +89,5 @@ pub(super) fn is_retryable_error(error: &str) -> bool {
         return true;
     }
 
-    error.contains("500") || error.contains("502") || error.contains("503") || error.contains("504")
+    error.contains("502") || error.contains("503") || error.contains("504")
 }

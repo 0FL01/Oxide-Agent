@@ -247,6 +247,8 @@ Browser Use не включается через alias `search`. Для него
 
 Bridge теперь сам делает узкий retry только для ранних transient readiness ошибок вроде `CDP client not initialized`; если ошибка повторяется или выглядит как обычный task/browser failure, сессия по-прежнему завершится `failed` без бесконечных повторов.
 
+Если upstream `browser_use` успел reset-нуть runtime после `browser_use_run_task`, follow-up вызовы теперь завершаются terminal ошибкой `browser_session_not_alive` вместо generic `500`, и Oxide больше не ретраит такой случай как transient.
+
 ## Рекомендуемый v1 usage pattern
 
 - использовать Browser Use для задач уровня “открой сайт, пройди пару шагов, собери summary”
