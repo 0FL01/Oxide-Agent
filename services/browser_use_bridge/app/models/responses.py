@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+ExecutionMode = Literal["autonomous", "navigation_only"]
+
 
 class RunTaskResponse(BaseModel):
     """Response from running a browser task."""
@@ -20,6 +22,7 @@ class RunTaskResponse(BaseModel):
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None
+    execution_mode: ExecutionMode | None = None
     profile_id: str | None = None
     profile_scope: str | None = None
     profile_status: str | None = None
@@ -42,6 +45,7 @@ class SessionResponse(BaseModel):
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None
+    execution_mode: ExecutionMode | None = None
     profile_id: str | None = None
     profile_scope: str | None = None
     profile_status: str | None = None
@@ -57,6 +61,7 @@ class CloseSessionResponse(BaseModel):
     session_id: str
     closed: bool
     status: Literal["closed"]
+    execution_mode: ExecutionMode | None = None
     profile_id: str | None = None
     profile_scope: str | None = None
     profile_status: str | None = None

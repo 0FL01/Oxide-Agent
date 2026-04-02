@@ -186,6 +186,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["browser_ready_retries"], 2)
             self.assertEqual(payload["browser_ready_retry_delay_ms"], 750)
             self.assertTrue(payload["browser_ready_retry_supported"])
+            self.assertTrue(payload["execution_mode_split_supported"])
             self.assertTrue(payload["browser_runtime_observability_supported"])
             self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
@@ -253,6 +254,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.llm_provider, "zai")
             self.assertEqual(response.llm_transport, "openai_compatible")
             self.assertEqual(response.vision_mode, "disabled")
+            self.assertEqual(response.execution_mode, "autonomous")
             self.assertTrue(response.browser_runtime_alive)
             self.assertIsNotNone(response.browser_runtime_last_check_at)
             self.assertIsNone(response.browser_runtime_dead_reason)
@@ -326,6 +328,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.llm_provider, "google")
             self.assertEqual(response.llm_transport, "google")
             self.assertEqual(response.vision_mode, "auto")
+            self.assertEqual(response.execution_mode, "autonomous")
             self.assertTrue(response.browser_runtime_alive)
             self.assertIsNotNone(response.browser_runtime_last_check_at)
             self.assertIsNone(response.browser_runtime_dead_reason)
@@ -335,7 +338,67 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 FakeAgent.instances[-1].llm.kwargs["model"], "gemini-2.5-flash"
             )
 
-    async def test_navigation_only_steering_task_applies_strict_agent_preset(self):
+    async def test_navigation_only_execution_mode_applies_strict_agent_preset(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the dashboard",
+                    execution_mode="navigation_only",
+                ),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.execution_mode, "navigation_only")
+            self.assertFalse(FakeAgent.instances[-1].kwargs["enable_planning"])
+            self.assertFalse(FakeAgent.instances[-1].kwargs["use_judge"])
+            self.assertEqual(FakeAgent.instances[-1].kwargs["max_actions_per_step"], 1)
+            self.assertIn(
+                "This run is navigation-only",
+                FakeAgent.instances[-1].kwargs["extend_system_message"],
+            )
+
+    async def test_explicit_autonomous_mode_overrides_legacy_steering_wrapper(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            steering_task = (
+                "Browser Use execution rules for this run:\n"
+                "- Use this step only for navigation and interaction needed to reach the target page or UI state.\n"
+                "- Do not take screenshots, save PDFs, or perform final page-content extraction in this step.\n"
+                "- Leave the session on the target page for Oxide follow-up tools.\n"
+                "- Return a short navigation/status summary only.\n\n"
+                "Original task:\nOpen the dashboard and take a screenshot"
+            )
+
+            response = await manager.run_task(
+                module.RunTaskRequest(
+                    task=steering_task,
+                    execution_mode="autonomous",
+                ),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.execution_mode, "autonomous")
+            self.assertEqual(FakeAgent.instances[-1].kwargs, {})
+
+    async def test_legacy_steering_wrapper_still_applies_navigation_only_fallback(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
                 {
@@ -359,31 +422,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(response.status, "completed")
+            self.assertEqual(response.execution_mode, "navigation_only")
             self.assertFalse(FakeAgent.instances[-1].kwargs["enable_planning"])
-            self.assertFalse(FakeAgent.instances[-1].kwargs["use_judge"])
-            self.assertEqual(FakeAgent.instances[-1].kwargs["max_actions_per_step"], 1)
-            self.assertIn(
-                "This run is navigation-only",
-                FakeAgent.instances[-1].kwargs["extend_system_message"],
-            )
-
-    async def test_plain_run_task_does_not_apply_navigation_only_preset(self):
-        with TemporaryDirectory() as tmpdir:
-            module = import_bridge_module(
-                {
-                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
-                }
-            )
-            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
-
-            response = await manager.run_task(
-                module.RunTaskRequest(task="Open the homepage and summarize it"), None
-            )
-
-            self.assertEqual(response.status, "completed")
-            self.assertEqual(FakeAgent.instances[-1].kwargs, {})
 
     async def test_extract_content_reads_active_session_page(self):
         with TemporaryDirectory() as tmpdir:
@@ -528,6 +568,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(response.session_id, run_response.session_id)
             self.assertEqual(response.status, "completed")
+            self.assertEqual(response.execution_mode, "autonomous")
             self.assertTrue(response.browser_runtime_alive)
             self.assertIsNotNone(response.browser_runtime_last_check_at)
             self.assertIsNone(response.browser_runtime_dead_reason)
@@ -960,6 +1001,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             close_response = await manager.close_session(run_response.session_id)
 
             self.assertEqual(close_response.status, "closed")
+            self.assertEqual(close_response.execution_mode, "autonomous")
             self.assertEqual(close_response.profile_id, run_response.profile_id)
             self.assertEqual(close_response.profile_status, "idle")
             self.assertFalse(close_response.profile_attached)

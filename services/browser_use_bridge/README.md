@@ -16,6 +16,11 @@
 - request-level `browser_llm_config`, который уже используется Rust provider-ом для Stage C route inheritance и является основным режимом
 - legacy fallback через `BROWSER_USE_BRIDGE_LLM_PROVIDER` / `BROWSER_USE_BRIDGE_LLM_MODEL`
 
+Дополнительно `POST /sessions/run` теперь принимает optional `execution_mode`:
+
+- `autonomous` - обычный full browse run
+- `navigation_only` - более узкий bridge-side mode для steering-задач, где финальный screenshot/extract должен делаться follow-up tool-ами
+
 Минимальный reuse slice добавляет в `POST /sessions/run` optional hints:
 
 - `reuse_profile=true` - создать reusable profile и привязать его к новой browser session
@@ -112,6 +117,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - The next warmup slice adds a short preflight wait before `Agent.run()`, so freshly created browser runtimes get a chance to connect before the first navigation step starts.
 - The next post-run slice classifies returned `browser_use` history objects, so a run no longer counts as success merely because `Agent.run()` returned without a Python exception.
 - The next navigation-only slice applies a stricter `Agent` preset for Rust steering tasks, so screenshot/extract-oriented runs get `enable_planning=False`, `use_judge=False`, `max_actions_per_step=1`, and an extra system-level navigation-only contract inside the bridge.
+- The next execution-mode slice makes that split explicit: Rust provider now sends `execution_mode=autonomous|navigation_only`, and bridge persists the resolved mode into session metadata.
 - Stage 5 verification adds focused test coverage for readiness retry budget exhaustion and health/env observability for retry knobs.
 - P1 housekeeping now reconciles orphaned profiles against live session snapshots, so unrelated profile create/reuse/close operations do not accidentally mark an actually attached profile as `stale`.
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
@@ -130,6 +136,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Даже до старта первого agent step bridge теперь делает короткий readiness preflight, чтобы initial navigation реже упиралась в freshly-started CDP race.
 - Если `browser_use` вернул internal failed history без Python exception, bridge теперь помечает run как `failed`; readiness-like history errors все еще могут получить bridge-side retry.
 - Если Rust provider уже переписал task в navigation-only steering form, bridge теперь не ограничивается prompt rewrite и дополнительно сужает upstream `Agent` preset, чтобы тот реже уходил в screenshot/PDF/extract overreach.
+- `POST /sessions/run`, `GET /sessions/{id}`, и `DELETE /sessions/{id}` теперь также возвращают `execution_mode`, чтобы было видно, шла ли задача как full autonomous run или как strict navigation-only run.
 - Если follow-up tool вызывается после того, как upstream runtime уже умер или reset-нулся, bridge возвращает terminal `browser_session_not_alive` и очищает stale browser handle из session metadata in-memory state.
 - `POST /sessions/{id}/extract_content` читает текущую страницу активной сессии и возвращает `text` или `html` с optional truncation.
 - `POST /sessions/{id}/screenshot` сохраняет PNG artifact в `BROWSER_USE_BRIDGE_DATA_DIR/artifacts/<session_id>/` и возвращает metadata с путем к файлу.

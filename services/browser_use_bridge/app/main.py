@@ -99,6 +99,7 @@ async def health() -> JSONResponse:
         "browser_ready_retries": settings.browser_ready_retries,
         "browser_ready_retry_delay_ms": settings.browser_ready_retry_delay_ms,
         "browser_ready_retry_supported": True,
+        "execution_mode_split_supported": True,
         "browser_runtime_observability_supported": True,
         "orphan_profile_recovery_supported": True,
     }
@@ -131,6 +132,7 @@ async def get_session(session_id: str) -> SessionResponse:
         llm_provider=session.llm_provider,
         llm_transport=session.llm_transport,
         vision_mode=session.vision_mode,
+        execution_mode=session.execution_mode,
         profile_id=session.profile_id,
         profile_scope=session.profile_scope,
         profile_status=session.profile_status,

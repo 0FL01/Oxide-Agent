@@ -12,7 +12,12 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.config import settings
-from app.models.requests import RunTaskRequest, ExtractContentRequest, ScreenshotRequest
+from app.models.requests import (
+    RunTaskRequest,
+    ExtractContentRequest,
+    ScreenshotRequest,
+    ExecutionMode,
+)
 from app.models.responses import (
     RunTaskResponse,
     CloseSessionResponse,
@@ -67,9 +72,20 @@ NAVIGATION_ONLY_SYSTEM_MESSAGE = (
 )
 
 
-def navigation_only_agent_kwargs(task: str) -> dict[str, Any]:
-    """Return stricter Agent kwargs for steering tasks that should stay navigation-only."""
-    if not task.lstrip().startswith(STEERING_TASK_PREFIX):
+def resolve_execution_mode(
+    task: str, requested_mode: ExecutionMode | None
+) -> ExecutionMode:
+    """Resolve execution mode from explicit request setting or legacy steering wrapper."""
+    if requested_mode is not None:
+        return requested_mode
+    if task.lstrip().startswith(STEERING_TASK_PREFIX):
+        return "navigation_only"
+    return "autonomous"
+
+
+def navigation_only_agent_kwargs(execution_mode: ExecutionMode) -> dict[str, Any]:
+    """Return stricter Agent kwargs for runs that should stay navigation-only."""
+    if execution_mode != "navigation_only":
         return {}
 
     return {
@@ -167,6 +183,9 @@ class SessionManager:
             session.status = "running"
             session.last_error = None
             session.last_task = request.task.strip()
+            session.execution_mode = resolve_execution_mode(
+                request.task, request.execution_mode
+            )
             session.updated_at = utc_now()
             await self._persist(session)
 
@@ -241,6 +260,7 @@ class SessionManager:
             llm_provider=session.llm_provider,
             llm_transport=session.llm_transport,
             vision_mode=session.vision_mode,
+            execution_mode=session.execution_mode,
             profile_id=session.profile_id,
             profile_scope=session.profile_scope,
             profile_status=session.profile_status,
@@ -259,6 +279,7 @@ class SessionManager:
             session_id=session_id,
             closed=True,
             status="closed",
+            execution_mode=session.execution_mode,
             profile_id=session.profile_id,
             profile_scope=session.profile_scope,
             profile_status=session.profile_status,
@@ -388,7 +409,9 @@ class SessionManager:
                 await self._warmup_browser_before_run(session)
 
                 task = build_agent_task(request)
-                agent_kwargs = navigation_only_agent_kwargs(task)
+                agent_kwargs = navigation_only_agent_kwargs(
+                    session.execution_mode or "autonomous"
+                )
 
                 agent = Agent(
                     task=task,
