@@ -10,7 +10,7 @@ use gemini_rust::{
 };
 use serde_json::json;
 
-mod tests {
+mod gemini_tests {
     use super::*;
 
     #[test]

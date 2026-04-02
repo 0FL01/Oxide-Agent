@@ -1233,11 +1233,13 @@ async fn topic_agent_tools_enable_accepts_reminder_provider_alias() {
 #[cfg(feature = "browser_use")]
 #[tokio::test]
 async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-    std::env::set_var("BROWSER_USE_ENABLED", "true");
+    {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+        std::env::set_var("BROWSER_USE_ENABLED", "true");
+    }
 
     let mut mock = crate::storage::MockStorageProvider::new();
     mock.expect_get_topic_binding()
@@ -1283,19 +1285,23 @@ async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled(
                 && tools.iter().any(|tool| tool == "browser_use_screenshot")
         }));
 
-    std::env::remove_var("BROWSER_USE_ENABLED");
-    std::env::remove_var("BROWSER_USE_URL");
+    {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var("BROWSER_USE_ENABLED");
+        std::env::remove_var("BROWSER_USE_URL");
+    }
 }
 
 #[cfg(feature = "browser_use")]
 #[tokio::test]
 async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-    std::env::set_var("BROWSER_USE_ENABLED", "true");
-
+    {
+        let _guard = crate::config::test_env_mutex().lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+        std::env::set_var("BROWSER_USE_ENABLED", "true");
+    }
     let mut mock = crate::storage::MockStorageProvider::new();
     mock.expect_get_user_config()
         .returning(|_| Ok(crate::storage::UserConfig::default()));
@@ -1371,14 +1377,12 @@ async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
         )
         .await
         .expect("topic agent tools disable should accept browser alias");
-
     let parsed: serde_json::Value =
         serde_json::from_str(&response).expect("response must be valid json");
     let blocked_tools = parsed["profile"]["profile"]["blockedTools"]
         .as_array()
         .expect("blockedTools must be present");
     assert_eq!(blocked_tools.len(), 5);
-
     let browser_status = parsed["tools"]["provider_statuses"]
         .as_array()
         .expect("provider_statuses must be an array")
@@ -1386,9 +1390,11 @@ async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
         .find(|entry| entry["provider"] == "browser_use")
         .expect("browser_use provider status must be present");
     assert_eq!(browser_status["enabled"], false);
-
-    std::env::remove_var("BROWSER_USE_ENABLED");
-    std::env::remove_var("BROWSER_USE_URL");
+    {
+        let _guard = crate::config::test_env_mutex().lock().unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var("BROWSER_USE_ENABLED");
+        std::env::remove_var("BROWSER_USE_URL");
+    }
 }
 
 #[tokio::test]
