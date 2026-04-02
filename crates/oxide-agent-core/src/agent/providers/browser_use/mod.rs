@@ -417,7 +417,7 @@ impl BrowserUseProvider {
                 "Warning: Browser Use is running with text-only route `{route_label}`. This task looks UI-heavy, so execution may run in degraded mode without visual grounding."
             ))),
             VisionRequirement::Required => Err(anyhow!(
-                "Browser Use task appears to require visual grounding, but inherited route `{route_label}` is text-only. Switch to a vision-capable route such as Gemini or a vision-capable OpenRouter model, or simplify the task to text-only browsing/extraction."
+                "Browser Use task appears to require visual grounding, but selected route `{route_label}` is text-only. Switch to a vision-capable route such as Gemini, `zai/GLM-4.6V`, or a vision-capable OpenRouter model, or simplify the task to text-only browsing/extraction."
             )),
         }
     }
@@ -804,7 +804,7 @@ fn is_openrouter_vision_model(model: &str) -> bool {
 }
 
 fn classify_vision_requirement(task: &str) -> VisionRequirement {
-    let task = task.to_ascii_lowercase();
+    let task = task.to_lowercase();
 
     let required_keywords = [
         "visual",
@@ -818,6 +818,15 @@ fn classify_vision_requirement(task: &str) -> VisionRequirement {
         "colour",
         "icon",
         "captcha",
+        "визуал",
+        "внешн",
+        "выгляд",
+        "на экране",
+        "скриншот",
+        "скрин",
+        "цвет",
+        "иконк",
+        "капча",
     ];
     if required_keywords.iter().any(|needle| task.contains(needle)) {
         return VisionRequirement::Required;
@@ -840,6 +849,22 @@ fn classify_vision_requirement(task: &str) -> VisionRequirement {
         "drag",
         "interactive",
         "wizard",
+        "клик",
+        "нажм",
+        "кнопк",
+        "выпада",
+        "меню",
+        "модал",
+        "диалог",
+        "форм",
+        "чекбокс",
+        "радиокноп",
+        "вкладк",
+        "войти",
+        "логин",
+        "загруз",
+        "перетян",
+        "интерактив",
     ];
     if recommended_keywords
         .iter()
