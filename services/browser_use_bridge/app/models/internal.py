@@ -51,6 +51,8 @@ class SessionRecord:
     browser_runtime_alive: bool | None = None
     browser_runtime_last_check_at: str | None = None
     browser_runtime_dead_reason: str | None = None
+    browser_keep_alive_requested: bool | None = None
+    browser_keep_alive_effective: bool | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def snapshot(self) -> dict[str, Any]:
@@ -77,6 +79,8 @@ class SessionRecord:
             "browser_runtime_alive": self.browser_runtime_alive,
             "browser_runtime_last_check_at": self.browser_runtime_last_check_at,
             "browser_runtime_dead_reason": self.browser_runtime_dead_reason,
+            "browser_keep_alive_requested": self.browser_keep_alive_requested,
+            "browser_keep_alive_effective": self.browser_keep_alive_effective,
         }
 
 

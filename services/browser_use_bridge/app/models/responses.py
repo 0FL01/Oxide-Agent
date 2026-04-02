@@ -31,6 +31,8 @@ class RunTaskResponse(BaseModel):
     browser_runtime_alive: bool | None = None
     browser_runtime_last_check_at: str | None = None
     browser_runtime_dead_reason: str | None = None
+    browser_keep_alive_requested: bool | None = None
+    browser_keep_alive_effective: bool | None = None
 
 
 class SessionResponse(BaseModel):
@@ -53,6 +55,8 @@ class SessionResponse(BaseModel):
     browser_runtime_alive: bool | None = None
     browser_runtime_last_check_at: str | None = None
     browser_runtime_dead_reason: str | None = None
+    browser_keep_alive_requested: bool | None = None
+    browser_keep_alive_effective: bool | None = None
 
 
 class CloseSessionResponse(BaseModel):
@@ -69,6 +73,8 @@ class CloseSessionResponse(BaseModel):
     browser_runtime_alive: bool | None = None
     browser_runtime_last_check_at: str | None = None
     browser_runtime_dead_reason: str | None = None
+    browser_keep_alive_requested: bool | None = None
+    browser_keep_alive_effective: bool | None = None
 
 
 class ExtractContentResponse(BaseModel):

@@ -102,6 +102,7 @@ async def health() -> JSONResponse:
         "execution_mode_split_supported": True,
         "navigation_only_keep_alive_supported": True,
         "browser_runtime_observability_supported": True,
+        "browser_keep_alive_observability_supported": True,
         "orphan_profile_recovery_supported": True,
     }
     status_code = 200 if BROWSER_USE_IMPORT_ERROR is None else 503
@@ -141,6 +142,8 @@ async def get_session(session_id: str) -> SessionResponse:
         browser_runtime_alive=session.browser_runtime_alive,
         browser_runtime_last_check_at=session.browser_runtime_last_check_at,
         browser_runtime_dead_reason=session.browser_runtime_dead_reason,
+        browser_keep_alive_requested=session.browser_keep_alive_requested,
+        browser_keep_alive_effective=session.browser_keep_alive_effective,
     )
 
 

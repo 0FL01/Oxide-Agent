@@ -214,6 +214,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload["execution_mode_split_supported"])
             self.assertTrue(payload["navigation_only_keep_alive_supported"])
             self.assertTrue(payload["browser_runtime_observability_supported"])
+            self.assertTrue(payload["browser_keep_alive_observability_supported"])
             self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
             self.assertIn("browser_use", payload["supported_legacy_env_providers"])
@@ -284,6 +285,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(response.browser_runtime_alive)
             self.assertIsNotNone(response.browser_runtime_last_check_at)
             self.assertIsNone(response.browser_runtime_dead_reason)
+            self.assertFalse(response.browser_keep_alive_requested)
+            self.assertFalse(response.browser_keep_alive_effective)
             self.assertEqual(FakeAgent.instances[-1].use_vision, False)
             self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatOpenAI)
             self.assertEqual(
@@ -358,6 +361,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(response.browser_runtime_alive)
             self.assertIsNotNone(response.browser_runtime_last_check_at)
             self.assertIsNone(response.browser_runtime_dead_reason)
+            self.assertFalse(response.browser_keep_alive_requested)
+            self.assertFalse(response.browser_keep_alive_effective)
             self.assertEqual(FakeAgent.instances[-1].use_vision, "auto")
             self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatGoogle)
             self.assertEqual(
@@ -416,6 +421,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(run_response.status, "completed")
             self.assertEqual(run_response.execution_mode, "navigation_only")
             self.assertTrue(run_response.browser_runtime_alive)
+            self.assertTrue(run_response.browser_keep_alive_requested)
+            self.assertTrue(run_response.browser_keep_alive_effective)
             self.assertTrue(FakeBrowser.instances[-1].kwargs["keep_alive"])
             self.assertEqual(FakeBrowser.instances[-1].stop_calls, 1)
             self.assertEqual(FakeBrowser.instances[-1].kill_calls, 0)
@@ -447,6 +454,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, "completed")
             self.assertEqual(response.execution_mode, "autonomous")
             self.assertFalse(response.browser_runtime_alive)
+            self.assertFalse(response.browser_keep_alive_requested)
+            self.assertFalse(response.browser_keep_alive_effective)
             self.assertIn(
                 "browser runtime is closed", response.browser_runtime_dead_reason
             )
@@ -659,6 +668,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(response.browser_runtime_alive)
             self.assertIsNotNone(response.browser_runtime_last_check_at)
             self.assertIsNone(response.browser_runtime_dead_reason)
+            self.assertFalse(response.browser_keep_alive_requested)
+            self.assertFalse(response.browser_keep_alive_effective)
 
     async def test_run_task_creates_and_returns_profile_metadata(self):
         with TemporaryDirectory() as tmpdir:
@@ -1089,6 +1100,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(close_response.status, "closed")
             self.assertEqual(close_response.execution_mode, "autonomous")
+            self.assertFalse(close_response.browser_keep_alive_requested)
             self.assertEqual(close_response.profile_id, run_response.profile_id)
             self.assertEqual(close_response.profile_status, "idle")
             self.assertFalse(close_response.profile_attached)
@@ -1098,6 +1110,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 close_response.browser_runtime_dead_reason,
                 "browser session was closed by bridge",
             )
+            self.assertFalse(close_response.browser_keep_alive_effective)
             self.assertEqual(FakeBrowser.instances[-1].kill_calls, 1)
 
             session = await manager.get_session(run_response.session_id)

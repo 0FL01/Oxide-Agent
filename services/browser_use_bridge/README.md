@@ -139,6 +139,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Если Rust provider уже переписал task в navigation-only steering form, bridge теперь не ограничивается prompt rewrite и дополнительно сужает upstream `Agent` preset, чтобы тот реже уходил в screenshot/PDF/extract overreach.
 - `POST /sessions/run`, `GET /sessions/{id}`, и `DELETE /sessions/{id}` теперь также возвращают `execution_mode`, чтобы было видно, шла ли задача как full autonomous run или как strict navigation-only run.
 - Для `navigation_only` bridge теперь дополнительно просит upstream browser runtime остаться живым после `Agent.run()`, поэтому follow-up `extract_content` / `screenshot` должны чаще работать без немедленного rerun.
+- Для диагностики keep-alive поведения `POST /sessions/run`, `GET /sessions/{id}` и `DELETE /sessions/{id}` теперь дополнительно возвращают `browser_keep_alive_requested` и `browser_keep_alive_effective`.
 - Если follow-up tool вызывается после того, как upstream runtime уже умер или reset-нулся, bridge возвращает terminal `browser_session_not_alive` и очищает stale browser handle из session metadata in-memory state.
 - При `close_session`, shutdown bridge и retry-reset такой kept-alive runtime теперь убивается принудительно, чтобы не оставлять фоновые browser processes.
 - `POST /sessions/{id}/extract_content` читает текущую страницу активной сессии и возвращает `text` или `html` с optional truncation.
@@ -146,4 +147,5 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Метаданные сессий сохраняются в `BROWSER_USE_BRIDGE_DATA_DIR/sessions/`.
 - Idle/stale profile records старше `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS` удаляются автоматически вместе с browser state, чтобы не зависал per-scope quota.
 - `POST /sessions/run` и `GET /sessions/{id}` теперь возвращают `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, profile metadata, а также `browser_runtime_alive`, `browser_runtime_last_check_at`, `browser_runtime_dead_reason`, чтобы было видно, жив ли runtime сессии и почему bridge считает его закрытым.
+- `GET /health` теперь также показывает `browser_keep_alive_observability_supported`, чтобы оператор видел, что keep-alive requested/effective сигналы доступны в session metadata.
 - Реальная успешность `run_task` зависит от доступности `browser-use`, выбранного adapter-а и корректного secret resolution.
