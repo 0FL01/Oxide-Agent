@@ -182,6 +182,7 @@ const TOPIC_AGENT_SANDBOX_TOOLS: &[&str] = &[
     "recreate_sandbox",
 ];
 const TOPIC_AGENT_FILEHOSTER_TOOLS: &[&str] = &["upload_file"];
+const TOPIC_AGENT_STACK_LOGS_TOOLS: &[&str] = &["stack_logs_list_sources", "stack_logs_fetch"];
 const TOPIC_AGENT_YTDLP_TOOLS: &[&str] = &[
     "ytdlp_get_video_metadata",
     "ytdlp_download_transcript",

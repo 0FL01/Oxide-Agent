@@ -144,7 +144,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, browser, reminder"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, stack_logs, search, browser, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -163,7 +163,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, browser, reminder"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, stack_logs, search, browser, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -298,6 +298,11 @@ impl ManagerControlPlaneProvider {
                 provider: "filehoster",
                 aliases: &["filehoster", "files"],
                 tools: TOPIC_AGENT_FILEHOSTER_TOOLS,
+            },
+            TopicAgentToolGroup {
+                provider: "stack_logs",
+                aliases: &["stack_logs", "logs"],
+                tools: TOPIC_AGENT_STACK_LOGS_TOOLS,
             },
             TopicAgentToolGroup {
                 provider: "ytdlp",
@@ -1602,6 +1607,35 @@ mod tests {
                 "web_markdown".to_string(),
                 "web_pdf".to_string(),
                 "web_search".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn logs_alias_expands_stack_logs_group() {
+        let catalog = TopicAgentToolCatalog {
+            groups: vec![TopicAgentToolGroup {
+                provider: "stack_logs",
+                aliases: &["stack_logs", "logs"],
+                tools: &["stack_logs_list_sources", "stack_logs_fetch"],
+            }],
+            tool_names: ["stack_logs_list_sources", "stack_logs_fetch"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        };
+
+        let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
+            &catalog,
+            vec!["logs".to_string()],
+        )
+        .expect("logs alias should expand the stack logs provider group");
+
+        assert_eq!(
+            expanded,
+            vec![
+                "stack_logs_fetch".to_string(),
+                "stack_logs_list_sources".to_string(),
             ]
         );
     }

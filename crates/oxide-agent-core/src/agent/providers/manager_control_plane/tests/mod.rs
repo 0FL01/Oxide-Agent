@@ -1230,6 +1230,96 @@ async fn topic_agent_tools_enable_accepts_reminder_provider_alias() {
     assert_eq!(reminder_status["enabled"], true);
 }
 
+#[tokio::test]
+async fn topic_agent_tools_disable_accepts_stack_logs_provider_alias() {
+    let mut mock = crate::storage::MockStorageProvider::new();
+    mock.expect_get_user_config()
+        .returning(|_| Ok(crate::storage::UserConfig::default()));
+    mock.expect_get_topic_binding()
+        .with(eq(77_i64), eq("topic-a".to_string()))
+        .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
+    mock.expect_get_topic_infra_config()
+        .with(eq(77_i64), eq("topic-a".to_string()))
+        .returning(|_, _| Ok(None));
+    mock.expect_get_agent_profile()
+        .with(eq(77_i64), eq("agent-a".to_string()))
+        .returning(|_, _| {
+            Ok(Some(AgentProfileRecord {
+                schema_version: 1,
+                version: 1,
+                user_id: 77,
+                agent_id: "agent-a".to_string(),
+                profile: json!({
+                    "systemPrompt": "ops agent",
+                }),
+                created_at: 10,
+                updated_at: 10,
+            }))
+        });
+    mock.expect_upsert_agent_profile()
+        .withf(|options| {
+            options.agent_id == "agent-a"
+                && options.profile["systemPrompt"] == "ops agent"
+                && options
+                    .profile
+                    .get("blockedTools")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|tools| {
+                        TOPIC_AGENT_STACK_LOGS_TOOLS
+                            .iter()
+                            .all(|tool| tools.iter().any(|value| value.as_str() == Some(*tool)))
+                    })
+        })
+        .returning(|options| {
+            Ok(AgentProfileRecord {
+                schema_version: 1,
+                version: 2,
+                user_id: options.user_id,
+                agent_id: options.agent_id,
+                profile: options.profile,
+                created_at: 10,
+                updated_at: 20,
+            })
+        });
+    mock.expect_append_audit_event().returning(|options| {
+        Ok(audit_event(
+            1,
+            options.topic_id.as_deref(),
+            options.agent_id.as_deref(),
+            &options.action,
+            options.payload,
+        ))
+    });
+
+    let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+    let response = provider
+        .execute(
+            TOOL_TOPIC_AGENT_TOOLS_DISABLE,
+            r#"{"topic_id":"topic-a","tools":["stack_logs"]}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("topic agent tools disable should accept stack_logs alias");
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&response).expect("response must be valid json");
+    let stack_logs_status = parsed["tools"]["provider_statuses"]
+        .as_array()
+        .expect("provider_statuses must be an array")
+        .iter()
+        .find(|entry| entry["provider"] == "stack_logs")
+        .expect("stack_logs provider status must be present");
+    assert_eq!(stack_logs_status["enabled"], false);
+    assert!(stack_logs_status["blocked_tools"]
+        .as_array()
+        .is_some_and(|tools| {
+            TOPIC_AGENT_STACK_LOGS_TOOLS
+                .iter()
+                .all(|tool| tools.iter().any(|value| value.as_str() == Some(*tool)))
+        }));
+}
+
 #[cfg(feature = "browser_use")]
 #[tokio::test]
 async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled() {
