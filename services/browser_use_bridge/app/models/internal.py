@@ -53,6 +53,9 @@ class SessionRecord:
     browser_runtime_dead_reason: str | None = None
     browser_keep_alive_requested: bool | None = None
     browser_keep_alive_effective: bool | None = None
+    browser_reconnect_attempted: bool | None = None
+    browser_reconnect_succeeded: bool | None = None
+    browser_reconnect_error: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def snapshot(self) -> dict[str, Any]:
@@ -81,6 +84,9 @@ class SessionRecord:
             "browser_runtime_dead_reason": self.browser_runtime_dead_reason,
             "browser_keep_alive_requested": self.browser_keep_alive_requested,
             "browser_keep_alive_effective": self.browser_keep_alive_effective,
+            "browser_reconnect_attempted": self.browser_reconnect_attempted,
+            "browser_reconnect_succeeded": self.browser_reconnect_succeeded,
+            "browser_reconnect_error": self.browser_reconnect_error,
         }
 
 

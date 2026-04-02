@@ -44,6 +44,7 @@ from app.utils.browser_utils import (
     infer_url,
     ensure_browser_runtime_ready,
     ensure_browser_session_alive,
+    start_browser_runtime,
     is_browser_session_unavailable_error,
     probe_browser_session_state,
     is_transient_browser_ready_error,
@@ -202,6 +203,7 @@ class SessionManager:
             session.browser_keep_alive_requested = browser_keep_alive_enabled(
                 session.execution_mode
             )
+            self._reset_browser_reconnect_observability(session)
             session.updated_at = utc_now()
             await self._persist(session)
 
@@ -287,6 +289,9 @@ class SessionManager:
             browser_runtime_dead_reason=session.browser_runtime_dead_reason,
             browser_keep_alive_requested=session.browser_keep_alive_requested,
             browser_keep_alive_effective=session.browser_keep_alive_effective,
+            browser_reconnect_attempted=session.browser_reconnect_attempted,
+            browser_reconnect_succeeded=session.browser_reconnect_succeeded,
+            browser_reconnect_error=session.browser_reconnect_error,
         )
 
     async def close_session(self, session_id: str) -> CloseSessionResponse:
@@ -307,6 +312,9 @@ class SessionManager:
             browser_runtime_dead_reason=session.browser_runtime_dead_reason,
             browser_keep_alive_requested=session.browser_keep_alive_requested,
             browser_keep_alive_effective=session.browser_keep_alive_effective,
+            browser_reconnect_attempted=session.browser_reconnect_attempted,
+            browser_reconnect_succeeded=session.browser_reconnect_succeeded,
+            browser_reconnect_error=session.browser_reconnect_error,
         )
 
     async def extract_content(
@@ -318,8 +326,8 @@ class SessionManager:
 
         async with session.lock:
             try:
-                browser = self._require_active_browser(session)
-                await ensure_browser_session_alive(browser)
+                self._reset_browser_reconnect_observability(session)
+                browser = await self._ensure_follow_up_browser_session(session)
                 content, truncated, total_chars = await extract_content(
                     browser, request.format, request.max_chars
                 )
@@ -352,8 +360,8 @@ class SessionManager:
 
         async with session.lock:
             try:
-                browser = self._require_active_browser(session)
-                await ensure_browser_session_alive(browser)
+                self._reset_browser_reconnect_observability(session)
+                browser = await self._ensure_follow_up_browser_session(session)
                 artifact = await take_screenshot(
                     browser,
                     self._artifacts_dir,
@@ -392,6 +400,7 @@ class SessionManager:
             session.browser = None
             session.browser_keep_alive_effective = False
             session.status = "closed"
+            self._reset_browser_reconnect_observability(session)
             self._set_browser_runtime_observability(
                 session,
                 alive=False,
@@ -688,6 +697,117 @@ class SessionManager:
         session.browser_runtime_alive = alive
         session.browser_runtime_last_check_at = utc_now()
         session.browser_runtime_dead_reason = None if alive else dead_reason
+
+    async def _ensure_follow_up_browser_session(self, session: SessionRecord) -> Any:
+        """Ensure follow-up tools have a live browser session, with optional reconnect."""
+        browser = self._require_active_browser(session)
+        try:
+            await ensure_browser_session_alive(browser)
+            return browser
+        except Exception as error:
+            return await self._attempt_follow_up_browser_reconnect(
+                session,
+                browser,
+                error,
+            )
+
+    async def _attempt_follow_up_browser_reconnect(
+        self,
+        session: SessionRecord,
+        browser: Any,
+        error: Exception,
+    ) -> Any:
+        """Try one reconnect attempt for navigation-only keep-alive sessions."""
+        if not self._should_attempt_follow_up_browser_reconnect(
+            session=session,
+            browser=browser,
+            error=error,
+        ):
+            raise error
+
+        logger.info(
+            "Attempting Browser Use reconnect before follow-up tool",
+            extra={
+                "session_id": session.session_id,
+                "execution_mode": session.execution_mode,
+                "error": str(error),
+            },
+        )
+
+        try:
+            await start_browser_runtime(browser)
+            await ensure_browser_session_alive(browser)
+        except Exception as reconnect_error:
+            self._set_browser_reconnect_observability(
+                session,
+                attempted=True,
+                succeeded=False,
+                error=str(reconnect_error),
+            )
+            raise reconnect_error from error
+
+        session.browser_keep_alive_effective = detect_browser_keep_alive_effective(
+            browser
+        )
+        await self._refresh_browser_runtime_observability(session, browser=browser)
+        self._set_browser_reconnect_observability(
+            session,
+            attempted=True,
+            succeeded=True,
+            error=None,
+        )
+        return browser
+
+    def _should_attempt_follow_up_browser_reconnect(
+        self,
+        *,
+        session: SessionRecord,
+        browser: Any,
+        error: Exception,
+    ) -> bool:
+        """Reconnect only for navigation-only keep-alive sessions with dead runtime."""
+        if session.execution_mode != "navigation_only":
+            return False
+
+        keep_alive_effective = session.browser_keep_alive_effective is True
+        if not keep_alive_effective:
+            keep_alive_effective = detect_browser_keep_alive_effective(browser)
+        if not keep_alive_effective:
+            return False
+
+        if isinstance(error, HTTPException):
+            detail = error.detail
+            if isinstance(detail, dict):
+                detail_error = str(detail.get("error") or "")
+                detail_message = str(detail.get("message") or "")
+                return detail_error == "browser_session_not_alive" or (
+                    is_browser_session_unavailable_error(detail_message)
+                )
+            return isinstance(detail, str) and is_browser_session_unavailable_error(
+                detail
+            )
+
+        return is_browser_session_unavailable_error(error)
+
+    def _reset_browser_reconnect_observability(self, session: SessionRecord) -> None:
+        self._set_browser_reconnect_observability(
+            session,
+            attempted=None,
+            succeeded=None,
+            error=None,
+        )
+
+    def _set_browser_reconnect_observability(
+        self,
+        session: SessionRecord,
+        *,
+        attempted: bool | None,
+        succeeded: bool | None,
+        error: str | None,
+    ) -> None:
+        session.browser_reconnect_attempted = attempted
+        session.browser_reconnect_succeeded = succeeded
+        session.browser_reconnect_error = error
 
     async def _live_session_snapshots(self) -> dict[str, dict[str, Any]]:
         """Return current session snapshots keyed by session_id."""
