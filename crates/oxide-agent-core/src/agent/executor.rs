@@ -18,8 +18,8 @@ use super::providers::{
     inject_approval_credentials, AgentsMdProvider, DelegationProvider, FileHosterProvider,
     KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle, MediaFileProvider,
     ReminderContext, ReminderProvider, SandboxProvider, SshApprovalGrant, SshApprovalRegistry,
-    SshApprovalRequestView, SshMcpProvider, TodoList, TodosProvider, TopicInfraPreflightReport,
-    YtdlpProvider,
+    SshApprovalRequestView, SshMcpProvider, StackLogsProvider, TodoList, TodosProvider,
+    TopicInfraPreflightReport, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -499,6 +499,7 @@ impl AgentExecutor {
             SandboxProvider::new(sandbox_scope.clone())
         };
         registry.register(Box::new(sandbox_provider));
+        registry.register(Box::new(StackLogsProvider::new()));
         registry.register(Box::new(FileHosterProvider::new(sandbox_scope.clone())));
         registry.register(Box::new(MediaFileProvider::new(
             self.runner.llm_client(),
@@ -1648,6 +1649,15 @@ mod tests {
         assert!(tool_names.contains("describe_video_file"));
         assert!(tool_names.contains("text_to_speech_en_file"));
         assert!(tool_names.contains("text_to_speech_ru_file"));
+    }
+
+    #[tokio::test]
+    async fn main_agent_registry_includes_stack_log_tools() {
+        let executor = build_executor();
+        let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+        assert!(registry.can_handle("stack_logs_list_sources"));
+        assert!(registry.can_handle("stack_logs_fetch"));
     }
 
     #[cfg(feature = "browser_use")]
