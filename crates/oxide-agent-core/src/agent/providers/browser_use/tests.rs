@@ -509,6 +509,46 @@ async fn run_task_warns_for_ui_heavy_text_only_route() {
 }
 
 #[tokio::test]
+async fn run_task_warns_for_russian_ui_heavy_text_only_route() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Done"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+    let route = crate::config::ModelInfo {
+        id: "MiniMax-M2.7".to_string(),
+        provider: "minimax".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let output = scope_tool_model_route(
+        route,
+        provider.execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Нажми кнопку входа и отправь форму"}"#,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("Russian UI-heavy task should still run");
+
+    assert!(output.contains("Warning: Browser Use is running with text-only route"));
+    assert!(output.contains("browser-use-123"));
+}
+
+#[tokio::test]
 async fn run_task_rejects_visual_analysis_on_text_only_route() {
     let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
     let route = crate::config::ModelInfo {
@@ -534,6 +574,68 @@ async fn run_task_rejects_visual_analysis_on_text_only_route() {
     assert!(error
         .to_string()
         .contains("Browser Use task appears to require visual grounding"));
+}
+
+#[tokio::test]
+async fn run_task_rejects_russian_visual_analysis_on_text_only_route() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "MiniMax-M2.7".to_string(),
+        provider: "minimax".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let error = scope_tool_model_route(
+        route,
+        provider.execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Опиши визуально, как выглядит главная страница и какие там цвета"}"#,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect_err("Russian visual analysis should fail on text-only route");
+
+    assert!(error
+        .to_string()
+        .contains("Browser Use task appears to require visual grounding"));
+    assert!(error.to_string().contains("zai/GLM-4.6V"));
+}
+
+#[tokio::test]
+async fn run_task_allows_russian_visual_analysis_on_dedicated_glm_4_6v_route() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Done"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings_with_dedicated_browser_use_model(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+
+    let output = provider
+        .execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Опиши визуально, как выглядит главная страница и какие там цвета"}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("vision-capable dedicated route should allow Russian visual analysis");
+
+    assert!(!output.contains("Warning: Browser Use is running with text-only route"));
+    assert!(output.contains("browser-use-123"));
+    let request_body = state.request_body().await;
+    assert!(request_body.contains("\"model\":\"GLM-4.6V\""));
 }
 
 #[tokio::test]

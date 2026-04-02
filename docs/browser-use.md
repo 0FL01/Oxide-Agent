@@ -35,6 +35,7 @@
 - Stage 2 reuse wiring прокидывает hidden `profile_scope` из реального `context_key` и вводит quota на retained profiles per scope
 - Stage 3 lifecycle cleanup теперь detaches reusable profiles на graceful shutdown bridge, auto-recovers orphaned `active` profiles после restart/crash и TTL-prune-ит старые idle/stale profiles до quota check
 - Stage 1 dedicated browser route добавляет отдельный Oxide-side override для Browser Use, чтобы browser automation можно было держать на `zai / GLM-4.6V`, даже если main/sub-agent идут по другому route
+- Stage 2 vision classification расширяет policy для `zai / GLM-4.6V` и добавляет распознавание русскоязычных UI/vision задач до запуска sidecar session
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
@@ -47,6 +48,7 @@
 - text-only route допустимы для summary/extraction/browsing задач
 - для interactive UI задач Browser Use теперь возвращает warning о degraded mode
 - для задач, явно требующих visual grounding, Browser Use завершает tool вызов понятной ошибкой до запуска sidecar session
+- policy теперь учитывает и англоязычные, и русскоязычные формулировки вроде `click button` / `нажми кнопку` и `describe layout` / `опиши визуально`
 
 ## Важные переменные окружения
 
