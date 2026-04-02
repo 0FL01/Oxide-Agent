@@ -6,17 +6,9 @@ import os
 import sys
 import types
 import unittest
-import warnings
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
-
-
-warnings.filterwarnings(
-    "ignore",
-    message=r".*on_event is deprecated.*",
-    category=DeprecationWarning,
-)
 
 
 class FakeBrowser:

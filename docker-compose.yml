@@ -20,6 +20,8 @@ services:
     environment:
       - BROWSER_USE_ENABLED=true
       - BROWSER_USE_URL=http://127.0.0.1:8002
+      - BROWSER_USE_MODEL_ID=${BROWSER_USE_MODEL_ID:-GLM-4.6V}
+      - BROWSER_USE_MODEL_PROVIDER=${BROWSER_USE_MODEL_PROVIDER:-zai}
       - CRAWL4AI_URL=http://127.0.0.1:11235
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
