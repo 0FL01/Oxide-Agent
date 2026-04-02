@@ -269,6 +269,10 @@ async def take_screenshot(
 
     return {
         "kind": "screenshot",
+        "artifact_id": file_name,
+        "file_name": file_name,
+        "content_type": "image/png",
+        "download_path": f"/sessions/{session_id}/artifacts/{file_name}",
         "path": str(path),
         "full_page": full_page,
         "size_bytes": path.stat().st_size,

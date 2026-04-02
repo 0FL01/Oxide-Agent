@@ -386,6 +386,26 @@ class SessionManager:
             artifact=artifact,
         )
 
+    async def get_artifact_path(self, session_id: str, artifact_id: str) -> Path:
+        """Resolve a screenshot artifact path for download endpoints."""
+        session = await self.get_session(session_id)
+        normalized_artifact_id = Path(artifact_id).name
+        if not normalized_artifact_id or normalized_artifact_id != artifact_id:
+            raise HTTPException(status_code=404, detail="unknown artifact")
+
+        for artifact in session.artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            if artifact.get("artifact_id") != normalized_artifact_id:
+                continue
+
+            path = Path(str(artifact.get("path") or ""))
+            if path.exists() and path.is_file():
+                return path
+            break
+
+        raise HTTPException(status_code=404, detail="unknown artifact")
+
     async def shutdown(self) -> None:
         """Shutdown all sessions."""
         async with self._registry_lock:

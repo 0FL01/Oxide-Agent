@@ -14,15 +14,18 @@ use crate::config::{
     get_browser_use_max_retries, get_browser_use_timeout,
 };
 use crate::llm::ToolDefinition;
+use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::{header::CONTENT_TYPE, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use shell_escape::escape;
 use std::future::Future;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -72,6 +75,8 @@ pub struct BrowserUseProvider {
     client: reqwest::Client,
     settings: Arc<crate::config::AgentSettings>,
     profile_scope: Option<String>,
+    sandbox: Arc<Mutex<Option<SandboxManager>>>,
+    sandbox_scope: Option<SandboxScope>,
     timeout: Duration,
     max_retries: usize,
     initial_backoff: Duration,
@@ -264,6 +269,8 @@ impl BrowserUseProvider {
             client,
             settings,
             profile_scope: None,
+            sandbox: Arc::new(Mutex::new(None)),
+            sandbox_scope: None,
             timeout,
             max_retries,
             initial_backoff,
@@ -312,6 +319,13 @@ impl BrowserUseProvider {
         if !profile_scope.trim().is_empty() {
             self.profile_scope = Some(profile_scope);
         }
+        self
+    }
+
+    /// Attach sandbox scope so screenshot artifacts can be materialized for file tools.
+    #[must_use]
+    pub fn with_sandbox_scope(mut self, scope: impl Into<SandboxScope>) -> Self {
+        self.sandbox_scope = Some(scope.into());
         self
     }
 
@@ -568,6 +582,199 @@ impl BrowserUseProvider {
         }
     }
 
+    async fn request_bytes(
+        &self,
+        method: Method,
+        path: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<Vec<u8>> {
+        let url = self.endpoint_url(path);
+        let mut last_error = None;
+        let mut backoff = self.initial_backoff;
+
+        for attempt in 0..=self.max_retries {
+            if attempt > 0 {
+                await_with_cancellation(
+                    sleep(backoff),
+                    cancellation_token,
+                    "Browser Use request cancelled",
+                )
+                .await?;
+                backoff = Duration::min(backoff * 2, self.max_backoff);
+            }
+
+            match self
+                .do_request_bytes(method.clone(), &url, cancellation_token)
+                .await
+            {
+                Ok(bytes) => return Ok(bytes),
+                Err(error) => {
+                    let retryable = is_retryable_error(&error.to_string());
+                    if !retryable {
+                        return Err(error);
+                    }
+                    warn!(
+                        url = %url,
+                        attempt,
+                        error = %error,
+                        "Browser Use binary request failed, will retry",
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("Browser Use request failed")))
+    }
+
+    async fn do_request_bytes(
+        &self,
+        method: Method,
+        url: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<Vec<u8>> {
+        let request = self.client.request(method, url);
+        let response = await_with_cancellation(
+            request.send(),
+            cancellation_token,
+            "Browser Use request cancelled",
+        )
+        .await?
+        .map_err(|error| anyhow!("Browser Use request failed: {error}"))?;
+
+        let status = response.status();
+        let bytes = await_with_cancellation(
+            response.bytes(),
+            cancellation_token,
+            "Browser Use request cancelled",
+        )
+        .await?
+        .map_err(|error| anyhow!("Browser Use response read failed: {error}"))?;
+
+        if !status.is_success() {
+            let text = String::from_utf8_lossy(bytes.as_ref()).to_string();
+            return Err(anyhow!(format_http_error(status, &text)));
+        }
+
+        Ok(bytes.to_vec())
+    }
+
+    async fn ensure_sandbox(&self) -> Result<()> {
+        if self
+            .sandbox
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(SandboxManager::is_running)
+        {
+            return Ok(());
+        }
+
+        let sandbox_scope = self
+            .sandbox_scope
+            .clone()
+            .ok_or_else(|| anyhow!("Sandbox scope is not configured for Browser Use"))?;
+        let mut sandbox = SandboxManager::new(sandbox_scope).await?;
+        sandbox.create_sandbox().await?;
+        *self.sandbox.lock().await = Some(sandbox);
+        Ok(())
+    }
+
+    async fn write_screenshot_file(
+        &self,
+        session_id: &str,
+        file_name: &str,
+        content: &[u8],
+    ) -> Result<String> {
+        self.ensure_sandbox().await?;
+        let mut sandbox = {
+            let guard = self.sandbox.lock().await;
+            guard
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
+        };
+
+        let sanitized_name = Path::new(file_name)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("Browser Use screenshot is missing a valid file name"))?;
+        let sandbox_path = format!("/workspace/browser_use/{session_id}/{sanitized_name}");
+        ensure_parent_dir(&mut sandbox, &sandbox_path).await?;
+        sandbox.write_file(&sandbox_path, content).await?;
+        *self.sandbox.lock().await = Some(sandbox);
+        Ok(sandbox_path)
+    }
+
+    async fn hydrate_screenshot_payload(
+        &self,
+        payload: ResponsePayload,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<ResponsePayload> {
+        if self.sandbox_scope.is_none() {
+            return Ok(payload);
+        }
+
+        let ResponsePayload::Json(mut value) = payload else {
+            return Ok(payload);
+        };
+
+        let Some(session_id) = value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+        else {
+            return Ok(ResponsePayload::Json(value));
+        };
+
+        let Some(artifact) = value.get_mut("artifact").and_then(Value::as_object_mut) else {
+            return Ok(ResponsePayload::Json(value));
+        };
+
+        let Some(download_path) = artifact
+            .get("download_path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+        else {
+            return Ok(ResponsePayload::Json(value));
+        };
+
+        let file_name = artifact
+            .get("file_name")
+            .and_then(Value::as_str)
+            .or_else(|| artifact.get("artifact_id").and_then(Value::as_str))
+            .or_else(|| {
+                Path::new(download_path.as_str())
+                    .file_name()
+                    .and_then(|value| value.to_str())
+            })
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow!("Browser Use screenshot response is missing file_name"))?;
+        let bridge_path = artifact
+            .get("path")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        let bytes = self
+            .request_bytes(Method::GET, download_path.as_str(), cancellation_token)
+            .await?;
+        let sandbox_path = self
+            .write_screenshot_file(session_id.as_str(), file_name.as_str(), &bytes)
+            .await?;
+
+        if let Some(path) = bridge_path {
+            artifact.insert("bridge_path".to_string(), Value::String(path));
+        }
+        artifact.insert("path".to_string(), Value::String(sandbox_path.clone()));
+        artifact.insert("sandbox_path".to_string(), Value::String(sandbox_path));
+
+        Ok(ResponsePayload::Json(value))
+    }
+
     async fn execute_run_task(
         &self,
         arguments: &str,
@@ -723,7 +930,27 @@ impl BrowserUseProvider {
                 cancellation_token,
             )
             .await?;
+        let payload = self
+            .hydrate_screenshot_payload(payload, cancellation_token)
+            .await?;
         Ok(format_tool_output(payload))
+    }
+}
+
+async fn ensure_parent_dir(sandbox: &mut SandboxManager, path: &str) -> Result<()> {
+    let parent = Path::new(path).parent().map_or_else(
+        || "/workspace".to_string(),
+        |value| value.to_string_lossy().to_string(),
+    );
+    let command = format!("mkdir -p {}", escape(parent.as_str().into()));
+    let result = sandbox.exec_command(&command, None).await?;
+    if result.success() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "Failed to create Browser Use artifact directory {parent}: {}",
+            result.combined_output()
+        )
     }
 }
 

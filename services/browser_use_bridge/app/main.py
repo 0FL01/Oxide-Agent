@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 try:
     import browser_use as browser_use_module
@@ -173,3 +173,10 @@ async def screenshot_endpoint(
 ) -> ScreenshotResponse:
     """Take a screenshot."""
     return await manager.screenshot(session_id, request)
+
+
+@app.get("/sessions/{session_id}/artifacts/{artifact_id}")
+async def download_artifact(session_id: str, artifact_id: str) -> FileResponse:
+    """Download a Browser Use screenshot artifact."""
+    artifact_path = await manager.get_artifact_path(session_id, artifact_id)
+    return FileResponse(path=artifact_path, media_type="image/png")
