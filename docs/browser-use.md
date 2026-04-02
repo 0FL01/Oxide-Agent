@@ -39,6 +39,7 @@
 - Stage 3 run-task steering усиливает guidance: screenshot/content-oriented задачи теперь подталкиваются к схеме `browser_use_run_task` для navigation only, затем `browser_use_screenshot` / `browser_use_extract_content` для финального артефакта
 - Stage 4 browser readiness hardening добавляет узкий retry на ранние transient browser/runtime ошибки вроде `CDP client not initialized` с пересозданием browser между попытками
 - Stage 5 verification закрепляет behavior тестами на retry budget exhaustion и health/env observability для readiness retry knobs
+- Default compose route теперь фиксирует Browser Use на dedicated vision route `zai / GLM-4.6V` (если не задан override), чтобы screenshot/vision задачи не уходили на text-only inheritance route
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
@@ -62,8 +63,8 @@
 - `BROWSER_USE_URL=http://127.0.0.1:8002`
 - `BROWSER_USE_TIMEOUT_SECS=300`
 - `BROWSER_USE_MAX_CONCURRENT=2`
-- `BROWSER_USE_MODEL_ID=GLM-4.6V` - optional dedicated Browser Use route
-- `BROWSER_USE_MODEL_PROVIDER=zai` - optional dedicated Browser Use provider
+- `BROWSER_USE_MODEL_ID=GLM-4.6V` - dedicated Browser Use route (default in `docker-compose`)
+- `BROWSER_USE_MODEL_PROVIDER=zai` - dedicated Browser Use provider (default in `docker-compose`)
 
 ### В `browser_use` sidecar
 

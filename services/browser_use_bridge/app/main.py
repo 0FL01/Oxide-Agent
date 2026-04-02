@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1486,12 +1487,17 @@ manager = SessionManager(
     browser_ready_retries=settings.browser_ready_retries,
     browser_ready_retry_delay_ms=settings.browser_ready_retry_delay_ms,
 )
-app = FastAPI(title="browser_use_bridge", version="0.1.0")
 
 
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    await manager.shutdown()
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    try:
+        yield
+    finally:
+        await manager.shutdown()
+
+
+app = FastAPI(title="browser_use_bridge", version="0.1.0", lifespan=app_lifespan)
 
 
 @app.get("/health")
