@@ -47,6 +47,18 @@ enum VisionRequirement {
     Required,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RunTaskSteering {
+    prefer_screenshot_tool: bool,
+    prefer_extract_tool: bool,
+}
+
+impl RunTaskSteering {
+    fn is_empty(self) -> bool {
+        !self.prefer_screenshot_tool && !self.prefer_extract_tool
+    }
+}
+
 /// Provider for Browser Use bridge tools.
 pub struct BrowserUseProvider {
     base_url: String,
@@ -64,13 +76,13 @@ impl BrowserUseProvider {
     fn run_task_definition() -> ToolDefinition {
         ToolDefinition {
             name: TOOL_RUN_TASK.to_string(),
-            description: "Run a high-level browser automation task via the self-hosted Browser Use bridge. Use when a real browser is needed for dynamic pages, navigation, or interactive flows.".to_string(),
+            description: "Run a high-level browser automation task via the self-hosted Browser Use bridge. Use when a real browser is needed for navigation, login, or interactive flows. Prefer `browser_use_screenshot` and `browser_use_extract_content` for the final screenshot or page-content capture once the session is on the target page.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "Browser task instruction"
+                        "description": "Browser task instruction focused on navigation or interaction; avoid asking this tool to produce the final screenshot or raw page extraction when dedicated follow-up tools can do that after the session is ready"
                     },
                     "start_url": {
                         "type": "string",
@@ -137,7 +149,7 @@ impl BrowserUseProvider {
         ToolDefinition {
             name: TOOL_EXTRACT_CONTENT.to_string(),
             description:
-                "Extract text or HTML from the current page of an active Browser Use session."
+                "Extract text or HTML from the current page of an active Browser Use session after `browser_use_run_task` has navigated to the target page."
                     .to_string(),
             parameters: json!({
                 "type": "object",
@@ -165,7 +177,7 @@ impl BrowserUseProvider {
         ToolDefinition {
             name: TOOL_SCREENSHOT.to_string(),
             description:
-                "Capture a screenshot from the current page of an active Browser Use session."
+                "Capture a screenshot from the current page of an active Browser Use session after `browser_use_run_task` has navigated to the target page."
                     .to_string(),
             parameters: json!({
                 "type": "object",
@@ -558,6 +570,7 @@ impl BrowserUseProvider {
         if args.task.trim().is_empty() {
             return Err(anyhow!("browser_use_run_task requires a non-empty task"));
         }
+        let steering = classify_run_task_steering(&args.task);
 
         let inherited_llm = self.browser_llm_config_for_request()?;
         let (browser_llm_config, browser_llm_api_key) = match inherited_llm {
@@ -567,7 +580,7 @@ impl BrowserUseProvider {
         let vision_warning = self.vision_policy_warning(&args.task, browser_llm_config.as_ref())?;
         let profile_scope = self.request_profile_scope(&args)?;
         let body = serde_json::to_value(RunTaskRequestBody {
-            task: args.task,
+            task: rewrite_run_task_instruction(&args.task, steering),
             start_url: args.start_url,
             session_id: args.session_id,
             timeout_secs: args.timeout_secs,
@@ -585,7 +598,10 @@ impl BrowserUseProvider {
                 cancellation_token,
             )
             .await?;
-        let output = format_tool_output(payload);
+        let mut output = format_tool_output(payload);
+        if let Some(guidance) = run_task_follow_up_guidance(steering, extract_session_id(&output)) {
+            output = format!("{output}\n\n{guidance}");
+        }
         if let Some(warning) = vision_warning {
             Ok(format!("{warning}\n\n{output}"))
         } else {
@@ -874,6 +890,93 @@ fn classify_vision_requirement(task: &str) -> VisionRequirement {
     }
 
     VisionRequirement::NotNeeded
+}
+
+fn classify_run_task_steering(task: &str) -> RunTaskSteering {
+    let task = task.to_lowercase();
+
+    let prefer_screenshot_tool = [
+        "screenshot",
+        "screen shot",
+        "png",
+        "snapshot",
+        "capture image",
+        "screen capture",
+        "скриншот",
+        "скрин",
+        "снимок экрана",
+    ]
+    .iter()
+    .any(|needle| task.contains(needle));
+
+    let prefer_extract_tool = [
+        "extract text",
+        "extract html",
+        "extract content",
+        "page text",
+        "page html",
+        "raw html",
+        "html source",
+        "page source",
+        "full text",
+        "извлеки текст",
+        "извлеки html",
+        "извлеки контент",
+        "текст страницы",
+        "html страницы",
+        "содержимое страницы",
+        "исходный код страницы",
+    ]
+    .iter()
+    .any(|needle| task.contains(needle));
+
+    RunTaskSteering {
+        prefer_screenshot_tool,
+        prefer_extract_tool,
+    }
+}
+
+fn rewrite_run_task_instruction(task: &str, steering: RunTaskSteering) -> String {
+    if steering.is_empty() {
+        return task.to_string();
+    }
+
+    format!(
+        "Browser Use execution rules for this run:\n- Use this step only for navigation and interaction needed to reach the target page or UI state.\n- Do not take screenshots, save PDFs, or perform final page-content extraction in this step.\n- Leave the session on the target page for Oxide follow-up tools.\n- Return a short navigation/status summary only.\n\nOriginal task:\n{task}"
+    )
+}
+
+fn run_task_follow_up_guidance(
+    steering: RunTaskSteering,
+    session_id: Option<&str>,
+) -> Option<String> {
+    if steering.is_empty() {
+        return None;
+    }
+
+    let session_ref = session_id
+        .map(|id| format!(" with `session_id` `{id}`"))
+        .unwrap_or_default();
+    let mut hints = Vec::new();
+    if steering.prefer_screenshot_tool {
+        hints.push(format!(
+            "Follow-up guidance: use `browser_use_screenshot`{session_ref} for the actual screenshot capture."
+        ));
+    }
+    if steering.prefer_extract_tool {
+        hints.push(format!(
+            "Follow-up guidance: use `browser_use_extract_content`{session_ref} for text or HTML extraction from the current page."
+        ));
+    }
+    Some(hints.join("\n"))
+}
+
+fn extract_session_id(output: &str) -> Option<&str> {
+    let key = "\"session_id\": \"";
+    let start = output.find(key)? + key.len();
+    let rest = output.get(start..)?;
+    let end = rest.find('"')?;
+    rest.get(..end)
 }
 
 #[derive(Debug, Deserialize)]

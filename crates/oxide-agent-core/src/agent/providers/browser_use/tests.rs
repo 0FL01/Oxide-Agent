@@ -66,6 +66,17 @@ fn run_task_request_body_serializes_profile_reuse_hints() {
     assert_eq!(payload["profile_scope"], "topic-a");
 }
 
+#[test]
+fn run_task_steering_classifies_screenshot_and_extract_requests() {
+    let screenshot = classify_run_task_steering("Open the dashboard and take a screenshot");
+    assert!(screenshot.prefer_screenshot_tool);
+    assert!(!screenshot.prefer_extract_tool);
+
+    let extract = classify_run_task_steering("Открой страницу и извлеки текст страницы");
+    assert!(!extract.prefer_screenshot_tool);
+    assert!(extract.prefer_extract_tool);
+}
+
 #[tokio::test]
 async fn run_task_rejects_profile_reuse_without_runtime_scope() {
     let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
@@ -132,10 +143,87 @@ async fn run_task_posts_to_bridge() {
     assert!(result.is_ok());
     let output = result.unwrap_or_default();
     assert!(output.contains("browser-use-123"));
+    assert!(!output.contains("Follow-up guidance:"));
     assert!(state
         .request_line()
         .await
         .contains("POST /sessions/run HTTP/1.1"));
+}
+
+#[tokio::test]
+async fn run_task_rewrites_screenshot_focused_requests_and_adds_follow_up_guidance() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(
+            r#"{"session_id":"browser-use-123","status":"completed","final_url":"https://example.com/dashboard","summary":"Ready"}"#,
+        ),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+
+    let output = provider
+        .execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Open the dashboard and take a screenshot"}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("screenshot-focused run should succeed");
+
+    assert!(output.contains("browser-use-123"));
+    assert!(output.contains(
+        "Follow-up guidance: use `browser_use_screenshot` with `session_id` `browser-use-123`"
+    ));
+    let body = state.request_body().await;
+    assert!(body.contains("Original task:\\nOpen the dashboard and take a screenshot"));
+    assert!(body.contains("Do not take screenshots, save PDFs, or perform final page-content extraction in this step."));
+}
+
+#[tokio::test]
+async fn run_task_rewrites_extract_focused_requests_and_adds_follow_up_guidance() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(
+            r#"{"session_id":"browser-use-123","status":"completed","final_url":"https://example.com/docs","summary":"Ready"}"#,
+        ),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+
+    let output = provider
+        .execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Открой документацию и извлеки текст страницы"}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("extract-focused run should succeed");
+
+    assert!(output.contains("browser-use-123"));
+    assert!(output.contains(
+        "Follow-up guidance: use `browser_use_extract_content` with `session_id` `browser-use-123`"
+    ));
+    let body = state.request_body().await;
+    assert!(body.contains("Original task:\\nОткрой документацию и извлеки текст страницы"));
+    assert!(body.contains("Leave the session on the target page for Oxide follow-up tools."));
 }
 
 #[tokio::test]
