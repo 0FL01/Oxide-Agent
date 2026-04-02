@@ -44,6 +44,7 @@
 - Next navigation-only preset slice теперь добавляет bridge-side `Agent` preset для steering tasks: `enable_planning=false`, `use_judge=false`, `max_actions_per_step=1` и строгий `extend_system_message`, чтобы снизить planner overreach на screenshot/extract-oriented runs
 - Next execution-mode slice делает split явным: Rust provider шлет в bridge `execution_mode=autonomous|navigation_only`, а bridge возвращает выбранный режим в session metadata вместо неявной догадки только по steering wrapper
 - Next keep-alive slice включает upstream `keep_alive=True` для `navigation_only`, чтобы после `browser_use_run_task` живая browser session чаще доживала до follow-up `browser_use_screenshot` / `browser_use_extract_content`
+- Next keep-alive observability slice добавляет явные session fields `browser_keep_alive_requested` и `browser_keep_alive_effective`, чтобы было видно, просил ли bridge keep-alive и применился ли он на реальном browser runtime
 - P1 profile housekeeping fix сохраняет live `active` profiles во время orphan reconciliation, чтобы unrelated create/reuse/close operations не stale-или рабочие topic-scoped profiles
 - Next compatibility hardening для `zai/GLM-*` через `openai_compatible` включает softer structured-output preset в bridge (`dont_force_structured_output`, schema hints), чтобы снизить вероятность `AgentOutput` validation errors без смены API
 - Default compose route теперь фиксирует Browser Use на dedicated vision route `zai / GLM-4.6V` (если не задан override), чтобы screenshot/vision задачи не уходили на text-only inheritance route
@@ -158,6 +159,7 @@ curl -f http://127.0.0.1:8002/health
 - `execution_mode_split_supported` показывает, что bridge понимает явный `execution_mode` в `POST /sessions/run`
 - `navigation_only_keep_alive_supported` показывает, что `navigation_only` runs просят upstream держать browser runtime живым для follow-up tool-ов
 - `browser_runtime_observability_supported` показывает, что session responses публикуют runtime liveness/dead-reason поля
+- `browser_keep_alive_observability_supported` показывает, что session responses публикуют keep-alive requested/effective поля
 - `orphan_profile_recovery_supported` показывает, что bridge умеет self-heal-ить `active` profiles, оставшиеся после рестарта
 
 Полезные поля в `POST /sessions/run` и `GET /sessions/{id}`:
@@ -166,6 +168,8 @@ curl -f http://127.0.0.1:8002/health
 - `browser_runtime_alive` показывает, был ли browser runtime жив на последней bridge-side проверке
 - `browser_runtime_last_check_at` показывает timestamp последней liveness проверки
 - `browser_runtime_dead_reason` показывает последнюю зафиксированную причину, почему runtime считается мертвым или закрытым
+- `browser_keep_alive_requested` показывает, просил ли bridge keep-alive для этой сессии (обычно `true` для `navigation_only`)
+- `browser_keep_alive_effective` показывает, применился ли keep-alive на фактическом browser object
 
 ## Topic-Agent UX
 

@@ -101,6 +101,12 @@ def browser_keep_alive_enabled(execution_mode: ExecutionMode) -> bool:
     return execution_mode == "navigation_only"
 
 
+def detect_browser_keep_alive_effective(browser: Any) -> bool:
+    """Detect whether keep-alive is effectively enabled on the live browser object."""
+    value = getattr(browser, "keep_alive", None)
+    return value is True
+
+
 class SessionManager:
     """Manages browser sessions and task execution."""
 
@@ -191,6 +197,9 @@ class SessionManager:
             session.execution_mode = resolve_execution_mode(
                 request.task, request.execution_mode
             )
+            session.browser_keep_alive_requested = browser_keep_alive_enabled(
+                session.execution_mode
+            )
             session.updated_at = utc_now()
             await self._persist(session)
 
@@ -274,6 +283,8 @@ class SessionManager:
             browser_runtime_alive=session.browser_runtime_alive,
             browser_runtime_last_check_at=session.browser_runtime_last_check_at,
             browser_runtime_dead_reason=session.browser_runtime_dead_reason,
+            browser_keep_alive_requested=session.browser_keep_alive_requested,
+            browser_keep_alive_effective=session.browser_keep_alive_effective,
         )
 
     async def close_session(self, session_id: str) -> CloseSessionResponse:
@@ -292,6 +303,8 @@ class SessionManager:
             browser_runtime_alive=session.browser_runtime_alive,
             browser_runtime_last_check_at=session.browser_runtime_last_check_at,
             browser_runtime_dead_reason=session.browser_runtime_dead_reason,
+            browser_keep_alive_requested=session.browser_keep_alive_requested,
+            browser_keep_alive_effective=session.browser_keep_alive_effective,
         )
 
     async def extract_content(
@@ -375,6 +388,7 @@ class SessionManager:
         async with session.lock:
             await close_browser(session.browser, kill=True)
             session.browser = None
+            session.browser_keep_alive_effective = False
             session.status = "closed"
             self._set_browser_runtime_observability(
                 session,
@@ -415,6 +429,9 @@ class SessionManager:
                             session.execution_mode or "autonomous"
                         ),
                     )
+                session.browser_keep_alive_effective = (
+                    detect_browser_keep_alive_effective(session.browser)
+                )
 
                 await self._warmup_browser_before_run(session)
 
@@ -478,6 +495,7 @@ class SessionManager:
         """Reset browser for retry attempt."""
         await close_browser(session.browser, kill=True)
         session.browser = None
+        session.browser_keep_alive_effective = False
 
     async def _warmup_browser_before_run(self, session: SessionRecord) -> None:
         """Wait briefly for a fresh browser runtime before the first agent step."""
@@ -633,6 +651,7 @@ class SessionManager:
     ) -> None:
         await close_browser(session.browser, kill=True)
         session.browser = None
+        session.browser_keep_alive_effective = False
         session.last_error = reason
         self._set_browser_runtime_observability(
             session,
