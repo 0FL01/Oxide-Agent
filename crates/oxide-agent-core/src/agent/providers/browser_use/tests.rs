@@ -843,6 +843,30 @@ async fn run_task_allows_russian_visual_analysis_on_dedicated_glm_4_6v_route() {
 }
 
 #[tokio::test]
+async fn run_task_fast_fails_autonomous_visual_task_on_unstable_glm_4_6v_route() {
+    let provider = BrowserUseProvider::new(
+        "http://localhost:8002",
+        test_settings_with_dedicated_browser_use_model(),
+    );
+
+    let error = provider
+        .execute(
+            TOOL_RUN_TASK,
+            r#"{"task":"Open the login page and solve the captcha to continue"}"#,
+            None,
+            None,
+        )
+        .await
+        .expect_err("autonomous visual tasks should fast-fail on unstable glm route");
+
+    let message = error.to_string();
+    assert!(message.contains("autonomous visual tasks are disabled"));
+    assert!(message.contains("zai/GLM-4.6V"));
+    assert!(message.contains("browser_use_screenshot"));
+    assert!(message.contains("describe_image_file"));
+}
+
+#[tokio::test]
 async fn run_task_rejects_unsupported_inherited_route() {
     let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
     let route = crate::config::ModelInfo {

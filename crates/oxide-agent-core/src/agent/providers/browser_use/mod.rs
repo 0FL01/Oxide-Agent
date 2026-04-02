@@ -795,6 +795,11 @@ impl BrowserUseProvider {
             Some((config, api_key)) => (Some(config), Some(api_key)),
             None => (None, None),
         };
+        self.fast_fail_unstable_autonomous_visual_route(
+            &args.task,
+            steering,
+            browser_llm_config.as_ref(),
+        )?;
         let vision_warning =
             self.vision_policy_warning(&vision_task, browser_llm_config.as_ref())?;
         let profile_scope = self.request_profile_scope(&args)?;
@@ -828,6 +833,35 @@ impl BrowserUseProvider {
         } else {
             Ok(output)
         }
+    }
+
+    fn fast_fail_unstable_autonomous_visual_route(
+        &self,
+        task: &str,
+        steering: RunTaskSteering,
+        browser_llm_config: Option<&BrowserLlmConfig>,
+    ) -> Result<()> {
+        if !steering.is_empty() {
+            return Ok(());
+        }
+
+        if classify_vision_requirement(task) != VisionRequirement::Required {
+            return Ok(());
+        }
+
+        let Some(config) = browser_llm_config else {
+            return Ok(());
+        };
+
+        if !is_unstable_autonomous_visual_route(config) {
+            return Ok(());
+        }
+
+        Err(anyhow!(
+            "Browser Use autonomous visual tasks are disabled on route `{}/{}` because this route is unstable for strict structured browser-use outputs and can stall on expensive retries. Run navigation-only first, then use `browser_use_screenshot` + `describe_image_file` (or `browser_use_extract_content`) for the final result.",
+            config.provider,
+            config.model,
+        ))
     }
 
     async fn execute_get_session(
@@ -1067,6 +1101,11 @@ fn is_openrouter_vision_model(model: &str) -> bool {
     ]
     .iter()
     .any(|needle| model.contains(needle))
+}
+
+fn is_unstable_autonomous_visual_route(config: &BrowserLlmConfig) -> bool {
+    config.provider.eq_ignore_ascii_case("zai")
+        && config.model.to_ascii_lowercase().contains("glm-4.6v")
 }
 
 fn classify_vision_requirement(task: &str) -> VisionRequirement {
