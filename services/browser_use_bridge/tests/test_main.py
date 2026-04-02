@@ -457,6 +457,86 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 str(Path(tmpdir) / "profiles" / first.profile_id / "browser"),
             )
 
+    async def test_creating_new_profile_keeps_other_live_profile_active(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=2)
+
+            first = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the homepage",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+            await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the docs page",
+                    reuse_profile=True,
+                    profile_scope="topic-b",
+                ),
+                None,
+            )
+
+            first_metadata = json.loads(
+                (
+                    Path(tmpdir) / "profiles" / first.profile_id / "metadata.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(first_metadata["status"], "active")
+            self.assertEqual(first_metadata["current_session_id"], first.session_id)
+
+    async def test_detaching_profile_keeps_other_live_profile_active(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=2)
+
+            first = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the homepage",
+                    reuse_profile=True,
+                    profile_scope="topic-a",
+                ),
+                None,
+            )
+            second = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the docs page",
+                    reuse_profile=True,
+                    profile_scope="topic-b",
+                ),
+                None,
+            )
+            await manager.close_session(first.session_id)
+
+            first_metadata = json.loads(
+                (
+                    Path(tmpdir) / "profiles" / first.profile_id / "metadata.json"
+                ).read_text(encoding="utf-8")
+            )
+            second_metadata = json.loads(
+                (
+                    Path(tmpdir) / "profiles" / second.profile_id / "metadata.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(first_metadata["status"], "idle")
+            self.assertIsNone(first_metadata["current_session_id"])
+            self.assertEqual(second_metadata["status"], "active")
+            self.assertEqual(second_metadata["current_session_id"], second.session_id)
+
     async def test_run_task_retries_transient_browser_readiness_error(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(

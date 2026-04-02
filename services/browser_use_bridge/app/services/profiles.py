@@ -33,13 +33,17 @@ class ProfileManager:
         self._registry_lock = asyncio.Lock()
         self._profiles_dir.mkdir(parents=True, exist_ok=True)
 
-    async def get_profile(self, profile_id: str) -> ProfileRecord:
+    async def get_profile(
+        self,
+        profile_id: str,
+        live_sessions: dict[str, dict[str, Any]] | None = None,
+    ) -> ProfileRecord:
         """Get profile by ID, loading from disk if needed."""
         profile_id = profile_id.strip()
         if not profile_id:
             raise HTTPException(status_code=404, detail="unknown profile ''")
 
-        await self._housekeep_profiles()
+        await self._housekeep_profiles(live_sessions)
 
         async with self._registry_lock:
             profile = self._profiles.get(profile_id)
@@ -80,10 +84,12 @@ class ProfileManager:
         return profile
 
     async def create_profile(
-        self, profile_scope: str = "bridge_local"
+        self,
+        profile_scope: str = "bridge_local",
+        live_sessions: dict[str, dict[str, Any]] | None = None,
     ) -> ProfileRecord:
         """Create a new persistent profile."""
-        await self._housekeep_profiles()
+        await self._housekeep_profiles(live_sessions)
         await self._enforce_profile_scope_quota(profile_scope)
 
         profile_id = f"browser-profile-{uuid4().hex}"
@@ -123,10 +129,15 @@ class ProfileManager:
             profile.updated_at = utc_now()
             await self._persist_profile(profile)
 
-    async def detach_profile(self, session_id: str, profile_id: str) -> ProfileRecord:
+    async def detach_profile(
+        self,
+        session_id: str,
+        profile_id: str,
+        live_sessions: dict[str, dict[str, Any]] | None = None,
+    ) -> ProfileRecord:
         """Detach profile from session."""
         try:
-            profile = await self.get_profile(profile_id)
+            profile = await self.get_profile(profile_id, live_sessions=live_sessions)
         except HTTPException:
             # Profile already gone - return minimal record
             return ProfileRecord(
@@ -171,9 +182,11 @@ class ProfileManager:
             count += 1
         return count
 
-    async def _housekeep_profiles(self) -> None:
+    async def _housekeep_profiles(
+        self, live_sessions: dict[str, dict[str, Any]] | None = None
+    ) -> None:
         """Run profile housekeeping: reconcile orphans and prune expired."""
-        await self._reconcile_orphaned_profiles()
+        await self._reconcile_orphaned_profiles(live_sessions)
         await self._prune_expired_profiles()
 
     async def _reconcile_orphaned_profiles(
