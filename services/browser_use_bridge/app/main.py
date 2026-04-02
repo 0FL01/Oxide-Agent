@@ -100,6 +100,7 @@ async def health() -> JSONResponse:
         "browser_ready_retry_delay_ms": settings.browser_ready_retry_delay_ms,
         "browser_ready_retry_supported": True,
         "execution_mode_split_supported": True,
+        "navigation_only_keep_alive_supported": True,
         "browser_runtime_observability_supported": True,
         "orphan_profile_recovery_supported": True,
     }

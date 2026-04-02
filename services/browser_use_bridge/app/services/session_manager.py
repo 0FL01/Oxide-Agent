@@ -96,6 +96,11 @@ def navigation_only_agent_kwargs(execution_mode: ExecutionMode) -> dict[str, Any
     }
 
 
+def browser_keep_alive_enabled(execution_mode: ExecutionMode) -> bool:
+    """Navigation-only runs keep the upstream browser alive for follow-up tools."""
+    return execution_mode == "navigation_only"
+
+
 class SessionManager:
     """Manages browser sessions and task execution."""
 
@@ -368,7 +373,7 @@ class SessionManager:
     async def _close_session_record(self, session: SessionRecord) -> None:
         """Close a session record and cleanup."""
         async with session.lock:
-            await close_browser(session.browser)
+            await close_browser(session.browser, kill=True)
             session.browser = None
             session.status = "closed"
             self._set_browser_runtime_observability(
@@ -404,7 +409,12 @@ class SessionManager:
         for attempt in range(1, max_attempts + 1):
             try:
                 if session.browser is None:
-                    session.browser = create_browser(profile)
+                    session.browser = create_browser(
+                        profile,
+                        keep_alive=browser_keep_alive_enabled(
+                            session.execution_mode or "autonomous"
+                        ),
+                    )
 
                 await self._warmup_browser_before_run(session)
 
@@ -466,7 +476,7 @@ class SessionManager:
 
     async def _reset_browser_for_retry(self, session: SessionRecord) -> None:
         """Reset browser for retry attempt."""
-        await close_browser(session.browser)
+        await close_browser(session.browser, kill=True)
         session.browser = None
 
     async def _warmup_browser_before_run(self, session: SessionRecord) -> None:
@@ -621,7 +631,7 @@ class SessionManager:
     async def _mark_browser_session_unavailable(
         self, session: SessionRecord, reason: str
     ) -> None:
-        await close_browser(session.browser)
+        await close_browser(session.browser, kill=True)
         session.browser = None
         session.last_error = reason
         self._set_browser_runtime_observability(

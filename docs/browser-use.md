@@ -43,6 +43,7 @@
 - Next post-run classification slice теперь различает successful history и internal failed history от `browser_use`: `Agent.run()` больше не считается успехом только потому, что не выбросил Python exception, а readiness-like failed history может получить bridge-side retry
 - Next navigation-only preset slice теперь добавляет bridge-side `Agent` preset для steering tasks: `enable_planning=false`, `use_judge=false`, `max_actions_per_step=1` и строгий `extend_system_message`, чтобы снизить planner overreach на screenshot/extract-oriented runs
 - Next execution-mode slice делает split явным: Rust provider шлет в bridge `execution_mode=autonomous|navigation_only`, а bridge возвращает выбранный режим в session metadata вместо неявной догадки только по steering wrapper
+- Next keep-alive slice включает upstream `keep_alive=True` для `navigation_only`, чтобы после `browser_use_run_task` живая browser session чаще доживала до follow-up `browser_use_screenshot` / `browser_use_extract_content`
 - P1 profile housekeeping fix сохраняет live `active` profiles во время orphan reconciliation, чтобы unrelated create/reuse/close operations не stale-или рабочие topic-scoped profiles
 - Next compatibility hardening для `zai/GLM-*` через `openai_compatible` включает softer structured-output preset в bridge (`dont_force_structured_output`, schema hints), чтобы снизить вероятность `AgentOutput` validation errors без смены API
 - Default compose route теперь фиксирует Browser Use на dedicated vision route `zai / GLM-4.6V` (если не задан override), чтобы screenshot/vision задачи не уходили на text-only inheritance route
@@ -62,6 +63,7 @@
 - если задача просит screenshot или raw page extraction, `browser_use_run_task` теперь дописывает bridge-side instruction не делать PDF/screenshot/extract в агентном шаге и возвращает follow-up hint с `session_id`
 - если такая steering-задача доходит до bridge, он теперь дополнительно запускает upstream `Agent` в более узком navigation-only preset, а не только надеется на prompt rewrite
 - для обычных run-task вызовов Rust provider теперь явно отправляет `execution_mode=autonomous`, а для steering-задач - `execution_mode=navigation_only`
+- для `navigation_only` bridge теперь дополнительно просит upstream browser runtime остаться живым после `Agent.run()`, тогда как explicit cleanup/retry paths по-прежнему делают hard shutdown
 
 ## Важные переменные окружения
 
@@ -154,6 +156,7 @@ curl -f http://127.0.0.1:8002/health
 - `browser_ready_retries` и `browser_ready_retry_delay_ms` показывают активный Stage 4 retry policy для transient readiness failures
 - `browser_ready_retry_supported` показывает, что bridge умеет автоматически пересоздавать browser после раннего readiness failure
 - `execution_mode_split_supported` показывает, что bridge понимает явный `execution_mode` в `POST /sessions/run`
+- `navigation_only_keep_alive_supported` показывает, что `navigation_only` runs просят upstream держать browser runtime живым для follow-up tool-ов
 - `browser_runtime_observability_supported` показывает, что session responses публикуют runtime liveness/dead-reason поля
 - `orphan_profile_recovery_supported` показывает, что bridge умеет self-heal-ить `active` profiles, оставшиеся после рестарта
 
@@ -212,6 +215,7 @@ Browser Use не включается через alias `search`. Для него
 12. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, `profile_id`, `profile_scope`, `profile_status` и `profile_attached`, чтобы убедиться, что реально используется inherited route и при необходимости привязан reusable profile.
 13. Для Stage 4/5 readiness hardening убедиться, что `/health` возвращает ожидаемые `browser_ready_retries` и `browser_ready_retry_delay_ms` из текущего runtime env.
 14. При нестабильном старте browser runtime сначала проверить, что transient ошибки вроде `CDP client not initialized` не превышают retry budget; после исчерпания budget bridge должен завершать сессию в `failed`, а не зависать в повторных попытках.
+15. Для `navigation_only` run проверить, что follow-up `browser_use_screenshot` или `browser_use_extract_content` проходит без немедленного rerun, а `/health` содержит `navigation_only_keep_alive_supported=true`.
 
 ## Типичные сбои
 

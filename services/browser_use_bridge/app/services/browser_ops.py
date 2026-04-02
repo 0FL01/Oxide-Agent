@@ -25,53 +25,68 @@ except ImportError:  # pragma: no cover - exercised in runtime envs.
 
 Browser = getattr(browser_use_module, "Browser", None)
 
+PROFILE_PATH_CANDIDATES = (
+    "user_data_dir",
+    "profile_path",
+    "profile_dir",
+    "browser_profile_path",
+    "browser_user_data_dir",
+)
 
-def create_browser(profile: ProfileRecord | None) -> Any:
+
+def create_browser(profile: ProfileRecord | None, *, keep_alive: bool = False) -> Any:
     """Create browser instance with optional profile persistence."""
     if Browser is None:
         raise RuntimeError("Browser is unavailable in installed browser_use package")
 
-    if profile is None:
-        return Browser()
-
-    profile_path = profile.browser_data_dir
+    profile_path = profile.browser_data_dir if profile is not None else None
     try:
         signature = inspect.signature(Browser)
     except (TypeError, ValueError):
         signature = None
 
     if signature is not None:
-        if any(
+        supports_var_kwargs = any(
             param.kind == inspect.Parameter.VAR_KEYWORD
             for param in signature.parameters.values()
-        ):
-            return Browser(user_data_dir=profile_path)
+        )
+        kwargs: dict[str, Any] = {}
 
-        for candidate in (
-            "user_data_dir",
-            "profile_path",
-            "profile_dir",
-            "browser_profile_path",
-            "browser_user_data_dir",
-        ):
-            if candidate in signature.parameters:
-                return Browser(**{candidate: profile_path})
+        if keep_alive and (supports_var_kwargs or "keep_alive" in signature.parameters):
+            kwargs["keep_alive"] = True
+
+        if profile_path is None:
+            return Browser(**kwargs)
+
+        for candidate in PROFILE_PATH_CANDIDATES:
+            if supports_var_kwargs or candidate in signature.parameters:
+                kwargs[candidate] = profile_path
+                return Browser(**kwargs)
 
         raise RuntimeError(
             "installed browser_use Browser constructor does not expose a supported persistent profile path argument"
         )
 
-    # Fallback: try common parameter names
-    for candidate in (
-        "user_data_dir",
-        "profile_path",
-        "profile_dir",
-        "browser_profile_path",
-        "browser_user_data_dir",
-    ):
+    if profile_path is None:
+        if keep_alive:
+            try:
+                return Browser(keep_alive=True)
+            except TypeError:
+                pass
+        return Browser()
+
+    for candidate in PROFILE_PATH_CANDIDATES:
+        kwargs = {candidate: profile_path}
+        if keep_alive:
+            kwargs["keep_alive"] = True
         try:
-            return Browser(**{candidate: profile_path})
+            return Browser(**kwargs)
         except TypeError:
+            if keep_alive:
+                try:
+                    return Browser(**{candidate: profile_path})
+                except TypeError:
+                    pass
             continue
 
     raise RuntimeError(
@@ -79,11 +94,18 @@ def create_browser(profile: ProfileRecord | None) -> Any:
     )
 
 
-async def close_browser(browser: Any) -> None:
-    """Safely close browser instance."""
+async def close_browser(browser: Any, *, kill: bool = False) -> None:
+    """Safely close browser instance.
+
+    When `kill=True`, prefer hard shutdown so kept-alive runtimes do not leak.
+    """
     if browser is None:
         return
-    for method_name in ("close", "stop", "quit"):
+
+    method_names = (
+        ("kill", "close", "quit", "stop") if kill else ("stop", "close", "quit", "kill")
+    )
+    for method_name in method_names:
         method = getattr(browser, method_name, None)
         if callable(method):
             try:

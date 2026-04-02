@@ -19,13 +19,28 @@ class FakeBrowser:
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
+        self.keep_alive = kwargs.get("keep_alive")
         self.closed = False
+        self.stop_calls = 0
+        self.kill_calls = 0
         self.page = FakePage()
         self.remaining_state_failures = type(self).initial_state_failures
         type(self).instances.append(self)
 
     async def close(self) -> None:
+        self.kill_calls += 1
         self.closed = True
+        self.page = None
+        return None
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+        return None
+
+    async def kill(self) -> None:
+        self.kill_calls += 1
+        self.closed = True
+        self.page = None
         return None
 
     async def get_state(self):
@@ -88,6 +103,7 @@ class FakeChatOpenAI(_BaseChat):
 class FakeAgent:
     instances = []
     run_outcomes = []
+    auto_close_after_run = False
 
     def __init__(self, task, llm, browser, use_vision, **kwargs):
         self.task = task
@@ -102,8 +118,16 @@ class FakeAgent:
             outcome = type(self).run_outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
-            return outcome
-        return "Task completed from fake agent"
+        else:
+            outcome = "Task completed from fake agent"
+
+        if type(self).auto_close_after_run:
+            if getattr(self.browser, "keep_alive", False):
+                await self.browser.stop()
+            else:
+                await self.browser.kill()
+
+        return outcome
 
 
 class FakeAgentHistory:
@@ -149,6 +173,7 @@ def import_bridge_module(extra_env: dict[str, str]):
     sys.modules.pop(module_name, None)
     FakeAgent.instances = []
     FakeAgent.run_outcomes = []
+    FakeAgent.auto_close_after_run = False
     FakeBrowser.instances = []
     FakeBrowser.initial_state_failures = 0
 
@@ -187,6 +212,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["browser_ready_retry_delay_ms"], 750)
             self.assertTrue(payload["browser_ready_retry_supported"])
             self.assertTrue(payload["execution_mode_split_supported"])
+            self.assertTrue(payload["navigation_only_keep_alive_supported"])
             self.assertTrue(payload["browser_runtime_observability_supported"])
             self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
@@ -366,6 +392,67 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "This run is navigation-only",
                 FakeAgent.instances[-1].kwargs["extend_system_message"],
             )
+
+    async def test_navigation_only_mode_keeps_runtime_alive_for_follow_up_tools(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            FakeAgent.auto_close_after_run = True
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            run_response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the dashboard",
+                    execution_mode="navigation_only",
+                ),
+                None,
+            )
+
+            self.assertEqual(run_response.status, "completed")
+            self.assertEqual(run_response.execution_mode, "navigation_only")
+            self.assertTrue(run_response.browser_runtime_alive)
+            self.assertTrue(FakeBrowser.instances[-1].kwargs["keep_alive"])
+            self.assertEqual(FakeBrowser.instances[-1].stop_calls, 1)
+            self.assertEqual(FakeBrowser.instances[-1].kill_calls, 0)
+
+            screenshot = await manager.screenshot(
+                run_response.session_id,
+                module.ScreenshotRequest(full_page=False),
+            )
+
+            self.assertEqual(screenshot.status, "completed")
+
+    async def test_autonomous_mode_allows_upstream_to_close_runtime(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            FakeAgent.auto_close_after_run = True
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.execution_mode, "autonomous")
+            self.assertFalse(response.browser_runtime_alive)
+            self.assertIn(
+                "browser runtime is closed", response.browser_runtime_dead_reason
+            )
+            self.assertNotIn("keep_alive", FakeBrowser.instances[-1].kwargs)
+            self.assertEqual(FakeBrowser.instances[-1].kill_calls, 1)
+            self.assertEqual(FakeBrowser.instances[-1].stop_calls, 0)
 
     async def test_explicit_autonomous_mode_overrides_legacy_steering_wrapper(self):
         with TemporaryDirectory() as tmpdir:
@@ -1011,6 +1098,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 close_response.browser_runtime_dead_reason,
                 "browser session was closed by bridge",
             )
+            self.assertEqual(FakeBrowser.instances[-1].kill_calls, 1)
 
             session = await manager.get_session(run_response.session_id)
             self.assertEqual(session.profile_id, run_response.profile_id)
