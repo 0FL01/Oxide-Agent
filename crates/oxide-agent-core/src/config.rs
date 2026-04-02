@@ -99,6 +99,15 @@ pub struct AgentSettings {
     pub browser_use_enabled: Option<bool>,
     /// Browser Use request timeout (seconds).
     pub browser_use_timeout_secs: Option<u64>,
+    /// Dedicated Browser Use model ID override.
+    pub browser_use_model_id: Option<String>,
+    /// Dedicated Browser Use model provider override.
+    pub browser_use_model_provider: Option<String>,
+    /// Dedicated Browser Use model max output tokens override.
+    #[serde(alias = "browser_use_model_max_tokens")]
+    pub browser_use_model_max_output_tokens: Option<u32>,
+    /// Dedicated Browser Use model context window tokens override.
+    pub browser_use_model_context_window_tokens: Option<u32>,
 
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
@@ -616,6 +625,22 @@ impl AgentSettings {
         ))
     }
 
+    fn browser_use_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.browser_use_model_id.as_ref()?;
+        let provider = self.browser_use_model_provider.as_ref()?;
+        let max_output_tokens = self
+            .browser_use_model_max_output_tokens
+            .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS);
+        let context_window_tokens = self
+            .browser_use_model_context_window_tokens
+            .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
+
+        Some((
+            id.clone(),
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
+        ))
+    }
+
     /// Returns a list of chat models configured from environment variables
     pub fn get_chat_models(&self) -> Vec<(String, ModelInfo)> {
         let mut models = Vec::new();
@@ -896,6 +921,11 @@ impl AgentSettings {
         self.agent_timeout_secs.unwrap_or(AGENT_TIMEOUT_SECS)
     }
 
+    /// Returns the dedicated Browser Use model when configured.
+    pub fn get_configured_browser_use_model(&self) -> Option<ModelInfo> {
+        self.browser_use_model_spec().map(|(_, info)| info)
+    }
+
     /// Returns the configured sub-agent timeout in seconds
     pub fn get_sub_agent_timeout_secs(&self) -> u64 {
         self.sub_agent_timeout_secs
@@ -1138,6 +1168,26 @@ mod tests {
         assert_eq!(routes[0].id, "MiniMax-M2.7");
         assert_eq!(routes[1].id, "glm-4.7");
         assert!(routes.iter().all(|route| route.max_output_tokens == 512));
+    }
+
+    #[test]
+    fn browser_use_model_returns_dedicated_route_when_configured() {
+        let settings = AgentSettings {
+            browser_use_model_id: Some("GLM-4.6V".to_string()),
+            browser_use_model_provider: Some("zai".to_string()),
+            browser_use_model_max_output_tokens: Some(16_384),
+            browser_use_model_context_window_tokens: Some(131_072),
+            ..AgentSettings::default()
+        };
+
+        let route = settings
+            .get_configured_browser_use_model()
+            .expect("browser-use route should be configured");
+
+        assert_eq!(route.id, "GLM-4.6V");
+        assert_eq!(route.provider, "zai");
+        assert_eq!(route.max_output_tokens, 16_384);
+        assert_eq!(route.context_window_tokens, 131_072);
     }
 
     #[test]

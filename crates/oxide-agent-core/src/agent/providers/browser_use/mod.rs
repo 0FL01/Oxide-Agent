@@ -326,6 +326,14 @@ impl BrowserUseProvider {
             .transpose()
     }
 
+    fn browser_llm_config_for_request(&self) -> Result<Option<(BrowserLlmConfig, String)>> {
+        if let Some(route) = self.settings.get_configured_browser_use_model() {
+            return self.browser_llm_config_for_route(&route).map(Some);
+        }
+
+        self.browser_llm_config_for_active_route()
+    }
+
     fn browser_llm_config_for_route(
         &self,
         route: &crate::config::ModelInfo,
@@ -551,7 +559,7 @@ impl BrowserUseProvider {
             return Err(anyhow!("browser_use_run_task requires a non-empty task"));
         }
 
-        let inherited_llm = self.browser_llm_config_for_active_route()?;
+        let inherited_llm = self.browser_llm_config_for_request()?;
         let (browser_llm_config, browser_llm_api_key) = match inherited_llm {
             Some((config, api_key)) => (Some(config), Some(api_key)),
             None => (None, None),
@@ -763,9 +771,17 @@ struct ScreenshotRequestBody {
 fn route_supports_vision(provider: &str, model: &str) -> bool {
     match provider {
         "gemini" => true,
+        "zai" => is_zai_vision_model(model),
         "openrouter" => is_openrouter_vision_model(model),
         _ => false,
     }
+}
+
+fn is_zai_vision_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    ["glm-4.6v", "glm-4v"]
+        .iter()
+        .any(|needle| model.contains(needle))
 }
 
 fn is_openrouter_vision_model(model: &str) -> bool {

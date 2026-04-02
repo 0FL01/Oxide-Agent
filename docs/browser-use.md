@@ -34,14 +34,16 @@
 - Stage 1 reuse slice добавляет optional `reuse_profile` / `profile_id` в `browser_use_run_task` и отдельные profile records в bridge storage
 - Stage 2 reuse wiring прокидывает hidden `profile_scope` из реального `context_key` и вводит quota на retained profiles per scope
 - Stage 3 lifecycle cleanup теперь detaches reusable profiles на graceful shutdown bridge, auto-recovers orphaned `active` profiles после restart/crash и TTL-prune-ит старые idle/stale profiles до quota check
+- Stage 1 dedicated browser route добавляет отдельный Oxide-side override для Browser Use, чтобы browser automation можно было держать на `zai / GLM-4.6V`, даже если main/sub-agent идут по другому route
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
 ## Capability Matrix
 
 - `gemini` route считается vision-capable
+- dedicated `zai` route с `GLM-4.6V` считается vision-capable для Browser Use
 - `openrouter` route считается vision-capable только для моделей, которые выглядят мультимодальными по model id, например `gemini`, `gpt-4o`, `claude-3`, `vision`, `vl`, `pixtral`
-- `minimax` и `zai` в текущем inheritance path считаются text-only route
+- `minimax` и остальные `zai` route в текущем inheritance path считаются text-only route
 - text-only route допустимы для summary/extraction/browsing задач
 - для interactive UI задач Browser Use теперь возвращает warning о degraded mode
 - для задач, явно требующих visual grounding, Browser Use завершает tool вызов понятной ошибкой до запуска sidecar session
@@ -54,10 +56,14 @@
 - `BROWSER_USE_URL=http://127.0.0.1:8002`
 - `BROWSER_USE_TIMEOUT_SECS=300`
 - `BROWSER_USE_MAX_CONCURRENT=2`
+- `BROWSER_USE_MODEL_ID=GLM-4.6V` - optional dedicated Browser Use route
+- `BROWSER_USE_MODEL_PROVIDER=zai` - optional dedicated Browser Use provider
 
 ### В `browser_use` sidecar
 
 Ниже перечислены fallback-переменные sidecar. Начиная со Stage C основной Rust provider уже сам прокидывает request-level `browser_llm_config` из активного Oxide route для `gemini`, `minimax`, `zai` и `openrouter`.
+
+Начиная со Stage 1 dedicated browser route Rust provider сначала смотрит на `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`, и только если они не заданы, откатывается к текущему active Oxide route.
 
 Начиная со Stage F дефолтный `docker-compose.yml` больше не прокидывает `BROWSER_USE_BRIDGE_LLM_PROVIDER` и `BROWSER_USE_BRIDGE_LLM_MODEL` в sidecar. Если legacy env path все еще нужен, его надо включать через compose override или отдельное runtime env для контейнера `browser_use`.
 
@@ -87,7 +93,7 @@
 Минимально важные случаи:
 
 - `MINIMAX_API_KEY` в `oxide_agent` для inherited route `provider=minimax`
-- `ZAI_API_KEY` в `oxide_agent` для inherited route `provider=zai`
+- `ZAI_API_KEY` в `oxide_agent` для dedicated Browser Use route `provider=zai` или inherited route `provider=zai`
 - `OPENROUTER_API_KEY` в `oxide_agent` для inherited route `provider=openrouter`
 
 Если ключа нет, bridge поднимется, но `browser_use_run_task` будет завершаться ошибкой на этапе создания LLM.
