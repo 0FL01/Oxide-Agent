@@ -89,11 +89,12 @@ class FakeAgent:
     instances = []
     run_outcomes = []
 
-    def __init__(self, task, llm, browser, use_vision):
+    def __init__(self, task, llm, browser, use_vision, **kwargs):
         self.task = task
         self.llm = llm
         self.browser = browser
         self.use_vision = use_vision
+        self.kwargs = kwargs
         type(self).instances.append(self)
 
     async def run(self):
@@ -333,6 +334,56 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 FakeAgent.instances[-1].llm.kwargs["model"], "gemini-2.5-flash"
             )
+
+    async def test_navigation_only_steering_task_applies_strict_agent_preset(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            steering_task = (
+                "Browser Use execution rules for this run:\n"
+                "- Use this step only for navigation and interaction needed to reach the target page or UI state.\n"
+                "- Do not take screenshots, save PDFs, or perform final page-content extraction in this step.\n"
+                "- Leave the session on the target page for Oxide follow-up tools.\n"
+                "- Return a short navigation/status summary only.\n\n"
+                "Original task:\nOpen the dashboard and take a screenshot"
+            )
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task=steering_task), None
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertFalse(FakeAgent.instances[-1].kwargs["enable_planning"])
+            self.assertFalse(FakeAgent.instances[-1].kwargs["use_judge"])
+            self.assertEqual(FakeAgent.instances[-1].kwargs["max_actions_per_step"], 1)
+            self.assertIn(
+                "This run is navigation-only",
+                FakeAgent.instances[-1].kwargs["extend_system_message"],
+            )
+
+    async def test_plain_run_task_does_not_apply_navigation_only_preset(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"), None
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(FakeAgent.instances[-1].kwargs, {})
 
     async def test_extract_content_reads_active_session_page(self):
         with TemporaryDirectory() as tmpdir:
