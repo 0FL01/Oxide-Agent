@@ -17,6 +17,7 @@ use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use lazy_regex::lazy_regex;
 use reqwest::{header::CONTENT_TYPE, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -54,6 +55,7 @@ enum VisionRequirement {
 struct RunTaskSteering {
     prefer_screenshot_tool: bool,
     prefer_extract_tool: bool,
+    prefer_visual_description: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -65,7 +67,7 @@ enum RunTaskExecutionMode {
 
 impl RunTaskSteering {
     fn is_empty(self) -> bool {
-        !self.prefer_screenshot_tool && !self.prefer_extract_tool
+        !self.prefer_screenshot_tool && !self.prefer_extract_tool && !self.prefer_visual_description
     }
 }
 
@@ -785,16 +787,19 @@ impl BrowserUseProvider {
             return Err(anyhow!("browser_use_run_task requires a non-empty task"));
         }
         let steering = classify_run_task_steering(&args.task);
+        let vision_task = vision_policy_task(&args.task, steering);
+        let rewritten_task = rewrite_run_task_instruction(&args.task, steering);
 
         let inherited_llm = self.browser_llm_config_for_request()?;
         let (browser_llm_config, browser_llm_api_key) = match inherited_llm {
             Some((config, api_key)) => (Some(config), Some(api_key)),
             None => (None, None),
         };
-        let vision_warning = self.vision_policy_warning(&args.task, browser_llm_config.as_ref())?;
+        let vision_warning =
+            self.vision_policy_warning(&vision_task, browser_llm_config.as_ref())?;
         let profile_scope = self.request_profile_scope(&args)?;
         let body = serde_json::to_value(RunTaskRequestBody {
-            task: rewrite_run_task_instruction(&args.task, steering),
+            task: rewritten_task,
             start_url: args.start_url,
             session_id: args.session_id,
             timeout_secs: args.timeout_secs,
@@ -1175,9 +1180,43 @@ fn classify_run_task_steering(task: &str) -> RunTaskSteering {
     .iter()
     .any(|needle| task.contains(needle));
 
+    let prefer_visual_description = [
+        "describe what you see",
+        "what do you see",
+        "how it looks",
+        "how does it look",
+        "visual description",
+        "visually describe",
+        "describe the visual",
+        "describe the layout",
+        "describe the appearance",
+        "appearance",
+        "layout",
+        "look like",
+        "on screen",
+        "what's on the screen",
+        "screen contents",
+        "color scheme",
+        "colors",
+        "colours",
+        "опиши что видишь",
+        "что ты видишь",
+        "как выглядит",
+        "опиши визуально",
+        "визуально",
+        "внешний вид",
+        "что на экране",
+        "цвета",
+        "цветовую схему",
+        "раскладку страницы",
+    ]
+    .iter()
+    .any(|needle| task.contains(needle));
+
     RunTaskSteering {
         prefer_screenshot_tool,
         prefer_extract_tool,
+        prefer_visual_description,
     }
 }
 
@@ -1186,8 +1225,11 @@ fn rewrite_run_task_instruction(task: &str, steering: RunTaskSteering) -> String
         return task.to_string();
     }
 
+    let navigation_goal = navigation_goal_from_task(task, steering);
+    let follow_up_plan = follow_up_plan_for_task(steering);
+
     format!(
-        "Browser Use execution rules for this run:\n- Use this step only for navigation and interaction needed to reach the target page or UI state.\n- Do not take screenshots, save PDFs, or perform final page-content extraction in this step.\n- Leave the session on the target page for Oxide follow-up tools.\n- Return a short navigation/status summary only.\n\nOriginal task:\n{task}"
+        "Browser Use execution rules for this run:\n- Use this step only for navigation and interaction needed to reach the target page or UI state.\n- Do not take screenshots, describe the final visual result, save PDFs, or perform final page-content extraction in this step.\n- Leave the session on the target page for Oxide follow-up tools.\n- Return a short navigation/status summary only.\n\nNavigation goal for this run:\n{navigation_goal}\n\nOxide follow-up plan after this run:\n{follow_up_plan}"
     )
 }
 
@@ -1217,18 +1259,177 @@ fn run_task_follow_up_guidance(
         ));
     }
 
-    let mut hints = Vec::new();
-    if steering.prefer_screenshot_tool {
-        hints.push(format!(
-            "Follow-up guidance: use `browser_use_screenshot`{session_ref} for the actual screenshot capture."
+    let mut steps = Vec::new();
+    if steering.prefer_screenshot_tool || steering.prefer_visual_description {
+        steps.push(format!(
+            "- Use `browser_use_screenshot`{session_ref} to capture the final page state."
         ));
+    }
+    if steering.prefer_visual_description {
+        steps.push(
+            "- Then pass the returned `artifact.path` from `browser_use_screenshot` to `describe_image_file` for the final visual description."
+                .to_string(),
+        );
     }
     if steering.prefer_extract_tool {
-        hints.push(format!(
-            "Follow-up guidance: use `browser_use_extract_content`{session_ref} for text or HTML extraction from the current page."
+        steps.push(format!(
+            "- Use `browser_use_extract_content`{session_ref} for the final text or HTML extraction."
         ));
     }
-    Some(hints.join("\n"))
+
+    if steps.is_empty() {
+        None
+    } else {
+        Some(format!("Follow-up guidance:\n{}", steps.join("\n")))
+    }
+}
+
+fn navigation_goal_from_task(task: &str, steering: RunTaskSteering) -> String {
+    if let Some(prefix) = strip_follow_up_clause(task, steering) {
+        return prefix;
+    }
+
+    if let Some(url) = first_url(task) {
+        return format!("Open {url} and leave the target page ready for Oxide follow-up tools.");
+    }
+
+    if steering.prefer_extract_tool {
+        return "Navigate to the page that contains the requested content and stop once the target page is ready for follow-up extraction.".to_string();
+    }
+
+    if steering.prefer_visual_description {
+        return "Navigate to the page or UI state the user requested and stop once it is ready for Oxide follow-up tools.".to_string();
+    }
+
+    "Navigate to the page or UI state the user wants captured and stop once it is ready for Oxide follow-up tools.".to_string()
+}
+
+fn vision_policy_task(task: &str, steering: RunTaskSteering) -> String {
+    if steering.is_empty() {
+        task.to_string()
+    } else {
+        navigation_goal_from_task(task, steering)
+    }
+}
+
+fn follow_up_plan_for_task(steering: RunTaskSteering) -> String {
+    let mut steps = Vec::new();
+    if steering.prefer_screenshot_tool || steering.prefer_visual_description {
+        steps.push("- Oxide will call `browser_use_screenshot` after navigation is complete.");
+    }
+    if steering.prefer_visual_description {
+        steps.push(
+            "- Oxide will then call `describe_image_file` on the screenshot path returned by `browser_use_screenshot`.",
+        );
+    }
+    if steering.prefer_extract_tool {
+        steps.push("- Oxide will call `browser_use_extract_content` after navigation is complete.");
+    }
+    steps.join("\n")
+}
+
+fn strip_follow_up_clause(task: &str, steering: RunTaskSteering) -> Option<String> {
+    let task_lower = task.to_lowercase();
+    let mut cut_index: Option<usize> = None;
+
+    for marker in follow_up_markers(steering) {
+        if let Some(index) = task_lower.find(marker) {
+            cut_index = Some(cut_index.map_or(index, |current| current.min(index)));
+        }
+    }
+
+    let cut_index = cut_index?;
+    let prefix = task.get(..cut_index)?.trim_end();
+    let prefix = trim_follow_up_prefix(prefix);
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
+fn follow_up_markers(steering: RunTaskSteering) -> Vec<&'static str> {
+    let mut markers = Vec::new();
+    if steering.prefer_screenshot_tool {
+        markers.extend([
+            "take a screenshot",
+            "take screenshot",
+            "capture a screenshot",
+            "capture screenshot",
+            "screen shot",
+            "screen capture",
+            "snapshot",
+            "скриншот",
+            "скрин",
+            "снимок экрана",
+        ]);
+    }
+    if steering.prefer_extract_tool {
+        markers.extend([
+            "extract text",
+            "extract html",
+            "extract content",
+            "page text",
+            "page html",
+            "raw html",
+            "html source",
+            "page source",
+            "full text",
+            "извлеки текст",
+            "извлеки html",
+            "извлеки контент",
+            "текст страницы",
+            "html страницы",
+            "содержимое страницы",
+            "исходный код страницы",
+        ]);
+    }
+    if steering.prefer_visual_description {
+        markers.extend([
+            "describe what you see",
+            "what do you see",
+            "how it looks",
+            "how does it look",
+            "visual description",
+            "visually describe",
+            "describe the visual",
+            "describe the layout",
+            "describe the appearance",
+            "appearance",
+            "layout",
+            "look like",
+            "what's on the screen",
+            "screen contents",
+            "color scheme",
+            "colors",
+            "colours",
+            "опиши что видишь",
+            "что ты видишь",
+            "как выглядит",
+            "опиши визуально",
+            "визуально",
+            "внешний вид",
+            "что на экране",
+            "цвета",
+        ]);
+    }
+    markers
+}
+
+fn trim_follow_up_prefix(prefix: &str) -> String {
+    static RE_TRAILING_JOINERS: lazy_regex::Lazy<regex::Regex> = lazy_regex!(
+        r"(?iu)(?:\s|,|;|:|-)*(?:and|then|after that|afterwards|to|for|with|и|затем|потом|чтобы|для|с)\s*$"
+    );
+    static RE_TRAILING_PUNCT: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"(?u)[\s,;:.-]+$");
+
+    let trimmed = RE_TRAILING_JOINERS.replace(prefix.trim(), "");
+    let trimmed = RE_TRAILING_PUNCT.replace(trimmed.as_ref(), "");
+    trimmed.trim().to_string()
+}
+
+fn first_url(task: &str) -> Option<&str> {
+    static RE_URL: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"https?://\S+");
+    RE_URL.find(task).map(|capture| capture.as_str())
 }
 
 fn extract_browser_runtime_state(payload: &ResponsePayload) -> Option<(bool, Option<&str>)> {

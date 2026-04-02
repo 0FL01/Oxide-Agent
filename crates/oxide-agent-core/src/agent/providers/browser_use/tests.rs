@@ -73,10 +73,16 @@ fn run_task_steering_classifies_screenshot_and_extract_requests() {
     let screenshot = classify_run_task_steering("Open the dashboard and take a screenshot");
     assert!(screenshot.prefer_screenshot_tool);
     assert!(!screenshot.prefer_extract_tool);
+    assert!(!screenshot.prefer_visual_description);
 
     let extract = classify_run_task_steering("Открой страницу и извлеки текст страницы");
     assert!(!extract.prefer_screenshot_tool);
     assert!(extract.prefer_extract_tool);
+
+    let visual = classify_run_task_steering("Describe what you see on the homepage and its colors");
+    assert!(!visual.prefer_screenshot_tool);
+    assert!(!visual.prefer_extract_tool);
+    assert!(visual.prefer_visual_description);
 }
 
 #[tokio::test]
@@ -204,11 +210,14 @@ async fn run_task_rewrites_screenshot_focused_requests_and_adds_follow_up_guidan
 
     assert!(output.contains("browser-use-123"));
     assert!(output.contains(
-        "Follow-up guidance: use `browser_use_screenshot` with `session_id` `browser-use-123`"
+        "- Use `browser_use_screenshot` with `session_id` `browser-use-123` to capture the final page state."
     ));
     let body = state.request_body().await;
-    assert!(body.contains("Original task:\\nOpen the dashboard and take a screenshot"));
-    assert!(body.contains("Do not take screenshots, save PDFs, or perform final page-content extraction in this step."));
+    assert!(body.contains("Navigation goal for this run:\\nOpen the dashboard"));
+    assert!(!body.contains("Original task:"));
+    assert!(!body.contains("Open the dashboard and take a screenshot"));
+    assert!(body.contains("Oxide will call `browser_use_screenshot` after navigation is complete."));
+    assert!(body.contains("Do not take screenshots, describe the final visual result, save PDFs, or perform final page-content extraction in this step."));
     assert!(body.contains(r#""execution_mode":"navigation_only""#));
 }
 
@@ -286,10 +295,14 @@ async fn run_task_rewrites_extract_focused_requests_and_adds_follow_up_guidance(
 
     assert!(output.contains("browser-use-123"));
     assert!(output.contains(
-        "Follow-up guidance: use `browser_use_extract_content` with `session_id` `browser-use-123`"
+        "- Use `browser_use_extract_content` with `session_id` `browser-use-123` for the final text or HTML extraction."
     ));
     let body = state.request_body().await;
-    assert!(body.contains("Original task:\\nОткрой документацию и извлеки текст страницы"));
+    assert!(body.contains("Navigation goal for this run:\\nОткрой документацию"));
+    assert!(!body.contains("Original task:"));
+    assert!(!body.contains("Открой документацию и извлеки текст страницы"));
+    assert!(body
+        .contains("Oxide will call `browser_use_extract_content` after navigation is complete."));
     assert!(body.contains("Leave the session on the target page for Oxide follow-up tools."));
     assert!(body.contains(r#""execution_mode":"navigation_only""#));
 }
@@ -705,8 +718,21 @@ async fn run_task_warns_for_russian_ui_heavy_text_only_route() {
 }
 
 #[tokio::test]
-async fn run_task_rejects_visual_analysis_on_text_only_route() {
-    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+async fn run_task_splits_visual_description_into_navigation_only_follow_up_on_text_only_route() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Ready"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
     let route = crate::config::ModelInfo {
         id: "glm-5-turbo".to_string(),
         provider: "zai".to_string(),
@@ -715,7 +741,7 @@ async fn run_task_rejects_visual_analysis_on_text_only_route() {
         weight: 1,
     };
 
-    let error = scope_tool_model_route(
+    let output = scope_tool_model_route(
         route,
         provider.execute(
             TOOL_RUN_TASK,
@@ -725,16 +751,33 @@ async fn run_task_rejects_visual_analysis_on_text_only_route() {
         ),
     )
     .await
-    .expect_err("visual analysis should fail on text-only route");
+    .expect("visual description should split into navigation-only follow-up");
 
-    assert!(error
-        .to_string()
-        .contains("Browser Use task appears to require visual grounding"));
+    assert!(output.contains("browser-use-123"));
+    assert!(output.contains("describe_image_file"));
+    assert!(!output.contains("Warning: Browser Use is running with text-only route"));
+    let request_body = state.request_body().await;
+    assert!(request_body.contains(r#""execution_mode":"navigation_only""#));
+    assert!(request_body.contains("Navigation goal for this run"));
+    assert!(!request_body.contains("Describe the visual layout and colors of the homepage"));
 }
 
 #[tokio::test]
-async fn run_task_rejects_russian_visual_analysis_on_text_only_route() {
-    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+async fn run_task_splits_russian_visual_description_on_text_only_route() {
+    let state = Arc::new(TestServerState::default());
+    let server = TestServer::spawn(
+        Arc::clone(&state),
+        json_response(r#"{"session_id":"browser-use-123","status":"completed","summary":"Ready"}"#),
+    )
+    .await;
+    let provider = BrowserUseProvider::with_config(
+        &server.base_url,
+        test_settings(),
+        Duration::from_secs(3),
+        0,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
     let route = crate::config::ModelInfo {
         id: "MiniMax-M2.7".to_string(),
         provider: "minimax".to_string(),
@@ -743,7 +786,7 @@ async fn run_task_rejects_russian_visual_analysis_on_text_only_route() {
         weight: 1,
     };
 
-    let error = scope_tool_model_route(
+    let output = scope_tool_model_route(
         route,
         provider.execute(
             TOOL_RUN_TASK,
@@ -753,12 +796,15 @@ async fn run_task_rejects_russian_visual_analysis_on_text_only_route() {
         ),
     )
     .await
-    .expect_err("Russian visual analysis should fail on text-only route");
+    .expect("Russian visual description should split into navigation-only follow-up");
 
-    assert!(error
-        .to_string()
-        .contains("Browser Use task appears to require visual grounding"));
-    assert!(error.to_string().contains("zai/GLM-4.6V"));
+    assert!(output.contains("browser-use-123"));
+    assert!(output.contains("browser_use_screenshot"));
+    assert!(output.contains("describe_image_file"));
+    assert!(!output.contains("Warning: Browser Use is running with text-only route"));
+    let request_body = state.request_body().await;
+    assert!(request_body.contains(r#""execution_mode":"navigation_only""#));
+    assert!(request_body.contains("Navigation goal for this run"));
 }
 
 #[tokio::test]
@@ -790,8 +836,10 @@ async fn run_task_allows_russian_visual_analysis_on_dedicated_glm_4_6v_route() {
 
     assert!(!output.contains("Warning: Browser Use is running with text-only route"));
     assert!(output.contains("browser-use-123"));
+    assert!(output.contains("describe_image_file"));
     let request_body = state.request_body().await;
     assert!(request_body.contains("\"model\":\"GLM-4.6V\""));
+    assert!(request_body.contains(r#""execution_mode":"navigation_only""#));
 }
 
 #[tokio::test]
