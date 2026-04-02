@@ -686,10 +686,6 @@ fn response_from_result<T>(
     }
 }
 
-fn not_implemented_response(capability: &str) -> SandboxBrokerResponse {
-    SandboxBrokerResponse::Error(format!("{capability} is not implemented yet"))
-}
-
 async fn handle_create_sandbox(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -951,9 +947,10 @@ async fn handle_request(
             DockerSandboxManager::list_stack_log_sources(request).await,
             SandboxBrokerResponse::StackLogSources,
         ),
-        SandboxBrokerRequest::FetchStackLogs { .. } => {
-            not_implemented_response("stack log fetching")
-        }
+        SandboxBrokerRequest::FetchStackLogs { request } => response_from_result(
+            DockerSandboxManager::fetch_stack_logs(request).await,
+            SandboxBrokerResponse::StackLogs,
+        ),
     };
 
     Ok(Some(response))
@@ -1010,7 +1007,7 @@ async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_request, ResolvedStackLogsSelector, SandboxBrokerClient, SandboxBrokerRequest,
+        ResolvedStackLogsSelector, SandboxBrokerClient, SandboxBrokerRequest,
         SandboxBrokerResponse, SandboxBrokerServer, StackLogCursor, StackLogEntry, StackLogSource,
         StackLogSuppression, StackLogsFetchRequest, StackLogsFetchResponse,
         StackLogsListSourcesResponse, StackLogsSelector, StackLogsWindow,
@@ -1021,7 +1018,6 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::net::UnixStream;
 
     fn unique_socket_path(test_name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -1134,26 +1130,6 @@ mod tests {
             bincode::deserialize(&bytes).expect("deserialize response");
 
         assert_eq!(decoded, response);
-    }
-
-    #[tokio::test]
-    async fn handle_request_returns_explicit_not_implemented_for_fetch_stack_logs() -> Result<()> {
-        let (mut stream, _peer) = UnixStream::pair().context("create unix stream pair")?;
-        let response = handle_request(
-            SandboxBrokerRequest::FetchStackLogs {
-                request: StackLogsFetchRequest::default(),
-            },
-            &mut stream,
-        )
-        .await?
-        .expect("non-exec broker request should always return a response");
-
-        assert_eq!(
-            response,
-            SandboxBrokerResponse::Error("stack log fetching is not implemented yet".to_string())
-        );
-
-        Ok(())
     }
 
     #[tokio::test]
