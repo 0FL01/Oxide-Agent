@@ -59,6 +59,8 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "text_to_speech_ru",
     "text_to_speech_ru_file",
     "recreate_sandbox",
+    "stack_logs_list_sources",
+    "stack_logs_fetch",
     "topic_binding_set",
     "topic_binding_get",
     "topic_binding_delete",
@@ -843,6 +845,8 @@ mod tests {
             "text_to_speech_ru",
             "text_to_speech_ru_file",
             "recreate_sandbox",
+            "stack_logs_list_sources",
+            "stack_logs_fetch",
             "topic_binding_set",
             "topic_binding_get",
             "topic_binding_delete",
@@ -893,6 +897,7 @@ mod tests {
             "forum_topic_create".to_string(),
             "topic_binding_set".to_string(),
             "topic_infra_upsert".to_string(),
+            "stack_logs_fetch".to_string(),
         ]);
 
         let allowed = provider
@@ -907,6 +912,7 @@ mod tests {
                     "forum_topic_create".to_string(),
                     "topic_binding_set".to_string(),
                     "topic_infra_upsert".to_string(),
+                    "stack_logs_fetch".to_string(),
                 ],
                 &available_tools,
                 "test-task",
