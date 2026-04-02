@@ -1561,6 +1561,16 @@ pub fn get_sandboxd_socket() -> String {
         .unwrap_or_else(|| SANDBOXD_SOCKET.to_string())
 }
 
+/// Get compose project override for stack log discovery.
+///
+/// Environment variable: `STACK_LOGS_PROJECT`
+#[must_use]
+pub fn get_stack_logs_project() -> Option<String> {
+    std::env::var("STACK_LOGS_PROJECT")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
 /// Transport API retry configuration for file operations.
 pub const TRANSPORT_API_MAX_RETRIES: usize = 3;
 /// Initial backoff delay in milliseconds for transport retries.
