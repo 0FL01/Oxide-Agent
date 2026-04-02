@@ -32,7 +32,7 @@ use crate::sandbox::broker::SandboxBrokerClient;
 use crate::sandbox::SandboxScope;
 
 /// Result of executing a command in the sandbox
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecResult {
     /// Standard output of the command
     pub stdout: String,

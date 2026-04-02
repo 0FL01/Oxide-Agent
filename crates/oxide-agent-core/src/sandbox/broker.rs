@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,130 @@ use crate::config::get_sandboxd_socket;
 use super::manager::{DockerSandboxManager, ExecResult, SandboxContainerRecord};
 use super::scope::SandboxScope;
 
-#[derive(Debug, Serialize, Deserialize)]
+const fn default_stack_logs_max_entries() -> u32 {
+    200
+}
+
+const fn default_stack_logs_include_stderr() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsSelector {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose_project: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedStackLogsSelector {
+    pub compose_project: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsListSourcesRequest {
+    #[serde(default)]
+    pub selector: StackLogsSelector,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    #[serde(default)]
+    pub include_stopped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogSource {
+    pub service: String,
+    pub container_name: String,
+    pub container_id: String,
+    pub state: String,
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsListSourcesResponse {
+    pub stack_selector: ResolvedStackLogsSelector,
+    pub containers: Vec<StackLogSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogCursor {
+    pub ts: DateTime<Utc>,
+    pub service: String,
+    pub stream: String,
+    pub ordinal: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsFetchRequest {
+    #[serde(default)]
+    pub selector: StackLogsSelector,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<StackLogCursor>,
+    #[serde(default = "default_stack_logs_max_entries")]
+    pub max_entries: u32,
+    #[serde(default)]
+    pub include_noise: bool,
+    #[serde(default = "default_stack_logs_include_stderr")]
+    pub include_stderr: bool,
+}
+
+impl Default for StackLogsFetchRequest {
+    fn default() -> Self {
+        Self {
+            selector: StackLogsSelector::default(),
+            services: Vec::new(),
+            since: None,
+            until: None,
+            cursor: None,
+            max_entries: default_stack_logs_max_entries(),
+            include_noise: false,
+            include_stderr: default_stack_logs_include_stderr(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogEntry {
+    pub ts: DateTime<Utc>,
+    pub service: String,
+    pub container_name: String,
+    pub stream: String,
+    pub ordinal: u64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogSuppression {
+    pub reason: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsFetchResponse {
+    pub window: StackLogsWindow,
+    pub entries: Vec<StackLogEntry>,
+    pub suppressed: Vec<StackLogSuppression>,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<StackLogCursor>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxBrokerRequest {
     ListUserSandboxes {
         user_id: i64,
@@ -90,9 +214,15 @@ pub enum SandboxBrokerRequest {
         image_name: String,
         container_path: String,
     },
+    ListStackLogSources {
+        request: StackLogsListSourcesRequest,
+    },
+    FetchStackLogs {
+        request: StackLogsFetchRequest,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxBrokerResponse {
     Sandboxes(Vec<SandboxContainerRecord>),
     Sandbox(Option<SandboxContainerRecord>),
@@ -102,6 +232,8 @@ pub enum SandboxBrokerResponse {
     ExecResult(ExecResult),
     Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     U64(u64),
+    StackLogSources(StackLogsListSourcesResponse),
+    StackLogs(StackLogsFetchResponse),
     Unit,
     Error(String),
 }
@@ -425,6 +557,34 @@ impl SandboxBrokerClient {
             response => Err(anyhow!("Unexpected broker response: {response:?}")),
         }
     }
+
+    pub async fn list_stack_log_sources(
+        &self,
+        request: StackLogsListSourcesRequest,
+    ) -> Result<StackLogsListSourcesResponse> {
+        match self
+            .send_request(&SandboxBrokerRequest::ListStackLogSources { request })
+            .await?
+        {
+            SandboxBrokerResponse::StackLogSources(response) => Ok(response),
+            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
+            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+        }
+    }
+
+    pub async fn fetch_stack_logs(
+        &self,
+        request: StackLogsFetchRequest,
+    ) -> Result<StackLogsFetchResponse> {
+        match self
+            .send_request(&SandboxBrokerRequest::FetchStackLogs { request })
+            .await?
+        {
+            SandboxBrokerResponse::StackLogs(response) => Ok(response),
+            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
+            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+        }
+    }
 }
 
 pub struct SandboxBrokerServer {
@@ -524,6 +684,10 @@ fn response_from_result<T>(
         Ok(value) => map(value),
         Err(error) => SandboxBrokerResponse::Error(error.to_string()),
     }
+}
+
+fn not_implemented_response(capability: &str) -> SandboxBrokerResponse {
+    SandboxBrokerResponse::Error(format!("{capability} is not implemented yet"))
 }
 
 async fn handle_create_sandbox(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
@@ -783,6 +947,12 @@ async fn handle_request(
             image_name,
             container_path,
         } => handle_file_size_bytes(scope, image_name, container_path).await,
+        SandboxBrokerRequest::ListStackLogSources { .. } => {
+            not_implemented_response("stack log source discovery")
+        }
+        SandboxBrokerRequest::FetchStackLogs { .. } => {
+            not_implemented_response("stack log fetching")
+        }
     };
 
     Ok(Some(response))
@@ -838,12 +1008,20 @@ async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SandboxBrokerClient, SandboxBrokerServer};
+    use super::{
+        handle_request, ResolvedStackLogsSelector, SandboxBrokerClient, SandboxBrokerRequest,
+        SandboxBrokerResponse, SandboxBrokerServer, StackLogCursor, StackLogEntry, StackLogSource,
+        StackLogSuppression, StackLogsFetchRequest, StackLogsFetchResponse,
+        StackLogsListSourcesRequest, StackLogsListSourcesResponse, StackLogsSelector,
+        StackLogsWindow,
+    };
     use crate::config::get_sandbox_image;
     use crate::sandbox::scope::SandboxScope;
     use anyhow::{bail, Context, Result};
+    use chrono::{TimeZone, Utc};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::net::UnixStream;
 
     fn unique_socket_path(test_name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -859,6 +1037,145 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         SandboxScope::new(991_337, format!("test:{test_name}:{nonce}"))
+    }
+
+    #[test]
+    fn stack_logs_fetch_request_defaults_match_stage_zero_contract() {
+        let request = StackLogsFetchRequest::default();
+
+        assert_eq!(request.max_entries, 200);
+        assert!(request.include_stderr);
+        assert!(!request.include_noise);
+        assert!(request.services.is_empty());
+        assert_eq!(request.selector, StackLogsSelector::default());
+        assert!(request.since.is_none());
+        assert!(request.until.is_none());
+        assert!(request.cursor.is_none());
+    }
+
+    #[test]
+    fn stack_logs_broker_payload_roundtrip_preserves_contract_types() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 3, 4).unwrap();
+        let request = SandboxBrokerRequest::FetchStackLogs {
+            request: StackLogsFetchRequest {
+                selector: StackLogsSelector {
+                    compose_project: Some("oxide-agent".to_string()),
+                },
+                services: vec!["oxide_agent".to_string(), "sandboxd".to_string()],
+                since: Some(ts),
+                until: Some(ts),
+                cursor: Some(StackLogCursor {
+                    ts,
+                    service: "oxide_agent".to_string(),
+                    stream: "stdout".to_string(),
+                    ordinal: 17,
+                }),
+                max_entries: 200,
+                include_noise: false,
+                include_stderr: true,
+            },
+        };
+        let request_bytes = bincode::serialize(&request).expect("serialize request");
+        let decoded_request: SandboxBrokerRequest =
+            bincode::deserialize(&request_bytes).expect("deserialize request");
+
+        assert_eq!(decoded_request, request);
+
+        let response = SandboxBrokerResponse::StackLogs(StackLogsFetchResponse {
+            window: StackLogsWindow {
+                since: Some(ts),
+                until: Some(ts),
+            },
+            entries: vec![StackLogEntry {
+                ts,
+                service: "oxide_agent".to_string(),
+                container_name: "oxide_agent".to_string(),
+                stream: "stdout".to_string(),
+                ordinal: 17,
+                message: "provider failover activated".to_string(),
+            }],
+            suppressed: vec![StackLogSuppression {
+                reason: "exact_duplicate_burst".to_string(),
+                count: 12,
+            }],
+            truncated: true,
+            next_cursor: Some(StackLogCursor {
+                ts,
+                service: "oxide_agent".to_string(),
+                stream: "stdout".to_string(),
+                ordinal: 18,
+            }),
+            warnings: vec!["truncated to max_entries".to_string()],
+        });
+        let response_bytes = bincode::serialize(&response).expect("serialize response");
+        let decoded_response: SandboxBrokerResponse =
+            bincode::deserialize(&response_bytes).expect("deserialize response");
+
+        assert_eq!(decoded_response, response);
+    }
+
+    #[test]
+    fn stack_logs_list_sources_payload_roundtrip_preserves_source_records() {
+        let started_at = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let response = SandboxBrokerResponse::StackLogSources(StackLogsListSourcesResponse {
+            stack_selector: ResolvedStackLogsSelector {
+                compose_project: "oxide-agent".to_string(),
+            },
+            containers: vec![StackLogSource {
+                service: "oxide_agent".to_string(),
+                container_name: "oxide_agent".to_string(),
+                container_id: "abc123def456".to_string(),
+                state: "running".to_string(),
+                started_at: Some(started_at),
+            }],
+        });
+        let bytes = bincode::serialize(&response).expect("serialize response");
+        let decoded: SandboxBrokerResponse =
+            bincode::deserialize(&bytes).expect("deserialize response");
+
+        assert_eq!(decoded, response);
+    }
+
+    #[tokio::test]
+    async fn handle_request_returns_explicit_not_implemented_for_stack_log_sources() -> Result<()> {
+        let (mut stream, _peer) = UnixStream::pair().context("create unix stream pair")?;
+        let response = handle_request(
+            SandboxBrokerRequest::ListStackLogSources {
+                request: StackLogsListSourcesRequest::default(),
+            },
+            &mut stream,
+        )
+        .await?
+        .expect("non-exec broker request should always return a response");
+
+        assert_eq!(
+            response,
+            SandboxBrokerResponse::Error(
+                "stack log source discovery is not implemented yet".to_string()
+            )
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_request_returns_explicit_not_implemented_for_fetch_stack_logs() -> Result<()> {
+        let (mut stream, _peer) = UnixStream::pair().context("create unix stream pair")?;
+        let response = handle_request(
+            SandboxBrokerRequest::FetchStackLogs {
+                request: StackLogsFetchRequest::default(),
+            },
+            &mut stream,
+        )
+        .await?
+        .expect("non-exec broker request should always return a response");
+
+        assert_eq!(
+            response,
+            SandboxBrokerResponse::Error("stack log fetching is not implemented yet".to_string())
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
