@@ -123,6 +123,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Если передан `profile_id`, bridge пытается поднять новую browser session поверх сохраненного profile state и проверяет совпадение injected `profile_scope`.
 - Если bridge был перезапущен с незакрытой profiled session, следующий reuse автоматически переведет orphaned profile из `active` в recoverable state и переиспользует его без ручной правки metadata.
 - Если `browser_use` падает на раннем transient browser error вроде `CDP client not initialized`, bridge пытается пересоздать browser и повторить run вместо немедленного `failed`.
+- Если follow-up tool вызывается после того, как upstream runtime уже умер или reset-нулся, bridge возвращает terminal `browser_session_not_alive` и очищает stale browser handle из session metadata in-memory state.
 - `POST /sessions/{id}/extract_content` читает текущую страницу активной сессии и возвращает `text` или `html` с optional truncation.
 - `POST /sessions/{id}/screenshot` сохраняет PNG artifact в `BROWSER_USE_BRIDGE_DATA_DIR/artifacts/<session_id>/` и возвращает metadata с путем к файлу.
 - Метаданные сессий сохраняются в `BROWSER_USE_BRIDGE_DATA_DIR/sessions/`.

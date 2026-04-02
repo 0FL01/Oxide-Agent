@@ -9,6 +9,21 @@ from typing import Any
 from app.utils.json_safe import json_safe
 
 
+BROWSER_RUNTIME_UNAVAILABLE_PATTERNS = [
+    "cdp client not initialized",
+    "browser is not initialized",
+    "browser not initialized",
+    "page is not initialized",
+    "page not initialized",
+    "context is not initialized",
+    "context not initialized",
+    "target page, context or browser has been closed",
+    "target closed",
+    "browser has been closed",
+    "browser session is not alive",
+]
+
+
 async def maybe_await(value: Any) -> Any:
     """Await value if it's awaitable, otherwise return as-is."""
     if inspect.isawaitable(value):
@@ -48,6 +63,23 @@ async def resolve_browser_page(browser: Any) -> Any | None:
     return None
 
 
+async def ensure_browser_session_alive(browser: Any) -> None:
+    """Verify that a browser session still has a usable runtime/page."""
+    if browser is None:
+        raise RuntimeError("browser session is not alive: browser handle is missing")
+
+    if await _object_is_closed(browser):
+        raise RuntimeError("browser session is not alive: browser runtime is closed")
+
+    page = await resolve_browser_page(browser)
+    if await _object_is_closed(page):
+        raise RuntimeError("browser session is not alive: browser page is closed")
+
+    state = await _browser_state(browser)
+    if page is None and not state:
+        raise RuntimeError("browser session is not alive: browser page is unavailable")
+
+
 async def infer_url(browser: Any, result: Any) -> str | None:
     """Infer URL from browser or result object."""
     for source in (result, browser):
@@ -84,16 +116,49 @@ def is_transient_browser_ready_error(error: Exception) -> bool:
     if not message:
         return False
 
-    transient_patterns = [
-        "cdp client not initialized",
-        "browser is not initialized",
-        "browser not initialized",
-        "page is not initialized",
-        "page not initialized",
-        "context is not initialized",
-        "context not initialized",
-        "target page, context or browser has been closed",
-        "target closed",
-        "browser has been closed",
-    ]
-    return any(pattern in message for pattern in transient_patterns)
+    return any(pattern in message for pattern in BROWSER_RUNTIME_UNAVAILABLE_PATTERNS)
+
+
+def is_browser_session_unavailable_error(error: Exception | str) -> bool:
+    """Check if an error indicates that a browser session/runtime is no longer alive."""
+    message = error if isinstance(error, str) else str(error)
+    message = message.strip().lower()
+    if not message:
+        return False
+
+    return any(pattern in message for pattern in BROWSER_RUNTIME_UNAVAILABLE_PATTERNS)
+
+
+async def _object_is_closed(candidate: Any) -> bool:
+    if candidate is None:
+        return False
+
+    for attr in ("is_closed", "closed"):
+        value = getattr(candidate, attr, None)
+        if value is None:
+            continue
+        if callable(value):
+            try:
+                value = await maybe_await(value())
+            except Exception as error:
+                return is_browser_session_unavailable_error(error)
+        if isinstance(value, bool):
+            return value
+
+    return False
+
+
+async def _browser_state(browser: Any) -> dict[str, Any]:
+    get_state = getattr(browser, "get_state", None)
+    if not callable(get_state):
+        return {}
+
+    try:
+        state = await maybe_await(get_state())
+    except Exception as error:
+        if is_browser_session_unavailable_error(error):
+            raise RuntimeError(f"browser session is not alive: {error}") from error
+        return {}
+
+    safe_state = json_safe(state)
+    return safe_state if isinstance(safe_state, dict) else {}

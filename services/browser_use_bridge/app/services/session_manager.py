@@ -35,7 +35,12 @@ from app.services.llm_resolver import (
     build_agent_task,
 )
 from app.utils.json_safe import stringify_result, extract_artifacts
-from app.utils.browser_utils import infer_url, is_transient_browser_ready_error
+from app.utils.browser_utils import (
+    infer_url,
+    ensure_browser_session_alive,
+    is_browser_session_unavailable_error,
+    is_transient_browser_ready_error,
+)
 from app.utils.time import utc_now
 from app.utils.text import clean_optional
 
@@ -229,14 +234,18 @@ class SessionManager:
         session = await self.get_session(session_id)
 
         async with session.lock:
-            browser = self._require_active_browser(session)
-            content, truncated, total_chars = await extract_content(
-                browser, request.format, request.max_chars
-            )
-            current_url = await infer_url(browser, None)
-            session.current_url = current_url
-            session.updated_at = utc_now()
-            await self._persist(session)
+            try:
+                browser = self._require_active_browser(session)
+                await ensure_browser_session_alive(browser)
+                content, truncated, total_chars = await extract_content(
+                    browser, request.format, request.max_chars
+                )
+                current_url = await infer_url(browser, None)
+                session.current_url = current_url
+                session.updated_at = utc_now()
+                await self._persist(session)
+            except Exception as error:
+                await self._raise_follow_up_browser_error(session, error)
 
         return ExtractContentResponse(
             session_id=session.session_id,
@@ -256,15 +265,22 @@ class SessionManager:
         session = await self.get_session(session_id)
 
         async with session.lock:
-            browser = self._require_active_browser(session)
-            artifact = await take_screenshot(
-                browser, self._artifacts_dir, session.session_id, request.full_page
-            )
-            session.artifacts.append(artifact)
-            current_url = await infer_url(browser, None)
-            session.current_url = current_url
-            session.updated_at = utc_now()
-            await self._persist(session)
+            try:
+                browser = self._require_active_browser(session)
+                await ensure_browser_session_alive(browser)
+                artifact = await take_screenshot(
+                    browser,
+                    self._artifacts_dir,
+                    session.session_id,
+                    request.full_page,
+                )
+                session.artifacts.append(artifact)
+                current_url = await infer_url(browser, None)
+                session.current_url = current_url
+                session.updated_at = utc_now()
+                await self._persist(session)
+            except Exception as error:
+                await self._raise_follow_up_browser_error(session, error)
 
         return ScreenshotResponse(
             session_id=session.session_id,
@@ -433,6 +449,54 @@ class SessionManager:
                 ),
             )
         return session.browser
+
+    async def _raise_follow_up_browser_error(
+        self, session: SessionRecord, error: Exception
+    ) -> None:
+        if isinstance(error, HTTPException):
+            detail = error.detail
+            if (
+                isinstance(detail, dict)
+                and detail.get("error") == "browser_session_not_alive"
+            ):
+                await self._mark_browser_session_unavailable(
+                    session,
+                    str(detail.get("message") or "browser session is not alive"),
+                )
+            elif isinstance(detail, str) and is_browser_session_unavailable_error(
+                detail
+            ):
+                await self._mark_browser_session_unavailable(session, detail)
+                raise self._browser_session_not_alive_error(session) from error
+            raise error
+
+        if is_browser_session_unavailable_error(error):
+            await self._mark_browser_session_unavailable(session, str(error))
+            raise self._browser_session_not_alive_error(session) from error
+
+        raise error
+
+    async def _mark_browser_session_unavailable(
+        self, session: SessionRecord, reason: str
+    ) -> None:
+        await close_browser(session.browser)
+        session.browser = None
+        session.last_error = reason
+        session.updated_at = utc_now()
+        await self._persist(session)
+
+    def _browser_session_not_alive_error(self, session: SessionRecord) -> HTTPException:
+        return HTTPException(
+            status_code=409,
+            detail={
+                "error": "browser_session_not_alive",
+                "message": (
+                    f"session '{session.session_id}' no longer has a live browser "
+                    "runtime; run browser_use_run_task again before calling "
+                    "browser_use_extract_content or browser_use_screenshot"
+                ),
+            },
+        )
 
     async def _persist(self, session: SessionRecord) -> None:
         """Persist session to disk."""

@@ -1,4 +1,4 @@
-use super::response::format_http_error;
+use super::response::{format_http_error, is_retryable_error};
 use super::*;
 use crate::agent::tool_runtime::scope_tool_model_route;
 use reqwest::StatusCode;
@@ -115,6 +115,23 @@ fn test_http_error_formatting() {
     let msg = format_http_error(StatusCode::SERVICE_UNAVAILABLE, "bridge unavailable");
     assert!(msg.contains("503"));
     assert!(msg.contains("bridge unavailable"));
+}
+
+#[test]
+fn browser_session_not_alive_errors_are_not_retryable() {
+    assert!(!is_retryable_error(
+        "Browser Use error: 409 - {\"detail\":{\"error\":\"browser_session_not_alive\",\"message\":\"session is dead\"}}"
+    ));
+}
+
+#[test]
+fn generic_bridge_500_errors_are_not_retryable() {
+    assert!(!is_retryable_error(
+        "Browser Use error: 500 - browser_use bridge could not create screenshot from active session"
+    ));
+    assert!(is_retryable_error(
+        "Browser Use error: 503 - bridge unavailable"
+    ));
 }
 
 #[tokio::test]
