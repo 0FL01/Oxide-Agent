@@ -12,9 +12,19 @@ Default branch: `testing`.
 
 ### browser_use_bridge
 - Python/FastAPI сервис в `services/browser_use_bridge/` для browser automation через browser_use.
-- Структура: модульная, разбита на slices (`config/`, `models/`, `services/`, `utils/`).
-- Основной код: `app/` - FastAPI endpoints, session manager, profile management, LLM resolution.
-- Конфигурация через env vars с префиксом `BROWSER_USE_BRIDGE_*`.
+- Архитектура: FastAPI app с slices (`models/`, `services/`, `utils/`), каждый slice — self-contained модуль.
+  - `app/main.py` — HTTP endpoints (session lifecycle, screenshot, extract_content, health)
+  - `app/config.py` — frozen Settings из env vars с префиксом `BROWSER_USE_BRIDGE_*`
+  - `app/services/` — session_manager, profiles, browser_ops, llm_resolver
+  - `app/utils/` — browser_utils (liveness probing), json_safe, text, time
+- **Profile lifecycle**: `active` → `idle` → `stale` → deleted; TTL pruning (default 7 days), orphan reconciliation при bridge restart.
+- **Profile scope isolation**: профили scoped (e.g., `topic-a`); cross-scope reuse отклоняется с HTTP 409; quota `max_profiles_per_scope` (default 3).
+- **Execution modes**: `autonomous` (full browse) vs `navigation_only` (strict steering для follow-up tools, `enable_planning=False`, `max_actions_per_step=1`).
+- **Keep-alive**: `navigation_only` runs запрашивают `keep_alive=True` для reuse runtime в follow-up tools (`extract_content`/`screenshot`); reconnect attempt при dead runtime.
+- **Runtime liveness**: probe_browser_runtime_ready(), probe_browser_session_state(); transient CDP errors retried; observability via `browser_runtime_alive`, `browser_reconnect_attempted/succeeded`.
+- **LLM resolution**: request-level `BrowserLlmConfig` (с `api_key_ref` типа `env:ZAI_API_KEY`) или legacy `BROWSER_USE_BRIDGE_LLM_PROVIDER/MODEL`; провайдеры: `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing relaxed для `zai`/`zhipuai`/`glm`.
+- **Visual route guardrails**: configurable guardrails для visual follow-ups; legacy steering wrapper detection (tasks starting с `"Browser Use execution rules for this run:"` → `navigation_only`).
+- **Screenshots**: hydrate в sandbox artifacts dir; доступны через `/sessions/{id}/artifacts/{artifact_id}`.
 
 ## Workspace Overview
 
@@ -140,13 +150,14 @@ Default branch: `testing`.
 
 ### LLM
 - Providers: `gemini`, `groq`, `mistral`, `minimax/`, `nvidia`, `openrouter`, `zai`.
+- Browser-use bridge LLM resolution: отдельный от core провайдеров; поддерживает `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing relaxed для `zai`/`zhipuai`/`glm`.
 - HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
 - Voice transcription: `voxtral` (Mistral) с retry backoff (5 attempts, 3s→48s).
 - NVIDIA NIM provider: `nvidia/llama-3.3-nemotron-super-49b-v1`, `nvidia/nemotron-mini`, `minimaxai/minimax-m*`.
 - LLM module structure: `capabilities.rs` (model capabilities), `client.rs` (HTTP orchestration), `support/` (backoff, history, http utils), `types.rs` (domain types).
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (включая `ssh_send_file_to_user`), yt-dlp, reminders, agents_md, TTS (Kokoro EN + Silero RU).
+- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (включая `ssh_send_file_to_user`), yt-dlp, reminders, agents_md, TTS (Kokoro EN + Silero RU), browser-use bridge (browser automation via external service).
 - Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport
