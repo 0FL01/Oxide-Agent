@@ -39,6 +39,7 @@ from app.utils.browser_utils import (
     infer_url,
     ensure_browser_session_alive,
     is_browser_session_unavailable_error,
+    probe_browser_session_state,
     is_transient_browser_ready_error,
 )
 from app.utils.time import utc_now
@@ -184,10 +185,15 @@ class SessionManager:
                     session.summary = stringify_result(result)
                     session.artifacts = extract_artifacts(result)
                     session.current_url = await infer_url(session.browser, result)
+                    await self._refresh_browser_runtime_observability(session)
                     session.status = "completed"
                 except Exception as error:
                     session.status = "failed"
                     session.last_error = str(error)
+                    if is_browser_session_unavailable_error(error):
+                        await self._refresh_browser_runtime_observability(
+                            session, dead_reason=str(error)
+                        )
                 finally:
                     session.updated_at = utc_now()
                     await self._persist(session)
@@ -210,6 +216,9 @@ class SessionManager:
             profile_status=session.profile_status,
             profile_attached=session.profile_attached,
             profile_reused=profile_reused,
+            browser_runtime_alive=session.browser_runtime_alive,
+            browser_runtime_last_check_at=session.browser_runtime_last_check_at,
+            browser_runtime_dead_reason=session.browser_runtime_dead_reason,
         )
 
     async def close_session(self, session_id: str) -> CloseSessionResponse:
@@ -224,6 +233,9 @@ class SessionManager:
             profile_scope=session.profile_scope,
             profile_status=session.profile_status,
             profile_attached=session.profile_attached,
+            browser_runtime_alive=session.browser_runtime_alive,
+            browser_runtime_last_check_at=session.browser_runtime_last_check_at,
+            browser_runtime_dead_reason=session.browser_runtime_dead_reason,
         )
 
     async def extract_content(
@@ -242,6 +254,9 @@ class SessionManager:
                 )
                 current_url = await infer_url(browser, None)
                 session.current_url = current_url
+                await self._refresh_browser_runtime_observability(
+                    session, browser=browser
+                )
                 session.updated_at = utc_now()
                 await self._persist(session)
             except Exception as error:
@@ -277,6 +292,9 @@ class SessionManager:
                 session.artifacts.append(artifact)
                 current_url = await infer_url(browser, None)
                 session.current_url = current_url
+                await self._refresh_browser_runtime_observability(
+                    session, browser=browser
+                )
                 session.updated_at = utc_now()
                 await self._persist(session)
             except Exception as error:
@@ -302,6 +320,11 @@ class SessionManager:
             await close_browser(session.browser)
             session.browser = None
             session.status = "closed"
+            self._set_browser_runtime_observability(
+                session,
+                alive=False,
+                dead_reason="browser session was closed by bridge",
+            )
 
             if session.profile_id is not None:
                 live_sessions = await self._live_session_snapshots()
@@ -492,8 +515,39 @@ class SessionManager:
         await close_browser(session.browser)
         session.browser = None
         session.last_error = reason
+        self._set_browser_runtime_observability(
+            session,
+            alive=False,
+            dead_reason=reason,
+        )
         session.updated_at = utc_now()
         await self._persist(session)
+
+    async def _refresh_browser_runtime_observability(
+        self,
+        session: SessionRecord,
+        browser: Any | None = None,
+        dead_reason: str | None = None,
+    ) -> None:
+        """Refresh observable browser runtime state for this session."""
+        browser = session.browser if browser is None else browser
+        alive, probed_reason = await probe_browser_session_state(browser)
+        self._set_browser_runtime_observability(
+            session,
+            alive=alive,
+            dead_reason=dead_reason or probed_reason,
+        )
+
+    def _set_browser_runtime_observability(
+        self,
+        session: SessionRecord,
+        *,
+        alive: bool,
+        dead_reason: str | None,
+    ) -> None:
+        session.browser_runtime_alive = alive
+        session.browser_runtime_last_check_at = utc_now()
+        session.browser_runtime_dead_reason = None if alive else dead_reason
 
     async def _live_session_snapshots(self) -> dict[str, dict[str, Any]]:
         """Return current session snapshots keyed by session_id."""

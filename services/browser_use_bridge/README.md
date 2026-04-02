@@ -114,7 +114,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
 - Reusable profile metadata lives under `BROWSER_USE_BRIDGE_DATA_DIR/profiles/<profile_id>/metadata.json`, browser state under `.../profiles/<profile_id>/browser/`.
 - Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
-- `GET /health` also shows whether legacy env fallback is configured, which LLM source is preferred, the profile idle TTL, readiness retry settings, and whether orphan recovery is enabled.
+- `GET /health` also shows whether legacy env fallback is configured, which LLM source is preferred, the profile idle TTL, readiness retry settings, whether session-level runtime observability is available, and whether orphan recovery is enabled.
 
 ## Notes
 
@@ -129,5 +129,5 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - `POST /sessions/{id}/screenshot` сохраняет PNG artifact в `BROWSER_USE_BRIDGE_DATA_DIR/artifacts/<session_id>/` и возвращает metadata с путем к файлу.
 - Метаданные сессий сохраняются в `BROWSER_USE_BRIDGE_DATA_DIR/sessions/`.
 - Idle/stale profile records старше `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS` удаляются автоматически вместе с browser state, чтобы не зависал per-scope quota.
-- `POST /sessions/run` и `GET /sessions/{id}` теперь возвращают `llm_source`, `llm_provider`, `llm_transport`, `vision_mode` и profile metadata, чтобы было видно, исполнялся ли запрос через inherited route или legacy fallback и был ли привязан reusable profile.
+- `POST /sessions/run` и `GET /sessions/{id}` теперь возвращают `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, profile metadata, а также `browser_runtime_alive`, `browser_runtime_last_check_at`, `browser_runtime_dead_reason`, чтобы было видно, жив ли runtime сессии и почему bridge считает его закрытым.
 - Реальная успешность `run_task` зависит от доступности `browser-use`, выбранного adapter-а и корректного secret resolution.

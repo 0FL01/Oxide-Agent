@@ -25,6 +25,9 @@ class RunTaskResponse(BaseModel):
     profile_status: str | None = None
     profile_attached: bool = False
     profile_reused: bool = False
+    browser_runtime_alive: bool | None = None
+    browser_runtime_last_check_at: str | None = None
+    browser_runtime_dead_reason: str | None = None
 
 
 class SessionResponse(BaseModel):
@@ -43,6 +46,9 @@ class SessionResponse(BaseModel):
     profile_scope: str | None = None
     profile_status: str | None = None
     profile_attached: bool = False
+    browser_runtime_alive: bool | None = None
+    browser_runtime_last_check_at: str | None = None
+    browser_runtime_dead_reason: str | None = None
 
 
 class CloseSessionResponse(BaseModel):
@@ -55,6 +61,9 @@ class CloseSessionResponse(BaseModel):
     profile_scope: str | None = None
     profile_status: str | None = None
     profile_attached: bool = False
+    browser_runtime_alive: bool | None = None
+    browser_runtime_last_check_at: str | None = None
+    browser_runtime_dead_reason: str | None = None
 
 
 class ExtractContentResponse(BaseModel):
