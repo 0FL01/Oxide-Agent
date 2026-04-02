@@ -340,6 +340,30 @@ impl SandboxManager {
         }
     }
 
+    pub async fn list_stack_log_sources(
+        request: StackLogsListSourcesRequest,
+    ) -> Result<StackLogsListSourcesResponse> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .list_stack_log_sources(request)
+                .await
+        } else {
+            DockerSandboxManager::list_stack_log_sources(request).await
+        }
+    }
+
+    pub async fn fetch_stack_logs(
+        request: StackLogsFetchRequest,
+    ) -> Result<StackLogsFetchResponse> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .fetch_stack_logs(request)
+                .await
+        } else {
+            DockerSandboxManager::fetch_stack_logs(request).await
+        }
+    }
+
     #[must_use]
     pub fn is_running(&self) -> bool {
         match &self.inner {
