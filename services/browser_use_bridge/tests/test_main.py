@@ -105,6 +105,33 @@ class FakeAgent:
         return "Task completed from fake agent"
 
 
+class FakeAgentHistory:
+    def __init__(
+        self,
+        *,
+        done: bool,
+        successful: bool | None,
+        final_result_text: str | None = None,
+        errors: list[str | None] | None = None,
+    ):
+        self._done = done
+        self._successful = successful
+        self._final_result_text = final_result_text
+        self._errors = errors or []
+
+    def is_done(self):
+        return self._done
+
+    def is_successful(self):
+        return self._successful
+
+    def final_result(self):
+        return self._final_result_text
+
+    def errors(self):
+        return self._errors
+
+
 def make_browser_use_module() -> types.ModuleType:
     module = types.ModuleType("browser_use")
     module.Agent = FakeAgent
@@ -684,6 +711,32 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(FakeAgent.instances), 1)
             self.assertTrue(response.browser_runtime_alive)
 
+    async def test_run_task_reads_final_result_from_browser_history(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            FakeAgent.run_outcomes = [
+                FakeAgentHistory(
+                    done=True,
+                    successful=True,
+                    final_result_text="Wikipedia homepage is ready",
+                )
+            ]
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open wikipedia and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.summary, "Wikipedia homepage is ready")
+
     async def test_run_task_fails_before_agent_start_when_browser_warmup_never_recovers(
         self,
     ):
@@ -712,6 +765,74 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("CDP client not initialized", response.error)
             self.assertEqual(len(FakeBrowser.instances), 1)
             self.assertEqual(len(FakeAgent.instances), 0)
+
+    async def test_run_task_marks_internal_failed_history_as_failed(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            FakeAgent.run_outcomes = [
+                FakeAgentHistory(
+                    done=False,
+                    successful=None,
+                    errors=[None, "Stopped due to 5 consecutive failures"],
+                )
+            ]
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open example.com and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "failed")
+            self.assertIn("Stopped due to 5 consecutive failures", response.error)
+            self.assertEqual(len(FakeAgent.instances), 1)
+            self.assertEqual(len(FakeBrowser.instances), 1)
+
+    async def test_run_task_retries_internal_readiness_failure_history(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                browser_ready_retries=1,
+                browser_ready_retry_delay_ms=0,
+            )
+            FakeAgent.run_outcomes = [
+                FakeAgentHistory(
+                    done=False,
+                    successful=None,
+                    errors=[
+                        "CDP client not initialized - browser may not be connected yet"
+                    ],
+                ),
+                FakeAgentHistory(
+                    done=True,
+                    successful=True,
+                    final_result_text="Recovered after history retry",
+                ),
+            ]
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.summary, "Recovered after history retry")
+            self.assertEqual(len(FakeAgent.instances), 2)
+            self.assertEqual(len(FakeBrowser.instances), 2)
 
     async def test_run_task_does_not_retry_non_readiness_error(self):
         with TemporaryDirectory() as tmpdir:

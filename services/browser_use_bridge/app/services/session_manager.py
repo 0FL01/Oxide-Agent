@@ -34,7 +34,7 @@ from app.services.llm_resolver import (
     vision_mode_label,
     build_agent_task,
 )
-from app.utils.json_safe import stringify_result, extract_artifacts
+from app.utils.json_safe import classify_run_result, stringify_result, extract_artifacts
 from app.utils.browser_utils import (
     infer_url,
     ensure_browser_runtime_ready,
@@ -176,7 +176,7 @@ class SessionManager:
                     session.llm_transport = llm_config.transport
                     session.vision_mode = vision_mode_label(llm_config)
 
-                    result = await self._run_agent_with_browser_ready_retry(
+                    result, run_error = await self._run_agent_with_browser_ready_retry(
                         session=session,
                         request=request,
                         profile=profile,
@@ -187,7 +187,15 @@ class SessionManager:
                     session.artifacts = extract_artifacts(result)
                     session.current_url = await infer_url(session.browser, result)
                     await self._refresh_browser_runtime_observability(session)
-                    session.status = "completed"
+                    if run_error is None:
+                        session.status = "completed"
+                    else:
+                        session.status = "failed"
+                        session.last_error = run_error
+                        if is_browser_session_unavailable_error(run_error):
+                            await self._refresh_browser_runtime_observability(
+                                session, dead_reason=run_error
+                            )
                 except Exception as error:
                     session.status = "failed"
                     session.last_error = str(error)
@@ -348,7 +356,7 @@ class SessionManager:
         profile: ProfileRecord | None,
         llm_config: Any,
         timeout_secs: int,
-    ) -> Any:
+    ) -> tuple[Any, str | None]:
         """Run agent with retry logic for browser readiness."""
         max_attempts = self._browser_ready_retries + 1
         for attempt in range(1, max_attempts + 1):
@@ -364,7 +372,28 @@ class SessionManager:
                     browser=session.browser,
                     use_vision=use_vision_mode(llm_config),
                 )
-                return await asyncio.wait_for(agent.run(), timeout=timeout_secs)
+                result = await asyncio.wait_for(agent.run(), timeout=timeout_secs)
+                success, run_error = classify_run_result(result)
+                if success:
+                    return result, None
+                if attempt >= max_attempts or not is_transient_browser_ready_error(
+                    RuntimeError(run_error or "")
+                ):
+                    return result, run_error
+
+                logger.warning(
+                    "Retrying Browser Use after internal readiness failure",
+                    extra={
+                        "session_id": session.session_id,
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "error": run_error,
+                    },
+                )
+                await self._reset_browser_for_retry(session)
+                if self._browser_ready_retry_delay_ms > 0:
+                    await asyncio.sleep(self._browser_ready_retry_delay_ms / 1000)
+                continue
 
             except Exception as error:
                 if attempt >= max_attempts or not is_transient_browser_ready_error(
