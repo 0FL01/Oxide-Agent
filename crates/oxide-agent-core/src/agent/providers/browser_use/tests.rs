@@ -57,6 +57,7 @@ fn run_task_request_body_serializes_profile_reuse_hints() {
         reuse_profile: true,
         profile_id: Some("browser-profile-1".to_string()),
         profile_scope: Some("topic-a".to_string()),
+        execution_mode: RunTaskExecutionMode::Autonomous,
         browser_llm_config: None,
     })
     .expect("serialize request body");
@@ -64,6 +65,7 @@ fn run_task_request_body_serializes_profile_reuse_hints() {
     assert_eq!(payload["reuse_profile"], serde_json::Value::Bool(true));
     assert_eq!(payload["profile_id"], "browser-profile-1");
     assert_eq!(payload["profile_scope"], "topic-a");
+    assert_eq!(payload["execution_mode"], "autonomous");
 }
 
 #[test]
@@ -165,6 +167,10 @@ async fn run_task_posts_to_bridge() {
         .request_line()
         .await
         .contains("POST /sessions/run HTTP/1.1"));
+    assert!(state
+        .request_body()
+        .await
+        .contains(r#""execution_mode":"autonomous""#));
 }
 
 #[tokio::test]
@@ -203,6 +209,7 @@ async fn run_task_rewrites_screenshot_focused_requests_and_adds_follow_up_guidan
     let body = state.request_body().await;
     assert!(body.contains("Original task:\\nOpen the dashboard and take a screenshot"));
     assert!(body.contains("Do not take screenshots, save PDFs, or perform final page-content extraction in this step."));
+    assert!(body.contains(r#""execution_mode":"navigation_only""#));
 }
 
 #[tokio::test]
@@ -284,6 +291,7 @@ async fn run_task_rewrites_extract_focused_requests_and_adds_follow_up_guidance(
     let body = state.request_body().await;
     assert!(body.contains("Original task:\\nОткрой документацию и извлеки текст страницы"));
     assert!(body.contains("Leave the session on the target page for Oxide follow-up tools."));
+    assert!(body.contains(r#""execution_mode":"navigation_only""#));
 }
 
 #[tokio::test]

@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+ExecutionMode = Literal["autonomous", "navigation_only"]
+
 
 class BrowserLlmConfig(BaseModel):
     """LLM configuration for browser tasks."""
@@ -29,6 +31,7 @@ class RunTaskRequest(BaseModel):
     reuse_profile: bool = False
     profile_id: str | None = Field(default=None, min_length=1)
     profile_scope: str | None = Field(default=None, min_length=1)
+    execution_mode: ExecutionMode | None = None
     browser_llm_config: BrowserLlmConfig | None = None
 
 

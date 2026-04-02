@@ -53,6 +53,13 @@ struct RunTaskSteering {
     prefer_extract_tool: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RunTaskExecutionMode {
+    Autonomous,
+    NavigationOnly,
+}
+
 impl RunTaskSteering {
     fn is_empty(self) -> bool {
         !self.prefer_screenshot_tool && !self.prefer_extract_tool
@@ -587,6 +594,7 @@ impl BrowserUseProvider {
             reuse_profile: args.reuse_profile.unwrap_or(false),
             profile_id: args.profile_id,
             profile_scope,
+            execution_mode: execution_mode_for_steering(steering),
             browser_llm_config,
         })?;
         let payload = self
@@ -756,8 +764,17 @@ struct RunTaskRequestBody {
     profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile_scope: Option<String>,
+    execution_mode: RunTaskExecutionMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     browser_llm_config: Option<BrowserLlmConfig>,
+}
+
+fn execution_mode_for_steering(steering: RunTaskSteering) -> RunTaskExecutionMode {
+    if steering.is_empty() {
+        RunTaskExecutionMode::Autonomous
+    } else {
+        RunTaskExecutionMode::NavigationOnly
+    }
 }
 
 #[derive(Debug, Deserialize)]

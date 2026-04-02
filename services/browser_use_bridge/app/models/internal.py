@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from app.utils.time import utc_now
 
+ExecutionMode = Literal["autonomous", "navigation_only"]
+
 
 @dataclass(frozen=True)
 class ResolvedBrowserLlmConfig:
@@ -41,6 +43,7 @@ class SessionRecord:
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None
+    execution_mode: ExecutionMode | None = None
     profile_id: str | None = None
     profile_scope: str | None = None
     profile_status: str | None = None
@@ -66,6 +69,7 @@ class SessionRecord:
             "llm_provider": self.llm_provider,
             "llm_transport": self.llm_transport,
             "vision_mode": self.vision_mode,
+            "execution_mode": self.execution_mode,
             "profile_id": self.profile_id,
             "profile_scope": self.profile_scope,
             "profile_status": self.profile_status,
