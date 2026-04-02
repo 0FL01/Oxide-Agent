@@ -756,6 +756,7 @@ async fn run_task_splits_visual_description_into_navigation_only_follow_up_on_te
 
     assert!(output.contains("browser-use-123"));
     assert!(output.contains("describe_image_file"));
+    assert!(output.contains("artifact.stable_path"));
     assert!(!output.contains("Warning: Browser Use is running with text-only route"));
     let request_body = state.request_body().await;
     assert!(request_body.contains(r#""execution_mode":"navigation_only""#));
@@ -802,6 +803,7 @@ async fn run_task_splits_russian_visual_description_on_text_only_route() {
     assert!(output.contains("browser-use-123"));
     assert!(output.contains("browser_use_screenshot"));
     assert!(output.contains("describe_image_file"));
+    assert!(output.contains("artifact.stable_path"));
     assert!(!output.contains("Warning: Browser Use is running with text-only route"));
     let request_body = state.request_body().await;
     assert!(request_body.contains(r#""execution_mode":"navigation_only""#));
@@ -838,6 +840,7 @@ async fn run_task_allows_russian_visual_analysis_on_dedicated_glm_4_6v_route() {
     assert!(!output.contains("Warning: Browser Use is running with text-only route"));
     assert!(output.contains("browser-use-123"));
     assert!(output.contains("describe_image_file"));
+    assert!(output.contains("artifact.stable_path"));
     let request_body = state.request_body().await;
     assert!(request_body.contains("\"model\":\"GLM-4.6V\""));
     assert!(request_body.contains(r#""execution_mode":"navigation_only""#));

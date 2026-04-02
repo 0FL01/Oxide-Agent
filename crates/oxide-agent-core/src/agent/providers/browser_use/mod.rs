@@ -59,6 +59,12 @@ struct RunTaskSteering {
     prefer_visual_description: bool,
 }
 
+#[derive(Debug)]
+struct HydratedScreenshotPaths {
+    captured_path: String,
+    stable_path: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum RunTaskExecutionMode {
@@ -688,7 +694,7 @@ impl BrowserUseProvider {
         session_id: &str,
         file_name: &str,
         content: &[u8],
-    ) -> Result<String> {
+    ) -> Result<HydratedScreenshotPaths> {
         self.ensure_sandbox().await?;
         let mut sandbox = {
             let guard = self.sandbox.lock().await;
@@ -703,11 +709,16 @@ impl BrowserUseProvider {
             .and_then(|value| value.to_str())
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow!("Browser Use screenshot is missing a valid file name"))?;
-        let sandbox_path = format!("/workspace/browser_use/{session_id}/{sanitized_name}");
-        ensure_parent_dir(&mut sandbox, &sandbox_path).await?;
-        sandbox.write_file(&sandbox_path, content).await?;
+        let captured_path = format!("/workspace/browser_use/{session_id}/{sanitized_name}");
+        let stable_path = format!("/workspace/browser_use/{session_id}/latest.png");
+        ensure_parent_dir(&mut sandbox, &captured_path).await?;
+        sandbox.write_file(&captured_path, content).await?;
+        sandbox.write_file(&stable_path, content).await?;
         *self.sandbox.lock().await = Some(sandbox);
-        Ok(sandbox_path)
+        Ok(HydratedScreenshotPaths {
+            captured_path,
+            stable_path,
+        })
     }
 
     async fn hydrate_screenshot_payload(
@@ -765,15 +776,29 @@ impl BrowserUseProvider {
         let bytes = self
             .request_bytes(Method::GET, download_path.as_str(), cancellation_token)
             .await?;
-        let sandbox_path = self
+        let screenshot_paths = self
             .write_screenshot_file(session_id.as_str(), file_name.as_str(), &bytes)
             .await?;
 
         if let Some(path) = bridge_path {
             artifact.insert("bridge_path".to_string(), Value::String(path));
         }
-        artifact.insert("path".to_string(), Value::String(sandbox_path.clone()));
-        artifact.insert("sandbox_path".to_string(), Value::String(sandbox_path));
+        artifact.insert(
+            "captured_path".to_string(),
+            Value::String(screenshot_paths.captured_path.clone()),
+        );
+        artifact.insert(
+            "path".to_string(),
+            Value::String(screenshot_paths.stable_path.clone()),
+        );
+        artifact.insert(
+            "sandbox_path".to_string(),
+            Value::String(screenshot_paths.stable_path.clone()),
+        );
+        artifact.insert(
+            "stable_path".to_string(),
+            Value::String(screenshot_paths.stable_path),
+        );
 
         Ok(ResponsePayload::Json(value))
     }
@@ -1371,7 +1396,7 @@ fn run_task_follow_up_guidance(
     }
     if steering.prefer_visual_description {
         steps.push(
-            "- Then pass the returned `artifact.path` from `browser_use_screenshot` to `describe_image_file` for the final visual description."
+            "- Then pass `artifact.stable_path` (or `artifact.path` when `stable_path` is absent) from `browser_use_screenshot` to `describe_image_file` for the final visual description."
                 .to_string(),
         );
     }
@@ -1423,7 +1448,7 @@ fn follow_up_plan_for_task(steering: RunTaskSteering) -> String {
     }
     if steering.prefer_visual_description {
         steps.push(
-            "- Oxide will then call `describe_image_file` on the screenshot path returned by `browser_use_screenshot`.",
+            "- Oxide will then call `describe_image_file` on `artifact.stable_path` returned by `browser_use_screenshot`.",
         );
     }
     if steering.prefer_extract_tool {
