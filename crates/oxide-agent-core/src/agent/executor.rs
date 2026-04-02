@@ -693,7 +693,7 @@ impl AgentExecutor {
         }
     }
 
-    fn register_browser_providers(&self, registry: &mut ToolRegistry) {
+    fn register_browser_providers(&self, _registry: &mut ToolRegistry) {
         #[cfg(feature = "browser_use")]
         if crate::config::is_browser_use_enabled() {
             if let Some(url) = crate::config::get_browser_use_url() {

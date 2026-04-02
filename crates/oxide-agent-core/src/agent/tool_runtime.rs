@@ -16,7 +16,9 @@ where
 }
 
 /// Returns the current task-local model route when tool execution is scoped.
+/// Reserved for future use by tool providers that need to access the active model route.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn current_tool_model_route() -> Option<ModelInfo> {
     ACTIVE_TOOL_MODEL_ROUTE.try_with(Clone::clone).ok()
 }
