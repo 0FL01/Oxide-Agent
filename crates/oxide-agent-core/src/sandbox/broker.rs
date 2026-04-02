@@ -947,9 +947,10 @@ async fn handle_request(
             image_name,
             container_path,
         } => handle_file_size_bytes(scope, image_name, container_path).await,
-        SandboxBrokerRequest::ListStackLogSources { .. } => {
-            not_implemented_response("stack log source discovery")
-        }
+        SandboxBrokerRequest::ListStackLogSources { request } => response_from_result(
+            DockerSandboxManager::list_stack_log_sources(request).await,
+            SandboxBrokerResponse::StackLogSources,
+        ),
         SandboxBrokerRequest::FetchStackLogs { .. } => {
             not_implemented_response("stack log fetching")
         }
@@ -1012,8 +1013,7 @@ mod tests {
         handle_request, ResolvedStackLogsSelector, SandboxBrokerClient, SandboxBrokerRequest,
         SandboxBrokerResponse, SandboxBrokerServer, StackLogCursor, StackLogEntry, StackLogSource,
         StackLogSuppression, StackLogsFetchRequest, StackLogsFetchResponse,
-        StackLogsListSourcesRequest, StackLogsListSourcesResponse, StackLogsSelector,
-        StackLogsWindow,
+        StackLogsListSourcesResponse, StackLogsSelector, StackLogsWindow,
     };
     use crate::config::get_sandbox_image;
     use crate::sandbox::scope::SandboxScope;
@@ -1134,28 +1134,6 @@ mod tests {
             bincode::deserialize(&bytes).expect("deserialize response");
 
         assert_eq!(decoded, response);
-    }
-
-    #[tokio::test]
-    async fn handle_request_returns_explicit_not_implemented_for_stack_log_sources() -> Result<()> {
-        let (mut stream, _peer) = UnixStream::pair().context("create unix stream pair")?;
-        let response = handle_request(
-            SandboxBrokerRequest::ListStackLogSources {
-                request: StackLogsListSourcesRequest::default(),
-            },
-            &mut stream,
-        )
-        .await?
-        .expect("non-exec broker request should always return a response");
-
-        assert_eq!(
-            response,
-            SandboxBrokerResponse::Error(
-                "stack log source discovery is not implemented yet".to_string()
-            )
-        );
-
-        Ok(())
     }
 
     #[tokio::test]

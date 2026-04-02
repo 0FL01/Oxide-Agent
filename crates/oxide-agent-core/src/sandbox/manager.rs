@@ -7,29 +7,40 @@
 use anyhow::{anyhow, Context, Result};
 use bollard::errors::Error as DockerError;
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::models::{
+    ContainerCreateBody, ContainerSummary, ContainerSummaryStateEnum, HostConfig,
+};
 use bollard::query_parameters::{
     CreateContainerOptions, DownloadFromContainerOptions, InspectContainerOptions,
     RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
 };
 use bollard::Docker;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{Either, Full};
 use serde::{Deserialize, Serialize};
 use shell_escape::escape;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, info, instrument, warn};
 
 use crate::config::{
-    get_sandbox_image, sandbox_uses_broker, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA,
-    SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
+    get_sandbox_image, get_stack_logs_project, sandbox_uses_broker, SANDBOX_CPU_PERIOD,
+    SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
 };
-use crate::sandbox::broker::SandboxBrokerClient;
+use crate::sandbox::broker::{
+    ResolvedStackLogsSelector, SandboxBrokerClient, StackLogSource, StackLogsListSourcesRequest,
+    StackLogsListSourcesResponse, StackLogsSelector,
+};
 use crate::sandbox::SandboxScope;
+
+const DOCKER_COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
+const DOCKER_COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
+const STACK_LOGS_PROJECT_ENV: &str = "STACK_LOGS_PROJECT";
+const UNKNOWN_STACK_LOG_STATE: &str = "unknown";
 
 /// Result of executing a command in the sandbox
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -458,6 +469,15 @@ const RECREATE_REMOVE_INITIAL_BACKOFF_MS: u64 = 50;
 const RECREATE_REMOVE_MAX_BACKOFF_MS: u64 = 800;
 
 impl DockerSandboxManager {
+    fn normalize_non_empty(value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
+    fn normalize_optional_string(value: Option<&str>) -> Option<String> {
+        value.and_then(Self::normalize_non_empty)
+    }
+
     fn parse_label_i64(labels: &HashMap<String, String>, key: &str) -> Option<i64> {
         labels.get(key).and_then(|value| value.parse::<i64>().ok())
     }
@@ -510,6 +530,167 @@ impl DockerSandboxManager {
                 format!("agent.user_id={user_id}"),
             ],
         )])
+    }
+
+    fn normalize_requested_stack_log_services(services: &[String]) -> BTreeSet<String> {
+        services
+            .iter()
+            .filter_map(|service| Self::normalize_non_empty(service))
+            .collect()
+    }
+
+    fn resolve_stack_logs_selector(
+        request_selector: &StackLogsSelector,
+        env_compose_project: Option<String>,
+        runtime_compose_project: Option<String>,
+    ) -> Result<ResolvedStackLogsSelector> {
+        if let Some(compose_project) =
+            Self::normalize_optional_string(request_selector.compose_project.as_deref())
+        {
+            return Ok(ResolvedStackLogsSelector { compose_project });
+        }
+
+        if let Some(compose_project) = env_compose_project
+            .as_deref()
+            .and_then(Self::normalize_non_empty)
+        {
+            return Ok(ResolvedStackLogsSelector { compose_project });
+        }
+
+        if let Some(compose_project) = runtime_compose_project
+            .as_deref()
+            .and_then(Self::normalize_non_empty)
+        {
+            return Ok(ResolvedStackLogsSelector { compose_project });
+        }
+
+        Err(anyhow!(
+            "Unable to resolve compose project for stack log discovery; set {STACK_LOGS_PROJECT_ENV} or run sandboxd inside a Docker Compose deployment"
+        ))
+    }
+
+    async fn detect_runtime_compose_project(docker: &Docker) -> Result<String> {
+        let hostname = Self::normalize_optional_string(std::env::var("HOSTNAME").ok().as_deref())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Unable to resolve compose project for stack log discovery automatically: HOSTNAME is unavailable; set {STACK_LOGS_PROJECT_ENV}"
+                )
+            })?;
+
+        let inspect = docker
+            .inspect_container(&hostname, None::<InspectContainerOptions>)
+            .await
+            .context("Failed to inspect current sandboxd container for stack log discovery")?;
+
+        inspect
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .and_then(|labels| {
+                Self::normalize_optional_string(
+                    labels.get(DOCKER_COMPOSE_PROJECT_LABEL).map(String::as_str),
+                )
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "Unable to resolve compose project for stack log discovery automatically: current sandboxd container is missing label '{DOCKER_COMPOSE_PROJECT_LABEL}'; set {STACK_LOGS_PROJECT_ENV}"
+                )
+            })
+    }
+
+    fn container_summary_is_running(summary: &ContainerSummary) -> bool {
+        matches!(summary.state, Some(ContainerSummaryStateEnum::RUNNING))
+            || summary
+                .status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Up"))
+    }
+
+    fn container_summary_state(summary: &ContainerSummary) -> String {
+        summary
+            .state
+            .map(|state| state.to_string())
+            .filter(|state| !state.is_empty())
+            .or_else(|| {
+                summary
+                    .status
+                    .as_deref()
+                    .and_then(Self::normalize_non_empty)
+            })
+            .unwrap_or_else(|| UNKNOWN_STACK_LOG_STATE.to_string())
+    }
+
+    fn parse_stack_log_started_at(started_at: Option<&str>) -> Option<DateTime<Utc>> {
+        started_at
+            .and_then(Self::normalize_non_empty)
+            .and_then(|started_at| DateTime::parse_from_rfc3339(&started_at).ok())
+            .map(|started_at| started_at.with_timezone(&Utc))
+    }
+
+    fn stack_log_source_from_summary(
+        summary: &ContainerSummary,
+        requested_services: &BTreeSet<String>,
+        include_stopped: bool,
+    ) -> Option<StackLogSource> {
+        let labels = summary.labels.as_ref()?;
+        let service = Self::normalize_optional_string(
+            labels.get(DOCKER_COMPOSE_SERVICE_LABEL).map(String::as_str),
+        )?;
+
+        if !requested_services.is_empty() && !requested_services.contains(&service) {
+            return None;
+        }
+
+        if !include_stopped && !Self::container_summary_is_running(summary) {
+            return None;
+        }
+
+        let container_id = summary.id.clone()?;
+        Some(StackLogSource {
+            service,
+            container_name: Self::normalize_container_name(summary.names.as_ref(), &container_id),
+            container_id,
+            state: Self::container_summary_state(summary),
+            started_at: None,
+        })
+    }
+
+    async fn enrich_stack_log_source_from_inspect(docker: &Docker, source: &mut StackLogSource) {
+        match docker
+            .inspect_container(&source.container_id, None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(inspect) => {
+                if let Some(container_name) = inspect
+                    .name
+                    .as_deref()
+                    .map(|name| name.trim_start_matches('/'))
+                    .and_then(Self::normalize_non_empty)
+                {
+                    source.container_name = container_name;
+                }
+
+                if let Some(state) = inspect
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.status.map(|status| status.to_string()))
+                    .filter(|state| !state.is_empty())
+                {
+                    source.state = state;
+                }
+
+                source.started_at = inspect.state.as_ref().and_then(|state| {
+                    Self::parse_stack_log_started_at(state.started_at.as_deref())
+                });
+            }
+            Err(error) => {
+                warn!(
+                    container_id = %source.container_id,
+                    error = %error,
+                    "Failed to inspect compose container during stack log source discovery; returning summary metadata only"
+                );
+            }
+        }
     }
 
     async fn connect_and_ping() -> Result<Docker> {
@@ -678,6 +859,68 @@ impl DockerSandboxManager {
             .iter()
             .filter_map(Self::record_from_container_summary)
             .find(|record| record.container_name == container_name))
+    }
+
+    /// List compose-stack containers that can be used as stack log sources.
+    pub(crate) async fn list_stack_log_sources(
+        request: StackLogsListSourcesRequest,
+    ) -> Result<StackLogsListSourcesResponse> {
+        let docker = Self::connect_and_ping().await?;
+        let env_compose_project = get_stack_logs_project();
+        let runtime_compose_project =
+            if request.selector.compose_project.is_some() || env_compose_project.is_some() {
+                None
+            } else {
+                Some(Self::detect_runtime_compose_project(&docker).await?)
+            };
+        let resolved_selector = Self::resolve_stack_logs_selector(
+            &request.selector,
+            env_compose_project,
+            runtime_compose_project,
+        )?;
+
+        let filters = HashMap::from([(
+            "label".to_string(),
+            vec![format!(
+                "{DOCKER_COMPOSE_PROJECT_LABEL}={}",
+                resolved_selector.compose_project
+            )],
+        )]);
+        let containers = docker
+            .list_containers(Some(bollard::query_parameters::ListContainersOptions {
+                all: true,
+                filters: Some(filters),
+                ..Default::default()
+            }))
+            .await
+            .context("Failed to list compose stack containers for stack log discovery")?;
+
+        let requested_services = Self::normalize_requested_stack_log_services(&request.services);
+        let mut sources = Vec::new();
+        for summary in &containers {
+            let Some(mut source) = Self::stack_log_source_from_summary(
+                summary,
+                &requested_services,
+                request.include_stopped,
+            ) else {
+                continue;
+            };
+
+            Self::enrich_stack_log_source_from_inspect(&docker, &mut source).await;
+            sources.push(source);
+        }
+
+        sources.sort_by(|left, right| {
+            left.service
+                .cmp(&right.service)
+                .then(left.container_name.cmp(&right.container_name))
+                .then(left.container_id.cmp(&right.container_id))
+        });
+
+        Ok(StackLogsListSourcesResponse {
+            stack_selector: resolved_selector,
+            containers: sources,
+        })
     }
 
     /// Ensure a sandbox exists for the provided scope and return its Docker metadata.
@@ -1442,6 +1685,8 @@ impl Drop for DockerSandboxManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::broker::StackLogsSelector;
+    use chrono::{TimeZone, Utc};
 
     // Integration test - requires Docker
     #[tokio::test]
@@ -1550,5 +1795,125 @@ mod tests {
 
         sandbox.destroy().await?;
         Ok(())
+    }
+
+    #[test]
+    fn resolve_stack_logs_selector_prefers_request_over_env_and_runtime() {
+        let resolved = DockerSandboxManager::resolve_stack_logs_selector(
+            &StackLogsSelector {
+                compose_project: Some("request-project".to_string()),
+            },
+            Some("env-project".to_string()),
+            Some("runtime-project".to_string()),
+        )
+        .expect("resolve selector");
+
+        assert_eq!(resolved.compose_project, "request-project");
+    }
+
+    #[test]
+    fn resolve_stack_logs_selector_uses_env_override_before_runtime() {
+        let resolved = DockerSandboxManager::resolve_stack_logs_selector(
+            &StackLogsSelector::default(),
+            Some("env-project".to_string()),
+            Some("runtime-project".to_string()),
+        )
+        .expect("resolve selector");
+
+        assert_eq!(resolved.compose_project, "env-project");
+    }
+
+    #[test]
+    fn resolve_stack_logs_selector_errors_when_project_is_unavailable() {
+        let error = DockerSandboxManager::resolve_stack_logs_selector(
+            &StackLogsSelector::default(),
+            None,
+            None,
+        )
+        .expect_err("selector should fail without compose project");
+
+        assert!(error
+            .to_string()
+            .contains("Unable to resolve compose project for stack log discovery"));
+    }
+
+    #[test]
+    fn stack_log_source_from_summary_filters_by_service_and_running_state() {
+        let summary = ContainerSummary {
+            id: Some("abc123def456".to_string()),
+            names: Some(vec!["/oxide_agent".to_string()]),
+            labels: Some(HashMap::from([
+                (
+                    DOCKER_COMPOSE_PROJECT_LABEL.to_string(),
+                    "oxide-agent".to_string(),
+                ),
+                (
+                    DOCKER_COMPOSE_SERVICE_LABEL.to_string(),
+                    "oxide_agent".to_string(),
+                ),
+            ])),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            status: Some("Up 2 minutes".to_string()),
+            ..Default::default()
+        };
+
+        let filtered = DockerSandboxManager::stack_log_source_from_summary(
+            &summary,
+            &BTreeSet::from(["browser_use".to_string()]),
+            false,
+        );
+        assert!(
+            filtered.is_none(),
+            "non-matching services should be skipped"
+        );
+
+        let source = DockerSandboxManager::stack_log_source_from_summary(
+            &summary,
+            &BTreeSet::from(["oxide_agent".to_string()]),
+            false,
+        )
+        .expect("matching running service should be included");
+
+        assert_eq!(source.service, "oxide_agent");
+        assert_eq!(source.container_name, "oxide_agent");
+        assert_eq!(source.container_id, "abc123def456");
+        assert_eq!(source.state, "running");
+        assert_eq!(source.started_at, None);
+    }
+
+    #[test]
+    fn stack_log_source_from_summary_excludes_stopped_by_default_and_parses_started_at() {
+        let stopped = ContainerSummary {
+            id: Some("abc123def456".to_string()),
+            names: Some(vec!["/oxide_agent".to_string()]),
+            labels: Some(HashMap::from([(
+                DOCKER_COMPOSE_SERVICE_LABEL.to_string(),
+                "oxide_agent".to_string(),
+            )])),
+            state: Some(ContainerSummaryStateEnum::EXITED),
+            status: Some("Exited (0) 5 seconds ago".to_string()),
+            ..Default::default()
+        };
+
+        assert!(DockerSandboxManager::stack_log_source_from_summary(
+            &stopped,
+            &BTreeSet::new(),
+            false,
+        )
+        .is_none());
+
+        let included =
+            DockerSandboxManager::stack_log_source_from_summary(&stopped, &BTreeSet::new(), true)
+                .expect("include_stopped should keep exited containers");
+        assert_eq!(included.state, "exited");
+
+        let started_at = DockerSandboxManager::parse_stack_log_started_at(Some(
+            "2026-04-02T10:11:12.000000000Z",
+        ))
+        .expect("parse started_at");
+        assert_eq!(
+            started_at,
+            Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap()
+        );
     }
 }
