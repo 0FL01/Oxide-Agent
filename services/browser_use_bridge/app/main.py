@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ ChatAnthropic = getattr(browser_use_module, "ChatAnthropic", None)
 ChatBrowserUse = getattr(browser_use_module, "ChatBrowserUse", None)
 ChatGoogle = getattr(browser_use_module, "ChatGoogle", None)
 ChatOpenAI = getattr(browser_use_module, "ChatOpenAI", None)
+
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> str:
@@ -81,6 +84,16 @@ class Settings:
     profile_idle_ttl_secs: int = field(
         default_factory=lambda: parse_int_env(
             "BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS", 604800
+        )
+    )
+    browser_ready_retries: int = field(
+        default_factory=lambda: parse_int_env(
+            "BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES", 2
+        )
+    )
+    browser_ready_retry_delay_ms: int = field(
+        default_factory=lambda: parse_int_env(
+            "BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS", 750
         )
     )
     llm_provider: str = field(
@@ -358,6 +371,26 @@ def build_agent_task(request: RunTaskRequest) -> str:
     return "\n\n".join(task_parts)
 
 
+def is_transient_browser_ready_error(error: Exception) -> bool:
+    message = str(error).strip().lower()
+    if not message:
+        return False
+
+    transient_patterns = [
+        "cdp client not initialized",
+        "browser is not initialized",
+        "browser not initialized",
+        "page is not initialized",
+        "page not initialized",
+        "context is not initialized",
+        "context not initialized",
+        "target page, context or browser has been closed",
+        "target closed",
+        "browser has been closed",
+    ]
+    return any(pattern in message for pattern in transient_patterns)
+
+
 def maybe_truncate(content: str, max_chars: int | None) -> tuple[str, bool, int]:
     total_chars = len(content)
     if max_chars is None or total_chars <= max_chars:
@@ -625,6 +658,8 @@ class SessionManager:
         max_concurrent_sessions: int,
         max_profiles_per_scope: int = 3,
         profile_idle_ttl_secs: int = 604800,
+        browser_ready_retries: int = 2,
+        browser_ready_retry_delay_ms: int = 750,
     ) -> None:
         self._data_dir = data_dir
         self._sessions_dir = data_dir / "sessions"
@@ -636,6 +671,8 @@ class SessionManager:
         self._semaphore = asyncio.Semaphore(max(1, max_concurrent_sessions))
         self._max_profiles_per_scope = max(1, max_profiles_per_scope)
         self._profile_idle_ttl_secs = max(0, profile_idle_ttl_secs)
+        self._browser_ready_retries = max(0, browser_ready_retries)
+        self._browser_ready_retry_delay_ms = max(0, browser_ready_retry_delay_ms)
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
         self._profiles_dir.mkdir(parents=True, exist_ok=True)
@@ -768,8 +805,6 @@ class SessionManager:
                     profile, profile_reused = await self._resolve_profile_for_run(
                         session, request
                     )
-                    if session.browser is None:
-                        session.browser = self._create_browser(profile)
                     if profile is not None:
                         await self._attach_profile(session, profile)
                     else:
@@ -780,13 +815,13 @@ class SessionManager:
                     session.llm_provider = llm_config.provider
                     session.llm_transport = llm_config.transport
                     session.vision_mode = vision_mode_label(llm_config)
-                    agent = Agent(
-                        task=build_agent_task(request),
-                        llm=create_llm_from_config(llm_config),
-                        browser=session.browser,
-                        use_vision=use_vision_mode(llm_config),
+                    result = await self._run_agent_with_browser_ready_retry(
+                        session=session,
+                        request=request,
+                        profile=profile,
+                        llm_config=llm_config,
+                        timeout_secs=timeout_secs,
                     )
-                    result = await asyncio.wait_for(agent.run(), timeout=timeout_secs)
                     session.summary = stringify_result(result)
                     session.artifacts = extract_artifacts(result)
                     session.current_url = await infer_url(session.browser, result)
@@ -894,6 +929,51 @@ class SessionManager:
             await self._detach_profile(session)
             session.updated_at = utc_now()
             await self._persist(session)
+
+    async def _run_agent_with_browser_ready_retry(
+        self,
+        session: SessionRecord,
+        request: RunTaskRequest,
+        profile: ProfileRecord | None,
+        llm_config: ResolvedBrowserLlmConfig,
+        timeout_secs: int,
+    ) -> Any:
+        max_attempts = self._browser_ready_retries + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if session.browser is None:
+                    session.browser = self._create_browser(profile)
+                agent = Agent(
+                    task=build_agent_task(request),
+                    llm=create_llm_from_config(llm_config),
+                    browser=session.browser,
+                    use_vision=use_vision_mode(llm_config),
+                )
+                return await asyncio.wait_for(agent.run(), timeout=timeout_secs)
+            except Exception as error:
+                if attempt >= max_attempts or not is_transient_browser_ready_error(
+                    error
+                ):
+                    raise
+
+                logger.warning(
+                    "Retrying Browser Use after transient readiness failure",
+                    extra={
+                        "session_id": session.session_id,
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "error": str(error),
+                    },
+                )
+                await self._reset_browser_for_retry(session)
+                if self._browser_ready_retry_delay_ms > 0:
+                    await asyncio.sleep(self._browser_ready_retry_delay_ms / 1000)
+
+        raise RuntimeError("browser readiness retry loop exhausted")
+
+    async def _reset_browser_for_retry(self, session: SessionRecord) -> None:
+        await self._close_browser(session.browser)
+        session.browser = None
 
     async def _housekeep_profiles(self) -> None:
         await self._reconcile_orphaned_profiles()
@@ -1403,6 +1483,8 @@ manager = SessionManager(
     max_concurrent_sessions=settings.max_concurrent_sessions,
     max_profiles_per_scope=settings.max_profiles_per_scope,
     profile_idle_ttl_secs=settings.profile_idle_ttl_secs,
+    browser_ready_retries=settings.browser_ready_retries,
+    browser_ready_retry_delay_ms=settings.browser_ready_retry_delay_ms,
 )
 app = FastAPI(title="browser_use_bridge", version="0.1.0")
 
@@ -1448,6 +1530,9 @@ async def health() -> JSONResponse:
         "profile_scope_mode": "runtime_injected_preferred",
         "max_profiles_per_scope": settings.max_profiles_per_scope,
         "profile_idle_ttl_secs": settings.profile_idle_ttl_secs,
+        "browser_ready_retries": settings.browser_ready_retries,
+        "browser_ready_retry_delay_ms": settings.browser_ready_retry_delay_ms,
+        "browser_ready_retry_supported": True,
         "orphan_profile_recovery_supported": True,
     }
     status_code = 200 if BROWSER_USE_IMPORT_ERROR is None else 503

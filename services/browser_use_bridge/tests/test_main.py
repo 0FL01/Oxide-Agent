@@ -73,6 +73,7 @@ class FakeChatOpenAI(_BaseChat):
 
 class FakeAgent:
     instances = []
+    run_outcomes = []
 
     def __init__(self, task, llm, browser, use_vision):
         self.task = task
@@ -82,6 +83,11 @@ class FakeAgent:
         type(self).instances.append(self)
 
     async def run(self):
+        if type(self).run_outcomes:
+            outcome = type(self).run_outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
         return "Task completed from fake agent"
 
 
@@ -100,6 +106,7 @@ def import_bridge_module(extra_env: dict[str, str]):
     module_name = "services.browser_use_bridge.app.main"
     sys.modules.pop(module_name, None)
     FakeAgent.instances = []
+    FakeAgent.run_outcomes = []
     FakeBrowser.instances = []
 
     browser_use_stub = make_browser_use_module()
@@ -133,6 +140,9 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(payload["max_profiles_per_scope"], 3)
             self.assertEqual(payload["profile_idle_ttl_secs"], 604800)
+            self.assertEqual(payload["browser_ready_retries"], 2)
+            self.assertEqual(payload["browser_ready_retry_delay_ms"], 750)
+            self.assertTrue(payload["browser_ready_retry_supported"])
             self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
             self.assertIn("browser_use", payload["supported_legacy_env_providers"])
@@ -360,6 +370,64 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 FakeBrowser.instances[-1].kwargs.get("user_data_dir"),
                 str(Path(tmpdir) / "profiles" / first.profile_id / "browser"),
             )
+
+    async def test_run_task_retries_transient_browser_readiness_error(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                browser_ready_retries=1,
+                browser_ready_retry_delay_ms=0,
+            )
+            FakeAgent.run_outcomes = [
+                RuntimeError("CDP client not initialized"),
+                "Recovered after retry",
+            ]
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.summary, "Recovered after retry")
+            self.assertIsNone(response.error)
+            self.assertEqual(len(FakeAgent.instances), 2)
+            self.assertEqual(len(FakeBrowser.instances), 2)
+
+    async def test_run_task_does_not_retry_non_readiness_error(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                browser_ready_retries=2,
+                browser_ready_retry_delay_ms=0,
+            )
+            FakeAgent.run_outcomes = [RuntimeError("selector not found")]
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "failed")
+            self.assertIn("selector not found", response.error)
+            self.assertEqual(len(FakeAgent.instances), 1)
+            self.assertEqual(len(FakeBrowser.instances), 1)
 
     async def test_close_session_detaches_profile_without_deleting_it(self):
         with TemporaryDirectory() as tmpdir:
