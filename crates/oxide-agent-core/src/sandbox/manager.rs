@@ -33,9 +33,9 @@ use crate::config::{
     SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
 };
 use crate::sandbox::broker::{
-    ResolvedStackLogsSelector, SandboxBrokerClient, StackLogEntry, StackLogSource,
-    StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
-    StackLogsListSourcesResponse, StackLogsSelector, StackLogsWindow,
+    ResolvedStackLogsSelector, SandboxBrokerClient, StackLogCursor, StackLogEntry, StackLogSource,
+    StackLogSuppression, StackLogsFetchRequest, StackLogsFetchResponse,
+    StackLogsListSourcesRequest, StackLogsListSourcesResponse, StackLogsSelector, StackLogsWindow,
 };
 use crate::sandbox::SandboxScope;
 
@@ -552,6 +552,11 @@ impl DockerSandboxManager {
 
     fn stack_logs_max_entries(max_entries: u32, warnings: &mut Vec<String>) -> usize {
         let requested = usize::try_from(max_entries).unwrap_or(usize::MAX);
+        if requested == 0 {
+            warnings.push("Requested max_entries=0 is invalid; using 1".to_string());
+            return 1;
+        }
+
         let effective = requested.min(STACK_LOGS_HARD_MAX_ENTRIES);
         if requested > STACK_LOGS_HARD_MAX_ENTRIES {
             warnings.push(format!(
@@ -768,6 +773,147 @@ impl DockerSandboxManager {
             entry.ordinal = *next_ordinal;
             *next_ordinal += 1;
         }
+    }
+
+    fn record_stack_log_suppression(
+        suppressed: &mut Vec<StackLogSuppression>,
+        reason: &str,
+        count: u64,
+    ) {
+        if count == 0 {
+            return;
+        }
+
+        if let Some(existing) = suppressed.iter_mut().find(|item| item.reason == reason) {
+            existing.count += count;
+            return;
+        }
+
+        suppressed.push(StackLogSuppression {
+            reason: reason.to_string(),
+            count,
+        });
+    }
+
+    fn is_stack_log_health_probe_chatter(message: &str) -> bool {
+        let normalized = message.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return false;
+        }
+
+        let mentions_endpoint = [
+            "/health",
+            "/healthz",
+            "/ready",
+            "/readyz",
+            "/readiness",
+            "/live",
+            "/livez",
+        ]
+        .iter()
+        .any(|endpoint| normalized.contains(endpoint));
+        if !mentions_endpoint {
+            return false;
+        }
+
+        ["get ", "head ", "healthcheck", "kube-probe", "probe"]
+            .iter()
+            .any(|needle| normalized.contains(needle))
+    }
+
+    fn is_stack_log_exact_duplicate_burst(
+        previous: &StackLogEntry,
+        current: &StackLogEntry,
+    ) -> bool {
+        previous.service == current.service
+            && previous.container_name == current.container_name
+            && previous.stream == current.stream
+            && previous.message == current.message
+            && current.ts >= previous.ts
+            && (current.ts - previous.ts).num_seconds() <= 1
+    }
+
+    fn apply_stack_log_noise_filter(
+        entries: Vec<StackLogEntry>,
+        include_noise: bool,
+    ) -> (Vec<StackLogEntry>, Vec<StackLogSuppression>) {
+        if include_noise {
+            return (entries, Vec::new());
+        }
+
+        let mut filtered = Vec::with_capacity(entries.len());
+        let mut suppressed = Vec::new();
+        let mut last_kept: Option<&StackLogEntry> = None;
+
+        for entry in entries {
+            if entry.message.trim().is_empty() {
+                Self::record_stack_log_suppression(&mut suppressed, "empty_line", 1);
+                continue;
+            }
+
+            if Self::is_stack_log_health_probe_chatter(&entry.message) {
+                Self::record_stack_log_suppression(&mut suppressed, "health_probe_chatter", 1);
+                continue;
+            }
+
+            if let Some(previous) = last_kept {
+                if Self::is_stack_log_exact_duplicate_burst(previous, &entry) {
+                    Self::record_stack_log_suppression(&mut suppressed, "exact_duplicate_burst", 1);
+                    continue;
+                }
+            }
+
+            filtered.push(entry);
+            last_kept = filtered.last();
+        }
+
+        (filtered, suppressed)
+    }
+
+    fn stack_log_cursor_from_entry(entry: &StackLogEntry) -> StackLogCursor {
+        StackLogCursor {
+            ts: entry.ts,
+            service: entry.service.clone(),
+            stream: entry.stream.clone(),
+            ordinal: entry.ordinal,
+        }
+    }
+
+    fn stack_log_entry_is_after_cursor(entry: &StackLogEntry, cursor: &StackLogCursor) -> bool {
+        entry.ts > cursor.ts
+            || (entry.ts == cursor.ts
+                && (entry.service > cursor.service
+                    || (entry.service == cursor.service
+                        && (entry.stream > cursor.stream
+                            || (entry.stream == cursor.stream && entry.ordinal > cursor.ordinal)))))
+    }
+
+    fn apply_stack_log_cursor(
+        entries: Vec<StackLogEntry>,
+        cursor: Option<&StackLogCursor>,
+    ) -> Vec<StackLogEntry> {
+        let Some(cursor) = cursor else {
+            return entries;
+        };
+
+        entries
+            .into_iter()
+            .filter(|entry| Self::stack_log_entry_is_after_cursor(entry, cursor))
+            .collect()
+    }
+
+    fn paginate_stack_log_entries(
+        mut entries: Vec<StackLogEntry>,
+        max_entries: usize,
+    ) -> (Vec<StackLogEntry>, bool, Option<StackLogCursor>) {
+        let truncated = entries.len() > max_entries;
+        if !truncated {
+            return (entries, false, None);
+        }
+
+        entries.truncate(max_entries);
+        let next_cursor = entries.last().map(Self::stack_log_cursor_from_entry);
+        (entries, true, next_cursor)
     }
 
     fn stack_log_source_from_summary(
@@ -1153,18 +1299,6 @@ impl DockerSandboxManager {
         let docker = Self::connect_and_ping().await?;
         let mut warnings = Vec::new();
         let max_entries = Self::stack_logs_max_entries(request.max_entries, &mut warnings);
-        if request.cursor.is_some() {
-            warnings.push(
-                "Stack log cursor pagination is not implemented yet; cursor was ignored"
-                    .to_string(),
-            );
-        }
-        if !request.include_noise {
-            warnings.push(
-                "Stack log noise filtering is not implemented yet; returning raw log lines"
-                    .to_string(),
-            );
-        }
 
         let (_resolved_selector, sources) =
             Self::discover_stack_log_sources(&docker, &request.selector, &request.services, true)
@@ -1209,16 +1343,12 @@ impl DockerSandboxManager {
                 .then(left.container_name.cmp(&right.container_name))
                 .then(left.ordinal.cmp(&right.ordinal))
         });
+        let (mut entries, suppressed) =
+            Self::apply_stack_log_noise_filter(entries, request.include_noise);
         Self::assign_stack_log_ordinals(&mut entries);
-
-        let truncated = entries.len() > max_entries;
-        if truncated {
-            entries.truncate(max_entries);
-            warnings.push(
-                "Stack log result was truncated to max_entries before pagination support is implemented"
-                    .to_string(),
-            );
-        }
+        let entries = Self::apply_stack_log_cursor(entries, request.cursor.as_ref());
+        let (entries, truncated, next_cursor) =
+            Self::paginate_stack_log_entries(entries, max_entries);
 
         Ok(StackLogsFetchResponse {
             window: StackLogsWindow {
@@ -1226,9 +1356,9 @@ impl DockerSandboxManager {
                 until: request.until,
             },
             entries,
-            suppressed: Vec::new(),
+            suppressed,
             truncated,
-            next_cursor: None,
+            next_cursor,
             warnings,
         })
     }
@@ -1995,8 +2125,28 @@ impl Drop for DockerSandboxManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::broker::{StackLogEntry, StackLogsSelector};
+    use crate::sandbox::broker::{
+        StackLogCursor, StackLogEntry, StackLogSuppression, StackLogsSelector,
+    };
     use chrono::{TimeZone, Utc};
+
+    fn test_stack_log_entry(
+        ts: DateTime<Utc>,
+        service: &str,
+        container_name: &str,
+        stream: &str,
+        ordinal: u64,
+        message: &str,
+    ) -> StackLogEntry {
+        StackLogEntry {
+            ts,
+            service: service.to_string(),
+            container_name: container_name.to_string(),
+            stream: stream.to_string(),
+            ordinal,
+            message: message.to_string(),
+        }
+    }
 
     // Integration test - requires Docker
     #[tokio::test]
@@ -2239,6 +2389,19 @@ mod tests {
     }
 
     #[test]
+    fn stack_logs_max_entries_rejects_zero() {
+        let mut warnings = Vec::new();
+
+        let effective = DockerSandboxManager::stack_logs_max_entries(0, &mut warnings);
+
+        assert_eq!(effective, 1);
+        assert_eq!(
+            warnings,
+            vec!["Requested max_entries=0 is invalid; using 1"]
+        );
+    }
+
+    #[test]
     fn validate_stack_logs_window_rejects_inverted_range() {
         let since = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 13).unwrap();
         let until = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
@@ -2337,5 +2500,98 @@ mod tests {
         assert_eq!(entries[0].ordinal, 0);
         assert_eq!(entries[1].ordinal, 1);
         assert_eq!(entries[2].ordinal, 0);
+    }
+
+    #[test]
+    fn apply_stack_log_noise_filter_suppresses_expected_noise_classes() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let entries = vec![
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "useful"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, ""),
+            test_stack_log_entry(
+                ts,
+                "oxide_agent",
+                "oxide_agent",
+                "stdout",
+                2,
+                "GET /health HTTP/1.1 200 OK",
+            ),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 3, "duplicate"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 4, "duplicate"),
+        ];
+
+        let (filtered, suppressed) =
+            DockerSandboxManager::apply_stack_log_noise_filter(entries, false);
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].message, "useful");
+        assert_eq!(filtered[1].message, "duplicate");
+        assert_eq!(
+            suppressed,
+            vec![
+                StackLogSuppression {
+                    reason: "empty_line".to_string(),
+                    count: 1,
+                },
+                StackLogSuppression {
+                    reason: "health_probe_chatter".to_string(),
+                    count: 1,
+                },
+                StackLogSuppression {
+                    reason: "exact_duplicate_burst".to_string(),
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_stack_log_cursor_returns_entries_after_cursor() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let entries = vec![
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stderr", 0, "stderr"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "first"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, "second"),
+        ];
+
+        let filtered = DockerSandboxManager::apply_stack_log_cursor(
+            entries,
+            Some(&StackLogCursor {
+                ts,
+                service: "oxide_agent".to_string(),
+                stream: "stdout".to_string(),
+                ordinal: 0,
+            }),
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].message, "second");
+    }
+
+    #[test]
+    fn paginate_stack_log_entries_sets_next_cursor_from_last_returned_entry() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let entries = vec![
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "first"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, "second"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 2, "third"),
+        ];
+
+        let (page, truncated, next_cursor) =
+            DockerSandboxManager::paginate_stack_log_entries(entries, 2);
+
+        assert!(truncated);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].message, "first");
+        assert_eq!(page[1].message, "second");
+        assert_eq!(
+            next_cursor,
+            Some(StackLogCursor {
+                ts,
+                service: "oxide_agent".to_string(),
+                stream: "stdout".to_string(),
+                ordinal: 1,
+            })
+        );
     }
 }
