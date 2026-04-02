@@ -211,6 +211,7 @@ def create_llm_from_config(config: ResolvedBrowserLlmConfig) -> Any:
             openai_kwargs["api_key"] = config.api_key
         if config.api_base:
             openai_kwargs["base_url"] = config.api_base
+        openai_kwargs.update(openai_compatible_schema_compat_kwargs(config))
         return ChatOpenAI(**openai_kwargs)
 
     raise RuntimeError(f"unsupported browser_llm transport '{config.transport}'")
@@ -221,6 +222,31 @@ def use_vision_mode(config: ResolvedBrowserLlmConfig) -> bool | Literal["auto"]:
     if config.supports_vision is False:
         return False
     return "auto"
+
+
+def openai_compatible_schema_compat_kwargs(
+    config: ResolvedBrowserLlmConfig,
+) -> dict[str, Any]:
+    """Apply compatibility knobs for providers that struggle with strict schema forcing."""
+    if not needs_openai_schema_compat_preset(config):
+        return {}
+
+    return {
+        "dont_force_structured_output": True,
+        "add_schema_to_system_prompt": True,
+        "remove_defaults_from_schema": True,
+        "remove_min_items_from_schema": True,
+    }
+
+
+def needs_openai_schema_compat_preset(config: ResolvedBrowserLlmConfig) -> bool:
+    """Detect OpenAI-compatible routes that need softer schema enforcement."""
+    if config.transport != "openai_compatible":
+        return False
+
+    provider = normalize_name(config.provider)
+    model = normalize_name(config.model)
+    return provider in {"zai", "zhipuai", "glm"} or model.startswith("glm-")
 
 
 def vision_mode_label(config: ResolvedBrowserLlmConfig) -> Literal["auto", "disabled"]:

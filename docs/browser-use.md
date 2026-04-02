@@ -40,6 +40,7 @@
 - Stage 4 browser readiness hardening добавляет узкий retry на ранние transient browser/runtime ошибки вроде `CDP client not initialized` с пересозданием browser между попытками
 - Stage 5 verification закрепляет behavior тестами на retry budget exhaustion и health/env observability для readiness retry knobs
 - P1 profile housekeeping fix сохраняет live `active` profiles во время orphan reconciliation, чтобы unrelated create/reuse/close operations не stale-или рабочие topic-scoped profiles
+- Next compatibility hardening для `zai/GLM-*` через `openai_compatible` включает softer structured-output preset в bridge (`dont_force_structured_output`, schema hints), чтобы снизить вероятность `AgentOutput` validation errors без смены API
 - Default compose route теперь фиксирует Browser Use на dedicated vision route `zai / GLM-4.6V` (если не задан override), чтобы screenshot/vision задачи не уходили на text-only inheritance route
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
@@ -256,6 +257,8 @@ Browser Use не включается через alias `search`. Для него
 Bridge теперь сам делает узкий retry только для ранних transient readiness ошибок вроде `CDP client not initialized`; если ошибка повторяется или выглядит как обычный task/browser failure, сессия по-прежнему завершится `failed` без бесконечных повторов.
 
 Если upstream `browser_use` успел reset-нуть runtime после `browser_use_run_task`, follow-up вызовы теперь завершаются terminal ошибкой `browser_session_not_alive` вместо generic `500`, и Oxide больше не ретраит такой случай как transient.
+
+Для `zai/GLM-*` через `openai_compatible` bridge теперь создает `ChatOpenAI` с relaxed schema preset, чтобы уменьшить structured-output/schema mismatch на agentic шагах. Это не гарантирует идеальное поведение planner-а, но убирает часть ложных `AgentOutput` validation errors без смены tool surface.
 
 ## Рекомендуемый v1 usage pattern
 

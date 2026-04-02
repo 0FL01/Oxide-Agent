@@ -229,6 +229,47 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 FakeAgent.instances[-1].llm.kwargs["api_key"], "zai-secret"
             )
+            self.assertTrue(
+                FakeAgent.instances[-1].llm.kwargs["dont_force_structured_output"]
+            )
+            self.assertTrue(
+                FakeAgent.instances[-1].llm.kwargs["add_schema_to_system_prompt"]
+            )
+            self.assertTrue(
+                FakeAgent.instances[-1].llm.kwargs["remove_defaults_from_schema"]
+            )
+            self.assertTrue(
+                FakeAgent.instances[-1].llm.kwargs["remove_min_items_from_schema"]
+            )
+
+    async def test_google_request_config_does_not_apply_openai_schema_compat_preset(
+        self,
+    ):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            request = module.RunTaskRequest(
+                task="Open the docs page and summarize it",
+                browser_llm_config={
+                    "provider": "google",
+                    "model": "gemini-2.5-flash",
+                    "supports_vision": True,
+                },
+            )
+
+            response = await manager.run_task(request, None)
+
+            self.assertEqual(response.status, "completed")
+            self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatGoogle)
+            self.assertNotIn(
+                "dont_force_structured_output", FakeAgent.instances[-1].llm.kwargs
+            )
 
     async def test_legacy_fallback_run_reports_observability_fields(self):
         with TemporaryDirectory() as tmpdir:
