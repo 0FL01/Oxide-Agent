@@ -164,6 +164,24 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["legacy_env_llm_provider"], "google")
             self.assertEqual(payload["legacy_env_llm_model"], "gemini-2.5-flash")
 
+    async def test_health_reports_browser_ready_retry_overrides(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "",
+                    "BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES": "5",
+                    "BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS": "1500",
+                }
+            )
+
+            response = await module.health()
+            payload = json.loads(response.body)
+
+            self.assertEqual(payload["browser_ready_retries"], 5)
+            self.assertEqual(payload["browser_ready_retry_delay_ms"], 1500)
+
     async def test_request_level_run_reports_observability_fields(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
@@ -428,6 +446,36 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("selector not found", response.error)
             self.assertEqual(len(FakeAgent.instances), 1)
             self.assertEqual(len(FakeBrowser.instances), 1)
+
+    async def test_run_task_fails_after_transient_retry_budget_exhausted(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                browser_ready_retries=1,
+                browser_ready_retry_delay_ms=0,
+            )
+            FakeAgent.run_outcomes = [
+                RuntimeError("CDP client not initialized"),
+                RuntimeError("CDP client not initialized"),
+            ]
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "failed")
+            self.assertIn("CDP client not initialized", response.error)
+            self.assertEqual(len(FakeAgent.instances), 2)
+            self.assertEqual(len(FakeBrowser.instances), 2)
 
     async def test_close_session_detaches_profile_without_deleting_it(self):
         with TemporaryDirectory() as tmpdir:
