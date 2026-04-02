@@ -38,6 +38,7 @@
 - Stage 2 vision classification расширяет policy для `zai / GLM-4.6V` и добавляет распознавание русскоязычных UI/vision задач до запуска sidecar session
 - Stage 3 run-task steering усиливает guidance: screenshot/content-oriented задачи теперь подталкиваются к схеме `browser_use_run_task` для navigation only, затем `browser_use_screenshot` / `browser_use_extract_content` для финального артефакта
 - Stage 4 browser readiness hardening добавляет узкий retry на ранние transient browser/runtime ошибки вроде `CDP client not initialized` с пересозданием browser между попытками
+- Stage 5 verification закрепляет behavior тестами на retry budget exhaustion и health/env observability для readiness retry knobs
 - post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
 - legacy env path остается fallback, когда route inheritance недоступен
 
@@ -191,6 +192,8 @@ Browser Use не включается через alias `search`. Для него
 10. При reuse убедиться, что вызов идет из того же topic/context: Stage 2 теперь шьет hidden `profile_scope` из runtime context и не даст reuse-ить profile из другого topic.
 11. После restart bridge не очищать metadata вручную: Stage 3 сам переведет orphaned `active` profile в recoverable state при следующем reuse.
 12. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, `profile_id`, `profile_scope`, `profile_status` и `profile_attached`, чтобы убедиться, что реально используется inherited route и при необходимости привязан reusable profile.
+13. Для Stage 4/5 readiness hardening убедиться, что `/health` возвращает ожидаемые `browser_ready_retries` и `browser_ready_retry_delay_ms` из текущего runtime env.
+14. При нестабильном старте browser runtime сначала проверить, что transient ошибки вроде `CDP client not initialized` не превышают retry budget; после исчерпания budget bridge должен завершать сессию в `failed`, а не зависать в повторных попытках.
 
 ## Типичные сбои
 
