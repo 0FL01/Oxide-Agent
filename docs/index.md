@@ -27,6 +27,7 @@
 - [**Gemini SDK Migration**](./gemini-rust-migration.md) - approved migration contract and vendored SDK patch plan
 
 ### Tooling Integrations
+- [**Stack Logs Stage 0**](./stack-logs-stage0.md) - approved contract for compose-stack log inspection via broker-backed tools
 - [**Browser Use Stage 0**](./browser-use-stage0.md) - approved integration contract for self-hosted Browser Use sidecar
 - [**Browser Use Stage A**](./browser-use-stage-a.md) - approved contract for route inheritance from Oxide Agent models including MiniMax and ZAI
 - [**Browser Use Post-v1 Decisions**](./browser-use-post-v1.md) - low-level surface deferral and priority decision for topic-scoped persistent profile reuse
