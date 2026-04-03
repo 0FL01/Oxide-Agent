@@ -65,6 +65,11 @@ struct HydratedScreenshotPaths {
     stable_path: String,
 }
 
+#[derive(Debug)]
+struct HydratedArtifactPath {
+    sandbox_path: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum RunTaskExecutionMode {
@@ -721,6 +726,33 @@ impl BrowserUseProvider {
         })
     }
 
+    async fn write_artifact_file(
+        &self,
+        session_id: &str,
+        file_name: &str,
+        content: &[u8],
+    ) -> Result<HydratedArtifactPath> {
+        self.ensure_sandbox().await?;
+        let mut sandbox = {
+            let guard = self.sandbox.lock().await;
+            guard
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
+        };
+
+        let sanitized_name = Path::new(file_name)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("Browser Use artifact is missing a valid file name"))?;
+        let sandbox_path = format!("/workspace/browser_use/{session_id}/{sanitized_name}");
+        ensure_parent_dir(&mut sandbox, &sandbox_path).await?;
+        sandbox.write_file(&sandbox_path, content).await?;
+        *self.sandbox.lock().await = Some(sandbox);
+        Ok(HydratedArtifactPath { sandbox_path })
+    }
+
     async fn hydrate_screenshot_payload(
         &self,
         payload: ResponsePayload,
@@ -803,6 +835,117 @@ impl BrowserUseProvider {
         Ok(ResponsePayload::Json(value))
     }
 
+    async fn hydrate_run_task_payload(
+        &self,
+        payload: ResponsePayload,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<ResponsePayload> {
+        if self.sandbox_scope.is_none() {
+            return Ok(payload);
+        }
+
+        let ResponsePayload::Json(mut value) = payload else {
+            return Ok(payload);
+        };
+
+        let Some(session_id) = value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+        else {
+            return Ok(ResponsePayload::Json(value));
+        };
+
+        let Some(artifacts) = value.get_mut("artifacts").and_then(Value::as_array_mut) else {
+            return Ok(ResponsePayload::Json(value));
+        };
+
+        for artifact_value in artifacts {
+            let Some(artifact) = artifact_value.as_object_mut() else {
+                continue;
+            };
+
+            let Some(download_path) = artifact
+                .get("download_path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+            else {
+                continue;
+            };
+
+            let file_name = artifact
+                .get("file_name")
+                .and_then(Value::as_str)
+                .or_else(|| artifact.get("artifact_id").and_then(Value::as_str))
+                .or_else(|| artifact.get("path").and_then(Value::as_str))
+                .or_else(|| {
+                    Path::new(download_path.as_str())
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                })
+                .map(ToString::to_string);
+            let Some(file_name) = file_name else {
+                continue;
+            };
+
+            let bridge_path = artifact
+                .get("path")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+
+            let bytes = match self
+                .request_bytes(Method::GET, download_path.as_str(), cancellation_token)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!(
+                        session_id = %session_id,
+                        artifact = %file_name,
+                        download_path = %download_path,
+                        error = %error,
+                        "Browser Use run_task artifact hydration failed"
+                    );
+                    continue;
+                }
+            };
+
+            let artifact_path = match self
+                .write_artifact_file(session_id.as_str(), file_name.as_str(), &bytes)
+                .await
+            {
+                Ok(path) => path,
+                Err(error) => {
+                    warn!(
+                        session_id = %session_id,
+                        artifact = %file_name,
+                        error = %error,
+                        "Browser Use run_task artifact sandbox write failed"
+                    );
+                    continue;
+                }
+            };
+
+            if let Some(path) = bridge_path {
+                artifact.insert("bridge_path".to_string(), Value::String(path));
+            }
+            artifact.insert(
+                "path".to_string(),
+                Value::String(artifact_path.sandbox_path.clone()),
+            );
+            artifact.insert(
+                "sandbox_path".to_string(),
+                Value::String(artifact_path.sandbox_path),
+            );
+        }
+
+        Ok(ResponsePayload::Json(value))
+    }
+
     async fn execute_run_task(
         &self,
         arguments: &str,
@@ -862,6 +1005,9 @@ impl BrowserUseProvider {
                 browser_llm_api_key.as_deref(),
                 cancellation_token,
             )
+            .await?;
+        let payload = self
+            .hydrate_run_task_payload(payload, cancellation_token)
             .await?;
         let follow_up_guidance = run_task_follow_up_guidance(steering, &payload);
         let mut output = format_tool_output(payload);

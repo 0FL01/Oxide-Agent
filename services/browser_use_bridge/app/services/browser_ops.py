@@ -33,8 +33,19 @@ PROFILE_PATH_CANDIDATES = (
     "browser_user_data_dir",
 )
 
+DOWNLOADS_PATH_CANDIDATES = (
+    "downloads_path",
+    "downloads_dir",
+    "save_downloads_path",
+)
 
-def create_browser(profile: ProfileRecord | None, *, keep_alive: bool = False) -> Any:
+
+def create_browser(
+    profile: ProfileRecord | None,
+    *,
+    keep_alive: bool = False,
+    downloads_path: str | None = None,
+) -> Any:
     """Create browser instance with optional profile persistence."""
     if Browser is None:
         raise RuntimeError("Browser is unavailable in installed browser_use package")
@@ -55,19 +66,24 @@ def create_browser(profile: ProfileRecord | None, *, keep_alive: bool = False) -
         if keep_alive and (supports_var_kwargs or "keep_alive" in signature.parameters):
             kwargs["keep_alive"] = True
 
-        if profile_path is None:
+        if profile_path is None and downloads_path is None:
             return Browser(**kwargs)
 
-        for candidate in PROFILE_PATH_CANDIDATES:
-            if supports_var_kwargs or candidate in signature.parameters:
-                kwargs[candidate] = profile_path
-                return Browser(**kwargs)
+        if downloads_path is not None:
+            for candidate in DOWNLOADS_PATH_CANDIDATES:
+                if supports_var_kwargs or candidate in signature.parameters:
+                    kwargs[candidate] = downloads_path
+                    break
 
-        raise RuntimeError(
-            "installed browser_use Browser constructor does not expose a supported persistent profile path argument"
-        )
+        if profile_path is not None:
+            for candidate in PROFILE_PATH_CANDIDATES:
+                if supports_var_kwargs or candidate in signature.parameters:
+                    kwargs[candidate] = profile_path
+                    break
 
-    if profile_path is None:
+        return Browser(**kwargs)
+
+    if profile_path is None and downloads_path is None:
         if keep_alive:
             try:
                 return Browser(keep_alive=True)
@@ -75,8 +91,28 @@ def create_browser(profile: ProfileRecord | None, *, keep_alive: bool = False) -
                 pass
         return Browser()
 
-    for candidate in PROFILE_PATH_CANDIDATES:
-        kwargs = {candidate: profile_path}
+    for downloads_candidate in DOWNLOADS_PATH_CANDIDATES:
+        for profile_candidate in PROFILE_PATH_CANDIDATES:
+            kwargs: dict[str, Any] = {}
+            if downloads_path is not None:
+                kwargs[downloads_candidate] = downloads_path
+            if profile_path is not None:
+                kwargs[profile_candidate] = profile_path
+            if keep_alive:
+                kwargs["keep_alive"] = True
+            try:
+                return Browser(**kwargs)
+            except TypeError:
+                if not keep_alive:
+                    continue
+                kwargs.pop("keep_alive", None)
+                try:
+                    return Browser(**kwargs)
+                except TypeError:
+                    pass
+
+    if downloads_path is not None:
+        kwargs = {"downloads_path": downloads_path}
         if keep_alive:
             kwargs["keep_alive"] = True
         try:
@@ -84,13 +120,27 @@ def create_browser(profile: ProfileRecord | None, *, keep_alive: bool = False) -
         except TypeError:
             if keep_alive:
                 try:
-                    return Browser(**{candidate: profile_path})
+                    return Browser(downloads_path=downloads_path)
                 except TypeError:
                     pass
-            continue
+
+    if profile_path is not None:
+        for candidate in PROFILE_PATH_CANDIDATES:
+            kwargs = {candidate: profile_path}
+            if keep_alive:
+                kwargs["keep_alive"] = True
+            try:
+                return Browser(**kwargs)
+            except TypeError:
+                if keep_alive:
+                    try:
+                        return Browser(**{candidate: profile_path})
+                    except TypeError:
+                        pass
+                continue
 
     raise RuntimeError(
-        "installed browser_use Browser constructor does not expose a supported persistent profile path argument"
+        "installed browser_use Browser constructor does not expose supported profile/download path arguments"
     )
 
 

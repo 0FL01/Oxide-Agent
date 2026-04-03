@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -110,6 +111,26 @@ def detect_browser_keep_alive_effective(browser: Any) -> bool:
     return getattr(browser, "keep_alive", None) is True
 
 
+def _detect_content_type(path: Path) -> str:
+    guessed, _ = mimetypes.guess_type(path.name)
+    return guessed or "application/octet-stream"
+
+
+def _iter_download_paths(browser: Any) -> list[Path]:
+    downloaded_files = getattr(browser, "downloaded_files", None)
+    if not isinstance(downloaded_files, list):
+        return []
+
+    paths: list[Path] = []
+    for candidate in downloaded_files:
+        if not isinstance(candidate, str):
+            continue
+        candidate_path = Path(candidate)
+        if candidate_path.exists() and candidate_path.is_file():
+            paths.append(candidate_path)
+    return paths
+
+
 class SessionManager:
     """Manages browser sessions and task execution."""
 
@@ -139,6 +160,43 @@ class SessionManager:
 
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    def _downloads_dir(self, session_id: str) -> Path:
+        return self._artifacts_dir / session_id / "downloads"
+
+    def _collect_download_artifacts(
+        self,
+        browser: Any,
+        session_id: str,
+        existing: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        artifacts = list(existing)
+        existing_ids = {
+            str(artifact.get("artifact_id"))
+            for artifact in artifacts
+            if isinstance(artifact, dict) and artifact.get("artifact_id")
+        }
+
+        for path in _iter_download_paths(browser):
+            artifact_id = path.name
+            if artifact_id in existing_ids:
+                continue
+
+            artifacts.append(
+                {
+                    "kind": "download",
+                    "artifact_id": artifact_id,
+                    "file_name": artifact_id,
+                    "content_type": _detect_content_type(path),
+                    "download_path": f"/sessions/{session_id}/artifacts/{artifact_id}",
+                    "path": str(path),
+                    "size_bytes": path.stat().st_size,
+                    "created_at": utc_now(),
+                }
+            )
+            existing_ids.add(artifact_id)
+
+        return artifacts
 
     @property
     def profile_manager(self) -> ProfileManager:
@@ -242,7 +300,11 @@ class SessionManager:
                         timeout_secs=timeout_secs,
                     )
                     session.summary = stringify_result(result)
-                    session.artifacts = extract_artifacts(result)
+                    session.artifacts = self._collect_download_artifacts(
+                        session.browser,
+                        session.session_id,
+                        extract_artifacts(result),
+                    )
                     session.current_url = await infer_url(session.browser, result)
                     await self._refresh_browser_runtime_observability(session)
                     if run_error is None:
@@ -386,8 +448,10 @@ class SessionManager:
             artifact=artifact,
         )
 
-    async def get_artifact_path(self, session_id: str, artifact_id: str) -> Path:
-        """Resolve a screenshot artifact path for download endpoints."""
+    async def get_artifact_path(
+        self, session_id: str, artifact_id: str
+    ) -> tuple[Path, str]:
+        """Resolve an artifact path and content type for download endpoints."""
         session = await self.get_session(session_id)
         normalized_artifact_id = Path(artifact_id).name
         if not normalized_artifact_id or normalized_artifact_id != artifact_id:
@@ -401,7 +465,10 @@ class SessionManager:
 
             path = Path(str(artifact.get("path") or ""))
             if path.exists() and path.is_file():
-                return path
+                content_type = str(artifact.get("content_type") or "").strip()
+                if not content_type:
+                    content_type = _detect_content_type(path)
+                return path, content_type
             break
 
         raise HTTPException(status_code=404, detail="unknown artifact")
@@ -454,11 +521,14 @@ class SessionManager:
         for attempt in range(1, max_attempts + 1):
             try:
                 if session.browser is None:
+                    downloads_dir = self._downloads_dir(session.session_id)
+                    downloads_dir.mkdir(parents=True, exist_ok=True)
                     session.browser = create_browser(
                         profile,
                         keep_alive=browser_keep_alive_enabled(
                             session.execution_mode or "autonomous"
                         ),
+                        downloads_path=str(downloads_dir),
                     )
                 session.browser_keep_alive_effective = (
                     detect_browser_keep_alive_effective(session.browser)
