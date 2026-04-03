@@ -95,8 +95,6 @@ pub struct AgentSettings {
     pub crawl4ai_timeout_secs: Option<u64>,
     /// Browser Use bridge base URL.
     pub browser_use_url: Option<String>,
-    /// Enable Browser Use tool provider registration.
-    pub browser_use_enabled: Option<bool>,
     /// Browser Use request timeout (seconds).
     pub browser_use_timeout_secs: Option<u64>,
     /// Dedicated Browser Use model ID override.
@@ -423,10 +421,6 @@ impl AgentSettings {
                     self.browser_use_url = Some(val);
                 }
             }
-        }
-
-        if self.browser_use_enabled.is_none() {
-            self.browser_use_enabled = parse_optional_env_bool("BROWSER_USE_ENABLED");
         }
     }
 
@@ -1216,25 +1210,10 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("BROWSER_USE_ENABLED");
         env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
 
         assert!(is_browser_use_enabled());
 
-        env::remove_var("BROWSER_USE_URL");
-    }
-
-    #[test]
-    fn browser_use_enabled_flag_overrides_url_fallback() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-        env::set_var("BROWSER_USE_ENABLED", "false");
-
-        assert!(!is_browser_use_enabled());
-
-        env::remove_var("BROWSER_USE_ENABLED");
         env::remove_var("BROWSER_USE_URL");
     }
 
@@ -1831,11 +1810,15 @@ pub fn is_searxng_enabled() -> bool {
 
 /// Determine whether Browser Use tools should be registered.
 ///
-/// Environment variable: `BROWSER_USE_ENABLED`
+/// Controlled by code: returns true if `BROWSER_USE_URL` is set and non-empty.
+///
+/// NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
+/// price-per-token. When such a model is available, re-enable by setting
+/// `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`).
+/// See `docs/browser-use.md` for current model recommendations.
 #[must_use]
 pub fn is_browser_use_enabled() -> bool {
-    parse_optional_env_bool("BROWSER_USE_ENABLED")
-        .unwrap_or_else(|| get_browser_use_url().is_some_and(|value| !value.trim().is_empty()))
+    get_browser_use_url().is_some_and(|value| !value.trim().is_empty())
 }
 
 // LLM HTTP client configuration

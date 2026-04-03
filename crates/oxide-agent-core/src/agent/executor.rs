@@ -695,6 +695,10 @@ impl AgentExecutor {
     }
 
     fn register_browser_providers(&self, registry: &mut ToolRegistry) {
+        // NOTE: Browser Use is disabled until a quality vision-capable agent model
+        // is available at a reasonable price-per-token. To re-enable, set
+        // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
+        // `BROWSER_USE_MODEL_PROVIDER`). See `docs/browser-use.md`.
         #[cfg(feature = "browser_use")]
         if crate::config::is_browser_use_enabled() {
             if let Some(url) = crate::config::get_browser_use_url() {
@@ -1688,8 +1692,8 @@ mod tests {
         let _guard = crate::config::test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-        std::env::set_var("BROWSER_USE_ENABLED", "false");
+        // No BROWSER_USE_URL set — browser tools must not be registered.
+        // BROWSER_USE_ENABLED env var is no longer consulted.
 
         let executor = build_executor();
         let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
@@ -1699,9 +1703,6 @@ mod tests {
         assert!(!registry.can_handle("browser_use_close_session"));
         assert!(!registry.can_handle("browser_use_extract_content"));
         assert!(!registry.can_handle("browser_use_screenshot"));
-
-        std::env::remove_var("BROWSER_USE_ENABLED");
-        std::env::remove_var("BROWSER_USE_URL");
     }
 
     #[cfg(feature = "browser_use")]
