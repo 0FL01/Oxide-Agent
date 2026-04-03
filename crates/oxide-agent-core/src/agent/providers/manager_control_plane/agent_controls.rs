@@ -1474,13 +1474,11 @@ mod tests {
     #[cfg(feature = "browser_use")]
     #[tokio::test]
     async fn topic_agent_tool_catalog_includes_browser_use_tools_when_enabled() {
-        {
-            let _guard = crate::config::test_env_mutex()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            std::env::set_var("BROWSER_USE_ENABLED", "true");
-            std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-        }
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("BROWSER_USE_ENABLED", "true");
+        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
 
         let mut mock = crate::storage::MockStorageProvider::new();
         mock.expect_get_topic_infra_config()
@@ -1515,13 +1513,8 @@ mod tests {
         assert!(catalog.tool_names.contains("browser_use_extract_content"));
         assert!(catalog.tool_names.contains("browser_use_screenshot"));
 
-        {
-            let _guard = crate::config::test_env_mutex()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            std::env::remove_var("BROWSER_USE_ENABLED");
-            std::env::remove_var("BROWSER_USE_URL");
-        }
+        std::env::remove_var("BROWSER_USE_ENABLED");
+        std::env::remove_var("BROWSER_USE_URL");
     }
 
     #[test]

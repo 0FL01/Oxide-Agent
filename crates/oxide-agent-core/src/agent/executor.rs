@@ -865,7 +865,11 @@ impl AgentExecutor {
                 Ok(AgentExecutionOutcome::WaitingForUserInput(request))
             }
             TimedRunResult::Failed(error) => {
-                self.session.fail(error.to_string());
+                let error_message = error.to_string();
+                if error_message.contains("cancelled") {
+                    self.session.clear_todos();
+                }
+                self.session.fail(error_message);
                 Err(error)
             }
             TimedRunResult::TimedOut => {

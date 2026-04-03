@@ -424,7 +424,7 @@ mod tests {
     use crate::agent::providers::TodoList;
     use crate::agent::registry::ToolRegistry;
     use crate::agent::session::AgentSession;
-    use crate::llm::{InvocationId, ToolCall, ToolCallFunction, ToolDefinition};
+    use crate::llm::{ToolCall, ToolCallFunction, ToolDefinition};
     use async_trait::async_trait;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -513,7 +513,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn waiting_for_approval_does_not_append_tool_result_to_memory() {
+    async fn approval_payload_is_treated_as_normal_tool_result_when_approval_flow_is_disabled() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(PendingApprovalProvider));
 
@@ -546,20 +546,12 @@ mod tests {
 
         assert!(matches!(
             result,
-            super::ToolExecutionResult::WaitingForApproval { .. }
+            super::ToolExecutionResult::Completed { .. }
         ));
-        assert!(messages.is_empty(), "tool response must not be appended");
-        assert!(
-            session.memory.get_messages().is_empty(),
-            "agent memory must not record a fake tool result"
-        );
-        assert_eq!(
-            session
-                .pending_ssh_replay("req-1")
-                .expect("pending replay must be stored")
-                .invocation_id,
-            InvocationId::from("call-1")
-        );
+        assert_eq!(messages.len(), 1, "tool response must be appended once");
+        assert!(messages[0].content.contains("approval_required"));
+        assert!(session.memory.get_messages().is_empty());
+        assert!(session.pending_ssh_replay("req-1").is_none());
     }
 
     #[tokio::test]
