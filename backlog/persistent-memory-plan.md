@@ -316,12 +316,12 @@ RRF можно добавить позже, но на старте не обяз
 Hot context не должен расти бесконтрольно.
 
 Целевая политика:
-- normal hot size: **10k–18k tokens**
-- soft limit: **12k–14k**
-- hard limit: **18k–20k**
-- emergency threshold: **24k**
+- **Normal hot size**: 33.3k – 60k tokens
+- **Soft limit**: 40k – 46.7k tokens
+- **Hard limit**: 60k – 66.7k tokens
+- **Emergency threshold**: 80k tokens
 
-Нельзя позволять active agent loop стабильно жить на 40k–50k+ hot context, даже если модель формально поддерживает большой контекст.
+Нельзя позволять active agent loop стабильно жить на 100k–120k+ hot context, даже если модель формально поддерживает большой контекст. (`Архитектура делается под дешёвые модели, а дешёвые модели теряют attention начиная от 80к токенов контекста, это выливается в тот факт, что агент не может вызывать инструменты и начинается лениться`)
 
 ---
 
@@ -332,7 +332,7 @@ Hot context не должен расти бесконтрольно.
 - сохранить episode summary;
 - сохранить artifact refs;
 - извлечь reusable memories;
-- сократить hot context почти до baseline.
+- сократить hot context почти до 12-16k tokens.
 
 После завершения задачи в hot остаются только:
 - system instructions;
