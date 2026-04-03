@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.config import settings
@@ -172,11 +172,12 @@ def resolve_llm_config(
 
 if ChatOpenAI is not None:
 
-    @dataclass
     class ConfigurableProviderChatOpenAI(ChatOpenAI):
         """ChatOpenAI wrapper that allows setting a custom provider name for logging."""
 
-        _custom_provider: str = field(default="openai")
+        def __init__(self, *, _custom_provider: str = "openai", **kwargs: Any):
+            super().__init__(**kwargs)
+            self._custom_provider = _custom_provider
 
         @property
         def provider(self) -> str:

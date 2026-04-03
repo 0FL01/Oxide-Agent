@@ -1135,6 +1135,70 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(FakeAgent.instances), 2)
             self.assertEqual(len(FakeBrowser.instances), 2)
 
+    async def test_run_task_retries_transient_invalid_json_model_output(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                browser_ready_retries=1,
+                browser_ready_retry_delay_ms=0,
+            )
+            FakeAgent.run_outcomes = [
+                RuntimeError(
+                    "ModelProviderError: pydantic.json_invalid due to trailing characters"
+                ),
+                "Recovered after malformed JSON retry",
+            ]
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.summary, "Recovered after malformed JSON retry")
+            self.assertIsNone(response.error)
+            self.assertEqual(len(FakeAgent.instances), 2)
+            self.assertEqual(len(FakeBrowser.instances), 2)
+
+    async def test_run_task_retries_transient_empty_model_response(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(
+                Path(tmpdir),
+                max_concurrent_sessions=1,
+                browser_ready_retries=1,
+                browser_ready_retry_delay_ms=0,
+            )
+            FakeAgent.run_outcomes = [
+                RuntimeError("Empty model response"),
+                "Recovered after empty response retry",
+            ]
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"),
+                None,
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.summary, "Recovered after empty response retry")
+            self.assertIsNone(response.error)
+            self.assertEqual(len(FakeAgent.instances), 2)
+            self.assertEqual(len(FakeBrowser.instances), 2)
+
     async def test_run_task_waits_for_browser_runtime_before_agent_start(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
