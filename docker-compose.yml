@@ -20,10 +20,6 @@ services:
     env_file:
       - .env
     environment:
-      - BROWSER_USE_ENABLED=true
-      - BROWSER_USE_URL=http://127.0.0.1:8002
-      - BROWSER_USE_MODEL_ID=${BROWSER_USE_MODEL_ID:-GLM-4.6V}
-      - BROWSER_USE_MODEL_PROVIDER=${BROWSER_USE_MODEL_PROVIDER:-zai}
       - CRAWL4AI_URL=http://127.0.0.1:11235
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
@@ -39,8 +35,6 @@ services:
     network_mode: host
     depends_on:
       sandboxd:
-        condition: service_healthy
-      browser_use:
         condition: service_healthy
       crawl4ai:
         condition: service_healthy
@@ -109,41 +103,41 @@ services:
         max-size: "1m"
         max-file: "3"
 
-  browser_use:
-    build:
-      context: ./services/browser_use_bridge
-    image: oxide-agent-browser-use:latest
-    container_name: browser_use
-    restart: unless-stopped
-    environment:
-      - TZ=Europe/Moscow
-      - BROWSER_USE_BRIDGE_HOST=0.0.0.0
-      - BROWSER_USE_BRIDGE_PORT=8000
-      - BROWSER_USE_BRIDGE_DATA_DIR=/data
-      - BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=${BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE:-3}
-      - BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=${BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS:-604800}
-      - BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=${BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES:-2}
-      - BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=${BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS:-750}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-    shm_size: '2gb'
-    ports:
-      - "127.0.0.1:8002:8000"
-    volumes:
-      - browser-use-data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
-    logging:
-      driver: json-file
-      options:
-        max-size: "1m"
-        max-file: "3"
+#  browser_use:
+#    build:
+#      context: ./services/browser_use_bridge
+#    image: oxide-agent-browser-use:latest
+#    container_name: browser_use
+#    restart: unless-stopped
+#    environment:
+#     - TZ=Europe/Moscow
+#     - BROWSER_USE_BRIDGE_HOST=0.0.0.0
+#     - BROWSER_USE_BRIDGE_PORT=8000
+#      - BROWSER_USE_BRIDGE_DATA_DIR=/data
+#      - BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=${BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE:-3}
+#      - BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=${BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS:-604800}
+#      - BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=${BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES:-2}
+#      - BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=${BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS:-750}
+#      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+#      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+#      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+#      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+#    shm_size: '2gb'
+#    ports:
+#      - "127.0.0.1:8002:8000"
+#    volumes:
+#      - browser-use-data:/data
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 5
+#      start_period: 40s
+#    logging:
+#      driver: json-file
+#      options:
+#        max-size: "1m"
+#        max-file: "3"
 
   searxng:
     image: searxng/searxng:2026.3.24-054174a19
