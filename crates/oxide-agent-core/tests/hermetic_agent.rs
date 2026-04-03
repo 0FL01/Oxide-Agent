@@ -199,7 +199,7 @@ impl LlmProvider for AlwaysFailMock {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_retry_logic_failure() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let settings = AgentSettings {
@@ -216,9 +216,17 @@ async fn test_retry_logic_failure() {
         }),
     );
 
-    let result = client
-        .chat_with_tools("sys", &[], &[], "test-model", false)
-        .await;
+    let handle = tokio::spawn(async move {
+        client
+            .chat_with_tools("sys", &[], &[], "test-model", false)
+            .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(301)).await;
+    tokio::task::yield_now().await;
+
+    let result = handle.await.expect("retry task panicked");
     assert!(result.is_err());
-    assert_eq!(call_count.load(Ordering::SeqCst), 5); // MAX_RETRIES is 5
+    assert_eq!(call_count.load(Ordering::SeqCst), LlmClient::MAX_RETRIES);
 }
