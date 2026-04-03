@@ -1,3 +1,5 @@
+name: ${COMPOSE_PROJECT_NAME:-oxide-agent}
+
 services:
   sandbox_image:
     build:
@@ -63,6 +65,7 @@ services:
       - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+      - STACK_LOGS_PROJECT=${COMPOSE_PROJECT_NAME:-oxide-agent}
     depends_on:
       sandbox_image:
         condition: service_completed_successfully
