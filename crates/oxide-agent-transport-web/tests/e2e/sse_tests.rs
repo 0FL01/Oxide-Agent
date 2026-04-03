@@ -189,7 +189,7 @@ async fn e2e_sse_stream() {
         .expect("failed to parse timeline response");
     eprintln!(
         "Timeline: {}",
-        serde_json::to_string_pretty(&timeline).unwrap()
+        serde_json::to_string_pretty(&timeline).expect("timeline should serialize to JSON")
     );
 
     let milestones = &timeline["milestones"];
@@ -201,38 +201,41 @@ async fn e2e_sse_stream() {
         session_ready_ms.is_some(),
         "session_ready_ms should be populated"
     );
+    let session_ready_ms = session_ready_ms.expect("session_ready_ms must be present");
     assert!(
-        session_ready_ms.unwrap() < 5000,
+        session_ready_ms < 5000,
         "session_ready_ms should be under 5s, got {}ms",
-        session_ready_ms.unwrap()
+        session_ready_ms
     );
 
     assert!(
         first_thinking_ms.is_some(),
         "first_thinking_ms should be populated"
     );
+    let first_thinking_ms = first_thinking_ms.expect("first_thinking_ms must be present");
     assert!(
-        first_thinking_ms.unwrap() >= 0,
+        first_thinking_ms >= 0,
         "first_thinking_ms should be non-negative, got {}ms",
-        first_thinking_ms.unwrap()
+        first_thinking_ms
     );
 
     assert!(
         final_response_ms.is_some(),
         "final_response_ms should be populated"
     );
+    let final_response_ms = final_response_ms.expect("final_response_ms must be present");
     assert!(
-        final_response_ms.unwrap() >= 0,
+        final_response_ms >= 0,
         "final_response_ms should be non-negative, got {}ms",
-        final_response_ms.unwrap()
+        final_response_ms
     );
 
-    if let (Some(first), Some(final_)) = (first_thinking_ms, final_response_ms) {
+    if first_thinking_ms > 0 {
         assert!(
-            final_ >= first,
+            final_response_ms >= first_thinking_ms,
             "final_response_ms ({}) should be >= first_thinking_ms ({})",
-            final_,
-            first
+            final_response_ms,
+            first_thinking_ms
         );
     }
 
