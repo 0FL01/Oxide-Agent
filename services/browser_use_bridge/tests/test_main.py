@@ -29,6 +29,7 @@ class FakeBrowser:
         self.kill_calls = 0
         self.current_url = "https://example.com/current"
         self.current_page = None
+        self.downloaded_files = []
         self.session_manager = None
         self._cdp_client_root = None
         self.remaining_start_failures = type(self).initial_start_failures
@@ -154,6 +155,7 @@ class FakeAgent:
     instances = []
     run_outcomes = []
     auto_close_after_run = False
+    next_download_file_name = None
 
     def __init__(self, task, llm, browser, use_vision, **kwargs):
         self.task = task
@@ -170,6 +172,14 @@ class FakeAgent:
                 raise outcome
         else:
             outcome = "Task completed from fake agent"
+
+        if type(self).next_download_file_name:
+            downloads_dir = Path(self.browser.kwargs["downloads_path"])
+            downloads_dir.mkdir(parents=True, exist_ok=True)
+            downloaded_file = downloads_dir / type(self).next_download_file_name
+            downloaded_file.write_bytes(b"fake-zip")
+            self.browser.downloaded_files.append(str(downloaded_file))
+            type(self).next_download_file_name = None
 
         if type(self).auto_close_after_run:
             if not getattr(self.browser.browser_profile, "keep_alive", False):
@@ -222,6 +232,7 @@ def import_bridge_module(extra_env: dict[str, str]):
     FakeAgent.instances = []
     FakeAgent.run_outcomes = []
     FakeAgent.auto_close_after_run = False
+    FakeAgent.next_download_file_name = None
     FakeBrowser.instances = []
     FakeBrowser.initial_start_failures = 0
 
@@ -772,6 +783,53 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.media_type, "image/png")
             self.assertTrue(Path(response.path).exists())
             self.assertEqual(Path(response.path).read_bytes(), b"fake-png")
+
+    async def test_run_task_collects_downloaded_files_as_artifacts(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            FakeAgent.next_download_file_name = "surprize.zip"
+
+            response = await manager.run_task(
+                module.RunTaskRequest(task="Download the archive"), None
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(len(response.artifacts), 1)
+            artifact = response.artifacts[0]
+            self.assertEqual(artifact["kind"], "download")
+            self.assertEqual(artifact["artifact_id"], "surprize.zip")
+            self.assertEqual(artifact["content_type"], "application/zip")
+            self.assertTrue(Path(artifact["path"]).exists())
+
+    async def test_artifact_endpoint_uses_recorded_content_type(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            FakeAgent.next_download_file_name = "surprize.zip"
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Download the archive"), None
+            )
+            module.manager = manager
+
+            response = await module.download_artifact(
+                run_response.session_id, run_response.artifacts[0]["artifact_id"]
+            )
+
+            self.assertEqual(response.media_type, "application/zip")
+            self.assertEqual(Path(response.path).read_bytes(), b"fake-zip")
 
     async def test_extract_content_reports_dead_browser_session_as_terminal_error(self):
         with TemporaryDirectory() as tmpdir:
