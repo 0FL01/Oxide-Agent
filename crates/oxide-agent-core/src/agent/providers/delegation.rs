@@ -276,6 +276,8 @@ impl DelegationProvider {
 
     #[cfg(feature = "browser_use")]
     fn maybe_push_browser_use_provider(&self, providers: &mut Vec<Box<dyn ToolProvider>>) {
+        // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
+        // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
         if !crate::config::is_browser_use_enabled() {
             return;
         }

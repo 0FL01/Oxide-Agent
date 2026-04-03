@@ -260,6 +260,8 @@ impl ManagerControlPlaneProvider {
     }
 
     fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
+        // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
+        // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
         let mut groups = Vec::new();
 
         #[cfg(feature = "browser_use")]
