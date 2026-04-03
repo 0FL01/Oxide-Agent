@@ -10,7 +10,10 @@ Default branch: `testing`.
 
 ## External Services
 
-### browser_use_bridge
+### browser_use_bridge (disabled)
+> **NOTE**: Browser Use отключён. Требуется качественная vision-агентная модель за вменяемую цену за токен.
+> Код и bridge-сервис сохранены; для включения нужно задать `BROWSER_USE_URL` в конфиге.
+> Подробности: `docs/browser-use.md`.
 - Python/FastAPI сервис в `services/browser_use_bridge/` для browser automation через browser_use.
 - Архитектура: FastAPI app с slices (`models/`, `services/`, `utils/`), каждый slice — self-contained модуль.
   - `app/main.py` — HTTP endpoints (session lifecycle, screenshot, extract_content, health)
@@ -150,14 +153,14 @@ Default branch: `testing`.
 
 ### LLM
 - Providers: `gemini`, `groq`, `mistral`, `minimax/`, `nvidia`, `openrouter`, `zai`.
-- Browser-use bridge LLM resolution: отдельный от core провайдеров; поддерживает `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing relaxed для `zai`/`zhipuai`/`glm`.
+- Browser-use bridge LLM resolution (disabled): отдельный от core провайдеров; поддерживает `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing relaxed для `zai`/`zhipuai`/`glm`.
 - HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
 - Voice transcription: `voxtral` (Mistral) с retry backoff (5 attempts, 3s→48s).
 - NVIDIA NIM provider: `nvidia/llama-3.3-nemotron-super-49b-v1`, `nvidia/nemotron-mini`, `minimaxai/minimax-m*`.
 - LLM module structure: `capabilities.rs` (model capabilities), `client.rs` (HTTP orchestration), `support/` (backoff, history, http utils), `types.rs` (domain types).
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (включая `ssh_send_file_to_user`), yt-dlp, reminders, agents_md, TTS (Kokoro EN + Silero RU), browser-use bridge (browser automation via external service).
+- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (включая `ssh_send_file_to_user`), yt-dlp, reminders, agents_md, TTS (Kokoro EN + Silero RU), browser-use bridge (disabled — browser automation via external service).
 - Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport

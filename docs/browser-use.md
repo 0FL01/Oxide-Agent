@@ -1,5 +1,11 @@
 # Browser Use Operations
 
+> **STATUS: DISABLED**
+>
+> Browser Use отключён. Причина: требуется качественная vision-агентная модель за вменяемую цену за токен.
+> Код и bridge-сервис сохранены. Для включения нужно задать `BROWSER_USE_URL` в конфиге
+> (env var `BROWSER_USE_ENABLED` больше не поддерживается).
+
 Операторский runbook для self-hosted интеграции Browser Use в Oxide Agent.
 
 Следующий архитектурный этап зафиксирован отдельно в [Browser Use Stage A](./browser-use-stage-a.md): там описан переход от bridge-side LLM env к inheritance route из Oxide Agent для `MiniMax`, `ZAI` и других основных provider-ов.
@@ -70,8 +76,7 @@
 
 ### В `oxide_agent`
 
-- `BROWSER_USE_ENABLED=true`
-- `BROWSER_USE_URL=http://127.0.0.1:8002`
+- `BROWSER_USE_URL=http://127.0.0.1:8002` — enables Browser Use when set and non-empty
 - `BROWSER_USE_TIMEOUT_SECS=300`
 - `BROWSER_USE_MAX_CONCURRENT=2`
 - `BROWSER_USE_MODEL_ID=GLM-4.6V` - dedicated Browser Use route (default in `docker-compose`)
@@ -206,7 +211,7 @@ Browser Use не включается через alias `search`. Для него
 ## Быстрые проверки после запуска
 
 1. Убедиться, что compose healthcheck зеленый для `browser_use`.
-2. Убедиться, что `BROWSER_USE_ENABLED=true` и `BROWSER_USE_URL` видны контейнеру `oxide_agent`.
+2. Убедиться, что `BROWSER_USE_URL` задан и виден контейнеру `oxide_agent`.
 3. Для legacy env path убедиться, что bridge-side LLM provider и его API key переданы в контейнер `browser_use`.
 4. Для Stage C inheritance path убедиться, что активный route агента использует совместимый provider: `gemini`, `minimax`, `zai` или `openrouter`.
 5. Для inherited route убедиться, что нужный provider key задан в `oxide_agent`, а не только в `browser_use` sidecar.
@@ -239,8 +244,7 @@ Browser Use не включается через alias `search`. Для него
 
 - контейнер `oxide_agent` пересобран после Stage 8
 - feature `oxide-agent-core/browser_use` включен в основном `Dockerfile`
-- `BROWSER_USE_ENABLED=true`
-- `BROWSER_USE_URL` непустой
+- `BROWSER_USE_URL` задан и непустой
 
 ### `browser_use_run_task` падает сразу
 
