@@ -944,6 +944,10 @@ mod tests {
     // Tests run sequentially to avoid environment variable race conditions
     #[test]
     fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         env::set_var("ZAI_API_KEY", "dummy_zai_key");
 
         // 1. Test standard loading
@@ -1048,6 +1052,9 @@ mod tests {
     #[test]
     fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
         use std::env;
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         env::set_var("ZAI_API_KEY", "test-key");
         env::set_var("CHAT_MODEL_ID", "chat-model");
