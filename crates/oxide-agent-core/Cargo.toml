@@ -18,7 +18,7 @@ redundant_clone = "deny"
 clone_on_ref_ptr = "deny"          
 
 [dependencies]
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.48", features = ["full", "test-util"] }
 tokio-util = "0.7"
 tracing = "0.1"
 config = "0.15"
