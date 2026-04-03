@@ -848,6 +848,11 @@ async fn run_task_allows_russian_visual_analysis_on_dedicated_glm_4_6v_route() {
 
 #[tokio::test]
 async fn run_task_fast_fails_autonomous_visual_task_on_unstable_glm_4_6v_route() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    env::remove_var(BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV);
+
     let provider = BrowserUseProvider::new(
         "http://localhost:8002",
         test_settings_with_dedicated_browser_use_model(),
@@ -876,7 +881,6 @@ async fn run_task_allows_autonomous_visual_task_when_unstable_routes_disabled() 
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     env::set_var(BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV, "off");
-    drop(_guard);
 
     let state = Arc::new(TestServerState::default());
     let server = TestServer::spawn(
