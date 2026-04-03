@@ -70,8 +70,23 @@ NAVIGATION_ONLY_SYSTEM_MESSAGE = (
     "This run is navigation-only. Success means the browser is left on the target "
     "page or UI state for Oxide follow-up tools. Do not take screenshots, save PDFs, "
     "download files, or perform final content extraction in this run. Stop once the "
-    "requested page or UI state is ready and return a short readiness summary."
+    "requested page or UI state is ready and return a short readiness summary. If the "
+    "page still shows only loading placeholders, skeletons, or spinners, wait for real "
+    "content or retry a single refresh/navigation. Do not loop on repeated identical "
+    "wait actions; after one extra wait or refresh, stop and report the blocking "
+    "loading state."
 )
+
+TRANSIENT_AGENT_OUTPUT_ERROR_PATTERNS = [
+    "pydantic.json_invalid",
+    "json_invalid",
+    "invalid json",
+    "trailing characters",
+    "extra data",
+    "empty model response",
+    "empty response",
+    "agent did not return any actions",
+]
 
 
 def resolve_execution_mode(
@@ -109,6 +124,19 @@ def detect_browser_keep_alive_effective(browser: Any) -> bool:
     if profile is not None:
         return getattr(profile, "keep_alive", None) is True
     return getattr(browser, "keep_alive", None) is True
+
+
+def is_transient_agent_output_error(error: Exception | str | None) -> bool:
+    """Check if a browser-use run failed because the model returned unusable output."""
+    if error is None:
+        return False
+
+    message = error if isinstance(error, str) else str(error)
+    message = message.strip().lower()
+    if not message:
+        return False
+
+    return any(pattern in message for pattern in TRANSIENT_AGENT_OUTPUT_ERROR_PATTERNS)
 
 
 def _detect_content_type(path: Path) -> str:
@@ -552,13 +580,14 @@ class SessionManager:
                 success, run_error = classify_run_result(result)
                 if success:
                     return result, None
-                if attempt >= max_attempts or not is_transient_browser_ready_error(
+                retryable_run_error = is_transient_browser_ready_error(
                     RuntimeError(run_error or "")
-                ):
+                ) or is_transient_agent_output_error(run_error)
+                if attempt >= max_attempts or not retryable_run_error:
                     return result, run_error
 
                 logger.warning(
-                    "Retrying Browser Use after internal readiness failure",
+                    "Retrying Browser Use after transient agent failure",
                     extra={
                         "session_id": session.session_id,
                         "attempt": attempt,
@@ -572,13 +601,14 @@ class SessionManager:
                 continue
 
             except Exception as error:
-                if attempt >= max_attempts or not is_transient_browser_ready_error(
+                retryable_error = is_transient_browser_ready_error(
                     error
-                ):
+                ) or is_transient_agent_output_error(error)
+                if attempt >= max_attempts or not retryable_error:
                     raise
 
                 logger.warning(
-                    "Retrying Browser Use after transient readiness failure",
+                    "Retrying Browser Use after transient agent failure",
                     extra={
                         "session_id": session.session_id,
                         "attempt": attempt,
