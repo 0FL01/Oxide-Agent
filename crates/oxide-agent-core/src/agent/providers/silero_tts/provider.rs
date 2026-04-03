@@ -491,9 +491,9 @@ mod tests {
 
     #[test]
     fn duration_estimation() {
-        // ~10 words at normal speed = ~4 seconds
-        let duration = estimate_duration("Это тестовое предложение из десяти слов");
-        assert!(duration > 3.0 && duration < 5.0);
+        // 6 words at normal speed = ~2.4 seconds
+        let duration = estimate_duration("Это тестовое предложение из шести слов");
+        assert!(duration > 2.0 && duration < 3.0);
 
         // Empty text
         let duration = estimate_duration("");

@@ -92,11 +92,11 @@ impl std::str::FromStr for SileroTtsFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SileroSampleRate {
     /// 8000 Hz.
-    #[default]
     R8000 = 8000,
     /// 24000 Hz.
     R24000 = 24000,
-    /// 48000 Hz.
+    /// 48000 Hz (default, best quality).
+    #[default]
     R48000 = 48000,
 }
 
