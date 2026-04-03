@@ -57,8 +57,8 @@ async fn e2e_session_lifecycle() {
     assert!(!session_id.is_empty());
 
     let meta = session_manager.get_session(&session_id).await;
-    assert!(meta.is_some(), "session should exist");
-    assert_eq!(meta.unwrap().user_id, 42);
+    let meta = meta.expect("session should exist after creation");
+    assert_eq!(meta.user_id, 42);
 
     let deleted = session_manager.delete_session(&session_id).await;
     assert!(deleted, "delete should succeed");
