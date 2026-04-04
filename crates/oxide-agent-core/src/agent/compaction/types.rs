@@ -357,6 +357,21 @@ pub struct ErrorRetryCollapseOutcome {
     pub dropped_indices: Vec<usize>,
 }
 
+/// Result of replacing superseded duplicate tool results with lightweight placeholders.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DedupSupersededOutcome {
+    /// Whether any hot-memory entries were rewritten.
+    pub applied: bool,
+    /// Number of entries rewritten as superseded placeholders.
+    pub deduplicated_count: usize,
+    /// Estimated tokens reclaimed by rewriting superseded entries.
+    pub reclaimed_tokens: usize,
+    /// Visible characters reclaimed by rewriting superseded entries.
+    pub reclaimed_chars: usize,
+    /// Stable indices rewritten in pre-stage ordering.
+    pub deduplicated_indices: Vec<usize>,
+}
+
 /// Result of archiving displaced hot-memory chunks for future retrieval features.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ArchivePersistenceOutcome {
@@ -502,6 +517,8 @@ pub struct CompactionOutcome {
     pub externalization: ExternalizationOutcome,
     /// Result of collapsing redundant failed tool retries before later stages.
     pub error_retry_collapse: ErrorRetryCollapseOutcome,
+    /// Result of deduplicating superseded tool results before externalization.
+    pub dedup_superseded: DedupSupersededOutcome,
     /// Result of archive persistence for displaced compacted history chunks.
     pub archive_persistence: ArchivePersistenceOutcome,
     /// Result of old artifact pruning applied before summary compaction.
@@ -530,6 +547,7 @@ impl CompactionOutcome {
             snapshot,
             externalization: ExternalizationOutcome::default(),
             error_retry_collapse: ErrorRetryCollapseOutcome::default(),
+            dedup_superseded: DedupSupersededOutcome::default(),
             archive_persistence: ArchivePersistenceOutcome::default(),
             pruning: PruneOutcome::default(),
             summary_generation: SummaryGenerationOutcome::default(),
@@ -562,6 +580,7 @@ impl CompactionOutcome {
     pub fn reclaimed_cleanup_tokens(&self) -> usize {
         self.error_retry_collapse
             .reclaimed_tokens
+            .saturating_add(self.dedup_superseded.reclaimed_tokens)
             .saturating_add(self.externalization.reclaimed_tokens)
             .saturating_add(self.pruning.reclaimed_tokens)
     }
