@@ -114,6 +114,7 @@ mod tests {
     use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
     use crate::agent::memory::AgentMemory;
     use crate::agent::providers::TodoList;
+    use crate::llm::ToolDefinition;
 
     fn context(token_count: usize, max_tokens: usize) -> HookContext<'static> {
         let todos = Box::leak(Box::new(TodoList::new()));
@@ -143,5 +144,29 @@ mod tests {
         );
 
         assert!(matches!(result, HookResult::RequestCompaction { .. }));
+    }
+
+    #[test]
+    fn soft_limit_mentions_compress_when_available() {
+        let hook = HotContextHealthHook::with_limits(HotContextLimits::new(10, 20));
+        let todos = Box::leak(Box::new(TodoList::new()));
+        let memory = Box::leak(Box::new(AgentMemory::new(100)));
+        let tools = vec![ToolDefinition {
+            name: "compress".to_string(),
+            description: "compress hot context".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+        }];
+        let context = HookContext::new(todos, memory, 0, 0, 4)
+            .with_available_tools(&tools)
+            .with_tokens(12, 100);
+
+        let result = hook.handle(&HookEvent::BeforeIteration { iteration: 1 }, &context);
+
+        let notice = match result {
+            HookResult::InjectTransientContext(notice) => notice,
+            other => panic!("expected transient notice, got {other:?}"),
+        };
+
+        assert!(notice.contains("Use `compress` to trim older context"));
     }
 }
