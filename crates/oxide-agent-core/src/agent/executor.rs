@@ -694,7 +694,7 @@ impl AgentExecutor {
         }
     }
 
-    fn register_browser_providers(&self, registry: &mut ToolRegistry) {
+    fn register_browser_providers(&self, _registry: &mut ToolRegistry) {
         // NOTE: Browser Use is disabled until a quality vision-capable agent model
         // is available at a reasonable price-per-token. To re-enable, set
         // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
@@ -1295,7 +1295,7 @@ mod tests {
     use crate::agent::providers::{
         ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult,
         ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
-        ManagerTopicLifecycle, ReminderContext,
+        ManagerTopicLifecycle,
     };
     use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
     use crate::config::AgentSettings;
