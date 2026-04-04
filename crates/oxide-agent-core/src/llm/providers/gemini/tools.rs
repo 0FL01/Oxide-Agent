@@ -4,17 +4,59 @@ use gemini_rust::{
     FunctionCall as GeminiFunctionCall, FunctionDeclaration,
     FunctionResponse as GeminiFunctionResponse,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use super::GeminiProvider;
 
 impl GeminiProvider {
+    fn sanitize_function_schema(value: Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut sanitized = Map::with_capacity(map.len());
+
+                for (key, value) in map {
+                    if key == "additionalProperties" {
+                        continue;
+                    }
+
+                    if key == "enum" {
+                        if let Value::Array(items) = value {
+                            if items.iter().all(Value::is_string) {
+                                sanitized.insert(
+                                    key,
+                                    Value::Array(
+                                        items
+                                            .into_iter()
+                                            .map(Self::sanitize_function_schema)
+                                            .collect(),
+                                    ),
+                                );
+                            }
+                        }
+                        continue;
+                    }
+
+                    sanitized.insert(key, Self::sanitize_function_schema(value));
+                }
+
+                Value::Object(sanitized)
+            }
+            Value::Array(items) => Value::Array(
+                items
+                    .into_iter()
+                    .map(Self::sanitize_function_schema)
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
     pub(super) fn function_declarations(tools: &[ToolDefinition]) -> Vec<FunctionDeclaration> {
         tools
             .iter()
             .map(|tool| {
                 FunctionDeclaration::new(tool.name.clone(), tool.description.clone(), None)
-                    .with_parameters_schema(tool.parameters.clone())
+                    .with_parameters_schema(Self::sanitize_function_schema(tool.parameters.clone()))
             })
             .collect()
     }

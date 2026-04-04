@@ -12,6 +12,7 @@ use serde_json::json;
 
 mod gemini_tests {
     use super::*;
+    use crate::agent::provider::ToolProvider;
 
     #[test]
     fn normalizes_sdk_model_ids() {
@@ -319,6 +320,102 @@ mod gemini_tests {
         assert_eq!(serialized["name"], json!("lookup_weather"));
         assert_eq!(serialized["description"], json!("Look up weather by city"));
         assert_eq!(serialized["parameters"]["required"], json!(["city"]));
+    }
+
+    #[test]
+    fn sanitizes_unsupported_schema_fields_for_function_declarations() {
+        let declarations = GeminiProvider::function_declarations(&[ToolDefinition {
+            name: "search_logs".to_string(),
+            description: "Search logs".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "object",
+                        "properties": {
+                            "compose_project": { "type": "string" }
+                        },
+                        "additionalProperties": false
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["day", "week", "month", "year"]
+                    },
+                    "safe_search": {
+                        "type": "integer",
+                        "enum": [0, 1, 2]
+                    },
+                    "sample_rate": {
+                        "type": "integer",
+                        "enum": [8000, 24000, 48000]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }]);
+
+        let serialized = serde_json::to_value(&declarations[0]).expect("serialize declaration");
+        let parameters = &serialized["parameters"];
+
+        assert!(parameters.get("additionalProperties").is_none());
+        assert!(parameters["properties"]["selector"]
+            .get("additionalProperties")
+            .is_none());
+        assert_eq!(
+            parameters["properties"]["time_range"]["enum"],
+            json!(["day", "week", "month", "year"])
+        );
+        assert!(parameters["properties"]["safe_search"]
+            .get("enum")
+            .is_none());
+        assert!(parameters["properties"]["sample_rate"]
+            .get("enum")
+            .is_none());
+    }
+
+    #[test]
+    fn sanitizes_real_provider_schemas_when_available() {
+        let tools = vec![
+            crate::agent::providers::compression::CompressionProvider::new().tools()[0].clone(),
+            crate::agent::providers::stack_logs::StackLogsProvider::new().tools()[0].clone(),
+            crate::agent::providers::SileroTtsProvider::new(
+                crate::agent::providers::SileroTtsConfig::default(),
+            )
+            .tools()[0]
+                .clone(),
+        ];
+
+        let declarations = GeminiProvider::function_declarations(&tools);
+
+        for declaration in declarations {
+            let serialized = serde_json::to_value(declaration).expect("serialize declaration");
+            let parameters = &serialized["parameters"];
+
+            assert!(parameters.get("additionalProperties").is_none());
+            if let Some(selector) = parameters["properties"].get("selector") {
+                assert!(selector.get("additionalProperties").is_none());
+            }
+        }
+    }
+
+    #[cfg(feature = "searxng")]
+    #[test]
+    fn sanitizes_searxng_numeric_enums() {
+        let tools = crate::agent::providers::searxng::SearxngProvider::new("http://localhost:8080")
+            .expect("create searxng provider")
+            .tools();
+
+        let declarations = GeminiProvider::function_declarations(&tools);
+        let serialized = serde_json::to_value(&declarations[0]).expect("serialize declaration");
+        let parameters = &serialized["parameters"];
+
+        assert!(parameters["properties"]["safe_search"]
+            .get("enum")
+            .is_none());
+        assert_eq!(
+            parameters["properties"]["time_range"]["enum"],
+            json!(["day", "week", "month", "year"])
+        );
     }
 
     #[test]
