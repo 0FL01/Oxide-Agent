@@ -102,6 +102,7 @@ Hybrid retrieval даёт лучшее покрытие:
 - Чтение конкретного episode / thread
 - Явная запись факта / процедуры по запросу агента
 - Линковка artifact'а
+- Явный compress контекста по решению агента (soft limit warning → agent decides)
 
 ### Профит
 - Снижение agent effort: рутина уходит в hooks
@@ -343,10 +344,15 @@ RRF можно добавить позже, но на старте не обяз
 Hot context не должен расти бесконтрольно.
 
 Целевая политика:
-- **Normal hot size**: 33.3k – 60k tokens
-- **Soft limit**: 40k – 46.7k tokens
-- **Hard limit**: 60k – 66.7k tokens
-- **Emergency threshold**: 80k tokens
+- **Normal hot size**: 12k – 60k tokens
+- **Soft limit (warning)**: 60k tokens → inject warning, агент решает вызвать `compress`
+- **Hard limit (auto-compaction)**: 80k tokens → hook автоматически запускает compaction с LLM summary + truncate
+- **Emergency threshold**: 80k+ tokens при неудаче LLM compaction → deterministic shrink
+
+Управление hot context — многоуровневое:
+1. Агент получает warning при 60k и может вызвать `compress` tool добровольно
+2. Если агент игнорирует warning и контекст достигает 80k — hook принудительно запускает compaction
+3. Если LLM compaction не удалась — deterministic fallback (emergency shrink)
 
 Нельзя позволять active agent loop стабильно жить на 100k–120k+ hot context, даже если модель формально поддерживает большой контекст. (`Архитектура делается под дешёвые модели, а дешёвые модели теряют attention начиная от 80к токенов контекста, это выливается в тот факт, что агент не может вызывать инструменты и начинается лениться`)
 
@@ -369,10 +375,13 @@ Hot context не должен расти бесконтрольно.
 - минимальный recent window.
 
 ### 2. Preflight cleanup
-Перед каждым вызовом модели:
+Перед каждой итерацией:
 - оценить размер hot context;
-- если превышен soft limit — выполнить normal compaction;
-- если превышен hard limit — выполнить forced compaction.
+- если `token_count >= 60k` (soft limit) → inject warning в prompt:
+  `"Context is growing (Nk tokens). Consider calling compress to free up space. At 80k tokens, compaction will be triggered automatically."`;
+- если `token_count >= 80k` (hard limit) → hook принудительно запускает compaction
+  с LLM summary + truncate;
+- если LLM compaction не удалась → deterministic emergency shrink.
 
 ### 3. Background cleanup
 Если end-of-task cleanup не произошёл:
@@ -401,6 +410,30 @@ Hot context не должен расти бесконтрольно.
 - **compaction = уборка активного контекста**
 - **memory pipeline = формирование долговременной памяти**
 
+### Compaction side-effects
+
+Каждая compression operation (вызванная инструментом `compress`, auto-compaction хуком,
+или `EndOfTaskMemoryHook`) обязана:
+
+1. **Persist to long-term memory** — перед truncate, извлечь из удаляемого контекста
+   high-signal данные и записать в episodic/semantic memory:
+   - ключевые решения и их обоснование
+   - важные находки и результаты
+   - procedure candidates (что сработало)
+   - constraint/fact candidates (что важно помнить)
+   - artifact refs
+2. **Не шуметь** — не писать в memory:
+   - промежуточные tool traces
+   - повторяющиеся/duplicate факты
+   - сырые output без нормализации
+3. **Оставить hint в текущей сессии** — после compaction добавить в hot context
+   `ArchiveReference` с кратким описанием того, что было заархивировано:
+   - типы данных (decisions, procedures, artifacts)
+   - episode_id / thread_id для retrieval
+   - короткий список ключевых тем
+   Это позволяет агенту в текущей сессии знать, что было сжато, и при необходимости
+   достать детали через `memory_search` / `memory_read_episode`.
+
 ---
 
 ## Memory Hooks (automatic)
@@ -411,13 +444,23 @@ Hot context не должен расти бесконтрольно.
 Триггерит при финальном ответе (без pending tool calls):
 - Пишет episode summary в storage
 - Извлекает reusable memories (fact, procedure, constraint)
+- Запускает compaction pipeline с persist to long-term memory
 - Сбрасывает hot context до ~12-16k tokens
 - Сохраняет artifact refs
+- Оставляет в hot context ArchiveReference на записанный episode
 
-### `HotContextHealthHook` (`BeforeAgent`)
-Проверяет перед стартом итерации:
-- Если `token_count >= hard_limit` (60k) → force compaction
-- Если `token_count >= soft_limit` (40k) → inject warning
+### `HotContextHealthHook` (`BeforeIteration`)
+Проверяет перед каждой итерацией:
+- Если `token_count >= soft_limit` (60k) → inject warning в prompt:
+  ```
+  [Context Health Warning] Hot context is at {N}k tokens (soft limit: 60k).
+  Consider calling compress to summarize and free space.
+  At 80k tokens, compaction will be triggered automatically.
+  ```
+  Агент решает — вызвать `compress` tool или продолжить.
+- Если `token_count >= hard_limit` (80k) → автоматически запускает compaction pipeline:
+  LLM summary → extract high-signal data → persist to long-term memory → truncate
+  → rebuild hot context с ArchiveReference hints.
 
 ### `EmergencyShrinkHook` (`BeforeIteration`)
 Пороговое срабатывание (80k tokens):
@@ -463,6 +506,24 @@ Hot context не должен расти бесконтрольно.
 ### `memory_link_artifact`
 Связывает episode с sandbox/file artefact.
 
+### `compress`
+Агент инициирует сжатие hot context. Вызывается добровольно при получении
+soft limit warning или по решению агента.
+
+Аргументы:
+- `reason` (optional) — почему агент решил сжать (для audit/observability)
+
+Поведение:
+1. Запускает compaction pipeline: LLM summary + truncate
+2. Извлекает high-signal данные из удаляемого контекста → persist в long-term memory
+3. Добавляет ArchiveReference hints в hot context
+4. Возвращает результат агенту: сколько токенов было, сколько стало, что заархивировано
+
+Гарантии:
+- Неблокирующий для agent loop — agent продолжает после compress
+- Данные не теряются — всё заархивированное доступно через `memory_search`
+- Можно вызывать несколько раз за сессию
+
 ---
 
 ## Indexing rules
@@ -485,19 +546,24 @@ Hot context не должен расти бесконтрольно.
 ## Phased implementation
 
 ## Phase 1 — Foundation
-Сделать базовые сущности, hooks и write path.
+Сделать базовые сущности, hooks, tool и write path.
 
 Что делаем:
 - вводим `threads`, `episodes`, `memories`, `session_state`;
-- реализуем `EndOfTaskMemoryHook` — автоматическая финализация при завершении задачи;
-- реализуем `HotContextHealthHook` — preflight hot context check;
-- реализуем `EmergencyShrinkHook` — deterministic shrink при 80k+;
+- реализуем `EndOfTaskMemoryHook` — автоматическая финализация + compaction + persist memory;
+- реализуем `HotContextHealthHook` — warning при 60k, auto-compaction при 80k;
+- реализуем `EmergencyShrinkHook` — deterministic shrink при неудаче LLM compaction;
+- реализуем `compress` tool — интерактивное сжатие по решению агента;
+- добавляем compaction side-effects: persist high-signal data → long-term memory;
+- добавляем ArchiveReference hints в hot context после каждой compression;
 - отделяем raw archive в R2 от retrieval metadata;
 - делаем lexical search по episodes/memories;
 - делаем manual read tools.
 
 Результат:
-- hot context управляется автоматически, агент не тратит attention;
+- hot context управляется автоматически (hooks) и интерактивно (tool);
+- каждая compression operation формирует long-term memory;
+- агент имеет hints о заархивированном контенте в текущей сессии;
 - эпизоды фиксируются при завершении задачи без участия агента;
 
 ## Phase 2 — Hybrid retrieval
