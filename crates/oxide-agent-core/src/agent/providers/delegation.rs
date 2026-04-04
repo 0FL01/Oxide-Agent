@@ -8,8 +8,8 @@ use crate::agent::compaction::{
 };
 use crate::agent::context::{AgentContext, EphemeralSession};
 use crate::agent::hooks::{
-    CompletionCheckHook, SearchBudgetHook, SubAgentSafetyConfig, SubAgentSafetyHook,
-    TimeoutReportHook,
+    CompletionCheckHook, HotContextHealthHook, SearchBudgetHook, SubAgentSafetyConfig,
+    SubAgentSafetyHook, TimeoutReportHook,
 };
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
@@ -351,6 +351,7 @@ impl DelegationProvider {
         let max_iterations = get_sub_agent_max_iterations();
         let mut runner = AgentRunner::new(Arc::clone(&self.llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
+        runner.register_hook(Box::new(HotContextHealthHook::new()));
         runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
             max_iterations,
             max_tokens,

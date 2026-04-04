@@ -55,6 +55,17 @@ pub enum HookResult {
     /// Inject additional context into the next LLM request
     InjectContext(String),
 
+    /// Inject context for the current turn without persisting it to memory.
+    InjectTransientContext(String),
+
+    /// Request an immediate compaction pass before the next model call.
+    RequestCompaction {
+        /// Reason for the request (shown in logs).
+        reason: String,
+        /// Optional transient context to add to the next model call.
+        context: Option<String>,
+    },
+
     /// Force the agent to continue iterating instead of returning
     ForceIteration {
         /// Reason for forcing continuation (shown in logs)
