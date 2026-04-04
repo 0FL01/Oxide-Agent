@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod budget;
 pub mod classifier;
+pub mod dedup_superseded;
 pub mod error_retry_collapse;
 pub mod externalize;
 pub mod prompt;
@@ -19,6 +20,9 @@ pub use archive::{
 };
 pub use budget::{count_tokens_cached, estimate_request_budget};
 pub use classifier::{classify_hot_memory, classify_hot_memory_with_policy};
+pub use dedup_superseded::{
+    dedup_superseded_tool_results, DedupSupersededContract, DedupSupersededOutcome,
+};
 pub use error_retry_collapse::collapse_error_retries;
 pub use externalize::{
     externalize_hot_memory, ExternalizedPayloadRecord, NoopPayloadSink, PayloadSink,

@@ -3,6 +3,7 @@
 use super::archive::{persist_compacted_history_chunk, ArchiveSink, NoopArchiveSink};
 use super::budget::estimate_request_budget;
 use super::classifier::classify_hot_memory_with_policy;
+use super::dedup_superseded::{dedup_superseded_tool_results, DedupSupersededContract};
 use super::error_retry_collapse::collapse_error_retries;
 use super::externalize::{externalize_hot_memory, NoopPayloadSink, PayloadSink};
 use super::prune::prune_hot_memory;
@@ -201,10 +202,25 @@ impl CompactionService {
             &self.policy,
             Some(agent.memory().max_tokens()),
         );
+        let stage0_contract = DedupSupersededContract::default();
+        let (deduped_messages, dedup_outcome) = dedup_superseded_tool_results(
+            &stage0_contract,
+            &snapshot_after_collapse,
+            agent.memory().get_messages(),
+        );
+        if dedup_outcome.applied {
+            agent.memory_mut().replace_messages(deduped_messages);
+        }
+
+        let snapshot_after_dedup = classify_hot_memory_with_policy(
+            agent.memory().get_messages(),
+            &self.policy,
+            Some(agent.memory().max_tokens()),
+        );
         let (rewritten_messages, externalization) = externalize_hot_memory(
             &self.policy,
             &agent.compaction_scope(),
-            &snapshot_after_collapse,
+            &snapshot_after_dedup,
             agent.memory().get_messages(),
             self.payload_sink.as_ref(),
             self.archive_sink.as_ref(),
