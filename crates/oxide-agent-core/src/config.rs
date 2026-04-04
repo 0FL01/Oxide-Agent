@@ -194,6 +194,11 @@ pub struct AgentSettings {
     /// Compaction summary model timeout override in seconds
     pub compaction_model_timeout_secs: Option<u64>,
 
+    /// Soft warning threshold for hot-context growth.
+    pub soft_warning_tokens: Option<usize>,
+    /// Hard threshold that triggers immediate compaction.
+    pub hard_compaction_tokens: Option<usize>,
+
     /// Embedding provider name (mistral, openrouter, openai)
     pub embedding_provider: Option<String>,
     /// Embedding model ID
@@ -925,6 +930,16 @@ impl AgentSettings {
         self.sub_agent_timeout_secs
             .unwrap_or(SUB_AGENT_TIMEOUT_SECS)
     }
+
+    /// Returns the configured hot-context warning and compaction thresholds.
+    pub fn get_hot_context_limits(&self) -> crate::agent::compaction::HotContextLimits {
+        crate::agent::compaction::HotContextLimits::new(
+            self.soft_warning_tokens
+                .unwrap_or(DEFAULT_HOT_CONTEXT_SOFT_WARNING_TOKENS),
+            self.hard_compaction_tokens
+                .unwrap_or(DEFAULT_HOT_CONTEXT_HARD_COMPACTION_TOKENS),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -954,16 +969,23 @@ mod tests {
         env::set_var("R2_ENDPOINT_URL", "https://example.com");
         env::set_var("CHAT_MODEL_ID", "test-model");
         env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("SOFT_WARNING_TOKENS", "12345");
+        env::set_var("HARD_COMPACTION_TOKENS", "23456");
 
         let settings = AgentSettings::new()?;
         assert_eq!(
             settings.r2_endpoint_url,
             Some("https://example.com".to_string())
         );
+        let hot_context_limits = settings.get_hot_context_limits();
+        assert_eq!(hot_context_limits.soft_warning_tokens, 12_345);
+        assert_eq!(hot_context_limits.hard_compaction_tokens, 23_456);
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("CHAT_MODEL_ID");
         env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("SOFT_WARNING_TOKENS");
+        env::remove_var("HARD_COMPACTION_TOKENS");
 
         // 2. Test empty env var
         env::set_var("R2_ENDPOINT_URL", "");
@@ -1837,6 +1859,10 @@ pub const LLM_HTTP_TIMEOUT_SECS: u64 = 30;
 /// Default token budget reserved for recent tool interactions in hot memory.
 /// Only tool outputs within this budget are protected from pruning during active runs.
 pub const DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS: usize = 8_192;
+/// Default soft warning threshold for hot context growth.
+pub const DEFAULT_HOT_CONTEXT_SOFT_WARNING_TOKENS: usize = 60_000;
+/// Default hard threshold for hot context compaction.
+pub const DEFAULT_HOT_CONTEXT_HARD_COMPACTION_TOKENS: usize = 80_000;
 
 /// Get compaction protected tool window tokens from env or default.
 ///

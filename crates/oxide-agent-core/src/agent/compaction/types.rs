@@ -2,6 +2,9 @@
 
 use super::archive::ArchiveRef;
 use crate::config::get_compaction_protected_tool_window_tokens;
+use crate::config::{
+    DEFAULT_HOT_CONTEXT_HARD_COMPACTION_TOKENS, DEFAULT_HOT_CONTEXT_SOFT_WARNING_TOKENS,
+};
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -134,6 +137,41 @@ pub struct CompactionPolicy {
     /// Token budget reserved for the recent raw tool window before older tool
     /// artifacts become eligible for pruning or summary compaction.
     pub protected_tool_window_tokens: usize,
+}
+
+/// Configured hot-context thresholds for warning and compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HotContextLimits {
+    /// Token budget at which the hook emits a soft warning.
+    pub soft_warning_tokens: usize,
+    /// Token budget at which the hook requests compaction.
+    pub hard_compaction_tokens: usize,
+}
+
+impl HotContextLimits {
+    /// Create hot-context limits, ensuring the hard limit stays above the soft limit.
+    #[must_use]
+    pub const fn new(soft_warning_tokens: usize, hard_compaction_tokens: usize) -> Self {
+        let hard_compaction_tokens = if hard_compaction_tokens > soft_warning_tokens {
+            hard_compaction_tokens
+        } else {
+            soft_warning_tokens.saturating_add(1)
+        };
+
+        Self {
+            soft_warning_tokens,
+            hard_compaction_tokens,
+        }
+    }
+}
+
+impl Default for HotContextLimits {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_HOT_CONTEXT_SOFT_WARNING_TOKENS,
+            DEFAULT_HOT_CONTEXT_HARD_COMPACTION_TOKENS,
+        )
+    }
 }
 
 impl Default for CompactionPolicy {
@@ -591,7 +629,7 @@ mod tests {
     use super::{
         resolve_retention, AgentMessageKind, BudgetEstimate, BudgetState, CompactionOutcome,
         CompactionPolicy, CompactionRetention, CompactionSnapshot, CompactionTrigger,
-        HotMemoryBudget,
+        HotContextLimits, HotMemoryBudget,
     };
 
     #[test]
@@ -641,6 +679,22 @@ mod tests {
         assert!(policy.prune_threshold_percent < policy.compact_threshold_percent);
         assert!(policy.compact_threshold_percent < policy.over_limit_threshold_percent);
         assert!(policy.hard_reserve_tokens > 0);
+    }
+
+    #[test]
+    fn default_hot_context_limits_match_plan_values() {
+        let limits = HotContextLimits::default();
+
+        assert_eq!(limits.soft_warning_tokens, 60_000);
+        assert_eq!(limits.hard_compaction_tokens, 80_000);
+    }
+
+    #[test]
+    fn hot_context_limits_keep_hard_above_soft() {
+        let limits = HotContextLimits::new(10, 5);
+
+        assert_eq!(limits.soft_warning_tokens, 10);
+        assert_eq!(limits.hard_compaction_tokens, 11);
     }
 
     #[test]

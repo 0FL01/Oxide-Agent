@@ -35,7 +35,8 @@ pub use types::{
     ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome, CompactionPolicy,
     CompactionRequest, CompactionRetention, CompactionScope, CompactionSnapshot, CompactionSummary,
     CompactionTrigger, DedupSupersededOutcome, ErrorRetryCollapseOutcome, ExternalizationOutcome,
-    HotMemoryBudget, PruneOutcome, RebuildOutcome, RecentRawWindow, SummaryGenerationOutcome,
+    HotContextLimits, HotMemoryBudget, PruneOutcome, RebuildOutcome, RecentRawWindow,
+    SummaryGenerationOutcome,
 };
 
 #[cfg(test)]
