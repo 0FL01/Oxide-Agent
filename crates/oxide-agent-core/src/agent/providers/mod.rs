@@ -4,6 +4,7 @@
 
 /// Topic-scoped self-editing tools for `AGENTS.md`.
 pub mod agents_md;
+pub mod compression;
 pub mod delegation;
 mod file_delivery;
 pub mod filehoster;
@@ -39,6 +40,7 @@ pub mod jira_mcp;
 pub mod mattermost_mcp;
 
 pub use agents_md::{agents_md_tool_names, AgentsMdProvider};
+pub use compression::{compress_tool_names, CompressionProvider, TOOL_COMPRESS};
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
 pub use manager_control_plane::{

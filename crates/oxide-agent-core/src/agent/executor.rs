@@ -15,11 +15,11 @@ use super::memory::AgentMessage;
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
-    inject_approval_credentials, AgentsMdProvider, DelegationProvider, FileHosterProvider,
-    KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle, MediaFileProvider,
-    ReminderContext, ReminderProvider, SandboxProvider, SshApprovalGrant, SshApprovalRegistry,
-    SshApprovalRequestView, SshMcpProvider, StackLogsProvider, TodoList, TodosProvider,
-    TopicInfraPreflightReport, YtdlpProvider,
+    inject_approval_credentials, AgentsMdProvider, CompressionProvider, DelegationProvider,
+    FileHosterProvider, KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
+    MediaFileProvider, ReminderContext, ReminderProvider, SandboxProvider, SshApprovalGrant,
+    SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider, StackLogsProvider, TodoList,
+    TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -499,6 +499,7 @@ impl AgentExecutor {
             SandboxProvider::new(sandbox_scope.clone())
         };
         registry.register(Box::new(sandbox_provider));
+        registry.register(Box::new(CompressionProvider::new()));
         registry.register(Box::new(StackLogsProvider::new()));
         registry.register(Box::new(FileHosterProvider::new(sandbox_scope.clone())));
         registry.register(Box::new(MediaFileProvider::new(
@@ -1664,8 +1665,16 @@ mod tests {
         let executor = build_executor();
         let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
 
+        assert!(registry.can_handle("compress"));
         assert!(registry.can_handle("stack_logs_list_sources"));
         assert!(registry.can_handle("stack_logs_fetch"));
+
+        let tool_names = registry
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(tool_names.contains("compress"));
     }
 
     #[cfg(feature = "browser_use")]
