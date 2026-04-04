@@ -3,9 +3,10 @@
 use super::hooks::ToolHookDecision;
 use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use super::AgentRunner;
-use crate::agent::compaction::CompactionTrigger;
+use crate::agent::compaction::{CompactionRequest, CompactionTrigger};
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
+use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_bridge::extract_updated_topic_agents_md;
 use crate::agent::tool_runtime::scope_tool_model_route;
@@ -102,6 +103,7 @@ impl AgentRunner {
         // 1. Hooks may block tools or force finish (decisions affect flow)
         // 2. Skill loading may mutate context
         let mut approved_tools: Vec<(usize, ToolCall)> = Vec::with_capacity(tool_calls.len());
+        let mut compress_tools: Vec<(usize, ToolCall)> = Vec::new();
         let mut blocked_results: Vec<(usize, String)> = Vec::new();
 
         for (idx, tool_call) in tool_calls.iter().enumerate() {
@@ -110,7 +112,11 @@ impl AgentRunner {
 
             match self.apply_before_tool_hooks(ctx, state, tool_call)? {
                 ToolHookDecision::Continue => {
-                    approved_tools.push((idx, tool_call.clone()));
+                    if tool_call.function.name == TOOL_COMPRESS {
+                        compress_tools.push((idx, tool_call.clone()));
+                    } else {
+                        approved_tools.push((idx, tool_call.clone()));
+                    }
                 }
                 ToolHookDecision::Blocked { reason } => {
                     blocked_results.push((idx, reason));
@@ -132,6 +138,36 @@ impl AgentRunner {
             )
             .await;
         }
+        if approved_tools.is_empty() && compress_tools.is_empty() {
+            return Ok(None);
+        }
+
+        for (_idx, tool_call) in compress_tools {
+            let result = self.execute_compress_tool(ctx, &tool_call).await;
+            if self
+                .record_tool_execution_result(ctx, state, tool_call, result)
+                .await?
+            {
+                return Ok(Some(AgentRunResult::WaitingForApproval));
+            }
+
+            Self::emit_token_snapshot_update(
+                ctx.progress_tx,
+                Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration),
+            )
+            .await;
+        }
+
+        self.execute_approved_tools(ctx, state, approved_tools)
+            .await
+    }
+
+    async fn execute_approved_tools(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &RunState,
+        approved_tools: Vec<(usize, ToolCall)>,
+    ) -> anyhow::Result<Option<AgentRunResult>> {
         if approved_tools.is_empty() {
             return Ok(None);
         }
@@ -198,6 +234,90 @@ impl AgentRunner {
         }
 
         Ok(None)
+    }
+
+    async fn execute_compress_tool(
+        &self,
+        ctx: &mut AgentRunnerContext<'_>,
+        tool_call: &ToolCall,
+    ) -> anyhow::Result<String> {
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::ToolCall {
+                    name: sanitize_xml_tags(&tool_call.function.name),
+                    input: sanitize_xml_tags(&tool_call.function.arguments),
+                    command_preview: None,
+                })
+                .await;
+        }
+
+        let Some(compaction_service) = ctx.compaction_service else {
+            return Err(anyhow::anyhow!(
+                "compress tool is unavailable in this runner context"
+            ));
+        };
+
+        let request = CompactionRequest::new(
+            CompactionTrigger::Manual,
+            ctx.task,
+            ctx.system_prompt,
+            ctx.tools,
+            &ctx.config.model_name,
+            ctx.config.model_max_output_tokens,
+            ctx.config.is_sub_agent,
+        );
+
+        Self::emit_compaction_started(ctx.progress_tx, CompactionTrigger::Manual).await;
+
+        let cancellation_token = ctx.agent.cancellation_token().clone();
+        let outcome = match Self::await_until_cancelled(
+            cancellation_token,
+            compaction_service.prepare_for_run(&request, ctx.agent),
+        )
+        .await
+        {
+            Some(Ok(outcome)) => outcome,
+            Some(Err(error)) => {
+                Self::emit_compaction_failed(
+                    ctx.progress_tx,
+                    CompactionTrigger::Manual,
+                    error.to_string(),
+                )
+                .await;
+                return Err(error);
+            }
+            None => {
+                if let Some(tx) = ctx.progress_tx {
+                    let _ = tx.send(AgentEvent::Cancelled).await;
+                }
+                Self::emit_compaction_failed(
+                    ctx.progress_tx,
+                    CompactionTrigger::Manual,
+                    "Task cancelled by user".to_string(),
+                )
+                .await;
+                return Err(anyhow::anyhow!("Task cancelled by user"));
+            }
+        };
+
+        if outcome.pruning.applied {
+            Self::emit_pruning_applied(ctx.progress_tx, &outcome).await;
+        }
+        Self::emit_compaction_completed(ctx.progress_tx, CompactionTrigger::Manual, &outcome).await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "applied": outcome.applied,
+            "tokens_before": outcome.token_count_before,
+            "tokens_after": outcome.token_count_after,
+            "reclaimed_tokens": outcome.reclaimed_hot_memory_tokens(),
+            "externalized_count": outcome.externalization.externalized_count,
+            "pruned_count": outcome.pruning.pruned_count,
+            "archived_chunk_count": outcome.archive_persistence.archived_chunk_count,
+            "summary_updated": outcome.rebuild.inserted_summary,
+            "budget_state": outcome.budget.state,
+        })
+        .to_string())
     }
 
     async fn record_tool_execution_result(

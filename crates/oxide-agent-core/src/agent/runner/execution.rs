@@ -633,7 +633,7 @@ impl AgentRunner {
         }
     }
 
-    async fn await_until_cancelled<T, F>(
+    pub(super) async fn await_until_cancelled<T, F>(
         cancellation_token: tokio_util::sync::CancellationToken,
         future: F,
     ) -> Option<T>
@@ -1216,7 +1216,7 @@ impl AgentRunner {
         }
     }
 
-    async fn emit_compaction_started(
+    pub(super) async fn emit_compaction_started(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         trigger: CompactionTrigger,
     ) {
@@ -1225,7 +1225,7 @@ impl AgentRunner {
         }
     }
 
-    async fn emit_pruning_applied(
+    pub(super) async fn emit_pruning_applied(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         outcome: &crate::agent::CompactionOutcome,
     ) {
@@ -1259,7 +1259,7 @@ impl AgentRunner {
         }
     }
 
-    async fn emit_compaction_completed(
+    pub(super) async fn emit_compaction_completed(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         trigger: CompactionTrigger,
         outcome: &crate::agent::CompactionOutcome,
@@ -1279,7 +1279,7 @@ impl AgentRunner {
         }
     }
 
-    async fn emit_compaction_failed(
+    pub(super) async fn emit_compaction_failed(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         trigger: CompactionTrigger,
         error: String,
