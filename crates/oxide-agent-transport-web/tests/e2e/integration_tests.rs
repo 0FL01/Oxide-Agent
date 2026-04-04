@@ -34,10 +34,12 @@ async fn e2e_connection_pool_latency() {
     eprintln!("Testing connection pool with provider: {}", provider_name);
 
     let agent_settings = Arc::new({
-        let mut s = AgentSettings::default();
-        s.agent_model_id = Some(model_id.to_string());
-        s.agent_model_provider = Some(provider_name.to_string());
-        s.agent_timeout_secs = Some(30);
+        let mut s = AgentSettings {
+            agent_model_id: Some(model_id.to_string()),
+            agent_model_provider: Some(provider_name.to_string()),
+            agent_timeout_secs: Some(30),
+            ..Default::default()
+        };
         match provider_name {
             "openrouter" => {
                 s.openrouter_api_key = std::env::var("OPENROUTER_API_KEY").ok();
