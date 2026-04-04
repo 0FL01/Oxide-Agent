@@ -2,7 +2,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use oxide_agent_core::agent::memory::AgentMessage;
@@ -19,11 +19,34 @@ use super::helpers::{
 };
 use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
 
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
 fn derive_session_id(session_id: &str, user_id: i64) -> SessionId {
     let mut h = DefaultHasher::new();
     session_id.hash(&mut h);
     user_id.hash(&mut h);
     SessionId::from(h.finish() as i64)
+}
+
+fn init_test_tracing() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = tracing_subscriber::registry()
+            .with(EnvFilter::from_default_env())
+            .with(tracing_subscriber::fmt::layer().with_test_writer())
+            .try_init();
+    });
+}
+
+fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+    ToolCall::new(
+        id.to_string(),
+        ToolCallFunction {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        },
+        false,
+    )
 }
 
 async fn seed_history(
@@ -153,6 +176,393 @@ fn token_rich_payload(label: &str, words: usize) -> String {
         .map(|index| format!("{label}_{index} signal_{index}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[tokio::test]
+async fn e2e_compaction_post_run_deduplicates_superseded_read_file_results() {
+    init_test_tracing();
+
+    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+        super::helpers::unstructured_text_response("done"),
+    ]));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
+    let app_state =
+        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260404;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+
+    seed_history(
+        session_manager.as_ref(),
+        &session_id,
+        user_id,
+        vec![
+            AgentMessage::user_task("Inspect dependency versions with repeated file reads"),
+            AgentMessage::assistant_with_tools(
+                "Read Cargo.toml first",
+                vec![tool_call(
+                    "call-read-1",
+                    "read_file",
+                    serde_json::json!({"path":"Cargo.toml"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "call-read-1",
+                "read_file",
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"",
+            ),
+            AgentMessage::assistant_with_tools(
+                "Read README next",
+                vec![tool_call(
+                    "call-read-2",
+                    "read_file",
+                    serde_json::json!({"path":"README.md"}),
+                )],
+            ),
+            AgentMessage::tool("call-read-2", "read_file", "# Demo repo\nSome notes here."),
+            AgentMessage::assistant_with_tools(
+                "Read Cargo.toml again",
+                vec![tool_call(
+                    "call-read-3",
+                    "read_file",
+                    serde_json::json!({"path":"Cargo.toml"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "call-read-3",
+                "read_file",
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"",
+            ),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 1",
+                vec![tool_call(
+                    "recent-call-1",
+                    "search",
+                    serde_json::json!({"query":"recent filler 1"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-1",
+                "search",
+                &token_rich_payload("recent-1", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 2",
+                vec![tool_call(
+                    "recent-call-2",
+                    "search",
+                    serde_json::json!({"query":"recent filler 2"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-2",
+                "search",
+                &token_rich_payload("recent-2", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 3",
+                vec![tool_call(
+                    "recent-call-3",
+                    "search",
+                    serde_json::json!({"query":"recent filler 3"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-3",
+                "search",
+                &token_rich_payload("recent-3", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 4",
+                vec![tool_call(
+                    "recent-call-4",
+                    "search",
+                    serde_json::json!({"query":"recent filler 4"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-4",
+                "search",
+                &token_rich_payload("recent-4", 1_200),
+            ),
+        ],
+    )
+    .await;
+
+    let task_id = create_task_http_with_body(&client, &base_url, &session_id, "Return done").await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(3),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+
+    let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
+    assert!(progress_resp.status().is_success());
+    let progress: serde_json::Value = progress_resp
+        .json()
+        .await
+        .expect("failed to decode task progress");
+    assert_eq!(progress["latest_token_snapshot"]["budget_state"], "Healthy");
+    assert!(progress["last_compaction_status"].as_str().is_some());
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let event_names: Vec<String> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .map(str::to_string)
+        .collect();
+    eprintln!("[dedup-e2e] event_names={event_names:?}");
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_completed"));
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+
+    let read_one = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-read-1"))
+        .expect("first read_file result should exist");
+    let read_two = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-read-2"))
+        .expect("README read_file result should exist");
+    let read_three = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-read-3"))
+        .expect("second Cargo.toml read_file result should exist");
+
+    eprintln!(
+        "[dedup-e2e] call-read-1 content={:?}",
+        read_one.content.chars().take(180).collect::<String>()
+    );
+    eprintln!(
+        "[dedup-e2e] call-read-2 content={:?}",
+        read_two.content.chars().take(180).collect::<String>()
+    );
+    eprintln!(
+        "[dedup-e2e] call-read-3 content={:?}",
+        read_three.content.chars().take(180).collect::<String>()
+    );
+
+    assert!(read_one.content.starts_with("[deduplicated tool result]"));
+    assert!(read_one.content.contains("tool: read_file"));
+    assert!(!read_one.is_externalized());
+    assert!(!read_one.is_pruned());
+    assert_eq!(read_two.content, "# Demo repo\nSome notes here.");
+    assert_eq!(
+        read_three.content,
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\""
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
+    init_test_tracing();
+
+    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+        super::helpers::unstructured_text_response("done"),
+    ]));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
+    let app_state =
+        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260405;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+
+    seed_history(
+        session_manager.as_ref(),
+        &session_id,
+        user_id,
+        vec![
+            AgentMessage::user_task("Inspect file-specific dedup behavior"),
+            AgentMessage::assistant_with_tools(
+                "Read file A",
+                vec![tool_call(
+                    "call-read-a-1",
+                    "read_file",
+                    serde_json::json!({"path":"file_a.txt"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "call-read-a-1",
+                "read_file",
+                "alpha contents\nline 2",
+            ),
+            AgentMessage::assistant_with_tools(
+                "Read file B",
+                vec![tool_call(
+                    "call-read-b",
+                    "read_file",
+                    serde_json::json!({"path":"file_b.txt"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "call-read-b",
+                "read_file",
+                "beta contents\nline 2",
+            ),
+            AgentMessage::assistant_with_tools(
+                "Read file A again",
+                vec![tool_call(
+                    "call-read-a-2",
+                    "read_file",
+                    serde_json::json!({"path":"file_a.txt"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "call-read-a-2",
+                "read_file",
+                "alpha contents\nline 2",
+            ),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 1",
+                vec![tool_call(
+                    "recent-call-1",
+                    "search",
+                    serde_json::json!({"query":"recent filler 1"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-1",
+                "search",
+                &token_rich_payload("recent-1", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 2",
+                vec![tool_call(
+                    "recent-call-2",
+                    "search",
+                    serde_json::json!({"query":"recent filler 2"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-2",
+                "search",
+                &token_rich_payload("recent-2", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 3",
+                vec![tool_call(
+                    "recent-call-3",
+                    "search",
+                    serde_json::json!({"query":"recent filler 3"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-3",
+                "search",
+                &token_rich_payload("recent-3", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 4",
+                vec![tool_call(
+                    "recent-call-4",
+                    "search",
+                    serde_json::json!({"query":"recent filler 4"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-4",
+                "search",
+                &token_rich_payload("recent-4", 1_200),
+            ),
+        ],
+    )
+    .await;
+
+    let task_id = create_task_http_with_body(&client, &base_url, &session_id, "Return done").await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(3),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+
+    let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
+    assert!(progress_resp.status().is_success());
+    let progress: serde_json::Value = progress_resp
+        .json()
+        .await
+        .expect("failed to decode task progress");
+    assert_eq!(progress["latest_token_snapshot"]["budget_state"], "Healthy");
+    assert!(progress["last_compaction_status"].as_str().is_some());
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let event_names: Vec<String> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .map(str::to_string)
+        .collect();
+    eprintln!("[dedup-e2e] event_names={event_names:?}");
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_completed"));
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+
+    let read_a_1 = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-read-a-1"))
+        .expect("first file_a read should exist");
+    let read_b = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-read-b"))
+        .expect("file_b read should exist");
+    let read_a_2 = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-read-a-2"))
+        .expect("second file_a read should exist");
+
+    eprintln!(
+        "[dedup-e2e] call-read-a-1 content={:?}",
+        read_a_1.content.chars().take(180).collect::<String>()
+    );
+    eprintln!(
+        "[dedup-e2e] call-read-b content={:?}",
+        read_b.content.chars().take(180).collect::<String>()
+    );
+    eprintln!(
+        "[dedup-e2e] call-read-a-2 content={:?}",
+        read_a_2.content.chars().take(180).collect::<String>()
+    );
+
+    assert!(read_a_1.content.starts_with("[deduplicated tool result]"));
+    assert!(read_a_1.content.contains("tool: read_file"));
+    assert_eq!(read_b.content, "beta contents\nline 2");
+    assert_eq!(read_a_2.content, "alpha contents\nline 2");
+
+    server.abort();
 }
 
 #[tokio::test]
