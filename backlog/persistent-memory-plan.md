@@ -11,6 +11,24 @@
 - хранить raw history отдельно от индексируемой памяти;
 - держать hot context маленьким и агрессивно чистить его.
 
+## Current Status In Code
+
+### Implemented
+- `compress` tool exists and is registered in the main agent registry.
+- `compress` is handled by the runner and blocked for sub-agents.
+- `HotContextHealthHook` is implemented and wired into agent execution.
+- Soft/hard hot-context limits are config-backed (`soft_warning_tokens`, `hard_compaction_tokens`).
+- Transient warning injection exists and does not persist into agent memory.
+- Regression tests cover `compress`, hot-context warnings, compaction behavior, and transport-web E2E.
+
+### Not Implemented Yet
+- Typed long-term memory model (`threads`, `episodes`, `memories`, `session_state`).
+- Memory search/read/write tools.
+- Hybrid retrieval pipeline (lexical + vector + rerank).
+- End-of-task memory finalization hook.
+- Episodic extraction / consolidation hooks.
+- Long-term memory persistence and indexing for compaction outputs.
+
 ---
 
 ## Decision
@@ -536,32 +554,40 @@ soft limit warning или по решению агента.
 ## Phase 1 — Foundation
 Сделать базовые сущности, hooks, tool и write path.
 
+Что уже есть в коде:
+- `compress` tool;
+- `HotContextHealthHook`;
+- transient warning path;
+- config/env для soft/hard limits;
+- tests for the hot-context path.
+
 Что делаем:
-- вводим `threads`, `episodes`, `memories`, `session_state`;
-- реализуем `EndOfTaskMemoryHook` — автоматическая финализация + compaction + persist memory;
-- реализуем `HotContextHealthHook` — warning при 60k, auto-compaction при 80k (с retry fallback);
-- реализуем `compress` tool — интерактивное сжатие по решению агента;
-- добавляем compaction side-effects: persist high-signal data → long-term memory;
-- добавляем ArchiveReference hints в hot context после каждой compression;
-- отделяем raw archive в R2 от retrieval metadata;
-- делаем lexical search по episodes/memories;
-- делаем manual read tools.
+- [ ] вводим `threads`, `episodes`, `memories`, `session_state`;
+- [ ] реализуем `EndOfTaskMemoryHook` — автоматическая финализация + compaction + persist memory;
+- [x] реализуем `HotContextHealthHook` — warning при 60k, auto-compaction при 80k (с retry fallback);
+- [x] реализуем `compress` tool — интерактивное сжатие по решению агента;
+- [ ] добавляем compaction side-effects: persist high-signal data → long-term memory;
+- [ ] добавляем ArchiveReference hints в hot context после каждой compression;
+- [ ] отделяем raw archive в R2 от retrieval metadata;
+- [ ] делаем lexical search по episodes/memories;
+- [ ] делаем manual read tools.
 
 Результат:
 - hot context управляется автоматически (hooks) и интерактивно (tool);
-- каждая compression operation формирует long-term memory;
-- агент имеет hints о заархивированном контенте в текущей сессии;
-- эпизоды фиксируются при завершении задачи без участия агента;
+- long-term memory pipeline ещё не реализован;
+- hints об архиве и эпизоды ещё не пишутся автоматически.
 
 ## Phase 2 — Hybrid retrieval
 Добавляем semantic retrieval.
 
+Статус: не реализовано.
+
 Что делаем:
-- embeddings для episodes/memories;
-- pgvector search;
-- weighted fusion;
-- optional rerank;
-- context injection policy.
+- [ ] embeddings для episodes/memories;
+- [ ] pgvector search;
+- [ ] weighted fusion;
+- [ ] optional rerank;
+- [ ] context injection policy.
 
 Результат:
 - поиск работает и по exact match, и по смыслу.
@@ -569,13 +595,15 @@ soft limit warning или по решению агента.
 ## Phase 3 — Consolidation
 Добавляем memory hygiene.
 
+Статус: не реализовано.
+
 Что делаем:
-- deduplication;
-- extraction episode -> reusable memory;
-- importance scoring;
-- decay / TTL;
-- merge похожих записей;
-- background cleanup watchdog.
+- [ ] deduplication;
+- [ ] extraction episode -> reusable memory;
+- [ ] importance scoring;
+- [ ] decay / TTL;
+- [ ] merge похожих записей;
+- [ ] background cleanup watchdog.
 
 Результат:
 - память растёт медленно и остаётся полезной;
@@ -584,11 +612,13 @@ soft limit warning или по решению агента.
 ## Phase 4 — Agent-native memory behavior
 Уточняем memory workflow для агента.
 
+Статус: не реализовано.
+
 Что делаем:
-- `EpisodicExtractHook` — extraction из tool calls в reusable memories;
-- retrieval advisor hook — подсказывает агенту "consider memory search", но агент решает;
-- topic-aware memory policies;
-- optional user-facing "memory cards" / "chat history cards".
+- [ ] `EpisodicExtractHook` — extraction из tool calls в reusable memories;
+- [ ] retrieval advisor hook — подсказывает агенту "consider memory search", но агент решает;
+- [ ] topic-aware memory policies;
+- [ ] optional user-facing "memory cards" / "chat history cards".
 
 Результат:
 - память становится управляемой подсистемой, а не пассивным архивом;
