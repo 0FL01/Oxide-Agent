@@ -3,16 +3,18 @@
 use super::budget::estimate_message_tokens;
 use super::types::{AgentMessageKind, CompactionSnapshot, DedupSupersededOutcome};
 use crate::agent::memory::AgentMessage;
+use crate::llm::ToolCall;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Component, Path};
 use tracing::warn;
 
 /// Placeholder written into older tool results once a later identical output supersedes them.
 pub const SUPERSEDED_DEDUP_PLACEHOLDER: &str =
     "[deduplicated tool result: superseded by later identical output]";
 
-/// Stage-2 scope contract for deterministic superseded-result deduplication.
+/// Stage-3 scope contract for deterministic superseded-result deduplication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DedupSupersededContract {
     /// Stage-level toggle.
@@ -29,6 +31,10 @@ pub struct DedupSupersededContract {
     pub require_output_fingerprint_match: bool,
     /// Dedup is blocked when mutating actions occurred between candidate reads.
     pub block_on_intermediate_mutating_actions: bool,
+    /// Tools that always block dedup because their mutation scope is ambiguous.
+    pub ambiguous_mutating_tool_allowlist: Vec<String>,
+    /// Tools that block dedup when their path overlaps the read target.
+    pub path_aware_mutating_tool_allowlist: Vec<String>,
     /// Placeholder message for superseded entries.
     pub superseded_placeholder: String,
 }
@@ -43,6 +49,15 @@ impl Default for DedupSupersededContract {
             require_canonical_tool_and_args_match: true,
             require_output_fingerprint_match: true,
             block_on_intermediate_mutating_actions: true,
+            ambiguous_mutating_tool_allowlist: vec![
+                "execute_command".to_string(),
+                "sudo_exec".to_string(),
+                "recreate_sandbox".to_string(),
+            ],
+            path_aware_mutating_tool_allowlist: vec![
+                "write_file".to_string(),
+                "apply_file_edit".to_string(),
+            ],
             superseded_placeholder: SUPERSEDED_DEDUP_PLACEHOLDER.to_string(),
         }
     }
@@ -60,6 +75,7 @@ struct ReadFileCandidate {
     key: DedupKey,
     assistant_index: usize,
     result_index: usize,
+    normalized_read_path: NormalizedPath,
     tool_name: String,
     preview: String,
 }
@@ -68,6 +84,12 @@ struct DedupedMessage {
     message: AgentMessage,
     reclaimed_tokens: usize,
     reclaimed_chars: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedPath {
+    is_absolute: bool,
+    parts: Vec<String>,
 }
 
 const PREVIEW_CHARS: usize = 120;
@@ -104,7 +126,7 @@ pub fn dedup_superseded_tool_results(
                     || !has_intermediate_mutating_actions(
                         contract,
                         messages,
-                        candidate.result_index,
+                        &candidate,
                         keeper.assistant_index,
                     )
             });
@@ -254,6 +276,10 @@ fn build_candidate(
         },
         assistant_index: assistant_entry.index,
         result_index: result_entry.index,
+        normalized_read_path: normalize_tool_path(
+            &tool_call.function.name,
+            &extract_path_argument(&tool_call.function.arguments)?,
+        )?,
         tool_name: result_message.tool_name.clone()?,
         preview: build_preview(&result_message.content, PREVIEW_CHARS),
     })
@@ -288,33 +314,62 @@ fn rewrite_as_placeholder(
 fn has_intermediate_mutating_actions(
     contract: &DedupSupersededContract,
     messages: &[AgentMessage],
-    from_result_index: usize,
+    candidate: &ReadFileCandidate,
     to_assistant_index: usize,
 ) -> bool {
     messages
         .iter()
         .enumerate()
-        .skip(from_result_index.saturating_add(1))
-        .take(to_assistant_index.saturating_sub(from_result_index.saturating_add(1)))
-        .any(|(_, message)| message_may_mutate_state(contract, message))
+        .skip(candidate.result_index.saturating_add(1))
+        .take(to_assistant_index.saturating_sub(candidate.result_index.saturating_add(1)))
+        .any(|(_, message)| message_may_mutate_read_target(contract, message, candidate))
 }
 
-fn message_may_mutate_state(contract: &DedupSupersededContract, message: &AgentMessage) -> bool {
-    match message.resolved_kind() {
-        AgentMessageKind::AssistantToolCall => {
-            message.tool_calls.as_ref().is_none_or(|tool_calls| {
-                tool_calls.iter().any(|tool_call| {
-                    !tool_allowed(contract, &canonicalize_tool_name(&tool_call.function.name))
-                })
-            })
-        }
-        AgentMessageKind::ToolResult => message
-            .tool_name
-            .as_deref()
-            .map(canonicalize_tool_name)
-            .is_none_or(|tool_name| !tool_allowed(contract, &tool_name)),
-        _ => false,
+fn message_may_mutate_read_target(
+    contract: &DedupSupersededContract,
+    message: &AgentMessage,
+    candidate: &ReadFileCandidate,
+) -> bool {
+    if message.resolved_kind() != AgentMessageKind::AssistantToolCall {
+        return false;
     }
+
+    message.tool_calls.as_ref().is_some_and(|tool_calls| {
+        tool_calls
+            .iter()
+            .any(|tool_call| tool_call_may_mutate_read_target(contract, tool_call, candidate))
+    })
+}
+
+fn tool_call_may_mutate_read_target(
+    contract: &DedupSupersededContract,
+    tool_call: &ToolCall,
+    candidate: &ReadFileCandidate,
+) -> bool {
+    let tool_name = canonicalize_tool_name(&tool_call.function.name);
+    if contract
+        .ambiguous_mutating_tool_allowlist
+        .iter()
+        .any(|allowed| canonicalize_tool_name(allowed) == tool_name)
+    {
+        return true;
+    }
+
+    if !contract
+        .path_aware_mutating_tool_allowlist
+        .iter()
+        .any(|allowed| canonicalize_tool_name(allowed) == tool_name)
+    {
+        return false;
+    }
+
+    let Some(mutation_path) = extract_path_argument(&tool_call.function.arguments)
+        .and_then(|path| normalize_tool_path(&tool_call.function.name, &path))
+    else {
+        return true;
+    };
+
+    paths_overlap(&candidate.normalized_read_path, &mutation_path)
 }
 
 fn tool_allowed(contract: &DedupSupersededContract, tool_name: &str) -> bool {
@@ -333,13 +388,76 @@ fn canonicalize_args_json(arguments: &str) -> Option<String> {
     serde_json::to_string(&sort_json_value(value)).ok()
 }
 
+fn extract_path_argument(arguments: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(arguments).ok()?;
+    value.get("path")?.as_str().map(ToOwned::to_owned)
+}
+
+fn normalize_tool_path(tool_name: &str, raw_path: &str) -> Option<NormalizedPath> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized_separators = trimmed.replace('\\', "/");
+    let canonical_tool_name = canonicalize_tool_name(tool_name);
+    let workspace_scoped = matches!(
+        canonical_tool_name.as_str(),
+        "read_file" | "write_file" | "apply_file_edit"
+    );
+    let normalized = if workspace_scoped && !normalized_separators.starts_with('/') {
+        format!("/workspace/{normalized_separators}")
+    } else {
+        normalized_separators
+    };
+    let is_absolute = normalized.starts_with('/');
+    let mut parts = Vec::new();
+
+    for component in Path::new(&normalized).components() {
+        match component {
+            Component::Prefix(_) => return None,
+            Component::RootDir => {}
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(last) = parts.last() {
+                    if last != ".." {
+                        parts.pop();
+                    } else if !is_absolute {
+                        parts.push("..".to_string());
+                    }
+                } else if !is_absolute {
+                    parts.push("..".to_string());
+                }
+            }
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+        }
+    }
+
+    Some(NormalizedPath { is_absolute, parts })
+}
+
+fn paths_overlap(left: &NormalizedPath, right: &NormalizedPath) -> bool {
+    if left.is_absolute != right.is_absolute {
+        return false;
+    }
+
+    is_prefix_path(left, right) || is_prefix_path(right, left)
+}
+
+fn is_prefix_path(prefix: &NormalizedPath, candidate: &NormalizedPath) -> bool {
+    prefix.parts.len() <= candidate.parts.len()
+        && prefix
+            .parts
+            .iter()
+            .zip(candidate.parts.iter())
+            .all(|(left, right)| left == right)
+}
+
 fn sort_json_value(value: Value) -> Value {
     match value {
         Value::Array(items) => Value::Array(items.into_iter().map(sort_json_value).collect()),
         Value::Object(map) => {
-            let sorted = map
-                .into_iter()
-                .collect::<std::collections::BTreeMap<_, _>>();
+            let sorted = map.into_iter().collect::<BTreeMap<_, _>>();
             let mut canonical = serde_json::Map::with_capacity(sorted.len());
             for (key, value) in sorted {
                 canonical.insert(key, sort_json_value(value));
@@ -392,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_two_contract_is_conservative_and_enabled() {
+    fn stage_three_contract_is_conservative_and_enabled() {
         let contract = DedupSupersededContract::default();
         assert!(contract.enabled);
         assert_eq!(contract.tool_allowlist, vec!["read_file"]);
@@ -401,6 +519,14 @@ mod tests {
         assert!(contract.require_canonical_tool_and_args_match);
         assert!(contract.require_output_fingerprint_match);
         assert!(contract.block_on_intermediate_mutating_actions);
+        assert_eq!(
+            contract.ambiguous_mutating_tool_allowlist,
+            vec!["execute_command", "sudo_exec", "recreate_sandbox"]
+        );
+        assert_eq!(
+            contract.path_aware_mutating_tool_allowlist,
+            vec!["write_file", "apply_file_edit"]
+        );
         assert!(contract
             .superseded_placeholder
             .contains("superseded by later identical output"));
@@ -459,7 +585,53 @@ mod tests {
     }
 
     #[test]
-    fn dedup_skips_candidates_when_mutating_tool_intervenes() {
+    fn dedup_allows_unrelated_non_mutating_tool_between_reads() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Read first copy",
+                vec![tool_call("call-1", "read_file", r#"{"path":"src/lib.rs"}"#)],
+            ),
+            AgentMessage::tool("call-1", "read_file", "same output"),
+            AgentMessage::assistant_with_tools(
+                "Search in between",
+                vec![tool_call("call-2", "search", r#"{"query":"lib"}"#)],
+            ),
+            AgentMessage::tool("call-2", "search", "result"),
+            AgentMessage::assistant_with_tools(
+                "Read second copy",
+                vec![tool_call("call-3", "read_file", r#"{"path":"src/lib.rs"}"#)],
+            ),
+            AgentMessage::tool("call-3", "read_file", "same output"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-4", "search", "{}")],
+            ),
+            AgentMessage::tool("call-4", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.deduplicated_indices, vec![1]);
+        assert!(rewritten[1].content.contains("[deduplicated tool result]"));
+        assert_eq!(rewritten[5].content, "same output");
+    }
+
+    #[test]
+    fn dedup_blocks_when_related_write_file_intervenes() {
         let messages = vec![
             AgentMessage::assistant_with_tools(
                 "Read first copy",
@@ -471,10 +643,170 @@ mod tests {
                 vec![tool_call(
                     "call-2",
                     "write_file",
-                    r#"{"path":"src/lib.rs","content":"changed"}"#,
+                    r#"{"path":"/workspace/src/./lib.rs","content":"changed"}"#,
                 )],
             ),
             AgentMessage::tool("call-2", "write_file", "ok"),
+            AgentMessage::assistant_with_tools(
+                "Read second copy",
+                vec![tool_call(
+                    "call-3",
+                    "read_file",
+                    r#"{"path":"/workspace/src/lib.rs"}"#,
+                )],
+            ),
+            AgentMessage::tool("call-3", "read_file", "same output"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-4", "search", "{}")],
+            ),
+            AgentMessage::tool("call-4", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(!outcome.applied);
+        assert_eq!(rewritten[1].content, "same output");
+        assert_eq!(rewritten[5].content, "same output");
+    }
+
+    #[test]
+    fn dedup_allows_unrelated_write_file_between_reads() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Read first copy",
+                vec![tool_call("call-1", "read_file", r#"{"path":"src/lib.rs"}"#)],
+            ),
+            AgentMessage::tool("call-1", "read_file", "same output"),
+            AgentMessage::assistant_with_tools(
+                "Write unrelated file",
+                vec![tool_call(
+                    "call-2",
+                    "write_file",
+                    r#"{"path":"docs/readme.md","content":"changed"}"#,
+                )],
+            ),
+            AgentMessage::tool("call-2", "write_file", "ok"),
+            AgentMessage::assistant_with_tools(
+                "Read second copy",
+                vec![tool_call("call-3", "read_file", r#"{"path":"src/lib.rs"}"#)],
+            ),
+            AgentMessage::tool("call-3", "read_file", "same output"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-4", "search", "{}")],
+            ),
+            AgentMessage::tool("call-4", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.deduplicated_indices, vec![1]);
+        assert!(rewritten[1].content.contains("[deduplicated tool result]"));
+        assert_eq!(rewritten[5].content, "same output");
+    }
+
+    #[test]
+    fn dedup_blocks_when_ambiguous_command_intervenes() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Read first copy",
+                vec![tool_call("call-1", "read_file", r#"{"path":"src/lib.rs"}"#)],
+            ),
+            AgentMessage::tool("call-1", "read_file", "same output"),
+            AgentMessage::assistant_with_tools(
+                "Run shell command in between",
+                vec![tool_call(
+                    "call-2",
+                    "execute_command",
+                    r#"{"command":"grep -n foo src/lib.rs"}"#,
+                )],
+            ),
+            AgentMessage::tool(
+                "call-2",
+                "execute_command",
+                r#"{"ok":true,"stdout":"1:foo","stderr":"","exit_code":0}"#,
+            ),
+            AgentMessage::assistant_with_tools(
+                "Read second copy",
+                vec![tool_call("call-3", "read_file", r#"{"path":"src/lib.rs"}"#)],
+            ),
+            AgentMessage::tool("call-3", "read_file", "same output"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-4", "search", "{}")],
+            ),
+            AgentMessage::tool("call-4", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(!outcome.applied);
+        assert_eq!(rewritten[1].content, "same output");
+        assert_eq!(rewritten[5].content, "same output");
+    }
+
+    #[test]
+    fn dedup_blocks_when_related_apply_file_edit_intervenes() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Read first copy",
+                vec![tool_call(
+                    "call-1",
+                    "read_file",
+                    r#"{"path":"/workspace/src/lib.rs"}"#,
+                )],
+            ),
+            AgentMessage::tool("call-1", "read_file", "same output"),
+            AgentMessage::assistant_with_tools(
+                "Edit file in between",
+                vec![tool_call(
+                    "call-2",
+                    "apply_file_edit",
+                    r#"{"path":"src/lib.rs","search":"foo","replace":"bar"}"#,
+                )],
+            ),
+            AgentMessage::tool("call-2", "apply_file_edit", "ok"),
             AgentMessage::assistant_with_tools(
                 "Read second copy",
                 vec![tool_call("call-3", "read_file", r#"{"path":"src/lib.rs"}"#)],
