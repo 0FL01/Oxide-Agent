@@ -77,6 +77,7 @@ Default branch: `testing`.
 - Token-based protected window (configurable via `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`).
 - Compaction summarization inherits `AGENT_MODEL_ROUTES`/`SUB_AGENT_MODEL_ROUTES` fallback.
 - Prunes only before summary boundary; delegate results skip externalization.
+- **Superseded dedup** - Stage-4 дедупликация идентичных read-only результатов (read_file, list_files, agents_md_get, stack_logs). Блокируется при mutation между чтениями (exec, write_file, apply_file_edit).
 
 ### Model Route Failover
 - Weighted fallback routes via `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`.
@@ -90,7 +91,7 @@ Default branch: `testing`.
 
 ### Sub-agents
 - Делегация реализована через `DelegationProvider`, `DelegationGuardHook`, `SubAgentSafetyHook` и отдельную `EphemeralSession`.
-- У sub-agent'ов изолированный контекст, отдельная память, автоматическая очистка и запрет на рекурсивную делегацию, отправку файлов пользователю и reminder tools.
+- У sub-agent'ов изолированный контекст, отдельная память, автоматическая очистка и запрет на рекурсивную делегацию, отправку файлов пользователю, reminder tools и stack_logs (операционные логи инфраструктуры).
 - Конфигурация: `sub_agent_model_id`, `sub_agent_model_provider`, `sub_agent_max_tokens`.
 
 ### Skills
@@ -116,6 +117,12 @@ Default branch: `testing`.
 - Все операции журналируются в audit trail; есть rollback для поддерживаемых сущностей.
 - Optional `MANAGER_HOME_*` env vars restrict operations к specific topic when configured.
 - При удалении forum topic автоматически чистятся topic memory, chat history, sandboxes, bindings, contexts, AGENTS.md и infra records.
+
+### Stack logs
+- Доступ к логам Docker Compose через `stack_logs_list_sources` и `stack_logs_fetch`.
+- Default: 200 entries, max 500; фильтрация по времени, сервису, pagination.
+- Требует `topic_infra` (SSH) для доступа; управляется через manager control plane (`topic_agent_tools_enable`/`disable`).
+- Заблокированы для sub-agent'ов (операционная безопасность).
 
 ### Sandbox и SSH infrastructure
 - Sandbox facade: `crates/oxide-agent-core/src/sandbox/manager.rs`; backends - direct Docker или broker через `sandbox/broker.rs`.
@@ -160,7 +167,7 @@ Default branch: `testing`.
 - LLM module structure: `capabilities.rs` (model capabilities), `client.rs` (HTTP orchestration), `support/` (backoff, history, http utils), `types.rs` (domain types).
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (включая `ssh_send_file_to_user`), yt-dlp, reminders, agents_md, TTS (Kokoro EN + Silero RU), browser-use bridge (disabled — browser automation via external service).
+- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (включая `ssh_send_file_to_user`), yt-dlp, reminders, agents_md, TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose логи; disabled by default для topic agents, blocked для sub-agents).
 - Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport
