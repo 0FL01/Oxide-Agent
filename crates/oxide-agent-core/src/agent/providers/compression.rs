@@ -92,4 +92,18 @@ mod tests {
     fn tool_name_list_contains_compress() {
         assert_eq!(compress_tool_names(), vec![TOOL_COMPRESS.to_string()]);
     }
+
+    #[tokio::test]
+    async fn execute_is_handled_by_runner() {
+        let provider = CompressionProvider::new();
+
+        let error = provider
+            .execute(TOOL_COMPRESS, "{}", None, None)
+            .await
+            .expect_err("compress should be handled by the runner");
+
+        assert!(error
+            .to_string()
+            .contains("handled directly by the agent runner"));
+    }
 }

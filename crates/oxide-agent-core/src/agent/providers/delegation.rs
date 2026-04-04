@@ -829,6 +829,7 @@ mod tests {
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::AgentContext;
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
+    use crate::agent::providers::TodoList;
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use serde_json::json;
@@ -1052,6 +1053,22 @@ mod tests {
 
         std::env::remove_var("BROWSER_USE_ENABLED");
         std::env::remove_var("BROWSER_USE_URL");
+    }
+
+    #[test]
+    fn build_sub_agent_providers_do_not_expose_compress() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
+        let providers = provider.build_sub_agent_providers(todos, None);
+        let tools: HashSet<String> = providers
+            .iter()
+            .flat_map(|provider| provider.tools())
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(!tools.contains("compress"));
     }
 
     fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {

@@ -15,7 +15,7 @@ use oxide_agent_transport_web::AppState;
 
 use super::helpers::{
     create_session_http_with_user, create_task_http_with_body, fetch_task_events,
-    fetch_task_progress, wait_for_task_status, wait_for_zai_calls,
+    fetch_task_progress, tool_call_response, wait_for_task_status, wait_for_zai_calls,
 };
 use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
 
@@ -1391,6 +1391,98 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
     assert!(before_summary.is_externalized() || before_summary.is_pruned());
     assert!(!before_summary.content.contains("BEFORE_SUMMARY_MARKER"));
     assert!(!after_summary.is_pruned());
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn e2e_compress_tool_triggers_manual_compaction() {
+    init_test_tracing();
+
+    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+        tool_call_response("compress", serde_json::json!({})),
+        super::helpers::unstructured_text_response("done"),
+    ]));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider);
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260404;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+
+    seed_history(
+        session_manager.as_ref(),
+        &session_id,
+        user_id,
+        vec![
+            AgentMessage::user("Older request with enough context to compact."),
+            AgentMessage::assistant("Older response that should move into the summary."),
+            AgentMessage::user("Recent request 1."),
+            AgentMessage::assistant("Recent response 1."),
+            AgentMessage::user("Recent request 2."),
+            AgentMessage::assistant("Recent response 2."),
+        ],
+    )
+    .await;
+
+    let task_id = create_task_http_with_body(
+        &client,
+        &base_url,
+        &session_id,
+        "Compress the hot context and finish.",
+    )
+    .await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(3),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+
+    let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
+    assert!(progress_resp.status().is_success());
+    let progress: serde_json::Value = progress_resp
+        .json()
+        .await
+        .expect("failed to decode task progress");
+    assert!(progress["last_compaction_status"].as_str().is_some());
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let event_names: Vec<String> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .map(str::to_string)
+        .collect();
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_started"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_completed"));
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+    let tool_result = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-compress"))
+        .expect("compress tool result should exist");
+    let tool_result_json: serde_json::Value = serde_json::from_str(&tool_result.content)
+        .expect("compress tool result should be valid json");
+
+    assert_eq!(tool_result_json["ok"], true);
+    assert_eq!(tool_result_json["applied"], true);
+    assert_eq!(tool_result_json["summary_updated"], true);
 
     server.abort();
 }
