@@ -347,12 +347,10 @@ Hot context не должен расти бесконтрольно.
 - **Normal hot size**: 12k – 60k tokens
 - **Soft limit (warning)**: 60k tokens → inject warning, агент решает вызвать `compress`
 - **Hard limit (auto-compaction)**: 80k tokens → hook автоматически запускает compaction с LLM summary + truncate
-- **Emergency threshold**: 80k+ tokens при неудаче LLM compaction → deterministic shrink
 
-Управление hot context — многоуровневое:
+Управление hot context — двухуровневое:
 1. Агент получает warning при 60k и может вызвать `compress` tool добровольно
 2. Если агент игнорирует warning и контекст достигает 80k — hook принудительно запускает compaction
-3. Если LLM compaction не удалась — deterministic fallback (emergency shrink)
 
 Нельзя позволять active agent loop стабильно жить на 100k–120k+ hot context, даже если модель формально поддерживает большой контекст. (`Архитектура делается под дешёвые модели, а дешёвые модели теряют attention начиная от 80к токенов контекста, это выливается в тот факт, что агент не может вызывать инструменты и начинается лениться`)
 
@@ -380,20 +378,13 @@ Hot context не должен расти бесконтрольно.
 - если `token_count >= 60k` (soft limit) → inject warning в prompt:
   `"Context is growing (Nk tokens). Consider calling compress to free up space. At 80k tokens, compaction will be triggered automatically."`;
 - если `token_count >= 80k` (hard limit) → hook принудительно запускает compaction
-  с LLM summary + truncate;
-- если LLM compaction не удалась → deterministic emergency shrink.
+  с LLM summary + truncate + retry с backoff.
 
 ### 3. Background cleanup
 Если end-of-task cleanup не произошёл:
 - фоновый watchdog находит idle / stuck sessions;
 - выполняет deferred compaction;
 - при необходимости финализирует episode.
-
-### 4. Emergency shrink
-Если normal compaction не удалась:
-- применить deterministic fallback без LLM;
-- оставить только short summary, active todo state, latest user turn, latest assistant intent и safety window;
-- остальной контекст удалить из hot и оставить в archive / episode records.
 
 ---
 
@@ -461,12 +452,9 @@ Hot context не должен расти бесконтрольно.
 - Если `token_count >= hard_limit` (80k) → автоматически запускает compaction pipeline:
   LLM summary → extract high-signal data → persist to long-term memory → truncate
   → rebuild hot context с ArchiveReference hints.
-
-### `EmergencyShrinkHook` (`BeforeIteration`)
-Пороговое срабатывание (80k tokens):
-- Deterministic fallback без LLM
-- Оставляет: short summary, todo state, latest turns, safety window
-- Остальное → archive / episode records
+  
+  Если LLM summarization не удалась (timeout/API error), используется retry с backoff.
+  После исчерпания retry — deterministic fallback summary (без отдельного hook).
 
 ### `EpisodicExtractHook` (`AfterTool`)
 Извлекает память после определённых tool calls:
@@ -551,8 +539,7 @@ soft limit warning или по решению агента.
 Что делаем:
 - вводим `threads`, `episodes`, `memories`, `session_state`;
 - реализуем `EndOfTaskMemoryHook` — автоматическая финализация + compaction + persist memory;
-- реализуем `HotContextHealthHook` — warning при 60k, auto-compaction при 80k;
-- реализуем `EmergencyShrinkHook` — deterministic shrink при неудаче LLM compaction;
+- реализуем `HotContextHealthHook` — warning при 60k, auto-compaction при 80k (с retry fallback);
 - реализуем `compress` tool — интерактивное сжатие по решению агента;
 - добавляем compaction side-effects: persist high-signal data → long-term memory;
 - добавляем ArchiveReference hints в hot context после каждой compression;
@@ -632,7 +619,7 @@ soft limit warning или по решению агента.
 ### Cleanup
 - всегда проверять budget перед model call
 - после task completion почти полностью сбрасывать hot context
-- держать emergency shrink как обязательный fallback
+- при auto-compaction использовать retry + deterministic fallback summary
 
 ---
 
@@ -652,8 +639,7 @@ soft limit warning или по решению агента.
 - ввести aggressive hot-context control:
   - end-of-task reset,
   - preflight compaction,
-  - background cleanup,
-  - emergency shrink.
+  - background cleanup.
 
 Это лучший баланс между:
 - качеством retrieval;
