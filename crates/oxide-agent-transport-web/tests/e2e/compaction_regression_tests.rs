@@ -403,11 +403,7 @@ async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
                     serde_json::json!({"path":"file_a.txt"}),
                 )],
             ),
-            AgentMessage::tool(
-                "call-read-a-1",
-                "read_file",
-                "alpha contents\nline 2",
-            ),
+            AgentMessage::tool("call-read-a-1", "read_file", "alpha contents\nline 2"),
             AgentMessage::assistant_with_tools(
                 "Read file B",
                 vec![tool_call(
@@ -416,11 +412,7 @@ async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
                     serde_json::json!({"path":"file_b.txt"}),
                 )],
             ),
-            AgentMessage::tool(
-                "call-read-b",
-                "read_file",
-                "beta contents\nline 2",
-            ),
+            AgentMessage::tool("call-read-b", "read_file", "beta contents\nline 2"),
             AgentMessage::assistant_with_tools(
                 "Read file A again",
                 vec![tool_call(
@@ -429,11 +421,7 @@ async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
                     serde_json::json!({"path":"file_a.txt"}),
                 )],
             ),
-            AgentMessage::tool(
-                "call-read-a-2",
-                "read_file",
-                "alpha contents\nline 2",
-            ),
+            AgentMessage::tool("call-read-a-2", "read_file", "alpha contents\nline 2"),
             AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
             AgentMessage::assistant_with_tools(
                 "Keep recent filler 1",
@@ -561,6 +549,189 @@ async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
     assert!(read_a_1.content.contains("tool: read_file"));
     assert_eq!(read_b.content, "beta contents\nline 2");
     assert_eq!(read_a_2.content, "alpha contents\nline 2");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn e2e_compaction_post_run_blocks_dedup_when_write_file_intervenes() {
+    init_test_tracing();
+
+    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+        super::helpers::unstructured_text_response("done"),
+    ]));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
+    let app_state =
+        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260406;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+
+    seed_history(
+        session_manager.as_ref(),
+        &session_id,
+        user_id,
+        vec![
+            AgentMessage::user_task("Inspect mutation blocking dedup"),
+            AgentMessage::assistant_with_tools(
+                "Read config first",
+                vec![tool_call(
+                    "call-read-1",
+                    "read_file",
+                    serde_json::json!({"path":"config.txt"}),
+                )],
+            ),
+            AgentMessage::tool("call-read-1", "read_file", "setting_a=1\nsetting_b=2"),
+            AgentMessage::assistant_with_tools(
+                "Write config in between",
+                vec![tool_call(
+                    "call-write-1",
+                    "write_file",
+                    serde_json::json!({"path":"config.txt","content":"new content"}),
+                )],
+            ),
+            AgentMessage::tool("call-write-1", "write_file", "ok"),
+            AgentMessage::assistant_with_tools(
+                "Read config again",
+                vec![tool_call(
+                    "call-read-2",
+                    "read_file",
+                    serde_json::json!({"path":"config.txt"}),
+                )],
+            ),
+            AgentMessage::tool("call-read-2", "read_file", "setting_a=1\nsetting_b=2"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 1",
+                vec![tool_call(
+                    "recent-call-1",
+                    "search",
+                    serde_json::json!({"query":"recent filler 1"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-1",
+                "search",
+                &token_rich_payload("recent-1", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 2",
+                vec![tool_call(
+                    "recent-call-2",
+                    "search",
+                    serde_json::json!({"query":"recent filler 2"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-2",
+                "search",
+                &token_rich_payload("recent-2", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 3",
+                vec![tool_call(
+                    "recent-call-3",
+                    "search",
+                    serde_json::json!({"query":"recent filler 3"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-3",
+                "search",
+                &token_rich_payload("recent-3", 1_200),
+            ),
+            AgentMessage::assistant_with_tools(
+                "Keep recent filler 4",
+                vec![tool_call(
+                    "recent-call-4",
+                    "search",
+                    serde_json::json!({"query":"recent filler 4"}),
+                )],
+            ),
+            AgentMessage::tool(
+                "recent-call-4",
+                "search",
+                &token_rich_payload("recent-4", 1_200),
+            ),
+        ],
+    )
+    .await;
+
+    let task_id = create_task_http_with_body(&client, &base_url, &session_id, "Return done").await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(3),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+
+    let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
+    assert!(progress_resp.status().is_success());
+    let progress: serde_json::Value = progress_resp
+        .json()
+        .await
+        .expect("failed to decode task progress");
+    assert_eq!(progress["latest_token_snapshot"]["budget_state"], "Healthy");
+    assert!(progress["last_compaction_status"].as_str().is_some());
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let event_names: Vec<String> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .map(str::to_string)
+        .collect();
+    eprintln!("[dedup-e2e] event_names={event_names:?}");
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_completed"));
+    assert!(!event_names.iter().any(|event| event.contains("dedup")));
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+
+    let read_one = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-read-1"))
+        .expect("first read_file result should exist");
+    let write_one = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-write-1"))
+        .expect("write_file result should exist");
+    let read_two = messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-read-2"))
+        .expect("second read_file result should exist");
+
+    eprintln!(
+        "[dedup-e2e] call-read-1 content={:?}",
+        read_one.content.chars().take(180).collect::<String>()
+    );
+    eprintln!(
+        "[dedup-e2e] call-write-1 content={:?}",
+        write_one.content.chars().take(180).collect::<String>()
+    );
+    eprintln!(
+        "[dedup-e2e] call-read-2 content={:?}",
+        read_two.content.chars().take(180).collect::<String>()
+    );
+
+    assert_eq!(read_one.content, "setting_a=1\nsetting_b=2");
+    assert_eq!(write_one.content, "ok");
+    assert_eq!(read_two.content, "setting_a=1\nsetting_b=2");
+    assert!(!read_one.content.starts_with("[deduplicated tool result]"));
+    assert!(!read_two.content.starts_with("[deduplicated tool result]"));
 
     server.abort();
 }
