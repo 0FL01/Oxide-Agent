@@ -317,48 +317,6 @@ pub(crate) async fn should_preserve_pending_file_input(session_id: &SessionId) -
     pending_user_input_requires_file(executor.session().pending_user_input())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::pending_user_input_requires_file;
-    use oxide_agent_core::agent::{PendingUserInput, UserInputKind};
-
-    #[test]
-    fn pending_file_request_requires_preserving_attachments() {
-        let request = PendingUserInput {
-            kind: UserInputKind::File,
-            prompt: "upload file".to_string(),
-        };
-
-        assert!(pending_user_input_requires_file(Some(&request)));
-    }
-
-    #[test]
-    fn pending_url_or_file_request_requires_preserving_attachments() {
-        let request = PendingUserInput {
-            kind: UserInputKind::UrlOrFile,
-            prompt: "upload or paste".to_string(),
-        };
-
-        assert!(pending_user_input_requires_file(Some(&request)));
-    }
-
-    #[test]
-    fn text_and_url_requests_keep_default_media_preprocessing() {
-        let text = PendingUserInput {
-            kind: UserInputKind::Text,
-            prompt: "reply".to_string(),
-        };
-        let url = PendingUserInput {
-            kind: UserInputKind::Url,
-            prompt: "paste url".to_string(),
-        };
-
-        assert!(!pending_user_input_requires_file(Some(&text)));
-        assert!(!pending_user_input_requires_file(Some(&url)));
-        assert!(!pending_user_input_requires_file(None));
-    }
-}
-
 pub(crate) async fn send_multimodal_unavailable_message(
     bot: &Bot,
     chat_id: ChatId,
@@ -590,4 +548,46 @@ async fn finalize_text_input_batch_if_current(session_id: SessionId, revision: u
 
 async fn finalize_text_input_batch(batch: PendingTextInputBatch) -> Result<()> {
     dispatch_preprocessed_agent_text(batch.ctx, assemble_text_batch(&batch.parts)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_user_input_requires_file;
+    use oxide_agent_core::agent::{PendingUserInput, UserInputKind};
+
+    #[test]
+    fn pending_file_request_requires_preserving_attachments() {
+        let request = PendingUserInput {
+            kind: UserInputKind::File,
+            prompt: "upload file".to_string(),
+        };
+
+        assert!(pending_user_input_requires_file(Some(&request)));
+    }
+
+    #[test]
+    fn pending_url_or_file_request_requires_preserving_attachments() {
+        let request = PendingUserInput {
+            kind: UserInputKind::UrlOrFile,
+            prompt: "upload or paste".to_string(),
+        };
+
+        assert!(pending_user_input_requires_file(Some(&request)));
+    }
+
+    #[test]
+    fn text_and_url_requests_keep_default_media_preprocessing() {
+        let text = PendingUserInput {
+            kind: UserInputKind::Text,
+            prompt: "reply".to_string(),
+        };
+        let url = PendingUserInput {
+            kind: UserInputKind::Url,
+            prompt: "paste url".to_string(),
+        };
+
+        assert!(!pending_user_input_requires_file(Some(&text)));
+        assert!(!pending_user_input_requires_file(Some(&url)));
+        assert!(!pending_user_input_requires_file(None));
+    }
 }
