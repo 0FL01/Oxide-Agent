@@ -826,6 +826,7 @@ mod tests {
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::AgentContext;
+    use crate::agent::TodoList;
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
