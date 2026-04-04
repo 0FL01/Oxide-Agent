@@ -1,6 +1,6 @@
 //! Stage-0 contract for superseded tool-result deduplication.
 
-use super::types::{AgentMessageKind, CompactionSnapshot};
+use super::types::{AgentMessageKind, CompactionSnapshot, DedupSupersededOutcome};
 use crate::agent::memory::AgentMessage;
 
 /// Placeholder written into older tool results once a later identical output supersedes them.
@@ -44,21 +44,6 @@ impl Default for DedupSupersededContract {
             superseded_placeholder: SUPERSEDED_DEDUP_PLACEHOLDER.to_string(),
         }
     }
-}
-
-/// Result of deterministic superseded-result dedup stage.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct DedupSupersededOutcome {
-    /// Whether any hot-memory entries were rewritten.
-    pub applied: bool,
-    /// Number of entries rewritten as superseded placeholders.
-    pub deduplicated_count: usize,
-    /// Estimated tokens reclaimed by rewriting superseded entries.
-    pub reclaimed_tokens: usize,
-    /// Visible characters reclaimed by rewriting superseded entries.
-    pub reclaimed_chars: usize,
-    /// Stable indices rewritten in pre-stage ordering.
-    pub deduplicated_indices: Vec<usize>,
 }
 
 /// Stage-0 no-op deterministic stage for superseded tool-result deduplication.
