@@ -49,12 +49,11 @@ async fn e2e_parallel_tool_execution_latency() {
         ScriptedResponse::Text("All tasks created".to_string()),
     ]));
 
-    let agent_settings = Arc::new({
-        let mut s = AgentSettings::default();
-        s.agent_model_id = Some("test-model".to_string());
-        s.agent_model_provider = Some("scripted".to_string());
-        s.agent_timeout_secs = Some(10);
-        s
+    let agent_settings = Arc::new(AgentSettings {
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("scripted".to_string()),
+        agent_timeout_secs: Some(10),
+        ..Default::default()
     });
 
     let llm = LlmClient::new(&agent_settings);
