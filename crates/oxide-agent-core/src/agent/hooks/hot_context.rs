@@ -2,45 +2,38 @@
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
-
-/// Default soft limit for hot context warnings.
-const DEFAULT_SOFT_LIMIT_TOKENS: usize = 60_000;
-/// Default hard limit that triggers an immediate compaction pass.
-const DEFAULT_HARD_LIMIT_TOKENS: usize = 80_000;
+use crate::agent::compaction::HotContextLimits;
 
 /// Warns when the hot context grows too large.
 pub struct HotContextHealthHook {
-    soft_limit_tokens: usize,
-    hard_limit_tokens: usize,
+    limits: HotContextLimits,
 }
 
 impl HotContextHealthHook {
     /// Create a hook with the default thresholds.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            soft_limit_tokens: DEFAULT_SOFT_LIMIT_TOKENS,
-            hard_limit_tokens: DEFAULT_HARD_LIMIT_TOKENS,
+            limits: HotContextLimits::default(),
         }
     }
 
     #[must_use]
     /// Create a hook with custom thresholds.
-    pub const fn with_limits(soft_limit_tokens: usize, hard_limit_tokens: usize) -> Self {
-        Self {
-            soft_limit_tokens,
-            hard_limit_tokens,
-        }
+    pub const fn with_limits(limits: HotContextLimits) -> Self {
+        Self { limits }
     }
 
     fn effective_soft_limit(&self, context: &HookContext) -> usize {
-        self.soft_limit_tokens
+        self.limits
+            .soft_warning_tokens
             .min(context.max_tokens.saturating_mul(60) / 100)
     }
 
     fn effective_hard_limit(&self, context: &HookContext) -> usize {
         let soft_limit = self.effective_soft_limit(context);
-        self.hard_limit_tokens
+        self.limits
+            .hard_compaction_tokens
             .min(context.max_tokens.saturating_mul(80) / 100)
             .max(soft_limit.saturating_add(1))
     }
@@ -117,6 +110,7 @@ impl Hook for HotContextHealthHook {
 #[cfg(test)]
 mod tests {
     use super::HotContextHealthHook;
+    use crate::agent::compaction::HotContextLimits;
     use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
     use crate::agent::memory::AgentMemory;
     use crate::agent::providers::TodoList;
@@ -129,7 +123,7 @@ mod tests {
 
     #[test]
     fn soft_limit_returns_transient_notice() {
-        let hook = HotContextHealthHook::with_limits(10, 20);
+        let hook = HotContextHealthHook::with_limits(HotContextLimits::new(10, 20));
 
         let result = hook.handle(
             &HookEvent::BeforeIteration { iteration: 1 },
@@ -141,7 +135,7 @@ mod tests {
 
     #[test]
     fn hard_limit_requests_compaction() {
-        let hook = HotContextHealthHook::with_limits(10, 20);
+        let hook = HotContextHealthHook::with_limits(HotContextLimits::new(10, 20));
 
         let result = hook.handle(
             &HookEvent::BeforeIteration { iteration: 1 },

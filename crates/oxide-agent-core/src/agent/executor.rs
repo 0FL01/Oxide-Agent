@@ -191,7 +191,9 @@ impl AgentExecutor {
         let hook_policy_state = Arc::new(RwLock::new(HookAccessPolicy::default()));
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
-        runner.register_hook(Box::new(HotContextHealthHook::new()));
+        runner.register_hook(Box::new(HotContextHealthHook::with_limits(
+            settings.get_hot_context_limits(),
+        )));
         Self::register_policy_controlled_hook(
             &mut runner,
             WorkloadDistributorHook::new(),
@@ -697,7 +699,7 @@ impl AgentExecutor {
         }
     }
 
-    fn register_browser_providers(&self, registry: &mut ToolRegistry) {
+    fn register_browser_providers(&self, _registry: &mut ToolRegistry) {
         // NOTE: Browser Use is disabled until a quality vision-capable agent model
         // is available at a reasonable price-per-token. To re-enable, set
         // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
@@ -711,7 +713,7 @@ impl AgentExecutor {
                         provider = provider.with_profile_scope(profile_scope);
                     }
                     provider = provider.with_sandbox_scope(self.session.sandbox_scope().clone());
-                    registry.register(Box::new(provider));
+                    _registry.register(Box::new(provider));
                 } else {
                     warn!(
                         "Browser Use enabled but BROWSER_USE_URL is empty; provider not registered"
@@ -1300,7 +1302,6 @@ mod tests {
         ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
         ManagerTopicLifecycle,
     };
-    use crate::agent::providers::ReminderContext;
     use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
