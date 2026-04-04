@@ -262,18 +262,16 @@ impl ManagerControlPlaneProvider {
     fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
         // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
         // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
-        let mut groups = Vec::new();
-
         #[cfg(feature = "browser_use")]
         if crate::config::is_browser_use_enabled() {
-            groups.push(TopicAgentToolGroup {
+            return vec![TopicAgentToolGroup {
                 provider: "browser_use",
                 aliases: &["browser", "browser_use"],
                 tools: TOPIC_AGENT_BROWSER_USE_TOOLS,
-            });
+            }];
         }
 
-        groups
+        Vec::new()
     }
 
     pub(super) async fn topic_agent_tool_catalog(

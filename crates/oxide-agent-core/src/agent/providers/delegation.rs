@@ -826,7 +826,6 @@ mod tests {
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::AgentContext;
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
-    use crate::agent::providers::TodoList;
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use serde_json::json;
