@@ -5,7 +5,7 @@ use crate::config::{
 use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use gemini_rust::{FunctionCallingMode, Tool};
+use gemini_rust::{ContentBuilder, FunctionCallingMode, ThinkingConfig, ThinkingLevel, Tool};
 
 use super::GeminiProvider;
 
@@ -20,8 +20,7 @@ impl LlmProvider for GeminiProvider {
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         let client = self.sdk_client(model_id)?;
-        let response = client
-            .generate_content()
+        let response = Self::apply_model_defaults(client.generate_content(), model_id)
             .with_system_prompt(system_prompt)
             .with_messages(Self::history_to_sdk_messages(history))
             .with_user_message(user_message)
@@ -58,8 +57,7 @@ impl LlmProvider for GeminiProvider {
         model_id: &str,
     ) -> Result<String, LlmError> {
         let client = self.sdk_client(model_id)?;
-        let response = client
-            .generate_content()
+        let response = Self::apply_model_defaults(client.generate_content(), model_id)
             .with_user_message(text_prompt)
             .with_inline_data(BASE64.encode(&audio_bytes), mime_type)
             .with_temperature(GEMINI_AUDIO_TRANSCRIBE_TEMPERATURE)
@@ -79,8 +77,7 @@ impl LlmProvider for GeminiProvider {
     ) -> Result<String, LlmError> {
         let image_mime_type = Self::infer_image_mime_type(&image_bytes);
         let client = self.sdk_client(model_id)?;
-        let response = client
-            .generate_content()
+        let response = Self::apply_model_defaults(client.generate_content(), model_id)
             .with_system_prompt(system_prompt)
             .with_user_message(text_prompt)
             .with_inline_data(BASE64.encode(&image_bytes), image_mime_type)
@@ -102,8 +99,7 @@ impl LlmProvider for GeminiProvider {
         model_id: &str,
     ) -> Result<String, LlmError> {
         let client = self.sdk_client(model_id)?;
-        let response = client
-            .generate_content()
+        let response = Self::apply_model_defaults(client.generate_content(), model_id)
             .with_system_prompt(system_prompt)
             .with_user_message(text_prompt)
             .with_inline_data(BASE64.encode(&video_bytes), mime_type)
@@ -130,8 +126,7 @@ impl LlmProvider for GeminiProvider {
         } = request;
 
         let client = self.sdk_client(model_id)?;
-        let mut request_builder = client
-            .generate_content()
+        let mut request_builder = Self::apply_model_defaults(client.generate_content(), model_id)
             .with_system_prompt(system_prompt)
             .with_messages(Self::history_to_sdk_messages(messages))
             .with_temperature(GEMINI_CHAT_TEMPERATURE)
@@ -155,5 +150,23 @@ impl LlmProvider for GeminiProvider {
             .map_err(Self::map_sdk_error)?;
 
         Self::parse_chat_response(&response)
+    }
+}
+
+impl GeminiProvider {
+    pub(super) fn thinking_config_for_model(model_id: &str) -> Option<ThinkingConfig> {
+        (Self::normalized_model_id(model_id) == "gemma-4-31b-it")
+            .then(|| ThinkingConfig::new().with_thinking_level(ThinkingLevel::High))
+    }
+
+    fn apply_model_defaults(request_builder: ContentBuilder, model_id: &str) -> ContentBuilder {
+        match Self::thinking_config_for_model(model_id) {
+            Some(thinking_config) => request_builder.with_thinking_config(thinking_config),
+            None => request_builder,
+        }
+    }
+
+    fn normalized_model_id(model_id: &str) -> &str {
+        model_id.strip_prefix("models/").unwrap_or(model_id)
     }
 }
