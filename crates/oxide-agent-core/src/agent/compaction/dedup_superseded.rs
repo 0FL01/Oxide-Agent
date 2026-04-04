@@ -43,7 +43,13 @@ impl Default for DedupSupersededContract {
     fn default() -> Self {
         Self {
             enabled: true,
-            tool_allowlist: vec!["read_file".to_string()],
+            tool_allowlist: vec![
+                "read_file".to_string(),
+                "list_files".to_string(),
+                "agents_md_get".to_string(),
+                "stack_logs_list_sources".to_string(),
+                "stack_logs_fetch".to_string(),
+            ],
             only_before_latest_summary_boundary: true,
             preserve_protected_recent_tool_window: true,
             require_canonical_tool_and_args_match: true,
@@ -75,7 +81,7 @@ struct ReadFileCandidate {
     key: DedupKey,
     assistant_index: usize,
     result_index: usize,
-    normalized_read_path: NormalizedPath,
+    normalized_read_path: Option<NormalizedPath>,
     tool_name: String,
     preview: String,
 }
@@ -325,10 +331,8 @@ fn build_candidate(
         },
         assistant_index: linked_tool_call.assistant_index,
         result_index: result_entry.index,
-        normalized_read_path: normalize_tool_path(
-            &linked_tool_call.canonical_tool_name,
-            &extract_path_argument(&linked_tool_call.arguments)?,
-        )?,
+        normalized_read_path: extract_path_argument(&linked_tool_call.arguments)
+            .and_then(|path| normalize_tool_path(&linked_tool_call.canonical_tool_name, &path)),
         tool_name: result_message.tool_name.clone()?,
         preview: build_preview(&result_message.content, PREVIEW_CHARS),
     })
@@ -418,7 +422,10 @@ fn tool_call_may_mutate_read_target(
         return true;
     };
 
-    paths_overlap(&candidate.normalized_read_path, &mutation_path)
+    candidate
+        .normalized_read_path
+        .as_ref()
+        .is_some_and(|read_path| paths_overlap(read_path, &mutation_path))
 }
 
 fn tool_allowed(contract: &DedupSupersededContract, tool_name: &str) -> bool {
@@ -451,7 +458,7 @@ fn normalize_tool_path(tool_name: &str, raw_path: &str) -> Option<NormalizedPath
     let canonical_tool_name = canonicalize_tool_name(tool_name);
     let workspace_scoped = matches!(
         canonical_tool_name.as_str(),
-        "read_file" | "write_file" | "apply_file_edit"
+        "read_file" | "list_files" | "write_file" | "apply_file_edit"
     );
     let normalized = if workspace_scoped && !normalized_separators.starts_with('/') {
         format!("/workspace/{normalized_separators}")
@@ -546,7 +553,16 @@ mod tests {
     fn stage_four_contract_is_conservative_and_enabled() {
         let contract = DedupSupersededContract::default();
         assert!(contract.enabled);
-        assert_eq!(contract.tool_allowlist, vec!["read_file"]);
+        assert_eq!(
+            contract.tool_allowlist,
+            vec![
+                "read_file",
+                "list_files",
+                "agents_md_get",
+                "stack_logs_list_sources",
+                "stack_logs_fetch",
+            ]
+        );
         assert!(contract.only_before_latest_summary_boundary);
         assert!(contract.preserve_protected_recent_tool_window);
         assert!(contract.require_canonical_tool_and_args_match);
@@ -615,6 +631,214 @@ mod tests {
         assert!(rewritten[1].content.contains("tool: read_file"));
         assert!(rewritten[1].content.contains("alpha\nbeta\ngamma"));
         assert_eq!(rewritten[3].content, "alpha\nbeta\ngamma");
+    }
+
+    #[test]
+    fn dedup_rewrites_older_identical_list_files_result() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "List first copy",
+                vec![tool_call("call-1", "list_files", r#"{"path":"src"}"#)],
+            ),
+            AgentMessage::tool("call-1", "list_files", "src/lib.rs\nsrc/main.rs"),
+            AgentMessage::assistant_with_tools(
+                "List second copy",
+                vec![tool_call("call-2", "list_files", r#"{"path":"src"}"#)],
+            ),
+            AgentMessage::tool("call-2", "list_files", "src/lib.rs\nsrc/main.rs"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-3", "search", "{}")],
+            ),
+            AgentMessage::tool("call-3", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.deduplicated_indices, vec![1]);
+        assert!(rewritten[1].content.contains("[deduplicated tool result]"));
+        assert!(rewritten[1].content.contains("tool: list_files"));
+        assert_eq!(rewritten[3].content, "src/lib.rs\nsrc/main.rs");
+    }
+
+    #[test]
+    fn dedup_rewrites_older_identical_agents_md_get_result() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Read topic AGENTS",
+                vec![tool_call("call-1", "agents_md_get", "{}")],
+            ),
+            AgentMessage::tool("call-1", "agents_md_get", "{\"ok\":true,\"found\":true}"),
+            AgentMessage::assistant_with_tools(
+                "Read topic AGENTS again",
+                vec![tool_call("call-2", "agents_md_get", "{}")],
+            ),
+            AgentMessage::tool("call-2", "agents_md_get", "{\"ok\":true,\"found\":true}"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-3", "search", "{}")],
+            ),
+            AgentMessage::tool("call-3", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.deduplicated_indices, vec![1]);
+        assert!(rewritten[1].content.contains("[deduplicated tool result]"));
+        assert!(rewritten[1].content.contains("tool: agents_md_get"));
+        assert_eq!(rewritten[3].content, "{\"ok\":true,\"found\":true}");
+    }
+
+    #[test]
+    fn dedup_rewrites_older_identical_stack_logs_list_sources_result() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "List stack sources",
+                vec![tool_call(
+                    "call-1",
+                    "stack_logs_list_sources",
+                    r#"{"include_stopped":false}"#,
+                )],
+            ),
+            AgentMessage::tool(
+                "call-1",
+                "stack_logs_list_sources",
+                "{\"ok\":true,\"sources\":[\"api\",\"worker\"]}",
+            ),
+            AgentMessage::assistant_with_tools(
+                "List stack sources again",
+                vec![tool_call(
+                    "call-2",
+                    "stack_logs_list_sources",
+                    r#"{"include_stopped":false}"#,
+                )],
+            ),
+            AgentMessage::tool(
+                "call-2",
+                "stack_logs_list_sources",
+                "{\"ok\":true,\"sources\":[\"api\",\"worker\"]}",
+            ),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-3", "search", "{}")],
+            ),
+            AgentMessage::tool("call-3", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.deduplicated_indices, vec![1]);
+        assert!(rewritten[1].content.contains("[deduplicated tool result]"));
+        assert!(rewritten[1]
+            .content
+            .contains("tool: stack_logs_list_sources"));
+        assert_eq!(
+            rewritten[3].content,
+            "{\"ok\":true,\"sources\":[\"api\",\"worker\"]}"
+        );
+    }
+
+    #[test]
+    fn dedup_rewrites_older_identical_stack_logs_fetch_result() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Fetch stack logs",
+                vec![tool_call(
+                    "call-1",
+                    "stack_logs_fetch",
+                    r#"{"max_entries":2,"include_stderr":true}"#,
+                )],
+            ),
+            AgentMessage::tool(
+                "call-1",
+                "stack_logs_fetch",
+                "{\"ok\":true,\"entries\":[{\"line\":1},{\"line\":2}]}",
+            ),
+            AgentMessage::assistant_with_tools(
+                "Fetch stack logs again",
+                vec![tool_call(
+                    "call-2",
+                    "stack_logs_fetch",
+                    r#"{"max_entries":2,"include_stderr":true}"#,
+                )],
+            ),
+            AgentMessage::tool(
+                "call-2",
+                "stack_logs_fetch",
+                "{\"ok\":true,\"entries\":[{\"line\":1},{\"line\":2}]}",
+            ),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-3", "search", "{}")],
+            ),
+            AgentMessage::tool("call-3", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.deduplicated_indices, vec![1]);
+        assert!(rewritten[1].content.contains("[deduplicated tool result]"));
+        assert!(rewritten[1].content.contains("tool: stack_logs_fetch"));
+        assert_eq!(
+            rewritten[3].content,
+            "{\"ok\":true,\"entries\":[{\"line\":1},{\"line\":2}]}"
+        );
     }
 
     #[test]
@@ -856,6 +1080,55 @@ mod tests {
         assert!(!outcome.applied);
         assert_eq!(rewritten[1].content, "same output");
         assert_eq!(rewritten[5].content, "same output");
+    }
+
+    #[test]
+    fn dedup_blocks_when_related_write_file_intervenes_between_list_files() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "List first copy",
+                vec![tool_call("call-1", "list_files", r#"{"path":"src"}"#)],
+            ),
+            AgentMessage::tool("call-1", "list_files", "src/lib.rs\nsrc/main.rs"),
+            AgentMessage::assistant_with_tools(
+                "Write file in between",
+                vec![tool_call(
+                    "call-2",
+                    "write_file",
+                    r#"{"path":"/workspace/src/./lib.rs","content":"changed"}"#,
+                )],
+            ),
+            AgentMessage::tool("call-2", "write_file", "ok"),
+            AgentMessage::assistant_with_tools(
+                "List second copy",
+                vec![tool_call("call-3", "list_files", r#"{"path":"src"}"#)],
+            ),
+            AgentMessage::tool("call-3", "list_files", "src/lib.rs\nsrc/main.rs"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-4", "search", "{}")],
+            ),
+            AgentMessage::tool("call-4", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(!outcome.applied);
+        assert_eq!(rewritten[1].content, "src/lib.rs\nsrc/main.rs");
+        assert_eq!(rewritten[5].content, "src/lib.rs\nsrc/main.rs");
     }
 
     #[test]
