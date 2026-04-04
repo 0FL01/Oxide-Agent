@@ -141,6 +141,10 @@ pub(super) struct RunState {
     pub compaction_count: usize,
     /// Number of deterministic cleanup passes in this run.
     pub cleanup_count: usize,
+    /// Transient system context appended to the next prompt rebuild.
+    pub transient_system_context: Option<String>,
+    /// Whether the next pre-LLM turn should run manual compaction.
+    pub force_manual_compaction: bool,
 }
 
 impl RunState {
@@ -152,7 +156,26 @@ impl RunState {
             structured_output_failures: 0,
             compaction_count: 0,
             cleanup_count: 0,
+            transient_system_context: None,
+            force_manual_compaction: false,
         }
+    }
+
+    /// Replace the current transient system context.
+    pub(super) fn set_transient_system_context(&mut self, context: Option<String>) {
+        self.transient_system_context = context;
+    }
+
+    /// Request a manual compaction pass before the next model call.
+    pub(super) fn request_manual_compaction(&mut self) {
+        self.force_manual_compaction = true;
+    }
+
+    /// Consume any pending manual compaction request.
+    pub(super) fn take_manual_compaction_request(&mut self) -> bool {
+        let requested = self.force_manual_compaction;
+        self.force_manual_compaction = false;
+        requested
     }
 }
 

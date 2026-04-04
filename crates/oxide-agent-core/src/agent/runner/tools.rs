@@ -71,6 +71,7 @@ impl AgentRunner {
     pub(super) fn record_assistant_tool_call(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
+        state: &RunState,
         raw_json: &str,
         tool_calls: &[ToolCall],
     ) {
@@ -85,7 +86,7 @@ impl AgentRunner {
                 raw_json.to_string(),
                 tool_calls_vec,
             ));
-        Self::refresh_messages_from_memory(ctx);
+        Self::refresh_messages_from_memory(ctx, state);
     }
 
     /// Execute all tool calls in parallel where possible.
@@ -95,7 +96,7 @@ impl AgentRunner {
     pub(super) async fn execute_tools(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        state: &RunState,
+        state: &mut RunState,
         tool_calls: Vec<ToolCall>,
     ) -> anyhow::Result<Option<AgentRunResult>> {
         // Phase 1: Sequential pre-processing - load skills and run hooks
@@ -130,7 +131,7 @@ impl AgentRunner {
         // Record blocked results for any tools that were blocked
         for (idx, reason) in blocked_results {
             let tool_call = &tool_calls[idx];
-            self.record_blocked_tool_result(ctx, tool_call, &reason)
+            self.record_blocked_tool_result(ctx, state, tool_call, &reason)
                 .await;
             Self::emit_token_snapshot_update(
                 ctx.progress_tx,
@@ -165,7 +166,7 @@ impl AgentRunner {
     async fn execute_approved_tools(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        state: &RunState,
+        state: &mut RunState,
         approved_tools: Vec<(usize, ToolCall)>,
     ) -> anyhow::Result<Option<AgentRunResult>> {
         if approved_tools.is_empty() {
@@ -323,7 +324,7 @@ impl AgentRunner {
     async fn record_tool_execution_result(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        state: &RunState,
+        state: &mut RunState,
         tool_call: ToolCall,
         result: anyhow::Result<String>,
     ) -> anyhow::Result<bool> {
@@ -377,12 +378,12 @@ impl AgentRunner {
                 &tool_call.function.name,
                 &output,
             ));
-        Self::refresh_messages_from_memory(ctx);
+        Self::refresh_messages_from_memory(ctx, state);
 
         if let Some(agents_md) = extract_updated_topic_agents_md(&tool_call.function.name, &output)
         {
             ctx.agent.memory_mut().upsert_topic_agents_md(&agents_md);
-            Self::refresh_messages_from_memory(ctx);
+            Self::refresh_messages_from_memory(ctx, state);
             ctx.agent.persist_memory_checkpoint_background();
         }
 
@@ -419,6 +420,7 @@ impl AgentRunner {
     async fn record_blocked_tool_result(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
+        state: &RunState,
         tool_call: &ToolCall,
         reason: &str,
     ) {
@@ -459,7 +461,7 @@ impl AgentRunner {
             tool_name,
             &output,
         ));
-        Self::refresh_messages_from_memory(ctx);
+        Self::refresh_messages_from_memory(ctx, state);
     }
 
     fn extract_command_preview(arguments: &str) -> Option<String> {

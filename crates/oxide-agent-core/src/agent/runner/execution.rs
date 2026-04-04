@@ -12,7 +12,7 @@ use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
 use crate::agent::recovery::{repair_agent_message_history_for_provider, sanitize_tool_calls};
 use crate::agent::structured_output::parse_structured_output;
 use crate::config::ModelInfo;
-use crate::llm::{ChatResponse, LlmClient, LlmError, ProviderCapabilities};
+use crate::llm::{ChatResponse, LlmClient, LlmError, Message, ProviderCapabilities};
 use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -53,24 +53,36 @@ impl AgentRunner {
             }
 
             if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs {
-                if let Some(res) = self.apply_timeout_hook(ctx, &state)? {
+                if let Some(res) = self.apply_timeout_hook(ctx, &mut state)? {
                     return Ok(AgentRunResult::Final(res));
                 }
             }
 
             self.apply_pending_runtime_context(ctx, &mut state).await;
 
-            self.apply_before_iteration_hooks(ctx, &state)?;
+            self.apply_before_iteration_hooks(ctx, &mut state)?;
             let cancellation_token = ctx.agent.cancellation_token().clone();
-            let Some(compaction_result) = Self::await_until_cancelled(
-                cancellation_token,
-                self.run_iteration_compaction(ctx, &mut state, iteration),
-            )
-            .await
-            else {
-                return Err(self.cancelled_error(ctx).await);
-            };
-            compaction_result?;
+            if state.take_manual_compaction_request() {
+                let Some(compaction_result) = Self::await_until_cancelled(
+                    cancellation_token.clone(),
+                    self.run_compaction_checkpoint(ctx, &mut state, CompactionTrigger::Manual),
+                )
+                .await
+                else {
+                    return Err(self.cancelled_error(ctx).await);
+                };
+                compaction_result?;
+            } else {
+                let Some(compaction_result) = Self::await_until_cancelled(
+                    cancellation_token,
+                    self.run_iteration_compaction(ctx, &mut state, iteration),
+                )
+                .await
+                else {
+                    return Err(self.cancelled_error(ctx).await);
+                };
+                compaction_result?;
+            }
 
             // Emit milestone after pre-run compaction (only on first iteration).
             if iteration == 0 {
@@ -211,7 +223,7 @@ impl AgentRunner {
         }
 
         for attempt in 1..=max_retries {
-            Self::refresh_messages_from_memory(ctx);
+            Self::refresh_messages_from_memory(ctx, state);
             Self::log_llm_route_attempt_started(
                 ctx,
                 state,
@@ -316,7 +328,7 @@ impl AgentRunner {
             }
 
             for attempt in 1..=max_retries {
-                Self::refresh_messages_from_memory(ctx);
+                Self::refresh_messages_from_memory(ctx, state);
                 Self::log_llm_route_attempt_started(
                     ctx,
                     state,
@@ -400,6 +412,7 @@ impl AgentRunner {
                             metadata.attempt,
                             metadata.max_retries,
                             reason,
+                            state,
                         )
                         .await
                     {
@@ -490,6 +503,7 @@ impl AgentRunner {
         attempt: usize,
         max_retries: usize,
         reason: &str,
+        state: &mut RunState,
     ) -> bool {
         let (repaired_messages, outcome) = repair_agent_message_history_for_provider(
             ctx.agent.memory().get_messages(),
@@ -508,7 +522,7 @@ impl AgentRunner {
 
         ctx.agent.memory_mut().replace_messages(repaired_messages);
         ctx.agent.persist_memory_checkpoint_background();
-        Self::refresh_messages_from_memory(ctx);
+        Self::refresh_messages_from_memory(ctx, state);
         Self::emit_history_repair_applied(ctx.progress_tx, provider_name, capabilities, &outcome)
             .await;
         Self::emit_llm_retrying(
@@ -766,7 +780,7 @@ impl AgentRunner {
                 .await);
         }
 
-        self.record_assistant_tool_call(ctx, &raw_json, &tool_calls);
+        self.record_assistant_tool_call(ctx, state, &raw_json, &tool_calls);
         if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
             return Ok(Some(res));
         }
@@ -887,7 +901,7 @@ impl AgentRunner {
             Self::emit_compaction_completed(ctx.progress_tx, trigger, &outcome).await;
         }
         if outcome.applied {
-            Self::refresh_messages_from_memory(ctx);
+            Self::refresh_messages_from_memory(ctx, state);
             Self::track_repeated_compaction(ctx, state, trigger, &outcome).await;
         }
 
@@ -1040,7 +1054,7 @@ impl AgentRunner {
                 .await);
         }
 
-        self.record_assistant_tool_call(ctx, raw_json, &tool_calls);
+        self.record_assistant_tool_call(ctx, state, raw_json, &tool_calls);
         if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
             return Ok(Some(res));
         }
@@ -1489,8 +1503,11 @@ impl AgentRunner {
         .any(|needle| message.contains(needle))
     }
 
-    pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
+    pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>, state: &RunState) {
         *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
+        if let Some(context) = state.transient_system_context.as_deref() {
+            ctx.messages.push(Message::system(context));
+        }
     }
 
     fn spawn_narrative_task(

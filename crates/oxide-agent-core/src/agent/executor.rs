@@ -9,7 +9,8 @@ use super::compaction::{
 };
 use super::hooks::{
     CompletionCheckHook, DelegationGuardHook, Hook, HookContext, HookEvent, HookResult,
-    SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook, WorkloadDistributorHook,
+    HotContextHealthHook, SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
+    WorkloadDistributorHook,
 };
 use super::memory::AgentMessage;
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
@@ -190,6 +191,7 @@ impl AgentExecutor {
         let hook_policy_state = Arc::new(RwLock::new(HookAccessPolicy::default()));
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
+        runner.register_hook(Box::new(HotContextHealthHook::new()));
         Self::register_policy_controlled_hook(
             &mut runner,
             WorkloadDistributorHook::new(),

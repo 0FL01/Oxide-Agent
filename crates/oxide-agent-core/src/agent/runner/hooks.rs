@@ -40,15 +40,17 @@ impl AgentRunner {
             &hook_context,
         );
 
-        self.apply_hook_result(result, ctx).map(|_| ())
+        self.apply_hook_result(result, ctx, None).map(|_| ())
     }
 
     /// Apply hooks before a loop iteration begins.
     pub(super) fn apply_before_iteration_hooks(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        state: &RunState,
+        state: &mut RunState,
     ) -> anyhow::Result<()> {
+        state.set_transient_system_context(None);
+
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
             ctx.agent.memory(),
@@ -70,14 +72,14 @@ impl AgentRunner {
             &hook_context,
         );
 
-        self.apply_hook_result(result, ctx).map(|_| ())
+        self.apply_hook_result(result, ctx, Some(state)).map(|_| ())
     }
 
     /// Apply hooks before executing a tool call.
     pub(super) fn apply_before_tool_hooks(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        state: &RunState,
+        state: &mut RunState,
         tool_call: &crate::llm::ToolCall,
     ) -> anyhow::Result<ToolHookDecision> {
         let hook_context = HookContext::new(
@@ -108,11 +110,22 @@ impl AgentRunner {
                 self.inject_system_context(ctx, context);
                 Ok(ToolHookDecision::Continue)
             }
+            HookResult::InjectTransientContext(context) => {
+                state.set_transient_system_context(Some(context));
+                Ok(ToolHookDecision::Continue)
+            }
             HookResult::ForceIteration { reason, context } => {
                 if let Some(context) = context {
                     self.inject_system_context(ctx, context);
                 }
                 Ok(ToolHookDecision::Blocked { reason })
+            }
+            HookResult::RequestCompaction { reason: _, context } => {
+                if let Some(context) = context {
+                    state.set_transient_system_context(Some(context));
+                }
+                state.request_manual_compaction();
+                Ok(ToolHookDecision::Continue)
             }
             HookResult::Block { reason } => Ok(ToolHookDecision::Blocked { reason }),
             HookResult::Finish(report) => Ok(ToolHookDecision::Finish { report }),
@@ -123,7 +136,7 @@ impl AgentRunner {
     pub(super) fn apply_after_tool_hooks(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        state: &RunState,
+        state: &mut RunState,
         tool_result: &crate::agent::tool_bridge::ToolExecutionResult,
     ) {
         let crate::agent::tool_bridge::ToolExecutionResult::Completed { tool_name, output } =
@@ -154,7 +167,7 @@ impl AgentRunner {
             &hook_context,
         );
 
-        let _ = self.apply_hook_result(result, ctx);
+        let _ = self.apply_hook_result(result, ctx, Some(state));
     }
 
     /// Evaluate hooks after the agent produces a final response.
@@ -190,7 +203,7 @@ impl AgentRunner {
     pub(super) fn apply_timeout_hook(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        state: &RunState,
+        state: &mut RunState,
     ) -> anyhow::Result<Option<String>> {
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
@@ -210,18 +223,37 @@ impl AgentRunner {
             .hook_registry
             .execute(&HookEvent::Timeout, &hook_context);
 
-        self.apply_hook_result(result, ctx)
+        self.apply_hook_result(result, ctx, Some(state))
     }
 
     fn apply_hook_result(
         &mut self,
         result: HookResult,
         ctx: &mut AgentRunnerContext<'_>,
+        state: Option<&mut RunState>,
     ) -> anyhow::Result<Option<String>> {
         match result {
             HookResult::Continue => Ok(None),
             HookResult::InjectContext(context) => {
                 self.inject_system_context(ctx, context);
+                Ok(None)
+            }
+            HookResult::InjectTransientContext(context) => {
+                if let Some(state) = state {
+                    state.set_transient_system_context(Some(context));
+                    Ok(None)
+                } else {
+                    self.inject_system_context(ctx, context);
+                    Ok(None)
+                }
+            }
+            HookResult::RequestCompaction { context, .. } => {
+                if let Some(state) = state {
+                    state.request_manual_compaction();
+                    if let Some(context) = context {
+                        state.set_transient_system_context(Some(context));
+                    }
+                }
                 Ok(None)
             }
             HookResult::Block { reason } => Err(anyhow::anyhow!(reason)),
