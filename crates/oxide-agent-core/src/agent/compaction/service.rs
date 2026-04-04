@@ -214,9 +214,9 @@ impl CompactionService {
             &self.policy,
             Some(agent.memory().max_tokens()),
         );
-        let stage0_contract = DedupSupersededContract::default();
+        let dedup_contract = DedupSupersededContract::default();
         let (deduped_messages, dedup_outcome) = dedup_superseded_tool_results(
-            &stage0_contract,
+            &dedup_contract,
             &snapshot_after_collapse,
             agent.memory().get_messages(),
         );
