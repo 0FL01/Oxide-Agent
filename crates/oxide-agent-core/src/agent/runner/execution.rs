@@ -12,7 +12,7 @@ use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
 use crate::agent::recovery::{repair_agent_message_history_for_provider, sanitize_tool_calls};
 use crate::agent::structured_output::parse_structured_output;
 use crate::config::ModelInfo;
-use crate::llm::{ChatResponse, LlmClient, LlmError, Message, ProviderCapabilities};
+use crate::llm::{ChatResponse, LlmClient, LlmError, ProviderCapabilities};
 use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -60,42 +60,8 @@ impl AgentRunner {
 
             self.apply_pending_runtime_context(ctx, &mut state).await;
 
-            self.apply_before_iteration_hooks(ctx, &mut state)?;
-            let cancellation_token = ctx.agent.cancellation_token().clone();
-            if state.take_manual_compaction_request() {
-                let Some(compaction_result) = Self::await_until_cancelled(
-                    cancellation_token.clone(),
-                    self.run_compaction_checkpoint(ctx, &mut state, CompactionTrigger::Manual),
-                )
-                .await
-                else {
-                    return Err(self.cancelled_error(ctx).await);
-                };
-                compaction_result?;
-            } else {
-                let Some(compaction_result) = Self::await_until_cancelled(
-                    cancellation_token,
-                    self.run_iteration_compaction(ctx, &mut state, iteration),
-                )
-                .await
-                else {
-                    return Err(self.cancelled_error(ctx).await);
-                };
-                compaction_result?;
-            }
-
-            // Emit milestone after pre-run compaction (only on first iteration).
-            if iteration == 0 {
-                if let Some(tx) = ctx.progress_tx {
-                    let timestamp_ms = chrono::Utc::now().timestamp_millis();
-                    let _ = tx
-                        .send(AgentEvent::Milestone {
-                            name: "pre_run_compaction_done".to_string(),
-                            timestamp_ms,
-                        })
-                        .await;
-                }
-            }
+            self.run_pre_llm_maintenance(ctx, &mut state, iteration)
+                .await?;
 
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
@@ -156,6 +122,58 @@ impl AgentRunner {
             "Agent exceeded iteration limit ({}).",
             ctx.config.max_iterations
         ))
+    }
+
+    async fn run_pre_llm_maintenance(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+        iteration: usize,
+    ) -> Result<()> {
+        self.apply_before_iteration_hooks(ctx, state)?;
+
+        let cancellation_token = ctx.agent.cancellation_token().clone();
+        if state.take_manual_compaction_request() {
+            let Some(compaction_result) = Self::await_until_cancelled(
+                cancellation_token.clone(),
+                self.run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual),
+            )
+            .await
+            else {
+                return Err(self.cancelled_error(ctx).await);
+            };
+            compaction_result?;
+        } else {
+            let Some(compaction_result) = Self::await_until_cancelled(
+                cancellation_token,
+                self.run_iteration_compaction(ctx, state, iteration),
+            )
+            .await
+            else {
+                return Err(self.cancelled_error(ctx).await);
+            };
+            compaction_result?;
+        }
+
+        if iteration == 0 {
+            Self::emit_pre_run_compaction_done(ctx.progress_tx).await;
+        }
+
+        Ok(())
+    }
+
+    async fn emit_pre_run_compaction_done(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
+        let Some(tx) = progress_tx else { return };
+
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+        let _ = tx
+            .send(AgentEvent::Milestone {
+                name: "pre_run_compaction_done".to_string(),
+                timestamp_ms,
+            })
+            .await;
     }
 
     async fn call_llm_with_tools(
@@ -223,7 +241,7 @@ impl AgentRunner {
         }
 
         for attempt in 1..=max_retries {
-            Self::refresh_messages_from_memory(ctx, state);
+            Self::refresh_messages_from_memory(ctx);
             Self::log_llm_route_attempt_started(
                 ctx,
                 state,
@@ -328,7 +346,7 @@ impl AgentRunner {
             }
 
             for attempt in 1..=max_retries {
-                Self::refresh_messages_from_memory(ctx, state);
+                Self::refresh_messages_from_memory(ctx);
                 Self::log_llm_route_attempt_started(
                     ctx,
                     state,
@@ -412,7 +430,6 @@ impl AgentRunner {
                             metadata.attempt,
                             metadata.max_retries,
                             reason,
-                            state,
                         )
                         .await
                     {
@@ -503,7 +520,6 @@ impl AgentRunner {
         attempt: usize,
         max_retries: usize,
         reason: &str,
-        state: &mut RunState,
     ) -> bool {
         let (repaired_messages, outcome) = repair_agent_message_history_for_provider(
             ctx.agent.memory().get_messages(),
@@ -522,7 +538,7 @@ impl AgentRunner {
 
         ctx.agent.memory_mut().replace_messages(repaired_messages);
         ctx.agent.persist_memory_checkpoint_background();
-        Self::refresh_messages_from_memory(ctx, state);
+        Self::refresh_messages_from_memory(ctx);
         Self::emit_history_repair_applied(ctx.progress_tx, provider_name, capabilities, &outcome)
             .await;
         Self::emit_llm_retrying(
@@ -780,7 +796,7 @@ impl AgentRunner {
                 .await);
         }
 
-        self.record_assistant_tool_call(ctx, state, &raw_json, &tool_calls);
+        self.record_assistant_tool_call(ctx, &raw_json, &tool_calls);
         if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
             return Ok(Some(res));
         }
@@ -901,7 +917,7 @@ impl AgentRunner {
             Self::emit_compaction_completed(ctx.progress_tx, trigger, &outcome).await;
         }
         if outcome.applied {
-            Self::refresh_messages_from_memory(ctx, state);
+            Self::refresh_messages_from_memory(ctx);
             Self::track_repeated_compaction(ctx, state, trigger, &outcome).await;
         }
 
@@ -1054,7 +1070,7 @@ impl AgentRunner {
                 .await);
         }
 
-        self.record_assistant_tool_call(ctx, state, raw_json, &tool_calls);
+        self.record_assistant_tool_call(ctx, raw_json, &tool_calls);
         if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
             return Ok(Some(res));
         }
@@ -1503,11 +1519,8 @@ impl AgentRunner {
         .any(|needle| message.contains(needle))
     }
 
-    pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>, state: &RunState) {
+    pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
         *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
-        if let Some(context) = state.transient_system_context.as_deref() {
-            ctx.messages.push(Message::system(context));
-        }
     }
 
     fn spawn_narrative_task(
@@ -2229,6 +2242,40 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.summary_payload().is_some()));
+    }
+
+    #[test]
+    fn refresh_messages_from_memory_drops_transient_messages() {
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let mut session = EphemeralSession::new(1024);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("refresh transient context"));
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        messages.push(crate::llm::Message::system("temporary warning"));
+        let mut ctx = AgentRunnerContext {
+            task: "refresh transient context",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "refresh-transient-test",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
+        };
+
+        AgentRunner::refresh_messages_from_memory(&mut ctx);
+
+        assert!(!ctx
+            .messages
+            .iter()
+            .any(|message| message.role == "system" && message.content == "temporary warning"));
     }
 
     #[tokio::test]
