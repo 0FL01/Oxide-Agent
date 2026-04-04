@@ -2,11 +2,11 @@
 
 use super::budget::estimate_message_tokens;
 use super::types::{AgentMessageKind, CompactionSnapshot, DedupSupersededOutcome};
+use crate::agent::loop_detection::canonicalize_tool_call_args;
 use crate::agent::memory::AgentMessage;
 use crate::llm::ToolCall;
-use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use tracing::warn;
 
@@ -14,7 +14,7 @@ use tracing::warn;
 pub const SUPERSEDED_DEDUP_PLACEHOLDER: &str =
     "[deduplicated tool result: superseded by later identical output]";
 
-/// Stage-3 scope contract for deterministic superseded-result deduplication.
+/// Stage-4 scope contract for deterministic superseded-result deduplication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DedupSupersededContract {
     /// Stage-level toggle.
@@ -78,6 +78,13 @@ struct ReadFileCandidate {
     normalized_read_path: NormalizedPath,
     tool_name: String,
     preview: String,
+}
+
+#[derive(Debug, Clone)]
+struct LinkedToolCall {
+    assistant_index: usize,
+    canonical_tool_name: String,
+    arguments: String,
 }
 
 struct DedupedMessage {
@@ -191,75 +198,117 @@ fn collect_candidates(
     latest_summary_boundary: usize,
 ) -> Vec<ReadFileCandidate> {
     let mut candidates = Vec::new();
-    let mut index = 0usize;
+    let mut linked_tool_calls: HashMap<String, LinkedToolCall> = HashMap::new();
 
-    while index + 1 < snapshot.entries.len() {
-        let assistant_entry = &snapshot.entries[index];
-        let result_entry = &snapshot.entries[index + 1];
-
-        let Some(candidate) = build_candidate(
-            contract,
-            assistant_entry,
-            result_entry,
-            messages,
-            latest_summary_boundary,
-        ) else {
-            index += 1;
+    for entry in &snapshot.entries {
+        if entry.index >= latest_summary_boundary {
             continue;
-        };
+        }
 
-        candidates.push(candidate);
-        index += 2;
+        match entry.kind {
+            AgentMessageKind::AssistantToolCall => {
+                register_linked_tool_calls(contract, entry, messages, &mut linked_tool_calls);
+            }
+            AgentMessageKind::ToolResult => {
+                let Some(candidate) = build_candidate(
+                    contract,
+                    entry,
+                    messages,
+                    &linked_tool_calls,
+                    latest_summary_boundary,
+                ) else {
+                    continue;
+                };
+                candidates.push(candidate);
+            }
+            _ => {}
+        }
     }
 
     candidates
 }
 
-fn build_candidate(
+fn register_linked_tool_calls(
     contract: &DedupSupersededContract,
     assistant_entry: &super::types::ClassifiedMemoryEntry,
+    messages: &[AgentMessage],
+    linked_tool_calls: &mut HashMap<String, LinkedToolCall>,
+) {
+    if assistant_entry.kind != AgentMessageKind::AssistantToolCall
+        || (contract.preserve_protected_recent_tool_window
+            && assistant_entry.preserve_in_raw_window)
+    {
+        return;
+    }
+
+    let Some(assistant_message) = messages.get(assistant_entry.index) else {
+        return;
+    };
+    let Some(tool_calls) = assistant_message.tool_calls.as_ref() else {
+        return;
+    };
+    let Some(correlations) = assistant_message.resolved_tool_call_correlations() else {
+        return;
+    };
+    if tool_calls.is_empty() || tool_calls.len() != correlations.len() {
+        return;
+    }
+
+    let mut batch = Vec::new();
+    let mut seen_invocations = HashSet::new();
+    for (tool_call, correlation) in tool_calls.iter().zip(correlations.iter()) {
+        let invocation_id = correlation.invocation_id.as_str().trim();
+        if invocation_id.is_empty() || !seen_invocations.insert(invocation_id.to_string()) {
+            return;
+        }
+
+        let canonical_tool_name = canonicalize_tool_name(&tool_call.function.name);
+        if !tool_allowed(contract, &canonical_tool_name) {
+            continue;
+        }
+
+        batch.push((
+            invocation_id.to_string(),
+            LinkedToolCall {
+                assistant_index: assistant_entry.index,
+                canonical_tool_name,
+                arguments: tool_call.function.arguments.clone(),
+            },
+        ));
+    }
+
+    for (invocation_id, linked_tool_call) in batch {
+        linked_tool_calls.insert(invocation_id, linked_tool_call);
+    }
+}
+
+fn build_candidate(
+    contract: &DedupSupersededContract,
     result_entry: &super::types::ClassifiedMemoryEntry,
     messages: &[AgentMessage],
+    linked_tool_calls: &HashMap<String, LinkedToolCall>,
     latest_summary_boundary: usize,
 ) -> Option<ReadFileCandidate> {
-    if assistant_entry.kind != AgentMessageKind::AssistantToolCall
-        || result_entry.kind != AgentMessageKind::ToolResult
-        || assistant_entry.index >= latest_summary_boundary
+    if result_entry.kind != AgentMessageKind::ToolResult
         || result_entry.index >= latest_summary_boundary
         || result_entry.is_pruned
         || result_entry.is_externalized
-        || (contract.preserve_protected_recent_tool_window
-            && (assistant_entry.preserve_in_raw_window || result_entry.preserve_in_raw_window))
+        || (contract.preserve_protected_recent_tool_window && result_entry.preserve_in_raw_window)
     {
         return None;
     }
 
-    let assistant_message = messages.get(assistant_entry.index)?;
     let result_message = messages.get(result_entry.index)?;
-    let tool_calls = assistant_message.tool_calls.as_ref()?;
-    let correlations = assistant_message.resolved_tool_call_correlations()?;
-    if tool_calls.len() != 1 || correlations.len() != 1 {
-        return None;
-    }
-
-    let tool_call = &tool_calls[0];
-    let canonical_tool_name = canonicalize_tool_name(&tool_call.function.name);
-    if !tool_allowed(contract, &canonical_tool_name) {
-        return None;
-    }
-
     let result_correlation = result_message.resolved_tool_call_correlation()?;
-    if result_correlation.invocation_id != correlations[0].invocation_id {
-        return None;
-    }
+    let linked_tool_call = linked_tool_calls.get(result_correlation.invocation_id.as_str())?;
 
     let result_tool_name = canonicalize_tool_name(result_message.tool_name.as_deref()?);
-    if canonical_tool_name != result_tool_name {
+    if linked_tool_call.canonical_tool_name != result_tool_name {
         return None;
     }
 
     let canonical_args_json = if contract.require_canonical_tool_and_args_match {
-        canonicalize_args_json(&tool_call.function.arguments)?
+        canonicalize_args_json(&linked_tool_call.arguments)?
     } else {
         String::new()
     };
@@ -270,15 +319,15 @@ fn build_candidate(
     };
     Some(ReadFileCandidate {
         key: DedupKey {
-            canonical_tool_name,
+            canonical_tool_name: linked_tool_call.canonical_tool_name.clone(),
             canonical_args_json,
             output_fingerprint,
         },
-        assistant_index: assistant_entry.index,
+        assistant_index: linked_tool_call.assistant_index,
         result_index: result_entry.index,
         normalized_read_path: normalize_tool_path(
-            &tool_call.function.name,
-            &extract_path_argument(&tool_call.function.arguments)?,
+            &linked_tool_call.canonical_tool_name,
+            &extract_path_argument(&linked_tool_call.arguments)?,
         )?,
         tool_name: result_message.tool_name.clone()?,
         preview: build_preview(&result_message.content, PREVIEW_CHARS),
@@ -384,12 +433,11 @@ fn canonicalize_tool_name(tool_name: &str) -> String {
 }
 
 fn canonicalize_args_json(arguments: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(arguments).ok()?;
-    serde_json::to_string(&sort_json_value(value)).ok()
+    canonicalize_tool_call_args(arguments)
 }
 
 fn extract_path_argument(arguments: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(arguments).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
     value.get("path")?.as_str().map(ToOwned::to_owned)
 }
 
@@ -453,21 +501,6 @@ fn is_prefix_path(prefix: &NormalizedPath, candidate: &NormalizedPath) -> bool {
             .all(|(left, right)| left == right)
 }
 
-fn sort_json_value(value: Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.into_iter().map(sort_json_value).collect()),
-        Value::Object(map) => {
-            let sorted = map.into_iter().collect::<BTreeMap<_, _>>();
-            let mut canonical = serde_json::Map::with_capacity(sorted.len());
-            for (key, value) in sorted {
-                canonical.insert(key, sort_json_value(value));
-            }
-            Value::Object(canonical)
-        }
-        other => other,
-    }
-}
-
 fn fingerprint_content(content: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(content.as_bytes());
@@ -510,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_three_contract_is_conservative_and_enabled() {
+    fn stage_four_contract_is_conservative_and_enabled() {
         let contract = DedupSupersededContract::default();
         assert!(contract.enabled);
         assert_eq!(contract.tool_allowlist, vec!["read_file"]);
@@ -582,6 +615,148 @@ mod tests {
         assert!(rewritten[1].content.contains("tool: read_file"));
         assert!(rewritten[1].content.contains("alpha\nbeta\ngamma"));
         assert_eq!(rewritten[3].content, "alpha\nbeta\ngamma");
+    }
+
+    #[test]
+    fn dedup_links_result_to_matching_call_in_multi_tool_batch() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Read first copy",
+                vec![
+                    tool_call("call-search-1", "search", r#"{"query":"lib"}"#),
+                    tool_call("call-read-1", "read_file", r#"{"path":"src/lib.rs"}"#),
+                ],
+            ),
+            AgentMessage::tool("call-search-1", "search", "hit"),
+            AgentMessage::tool("call-read-1", "read_file", "same output"),
+            AgentMessage::assistant_with_tools(
+                "Read second copy",
+                vec![
+                    tool_call("call-search-2", "search", r#"{"query":"lib"}"#),
+                    tool_call("call-read-2", "read_file", r#"{"path":"src/lib.rs"}"#),
+                ],
+            ),
+            AgentMessage::tool("call-search-2", "search", "hit"),
+            AgentMessage::tool("call-read-2", "read_file", "same output"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-3", "search", "{}")],
+            ),
+            AgentMessage::tool("call-3", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(outcome.applied);
+        assert_eq!(outcome.deduplicated_indices, vec![2]);
+        assert!(rewritten[2].content.contains("[deduplicated tool result]"));
+        assert_eq!(rewritten[5].content, "same output");
+    }
+
+    #[test]
+    fn dedup_skips_when_batch_correlations_are_invalid() {
+        let mut first_batch = AgentMessage::assistant_with_tools(
+            "Read first copy",
+            vec![
+                tool_call("call-search-1", "search", r#"{"query":"lib"}"#),
+                tool_call("call-read-1", "read_file", r#"{"path":"src/lib.rs"}"#),
+            ],
+        );
+        first_batch.tool_call_correlations = Some(vec![
+            crate::llm::ToolCallCorrelation::from_legacy_tool_call_id("call-search-1"),
+            crate::llm::ToolCallCorrelation::from_legacy_tool_call_id("call-search-1"),
+        ]);
+        let messages = vec![
+            first_batch,
+            AgentMessage::tool("call-search-1", "search", "hit"),
+            AgentMessage::tool("call-read-1", "read_file", "same output"),
+            AgentMessage::assistant_with_tools(
+                "Read second copy",
+                vec![tool_call(
+                    "call-read-2",
+                    "read_file",
+                    r#"{"path":"src/lib.rs"}"#,
+                )],
+            ),
+            AgentMessage::tool("call-read-2", "read_file", "same output"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-3", "search", "{}")],
+            ),
+            AgentMessage::tool("call-3", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(!outcome.applied);
+        assert_eq!(rewritten[2].content, "same output");
+        assert_eq!(rewritten[4].content, "same output");
+    }
+
+    #[test]
+    fn dedup_skips_when_result_tool_name_mismatches_linked_call() {
+        let messages = vec![
+            AgentMessage::assistant_with_tools(
+                "Read first copy",
+                vec![tool_call("call-1", "read_file", r#"{"path":"src/lib.rs"}"#)],
+            ),
+            AgentMessage::tool("call-1", "search", "same output"),
+            AgentMessage::assistant_with_tools(
+                "Read second copy",
+                vec![tool_call("call-2", "read_file", r#"{"path":"src/lib.rs"}"#)],
+            ),
+            AgentMessage::tool("call-2", "read_file", "same output"),
+            AgentMessage::summary("[Previous context compressed]\n- earlier work preserved"),
+            AgentMessage::assistant_with_tools(
+                "Keep recent raw window",
+                vec![tool_call("call-3", "search", "{}")],
+            ),
+            AgentMessage::tool("call-3", "search", "recent result"),
+        ];
+        let snapshot = classify_hot_memory_with_policy(
+            &messages,
+            &CompactionPolicy {
+                protected_tool_window_tokens: 1,
+                ..CompactionPolicy::default()
+            },
+            None,
+        );
+
+        let (rewritten, outcome) = dedup_superseded_tool_results(
+            &DedupSupersededContract::default(),
+            &snapshot,
+            &messages,
+        );
+
+        assert!(!outcome.applied);
+        assert_eq!(rewritten[1].content, "same output");
+        assert_eq!(rewritten[3].content, "same output");
     }
 
     #[test]

@@ -11,4 +11,5 @@ mod types;
 
 pub use config::LoopDetectionConfig;
 pub use service::LoopDetectionService;
+pub(crate) use tool_detector::canonicalize_tool_call_args;
 pub use types::{LoopDetectedEvent, LoopDetectionError, LoopType};

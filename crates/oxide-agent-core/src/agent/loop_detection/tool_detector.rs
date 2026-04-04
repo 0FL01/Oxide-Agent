@@ -1,6 +1,8 @@
 //! Tool call loop detector.
 
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use tracing::debug;
 
 /// Detects consecutive identical tool calls using hashing.
@@ -83,15 +85,35 @@ impl ToolCallDetector {
     }
 
     fn normalize_args(args: &str) -> String {
-        serde_json::from_str::<serde_json::Value>(args)
-            .map(|value| value.to_string())
-            .unwrap_or_else(|_| args.to_string())
+        canonicalize_tool_call_args(args).unwrap_or_else(|| args.to_string())
+    }
+}
+
+pub(crate) fn canonicalize_tool_call_args(args: &str) -> Option<String> {
+    serde_json::from_str::<Value>(args)
+        .ok()
+        .map(sort_json_value)
+        .map(|value| value.to_string())
+}
+
+fn sort_json_value(value: Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.into_iter().map(sort_json_value).collect()),
+        Value::Object(map) => {
+            let sorted = map.into_iter().collect::<BTreeMap<_, _>>();
+            let mut canonical = serde_json::Map::with_capacity(sorted.len());
+            for (key, value) in sorted {
+                canonical.insert(key, sort_json_value(value));
+            }
+            Value::Object(canonical)
+        }
+        other => other,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ToolCallDetector;
+    use super::{canonicalize_tool_call_args, ToolCallDetector};
 
     #[test]
     fn detects_at_threshold() {
@@ -117,5 +139,15 @@ mod tests {
         assert!(!detector.check("tool_a", r#"{"a":1}"#));
         assert!(!detector.check("tool_a", r#"{"a":2}"#));
         assert_eq!(detector.repetition_count(), 1);
+    }
+
+    #[test]
+    fn canonicalize_tool_call_args_sorts_object_keys_recursively() {
+        let left = canonicalize_tool_call_args(r#"{"b":2,"a":{"d":4,"c":3}}"#)
+            .expect("left canonical args");
+        let right = canonicalize_tool_call_args(r#"{"a":{"c":3,"d":4},"b":2}"#)
+            .expect("right canonical args");
+
+        assert_eq!(left, right);
     }
 }
