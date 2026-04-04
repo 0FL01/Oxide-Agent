@@ -145,7 +145,7 @@ impl LlmProvider for GeminiProvider {
         } else {
             request_builder = request_builder
                 .with_tool(Tool::with_functions(Self::function_declarations(tools)))
-                .with_function_calling_mode(FunctionCallingMode::Auto)
+                .with_function_calling_mode(FunctionCallingMode::Any)
                 .with_allowed_function_names(tools.iter().map(|tool| tool.name.clone()));
         }
 
