@@ -3,6 +3,7 @@
 //! Manages the lifecycle of an agent session, including
 //! timeout tracking, session state, and sandbox.
 
+use super::compaction::CompactionScope;
 use super::identity::SessionId;
 use super::memory::AgentMemory;
 // use super::providers::TodoList;
@@ -63,6 +64,47 @@ pub struct PendingUserInput {
     pub kind: UserInputKind,
     /// Human-readable prompt shown to the user.
     pub prompt: String,
+}
+
+/// Stable memory scope for topic-aware and flow-aware persistence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentMemoryScope {
+    /// User owning the scoped memory.
+    pub user_id: i64,
+    /// Stable transport context key (topic/thread scope).
+    pub context_key: String,
+    /// Stable flow identifier within the context.
+    pub flow_id: String,
+}
+
+impl AgentMemoryScope {
+    /// Create a new explicit memory scope.
+    #[must_use]
+    pub fn new(user_id: i64, context_key: impl Into<String>, flow_id: impl Into<String>) -> Self {
+        Self {
+            user_id,
+            context_key: context_key.into(),
+            flow_id: flow_id.into(),
+        }
+    }
+
+    #[must_use]
+    fn synthetic(session_id: SessionId) -> Self {
+        Self {
+            user_id: session_id.as_i64(),
+            context_key: format!("session:{session_id}"),
+            flow_id: "agent-mode".to_string(),
+        }
+    }
+
+    /// Convert the memory scope into the compaction/archive scope used today.
+    #[must_use]
+    pub fn compaction_scope(&self) -> CompactionScope {
+        CompactionScope {
+            context_key: self.context_key.clone(),
+            flow_id: self.flow_id.clone(),
+        }
+    }
 }
 
 #[async_trait]
@@ -251,6 +293,8 @@ pub struct AgentSession {
     sandbox: Option<SandboxManager>,
     /// Stable scope used to resolve this session's persistent sandbox container.
     sandbox_scope: SandboxScope,
+    /// Stable scope used by long-term memory and archive persistence.
+    memory_scope: AgentMemoryScope,
     /// When the current task started
     started_at: Option<Instant>,
     /// Unique ID for the current task execution (for log correlation)
@@ -285,17 +329,36 @@ impl AgentSession {
     /// Create a new agent session for a transport session
     #[must_use]
     pub fn new(session_id: SessionId) -> Self {
-        Self::new_with_sandbox_scope(session_id, SandboxScope::from(session_id.as_i64()))
+        Self::new_with_scopes(
+            session_id,
+            SandboxScope::from(session_id.as_i64()),
+            AgentMemoryScope::synthetic(session_id),
+        )
     }
 
     /// Create a new agent session with an explicit sandbox scope.
     #[must_use]
     pub fn new_with_sandbox_scope(session_id: SessionId, sandbox_scope: SandboxScope) -> Self {
+        Self::new_with_scopes(
+            session_id,
+            sandbox_scope,
+            AgentMemoryScope::synthetic(session_id),
+        )
+    }
+
+    /// Create a new agent session with explicit sandbox and memory scopes.
+    #[must_use]
+    pub fn new_with_scopes(
+        session_id: SessionId,
+        sandbox_scope: SandboxScope,
+        memory_scope: AgentMemoryScope,
+    ) -> Self {
         Self {
             session_id,
             memory: AgentMemory::new(AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS),
             sandbox: None,
             sandbox_scope,
+            memory_scope,
             started_at: None,
             current_task_id: None,
             status: AgentStatus::Idle,
@@ -310,6 +373,23 @@ impl AgentSession {
             checkpoint_state: Arc::new(AsyncMutex::new(MemoryCheckpointState::default())),
             checkpoint_persist_lock: Arc::new(AsyncMutex::new(())),
         }
+    }
+
+    /// Override the memory scope used for archive and durable memory persistence.
+    pub fn set_memory_scope(&mut self, memory_scope: AgentMemoryScope) {
+        self.memory_scope = memory_scope;
+    }
+
+    /// Access the stable memory scope for this session.
+    #[must_use]
+    pub fn memory_scope(&self) -> &AgentMemoryScope {
+        &self.memory_scope
+    }
+
+    /// Build the compaction/archive scope for this session.
+    #[must_use]
+    pub fn compaction_scope(&self) -> CompactionScope {
+        self.memory_scope.compaction_scope()
     }
 
     /// Install a transport-provided checkpoint sink for memory snapshots.
@@ -701,10 +781,12 @@ mod tests {
     #![allow(clippy::clone_on_ref_ptr)]
 
     use super::{
-        AgentMemoryCheckpoint, AgentSession, PendingSshReplay, PendingUserInput, UserInputKind,
+        AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, PendingSshReplay, PendingUserInput,
+        UserInputKind,
     };
     use crate::agent::memory::AgentMessage;
     use crate::llm::InvocationId;
+    use crate::sandbox::SandboxScope;
     use anyhow::Result;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
@@ -770,6 +852,32 @@ mod tests {
         session.start_task();
 
         assert!(session.pending_user_input().is_none());
+    }
+
+    #[test]
+    fn synthetic_memory_scope_defaults_to_session_identity() {
+        let session = AgentSession::new(42_i64.into());
+
+        assert_eq!(session.memory_scope().user_id, 42);
+        assert_eq!(session.memory_scope().context_key, "session:42");
+        assert_eq!(session.memory_scope().flow_id, "agent-mode");
+
+        let compaction_scope = session.compaction_scope();
+        assert_eq!(compaction_scope.context_key, "session:42");
+        assert_eq!(compaction_scope.flow_id, "agent-mode");
+    }
+
+    #[test]
+    fn explicit_memory_scope_overrides_compaction_scope() {
+        let scope = AgentMemoryScope::new(7, "topic-a", "flow-b");
+        let session =
+            AgentSession::new_with_scopes(42_i64.into(), SandboxScope::from(42_i64), scope.clone());
+
+        assert_eq!(session.memory_scope(), &scope);
+
+        let compaction_scope = session.compaction_scope();
+        assert_eq!(compaction_scope.context_key, "topic-a");
+        assert_eq!(compaction_scope.flow_id, "flow-b");
     }
 
     #[tokio::test]

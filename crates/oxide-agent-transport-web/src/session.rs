@@ -10,7 +10,9 @@ use crate::web_transport::TaskEventLog;
 use chrono::{DateTime, Utc};
 use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::providers::ReminderContext;
-use oxide_agent_core::agent::{AgentExecutor, AgentMemory, AgentSession, SessionId};
+use oxide_agent_core::agent::{
+    AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
+};
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
@@ -211,12 +213,18 @@ impl WebSessionManager {
 
         let sid = SessionId::from(session_id_i64);
         let sandbox_scope = SandboxScope::new(user_id, "web");
+        let context_key = context_key.unwrap_or_else(|| "default".to_string());
+        let agent_flow_id = agent_flow_id.unwrap_or_else(|| "default".to_string());
 
-        let mut session = AgentSession::new_with_sandbox_scope(sid, sandbox_scope);
+        let mut session = AgentSession::new_with_scopes(
+            sid,
+            sandbox_scope,
+            AgentMemoryScope::new(user_id, context_key.clone(), agent_flow_id.clone()),
+        );
         inject_topic_agents_md_for_session(
             self.storage(),
             user_id,
-            context_key.clone().unwrap_or_else(|| "default".to_string()),
+            context_key.clone(),
             &mut session,
         )
         .await;
@@ -225,26 +233,18 @@ impl WebSessionManager {
         session.set_memory_checkpoint(Arc::new(InMemoryFlowCheckpoint {
             storage: Arc::new(InMemoryStorage::new()),
             user_id,
-            context_key: context_key.clone().unwrap_or_else(|| "default".to_string()),
-            agent_flow_id: agent_flow_id
-                .clone()
-                .unwrap_or_else(|| "default".to_string()),
+            context_key: context_key.clone(),
+            agent_flow_id: agent_flow_id.clone(),
         }));
 
         let mut executor =
             AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone());
-        executor.set_agents_md_context(
-            self.storage(),
-            user_id,
-            context_key.clone().unwrap_or_else(|| "default".to_string()),
-        );
+        executor.set_agents_md_context(self.storage(), user_id, context_key.clone());
         executor.set_reminder_context(ReminderContext {
             storage: self.storage(),
             user_id,
-            context_key: context_key.clone().unwrap_or_else(|| "default".to_string()),
-            flow_id: agent_flow_id
-                .clone()
-                .unwrap_or_else(|| "default".to_string()),
+            context_key: context_key.clone(),
+            flow_id: agent_flow_id.clone(),
             chat_id: user_id,
             thread_id: None,
             thread_kind: ReminderThreadKind::None,
@@ -256,8 +256,8 @@ impl WebSessionManager {
         let meta = SessionMeta {
             session_id: session_id.clone(),
             user_id,
-            context_key: context_key.unwrap_or_else(|| "default".to_string()),
-            agent_flow_id: agent_flow_id.unwrap_or_else(|| "default".to_string()),
+            context_key,
+            agent_flow_id,
             status: SessionStatus::Idle,
             created_at: Utc::now(),
             last_activity_at: Utc::now(),
