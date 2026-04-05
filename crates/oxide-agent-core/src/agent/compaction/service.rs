@@ -15,6 +15,7 @@ use super::types::{
     ExternalizationOutcome, PruneOutcome, RebuildOutcome, SummaryGenerationOutcome,
 };
 use crate::agent::context::AgentContext;
+use crate::storage::{R2ArchiveSink, R2PayloadSink, R2Storage};
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -69,6 +70,14 @@ impl CompactionService {
     #[must_use]
     pub fn with_payload_sink(mut self, payload_sink: Arc<dyn PayloadSink>) -> Self {
         self.payload_sink = payload_sink;
+        self
+    }
+
+    /// Replace the sink pair with R2-backed production adapters.
+    #[must_use]
+    pub fn with_r2_storage(mut self, storage: Arc<R2Storage>) -> Self {
+        self.archive_sink = Arc::new(R2ArchiveSink::new(Arc::clone(&storage)));
+        self.payload_sink = Arc::new(R2PayloadSink::new(storage));
         self
     }
 

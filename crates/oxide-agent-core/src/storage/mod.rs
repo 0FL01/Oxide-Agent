@@ -3,6 +3,7 @@
 //! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
 
 mod builders;
+mod compaction;
 mod control_plane;
 mod error;
 mod flows;
@@ -21,6 +22,7 @@ mod telemetry;
 mod user;
 mod utils;
 
+pub use compaction::{CompactionBlobBackend, R2ArchiveSink, R2PayloadSink};
 #[cfg(test)]
 pub(crate) use control_plane::TOPIC_AGENTS_MD_MAX_LINES;
 pub use control_plane::{
