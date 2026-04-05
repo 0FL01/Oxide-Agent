@@ -155,8 +155,11 @@ impl LlmProvider for GeminiProvider {
 
 impl GeminiProvider {
     pub(super) fn thinking_config_for_model(model_id: &str) -> Option<ThinkingConfig> {
-        (Self::normalized_model_id(model_id) == "gemma-4-31b-it")
-            .then(|| ThinkingConfig::new().with_thinking_level(ThinkingLevel::High))
+        matches!(
+            Self::normalized_model_id(model_id),
+            "gemma-4-31b-it" | "gemini-3.1-flash-lite-preview"
+        )
+        .then(|| ThinkingConfig::new().with_thinking_level(ThinkingLevel::High))
     }
 
     fn apply_model_defaults(request_builder: ContentBuilder, model_id: &str) -> ContentBuilder {

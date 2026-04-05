@@ -39,9 +39,33 @@ mod gemini_tests {
     }
 
     #[test]
+    fn enables_high_thinking_for_gemini_3_1_flash_lite_preview() {
+        let config = GeminiProvider::thinking_config_for_model("gemini-3.1-flash-lite-preview")
+            .expect("expected thinking config");
+
+        assert!(matches!(
+            config.thinking_level,
+            Some(gemini_rust::ThinkingLevel::High)
+        ));
+        assert!(config.thinking_budget.is_none());
+    }
+
+    #[test]
     fn enables_high_thinking_for_normalized_gemma_model_id() {
         let config = GeminiProvider::thinking_config_for_model("models/gemma-4-31b-it")
             .expect("expected thinking config");
+
+        assert!(matches!(
+            config.thinking_level,
+            Some(gemini_rust::ThinkingLevel::High)
+        ));
+    }
+
+    #[test]
+    fn enables_high_thinking_for_normalized_gemini_preview_model_id() {
+        let config =
+            GeminiProvider::thinking_config_for_model("models/gemini-3.1-flash-lite-preview")
+                .expect("expected thinking config");
 
         assert!(matches!(
             config.thinking_level,
