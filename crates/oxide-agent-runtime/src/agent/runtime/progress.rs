@@ -5,7 +5,7 @@ use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressSt
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 /// File delivery semantics for progress runtime handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,8 +135,18 @@ pub async fn run_progress_loop<T: AgentTransport>(
                 loop_type,
                 iteration,
             } => {
-                if let Err(e) = transport.notify_loop_detected(*loop_type, *iteration).await {
-                    warn!(error = %e, "Loop detection notification failed");
+                if !state.loop_notification_sent {
+                    state.loop_notification_sent = true;
+                    if let Err(e) = transport.notify_loop_detected(*loop_type, *iteration).await {
+                        warn!(error = %e, "Loop detection notification failed");
+                    }
+                } else {
+                    debug!(
+                        loop_type = ?loop_type,
+                        iteration = *iteration,
+                        "Skipping duplicate loop detection notification"
+                    );
+                    continue;
                 }
             }
             // Rate limit events must update the UI immediately regardless of throttle,
@@ -179,6 +189,7 @@ pub async fn run_progress_loop<T: AgentTransport>(
 mod tests {
     use super::*;
     use oxide_agent_core::agent::compaction::BudgetState;
+    use oxide_agent_core::agent::loop_detection::LoopType;
     use oxide_agent_core::agent::progress::TokenSnapshot;
     use oxide_agent_core::llm::TokenUsage;
     use std::sync::Arc;
@@ -211,6 +222,7 @@ mod tests {
     struct DummyTransport {
         updates: Arc<Mutex<usize>>,
         delivered: Arc<Mutex<Vec<DeliveredFileRecord>>>,
+        loop_notifications: Arc<Mutex<usize>>,
         fail_deliver: bool,
     }
 
@@ -235,6 +247,16 @@ mod tests {
 
             let mut delivered = self.delivered.lock().await;
             delivered.push((mode, kind, file_name.to_string(), content.len()));
+            Ok(())
+        }
+
+        async fn notify_loop_detected(
+            &self,
+            _loop_type: LoopType,
+            _iteration: usize,
+        ) -> Result<()> {
+            let mut loop_notifications = self.loop_notifications.lock().await;
+            *loop_notifications += 1;
             Ok(())
         }
     }
@@ -429,5 +451,32 @@ mod tests {
             Ok(state) => state,
             Err(err) => panic!("progress runtime join failed: {err}"),
         };
+    }
+
+    #[tokio::test]
+    async fn loop_notification_is_deduplicated_per_run() {
+        let (tx, rx) = mpsc::channel(8);
+        let transport = DummyTransport::default();
+
+        let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(0));
+        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+
+        tx.send(AgentEvent::LoopDetected {
+            loop_type: LoopType::ToolCallLoop,
+            iteration: 4,
+        })
+        .await
+        .expect("first loop send");
+        tx.send(AgentEvent::LoopDetected {
+            loop_type: LoopType::ToolCallLoop,
+            iteration: 5,
+        })
+        .await
+        .expect("second loop send");
+        drop(tx);
+
+        let _state = handle.await.expect("progress runtime join failed");
+        let loop_notifications = *transport.loop_notifications.lock().await;
+        assert_eq!(loop_notifications, 1);
     }
 }

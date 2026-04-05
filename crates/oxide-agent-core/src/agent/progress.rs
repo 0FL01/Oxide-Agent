@@ -304,6 +304,8 @@ pub struct ProgressState {
     pub rate_limit_retry: Option<RateLimitRetryState>,
     /// Latest provider failover notice for the current run.
     pub provider_failover_notice: Option<String>,
+    /// Whether the loop-detected modal was already surfaced for this run.
+    pub loop_notification_sent: bool,
 }
 
 /// State for rate limit retry display
