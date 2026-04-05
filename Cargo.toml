@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/oxide-agent-core",
+    "crates/oxide-agent-memory",
     "crates/oxide-agent-runtime",
     "crates/oxide-agent-transport-telegram",
     "crates/oxide-agent-transport-web",
