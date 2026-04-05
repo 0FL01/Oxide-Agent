@@ -7,7 +7,8 @@ use crate::config::BotSettings;
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::{
-    executor::AgentExecutor, AgentMemory, AgentMemoryCheckpoint, AgentSession, SessionId,
+    executor::AgentExecutor, AgentMemory, AgentMemoryCheckpoint, AgentMemoryScope, AgentSession,
+    SessionId,
 };
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
@@ -291,7 +292,15 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
         return session_id;
     }
 
-    let mut session = AgentSession::new_with_sandbox_scope(session_id, ctx.sandbox_scope.clone());
+    let mut session = AgentSession::new_with_scopes(
+        session_id,
+        ctx.sandbox_scope.clone(),
+        AgentMemoryScope::new(
+            ctx.user_id,
+            ctx.context_key.clone(),
+            ctx.agent_flow_id.clone(),
+        ),
+    );
     session.set_memory_checkpoint(Arc::new(FlowMemoryCheckpoint {
         storage: ctx.storage.clone(),
         user_id: ctx.user_id,

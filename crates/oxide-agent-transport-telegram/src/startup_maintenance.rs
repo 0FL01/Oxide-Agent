@@ -10,7 +10,7 @@ use anyhow::Result;
 use oxide_agent_core::agent::executor::AgentExecutor;
 use oxide_agent_core::agent::providers::{inspect_topic_infra_config, ReminderContext};
 use oxide_agent_core::agent::recovery::{prune_tool_history_by_availability, HistoryRepairOutcome};
-use oxide_agent_core::agent::{AgentSession, SessionId};
+use oxide_agent_core::agent::{AgentMemoryScope, AgentSession, SessionId};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::{
     resolve_active_topic_binding, PersistedAgentMemoryRef, R2Storage, StorageProvider,
@@ -272,9 +272,14 @@ async fn resolve_available_tools_for_memory(
         .clone()
         .unwrap_or_else(|| MAINTENANCE_FLOW_ID.to_string());
     let session_id = maintenance_session_id(reference);
-    let session = AgentSession::new_with_sandbox_scope(
+    let session = AgentSession::new_with_scopes(
         session_id,
         sandbox_scope(reference.user_id, chat_id, thread_spec),
+        AgentMemoryScope::new(
+            reference.user_id,
+            reference.context_key.clone(),
+            flow_id.clone(),
+        ),
     );
     let mut executor = AgentExecutor::new(llm_client, session, settings.agent.clone());
     executor.set_agents_md_context(

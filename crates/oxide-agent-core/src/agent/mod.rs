@@ -89,7 +89,7 @@ pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{
-    AgentMemoryCheckpoint, AgentSession, AgentStatus, PendingSshReplay, PendingUserInput,
-    RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
+    AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingSshReplay,
+    PendingUserInput, RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
 };
 pub use skills::SkillRegistry;

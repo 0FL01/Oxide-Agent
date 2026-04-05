@@ -138,10 +138,7 @@ impl AgentContext for AgentSession {
     }
 
     fn compaction_scope(&self) -> CompactionScope {
-        CompactionScope {
-            context_key: format!("session:{}", self.session_id),
-            flow_id: "agent-mode".to_string(),
-        }
+        AgentSession::compaction_scope(self)
     }
 
     fn skill_token_count(&self) -> usize {
