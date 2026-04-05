@@ -13,6 +13,7 @@ use super::hooks::{
     WorkloadDistributorHook,
 };
 use super::memory::AgentMessage;
+use super::persistent_memory::{PersistentMemoryCoordinator, PersistentMemoryStore};
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
@@ -33,7 +34,7 @@ use super::tool_runtime::scope_tool_model_route;
 use crate::agent::progress::AgentEvent;
 use crate::config::{get_agent_max_iterations, get_agent_search_limit};
 use crate::llm::{LlmClient, Message, ToolCall, ToolCallFunction, ToolDefinition};
-use crate::storage::{StorageProvider, TopicInfraConfigRecord};
+use crate::storage::{StorageMemoryRepository, StorageProvider, TopicInfraConfigRecord};
 use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::sync::Arc;
@@ -68,6 +69,7 @@ pub struct AgentExecutor {
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
     hook_policy_state: Arc<RwLock<HookAccessPolicy>>,
     compaction_service: CompactionService,
+    persistent_memory: Option<PersistentMemoryCoordinator>,
     last_topic_infra_preflight_summary: Option<String>,
 }
 
@@ -111,6 +113,11 @@ struct PreparedExecution {
     system_prompt: String,
     messages: Vec<Message>,
     runner_config: AgentRunnerConfig,
+}
+
+struct RunnerContextServices<'a> {
+    compaction_service: &'a CompactionService,
+    persistent_memory: Option<&'a PersistentMemoryCoordinator>,
 }
 
 fn current_model_route(config: &AgentRunnerConfig) -> Option<crate::config::ModelInfo> {
@@ -245,8 +252,25 @@ impl AgentExecutor {
             tool_policy_state,
             hook_policy_state,
             compaction_service,
+            persistent_memory: None,
             last_topic_infra_preflight_summary: None,
         }
+    }
+
+    /// Attach a custom persistent-memory store used for Stage-4 durable writes.
+    #[must_use]
+    pub fn with_persistent_memory_store(mut self, store: Arc<dyn PersistentMemoryStore>) -> Self {
+        self.persistent_memory = Some(PersistentMemoryCoordinator::new(store));
+        self
+    }
+
+    /// Attach a storage-backed persistent-memory repository for Stage-4 durable writes.
+    #[must_use]
+    pub fn with_storage_memory_repository(mut self, storage: Arc<dyn StorageProvider>) -> Self {
+        self.persistent_memory = Some(PersistentMemoryCoordinator::new(Arc::new(
+            StorageMemoryRepository::new(storage),
+        )));
+        self
     }
 
     fn register_policy_controlled_hook<H>(
@@ -852,7 +876,10 @@ impl AgentExecutor {
             progress_tx.as_ref(),
             &mut self.session,
             self.skill_registry.as_mut(),
-            &self.compaction_service,
+            RunnerContextServices {
+                compaction_service: &self.compaction_service,
+                persistent_memory: self.persistent_memory.as_ref(),
+            },
         );
 
         match Self::run_with_outer_timeout(&mut self.runner, &mut ctx, timeout_duration).await {
@@ -976,8 +1003,10 @@ impl AgentExecutor {
         progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
         session: &'a mut AgentSession,
         skill_registry: Option<&'a mut SkillRegistry>,
-        compaction_service: &'a CompactionService,
+        services: RunnerContextServices<'a>,
     ) -> AgentRunnerContext<'a> {
+        let session_id = Some(session.session_id.to_string());
+        let memory_scope = Some(session.memory_scope().clone());
         AgentRunnerContext {
             task,
             system_prompt: &prepared.system_prompt,
@@ -989,7 +1018,10 @@ impl AgentExecutor {
             messages: &mut prepared.messages,
             agent: session,
             skill_registry,
-            compaction_service: Some(compaction_service),
+            compaction_service: Some(services.compaction_service),
+            persistent_memory: services.persistent_memory,
+            session_id,
+            memory_scope,
             config: prepared.runner_config.clone(),
         }
     }
@@ -1311,6 +1343,7 @@ mod tests {
     };
     use anyhow::{bail, Result};
     use mockall::predicate::eq;
+    use oxide_agent_memory::{CleanupStatus, InMemoryMemoryRepository, MemoryRepository};
     use serde_json::json;
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
@@ -1587,6 +1620,81 @@ mod tests {
         };
 
         assert!(error.to_string().contains("not waiting for user input"));
+    }
+
+    #[tokio::test]
+    async fn execute_persists_episode_after_final_response() {
+        let store = Arc::new(InMemoryMemoryRepository::new());
+        let mut executor = build_executor_with_mock_response(
+            r#"{"thought":"done","tool_call":null,"final_answer":"persisted ok","awaiting_user_input":null}"#,
+        )
+        .with_persistent_memory_store(store.clone());
+
+        let result = executor.execute("persist final response", None).await;
+
+        assert!(matches!(
+            result,
+            Ok(super::AgentExecutionOutcome::Completed(ref answer)) if answer == "persisted ok"
+        ));
+
+        let task_id = executor
+            .session()
+            .current_task_id
+            .clone()
+            .expect("task id should be recorded");
+        let episode = store
+            .get_episode(&task_id)
+            .await
+            .expect("episode lookup should succeed")
+            .expect("episode should exist");
+        assert_eq!(episode.goal, "persist final response");
+
+        let session_id = executor.session().session_id.to_string();
+        let state = store
+            .get_session_state(&session_id)
+            .await
+            .expect("session state lookup should succeed")
+            .expect("session state should exist");
+        assert_eq!(state.cleanup_status, CleanupStatus::Finalized);
+        assert_eq!(state.pending_episode_id, None);
+    }
+
+    #[tokio::test]
+    async fn execute_waiting_for_user_input_updates_session_state_without_episode() {
+        let store = Arc::new(InMemoryMemoryRepository::new());
+        let mut executor = build_executor_with_mock_response(
+            r#"{"thought":"blocked","tool_call":null,"final_answer":null,"awaiting_user_input":{"kind":"text","prompt":"Send more details"}}"#,
+        )
+        .with_persistent_memory_store(store.clone());
+
+        let result = executor.execute("need more details", None).await;
+
+        assert!(matches!(
+            result,
+            Ok(super::AgentExecutionOutcome::WaitingForUserInput(ref request))
+                if request.kind == UserInputKind::Text
+                    && request.prompt == "Send more details"
+        ));
+
+        let task_id = executor
+            .session()
+            .current_task_id
+            .clone()
+            .expect("task id should be recorded");
+        assert!(store
+            .get_episode(&task_id)
+            .await
+            .expect("episode lookup should succeed")
+            .is_none());
+
+        let session_id = executor.session().session_id.to_string();
+        let state = store
+            .get_session_state(&session_id)
+            .await
+            .expect("session state lookup should succeed")
+            .expect("session state should exist");
+        assert_eq!(state.cleanup_status, CleanupStatus::Idle);
+        assert_eq!(state.pending_episode_id.as_deref(), Some(task_id.as_str()));
     }
 
     #[tokio::test]

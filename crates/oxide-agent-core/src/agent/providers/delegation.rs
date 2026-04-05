@@ -491,6 +491,9 @@ impl DelegationProvider {
             agent: &mut prepared.sub_session,
             skill_registry: None,
             compaction_service: Some(&prepared.compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: prepared.runner_config.clone(),
         }
     }

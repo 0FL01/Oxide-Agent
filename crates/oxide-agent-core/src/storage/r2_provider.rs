@@ -9,6 +9,7 @@ use super::{
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
+use oxide_agent_memory::{EpisodeRecord, SessionStateRecord, ThreadRecord};
 use tracing::{error, info};
 
 #[async_trait]
@@ -289,6 +290,39 @@ impl StorageProvider for R2Storage {
         with_storage_reason(
             "upsert_agent_flow_record",
             self.upsert_agent_flow_record_inner(user_id, context_key, flow_id),
+        )
+        .await
+    }
+
+    async fn upsert_memory_thread(
+        &self,
+        record: ThreadRecord,
+    ) -> Result<ThreadRecord, StorageError> {
+        with_storage_reason(
+            "upsert_memory_thread",
+            self.upsert_memory_thread_inner(record),
+        )
+        .await
+    }
+
+    async fn create_memory_episode(
+        &self,
+        record: EpisodeRecord,
+    ) -> Result<EpisodeRecord, StorageError> {
+        with_storage_reason(
+            "create_memory_episode",
+            self.create_memory_episode_inner(record),
+        )
+        .await
+    }
+
+    async fn upsert_memory_session_state(
+        &self,
+        record: SessionStateRecord,
+    ) -> Result<SessionStateRecord, StorageError> {
+        with_storage_reason(
+            "upsert_memory_session_state",
+            self.upsert_memory_session_state_inner(record),
         )
         .await
     }

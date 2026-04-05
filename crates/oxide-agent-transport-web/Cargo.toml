@@ -15,6 +15,7 @@ too_many_arguments = "forbid"
 
 [dependencies]
 oxide-agent-core = { path = "../oxide-agent-core" }
+oxide-agent-memory = { path = "../oxide-agent-memory" }
 oxide-agent-runtime = { path = "../oxide-agent-runtime" }
 tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"

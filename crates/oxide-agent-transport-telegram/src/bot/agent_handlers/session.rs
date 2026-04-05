@@ -310,7 +310,8 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
     load_agent_memory_into_session(&ctx, &mut session).await;
     inject_topic_agents_md_for_flow(&ctx, &mut session).await;
 
-    let mut executor = AgentExecutor::new(ctx.llm.clone(), session, ctx.settings.agent.clone());
+    let mut executor = AgentExecutor::new(ctx.llm.clone(), session, ctx.settings.agent.clone())
+        .with_storage_memory_repository(ctx.storage.clone());
     executor.set_agents_md_context(ctx.storage.clone(), ctx.user_id, ctx.context_key.clone());
     if manager_enabled {
         let topic_lifecycle = Arc::new(TelegramManagerTopicLifecycle::new(

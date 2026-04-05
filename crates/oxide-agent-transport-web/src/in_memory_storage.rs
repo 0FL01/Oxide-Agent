@@ -19,6 +19,7 @@ use oxide_agent_core::storage::{
     TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
+use oxide_agent_memory::{EpisodeRecord, SessionStateRecord, ThreadRecord};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -37,6 +38,9 @@ pub struct InMemoryStorage {
     agent_memories_context: RwLock<HashMap<(i64, String), AgentMemory>>,
     agent_memories_flow: RwLock<HashMap<(i64, String, String), AgentMemory>>,
     flow_records: RwLock<HashMap<(i64, String, String), AgentFlowRecord>>,
+    memory_threads: RwLock<HashMap<String, ThreadRecord>>,
+    memory_episodes: RwLock<HashMap<String, EpisodeRecord>>,
+    memory_session_states: RwLock<HashMap<String, SessionStateRecord>>,
     reminder_jobs: RwLock<HashMap<(i64, String), ReminderJobRecord>>,
     topic_agents_md: RwLock<HashMap<(i64, String), TopicAgentsMdRecord>>,
 }
@@ -55,6 +59,9 @@ impl InMemoryStorage {
             agent_memories_context: RwLock::new(HashMap::new()),
             agent_memories_flow: RwLock::new(HashMap::new()),
             flow_records: RwLock::new(HashMap::new()),
+            memory_threads: RwLock::new(HashMap::new()),
+            memory_episodes: RwLock::new(HashMap::new()),
+            memory_session_states: RwLock::new(HashMap::new()),
             reminder_jobs: RwLock::new(HashMap::new()),
             topic_agents_md: RwLock::new(HashMap::new()),
         }
@@ -318,6 +325,47 @@ impl crate::api::StorageProvider for InMemoryStorage {
         };
         let mut records = self.flow_records.write().await;
         records.insert((user_id, context_key, flow_id), record.clone());
+        Ok(record)
+    }
+
+    async fn upsert_memory_thread(
+        &self,
+        record: ThreadRecord,
+    ) -> Result<ThreadRecord, StorageError> {
+        let mut threads = self.memory_threads.write().await;
+        let stored = if let Some(existing) = threads.get(&record.thread_id) {
+            ThreadRecord {
+                created_at: existing.created_at,
+                ..record
+            }
+        } else {
+            record
+        };
+        threads.insert(stored.thread_id.clone(), stored.clone());
+        Ok(stored)
+    }
+
+    async fn create_memory_episode(
+        &self,
+        record: EpisodeRecord,
+    ) -> Result<EpisodeRecord, StorageError> {
+        let mut episodes = self.memory_episodes.write().await;
+        if episodes.contains_key(&record.episode_id) {
+            return Err(StorageError::InvalidInput(format!(
+                "episode {} already exists",
+                record.episode_id
+            )));
+        }
+        episodes.insert(record.episode_id.clone(), record.clone());
+        Ok(record)
+    }
+
+    async fn upsert_memory_session_state(
+        &self,
+        record: SessionStateRecord,
+    ) -> Result<SessionStateRecord, StorageError> {
+        let mut session_states = self.memory_session_states.write().await;
+        session_states.insert(record.session_id.clone(), record.clone());
         Ok(record)
     }
 

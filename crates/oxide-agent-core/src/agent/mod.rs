@@ -52,6 +52,8 @@ pub mod thoughts;
 /// Narrator for human-readable status updates
 pub mod narrator;
 
+pub(crate) mod persistent_memory;
+
 /// Loop detection subsystem
 pub mod loop_detection;
 

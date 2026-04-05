@@ -281,7 +281,8 @@ async fn resolve_available_tools_for_memory(
             flow_id.clone(),
         ),
     );
-    let mut executor = AgentExecutor::new(llm_client, session, settings.agent.clone());
+    let mut executor = AgentExecutor::new(llm_client, session, settings.agent.clone())
+        .with_storage_memory_repository(storage.clone());
     executor.set_agents_md_context(
         storage.clone(),
         reference.user_id,
