@@ -683,6 +683,7 @@ fn should_forward_sub_agent_progress_event(event: &AgentEvent) -> bool {
             | AgentEvent::TokenSnapshotUpdated { .. }
             | AgentEvent::FileToSend { .. }
             | AgentEvent::FileToSendWithConfirmation { .. }
+            | AgentEvent::LoopDetected { .. }
     )
 }
 
@@ -946,6 +947,12 @@ mod tests {
                 content: vec![1, 2, 3],
             }
         ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::LoopDetected {
+                loop_type: crate::agent::loop_detection::LoopType::ToolCallLoop,
+                iteration: 3,
+            }
+        ));
         assert!(should_forward_sub_agent_progress_event(
             &AgentEvent::ToolCall {
                 name: "execute_command".to_string(),
@@ -992,6 +999,29 @@ mod tests {
 
         let forwarded = parent_rx.recv().await.expect("forwarded event");
         assert!(matches!(forwarded, AgentEvent::ToolCall { .. }));
+        assert!(parent_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn sub_agent_progress_relay_drops_loop_notifications() {
+        let (parent_tx, mut parent_rx) = mpsc::channel(8);
+        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let sub_tx = sub_tx.expect("relay tx");
+
+        sub_tx
+            .send(AgentEvent::LoopDetected {
+                loop_type: crate::agent::loop_detection::LoopType::ToolCallLoop,
+                iteration: 7,
+            })
+            .await
+            .expect("loop send");
+
+        drop(sub_tx);
+        if let Some(task) = relay_task {
+            task.await.expect("relay task join");
+        }
+        drop(parent_tx);
+
         assert!(parent_rx.recv().await.is_none());
     }
 
