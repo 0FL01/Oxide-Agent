@@ -238,7 +238,8 @@ impl WebSessionManager {
         }));
 
         let mut executor =
-            AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone());
+            AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone())
+                .with_storage_memory_repository(self.storage());
         executor.set_agents_md_context(self.storage(), user_id, context_key.clone());
         executor.set_reminder_context(ReminderContext {
             storage: self.storage(),

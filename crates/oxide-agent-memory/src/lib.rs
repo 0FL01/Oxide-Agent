@@ -4,11 +4,13 @@
 //! primitives for persistent agent memory (hybrid RAG).
 
 pub mod archive;
+pub mod finalize;
 pub mod in_memory;
 pub mod repository;
 pub mod types;
 
 pub use archive::ArchiveBlobStore;
+pub use finalize::{EpisodeFinalizationInput, EpisodeFinalizationPlan, EpisodeFinalizer};
 pub use in_memory::{InMemoryArchiveBlobStore, InMemoryMemoryRepository};
 pub use repository::{MemoryRepository, RepositoryError};
 pub use types::*;

@@ -7,6 +7,7 @@ use super::{
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
+use oxide_agent_memory::{EpisodeRecord, SessionStateRecord, ThreadRecord};
 
 /// Interface for storage providers.
 #[cfg_attr(test, mockall::automock)]
@@ -175,6 +176,37 @@ pub trait StorageProvider: Send + Sync {
         context_key: String,
         flow_id: String,
     ) -> Result<AgentFlowRecord, StorageError>;
+    /// Upsert a persistent memory thread record.
+    async fn upsert_memory_thread(
+        &self,
+        record: ThreadRecord,
+    ) -> Result<ThreadRecord, StorageError> {
+        let _ = record;
+        Err(StorageError::Config(
+            "persistent memory threads are not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Create a persistent memory episode record.
+    async fn create_memory_episode(
+        &self,
+        record: EpisodeRecord,
+    ) -> Result<EpisodeRecord, StorageError> {
+        let _ = record;
+        Err(StorageError::Config(
+            "persistent memory episodes are not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Upsert a persistent memory session-state record.
+    async fn upsert_memory_session_state(
+        &self,
+        record: SessionStateRecord,
+    ) -> Result<SessionStateRecord, StorageError> {
+        let _ = record;
+        Err(StorageError::Config(
+            "persistent memory session state is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
     /// Clear all context (history and memory) for a user.
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError>;
     /// Check connection to storage.

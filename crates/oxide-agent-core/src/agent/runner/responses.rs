@@ -5,12 +5,46 @@ use super::types::{
 };
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
+use crate::agent::persistent_memory::{PersistentRunContext, PersistentRunPhase};
 use crate::agent::progress::AgentEvent;
 use crate::agent::session::PendingUserInput;
 use crate::agent::tool_bridge::sync_todos_from_arc;
 use tracing::warn;
 
 impl AgentRunner {
+    async fn persist_post_run_memory(
+        &self,
+        ctx: &mut AgentRunnerContext<'_>,
+        phase: PersistentRunPhase<'_>,
+    ) {
+        if ctx.config.is_sub_agent {
+            return;
+        }
+
+        let (Some(persistent_memory), Some(session_id), Some(scope)) = (
+            ctx.persistent_memory,
+            ctx.session_id.as_deref(),
+            ctx.memory_scope.as_ref(),
+        ) else {
+            return;
+        };
+
+        if let Err(error) = persistent_memory
+            .persist_post_run(PersistentRunContext {
+                session_id,
+                task_id: ctx.task_id,
+                scope,
+                task: ctx.task,
+                messages: ctx.agent.memory().get_messages(),
+                hot_token_estimate: ctx.agent.memory().token_count(),
+                phase,
+            })
+            .await
+        {
+            warn!(error = %error, task_id = %ctx.task_id, "Persistent memory post-run write failed");
+        }
+    }
+
     /// Handle malformed structured output responses.
     pub(super) async fn handle_structured_output_error(
         &mut self,
@@ -163,6 +197,13 @@ impl AgentRunner {
         let _ = self
             .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
             .await?;
+        self.persist_post_run_memory(
+            ctx,
+            PersistentRunPhase::Completed {
+                final_answer: &final_response,
+            },
+        )
+        .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
@@ -192,6 +233,8 @@ impl AgentRunner {
         let _ = self
             .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
             .await?;
+        self.persist_post_run_memory(ctx, PersistentRunPhase::WaitingForUserInput)
+            .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 

@@ -1579,6 +1579,7 @@ mod tests {
         ToolDefinition,
     };
     use async_trait::async_trait;
+    use oxide_agent_memory::MemoryRepository;
     use serde_json::json;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -1698,6 +1699,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -1769,6 +1773,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -1793,6 +1800,60 @@ mod tests {
                 tool_calls.iter().any(|tool_call| tool_call.id == "call-2")
             })
         }));
+    }
+
+    #[tokio::test]
+    async fn run_sub_agent_does_not_persist_post_run_memory() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Sub-agent task"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let store = Arc::new(oxide_agent_memory::InMemoryMemoryRepository::new());
+        let store_for_coordinator = Arc::clone(&store);
+        let store_for_coordinator: Arc<dyn crate::agent::persistent_memory::PersistentMemoryStore> =
+            store_for_coordinator;
+        let coordinator = crate::agent::persistent_memory::PersistentMemoryCoordinator::new(
+            store_for_coordinator,
+        );
+        let mut ctx = AgentRunnerContext {
+            task: "Sub-agent task",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-sub-agent-memory",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: Some(&coordinator),
+            session_id: Some("sub-session".to_string()),
+            memory_scope: Some(crate::agent::AgentMemoryScope::new(42, "topic-a", "flow-a")),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256)
+                .with_sub_agent(true),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        assert!(store
+            .get_session_state("sub-session")
+            .await
+            .expect("session state lookup should succeed")
+            .is_none());
+        assert!(store
+            .get_episode(&"runner-sub-agent-memory".to_string())
+            .await
+            .expect("episode lookup should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1822,6 +1883,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 128),
         };
 
@@ -1895,6 +1959,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 256),
         };
 
@@ -1968,6 +2035,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 256),
         };
 
@@ -2043,6 +2113,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 256),
         };
 
@@ -2134,6 +2207,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -2227,6 +2303,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -2267,6 +2346,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
         };
 
@@ -2307,6 +2389,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
         };
         let mut response = ChatResponse {
@@ -2384,6 +2469,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
                 .with_model_provider("primary")
                 .with_model_routes(vec![
@@ -2485,6 +2573,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
                 .with_model_provider("primary")
                 .with_model_routes(vec![
@@ -2563,6 +2654,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
             config: AgentRunnerConfig::new("deepseek-ai/deepseek-r1".to_string(), 1, 1, 30, 256)
                 .with_model_provider("nvidia")
                 .with_model_routes(vec![
