@@ -3347,6 +3347,7 @@ dependencies = [
  "lazy-regex",
  "mockall",
  "moka",
+ "oxide-agent-memory",
  "proptest",
  "regex",
  "reqwest 0.12.28",
