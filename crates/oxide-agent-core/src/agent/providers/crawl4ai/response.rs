@@ -198,6 +198,13 @@ fn truncate_output(text: String) -> String {
 /// Determines if an error is retryable (transient).
 /// Returns true for network errors, timeouts, and 5xx server errors.
 pub(super) fn is_retryable_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+
+    // Wrong-tool navigation failures are not transient.
+    if lower.contains("net::err_failed") || lower.contains("failed on navigating acs-goto") {
+        return false;
+    }
+
     // Network-level errors (connection refused, timeout, etc.)
     let transient_patterns = [
         "connection refused",
@@ -213,7 +220,7 @@ pub(super) fn is_retryable_error(error: &str) -> bool {
     ];
 
     for pattern in transient_patterns {
-        if error.to_lowercase().contains(pattern) {
+        if lower.contains(pattern) {
             return true;
         }
     }

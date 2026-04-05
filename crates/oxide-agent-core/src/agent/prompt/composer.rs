@@ -40,7 +40,7 @@ fn build_file_workflow_guidance(tools: &[ToolDefinition]) -> Option<&'static str
     });
 
     (has_media_file_tools || has_tts_file_tools).then_some(
-        "## File Workflows\n- Uploaded files provided for file workflows are preserved in the sandbox and remain directly manipulable\n- When the user wants editing, transcoding, muxing, translation dubbing, or other file transformations, operate on the sandbox file instead of summarizing it\n- Use `describe_image_file`, `describe_video_file`, or `transcribe_audio_file` only when you actually need multimodal understanding before acting on the file\n- Use `text_to_speech_en_file` or `text_to_speech_ru_file` when another tool such as `ffmpeg` needs an audio file path instead of an immediate voice message"
+        "## File Workflows\n- Uploaded files provided for file workflows are preserved in the sandbox and remain directly manipulable\n- When the user wants editing, transcoding, muxing, translation dubbing, or other file transformations, operate on the sandbox file instead of summarizing it\n- Use `describe_image_file`, `describe_video_file`, or `transcribe_audio_file` only when you actually need multimodal understanding before acting on the file\n- `describe_image_file` and `describe_video_file` accept either sandbox paths or direct `http(s)` URLs; remote media is downloaded into the sandbox automatically and cleaned up after successful analysis\n- Use `text_to_speech_en_file` or `text_to_speech_ru_file` when another tool such as `ffmpeg` needs an audio file path instead of an immediate voice message"
     )
 }
 
