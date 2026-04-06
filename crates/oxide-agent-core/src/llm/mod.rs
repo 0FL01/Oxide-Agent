@@ -14,6 +14,7 @@ mod types;
 
 pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
 pub use client::LlmClient;
+pub use embeddings::EmbeddingTaskType;
 pub use error::LlmError;
 pub use provider::LlmProvider;
 #[cfg(test)]

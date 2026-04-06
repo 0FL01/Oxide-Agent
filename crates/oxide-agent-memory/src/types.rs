@@ -314,3 +314,125 @@ pub struct MemorySearchHit {
     /// Short preview showing the matched content.
     pub snippet: String,
 }
+
+/// Embedded owner kind stored in `memory_embeddings`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingOwnerType {
+    /// Embedding belongs to an episodic record.
+    Episode,
+    /// Embedding belongs to a reusable memory record.
+    Memory,
+}
+
+/// Current indexing status for one embedding row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingStatus {
+    /// Row is queued or waiting for embedding generation.
+    Pending,
+    /// Embedding vector is available and searchable.
+    Ready,
+    /// Latest indexing attempt failed.
+    Failed,
+}
+
+/// Persisted embedding state for one episode or memory record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbeddingRecord {
+    /// Record identifier from the owning table.
+    pub owner_id: String,
+    /// Type of owning record.
+    pub owner_type: EmbeddingOwnerType,
+    /// Embedding model used to index the content.
+    pub model_id: String,
+    /// Stable content hash used for audit and reindex tracking.
+    pub content_hash: String,
+    /// Stored vector when indexing succeeded.
+    pub embedding: Option<Vec<f32>>,
+    /// Cached dimension of the stored vector.
+    pub dimensions: Option<usize>,
+    /// Current indexing status.
+    pub status: EmbeddingStatus,
+    /// Last indexing error, if any.
+    pub last_error: Option<String>,
+    /// Number of failed indexing attempts seen for this row.
+    pub retry_count: u32,
+    /// When the embedding row was first created.
+    pub created_at: DateTime<Utc>,
+    /// When the embedding row was last updated.
+    pub updated_at: DateTime<Utc>,
+    /// When the latest successful indexing completed.
+    pub indexed_at: Option<DateTime<Utc>>,
+}
+
+/// Common parameters for pending / ready / failed embedding updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingUpdateBase {
+    /// Record identifier from the owning table.
+    pub owner_id: String,
+    /// Type of owning record.
+    pub owner_type: EmbeddingOwnerType,
+    /// Embedding model used to index the content.
+    pub model_id: String,
+    /// Stable content hash used for audit and reindex tracking.
+    pub content_hash: String,
+}
+
+/// Request to mark one embedding as pending generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingPendingUpdate {
+    /// Shared owner/model metadata.
+    pub base: EmbeddingUpdateBase,
+    /// Timestamp of the pending marker.
+    pub requested_at: DateTime<Utc>,
+}
+
+/// Request to store a successful embedding vector.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmbeddingReadyUpdate {
+    /// Shared owner/model metadata.
+    pub base: EmbeddingUpdateBase,
+    /// Generated dense vector.
+    pub embedding: Vec<f32>,
+    /// Timestamp of the successful indexing operation.
+    pub indexed_at: DateTime<Utc>,
+}
+
+/// Request to record an embedding indexing failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingFailureUpdate {
+    /// Shared owner/model metadata.
+    pub base: EmbeddingUpdateBase,
+    /// Failure text preserved for audit/debugging.
+    pub error: String,
+    /// Timestamp of the failed indexing operation.
+    pub failed_at: DateTime<Utc>,
+}
+
+/// Parameters for bounded embedding backfill discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingBackfillRequest {
+    /// Target embedding model that should exist on all returned records.
+    pub model_id: String,
+    /// Maximum number of candidates to return.
+    pub limit: Option<usize>,
+}
+
+/// Episode plus its current embedding state for indexing/backfill.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpisodeEmbeddingCandidate {
+    /// Episode record requiring indexing or reindexing.
+    pub record: EpisodeRecord,
+    /// Existing embedding state, if any.
+    pub embedding: Option<EmbeddingRecord>,
+}
+
+/// Reusable memory plus its current embedding state for indexing/backfill.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryEmbeddingCandidate {
+    /// Memory record requiring indexing or reindexing.
+    pub record: MemoryRecord,
+    /// Existing embedding state, if any.
+    pub embedding: Option<EmbeddingRecord>,
+}

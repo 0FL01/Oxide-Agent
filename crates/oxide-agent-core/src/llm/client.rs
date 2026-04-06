@@ -38,15 +38,18 @@ impl LlmClient {
         let api_key = match provider_name.to_lowercase().as_str() {
             "mistral" => settings.mistral_api_key.clone()?,
             "openrouter" => settings.openrouter_api_key.clone()?,
+            "gemini" | "google" => settings.gemini_api_key.clone()?,
             _ => return None,
         };
+        let provider = match provider_name.to_lowercase().as_str() {
+            "gemini" | "google" => embeddings::EmbeddingProvider::new_gemini(api_key),
+            _ => {
+                let api_base = embeddings::get_api_base(provider_name)?;
+                embeddings::EmbeddingProvider::new_openai_compatible(api_key, api_base.to_string())
+            }
+        };
 
-        let api_base = embeddings::get_api_base(provider_name)?;
-
-        Some((
-            embeddings::EmbeddingProvider::new(api_key, api_base.to_string()),
-            model_id,
-        ))
+        Some((provider, model_id))
     }
 
     fn provider_key(name: &str) -> String {
@@ -633,11 +636,21 @@ impl LlmClient {
     ///
     /// Returns `LlmError::MissingConfig` if embedding provider is not configured, or any provider error.
     pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        self.generate_embedding_for_task(text, None, None).await
+    }
+
+    /// Generate an embedding vector with provider-specific retrieval task metadata.
+    pub async fn generate_embedding_for_task(
+        &self,
+        text: &str,
+        task_type: Option<embeddings::EmbeddingTaskType>,
+        title: Option<&str>,
+    ) -> Result<Vec<f32>, LlmError> {
         let (provider, model) = self.embedding.as_ref().ok_or_else(|| {
             LlmError::MissingConfig("embedding provider not configured".to_string())
         })?;
 
-        provider.generate(text, model).await
+        provider.generate(text, model, task_type, title).await
     }
 
     /// Probe embedding dimension by making a test request.

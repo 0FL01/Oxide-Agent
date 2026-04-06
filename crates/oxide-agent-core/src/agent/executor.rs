@@ -13,7 +13,10 @@ use super::hooks::{
     WorkloadDistributorHook,
 };
 use super::memory::AgentMessage;
-use super::persistent_memory::{PersistentMemoryCoordinator, PersistentMemoryStore};
+use super::persistent_memory::{
+    LlmMemoryEmbeddingGenerator, PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer,
+    PersistentMemoryStore,
+};
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
 use super::providers::{
@@ -270,9 +273,20 @@ impl AgentExecutor {
     #[must_use]
     pub fn with_storage_memory_repository(mut self, storage: Arc<dyn StorageProvider>) -> Self {
         self.memory_storage = Some(Arc::clone(&storage));
-        self.persistent_memory = Some(PersistentMemoryCoordinator::new(Arc::new(
-            StorageMemoryRepository::new(storage),
-        )));
+        let repository = Arc::new(StorageMemoryRepository::new(Arc::clone(&storage)));
+        let mut coordinator = PersistentMemoryCoordinator::new(repository);
+        if let (Some(model_id), true) = (
+            self.settings.embedding_model_id.clone(),
+            self.runner.llm_client().is_embedding_available(),
+        ) {
+            coordinator =
+                coordinator.with_embedding_indexer(PersistentMemoryEmbeddingIndexer::new(
+                    storage,
+                    Arc::new(LlmMemoryEmbeddingGenerator::new(self.runner.llm_client())),
+                    model_id,
+                ));
+        }
+        self.persistent_memory = Some(coordinator);
         self
     }
 

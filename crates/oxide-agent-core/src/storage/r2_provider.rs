@@ -423,6 +423,97 @@ impl StorageProvider for R2Storage {
         .await
     }
 
+    async fn get_memory_embedding(
+        &self,
+        owner_type: oxide_agent_memory::EmbeddingOwnerType,
+        owner_id: String,
+    ) -> Result<Option<oxide_agent_memory::EmbeddingRecord>, StorageError> {
+        with_storage_reason(
+            "get_memory_embedding",
+            self.get_memory_embedding_inner(owner_type, owner_id),
+        )
+        .await
+    }
+
+    async fn upsert_memory_embedding_pending(
+        &self,
+        update: oxide_agent_memory::EmbeddingPendingUpdate,
+    ) -> Result<oxide_agent_memory::EmbeddingRecord, StorageError> {
+        with_storage_reason(
+            "upsert_memory_embedding_pending",
+            self.upsert_memory_embedding_pending_inner(update),
+        )
+        .await
+    }
+
+    async fn upsert_memory_embedding_ready(
+        &self,
+        update: oxide_agent_memory::EmbeddingReadyUpdate,
+    ) -> Result<oxide_agent_memory::EmbeddingRecord, StorageError> {
+        with_storage_reason(
+            "upsert_memory_embedding_ready",
+            self.upsert_memory_embedding_ready_inner(update),
+        )
+        .await
+    }
+
+    async fn upsert_memory_embedding_failure(
+        &self,
+        update: oxide_agent_memory::EmbeddingFailureUpdate,
+    ) -> Result<oxide_agent_memory::EmbeddingRecord, StorageError> {
+        with_storage_reason(
+            "upsert_memory_embedding_failure",
+            self.upsert_memory_embedding_failure_inner(update),
+        )
+        .await
+    }
+
+    async fn list_memory_episode_embedding_backfill_candidates(
+        &self,
+        request: oxide_agent_memory::EmbeddingBackfillRequest,
+    ) -> Result<Vec<oxide_agent_memory::EpisodeEmbeddingCandidate>, StorageError> {
+        with_storage_reason(
+            "list_memory_episode_embedding_backfill_candidates",
+            self.list_memory_episode_embedding_backfill_candidates_inner(request),
+        )
+        .await
+    }
+
+    async fn list_memory_record_embedding_backfill_candidates(
+        &self,
+        request: oxide_agent_memory::EmbeddingBackfillRequest,
+    ) -> Result<Vec<oxide_agent_memory::MemoryEmbeddingCandidate>, StorageError> {
+        with_storage_reason(
+            "list_memory_record_embedding_backfill_candidates",
+            self.list_memory_record_embedding_backfill_candidates_inner(request),
+        )
+        .await
+    }
+
+    async fn search_memory_episodes_vector(
+        &self,
+        query_embedding: Vec<f32>,
+        filter: oxide_agent_memory::EpisodeSearchFilter,
+    ) -> Result<Vec<oxide_agent_memory::EpisodeSearchHit>, StorageError> {
+        with_storage_reason(
+            "search_memory_episodes_vector",
+            self.search_memory_episodes_vector_inner(query_embedding, filter),
+        )
+        .await
+    }
+
+    async fn search_memory_records_vector(
+        &self,
+        query_embedding: Vec<f32>,
+        filter: oxide_agent_memory::MemorySearchFilter,
+    ) -> Result<Vec<oxide_agent_memory::MemorySearchHit>, StorageError> {
+        with_storage_reason(
+            "search_memory_records_vector",
+            self.search_memory_records_vector_inner(query_embedding, filter),
+        )
+        .await
+    }
+
     async fn load_text_artifact(
         &self,
         storage_key: String,

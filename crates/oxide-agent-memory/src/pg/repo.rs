@@ -1,16 +1,20 @@
 //! Postgres-backed `MemoryRepository` implementation.
 
 use super::mapping::{
-    encode_cleanup_status, encode_episode_outcome, encode_memory_type, EpisodeRow,
-    EpisodeSearchRow, MemoryRow, MemorySearchRow, SessionStateRow, ThreadRow,
+    encode_cleanup_status, encode_embedding_owner_type, encode_embedding_status,
+    encode_episode_outcome, encode_memory_type, EmbeddingRow, EpisodeRow, EpisodeSearchRow,
+    MemoryRow, MemorySearchRow, SessionStateRow, ThreadRow,
 };
 use super::migrator;
 use crate::repository::{MemoryRepository, RepositoryError};
 use crate::types::{
-    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
+    EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
+    EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
     MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
     ThreadId, ThreadRecord,
 };
+use pgvector::Vector;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::types::Json;
 use sqlx::Error;
@@ -630,6 +634,470 @@ impl MemoryRepository for PgMemoryRepository {
         }
     }
 
+    fn get_embedding(
+        &self,
+        owner_type: EmbeddingOwnerType,
+        owner_id: &str,
+    ) -> impl Future<Output = Result<Option<EmbeddingRecord>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let owner_type = encode_embedding_owner_type(owner_type).to_string();
+        let owner_id = owner_id.to_string();
+        async move { fetch_embedding_row(&pool, owner_type, owner_id).await }
+    }
+
+    fn upsert_embedding_pending(
+        &self,
+        update: EmbeddingPendingUpdate,
+    ) -> impl Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            let row = sqlx::query_as::<_, EmbeddingRow>(
+                r#"
+                INSERT INTO memory_embeddings (
+                    owner_id,
+                    owner_type,
+                    model_id,
+                    content_hash,
+                    embedding,
+                    dimensions,
+                    status,
+                    last_error,
+                    retry_count,
+                    created_at,
+                    updated_at,
+                    indexed_at
+                )
+                VALUES ($1, $2, $3, $4, NULL, NULL, $5, NULL, 0, $6, $6, NULL)
+                ON CONFLICT (owner_type, owner_id) DO UPDATE
+                SET
+                    model_id = EXCLUDED.model_id,
+                    content_hash = EXCLUDED.content_hash,
+                    embedding = NULL,
+                    dimensions = NULL,
+                    status = EXCLUDED.status,
+                    last_error = NULL,
+                    updated_at = EXCLUDED.updated_at,
+                    indexed_at = NULL
+                RETURNING
+                    owner_id,
+                    owner_type,
+                    model_id,
+                    content_hash,
+                    embedding,
+                    dimensions,
+                    status,
+                    last_error,
+                    retry_count,
+                    created_at,
+                    updated_at,
+                    indexed_at
+                "#,
+            )
+            .bind(update.base.owner_id)
+            .bind(encode_embedding_owner_type(update.base.owner_type))
+            .bind(update.base.model_id)
+            .bind(update.base.content_hash)
+            .bind(encode_embedding_status(
+                crate::types::EmbeddingStatus::Pending,
+            ))
+            .bind(update.requested_at)
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("upsert_embedding_pending", error))?;
+
+            EmbeddingRecord::try_from(row)
+        }
+    }
+
+    fn upsert_embedding_ready(
+        &self,
+        update: EmbeddingReadyUpdate,
+    ) -> impl Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            let dimensions = i32::try_from(update.embedding.len()).map_err(|_| {
+                RepositoryError::Storage("embedding dimensions do not fit into i32".to_string())
+            })?;
+            let row = sqlx::query_as::<_, EmbeddingRow>(
+                r#"
+                INSERT INTO memory_embeddings (
+                    owner_id,
+                    owner_type,
+                    model_id,
+                    content_hash,
+                    embedding,
+                    dimensions,
+                    status,
+                    last_error,
+                    retry_count,
+                    created_at,
+                    updated_at,
+                    indexed_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, 0, $8, $8, $8)
+                ON CONFLICT (owner_type, owner_id) DO UPDATE
+                SET
+                    model_id = EXCLUDED.model_id,
+                    content_hash = EXCLUDED.content_hash,
+                    embedding = EXCLUDED.embedding,
+                    dimensions = EXCLUDED.dimensions,
+                    status = EXCLUDED.status,
+                    last_error = NULL,
+                    updated_at = EXCLUDED.updated_at,
+                    indexed_at = EXCLUDED.indexed_at
+                RETURNING
+                    owner_id,
+                    owner_type,
+                    model_id,
+                    content_hash,
+                    embedding,
+                    dimensions,
+                    status,
+                    last_error,
+                    retry_count,
+                    created_at,
+                    updated_at,
+                    indexed_at
+                "#,
+            )
+            .bind(update.base.owner_id)
+            .bind(encode_embedding_owner_type(update.base.owner_type))
+            .bind(update.base.model_id)
+            .bind(update.base.content_hash)
+            .bind(Vector::from(update.embedding))
+            .bind(dimensions)
+            .bind(encode_embedding_status(
+                crate::types::EmbeddingStatus::Ready,
+            ))
+            .bind(update.indexed_at)
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("upsert_embedding_ready", error))?;
+
+            EmbeddingRecord::try_from(row)
+        }
+    }
+
+    fn upsert_embedding_failure(
+        &self,
+        update: EmbeddingFailureUpdate,
+    ) -> impl Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            let row = sqlx::query_as::<_, EmbeddingRow>(
+                r#"
+                INSERT INTO memory_embeddings (
+                    owner_id,
+                    owner_type,
+                    model_id,
+                    content_hash,
+                    embedding,
+                    dimensions,
+                    status,
+                    last_error,
+                    retry_count,
+                    created_at,
+                    updated_at,
+                    indexed_at
+                )
+                VALUES ($1, $2, $3, $4, NULL, NULL, $5, $6, 1, $7, $7, NULL)
+                ON CONFLICT (owner_type, owner_id) DO UPDATE
+                SET
+                    model_id = EXCLUDED.model_id,
+                    content_hash = EXCLUDED.content_hash,
+                    embedding = NULL,
+                    dimensions = NULL,
+                    status = EXCLUDED.status,
+                    last_error = EXCLUDED.last_error,
+                    retry_count = memory_embeddings.retry_count + 1,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING
+                    owner_id,
+                    owner_type,
+                    model_id,
+                    content_hash,
+                    embedding,
+                    dimensions,
+                    status,
+                    last_error,
+                    retry_count,
+                    created_at,
+                    updated_at,
+                    indexed_at
+                "#,
+            )
+            .bind(update.base.owner_id)
+            .bind(encode_embedding_owner_type(update.base.owner_type))
+            .bind(update.base.model_id)
+            .bind(update.base.content_hash)
+            .bind(encode_embedding_status(
+                crate::types::EmbeddingStatus::Failed,
+            ))
+            .bind(update.error)
+            .bind(update.failed_at)
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("upsert_embedding_failure", error))?;
+
+            EmbeddingRecord::try_from(row)
+        }
+    }
+
+    fn list_episode_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> impl Future<Output = Result<Vec<EpisodeEmbeddingCandidate>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let request = request.clone();
+        async move {
+            let limit = request.limit.and_then(|value| i64::try_from(value).ok());
+            let rows = sqlx::query_as::<_, EpisodeRow>(
+                r#"
+                SELECT
+                    episodes.episode_id,
+                    episodes.thread_id,
+                    episodes.context_key,
+                    episodes.goal,
+                    episodes.summary,
+                    episodes.outcome,
+                    episodes.tools_used,
+                    episodes.artifacts,
+                    episodes.failures,
+                    episodes.importance,
+                    episodes.created_at
+                FROM memory_episodes AS episodes
+                LEFT JOIN memory_embeddings AS embeddings
+                    ON embeddings.owner_type = 'episode'
+                   AND embeddings.owner_id = episodes.episode_id
+                WHERE embeddings.owner_id IS NULL
+                   OR embeddings.model_id <> $1
+                   OR embeddings.status <> 'ready'
+                   OR embeddings.embedding IS NULL
+                ORDER BY episodes.created_at ASC, episodes.episode_id ASC
+                LIMIT COALESCE($2, 100)
+                "#,
+            )
+            .bind(request.model_id.clone())
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("list_episode_embedding_backfill_candidates", error))?;
+
+            let mut candidates = Vec::with_capacity(rows.len());
+            for row in rows {
+                let record = EpisodeRecord::try_from(row)?;
+                let embedding =
+                    fetch_embedding_row(&pool, "episode".to_string(), record.episode_id.clone())
+                        .await?;
+                candidates.push(EpisodeEmbeddingCandidate { record, embedding });
+            }
+            Ok(candidates)
+        }
+    }
+
+    fn list_memory_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> impl Future<Output = Result<Vec<MemoryEmbeddingCandidate>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let request = request.clone();
+        async move {
+            let limit = request.limit.and_then(|value| i64::try_from(value).ok());
+            let rows = sqlx::query_as::<_, MemoryRow>(
+                r#"
+                SELECT
+                    memories.memory_id,
+                    memories.context_key,
+                    memories.source_episode_id,
+                    memories.memory_type,
+                    memories.title,
+                    memories.content,
+                    memories.short_description,
+                    memories.importance,
+                    memories.confidence,
+                    memories.source,
+                    memories.reason,
+                    memories.tags,
+                    memories.created_at,
+                    memories.updated_at
+                FROM memory_records AS memories
+                LEFT JOIN memory_embeddings AS embeddings
+                    ON embeddings.owner_type = 'memory'
+                   AND embeddings.owner_id = memories.memory_id
+                WHERE embeddings.owner_id IS NULL
+                   OR embeddings.model_id <> $1
+                   OR embeddings.status <> 'ready'
+                   OR embeddings.embedding IS NULL
+                ORDER BY memories.updated_at ASC, memories.memory_id ASC
+                LIMIT COALESCE($2, 100)
+                "#,
+            )
+            .bind(request.model_id.clone())
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("list_memory_embedding_backfill_candidates", error))?;
+
+            let mut candidates = Vec::with_capacity(rows.len());
+            for row in rows {
+                let record = MemoryRecord::try_from(row)?;
+                let embedding =
+                    fetch_embedding_row(&pool, "memory".to_string(), record.memory_id.clone())
+                        .await?;
+                candidates.push(MemoryEmbeddingCandidate { record, embedding });
+            }
+            Ok(candidates)
+        }
+    }
+
+    fn search_episodes_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &EpisodeSearchFilter,
+    ) -> impl Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let query_embedding = query_embedding.to_vec();
+        let filter = filter.clone();
+        async move {
+            if query_embedding.is_empty() {
+                return Ok(Vec::new());
+            }
+            let limit = filter.limit.and_then(|value| i64::try_from(value).ok());
+            let outcome = filter.outcome.map(encode_episode_outcome);
+            let rows = sqlx::query_as::<_, EpisodeSearchRow>(
+                r#"
+                SELECT
+                    episodes.episode_id,
+                    episodes.thread_id,
+                    episodes.context_key,
+                    episodes.goal,
+                    episodes.summary,
+                    episodes.outcome,
+                    episodes.tools_used,
+                    episodes.artifacts,
+                    episodes.failures,
+                    episodes.importance,
+                    episodes.created_at,
+                    CAST(1 - (embeddings.embedding <=> $1) AS real) AS lexical_score,
+                    LEFT(concat_ws(E'\n', episodes.goal, episodes.summary), 160) AS lexical_snippet
+                FROM memory_episodes AS episodes
+                INNER JOIN memory_embeddings AS embeddings
+                    ON embeddings.owner_type = 'episode'
+                   AND embeddings.owner_id = episodes.episode_id
+                   AND embeddings.status = 'ready'
+                   AND embeddings.embedding IS NOT NULL
+                INNER JOIN memory_threads AS threads
+                    ON threads.thread_id = episodes.thread_id
+                WHERE ($2::text IS NULL OR episodes.context_key = $2)
+                  AND ($3::bigint IS NULL OR threads.user_id = $3)
+                  AND ($4::text IS NULL OR episodes.outcome = $4)
+                  AND ($5::real IS NULL OR episodes.importance >= $5)
+                  AND ($6::timestamptz IS NULL OR episodes.created_at >= $6)
+                  AND ($7::timestamptz IS NULL OR episodes.created_at <= $7)
+                ORDER BY embeddings.embedding <=> $1 ASC,
+                         episodes.importance DESC,
+                         episodes.created_at DESC,
+                         episodes.episode_id ASC
+                LIMIT COALESCE($8, 20)
+                "#,
+            )
+            .bind(Vector::from(query_embedding))
+            .bind(filter.context_key)
+            .bind(filter.user_id)
+            .bind(outcome)
+            .bind(filter.min_importance)
+            .bind(filter.time_range.since)
+            .bind(filter.time_range.until)
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("search_episodes_vector", error))?;
+            rows.into_iter().map(EpisodeSearchHit::try_from).collect()
+        }
+    }
+
+    fn search_memories_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &MemorySearchFilter,
+    ) -> impl Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let query_embedding = query_embedding.to_vec();
+        let filter = filter.clone();
+        async move {
+            if query_embedding.is_empty() {
+                return Ok(Vec::new());
+            }
+            let limit = filter.limit.and_then(|value| i64::try_from(value).ok());
+            let memory_type = filter.memory_type.map(encode_memory_type);
+            let required_tags = if filter.tags.is_empty() {
+                None
+            } else {
+                Some(filter.tags)
+            };
+            let rows = sqlx::query_as::<_, MemorySearchRow>(
+                r#"
+                SELECT
+                    memories.memory_id,
+                    memories.context_key,
+                    memories.source_episode_id,
+                    memories.memory_type,
+                    memories.title,
+                    memories.content,
+                    memories.short_description,
+                    memories.importance,
+                    memories.confidence,
+                    memories.source,
+                    memories.reason,
+                    memories.tags,
+                    memories.created_at,
+                    memories.updated_at,
+                    CAST(1 - (embeddings.embedding <=> $1) AS real) AS lexical_score,
+                    LEFT(
+                        concat_ws(E'\n', memories.title, memories.short_description, memories.content),
+                        160
+                    ) AS lexical_snippet
+                FROM memory_records AS memories
+                INNER JOIN memory_embeddings AS embeddings
+                    ON embeddings.owner_type = 'memory'
+                   AND embeddings.owner_id = memories.memory_id
+                   AND embeddings.status = 'ready'
+                   AND embeddings.embedding IS NOT NULL
+                LEFT JOIN memory_episodes AS episodes
+                    ON episodes.episode_id = memories.source_episode_id
+                LEFT JOIN memory_threads AS threads
+                    ON threads.thread_id = episodes.thread_id
+                WHERE ($2::text IS NULL OR memories.context_key = $2)
+                  AND ($3::bigint IS NULL OR threads.user_id = $3)
+                  AND ($4::text IS NULL OR memories.memory_type = $4)
+                  AND ($5::real IS NULL OR memories.importance >= $5)
+                  AND ($6::text[] IS NULL OR memories.tags @> $6)
+                  AND ($7::timestamptz IS NULL OR memories.updated_at >= $7)
+                  AND ($8::timestamptz IS NULL OR memories.updated_at <= $8)
+                ORDER BY embeddings.embedding <=> $1 ASC,
+                         memories.importance DESC,
+                         memories.confidence DESC,
+                         memories.updated_at DESC,
+                         memories.memory_id ASC
+                LIMIT COALESCE($9, 20)
+                "#,
+            )
+            .bind(Vector::from(query_embedding))
+            .bind(filter.context_key)
+            .bind(filter.user_id)
+            .bind(memory_type)
+            .bind(filter.min_importance)
+            .bind(required_tags)
+            .bind(filter.time_range.since)
+            .bind(filter.time_range.until)
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("search_memories_vector", error))?;
+            rows.into_iter().map(MemorySearchHit::try_from).collect()
+        }
+    }
+
     fn upsert_session_state(
         &self,
         record: SessionStateRecord,
@@ -741,6 +1209,38 @@ fn map_insert_error(context: &str, error: Error) -> RepositoryError {
         }
         other => RepositoryError::Storage(format!("{context}: {other}")),
     }
+}
+
+async fn fetch_embedding_row(
+    pool: &PgPool,
+    owner_type: String,
+    owner_id: String,
+) -> Result<Option<EmbeddingRecord>, RepositoryError> {
+    let row = sqlx::query_as::<_, EmbeddingRow>(
+        r#"
+        SELECT
+            owner_id,
+            owner_type,
+            model_id,
+            content_hash,
+            embedding,
+            dimensions,
+            status,
+            last_error,
+            retry_count,
+            created_at,
+            updated_at,
+            indexed_at
+        FROM memory_embeddings
+        WHERE owner_type = $1 AND owner_id = $2
+        "#,
+    )
+    .bind(owner_type)
+    .bind(owner_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| map_sqlx_error("get_embedding", error))?;
+    row.map(EmbeddingRecord::try_from).transpose()
 }
 
 #[cfg(test)]

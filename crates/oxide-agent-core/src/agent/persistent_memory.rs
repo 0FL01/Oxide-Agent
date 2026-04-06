@@ -1,15 +1,22 @@
 use crate::agent::memory::AgentMessage;
 use crate::agent::session::AgentMemoryScope;
+use crate::llm::{EmbeddingTaskType, LlmClient};
+use crate::storage::StorageProvider;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use oxide_agent_memory::{
-    ArtifactRef, EpisodeFinalizationInput, EpisodeFinalizer, EpisodeMemorySignals,
-    MemoryRepository, RepositoryError, ReusableMemoryExtractor, SessionStateRecord, ThreadRecord,
+    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
+    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingUpdateBase, EpisodeFinalizationInput,
+    EpisodeFinalizer, EpisodeMemorySignals, EpisodeRecord, MemoryRecord, MemoryRepository,
+    RepositoryError, ReusableMemoryExtractor, SessionStateRecord, ThreadRecord,
 };
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::warn;
+
+const EMBEDDING_BACKFILL_LIMIT: usize = 8;
 
 /// Object-safe persistent-memory write surface used by the runner.
 #[async_trait]
@@ -81,6 +88,7 @@ pub struct PersistentMemoryCoordinator {
     store: Arc<dyn PersistentMemoryStore>,
     finalizer: EpisodeFinalizer,
     extractor: ReusableMemoryExtractor,
+    embedding_indexer: Option<PersistentMemoryEmbeddingIndexer>,
 }
 
 impl PersistentMemoryCoordinator {
@@ -90,7 +98,17 @@ impl PersistentMemoryCoordinator {
             store,
             finalizer: EpisodeFinalizer,
             extractor: ReusableMemoryExtractor::new(),
+            embedding_indexer: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_embedding_indexer(
+        mut self,
+        embedding_indexer: PersistentMemoryEmbeddingIndexer,
+    ) -> Self {
+        self.embedding_indexer = Some(embedding_indexer);
+        self
     }
 
     pub async fn persist_post_run(&self, ctx: PersistentRunContext<'_>) -> Result<()> {
@@ -127,9 +145,20 @@ impl PersistentMemoryCoordinator {
         } else {
             None
         };
+        if let (Some(indexer), Some(episode)) = (self.embedding_indexer.as_ref(), episode.as_ref())
+        {
+            if let Err(error) = indexer.index_episode(episode).await {
+                warn!(error = %error, episode_id = %episode.episode_id, "episode embedding write failed");
+            }
+        }
         if let Some(episode) = episode.as_ref() {
             self.persist_reusable_memories(episode, summary_signal.as_ref())
                 .await;
+        }
+        if let Some(indexer) = self.embedding_indexer.as_ref() {
+            if let Err(error) = indexer.backfill().await {
+                warn!(error = %error, "persistent memory embedding backfill failed");
+            }
         }
         self.store.upsert_session_state(plan.session_state).await?;
         Ok(())
@@ -150,11 +179,221 @@ impl PersistentMemoryCoordinator {
             discoveries: summary_signal.discoveries.clone(),
         };
         for memory in self.extractor.extract(episode, &signals) {
-            if let Err(error) = self.store.create_memory(memory).await {
-                warn!(error = %error, episode_id = %episode.episode_id, "Reusable memory extraction write failed");
+            match self.store.create_memory(memory).await {
+                Ok(memory) => {
+                    if let Some(indexer) = self.embedding_indexer.as_ref() {
+                        if let Err(error) = indexer.index_memory(&memory).await {
+                            warn!(error = %error, memory_id = %memory.memory_id, "reusable memory embedding write failed");
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(error = %error, episode_id = %episode.episode_id, "Reusable memory extraction write failed");
+                }
             }
         }
     }
+}
+
+#[async_trait]
+pub trait MemoryEmbeddingGenerator: Send + Sync {
+    async fn embed_document(
+        &self,
+        text: &str,
+        title: Option<&str>,
+    ) -> Result<Vec<f32>, anyhow::Error>;
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, anyhow::Error>;
+}
+
+#[derive(Clone)]
+pub struct LlmMemoryEmbeddingGenerator {
+    llm_client: Arc<LlmClient>,
+}
+
+impl LlmMemoryEmbeddingGenerator {
+    #[must_use]
+    pub fn new(llm_client: Arc<LlmClient>) -> Self {
+        Self { llm_client }
+    }
+}
+
+#[async_trait]
+impl MemoryEmbeddingGenerator for LlmMemoryEmbeddingGenerator {
+    async fn embed_document(
+        &self,
+        text: &str,
+        title: Option<&str>,
+    ) -> Result<Vec<f32>, anyhow::Error> {
+        self.llm_client
+            .generate_embedding_for_task(text, Some(EmbeddingTaskType::RetrievalDocument), title)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, anyhow::Error> {
+        self.llm_client
+            .generate_embedding_for_task(text, Some(EmbeddingTaskType::RetrievalQuery), None)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[derive(Clone)]
+pub struct PersistentMemoryEmbeddingIndexer {
+    storage: Arc<dyn StorageProvider>,
+    generator: Arc<dyn MemoryEmbeddingGenerator>,
+    model_id: String,
+    backfill_limit: usize,
+}
+
+impl PersistentMemoryEmbeddingIndexer {
+    #[must_use]
+    pub fn new(
+        storage: Arc<dyn StorageProvider>,
+        generator: Arc<dyn MemoryEmbeddingGenerator>,
+        model_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            storage,
+            generator,
+            model_id: model_id.into(),
+            backfill_limit: EMBEDDING_BACKFILL_LIMIT,
+        }
+    }
+
+    pub async fn index_episode(&self, episode: &EpisodeRecord) -> Result<()> {
+        let text = episode_embedding_text(episode);
+        let base = EmbeddingUpdateBase {
+            owner_id: episode.episode_id.clone(),
+            owner_type: EmbeddingOwnerType::Episode,
+            model_id: self.model_id.clone(),
+            content_hash: embedding_content_hash(&text),
+        };
+        self.storage
+            .upsert_memory_embedding_pending(EmbeddingPendingUpdate {
+                base: base.clone(),
+                requested_at: Utc::now(),
+            })
+            .await?;
+        match self
+            .generator
+            .embed_document(&text, Some(&episode.goal))
+            .await
+        {
+            Ok(embedding) => {
+                self.storage
+                    .upsert_memory_embedding_ready(EmbeddingReadyUpdate {
+                        base,
+                        embedding,
+                        indexed_at: Utc::now(),
+                    })
+                    .await?;
+                Ok(())
+            }
+            Err(error) => {
+                self.storage
+                    .upsert_memory_embedding_failure(EmbeddingFailureUpdate {
+                        base,
+                        error: error.to_string(),
+                        failed_at: Utc::now(),
+                    })
+                    .await?;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn index_memory(&self, memory: &MemoryRecord) -> Result<()> {
+        let text = memory_embedding_text(memory);
+        let base = EmbeddingUpdateBase {
+            owner_id: memory.memory_id.clone(),
+            owner_type: EmbeddingOwnerType::Memory,
+            model_id: self.model_id.clone(),
+            content_hash: embedding_content_hash(&text),
+        };
+        self.storage
+            .upsert_memory_embedding_pending(EmbeddingPendingUpdate {
+                base: base.clone(),
+                requested_at: Utc::now(),
+            })
+            .await?;
+        match self
+            .generator
+            .embed_document(&text, Some(&memory.title))
+            .await
+        {
+            Ok(embedding) => {
+                self.storage
+                    .upsert_memory_embedding_ready(EmbeddingReadyUpdate {
+                        base,
+                        embedding,
+                        indexed_at: Utc::now(),
+                    })
+                    .await?;
+                Ok(())
+            }
+            Err(error) => {
+                self.storage
+                    .upsert_memory_embedding_failure(EmbeddingFailureUpdate {
+                        base,
+                        error: error.to_string(),
+                        failed_at: Utc::now(),
+                    })
+                    .await?;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn backfill(&self) -> Result<()> {
+        let request = EmbeddingBackfillRequest {
+            model_id: self.model_id.clone(),
+            limit: Some(self.backfill_limit),
+        };
+        for candidate in self
+            .storage
+            .list_memory_episode_embedding_backfill_candidates(request.clone())
+            .await?
+        {
+            self.index_episode(&candidate.record).await?;
+        }
+        for candidate in self
+            .storage
+            .list_memory_record_embedding_backfill_candidates(request)
+            .await?
+        {
+            self.index_memory(&candidate.record).await?;
+        }
+        Ok(())
+    }
+}
+
+fn embedding_content_hash(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn episode_embedding_text(episode: &EpisodeRecord) -> String {
+    format!(
+        "goal: {}\nsummary: {}\ntools: {}\nfailures: {}",
+        episode.goal,
+        episode.summary,
+        episode.tools_used.join(", "),
+        episode.failures.join(" | ")
+    )
+}
+
+fn memory_embedding_text(memory: &MemoryRecord) -> String {
+    format!(
+        "title: {}\ndescription: {}\ncontent: {}\nsource: {}\nreason: {}\ntags: {}",
+        memory.title,
+        memory.short_description,
+        memory.content,
+        memory.source.clone().unwrap_or_default(),
+        memory.reason.clone().unwrap_or_default(),
+        memory.tags.join(", ")
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -301,16 +540,35 @@ fn collect_tools_used(messages: &[AgentMessage]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PersistentMemoryCoordinator, PersistentMemoryStore, PersistentRunContext,
-        PersistentRunPhase,
+        MemoryEmbeddingGenerator, PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer,
+        PersistentMemoryStore, PersistentRunContext, PersistentRunPhase,
     };
     use crate::agent::compaction::ArchiveRef;
     use crate::agent::memory::AgentMessage;
     use crate::agent::session::AgentMemoryScope;
+    use crate::storage::MockStorageProvider;
     use oxide_agent_memory::{
-        CleanupStatus, InMemoryMemoryRepository, MemoryListFilter, MemoryRepository, MemoryType,
+        CleanupStatus, EmbeddingPendingUpdate, EmbeddingReadyUpdate, EpisodeEmbeddingCandidate,
+        EpisodeRecord, InMemoryMemoryRepository, MemoryListFilter, MemoryRepository, MemoryType,
     };
     use std::sync::Arc;
+
+    struct FakeEmbeddingGenerator;
+
+    #[async_trait::async_trait]
+    impl MemoryEmbeddingGenerator for FakeEmbeddingGenerator {
+        async fn embed_document(
+            &self,
+            _text: &str,
+            _title: Option<&str>,
+        ) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+
+        async fn embed_query(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+    }
 
     #[tokio::test]
     async fn persist_completed_run_writes_episode_and_session_state() {
@@ -527,5 +785,81 @@ mod tests {
             .await
             .expect("episode-b lookup should succeed")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn embedding_indexer_backfills_existing_episode_records() {
+        let mut storage = MockStorageProvider::new();
+        let candidate = EpisodeEmbeddingCandidate {
+            record: EpisodeRecord {
+                episode_id: "episode-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                context_key: "topic-a".to_string(),
+                goal: "Index embeddings".to_string(),
+                summary: "Backfill older persistent memory records".to_string(),
+                outcome: oxide_agent_memory::EpisodeOutcome::Success,
+                tools_used: vec!["memory_search".to_string()],
+                artifacts: Vec::new(),
+                failures: Vec::new(),
+                importance: 0.8,
+                created_at: chrono::Utc::now(),
+            },
+            embedding: None,
+        };
+
+        storage
+            .expect_list_memory_episode_embedding_backfill_candidates()
+            .times(1)
+            .return_once(move |_| Ok(vec![candidate]));
+        storage
+            .expect_list_memory_record_embedding_backfill_candidates()
+            .times(1)
+            .return_once(|_| Ok(Vec::new()));
+        storage
+            .expect_upsert_memory_embedding_pending()
+            .times(1)
+            .returning(|update: EmbeddingPendingUpdate| {
+                Ok(oxide_agent_memory::EmbeddingRecord {
+                    owner_id: update.base.owner_id,
+                    owner_type: update.base.owner_type,
+                    model_id: update.base.model_id,
+                    content_hash: update.base.content_hash,
+                    embedding: None,
+                    dimensions: None,
+                    status: oxide_agent_memory::EmbeddingStatus::Pending,
+                    last_error: None,
+                    retry_count: 0,
+                    created_at: update.requested_at,
+                    updated_at: update.requested_at,
+                    indexed_at: None,
+                })
+            });
+        storage
+            .expect_upsert_memory_embedding_ready()
+            .times(1)
+            .returning(|update: EmbeddingReadyUpdate| {
+                Ok(oxide_agent_memory::EmbeddingRecord {
+                    owner_id: update.base.owner_id,
+                    owner_type: update.base.owner_type,
+                    model_id: update.base.model_id,
+                    content_hash: update.base.content_hash,
+                    dimensions: Some(update.embedding.len()),
+                    embedding: Some(update.embedding),
+                    status: oxide_agent_memory::EmbeddingStatus::Ready,
+                    last_error: None,
+                    retry_count: 0,
+                    created_at: update.indexed_at,
+                    updated_at: update.indexed_at,
+                    indexed_at: Some(update.indexed_at),
+                })
+            });
+
+        let indexer = PersistentMemoryEmbeddingIndexer::new(
+            Arc::new(storage),
+            Arc::new(FakeEmbeddingGenerator),
+            "gemini-embedding-001",
+        );
+
+        indexer.backfill().await.expect("backfill should succeed");
     }
 }

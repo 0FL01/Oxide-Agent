@@ -2,10 +2,12 @@
 
 use crate::repository::RepositoryError;
 use crate::types::{
-    ArtifactRef, CleanupStatus, EpisodeOutcome, EpisodeRecord, EpisodeSearchHit, MemoryRecord,
-    MemorySearchHit, MemoryType, SessionStateRecord, ThreadRecord,
+    ArtifactRef, CleanupStatus, EmbeddingOwnerType, EmbeddingRecord, EmbeddingStatus,
+    EpisodeOutcome, EpisodeRecord, EpisodeSearchHit, MemoryRecord, MemorySearchHit, MemoryType,
+    SessionStateRecord, ThreadRecord,
 };
 use chrono::{DateTime, Utc};
+use pgvector::Vector;
 use sqlx::types::Json;
 
 /// Row shape for `memory_threads`.
@@ -204,6 +206,51 @@ impl TryFrom<MemorySearchRow> for MemorySearchHit {
     }
 }
 
+/// Row shape for `memory_embeddings`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct EmbeddingRow {
+    pub owner_id: String,
+    pub owner_type: String,
+    pub model_id: String,
+    pub content_hash: String,
+    pub embedding: Option<Vector>,
+    pub dimensions: Option<i32>,
+    pub status: String,
+    pub last_error: Option<String>,
+    pub retry_count: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub indexed_at: Option<DateTime<Utc>>,
+}
+
+impl TryFrom<EmbeddingRow> for EmbeddingRecord {
+    type Error = RepositoryError;
+
+    fn try_from(value: EmbeddingRow) -> Result<Self, Self::Error> {
+        let dimensions = value
+            .dimensions
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| RepositoryError::Storage("negative embedding dimensions".to_string()))?;
+        let retry_count = u32::try_from(value.retry_count)
+            .map_err(|_| RepositoryError::Storage("negative embedding retry count".to_string()))?;
+        Ok(Self {
+            owner_id: value.owner_id,
+            owner_type: decode_embedding_owner_type(&value.owner_type)?,
+            model_id: value.model_id,
+            content_hash: value.content_hash,
+            embedding: value.embedding.map(Vec::<f32>::from),
+            dimensions,
+            status: decode_embedding_status(&value.status)?,
+            last_error: value.last_error,
+            retry_count,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+            indexed_at: value.indexed_at,
+        })
+    }
+}
+
 /// Row shape for `memory_session_state`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct SessionStateRow {
@@ -275,6 +322,25 @@ pub(crate) fn encode_cleanup_status(value: CleanupStatus) -> &'static str {
     }
 }
 
+/// Encodes `EmbeddingOwnerType` into the database representation.
+#[must_use]
+pub(crate) fn encode_embedding_owner_type(value: EmbeddingOwnerType) -> &'static str {
+    match value {
+        EmbeddingOwnerType::Episode => "episode",
+        EmbeddingOwnerType::Memory => "memory",
+    }
+}
+
+/// Encodes `EmbeddingStatus` into the database representation.
+#[must_use]
+pub(crate) fn encode_embedding_status(value: EmbeddingStatus) -> &'static str {
+    match value {
+        EmbeddingStatus::Pending => "pending",
+        EmbeddingStatus::Ready => "ready",
+        EmbeddingStatus::Failed => "failed",
+    }
+}
+
 fn decode_episode_outcome(value: &str) -> Result<EpisodeOutcome, RepositoryError> {
     match value {
         "success" => Ok(EpisodeOutcome::Success),
@@ -308,6 +374,27 @@ fn decode_cleanup_status(value: &str) -> Result<CleanupStatus, RepositoryError> 
         "finalized" => Ok(CleanupStatus::Finalized),
         _ => Err(RepositoryError::Storage(format!(
             "unknown cleanup status {value}"
+        ))),
+    }
+}
+
+fn decode_embedding_owner_type(value: &str) -> Result<EmbeddingOwnerType, RepositoryError> {
+    match value {
+        "episode" => Ok(EmbeddingOwnerType::Episode),
+        "memory" => Ok(EmbeddingOwnerType::Memory),
+        _ => Err(RepositoryError::Storage(format!(
+            "unknown embedding owner type {value}"
+        ))),
+    }
+}
+
+fn decode_embedding_status(value: &str) -> Result<EmbeddingStatus, RepositoryError> {
+    match value {
+        "pending" => Ok(EmbeddingStatus::Pending),
+        "ready" => Ok(EmbeddingStatus::Ready),
+        "failed" => Ok(EmbeddingStatus::Failed),
+        _ => Err(RepositoryError::Storage(format!(
+            "unknown embedding status {value}"
         ))),
     }
 }
