@@ -20,6 +20,7 @@ uuid = { version = "1.19.0", features = ["v4", "v5"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 thiserror = "2.0"
 anyhow = "1.0.102"
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json", "migrate", "macros"] }
 
 [dev-dependencies]
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }

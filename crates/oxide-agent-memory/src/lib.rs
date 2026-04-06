@@ -7,6 +7,7 @@ pub mod archive;
 pub mod extract;
 pub mod finalize;
 pub mod in_memory;
+pub mod pg;
 pub mod repository;
 pub mod types;
 
