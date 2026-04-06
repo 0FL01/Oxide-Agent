@@ -19,15 +19,22 @@
 - `HotContextHealthHook` is implemented and wired into agent execution.
 - Soft/hard hot-context limits are config-backed (`soft_warning_tokens`, `hard_compaction_tokens`).
 - Transient warning injection exists and does not persist into agent memory.
-- Regression tests cover `compress`, hot-context warnings, compaction behavior, and transport-web E2E.
+- Typed long-term memory exists in `oxide-agent-memory` (`threads`, `episodes`, `memories`, `session_state`).
+- Real memory scope plumbing is in place (`user_id`, `context_key`, `flow_id`).
+- Durable PostRun write path exists: `EpisodeRecord` + `SessionStateRecord` + thread metadata.
+- Archive/blob persistence is wired through the existing storage/R2 path.
+- Conservative reusable-memory extraction is implemented without embeddings.
+- PG backend skeleton exists for memory write path.
+- Core integration tests cover final response, archive refs, scope isolation, sub-agent no-write, and waiting-state finalization.
 
 ### Not Implemented Yet
-- Typed long-term memory model (`threads`, `episodes`, `memories`, `session_state`).
 - Memory search/read/write tools.
 - Hybrid retrieval pipeline (lexical + vector + rerank).
-- End-of-task memory finalization hook.
-- Episodic extraction / consolidation hooks.
-- Long-term memory persistence and indexing for compaction outputs.
+- Query router for deciding when retrieval is needed.
+- pgvector / semantic retrieval.
+- Full-text lexical retrieval over Postgres.
+- Background consolidation / dedup / TTL / decay.
+- Higher-signal extraction beyond the conservative Stage 5 baseline.
 
 ---
 
@@ -562,20 +569,20 @@ soft limit warning или по решению агента.
 - tests for the hot-context path.
 
 Что делаем:
-- [ ] вводим `threads`, `episodes`, `memories`, `session_state`;
-- [ ] реализуем `EndOfTaskMemoryHook` — автоматическая финализация + compaction + persist memory;
+- [x] вводим `threads`, `episodes`, `memories`, `session_state`;
+- [x] реализуем durable PostRun finalization для episode/thread/session_state;
 - [x] реализуем `HotContextHealthHook` — warning при 60k, auto-compaction при 80k (с retry fallback);
 - [x] реализуем `compress` tool — интерактивное сжатие по решению агента;
-- [ ] добавляем compaction side-effects: persist high-signal data → long-term memory;
-- [ ] добавляем ArchiveReference hints в hot context после каждой compression;
-- [ ] отделяем raw archive в R2 от retrieval metadata;
+- [x] добавляем compaction side-effects: persist high-signal data → long-term memory;
+- [x] добавляем ArchiveReference hints в hot context после каждой compression;
+- [x] отделяем raw archive in R2 from retrieval metadata;
 - [ ] делаем lexical search по episodes/memories;
 - [ ] делаем manual read tools.
 
 Результат:
 - hot context управляется автоматически (hooks) и интерактивно (tool);
-- long-term memory pipeline ещё не реализован;
-- hints об архиве и эпизоды ещё не пишутся автоматически.
+- long-term memory write path и archive persistence уже реализованы;
+- retrieval layer и advanced consolidation ещё не готовы.
 
 ## Phase 2 — Hybrid retrieval
 Добавляем semantic retrieval.
@@ -595,11 +602,11 @@ soft limit warning или по решению агента.
 ## Phase 3 — Consolidation
 Добавляем memory hygiene.
 
-Статус: не реализовано.
+Статус: частично реализовано.
 
 Что делаем:
+- [x] extraction episode -> reusable memory (conservative baseline);
 - [ ] deduplication;
-- [ ] extraction episode -> reusable memory;
 - [ ] importance scoring;
 - [ ] decay / TTL;
 - [ ] merge похожих записей;
