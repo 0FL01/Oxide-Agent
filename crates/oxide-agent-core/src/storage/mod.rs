@@ -42,11 +42,12 @@ pub use error::StorageError;
 pub use flows::AgentFlowRecord;
 pub use keys::{
     agent_profile_key, audit_events_key, generate_chat_uuid, persistent_memory_episode_key,
-    persistent_memory_session_state_key, persistent_memory_thread_key, private_secret_key,
-    reminder_job_key, reminder_jobs_prefix, topic_agents_md_key, topic_binding_key,
-    topic_context_key, topic_infra_config_key, user_agent_memory_key, user_chat_history_key,
-    user_config_key, user_context_agent_flow_key, user_context_agent_flow_memory_key,
-    user_context_agent_flow_prefix, user_context_agent_flows_prefix, user_context_agent_memory_key,
+    persistent_memory_record_key, persistent_memory_session_state_key,
+    persistent_memory_thread_key, private_secret_key, reminder_job_key, reminder_jobs_prefix,
+    topic_agents_md_key, topic_binding_key, topic_context_key, topic_infra_config_key,
+    user_agent_memory_key, user_chat_history_key, user_config_key, user_context_agent_flow_key,
+    user_context_agent_flow_memory_key, user_context_agent_flow_prefix,
+    user_context_agent_flows_prefix, user_context_agent_memory_key,
     user_context_chat_history_prefix, user_history_key,
 };
 pub use persistent_memory::StorageMemoryRepository;

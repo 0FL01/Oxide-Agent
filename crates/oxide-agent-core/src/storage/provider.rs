@@ -7,7 +7,7 @@ use super::{
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
-use oxide_agent_memory::{EpisodeRecord, SessionStateRecord, ThreadRecord};
+use oxide_agent_memory::{EpisodeRecord, MemoryRecord, SessionStateRecord, ThreadRecord};
 
 /// Interface for storage providers.
 #[cfg_attr(test, mockall::automock)]
@@ -194,6 +194,17 @@ pub trait StorageProvider: Send + Sync {
         let _ = record;
         Err(StorageError::Config(
             "persistent memory episodes are not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Create a reusable persistent memory record.
+    async fn create_memory_record(
+        &self,
+        record: MemoryRecord,
+    ) -> Result<MemoryRecord, StorageError> {
+        let _ = record;
+        Err(StorageError::Config(
+            "reusable persistent memories are not implemented for this storage provider"
+                .to_string(),
         ))
     }
     /// Upsert a persistent memory session-state record.

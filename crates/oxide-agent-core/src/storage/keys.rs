@@ -76,6 +76,12 @@ pub fn persistent_memory_episode_key(thread_id: &str, episode_id: &str) -> Strin
     format!("persistent_memory/threads/{thread_id}/episodes/{episode_id}.json")
 }
 
+/// Returns the R2 key for a reusable memory record.
+#[must_use]
+pub fn persistent_memory_record_key(context_key: &str, memory_id: &str) -> String {
+    format!("persistent_memory/contexts/{context_key}/memories/{memory_id}.json")
+}
+
 /// Returns the R2 key for a persistent session-state record.
 #[must_use]
 pub fn persistent_memory_session_state_key(session_id: &str) -> String {

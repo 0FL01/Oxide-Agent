@@ -4,11 +4,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use oxide_agent_memory::{
-    ArtifactRef, EpisodeFinalizationInput, EpisodeFinalizer, MemoryRepository, RepositoryError,
-    SessionStateRecord, ThreadRecord,
+    ArtifactRef, EpisodeFinalizationInput, EpisodeFinalizer, EpisodeMemorySignals,
+    MemoryRepository, RepositoryError, ReusableMemoryExtractor, SessionStateRecord, ThreadRecord,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::warn;
 
 /// Object-safe persistent-memory write surface used by the runner.
 #[async_trait]
@@ -18,6 +19,10 @@ pub trait PersistentMemoryStore: Send + Sync {
         &self,
         record: oxide_agent_memory::EpisodeRecord,
     ) -> Result<oxide_agent_memory::EpisodeRecord, RepositoryError>;
+    async fn create_memory(
+        &self,
+        record: oxide_agent_memory::MemoryRecord,
+    ) -> Result<oxide_agent_memory::MemoryRecord, RepositoryError>;
     async fn upsert_session_state(
         &self,
         record: SessionStateRecord,
@@ -38,6 +43,13 @@ where
         record: oxide_agent_memory::EpisodeRecord,
     ) -> Result<oxide_agent_memory::EpisodeRecord, RepositoryError> {
         MemoryRepository::create_episode(self, record).await
+    }
+
+    async fn create_memory(
+        &self,
+        record: oxide_agent_memory::MemoryRecord,
+    ) -> Result<oxide_agent_memory::MemoryRecord, RepositoryError> {
+        MemoryRepository::create_memory(self, record).await
     }
 
     async fn upsert_session_state(
@@ -68,6 +80,7 @@ pub struct PersistentRunContext<'a> {
 pub struct PersistentMemoryCoordinator {
     store: Arc<dyn PersistentMemoryStore>,
     finalizer: EpisodeFinalizer,
+    extractor: ReusableMemoryExtractor,
 }
 
 impl PersistentMemoryCoordinator {
@@ -76,11 +89,12 @@ impl PersistentMemoryCoordinator {
         Self {
             store,
             finalizer: EpisodeFinalizer,
+            extractor: ReusableMemoryExtractor::new(),
         }
     }
 
     pub async fn persist_post_run(&self, ctx: PersistentRunContext<'_>) -> Result<()> {
-        let (summary_text, failures) = latest_summary_and_failures(ctx.messages);
+        let summary_signal = latest_summary_signal(ctx.messages);
         let artifacts = collect_artifacts(ctx.messages);
         let tools_used = collect_tools_used(ctx.messages);
         let final_answer = match ctx.phase {
@@ -95,44 +109,106 @@ impl PersistentMemoryCoordinator {
             episode_id: ctx.task_id.to_string(),
             goal: ctx.task.to_string(),
             final_answer,
-            compaction_summary: summary_text,
+            compaction_summary: summary_signal
+                .as_ref()
+                .map(|signal| signal.summary_text.clone()),
             tools_used,
             artifacts,
-            failures,
+            failures: summary_signal
+                .as_ref()
+                .map_or_else(Vec::new, |signal| signal.failures.clone()),
             hot_token_estimate: ctx.hot_token_estimate,
             finalized_at: Utc::now(),
         });
 
         self.store.upsert_thread(plan.thread).await?;
-        if let Some(episode) = plan.episode {
-            self.store.create_episode(episode).await?;
+        let episode = if let Some(episode) = plan.episode {
+            Some(self.store.create_episode(episode).await?)
+        } else {
+            None
+        };
+        if let Some(episode) = episode.as_ref() {
+            self.persist_reusable_memories(episode, summary_signal.as_ref())
+                .await;
         }
         self.store.upsert_session_state(plan.session_state).await?;
         Ok(())
     }
+
+    async fn persist_reusable_memories(
+        &self,
+        episode: &oxide_agent_memory::EpisodeRecord,
+        summary_signal: Option<&PersistentSummarySignal>,
+    ) {
+        let Some(summary_signal) = summary_signal else {
+            return;
+        };
+
+        let signals = EpisodeMemorySignals {
+            decisions: summary_signal.decisions.clone(),
+            constraints: summary_signal.constraints.clone(),
+            discoveries: summary_signal.discoveries.clone(),
+        };
+        for memory in self.extractor.extract(episode, &signals) {
+            if let Err(error) = self.store.create_memory(memory).await {
+                warn!(error = %error, episode_id = %episode.episode_id, "Reusable memory extraction write failed");
+            }
+        }
+    }
 }
 
-fn latest_summary_and_failures(messages: &[AgentMessage]) -> (Option<String>, Vec<String>) {
+#[derive(Debug, Clone)]
+struct PersistentSummarySignal {
+    summary_text: String,
+    decisions: Vec<String>,
+    constraints: Vec<String>,
+    discoveries: Vec<String>,
+    failures: Vec<String>,
+}
+
+fn latest_summary_signal(messages: &[AgentMessage]) -> Option<PersistentSummarySignal> {
     let mut latest_summary = None;
-    let mut failures = Vec::new();
 
     for message in messages.iter().rev() {
         let Some(summary) = message.summary_payload() else {
             continue;
         };
 
-        latest_summary = Some(message.content.trim().to_string());
-        failures = summary
-            .risks
-            .iter()
-            .map(|risk| risk.trim())
-            .filter(|risk| !risk.is_empty())
-            .map(ToOwned::to_owned)
-            .collect();
+        latest_summary = Some(PersistentSummarySignal {
+            summary_text: message.content.trim().to_string(),
+            decisions: summary
+                .decisions
+                .iter()
+                .map(|item| item.trim())
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            constraints: summary
+                .constraints
+                .iter()
+                .map(|item| item.trim())
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            discoveries: summary
+                .discoveries
+                .iter()
+                .map(|item| item.trim())
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            failures: summary
+                .risks
+                .iter()
+                .map(|risk| risk.trim())
+                .filter(|risk| !risk.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+        });
         break;
     }
 
-    (latest_summary, failures)
+    latest_summary
 }
 
 fn collect_artifacts(messages: &[AgentMessage]) -> Vec<ArtifactRef> {
@@ -227,7 +303,9 @@ mod tests {
     };
     use crate::agent::memory::AgentMessage;
     use crate::agent::session::AgentMemoryScope;
-    use oxide_agent_memory::{CleanupStatus, InMemoryMemoryRepository, MemoryRepository};
+    use oxide_agent_memory::{
+        CleanupStatus, InMemoryMemoryRepository, MemoryListFilter, MemoryRepository, MemoryType,
+    };
     use std::sync::Arc;
 
     #[tokio::test]
@@ -241,6 +319,9 @@ mod tests {
             AgentMessage::tool("tool-1", "read_file", "content"),
             AgentMessage::from_compaction_summary(crate::agent::CompactionSummary {
                 goal: "Implement Stage 4".to_string(),
+                decisions: vec!["Use persistent memory coordinator for PostRun durable writes".to_string()],
+                constraints: vec!["Sub-agent runs must never persist durable memory records".to_string()],
+                discoveries: vec!["PostRun persistence is handled in crates/oxide-agent-core/src/agent/runner/responses.rs".to_string()],
                 risks: vec!["Need follow-up test".to_string()],
                 ..crate::agent::CompactionSummary::default()
             }),
@@ -277,6 +358,21 @@ mod tests {
             .expect("session state should exist");
         assert_eq!(session_state.cleanup_status, CleanupStatus::Finalized);
         assert_eq!(session_state.pending_episode_id, None);
+
+        let memories = store
+            .list_memories("topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memory lookup should succeed");
+        assert_eq!(memories.len(), 3);
+        assert!(memories
+            .iter()
+            .any(|memory| memory.memory_type == MemoryType::Decision));
+        assert!(memories
+            .iter()
+            .any(|memory| memory.memory_type == MemoryType::Constraint));
+        assert!(memories
+            .iter()
+            .any(|memory| memory.memory_type == MemoryType::Fact));
     }
 
     #[tokio::test]
@@ -312,5 +408,10 @@ mod tests {
             .await
             .expect("episode lookup should succeed")
             .is_none());
+        assert!(store
+            .list_memories("topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memory lookup should succeed")
+            .is_empty());
     }
 }
