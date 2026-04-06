@@ -1,6 +1,7 @@
 use super::StorageProvider;
 use oxide_agent_memory::{
-    EpisodeId, EpisodeListFilter, EpisodeRecord, MemoryListFilter, MemoryRecord, MemoryRepository,
+    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
     RepositoryError, SessionStateRecord, ThreadId, ThreadRecord,
 };
 use std::future::Future;
@@ -96,6 +97,28 @@ impl MemoryRepository for StorageMemoryRepository {
     ) -> Result<Vec<MemoryRecord>, RepositoryError> {
         Err(RepositoryError::Storage(
             "list_memories is not implemented for storage-backed memory repository".to_string(),
+        ))
+    }
+
+    async fn search_episodes_lexical(
+        &self,
+        _query: &str,
+        _filter: &EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "search_episodes_lexical is not implemented for storage-backed memory repository"
+                .to_string(),
+        ))
+    }
+
+    async fn search_memories_lexical(
+        &self,
+        _query: &str,
+        _filter: &MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "search_memories_lexical is not implemented for storage-backed memory repository"
+                .to_string(),
         ))
     }
 

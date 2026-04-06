@@ -3,13 +3,17 @@
 use crate::archive::ArchiveBlobStore;
 use crate::repository::{MemoryRepository, RepositoryError};
 use crate::types::{
-    ArtifactRef, EpisodeId, EpisodeListFilter, EpisodeRecord, MemoryId, MemoryListFilter,
-    MemoryRecord, SessionStateId, SessionStateRecord, ThreadId, ThreadRecord,
+    ArtifactRef, EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter,
+    EpisodeSearchHit, MemoryId, MemoryListFilter, MemoryRecord, MemorySearchFilter,
+    MemorySearchHit, SessionStateId, SessionStateRecord, ThreadId, ThreadRecord,
 };
 use chrono::Utc;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, RwLock};
+
+const EPISODE_SNIPPET_LEN: usize = 160;
+const MEMORY_SNIPPET_LEN: usize = 160;
 
 #[derive(Debug, Default)]
 struct RepositoryState {
@@ -34,6 +38,52 @@ impl InMemoryMemoryRepository {
     fn map_storage_error() -> RepositoryError {
         RepositoryError::Storage("in-memory repository lock poisoned".to_string())
     }
+}
+
+fn lexical_terms(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| {
+            !(character.is_alphanumeric() || character == '_' || character == '-')
+        })
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn field_matches(field: &str, term: &str) -> bool {
+    field.to_ascii_lowercase().contains(term)
+}
+
+fn lexical_score(fields: &[(&str, f32)], terms: &[String]) -> f32 {
+    terms
+        .iter()
+        .map(|term| {
+            fields
+                .iter()
+                .filter_map(|(field, weight)| field_matches(field, term).then_some(*weight))
+                .sum::<f32>()
+        })
+        .sum()
+}
+
+fn snippet_for(fields: &[&str], terms: &[String], max_chars: usize) -> String {
+    let source = fields
+        .iter()
+        .copied()
+        .find(|field| !field.is_empty() && terms.iter().any(|term| field_matches(field, term)))
+        .or_else(|| fields.iter().copied().find(|field| !field.is_empty()))
+        .unwrap_or_default();
+
+    truncate_snippet(source, max_chars)
+}
+
+fn truncate_snippet(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        truncated.push('…');
+    }
+    truncated
 }
 
 impl MemoryRepository for InMemoryMemoryRepository {
@@ -219,6 +269,181 @@ impl MemoryRepository for InMemoryMemoryRepository {
         }
     }
 
+    fn search_episodes_lexical(
+        &self,
+        query: &str,
+        filter: &EpisodeSearchFilter,
+    ) -> impl Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let query = query.to_string();
+        let filter = filter.clone();
+        async move {
+            let terms = lexical_terms(&query);
+            if terms.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let guard = state.read().map_err(|_| Self::map_storage_error())?;
+            let mut hits: Vec<_> = guard
+                .episodes
+                .values()
+                .filter(|episode| match &filter.context_key {
+                    Some(context_key) => &episode.context_key == context_key,
+                    None => true,
+                })
+                .filter(|episode| match filter.user_id {
+                    Some(user_id) => guard
+                        .threads
+                        .get(&episode.thread_id)
+                        .is_some_and(|thread| thread.user_id == user_id),
+                    None => true,
+                })
+                .filter(|episode| match filter.outcome {
+                    Some(outcome) => episode.outcome == outcome,
+                    None => true,
+                })
+                .filter(|episode| match filter.min_importance {
+                    Some(min_importance) => episode.importance >= min_importance,
+                    None => true,
+                })
+                .filter(|episode| match filter.time_range.since {
+                    Some(since) => episode.created_at >= since,
+                    None => true,
+                })
+                .filter(|episode| match filter.time_range.until {
+                    Some(until) => episode.created_at <= until,
+                    None => true,
+                })
+                .filter_map(|episode| {
+                    let tools = episode.tools_used.join(" ");
+                    let failures = episode.failures.join(" ");
+                    let score = lexical_score(
+                        &[
+                            (&episode.goal, 3.0),
+                            (&episode.summary, 2.0),
+                            (&tools, 1.5),
+                            (&failures, 1.5),
+                        ],
+                        &terms,
+                    );
+                    (score > 0.0).then(|| EpisodeSearchHit {
+                        record: episode.clone(),
+                        score,
+                        snippet: snippet_for(
+                            &[&episode.goal, &episode.summary],
+                            &terms,
+                            EPISODE_SNIPPET_LEN,
+                        ),
+                    })
+                })
+                .collect();
+
+            hits.sort_by(|left, right| {
+                right
+                    .score
+                    .total_cmp(&left.score)
+                    .then_with(|| right.record.importance.total_cmp(&left.record.importance))
+                    .then_with(|| right.record.created_at.cmp(&left.record.created_at))
+                    .then_with(|| left.record.episode_id.cmp(&right.record.episode_id))
+            });
+
+            if let Some(limit) = filter.limit {
+                hits.truncate(limit);
+            }
+
+            Ok(hits)
+        }
+    }
+
+    fn search_memories_lexical(
+        &self,
+        query: &str,
+        filter: &MemorySearchFilter,
+    ) -> impl Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let query = query.to_string();
+        let filter = filter.clone();
+        async move {
+            let terms = lexical_terms(&query);
+            if terms.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let guard = state.read().map_err(|_| Self::map_storage_error())?;
+            let mut hits: Vec<_> = guard
+                .memories
+                .values()
+                .filter(|memory| match &filter.context_key {
+                    Some(context_key) => &memory.context_key == context_key,
+                    None => true,
+                })
+                .filter(|memory| match filter.user_id {
+                    Some(user_id) => memory
+                        .source_episode_id
+                        .as_ref()
+                        .and_then(|episode_id| guard.episodes.get(episode_id))
+                        .and_then(|episode| guard.threads.get(&episode.thread_id))
+                        .is_some_and(|thread| thread.user_id == user_id),
+                    None => true,
+                })
+                .filter(|memory| match filter.memory_type {
+                    Some(memory_type) => memory.memory_type == memory_type,
+                    None => true,
+                })
+                .filter(|memory| match filter.min_importance {
+                    Some(min_importance) => memory.importance >= min_importance,
+                    None => true,
+                })
+                .filter(|memory| filter.tags.iter().all(|tag| memory.tags.contains(tag)))
+                .filter(|memory| match filter.time_range.since {
+                    Some(since) => memory.updated_at >= since,
+                    None => true,
+                })
+                .filter(|memory| match filter.time_range.until {
+                    Some(until) => memory.updated_at <= until,
+                    None => true,
+                })
+                .filter_map(|memory| {
+                    let tags = memory.tags.join(" ");
+                    let score = lexical_score(
+                        &[
+                            (&memory.title, 3.0),
+                            (&memory.short_description, 2.0),
+                            (&memory.content, 2.0),
+                            (&tags, 1.0),
+                        ],
+                        &terms,
+                    );
+                    (score > 0.0).then(|| MemorySearchHit {
+                        record: memory.clone(),
+                        score,
+                        snippet: snippet_for(
+                            &[&memory.title, &memory.short_description, &memory.content],
+                            &terms,
+                            MEMORY_SNIPPET_LEN,
+                        ),
+                    })
+                })
+                .collect();
+
+            hits.sort_by(|left, right| {
+                right
+                    .score
+                    .total_cmp(&left.score)
+                    .then_with(|| right.record.importance.total_cmp(&left.record.importance))
+                    .then_with(|| right.record.confidence.total_cmp(&left.record.confidence))
+                    .then_with(|| right.record.updated_at.cmp(&left.record.updated_at))
+                    .then_with(|| left.record.memory_id.cmp(&right.record.memory_id))
+            });
+
+            if let Some(limit) = filter.limit {
+                hits.truncate(limit);
+            }
+
+            Ok(hits)
+        }
+    }
+
     fn upsert_session_state(
         &self,
         record: SessionStateRecord,
@@ -327,7 +552,10 @@ impl ArchiveBlobStore for InMemoryArchiveBlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ArtifactRef, CleanupStatus, EpisodeOutcome, MemoryType};
+    use crate::types::{
+        ArtifactRef, CleanupStatus, EpisodeOutcome, EpisodeSearchFilter, MemorySearchFilter,
+        MemoryType, TimeRange,
+    };
     use chrono::TimeZone;
 
     fn utc(ts: i64) -> chrono::DateTime<Utc> {
@@ -536,6 +764,113 @@ mod tests {
             .expect("session state should exist");
         assert_eq!(loaded.context_key, "topic-a");
         assert_eq!(loaded.hot_token_estimate, 123);
+    }
+
+    #[tokio::test]
+    async fn lexical_episode_search_respects_scope_and_ordering() {
+        let repo = InMemoryMemoryRepository::new();
+        repo.upsert_thread(thread_record("th-1"))
+            .await
+            .expect("thread 1 should store");
+
+        let mut thread_two = thread_record("th-2");
+        thread_two.user_id = 2;
+        thread_two.context_key = "topic-b".to_string();
+        repo.upsert_thread(thread_two)
+            .await
+            .expect("thread 2 should store");
+
+        let mut matching = episode_record("ep-1", "th-1", 100, EpisodeOutcome::Success);
+        matching.goal = "Fix R2_REGION lexical search bug".to_string();
+        matching.summary = "Confirmed lexical search should keep R2_REGION exact".to_string();
+        repo.create_episode(matching)
+            .await
+            .expect("matching episode should store");
+
+        let mut weaker = episode_record("ep-2", "th-1", 200, EpisodeOutcome::Success);
+        weaker.summary = "Investigated lexical search fallback".to_string();
+        repo.create_episode(weaker)
+            .await
+            .expect("weaker episode should store");
+
+        let mut wrong_scope = episode_record("ep-3", "th-2", 300, EpisodeOutcome::Success);
+        wrong_scope.context_key = "topic-b".to_string();
+        wrong_scope.goal = "Fix lexical search in another topic".to_string();
+        repo.create_episode(wrong_scope)
+            .await
+            .expect("other scope episode should store");
+
+        let hits = repo
+            .search_episodes_lexical(
+                "R2_REGION lexical",
+                &EpisodeSearchFilter {
+                    context_key: Some("topic-a".to_string()),
+                    user_id: Some(1),
+                    outcome: Some(EpisodeOutcome::Success),
+                    min_importance: Some(0.5),
+                    time_range: TimeRange::default(),
+                    limit: Some(10),
+                },
+            )
+            .await
+            .expect("episode search should succeed");
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].record.episode_id, "ep-1");
+        assert!(hits[0].score > hits[1].score);
+        assert!(hits[0].snippet.contains("R2_REGION"));
+    }
+
+    #[tokio::test]
+    async fn lexical_memory_search_respects_filters_and_limit() {
+        let repo = InMemoryMemoryRepository::new();
+        repo.upsert_thread(thread_record("th-1"))
+            .await
+            .expect("thread should store");
+        repo.create_episode(episode_record("ep-1", "th-1", 100, EpisodeOutcome::Success))
+            .await
+            .expect("episode should store");
+
+        let mut fact = memory_record("mem-1", MemoryType::Fact, vec!["topic", "search"], 120);
+        fact.title = "R2_REGION exact lookup".to_string();
+        fact.short_description = "Keep exact env var matching in lexical search".to_string();
+        repo.create_memory(fact)
+            .await
+            .expect("fact memory should store");
+
+        let mut procedure = memory_record("mem-2", MemoryType::Procedure, vec!["topic"], 140);
+        procedure.title = "Lexical search rollout".to_string();
+        procedure.content = "Run cargo check before enabling lexical memory tools".to_string();
+        repo.create_memory(procedure)
+            .await
+            .expect("procedure memory should store");
+
+        let mut filtered_out = memory_record("mem-3", MemoryType::Fact, vec!["topic"], 160);
+        filtered_out.context_key = "topic-b".to_string();
+        filtered_out.title = "Lexical search in another topic".to_string();
+        repo.create_memory(filtered_out)
+            .await
+            .expect("other topic memory should store");
+
+        let hits = repo
+            .search_memories_lexical(
+                "R2_REGION lexical search",
+                &MemorySearchFilter {
+                    context_key: Some("topic-a".to_string()),
+                    user_id: Some(1),
+                    memory_type: Some(MemoryType::Fact),
+                    min_importance: Some(0.5),
+                    tags: vec!["topic".to_string()],
+                    time_range: TimeRange::default(),
+                    limit: Some(1),
+                },
+            )
+            .await
+            .expect("memory search should succeed");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].record.memory_id, "mem-1");
+        assert!(hits[0].snippet.contains("R2_REGION"));
     }
 
     #[tokio::test]

@@ -232,3 +232,70 @@ pub struct MemoryListFilter {
     /// Maximum number of results to return.
     pub limit: Option<usize>,
 }
+
+/// Optional inclusive time range for search and retrieval filters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TimeRange {
+    /// Lower bound for timestamps.
+    pub since: Option<DateTime<Utc>>,
+    /// Upper bound for timestamps.
+    pub until: Option<DateTime<Utc>>,
+}
+
+/// Filter parameters for lexical episode search.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EpisodeSearchFilter {
+    /// Restrict results to one transport context.
+    pub context_key: Option<String>,
+    /// Restrict results to threads owned by one user.
+    pub user_id: Option<i64>,
+    /// Restrict results to a specific outcome.
+    pub outcome: Option<EpisodeOutcome>,
+    /// Only return episodes with at least this importance.
+    pub min_importance: Option<f32>,
+    /// Restrict results to a time range over `created_at`.
+    pub time_range: TimeRange,
+    /// Maximum number of results to return.
+    pub limit: Option<usize>,
+}
+
+/// Ranked lexical hit for an episode search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpisodeSearchHit {
+    /// Matching episode record.
+    pub record: EpisodeRecord,
+    /// Backend-provided lexical relevance score.
+    pub score: f32,
+    /// Short preview showing the matched content.
+    pub snippet: String,
+}
+
+/// Filter parameters for lexical reusable-memory search.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemorySearchFilter {
+    /// Restrict results to one transport context.
+    pub context_key: Option<String>,
+    /// Restrict results to memories linked to threads owned by one user.
+    pub user_id: Option<i64>,
+    /// Restrict results to a specific memory kind.
+    pub memory_type: Option<MemoryType>,
+    /// Only return memories with at least this importance.
+    pub min_importance: Option<f32>,
+    /// Require every tag in this list to be present.
+    pub tags: Vec<String>,
+    /// Restrict results to a time range over `updated_at`.
+    pub time_range: TimeRange,
+    /// Maximum number of results to return.
+    pub limit: Option<usize>,
+}
+
+/// Ranked lexical hit for a reusable-memory search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemorySearchHit {
+    /// Matching reusable memory record.
+    pub record: MemoryRecord,
+    /// Backend-provided lexical relevance score.
+    pub score: f32,
+    /// Short preview showing the matched content.
+    pub snippet: String,
+}

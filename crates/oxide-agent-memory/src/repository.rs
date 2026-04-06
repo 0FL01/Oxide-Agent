@@ -1,12 +1,12 @@
 //! Memory repository trait for typed long-term memory persistence.
 //!
-//! This trait defines the write-path API for the persistent memory subsystem.
-//! Concrete implementations may use in-memory stores, Postgres, etc.
-//! Search/retrieval APIs will be added in a later stage.
+//! This trait defines the write-path and lexical-retrieval API for the persistent memory
+//! subsystem. Concrete implementations may use in-memory stores, Postgres, etc.
 
 use crate::types::{
-    EpisodeId, EpisodeListFilter, EpisodeRecord, MemoryListFilter, MemoryRecord,
-    SessionStateRecord, ThreadId, ThreadRecord,
+    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
+    ThreadId, ThreadRecord,
 };
 
 /// Error type for memory repository operations.
@@ -85,6 +85,20 @@ pub trait MemoryRepository: Send + Sync {
         context_key: &str,
         filter: &MemoryListFilter,
     ) -> impl std::future::Future<Output = Result<Vec<MemoryRecord>, RepositoryError>> + Send;
+
+    /// Execute lexical search over episode records.
+    fn search_episodes_lexical(
+        &self,
+        query: &str,
+        filter: &EpisodeSearchFilter,
+    ) -> impl std::future::Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send;
+
+    /// Execute lexical search over reusable memory records.
+    fn search_memories_lexical(
+        &self,
+        query: &str,
+        filter: &MemorySearchFilter,
+    ) -> impl std::future::Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send;
 
     // -- Session state operations --
 

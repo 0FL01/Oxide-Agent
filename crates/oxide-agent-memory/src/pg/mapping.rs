@@ -2,8 +2,8 @@
 
 use crate::repository::RepositoryError;
 use crate::types::{
-    ArtifactRef, CleanupStatus, EpisodeOutcome, EpisodeRecord, MemoryRecord, MemoryType,
-    SessionStateRecord, ThreadRecord,
+    ArtifactRef, CleanupStatus, EpisodeOutcome, EpisodeRecord, EpisodeSearchHit, MemoryRecord,
+    MemorySearchHit, MemoryType, SessionStateRecord, ThreadRecord,
 };
 use chrono::{DateTime, Utc};
 use sqlx::types::Json;
@@ -106,6 +106,92 @@ impl TryFrom<MemoryRow> for MemoryRecord {
             tags: value.tags,
             created_at: value.created_at,
             updated_at: value.updated_at,
+        })
+    }
+}
+
+/// Row shape for lexical episode search results.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct EpisodeSearchRow {
+    pub episode_id: String,
+    pub thread_id: String,
+    pub context_key: String,
+    pub goal: String,
+    pub summary: String,
+    pub outcome: String,
+    pub tools_used: Vec<String>,
+    pub artifacts: Json<Vec<ArtifactRef>>,
+    pub failures: Vec<String>,
+    pub importance: f32,
+    pub created_at: DateTime<Utc>,
+    pub lexical_score: f32,
+    pub lexical_snippet: String,
+}
+
+impl TryFrom<EpisodeSearchRow> for EpisodeSearchHit {
+    type Error = RepositoryError;
+
+    fn try_from(value: EpisodeSearchRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            record: EpisodeRecord {
+                episode_id: value.episode_id,
+                thread_id: value.thread_id,
+                context_key: value.context_key,
+                goal: value.goal,
+                summary: value.summary,
+                outcome: decode_episode_outcome(&value.outcome)?,
+                tools_used: value.tools_used,
+                artifacts: value.artifacts.0,
+                failures: value.failures,
+                importance: value.importance,
+                created_at: value.created_at,
+            },
+            score: value.lexical_score,
+            snippet: value.lexical_snippet,
+        })
+    }
+}
+
+/// Row shape for lexical memory search results.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct MemorySearchRow {
+    pub memory_id: String,
+    pub context_key: String,
+    pub source_episode_id: Option<String>,
+    pub memory_type: String,
+    pub title: String,
+    pub content: String,
+    pub short_description: String,
+    pub importance: f32,
+    pub confidence: f32,
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub lexical_score: f32,
+    pub lexical_snippet: String,
+}
+
+impl TryFrom<MemorySearchRow> for MemorySearchHit {
+    type Error = RepositoryError;
+
+    fn try_from(value: MemorySearchRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            record: MemoryRecord {
+                memory_id: value.memory_id,
+                context_key: value.context_key,
+                source_episode_id: value.source_episode_id,
+                memory_type: decode_memory_type(&value.memory_type)?,
+                title: value.title,
+                content: value.content,
+                short_description: value.short_description,
+                importance: value.importance,
+                confidence: value.confidence,
+                tags: value.tags,
+                created_at: value.created_at,
+                updated_at: value.updated_at,
+            },
+            score: value.lexical_score,
+            snippet: value.lexical_snippet,
         })
     }
 }
@@ -222,7 +308,8 @@ fn decode_cleanup_status(value: &str) -> Result<CleanupStatus, RepositoryError> 
 mod tests {
     use super::{
         decode_cleanup_status, decode_episode_outcome, decode_memory_type, encode_cleanup_status,
-        encode_episode_outcome, encode_memory_type, EpisodeRow, MemoryRow, SessionStateRow,
+        encode_episode_outcome, encode_memory_type, EpisodeRow, EpisodeSearchRow, MemoryRow,
+        MemorySearchRow, SessionStateRow,
     };
     use crate::types::{ArtifactRef, CleanupStatus, EpisodeOutcome, MemoryType};
     use chrono::{TimeZone, Utc};
@@ -316,5 +403,52 @@ mod tests {
 
         let record = crate::types::MemoryRecord::try_from(row).expect("row should map");
         assert_eq!(record.memory_type, MemoryType::Constraint);
+    }
+
+    #[test]
+    fn lexical_episode_row_maps_back_to_search_hit() {
+        let row = EpisodeSearchRow {
+            episode_id: "episode-2".to_string(),
+            thread_id: "thread-1".to_string(),
+            context_key: "topic-a".to_string(),
+            goal: "Fix lexical search".to_string(),
+            summary: "R2_REGION should remain searchable".to_string(),
+            outcome: "partial".to_string(),
+            tools_used: vec!["grep".to_string()],
+            artifacts: Json(Vec::new()),
+            failures: vec!["fts ranking".to_string()],
+            importance: 0.7,
+            created_at: ts(6),
+            lexical_score: 0.42,
+            lexical_snippet: "R2_REGION should remain searchable".to_string(),
+        };
+
+        let hit = crate::types::EpisodeSearchHit::try_from(row).expect("row should map");
+        assert_eq!(hit.record.outcome, EpisodeOutcome::Partial);
+        assert_eq!(hit.score, 0.42);
+    }
+
+    #[test]
+    fn lexical_memory_row_maps_back_to_search_hit() {
+        let row = MemorySearchRow {
+            memory_id: "memory-2".to_string(),
+            context_key: "topic-a".to_string(),
+            source_episode_id: Some("episode-2".to_string()),
+            memory_type: "fact".to_string(),
+            title: "R2_REGION exact lookup".to_string(),
+            content: "Use lexical search for env vars".to_string(),
+            short_description: "env var retrieval".to_string(),
+            importance: 0.8,
+            confidence: 0.9,
+            tags: vec!["search".to_string()],
+            created_at: ts(7),
+            updated_at: ts(8),
+            lexical_score: 0.5,
+            lexical_snippet: "R2_REGION exact lookup".to_string(),
+        };
+
+        let hit = crate::types::MemorySearchHit::try_from(row).expect("row should map");
+        assert_eq!(hit.record.memory_type, MemoryType::Fact);
+        assert_eq!(hit.snippet, "R2_REGION exact lookup");
     }
 }
