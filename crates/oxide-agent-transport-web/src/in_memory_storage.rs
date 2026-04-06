@@ -20,9 +20,11 @@ use oxide_agent_core::storage::{
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use oxide_agent_memory::{
-    ArtifactRef, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
-    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
-    ThreadRecord,
+    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
+    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EmbeddingStatus,
+    EpisodeEmbeddingCandidate, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter,
+    EpisodeSearchHit, MemoryEmbeddingCandidate, MemoryListFilter, MemoryRecord, MemorySearchFilter,
+    MemorySearchHit, SessionStateRecord, ThreadRecord,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,6 +50,7 @@ pub struct InMemoryStorage {
     memory_threads: RwLock<HashMap<String, ThreadRecord>>,
     memory_episodes: RwLock<HashMap<String, EpisodeRecord>>,
     memory_records: RwLock<HashMap<String, MemoryRecord>>,
+    memory_embeddings: RwLock<HashMap<(EmbeddingOwnerType, String), EmbeddingRecord>>,
     memory_session_states: RwLock<HashMap<String, SessionStateRecord>>,
     reminder_jobs: RwLock<HashMap<(i64, String), ReminderJobRecord>>,
     topic_agents_md: RwLock<HashMap<(i64, String), TopicAgentsMdRecord>>,
@@ -70,6 +73,7 @@ impl InMemoryStorage {
             memory_threads: RwLock::new(HashMap::new()),
             memory_episodes: RwLock::new(HashMap::new()),
             memory_records: RwLock::new(HashMap::new()),
+            memory_embeddings: RwLock::new(HashMap::new()),
             memory_session_states: RwLock::new(HashMap::new()),
             reminder_jobs: RwLock::new(HashMap::new()),
             topic_agents_md: RwLock::new(HashMap::new()),
@@ -133,6 +137,43 @@ fn truncate_snippet(value: &str, max_chars: usize) -> String {
         truncated.push('…');
     }
     truncated
+}
+
+fn snippet_from_primary(fields: &[&str], max_chars: usize) -> String {
+    let source = fields
+        .iter()
+        .copied()
+        .find(|field| !field.is_empty())
+        .unwrap_or_default();
+    truncate_snippet(source, max_chars)
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
+    if left.is_empty() || left.len() != right.len() {
+        return None;
+    }
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for (lhs, rhs) in left.iter().zip(right.iter()) {
+        dot += lhs * rhs;
+        left_norm += lhs * lhs;
+        right_norm += rhs * rhs;
+    }
+    let left_norm = left_norm.sqrt();
+    let right_norm = right_norm.sqrt();
+    (left_norm > 0.0 && right_norm > 0.0).then_some(dot / (left_norm * right_norm))
+}
+
+fn embedding_needs_backfill(embedding: Option<&EmbeddingRecord>, model_id: &str) -> bool {
+    match embedding {
+        Some(embedding) => {
+            embedding.model_id != model_id
+                || embedding.status != EmbeddingStatus::Ready
+                || embedding.embedding.is_none()
+        }
+        None => true,
+    }
 }
 
 fn merge_artifact_ref(existing: &mut ArtifactRef, incoming: ArtifactRef) {
@@ -741,6 +782,308 @@ impl crate::api::StorageProvider for InMemoryStorage {
             hits.truncate(limit);
         }
 
+        Ok(hits)
+    }
+
+    async fn get_memory_embedding(
+        &self,
+        owner_type: EmbeddingOwnerType,
+        owner_id: String,
+    ) -> Result<Option<EmbeddingRecord>, StorageError> {
+        let embeddings = self.memory_embeddings.read().await;
+        Ok(embeddings.get(&(owner_type, owner_id)).cloned())
+    }
+
+    async fn upsert_memory_embedding_pending(
+        &self,
+        update: EmbeddingPendingUpdate,
+    ) -> Result<EmbeddingRecord, StorageError> {
+        let mut embeddings = self.memory_embeddings.write().await;
+        let existing = embeddings
+            .get(&(update.base.owner_type, update.base.owner_id.clone()))
+            .cloned();
+        let record = EmbeddingRecord {
+            owner_id: update.base.owner_id,
+            owner_type: update.base.owner_type,
+            model_id: update.base.model_id,
+            content_hash: update.base.content_hash,
+            embedding: None,
+            dimensions: None,
+            status: EmbeddingStatus::Pending,
+            last_error: None,
+            retry_count: existing.as_ref().map_or(0, |value| value.retry_count),
+            created_at: existing
+                .as_ref()
+                .map_or(update.requested_at, |value| value.created_at),
+            updated_at: update.requested_at,
+            indexed_at: None,
+        };
+        embeddings.insert((record.owner_type, record.owner_id.clone()), record.clone());
+        Ok(record)
+    }
+
+    async fn upsert_memory_embedding_ready(
+        &self,
+        update: EmbeddingReadyUpdate,
+    ) -> Result<EmbeddingRecord, StorageError> {
+        let mut embeddings = self.memory_embeddings.write().await;
+        let existing = embeddings
+            .get(&(update.base.owner_type, update.base.owner_id.clone()))
+            .cloned();
+        let dimensions = update.embedding.len();
+        let record = EmbeddingRecord {
+            owner_id: update.base.owner_id,
+            owner_type: update.base.owner_type,
+            model_id: update.base.model_id,
+            content_hash: update.base.content_hash,
+            embedding: Some(update.embedding),
+            dimensions: Some(dimensions),
+            status: EmbeddingStatus::Ready,
+            last_error: None,
+            retry_count: existing.as_ref().map_or(0, |value| value.retry_count),
+            created_at: existing
+                .as_ref()
+                .map_or(update.indexed_at, |value| value.created_at),
+            updated_at: update.indexed_at,
+            indexed_at: Some(update.indexed_at),
+        };
+        embeddings.insert((record.owner_type, record.owner_id.clone()), record.clone());
+        Ok(record)
+    }
+
+    async fn upsert_memory_embedding_failure(
+        &self,
+        update: EmbeddingFailureUpdate,
+    ) -> Result<EmbeddingRecord, StorageError> {
+        let mut embeddings = self.memory_embeddings.write().await;
+        let existing = embeddings
+            .get(&(update.base.owner_type, update.base.owner_id.clone()))
+            .cloned();
+        let record = EmbeddingRecord {
+            owner_id: update.base.owner_id,
+            owner_type: update.base.owner_type,
+            model_id: update.base.model_id,
+            content_hash: update.base.content_hash,
+            embedding: None,
+            dimensions: None,
+            status: EmbeddingStatus::Failed,
+            last_error: Some(update.error),
+            retry_count: existing
+                .as_ref()
+                .map_or(1, |value| value.retry_count.saturating_add(1)),
+            created_at: existing
+                .as_ref()
+                .map_or(update.failed_at, |value| value.created_at),
+            updated_at: update.failed_at,
+            indexed_at: existing.and_then(|value| value.indexed_at),
+        };
+        embeddings.insert((record.owner_type, record.owner_id.clone()), record.clone());
+        Ok(record)
+    }
+
+    async fn list_memory_episode_embedding_backfill_candidates(
+        &self,
+        request: EmbeddingBackfillRequest,
+    ) -> Result<Vec<EpisodeEmbeddingCandidate>, StorageError> {
+        let embeddings = self.memory_embeddings.read().await;
+        let episodes = self.memory_episodes.read().await;
+        let mut candidates = episodes
+            .values()
+            .filter_map(|record| {
+                let embedding = embeddings
+                    .get(&(EmbeddingOwnerType::Episode, record.episode_id.clone()))
+                    .cloned();
+                embedding_needs_backfill(embedding.as_ref(), &request.model_id).then(|| {
+                    EpisodeEmbeddingCandidate {
+                        record: record.clone(),
+                        embedding,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            left.record
+                .created_at
+                .cmp(&right.record.created_at)
+                .then_with(|| left.record.episode_id.cmp(&right.record.episode_id))
+        });
+        if let Some(limit) = request.limit {
+            candidates.truncate(limit);
+        }
+        Ok(candidates)
+    }
+
+    async fn list_memory_record_embedding_backfill_candidates(
+        &self,
+        request: EmbeddingBackfillRequest,
+    ) -> Result<Vec<MemoryEmbeddingCandidate>, StorageError> {
+        let embeddings = self.memory_embeddings.read().await;
+        let memories = self.memory_records.read().await;
+        let mut candidates = memories
+            .values()
+            .filter_map(|record| {
+                let embedding = embeddings
+                    .get(&(EmbeddingOwnerType::Memory, record.memory_id.clone()))
+                    .cloned();
+                embedding_needs_backfill(embedding.as_ref(), &request.model_id).then(|| {
+                    MemoryEmbeddingCandidate {
+                        record: record.clone(),
+                        embedding,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            left.record
+                .updated_at
+                .cmp(&right.record.updated_at)
+                .then_with(|| left.record.memory_id.cmp(&right.record.memory_id))
+        });
+        if let Some(limit) = request.limit {
+            candidates.truncate(limit);
+        }
+        Ok(candidates)
+    }
+
+    async fn search_memory_episodes_vector(
+        &self,
+        query_embedding: Vec<f32>,
+        filter: EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, StorageError> {
+        if query_embedding.is_empty() {
+            return Ok(Vec::new());
+        }
+        let threads = self.memory_threads.read().await;
+        let episodes = self.memory_episodes.read().await;
+        let embeddings = self.memory_embeddings.read().await;
+        let mut hits = episodes
+            .values()
+            .filter(|episode| match &filter.context_key {
+                Some(context_key) => &episode.context_key == context_key,
+                None => true,
+            })
+            .filter(|episode| match filter.user_id {
+                Some(user_id) => threads
+                    .get(&episode.thread_id)
+                    .is_some_and(|thread| thread.user_id == user_id),
+                None => true,
+            })
+            .filter(|episode| match filter.outcome {
+                Some(outcome) => episode.outcome == outcome,
+                None => true,
+            })
+            .filter(|episode| match filter.min_importance {
+                Some(min_importance) => episode.importance >= min_importance,
+                None => true,
+            })
+            .filter(|episode| match filter.time_range.since {
+                Some(since) => episode.created_at >= since,
+                None => true,
+            })
+            .filter(|episode| match filter.time_range.until {
+                Some(until) => episode.created_at <= until,
+                None => true,
+            })
+            .filter_map(|episode| {
+                let embedding =
+                    embeddings.get(&(EmbeddingOwnerType::Episode, episode.episode_id.clone()))?;
+                let vector = embedding.embedding.as_ref()?;
+                let score = cosine_similarity(&query_embedding, vector)?;
+                (score > 0.0).then(|| EpisodeSearchHit {
+                    record: episode.clone(),
+                    score,
+                    snippet: snippet_from_primary(
+                        &[&episode.goal, &episode.summary],
+                        EPISODE_SNIPPET_LEN,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| right.record.importance.total_cmp(&left.record.importance))
+                .then_with(|| right.record.created_at.cmp(&left.record.created_at))
+                .then_with(|| left.record.episode_id.cmp(&right.record.episode_id))
+        });
+        if let Some(limit) = filter.limit {
+            hits.truncate(limit);
+        }
+        Ok(hits)
+    }
+
+    async fn search_memory_records_vector(
+        &self,
+        query_embedding: Vec<f32>,
+        filter: MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, StorageError> {
+        if query_embedding.is_empty() {
+            return Ok(Vec::new());
+        }
+        let threads = self.memory_threads.read().await;
+        let episodes = self.memory_episodes.read().await;
+        let memories = self.memory_records.read().await;
+        let embeddings = self.memory_embeddings.read().await;
+        let mut hits = memories
+            .values()
+            .filter(|memory| match &filter.context_key {
+                Some(context_key) => &memory.context_key == context_key,
+                None => true,
+            })
+            .filter(|memory| match filter.user_id {
+                Some(user_id) => memory
+                    .source_episode_id
+                    .as_ref()
+                    .and_then(|episode_id| episodes.get(episode_id))
+                    .and_then(|episode| threads.get(&episode.thread_id))
+                    .is_some_and(|thread| thread.user_id == user_id),
+                None => true,
+            })
+            .filter(|memory| match filter.memory_type {
+                Some(memory_type) => memory.memory_type == memory_type,
+                None => true,
+            })
+            .filter(|memory| match filter.min_importance {
+                Some(min_importance) => memory.importance >= min_importance,
+                None => true,
+            })
+            .filter(|memory| filter.tags.iter().all(|tag| memory.tags.contains(tag)))
+            .filter(|memory| match filter.time_range.since {
+                Some(since) => memory.updated_at >= since,
+                None => true,
+            })
+            .filter(|memory| match filter.time_range.until {
+                Some(until) => memory.updated_at <= until,
+                None => true,
+            })
+            .filter_map(|memory| {
+                let embedding =
+                    embeddings.get(&(EmbeddingOwnerType::Memory, memory.memory_id.clone()))?;
+                let vector = embedding.embedding.as_ref()?;
+                let score = cosine_similarity(&query_embedding, vector)?;
+                (score > 0.0).then(|| MemorySearchHit {
+                    record: memory.clone(),
+                    score,
+                    snippet: snippet_from_primary(
+                        &[&memory.title, &memory.short_description, &memory.content],
+                        MEMORY_SNIPPET_LEN,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| right.record.importance.total_cmp(&left.record.importance))
+                .then_with(|| right.record.confidence.total_cmp(&left.record.confidence))
+                .then_with(|| right.record.updated_at.cmp(&left.record.updated_at))
+                .then_with(|| left.record.memory_id.cmp(&right.record.memory_id))
+        });
+        if let Some(limit) = filter.limit {
+            hits.truncate(limit);
+        }
         Ok(hits)
     }
 

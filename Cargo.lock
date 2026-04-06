@@ -3498,6 +3498,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "pgvector",
  "serde",
  "serde_json",
  "sqlx",
@@ -3698,6 +3699,15 @@ checksum = "89815c69d36021a140146f26659a81d6c2afa33d216d736dd4be5381a7362220"
 dependencies = [
  "pest",
  "sha2",
+]
+
+[[package]]
+name = "pgvector"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc58e2d255979a31caa7cabfa7aac654af0354220719ab7a68520ae7a91e8c0b"
+dependencies = [
+ "sqlx",
 ]
 
 [[package]]

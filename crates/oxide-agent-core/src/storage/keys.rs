@@ -88,6 +88,12 @@ pub fn persistent_memory_session_state_key(session_id: &str) -> String {
     format!("persistent_memory/session_states/{session_id}.json")
 }
 
+/// Returns the R2 key for a persistent memory embedding record.
+#[must_use]
+pub fn persistent_memory_embedding_key(owner_type: &str, owner_id: &str) -> String {
+    format!("persistent_memory/embeddings/{owner_type}/{owner_id}.json")
+}
+
 /// Returns the R2 key for an agent profile record.
 #[must_use]
 pub fn agent_profile_key(user_id: i64, agent_id: &str) -> String {

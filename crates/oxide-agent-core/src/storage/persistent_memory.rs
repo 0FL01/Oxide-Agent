@@ -1,6 +1,8 @@
 use super::StorageProvider;
 use oxide_agent_memory::{
-    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
+    EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
+    EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
     MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
     RepositoryError, SessionStateRecord, ThreadId, ThreadRecord,
 };
@@ -122,6 +124,89 @@ impl MemoryRepository for StorageMemoryRepository {
     ) -> Result<Vec<MemorySearchHit>, RepositoryError> {
         self.storage
             .search_memory_records_lexical(query.to_string(), filter.clone())
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn get_embedding(
+        &self,
+        owner_type: EmbeddingOwnerType,
+        owner_id: &str,
+    ) -> Result<Option<EmbeddingRecord>, RepositoryError> {
+        self.storage
+            .get_memory_embedding(owner_type, owner_id.to_string())
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn upsert_embedding_pending(
+        &self,
+        update: EmbeddingPendingUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError> {
+        self.storage
+            .upsert_memory_embedding_pending(update)
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn upsert_embedding_ready(
+        &self,
+        update: EmbeddingReadyUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError> {
+        self.storage
+            .upsert_memory_embedding_ready(update)
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn upsert_embedding_failure(
+        &self,
+        update: EmbeddingFailureUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError> {
+        self.storage
+            .upsert_memory_embedding_failure(update)
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn list_episode_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> Result<Vec<EpisodeEmbeddingCandidate>, RepositoryError> {
+        self.storage
+            .list_memory_episode_embedding_backfill_candidates(request.clone())
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn list_memory_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> Result<Vec<MemoryEmbeddingCandidate>, RepositoryError> {
+        self.storage
+            .list_memory_record_embedding_backfill_candidates(request.clone())
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn search_episodes_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, RepositoryError> {
+        self.storage
+            .search_memory_episodes_vector(query_embedding.to_vec(), filter.clone())
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn search_memories_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, RepositoryError> {
+        self.storage
+            .search_memory_records_vector(query_embedding.to_vec(), filter.clone())
             .await
             .map_err(map_storage_error)
     }

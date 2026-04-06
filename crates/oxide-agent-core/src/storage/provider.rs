@@ -8,9 +8,11 @@ use super::{
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
 use oxide_agent_memory::{
-    ArtifactRef, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
-    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
-    ThreadRecord,
+    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
+    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate,
+    EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryEmbeddingCandidate, MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit,
+    SessionStateRecord, ThreadRecord,
 };
 
 /// Interface for storage providers.
@@ -317,6 +319,100 @@ pub trait StorageProvider: Send + Sync {
         let _ = filter;
         Err(StorageError::Config(
             "persistent memory record lexical search is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Read embedding state for one owner.
+    async fn get_memory_embedding(
+        &self,
+        owner_type: EmbeddingOwnerType,
+        owner_id: String,
+    ) -> Result<Option<EmbeddingRecord>, StorageError> {
+        let _ = owner_type;
+        let _ = owner_id;
+        Err(StorageError::Config(
+            "persistent memory embeddings are not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Mark one embedding row as pending generation.
+    async fn upsert_memory_embedding_pending(
+        &self,
+        update: EmbeddingPendingUpdate,
+    ) -> Result<EmbeddingRecord, StorageError> {
+        let _ = update;
+        Err(StorageError::Config(
+            "persistent memory embedding pending writes are not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Persist a successful embedding vector.
+    async fn upsert_memory_embedding_ready(
+        &self,
+        update: EmbeddingReadyUpdate,
+    ) -> Result<EmbeddingRecord, StorageError> {
+        let _ = update;
+        Err(StorageError::Config(
+            "persistent memory embedding writes are not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Persist a failed embedding attempt.
+    async fn upsert_memory_embedding_failure(
+        &self,
+        update: EmbeddingFailureUpdate,
+    ) -> Result<EmbeddingRecord, StorageError> {
+        let _ = update;
+        Err(StorageError::Config(
+            "persistent memory embedding failure writes are not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Discover episode records that still need embeddings.
+    async fn list_memory_episode_embedding_backfill_candidates(
+        &self,
+        request: EmbeddingBackfillRequest,
+    ) -> Result<Vec<EpisodeEmbeddingCandidate>, StorageError> {
+        let _ = request;
+        Err(StorageError::Config(
+            "persistent memory episode embedding backfill is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Discover memory records that still need embeddings.
+    async fn list_memory_record_embedding_backfill_candidates(
+        &self,
+        request: EmbeddingBackfillRequest,
+    ) -> Result<Vec<MemoryEmbeddingCandidate>, StorageError> {
+        let _ = request;
+        Err(StorageError::Config(
+            "persistent memory record embedding backfill is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Vector search over episode records.
+    async fn search_memory_episodes_vector(
+        &self,
+        query_embedding: Vec<f32>,
+        filter: EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, StorageError> {
+        let _ = query_embedding;
+        let _ = filter;
+        Err(StorageError::Config(
+            "persistent memory episode vector search is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Vector search over reusable memory records.
+    async fn search_memory_records_vector(
+        &self,
+        query_embedding: Vec<f32>,
+        filter: MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, StorageError> {
+        let _ = query_embedding;
+        let _ = filter;
+        Err(StorageError::Config(
+            "persistent memory record vector search is not implemented for this storage provider"
                 .to_string(),
         ))
     }

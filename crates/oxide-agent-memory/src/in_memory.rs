@@ -3,9 +3,12 @@
 use crate::archive::ArchiveBlobStore;
 use crate::repository::{MemoryRepository, RepositoryError};
 use crate::types::{
-    ArtifactRef, EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter,
-    EpisodeSearchHit, MemoryId, MemoryListFilter, MemoryRecord, MemorySearchFilter,
-    MemorySearchHit, SessionStateId, SessionStateRecord, ThreadId, ThreadRecord,
+    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
+    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EmbeddingStatus,
+    EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter,
+    EpisodeSearchHit, MemoryEmbeddingCandidate, MemoryId, MemoryListFilter, MemoryRecord,
+    MemorySearchFilter, MemorySearchHit, SessionStateId, SessionStateRecord, ThreadId,
+    ThreadRecord,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -20,6 +23,7 @@ struct RepositoryState {
     threads: HashMap<ThreadId, ThreadRecord>,
     episodes: HashMap<EpisodeId, EpisodeRecord>,
     memories: HashMap<MemoryId, MemoryRecord>,
+    embeddings: HashMap<(EmbeddingOwnerType, String), EmbeddingRecord>,
     session_states: HashMap<SessionStateId, SessionStateRecord>,
 }
 
@@ -84,6 +88,54 @@ fn truncate_snippet(value: &str, max_chars: usize) -> String {
         truncated.push('…');
     }
     truncated
+}
+
+fn snippet_from_primary(fields: &[&str], max_chars: usize) -> String {
+    let source = fields
+        .iter()
+        .copied()
+        .find(|field| !field.is_empty())
+        .unwrap_or_default();
+    truncate_snippet(source, max_chars)
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
+    if left.is_empty() || left.len() != right.len() {
+        return None;
+    }
+
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for (lhs, rhs) in left.iter().zip(right.iter()) {
+        dot += lhs * rhs;
+        left_norm += lhs * lhs;
+        right_norm += rhs * rhs;
+    }
+
+    let left_norm = left_norm.sqrt();
+    let right_norm = right_norm.sqrt();
+    (left_norm > 0.0 && right_norm > 0.0).then_some(dot / (left_norm * right_norm))
+}
+
+fn upsert_embedding_record(
+    embeddings: &mut HashMap<(EmbeddingOwnerType, String), EmbeddingRecord>,
+    record: EmbeddingRecord,
+) -> EmbeddingRecord {
+    let key = (record.owner_type, record.owner_id.clone());
+    embeddings.insert(key, record.clone());
+    record
+}
+
+fn embedding_needs_backfill(embedding: Option<&EmbeddingRecord>, model_id: &str) -> bool {
+    match embedding {
+        Some(embedding) => {
+            embedding.model_id != model_id
+                || embedding.status != EmbeddingStatus::Ready
+                || embedding.embedding.is_none()
+        }
+        None => true,
+    }
 }
 
 impl MemoryRepository for InMemoryMemoryRepository {
@@ -444,6 +496,345 @@ impl MemoryRepository for InMemoryMemoryRepository {
         }
     }
 
+    fn get_embedding(
+        &self,
+        owner_type: EmbeddingOwnerType,
+        owner_id: &str,
+    ) -> impl Future<Output = Result<Option<EmbeddingRecord>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let owner_id = owner_id.to_string();
+        async move {
+            let guard = state.read().map_err(|_| Self::map_storage_error())?;
+            Ok(guard.embeddings.get(&(owner_type, owner_id)).cloned())
+        }
+    }
+
+    fn upsert_embedding_pending(
+        &self,
+        update: EmbeddingPendingUpdate,
+    ) -> impl Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        async move {
+            let mut guard = state.write().map_err(|_| Self::map_storage_error())?;
+            let existing = guard
+                .embeddings
+                .get(&(update.base.owner_type, update.base.owner_id.clone()))
+                .cloned();
+            let record = EmbeddingRecord {
+                owner_id: update.base.owner_id,
+                owner_type: update.base.owner_type,
+                model_id: update.base.model_id,
+                content_hash: update.base.content_hash,
+                embedding: None,
+                dimensions: None,
+                status: EmbeddingStatus::Pending,
+                last_error: None,
+                retry_count: existing.as_ref().map_or(0, |value| value.retry_count),
+                created_at: existing
+                    .as_ref()
+                    .map_or(update.requested_at, |value| value.created_at),
+                updated_at: update.requested_at,
+                indexed_at: None,
+            };
+            Ok(upsert_embedding_record(&mut guard.embeddings, record))
+        }
+    }
+
+    fn upsert_embedding_ready(
+        &self,
+        update: EmbeddingReadyUpdate,
+    ) -> impl Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        async move {
+            let mut guard = state.write().map_err(|_| Self::map_storage_error())?;
+            let existing = guard
+                .embeddings
+                .get(&(update.base.owner_type, update.base.owner_id.clone()))
+                .cloned();
+            let dimensions = update.embedding.len();
+            let record = EmbeddingRecord {
+                owner_id: update.base.owner_id,
+                owner_type: update.base.owner_type,
+                model_id: update.base.model_id,
+                content_hash: update.base.content_hash,
+                embedding: Some(update.embedding),
+                dimensions: Some(dimensions),
+                status: EmbeddingStatus::Ready,
+                last_error: None,
+                retry_count: existing.as_ref().map_or(0, |value| value.retry_count),
+                created_at: existing
+                    .as_ref()
+                    .map_or(update.indexed_at, |value| value.created_at),
+                updated_at: update.indexed_at,
+                indexed_at: Some(update.indexed_at),
+            };
+            Ok(upsert_embedding_record(&mut guard.embeddings, record))
+        }
+    }
+
+    fn upsert_embedding_failure(
+        &self,
+        update: EmbeddingFailureUpdate,
+    ) -> impl Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        async move {
+            let mut guard = state.write().map_err(|_| Self::map_storage_error())?;
+            let existing = guard
+                .embeddings
+                .get(&(update.base.owner_type, update.base.owner_id.clone()))
+                .cloned();
+            let record = EmbeddingRecord {
+                owner_id: update.base.owner_id,
+                owner_type: update.base.owner_type,
+                model_id: update.base.model_id,
+                content_hash: update.base.content_hash,
+                embedding: None,
+                dimensions: None,
+                status: EmbeddingStatus::Failed,
+                last_error: Some(update.error),
+                retry_count: existing
+                    .as_ref()
+                    .map_or(1, |value| value.retry_count.saturating_add(1)),
+                created_at: existing
+                    .as_ref()
+                    .map_or(update.failed_at, |value| value.created_at),
+                updated_at: update.failed_at,
+                indexed_at: existing.and_then(|value| value.indexed_at),
+            };
+            Ok(upsert_embedding_record(&mut guard.embeddings, record))
+        }
+    }
+
+    fn list_episode_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> impl Future<Output = Result<Vec<EpisodeEmbeddingCandidate>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let request = request.clone();
+        async move {
+            let guard = state.read().map_err(|_| Self::map_storage_error())?;
+            let mut candidates = guard
+                .episodes
+                .values()
+                .filter_map(|record| {
+                    let embedding = guard
+                        .embeddings
+                        .get(&(EmbeddingOwnerType::Episode, record.episode_id.clone()))
+                        .cloned();
+                    embedding_needs_backfill(embedding.as_ref(), &request.model_id).then(|| {
+                        EpisodeEmbeddingCandidate {
+                            record: record.clone(),
+                            embedding,
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by(|left, right| {
+                left.record
+                    .created_at
+                    .cmp(&right.record.created_at)
+                    .then_with(|| left.record.episode_id.cmp(&right.record.episode_id))
+            });
+            if let Some(limit) = request.limit {
+                candidates.truncate(limit);
+            }
+            Ok(candidates)
+        }
+    }
+
+    fn list_memory_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> impl Future<Output = Result<Vec<MemoryEmbeddingCandidate>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let request = request.clone();
+        async move {
+            let guard = state.read().map_err(|_| Self::map_storage_error())?;
+            let mut candidates = guard
+                .memories
+                .values()
+                .filter_map(|record| {
+                    let embedding = guard
+                        .embeddings
+                        .get(&(EmbeddingOwnerType::Memory, record.memory_id.clone()))
+                        .cloned();
+                    embedding_needs_backfill(embedding.as_ref(), &request.model_id).then(|| {
+                        MemoryEmbeddingCandidate {
+                            record: record.clone(),
+                            embedding,
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by(|left, right| {
+                left.record
+                    .updated_at
+                    .cmp(&right.record.updated_at)
+                    .then_with(|| left.record.memory_id.cmp(&right.record.memory_id))
+            });
+            if let Some(limit) = request.limit {
+                candidates.truncate(limit);
+            }
+            Ok(candidates)
+        }
+    }
+
+    fn search_episodes_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &EpisodeSearchFilter,
+    ) -> impl Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let query_embedding = query_embedding.to_vec();
+        let filter = filter.clone();
+        async move {
+            if query_embedding.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let guard = state.read().map_err(|_| Self::map_storage_error())?;
+            let mut hits = guard
+                .episodes
+                .values()
+                .filter(|episode| match &filter.context_key {
+                    Some(context_key) => &episode.context_key == context_key,
+                    None => true,
+                })
+                .filter(|episode| match filter.user_id {
+                    Some(user_id) => guard
+                        .threads
+                        .get(&episode.thread_id)
+                        .is_some_and(|thread| thread.user_id == user_id),
+                    None => true,
+                })
+                .filter(|episode| match filter.outcome {
+                    Some(outcome) => episode.outcome == outcome,
+                    None => true,
+                })
+                .filter(|episode| match filter.min_importance {
+                    Some(min_importance) => episode.importance >= min_importance,
+                    None => true,
+                })
+                .filter(|episode| match filter.time_range.since {
+                    Some(since) => episode.created_at >= since,
+                    None => true,
+                })
+                .filter(|episode| match filter.time_range.until {
+                    Some(until) => episode.created_at <= until,
+                    None => true,
+                })
+                .filter_map(|episode| {
+                    let embedding = guard
+                        .embeddings
+                        .get(&(EmbeddingOwnerType::Episode, episode.episode_id.clone()))?;
+                    let vector = embedding.embedding.as_ref()?;
+                    let score = cosine_similarity(&query_embedding, vector)?;
+                    (score > 0.0).then(|| EpisodeSearchHit {
+                        record: episode.clone(),
+                        score,
+                        snippet: snippet_from_primary(
+                            &[&episode.goal, &episode.summary],
+                            EPISODE_SNIPPET_LEN,
+                        ),
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            hits.sort_by(|left, right| {
+                right
+                    .score
+                    .total_cmp(&left.score)
+                    .then_with(|| right.record.importance.total_cmp(&left.record.importance))
+                    .then_with(|| right.record.created_at.cmp(&left.record.created_at))
+                    .then_with(|| left.record.episode_id.cmp(&right.record.episode_id))
+            });
+            if let Some(limit) = filter.limit {
+                hits.truncate(limit);
+            }
+            Ok(hits)
+        }
+    }
+
+    fn search_memories_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &MemorySearchFilter,
+    ) -> impl Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let query_embedding = query_embedding.to_vec();
+        let filter = filter.clone();
+        async move {
+            if query_embedding.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let guard = state.read().map_err(|_| Self::map_storage_error())?;
+            let mut hits = guard
+                .memories
+                .values()
+                .filter(|memory| match &filter.context_key {
+                    Some(context_key) => &memory.context_key == context_key,
+                    None => true,
+                })
+                .filter(|memory| match filter.user_id {
+                    Some(user_id) => memory
+                        .source_episode_id
+                        .as_ref()
+                        .and_then(|episode_id| guard.episodes.get(episode_id))
+                        .and_then(|episode| guard.threads.get(&episode.thread_id))
+                        .is_some_and(|thread| thread.user_id == user_id),
+                    None => true,
+                })
+                .filter(|memory| match filter.memory_type {
+                    Some(memory_type) => memory.memory_type == memory_type,
+                    None => true,
+                })
+                .filter(|memory| match filter.min_importance {
+                    Some(min_importance) => memory.importance >= min_importance,
+                    None => true,
+                })
+                .filter(|memory| filter.tags.iter().all(|tag| memory.tags.contains(tag)))
+                .filter(|memory| match filter.time_range.since {
+                    Some(since) => memory.updated_at >= since,
+                    None => true,
+                })
+                .filter(|memory| match filter.time_range.until {
+                    Some(until) => memory.updated_at <= until,
+                    None => true,
+                })
+                .filter_map(|memory| {
+                    let embedding = guard
+                        .embeddings
+                        .get(&(EmbeddingOwnerType::Memory, memory.memory_id.clone()))?;
+                    let vector = embedding.embedding.as_ref()?;
+                    let score = cosine_similarity(&query_embedding, vector)?;
+                    (score > 0.0).then(|| MemorySearchHit {
+                        record: memory.clone(),
+                        score,
+                        snippet: snippet_from_primary(
+                            &[&memory.title, &memory.short_description, &memory.content],
+                            MEMORY_SNIPPET_LEN,
+                        ),
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            hits.sort_by(|left, right| {
+                right
+                    .score
+                    .total_cmp(&left.score)
+                    .then_with(|| right.record.importance.total_cmp(&left.record.importance))
+                    .then_with(|| right.record.confidence.total_cmp(&left.record.confidence))
+                    .then_with(|| right.record.updated_at.cmp(&left.record.updated_at))
+                    .then_with(|| left.record.memory_id.cmp(&right.record.memory_id))
+            });
+            if let Some(limit) = filter.limit {
+                hits.truncate(limit);
+            }
+            Ok(hits)
+        }
+    }
+
     fn upsert_session_state(
         &self,
         record: SessionStateRecord,
@@ -556,8 +947,9 @@ impl ArchiveBlobStore for InMemoryArchiveBlobStore {
 mod tests {
     use super::*;
     use crate::types::{
-        ArtifactRef, CleanupStatus, EpisodeOutcome, EpisodeSearchFilter, MemorySearchFilter,
-        MemoryType, TimeRange,
+        ArtifactRef, CleanupStatus, EmbeddingBackfillRequest, EmbeddingFailureUpdate,
+        EmbeddingOwnerType, EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingUpdateBase,
+        EpisodeOutcome, EpisodeSearchFilter, MemorySearchFilter, MemoryType, TimeRange,
     };
     use chrono::TimeZone;
 
@@ -879,6 +1271,161 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.memory_id, "mem-1");
         assert!(hits[0].snippet.contains("R2_REGION"));
+    }
+
+    #[tokio::test]
+    async fn vector_search_and_backfill_candidates_work() {
+        let repo = InMemoryMemoryRepository::new();
+        repo.upsert_thread(thread_record("th-1"))
+            .await
+            .expect("thread should store");
+
+        let mut episode = episode_record("ep-1", "th-1", 100, EpisodeOutcome::Success);
+        episode.goal = "Deploy memory embeddings".to_string();
+        repo.create_episode(episode.clone())
+            .await
+            .expect("episode should store");
+
+        let mut memory = memory_record("mem-1", MemoryType::Procedure, vec!["embedding"], 120);
+        memory.title = "Memory embedding rollout".to_string();
+        repo.create_memory(memory.clone())
+            .await
+            .expect("memory should store");
+
+        let request = EmbeddingBackfillRequest {
+            model_id: "gemini-embedding-001".to_string(),
+            limit: Some(10),
+        };
+        assert_eq!(
+            repo.list_episode_embedding_backfill_candidates(&request)
+                .await
+                .expect("episode backfill should succeed")
+                .len(),
+            1
+        );
+        assert_eq!(
+            repo.list_memory_embedding_backfill_candidates(&request)
+                .await
+                .expect("memory backfill should succeed")
+                .len(),
+            1
+        );
+
+        let episode_base = EmbeddingUpdateBase {
+            owner_id: "ep-1".to_string(),
+            owner_type: EmbeddingOwnerType::Episode,
+            model_id: "gemini-embedding-001".to_string(),
+            content_hash: "hash-ep-1".to_string(),
+        };
+        repo.upsert_embedding_pending(EmbeddingPendingUpdate {
+            base: episode_base.clone(),
+            requested_at: utc(130),
+        })
+        .await
+        .expect("episode pending should store");
+        repo.upsert_embedding_ready(EmbeddingReadyUpdate {
+            base: episode_base,
+            embedding: vec![1.0, 0.0],
+            indexed_at: utc(131),
+        })
+        .await
+        .expect("episode embedding should store");
+
+        let memory_base = EmbeddingUpdateBase {
+            owner_id: "mem-1".to_string(),
+            owner_type: EmbeddingOwnerType::Memory,
+            model_id: "gemini-embedding-001".to_string(),
+            content_hash: "hash-mem-1".to_string(),
+        };
+        repo.upsert_embedding_pending(EmbeddingPendingUpdate {
+            base: memory_base.clone(),
+            requested_at: utc(132),
+        })
+        .await
+        .expect("memory pending should store");
+        repo.upsert_embedding_ready(EmbeddingReadyUpdate {
+            base: memory_base,
+            embedding: vec![0.9, 0.1],
+            indexed_at: utc(133),
+        })
+        .await
+        .expect("memory embedding should store");
+
+        let episode_hits = repo
+            .search_episodes_vector(
+                &[1.0, 0.0],
+                &EpisodeSearchFilter {
+                    context_key: Some("topic-a".to_string()),
+                    user_id: Some(1),
+                    outcome: Some(EpisodeOutcome::Success),
+                    min_importance: Some(0.5),
+                    time_range: TimeRange::default(),
+                    limit: Some(5),
+                },
+            )
+            .await
+            .expect("episode vector search should succeed");
+        assert_eq!(episode_hits[0].record.episode_id, "ep-1");
+
+        let memory_hits = repo
+            .search_memories_vector(
+                &[1.0, 0.0],
+                &MemorySearchFilter {
+                    context_key: Some("topic-a".to_string()),
+                    user_id: Some(1),
+                    memory_type: Some(MemoryType::Procedure),
+                    min_importance: Some(0.5),
+                    tags: vec!["embedding".to_string()],
+                    time_range: TimeRange::default(),
+                    limit: Some(5),
+                },
+            )
+            .await
+            .expect("memory vector search should succeed");
+        assert_eq!(memory_hits[0].record.memory_id, "mem-1");
+
+        assert!(repo
+            .list_episode_embedding_backfill_candidates(&request)
+            .await
+            .expect("episode backfill should succeed")
+            .is_empty());
+        assert!(repo
+            .list_memory_embedding_backfill_candidates(&request)
+            .await
+            .expect("memory backfill should succeed")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn embedding_failure_increments_retry_count() {
+        let repo = InMemoryMemoryRepository::new();
+        let base = EmbeddingUpdateBase {
+            owner_id: "mem-1".to_string(),
+            owner_type: EmbeddingOwnerType::Memory,
+            model_id: "gemini-embedding-001".to_string(),
+            content_hash: "hash".to_string(),
+        };
+
+        let first = repo
+            .upsert_embedding_failure(EmbeddingFailureUpdate {
+                base: base.clone(),
+                error: "temporary failure".to_string(),
+                failed_at: utc(200),
+            })
+            .await
+            .expect("first failure should store");
+        let second = repo
+            .upsert_embedding_failure(EmbeddingFailureUpdate {
+                base,
+                error: "second failure".to_string(),
+                failed_at: utc(201),
+            })
+            .await
+            .expect("second failure should store");
+
+        assert_eq!(first.retry_count, 1);
+        assert_eq!(second.retry_count, 2);
+        assert_eq!(second.last_error.as_deref(), Some("second failure"));
     }
 
     #[tokio::test]

@@ -4,7 +4,9 @@
 //! subsystem. Concrete implementations may use in-memory stores, Postgres, etc.
 
 use crate::types::{
-    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
+    EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
+    EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
     MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
     ThreadId, ThreadRecord,
 };
@@ -97,6 +99,57 @@ pub trait MemoryRepository: Send + Sync {
     fn search_memories_lexical(
         &self,
         query: &str,
+        filter: &MemorySearchFilter,
+    ) -> impl std::future::Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send;
+
+    /// Retrieve embedding state for one owner.
+    fn get_embedding(
+        &self,
+        owner_type: EmbeddingOwnerType,
+        owner_id: &str,
+    ) -> impl std::future::Future<Output = Result<Option<EmbeddingRecord>, RepositoryError>> + Send;
+
+    /// Mark one owner as pending embedding generation.
+    fn upsert_embedding_pending(
+        &self,
+        update: EmbeddingPendingUpdate,
+    ) -> impl std::future::Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send;
+
+    /// Persist a successful embedding vector.
+    fn upsert_embedding_ready(
+        &self,
+        update: EmbeddingReadyUpdate,
+    ) -> impl std::future::Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send;
+
+    /// Persist a failed embedding indexing attempt.
+    fn upsert_embedding_failure(
+        &self,
+        update: EmbeddingFailureUpdate,
+    ) -> impl std::future::Future<Output = Result<EmbeddingRecord, RepositoryError>> + Send;
+
+    /// Discover episodes that still need embeddings or reindexing for one model.
+    fn list_episode_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> impl std::future::Future<Output = Result<Vec<EpisodeEmbeddingCandidate>, RepositoryError>> + Send;
+
+    /// Discover memories that still need embeddings or reindexing for one model.
+    fn list_memory_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> impl std::future::Future<Output = Result<Vec<MemoryEmbeddingCandidate>, RepositoryError>> + Send;
+
+    /// Execute vector similarity search over episode records.
+    fn search_episodes_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &EpisodeSearchFilter,
+    ) -> impl std::future::Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send;
+
+    /// Execute vector similarity search over reusable memory records.
+    fn search_memories_vector(
+        &self,
+        query_embedding: &[f32],
         filter: &MemorySearchFilter,
     ) -> impl std::future::Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send;
 
