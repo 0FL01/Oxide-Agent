@@ -7,8 +7,9 @@ use super::{
     StorageError,
 };
 use oxide_agent_memory::{
-    EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryListFilter,
-    MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord, ThreadRecord,
+    ArtifactRef, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
+    ThreadRecord,
 };
 
 const EPISODE_SNIPPET_LEN: usize = 160;
@@ -71,6 +72,30 @@ impl R2Storage {
         }
         self.save_json(&key, &record).await?;
         Ok(record)
+    }
+
+    pub(super) async fn link_memory_episode_artifact_inner(
+        &self,
+        episode_id: String,
+        artifact: ArtifactRef,
+    ) -> Result<Option<EpisodeRecord>, StorageError> {
+        let Some(mut episode) = self.get_memory_episode_inner(episode_id).await? else {
+            return Ok(None);
+        };
+
+        if let Some(existing) = episode
+            .artifacts
+            .iter_mut()
+            .find(|existing| existing.storage_key == artifact.storage_key)
+        {
+            merge_artifact_ref(existing, artifact);
+        } else {
+            episode.artifacts.push(artifact);
+        }
+
+        let key = persistent_memory_episode_key(&episode.thread_id, &episode.episode_id);
+        self.save_json(&key, &episode).await?;
+        Ok(Some(episode))
     }
 
     pub(super) async fn get_memory_thread_inner(
@@ -401,6 +426,30 @@ fn truncate_snippet(value: &str, max_chars: usize) -> String {
         truncated.push('…');
     }
     truncated
+}
+
+fn merge_artifact_ref(existing: &mut ArtifactRef, incoming: ArtifactRef) {
+    if existing.description.trim().is_empty() && !incoming.description.trim().is_empty() {
+        existing.description = incoming.description;
+    }
+    if existing.content_type.is_none() {
+        existing.content_type = incoming.content_type;
+    }
+    if existing.source.is_none() {
+        existing.source = incoming.source;
+    }
+    if existing.reason.is_none() {
+        existing.reason = incoming.reason;
+    }
+    merge_tags(&mut existing.tags, incoming.tags);
+}
+
+fn merge_tags(existing: &mut Vec<String>, incoming: Vec<String>) {
+    for tag in incoming {
+        if !existing.iter().any(|current| current == &tag) {
+            existing.push(tag);
+        }
+    }
 }
 
 fn matches_episode_search(episode: &EpisodeRecord, filter: &EpisodeSearchFilter) -> bool {

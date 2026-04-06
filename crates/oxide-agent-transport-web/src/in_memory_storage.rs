@@ -20,8 +20,9 @@ use oxide_agent_core::storage::{
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use oxide_agent_memory::{
-    EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryListFilter,
-    MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord, ThreadRecord,
+    ArtifactRef, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
+    ThreadRecord,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -132,6 +133,30 @@ fn truncate_snippet(value: &str, max_chars: usize) -> String {
         truncated.push('…');
     }
     truncated
+}
+
+fn merge_artifact_ref(existing: &mut ArtifactRef, incoming: ArtifactRef) {
+    if existing.description.trim().is_empty() && !incoming.description.trim().is_empty() {
+        existing.description = incoming.description;
+    }
+    if existing.content_type.is_none() {
+        existing.content_type = incoming.content_type;
+    }
+    if existing.source.is_none() {
+        existing.source = incoming.source;
+    }
+    if existing.reason.is_none() {
+        existing.reason = incoming.reason;
+    }
+    merge_tags(&mut existing.tags, incoming.tags);
+}
+
+fn merge_tags(existing: &mut Vec<String>, incoming: Vec<String>) {
+    for tag in incoming {
+        if !existing.iter().any(|current| current == &tag) {
+            existing.push(tag);
+        }
+    }
 }
 
 #[async_trait]
@@ -412,6 +437,29 @@ impl crate::api::StorageProvider for InMemoryStorage {
         }
         episodes.insert(record.episode_id.clone(), record.clone());
         Ok(record)
+    }
+
+    async fn link_memory_episode_artifact(
+        &self,
+        episode_id: String,
+        artifact: ArtifactRef,
+    ) -> Result<Option<EpisodeRecord>, StorageError> {
+        let mut episodes = self.memory_episodes.write().await;
+        let Some(episode) = episodes.get_mut(&episode_id) else {
+            return Ok(None);
+        };
+
+        if let Some(existing) = episode
+            .artifacts
+            .iter_mut()
+            .find(|existing| existing.storage_key == artifact.storage_key)
+        {
+            merge_artifact_ref(existing, artifact);
+        } else {
+            episode.artifacts.push(artifact);
+        }
+
+        Ok(Some(episode.clone()))
     }
 
     async fn create_memory_record(

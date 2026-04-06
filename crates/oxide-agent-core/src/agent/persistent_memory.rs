@@ -273,6 +273,9 @@ fn push_artifact(
         storage_key,
         description,
         content_type,
+        source: Some("post_run_extract".to_string()),
+        reason: None,
+        tags: vec!["archive".to_string()],
         created_at,
     });
 }

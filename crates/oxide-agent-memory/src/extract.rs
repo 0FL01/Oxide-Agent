@@ -189,6 +189,8 @@ fn build_memory_record(
             .max(episode.importance)
             .min(1.0),
         confidence: base_confidence(memory_type),
+        source: Some("post_run_extract".to_string()),
+        reason: Some("conservative reusable-memory extraction from finalized episode".to_string()),
         tags: vec![
             "episode".to_string(),
             memory_type_tag(memory_type).to_string(),

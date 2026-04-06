@@ -210,6 +210,9 @@ mod tests {
             storage_key: "archive/ref-1".to_string(),
             description: "Compaction archive".to_string(),
             content_type: Some("application/json".to_string()),
+            source: Some("post_run_extract".to_string()),
+            reason: None,
+            tags: vec!["archive".to_string()],
             created_at: ts(),
         };
         let plan = finalizer.build_plan(EpisodeFinalizationInput {

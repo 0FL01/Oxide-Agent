@@ -509,6 +509,9 @@ impl ArchiveBlobStore for InMemoryArchiveBlobStore {
                 storage_key: key.clone(),
                 description: format!("Archived blob at {key}"),
                 content_type: content_type.clone(),
+                source: Some("archive_blob_store".to_string()),
+                reason: None,
+                tags: vec!["archive".to_string()],
                 created_at: Utc::now(),
             };
 
@@ -593,6 +596,9 @@ mod tests {
                 storage_key: format!("r2://artifact/{episode_id}"),
                 description: "artifact".to_string(),
                 content_type: Some("text/plain".to_string()),
+                source: Some("test".to_string()),
+                reason: None,
+                tags: vec!["fixture".to_string()],
                 created_at: utc(ts),
             }],
             failures: vec![],
@@ -617,6 +623,8 @@ mod tests {
             short_description: "desc".to_string(),
             importance: 0.9,
             confidence: 0.7,
+            source: Some("test".to_string()),
+            reason: None,
             tags: tags.into_iter().map(ToOwned::to_owned).collect(),
             created_at: utc(updated_at - 10),
             updated_at: utc(updated_at),
