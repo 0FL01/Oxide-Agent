@@ -301,6 +301,7 @@ mod tests {
         PersistentMemoryCoordinator, PersistentMemoryStore, PersistentRunContext,
         PersistentRunPhase,
     };
+    use crate::agent::compaction::ArchiveRef;
     use crate::agent::memory::AgentMessage;
     use crate::agent::session::AgentMemoryScope;
     use oxide_agent_memory::{
@@ -317,6 +318,15 @@ mod tests {
         let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
         let messages = vec![
             AgentMessage::tool("tool-1", "read_file", "content"),
+            AgentMessage::archive_reference_with_ref(
+                "Archived displaced context chunk",
+                Some(ArchiveRef {
+                    archive_id: "archive-1".to_string(),
+                    created_at: 1_700_000_000,
+                    title: "Compacted history".to_string(),
+                    storage_key: "archive/topic-a/flow-1/history-1.json".to_string(),
+                }),
+            ),
             AgentMessage::from_compaction_summary(crate::agent::CompactionSummary {
                 goal: "Implement Stage 4".to_string(),
                 decisions: vec!["Use persistent memory coordinator for PostRun durable writes".to_string()],
@@ -350,6 +360,11 @@ mod tests {
         assert_eq!(episode.goal, "Implement Stage 4");
         assert_eq!(episode.tools_used, vec!["read_file".to_string()]);
         assert_eq!(episode.failures, vec!["Need follow-up test".to_string()]);
+        assert_eq!(episode.artifacts.len(), 1);
+        assert_eq!(
+            episode.artifacts[0].storage_key,
+            "archive/topic-a/flow-1/history-1.json"
+        );
 
         let session_state = store
             .get_session_state("session-1")
@@ -413,5 +428,101 @@ mod tests {
             .await
             .expect("memory lookup should succeed")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn persist_post_run_keeps_topic_scopes_isolated() {
+        let store = Arc::new(InMemoryMemoryRepository::new());
+        let store_for_coordinator = Arc::clone(&store);
+        let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+        let coordinator = PersistentMemoryCoordinator::new(store_for_coordinator);
+
+        let topic_a_scope = AgentMemoryScope::new(42, "topic-a", "flow-a");
+        let topic_b_scope = AgentMemoryScope::new(42, "topic-b", "flow-b");
+
+        let topic_a_messages = vec![
+            AgentMessage::tool("tool-a", "read_file", "content"),
+            AgentMessage::from_compaction_summary(crate::agent::CompactionSummary {
+                goal: "Topic A".to_string(),
+                decisions: vec![
+                    "Use persistent memory repository for topic-a durable writes".to_string(),
+                ],
+                constraints: vec!["Topic-a durable memory records must stay isolated".to_string()],
+                discoveries: vec!["topic-a records are stored in context_key".to_string()],
+                risks: vec!["Need follow-up test".to_string()],
+                ..crate::agent::CompactionSummary::default()
+            }),
+        ];
+        let topic_b_messages = vec![
+            AgentMessage::tool("tool-b", "read_file", "content"),
+            AgentMessage::from_compaction_summary(crate::agent::CompactionSummary {
+                goal: "Topic B".to_string(),
+                decisions: vec![
+                    "Use persistent memory repository for topic-b durable writes".to_string(),
+                ],
+                constraints: vec!["Topic-b durable memory records must stay isolated".to_string()],
+                discoveries: vec!["topic-b records are stored in context_key".to_string()],
+                risks: vec!["Need follow-up test".to_string()],
+                ..crate::agent::CompactionSummary::default()
+            }),
+        ];
+
+        coordinator
+            .persist_post_run(PersistentRunContext {
+                session_id: "session-a",
+                task_id: "episode-a",
+                scope: &topic_a_scope,
+                task: "topic a task",
+                messages: &topic_a_messages,
+                hot_token_estimate: 128,
+                phase: PersistentRunPhase::Completed {
+                    final_answer: "done",
+                },
+            })
+            .await
+            .expect("topic-a persistence should succeed");
+
+        coordinator
+            .persist_post_run(PersistentRunContext {
+                session_id: "session-b",
+                task_id: "episode-b",
+                scope: &topic_b_scope,
+                task: "topic b task",
+                messages: &topic_b_messages,
+                hot_token_estimate: 256,
+                phase: PersistentRunPhase::Completed {
+                    final_answer: "done",
+                },
+            })
+            .await
+            .expect("topic-b persistence should succeed");
+
+        let topic_a_memories = store
+            .list_memories("topic-a", &MemoryListFilter::default())
+            .await
+            .expect("topic-a memory lookup should succeed");
+        let topic_b_memories = store
+            .list_memories("topic-b", &MemoryListFilter::default())
+            .await
+            .expect("topic-b memory lookup should succeed");
+
+        assert_eq!(topic_a_memories.len(), 3);
+        assert_eq!(topic_b_memories.len(), 3);
+        assert!(topic_a_memories
+            .iter()
+            .all(|memory| memory.context_key == "topic-a"));
+        assert!(topic_b_memories
+            .iter()
+            .all(|memory| memory.context_key == "topic-b"));
+        assert!(store
+            .get_episode(&"episode-a".to_string())
+            .await
+            .expect("episode-a lookup should succeed")
+            .is_some());
+        assert!(store
+            .get_episode(&"episode-b".to_string())
+            .await
+            .expect("episode-b lookup should succeed")
+            .is_some());
     }
 }
