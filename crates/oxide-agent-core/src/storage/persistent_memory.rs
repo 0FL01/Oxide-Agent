@@ -37,11 +37,12 @@ impl MemoryRepository for StorageMemoryRepository {
 
     async fn get_thread(
         &self,
-        _thread_id: &ThreadId,
+        thread_id: &ThreadId,
     ) -> Result<Option<ThreadRecord>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "get_thread is not implemented for storage-backed memory repository".to_string(),
-        ))
+        self.storage
+            .get_memory_thread(thread_id.clone())
+            .await
+            .map_err(map_storage_error)
     }
 
     fn create_episode(
@@ -59,22 +60,23 @@ impl MemoryRepository for StorageMemoryRepository {
 
     async fn get_episode(
         &self,
-        _episode_id: &EpisodeId,
+        episode_id: &EpisodeId,
     ) -> Result<Option<EpisodeRecord>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "get_episode is not implemented for storage-backed memory repository".to_string(),
-        ))
+        self.storage
+            .get_memory_episode(episode_id.clone())
+            .await
+            .map_err(map_storage_error)
     }
 
     async fn list_episodes_for_thread(
         &self,
-        _thread_id: &ThreadId,
-        _filter: &EpisodeListFilter,
+        thread_id: &ThreadId,
+        filter: &EpisodeListFilter,
     ) -> Result<Vec<EpisodeRecord>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "list_episodes_for_thread is not implemented for storage-backed memory repository"
-                .to_string(),
-        ))
+        self.storage
+            .list_memory_episodes_for_thread(thread_id.clone(), filter.clone())
+            .await
+            .map_err(map_storage_error)
     }
 
     async fn create_memory(&self, record: MemoryRecord) -> Result<MemoryRecord, RepositoryError> {
@@ -84,42 +86,44 @@ impl MemoryRepository for StorageMemoryRepository {
             .map_err(map_storage_error)
     }
 
-    async fn get_memory(&self, _memory_id: &str) -> Result<Option<MemoryRecord>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "get_memory is not implemented for storage-backed memory repository".to_string(),
-        ))
+    async fn get_memory(&self, memory_id: &str) -> Result<Option<MemoryRecord>, RepositoryError> {
+        self.storage
+            .get_memory_record(memory_id.to_string())
+            .await
+            .map_err(map_storage_error)
     }
 
     async fn list_memories(
         &self,
-        _context_key: &str,
-        _filter: &MemoryListFilter,
+        context_key: &str,
+        filter: &MemoryListFilter,
     ) -> Result<Vec<MemoryRecord>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "list_memories is not implemented for storage-backed memory repository".to_string(),
-        ))
+        self.storage
+            .list_memory_records(context_key.to_string(), filter.clone())
+            .await
+            .map_err(map_storage_error)
     }
 
     async fn search_episodes_lexical(
         &self,
-        _query: &str,
-        _filter: &EpisodeSearchFilter,
+        query: &str,
+        filter: &EpisodeSearchFilter,
     ) -> Result<Vec<EpisodeSearchHit>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "search_episodes_lexical is not implemented for storage-backed memory repository"
-                .to_string(),
-        ))
+        self.storage
+            .search_memory_episodes_lexical(query.to_string(), filter.clone())
+            .await
+            .map_err(map_storage_error)
     }
 
     async fn search_memories_lexical(
         &self,
-        _query: &str,
-        _filter: &MemorySearchFilter,
+        query: &str,
+        filter: &MemorySearchFilter,
     ) -> Result<Vec<MemorySearchHit>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "search_memories_lexical is not implemented for storage-backed memory repository"
-                .to_string(),
-        ))
+        self.storage
+            .search_memory_records_lexical(query.to_string(), filter.clone())
+            .await
+            .map_err(map_storage_error)
     }
 
     fn upsert_session_state(

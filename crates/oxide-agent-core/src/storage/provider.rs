@@ -7,7 +7,10 @@ use super::{
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
-use oxide_agent_memory::{EpisodeRecord, MemoryRecord, SessionStateRecord, ThreadRecord};
+use oxide_agent_memory::{
+    EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryListFilter,
+    MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord, ThreadRecord,
+};
 
 /// Interface for storage providers.
 #[cfg_attr(test, mockall::automock)]
@@ -216,6 +219,101 @@ pub trait StorageProvider: Send + Sync {
         Err(StorageError::Config(
             "persistent memory session state is not implemented for this storage provider"
                 .to_string(),
+        ))
+    }
+    /// Get a persistent memory thread record by identifier.
+    async fn get_memory_thread(
+        &self,
+        thread_id: String,
+    ) -> Result<Option<ThreadRecord>, StorageError> {
+        let _ = thread_id;
+        Err(StorageError::Config(
+            "persistent memory thread reads are not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Get a persistent memory episode record by identifier.
+    async fn get_memory_episode(
+        &self,
+        episode_id: String,
+    ) -> Result<Option<EpisodeRecord>, StorageError> {
+        let _ = episode_id;
+        Err(StorageError::Config(
+            "persistent memory episode reads are not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// List persistent memory episodes for one thread.
+    async fn list_memory_episodes_for_thread(
+        &self,
+        thread_id: String,
+        filter: EpisodeListFilter,
+    ) -> Result<Vec<EpisodeRecord>, StorageError> {
+        let _ = thread_id;
+        let _ = filter;
+        Err(StorageError::Config(
+            "persistent memory episode listing is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Get a reusable persistent memory record by identifier.
+    async fn get_memory_record(
+        &self,
+        memory_id: String,
+    ) -> Result<Option<MemoryRecord>, StorageError> {
+        let _ = memory_id;
+        Err(StorageError::Config(
+            "reusable persistent memory reads are not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// List reusable persistent memory records for one context.
+    async fn list_memory_records(
+        &self,
+        context_key: String,
+        filter: MemoryListFilter,
+    ) -> Result<Vec<MemoryRecord>, StorageError> {
+        let _ = context_key;
+        let _ = filter;
+        Err(StorageError::Config(
+            "reusable persistent memory listing is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Search episode records lexically.
+    async fn search_memory_episodes_lexical(
+        &self,
+        query: String,
+        filter: EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, StorageError> {
+        let _ = query;
+        let _ = filter;
+        Err(StorageError::Config(
+            "persistent memory episode lexical search is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Search reusable memory records lexically.
+    async fn search_memory_records_lexical(
+        &self,
+        query: String,
+        filter: MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, StorageError> {
+        let _ = query;
+        let _ = filter;
+        Err(StorageError::Config(
+            "persistent memory record lexical search is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Load archived or artifact text payload by storage key.
+    async fn load_text_artifact(
+        &self,
+        storage_key: String,
+    ) -> Result<Option<String>, StorageError> {
+        let _ = storage_key;
+        Err(StorageError::Config(
+            "artifact text loading is not implemented for this storage provider".to_string(),
         ))
     }
     /// Clear all context (history and memory) for a user.

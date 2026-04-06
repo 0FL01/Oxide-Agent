@@ -19,10 +19,16 @@ use oxide_agent_core::storage::{
     TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
-use oxide_agent_memory::{EpisodeRecord, MemoryRecord, SessionStateRecord, ThreadRecord};
+use oxide_agent_memory::{
+    EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryListFilter,
+    MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord, ThreadRecord,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+const EPISODE_SNIPPET_LEN: usize = 160;
+const MEMORY_SNIPPET_LEN: usize = 160;
 
 /// In-memory storage for E2E testing.
 ///
@@ -80,6 +86,52 @@ impl Default for InMemoryStorage {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn lexical_terms(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| {
+            !(character.is_alphanumeric() || character == '_' || character == '-')
+        })
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn field_matches(field: &str, term: &str) -> bool {
+    field.to_ascii_lowercase().contains(term)
+}
+
+fn lexical_score(fields: &[(&str, f32)], terms: &[String]) -> f32 {
+    terms
+        .iter()
+        .map(|term| {
+            fields
+                .iter()
+                .filter_map(|(field, weight)| field_matches(field, term).then_some(*weight))
+                .sum::<f32>()
+        })
+        .sum()
+}
+
+fn snippet_for(fields: &[&str], terms: &[String], max_chars: usize) -> String {
+    let source = fields
+        .iter()
+        .copied()
+        .find(|field| !field.is_empty() && terms.iter().any(|term| field_matches(field, term)))
+        .or_else(|| fields.iter().copied().find(|field| !field.is_empty()))
+        .unwrap_or_default();
+
+    truncate_snippet(source, max_chars)
+}
+
+fn truncate_snippet(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        truncated.push('…');
+    }
+    truncated
 }
 
 #[async_trait]
@@ -384,6 +436,271 @@ impl crate::api::StorageProvider for InMemoryStorage {
         let mut session_states = self.memory_session_states.write().await;
         session_states.insert(record.session_id.clone(), record.clone());
         Ok(record)
+    }
+
+    async fn get_memory_thread(
+        &self,
+        thread_id: String,
+    ) -> Result<Option<ThreadRecord>, StorageError> {
+        let threads = self.memory_threads.read().await;
+        Ok(threads.get(&thread_id).cloned())
+    }
+
+    async fn get_memory_episode(
+        &self,
+        episode_id: String,
+    ) -> Result<Option<EpisodeRecord>, StorageError> {
+        let episodes = self.memory_episodes.read().await;
+        Ok(episodes.get(&episode_id).cloned())
+    }
+
+    async fn list_memory_episodes_for_thread(
+        &self,
+        thread_id: String,
+        filter: EpisodeListFilter,
+    ) -> Result<Vec<EpisodeRecord>, StorageError> {
+        let episodes = self.memory_episodes.read().await;
+        let mut records = episodes
+            .values()
+            .filter(|episode| episode.thread_id == thread_id)
+            .filter(|episode| match filter.min_importance {
+                Some(min_importance) => episode.importance >= min_importance,
+                None => true,
+            })
+            .filter(|episode| match filter.outcome {
+                Some(outcome) => episode.outcome == outcome,
+                None => true,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        records.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| left.episode_id.cmp(&right.episode_id))
+        });
+
+        if let Some(limit) = filter.limit {
+            records.truncate(limit);
+        }
+
+        Ok(records)
+    }
+
+    async fn get_memory_record(
+        &self,
+        memory_id: String,
+    ) -> Result<Option<MemoryRecord>, StorageError> {
+        let memories = self.memory_records.read().await;
+        Ok(memories.get(&memory_id).cloned())
+    }
+
+    async fn list_memory_records(
+        &self,
+        context_key: String,
+        filter: MemoryListFilter,
+    ) -> Result<Vec<MemoryRecord>, StorageError> {
+        let memories = self.memory_records.read().await;
+        let mut records = memories
+            .values()
+            .filter(|memory| memory.context_key == context_key)
+            .filter(|memory| match filter.memory_type {
+                Some(memory_type) => memory.memory_type == memory_type,
+                None => true,
+            })
+            .filter(|memory| match filter.min_importance {
+                Some(min_importance) => memory.importance >= min_importance,
+                None => true,
+            })
+            .filter(|memory| filter.tags.iter().all(|tag| memory.tags.contains(tag)))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        records.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.memory_id.cmp(&right.memory_id))
+        });
+
+        if let Some(limit) = filter.limit {
+            records.truncate(limit);
+        }
+
+        Ok(records)
+    }
+
+    async fn search_memory_episodes_lexical(
+        &self,
+        query: String,
+        filter: EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, StorageError> {
+        let terms = lexical_terms(&query);
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let threads = self.memory_threads.read().await;
+        let episodes = self.memory_episodes.read().await;
+        let mut hits = episodes
+            .values()
+            .filter(|episode| match &filter.context_key {
+                Some(context_key) => &episode.context_key == context_key,
+                None => true,
+            })
+            .filter(|episode| match filter.user_id {
+                Some(user_id) => threads
+                    .get(&episode.thread_id)
+                    .is_some_and(|thread| thread.user_id == user_id),
+                None => true,
+            })
+            .filter(|episode| match filter.outcome {
+                Some(outcome) => episode.outcome == outcome,
+                None => true,
+            })
+            .filter(|episode| match filter.min_importance {
+                Some(min_importance) => episode.importance >= min_importance,
+                None => true,
+            })
+            .filter(|episode| match filter.time_range.since {
+                Some(since) => episode.created_at >= since,
+                None => true,
+            })
+            .filter(|episode| match filter.time_range.until {
+                Some(until) => episode.created_at <= until,
+                None => true,
+            })
+            .filter_map(|episode| {
+                let tools = episode.tools_used.join(" ");
+                let failures = episode.failures.join(" ");
+                let score = lexical_score(
+                    &[
+                        (&episode.goal, 3.0),
+                        (&episode.summary, 2.0),
+                        (&tools, 1.5),
+                        (&failures, 1.5),
+                    ],
+                    &terms,
+                );
+                (score > 0.0).then(|| EpisodeSearchHit {
+                    record: episode.clone(),
+                    score,
+                    snippet: snippet_for(
+                        &[&episode.goal, &episode.summary],
+                        &terms,
+                        EPISODE_SNIPPET_LEN,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| right.record.importance.total_cmp(&left.record.importance))
+                .then_with(|| right.record.created_at.cmp(&left.record.created_at))
+                .then_with(|| left.record.episode_id.cmp(&right.record.episode_id))
+        });
+
+        if let Some(limit) = filter.limit {
+            hits.truncate(limit);
+        }
+
+        Ok(hits)
+    }
+
+    async fn search_memory_records_lexical(
+        &self,
+        query: String,
+        filter: MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, StorageError> {
+        let terms = lexical_terms(&query);
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let threads = self.memory_threads.read().await;
+        let episodes = self.memory_episodes.read().await;
+        let memories = self.memory_records.read().await;
+        let mut hits = memories
+            .values()
+            .filter(|memory| match &filter.context_key {
+                Some(context_key) => &memory.context_key == context_key,
+                None => true,
+            })
+            .filter(|memory| match filter.user_id {
+                Some(user_id) => memory
+                    .source_episode_id
+                    .as_ref()
+                    .and_then(|episode_id| episodes.get(episode_id))
+                    .and_then(|episode| threads.get(&episode.thread_id))
+                    .is_some_and(|thread| thread.user_id == user_id),
+                None => true,
+            })
+            .filter(|memory| match filter.memory_type {
+                Some(memory_type) => memory.memory_type == memory_type,
+                None => true,
+            })
+            .filter(|memory| match filter.min_importance {
+                Some(min_importance) => memory.importance >= min_importance,
+                None => true,
+            })
+            .filter(|memory| filter.tags.iter().all(|tag| memory.tags.contains(tag)))
+            .filter(|memory| match filter.time_range.since {
+                Some(since) => memory.updated_at >= since,
+                None => true,
+            })
+            .filter(|memory| match filter.time_range.until {
+                Some(until) => memory.updated_at <= until,
+                None => true,
+            })
+            .filter_map(|memory| {
+                let tags = memory.tags.join(" ");
+                let score = lexical_score(
+                    &[
+                        (&memory.title, 3.0),
+                        (&memory.short_description, 2.0),
+                        (&memory.content, 2.0),
+                        (&tags, 1.0),
+                    ],
+                    &terms,
+                );
+                (score > 0.0).then(|| MemorySearchHit {
+                    record: memory.clone(),
+                    score,
+                    snippet: snippet_for(
+                        &[&memory.title, &memory.short_description, &memory.content],
+                        &terms,
+                        MEMORY_SNIPPET_LEN,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| right.record.importance.total_cmp(&left.record.importance))
+                .then_with(|| right.record.confidence.total_cmp(&left.record.confidence))
+                .then_with(|| right.record.updated_at.cmp(&left.record.updated_at))
+                .then_with(|| left.record.memory_id.cmp(&right.record.memory_id))
+        });
+
+        if let Some(limit) = filter.limit {
+            hits.truncate(limit);
+        }
+
+        Ok(hits)
+    }
+
+    async fn load_text_artifact(
+        &self,
+        _storage_key: String,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(None)
     }
 
     // --- Topic agents md ---
