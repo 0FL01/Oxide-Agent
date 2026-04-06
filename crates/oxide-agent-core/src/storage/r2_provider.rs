@@ -9,7 +9,7 @@ use super::{
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
-use oxide_agent_memory::{EpisodeRecord, SessionStateRecord, ThreadRecord};
+use oxide_agent_memory::{EpisodeRecord, MemoryRecord, SessionStateRecord, ThreadRecord};
 use tracing::{error, info};
 
 #[async_trait]
@@ -312,6 +312,17 @@ impl StorageProvider for R2Storage {
         with_storage_reason(
             "create_memory_episode",
             self.create_memory_episode_inner(record),
+        )
+        .await
+    }
+
+    async fn create_memory_record(
+        &self,
+        record: MemoryRecord,
+    ) -> Result<MemoryRecord, StorageError> {
+        with_storage_reason(
+            "create_memory_record",
+            self.create_memory_record_inner(record),
         )
         .await
     }

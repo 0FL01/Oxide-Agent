@@ -19,7 +19,7 @@ use oxide_agent_core::storage::{
     TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
-use oxide_agent_memory::{EpisodeRecord, SessionStateRecord, ThreadRecord};
+use oxide_agent_memory::{EpisodeRecord, MemoryRecord, SessionStateRecord, ThreadRecord};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -40,6 +40,7 @@ pub struct InMemoryStorage {
     flow_records: RwLock<HashMap<(i64, String, String), AgentFlowRecord>>,
     memory_threads: RwLock<HashMap<String, ThreadRecord>>,
     memory_episodes: RwLock<HashMap<String, EpisodeRecord>>,
+    memory_records: RwLock<HashMap<String, MemoryRecord>>,
     memory_session_states: RwLock<HashMap<String, SessionStateRecord>>,
     reminder_jobs: RwLock<HashMap<(i64, String), ReminderJobRecord>>,
     topic_agents_md: RwLock<HashMap<(i64, String), TopicAgentsMdRecord>>,
@@ -61,6 +62,7 @@ impl InMemoryStorage {
             flow_records: RwLock::new(HashMap::new()),
             memory_threads: RwLock::new(HashMap::new()),
             memory_episodes: RwLock::new(HashMap::new()),
+            memory_records: RwLock::new(HashMap::new()),
             memory_session_states: RwLock::new(HashMap::new()),
             reminder_jobs: RwLock::new(HashMap::new()),
             topic_agents_md: RwLock::new(HashMap::new()),
@@ -357,6 +359,21 @@ impl crate::api::StorageProvider for InMemoryStorage {
             )));
         }
         episodes.insert(record.episode_id.clone(), record.clone());
+        Ok(record)
+    }
+
+    async fn create_memory_record(
+        &self,
+        record: MemoryRecord,
+    ) -> Result<MemoryRecord, StorageError> {
+        let mut memories = self.memory_records.write().await;
+        if memories.contains_key(&record.memory_id) {
+            return Err(StorageError::InvalidInput(format!(
+                "memory {} already exists",
+                record.memory_id
+            )));
+        }
+        memories.insert(record.memory_id.clone(), record.clone());
         Ok(record)
     }
 

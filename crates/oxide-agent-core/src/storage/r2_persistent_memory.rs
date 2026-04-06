@@ -1,12 +1,12 @@
 use super::{
     keys::{
-        persistent_memory_episode_key, persistent_memory_session_state_key,
-        persistent_memory_thread_key,
+        persistent_memory_episode_key, persistent_memory_record_key,
+        persistent_memory_session_state_key, persistent_memory_thread_key,
     },
     r2::R2Storage,
     StorageError,
 };
-use oxide_agent_memory::{EpisodeRecord, SessionStateRecord, ThreadRecord};
+use oxide_agent_memory::{EpisodeRecord, MemoryRecord, SessionStateRecord, ThreadRecord};
 
 impl R2Storage {
     pub(super) async fn upsert_memory_thread_inner(
@@ -46,6 +46,21 @@ impl R2Storage {
         record: SessionStateRecord,
     ) -> Result<SessionStateRecord, StorageError> {
         let key = persistent_memory_session_state_key(&record.session_id);
+        self.save_json(&key, &record).await?;
+        Ok(record)
+    }
+
+    pub(super) async fn create_memory_record_inner(
+        &self,
+        record: MemoryRecord,
+    ) -> Result<MemoryRecord, StorageError> {
+        let key = persistent_memory_record_key(&record.context_key, &record.memory_id);
+        if self.load_json::<MemoryRecord>(&key).await?.is_some() {
+            return Err(StorageError::InvalidInput(format!(
+                "persistent memory {} already exists",
+                record.memory_id
+            )));
+        }
         self.save_json(&key, &record).await?;
         Ok(record)
     }

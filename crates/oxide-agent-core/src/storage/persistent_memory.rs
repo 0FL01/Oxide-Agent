@@ -34,7 +34,10 @@ impl MemoryRepository for StorageMemoryRepository {
         }
     }
 
-    async fn get_thread(&self, _thread_id: &ThreadId) -> Result<Option<ThreadRecord>, RepositoryError> {
+    async fn get_thread(
+        &self,
+        _thread_id: &ThreadId,
+    ) -> Result<Option<ThreadRecord>, RepositoryError> {
         Err(RepositoryError::Storage(
             "get_thread is not implemented for storage-backed memory repository".to_string(),
         ))
@@ -73,13 +76,11 @@ impl MemoryRepository for StorageMemoryRepository {
         ))
     }
 
-    async fn create_memory(
-        &self,
-        _record: MemoryRecord,
-    ) -> Result<MemoryRecord, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "create_memory is not implemented for storage-backed memory repository".to_string(),
-        ))
+    async fn create_memory(&self, record: MemoryRecord) -> Result<MemoryRecord, RepositoryError> {
+        self.storage
+            .create_memory_record(record)
+            .await
+            .map_err(map_storage_error)
     }
 
     async fn get_memory(&self, _memory_id: &str) -> Result<Option<MemoryRecord>, RepositoryError> {
@@ -116,8 +117,7 @@ impl MemoryRepository for StorageMemoryRepository {
         _session_id: &str,
     ) -> Result<Option<SessionStateRecord>, RepositoryError> {
         Err(RepositoryError::Storage(
-            "get_session_state is not implemented for storage-backed memory repository"
-                .to_string(),
+            "get_session_state is not implemented for storage-backed memory repository".to_string(),
         ))
     }
 }
