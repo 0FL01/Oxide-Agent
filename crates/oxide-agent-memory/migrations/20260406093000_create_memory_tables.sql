@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS memory_records (
     short_description TEXT NOT NULL,
     importance REAL NOT NULL CHECK (importance >= 0.0 AND importance <= 1.0),
     confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    source TEXT NULL,
+    reason TEXT NULL,
     tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL

@@ -327,6 +327,18 @@ impl StorageProvider for R2Storage {
         .await
     }
 
+    async fn link_memory_episode_artifact(
+        &self,
+        episode_id: String,
+        artifact: oxide_agent_memory::ArtifactRef,
+    ) -> Result<Option<EpisodeRecord>, StorageError> {
+        with_storage_reason(
+            "link_memory_episode_artifact",
+            self.link_memory_episode_artifact_inner(episode_id, artifact),
+        )
+        .await
+    }
+
     async fn upsert_memory_session_state(
         &self,
         record: SessionStateRecord,

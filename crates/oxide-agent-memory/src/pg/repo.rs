@@ -288,11 +288,13 @@ impl MemoryRepository for PgMemoryRepository {
                     short_description,
                     importance,
                     confidence,
+                    source,
+                    reason,
                     tags,
                     created_at,
                     updated_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING
                     memory_id,
                     context_key,
@@ -303,6 +305,8 @@ impl MemoryRepository for PgMemoryRepository {
                     short_description,
                     importance,
                     confidence,
+                    source,
+                    reason,
                     tags,
                     created_at,
                     updated_at
@@ -317,6 +321,8 @@ impl MemoryRepository for PgMemoryRepository {
             .bind(record.short_description)
             .bind(record.importance)
             .bind(record.confidence)
+            .bind(record.source)
+            .bind(record.reason)
             .bind(record.tags)
             .bind(record.created_at)
             .bind(record.updated_at)
@@ -347,6 +353,8 @@ impl MemoryRepository for PgMemoryRepository {
                     short_description,
                     importance,
                     confidence,
+                    source,
+                    reason,
                     tags,
                     created_at,
                     updated_at
@@ -391,6 +399,8 @@ impl MemoryRepository for PgMemoryRepository {
                     short_description,
                     importance,
                     confidence,
+                    source,
+                    reason,
                     tags,
                     created_at,
                     updated_at
@@ -538,6 +548,8 @@ impl MemoryRepository for PgMemoryRepository {
                     memories.short_description,
                     memories.importance,
                     memories.confidence,
+                    memories.source,
+                    memories.reason,
                     memories.tags,
                     memories.created_at,
                     memories.updated_at,
@@ -549,6 +561,8 @@ impl MemoryRepository for PgMemoryRepository {
                                 memories.title,
                                 memories.short_description,
                                 memories.content,
+                                COALESCE(memories.source, ''),
+                                COALESCE(memories.reason, ''),
                                 array_to_string(memories.tags, ' ')
                             )
                         ),
@@ -556,7 +570,14 @@ impl MemoryRepository for PgMemoryRepository {
                     ) AS lexical_score,
                     ts_headline(
                         'simple',
-                        concat_ws(E'\n', memories.title, memories.short_description, memories.content),
+                        concat_ws(
+                            E'\n',
+                            memories.title,
+                            memories.short_description,
+                            memories.content,
+                            memories.source,
+                            memories.reason
+                        ),
                         websearch_to_tsquery('simple', $1),
                         'MaxFragments=2, MaxWords=20, MinWords=8'
                     ) AS lexical_snippet
@@ -572,6 +593,8 @@ impl MemoryRepository for PgMemoryRepository {
                             memories.title,
                             memories.short_description,
                             memories.content,
+                            COALESCE(memories.source, ''),
+                            COALESCE(memories.reason, ''),
                             array_to_string(memories.tags, ' ')
                         )
                     ) @@ websearch_to_tsquery('simple', $1)

@@ -8,8 +8,9 @@ use super::{
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
 use oxide_agent_memory::{
-    EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryListFilter,
-    MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord, ThreadRecord,
+    ArtifactRef, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
+    ThreadRecord,
 };
 
 /// Interface for storage providers.
@@ -197,6 +198,19 @@ pub trait StorageProvider: Send + Sync {
         let _ = record;
         Err(StorageError::Config(
             "persistent memory episodes are not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Link or merge one artifact into a persistent memory episode.
+    async fn link_memory_episode_artifact(
+        &self,
+        episode_id: String,
+        artifact: ArtifactRef,
+    ) -> Result<Option<EpisodeRecord>, StorageError> {
+        let _ = episode_id;
+        let _ = artifact;
+        Err(StorageError::Config(
+            "persistent memory artifact linking is not implemented for this storage provider"
+                .to_string(),
         ))
     }
     /// Create a reusable persistent memory record.

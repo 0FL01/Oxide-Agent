@@ -133,6 +133,12 @@ pub struct MemoryRecord {
     pub importance: f32,
     /// Confidence in the accuracy / relevance of this memory (0.0 – 1.0).
     pub confidence: f32,
+    /// Explicit origin for auditability (e.g. tool, extractor, user request).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Why this memory was stored.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// Freeform tags for filtering.
     pub tags: Vec<String>,
     /// When the memory was first created.
@@ -201,6 +207,15 @@ pub struct ArtifactRef {
     /// MIME type or format hint (e.g. `"application/json"`, `"text/plain"`).
     #[serde(default)]
     pub content_type: Option<String>,
+    /// Explicit origin for auditability (e.g. tool, extractor, user request).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Why this artifact was linked.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Freeform tags for filtering and audit.
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// When the artifact was created.
     pub created_at: DateTime<Utc>,
 }
