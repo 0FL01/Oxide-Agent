@@ -28,7 +28,7 @@
 - Core integration tests cover final response, archive refs, scope isolation, sub-agent no-write, and waiting-state finalization.
 
 ### Not Implemented Yet
-- Memory read/write tools.
+- Memory write tools.
 - Hybrid retrieval pipeline (lexical + vector + rerank).
 - Query router for deciding when retrieval is needed.
 - pgvector / semantic retrieval.
@@ -576,7 +576,7 @@ soft limit warning или по решению агента.
 - [x] добавляем ArchiveReference hints в hot context после каждой compression;
 - [x] отделяем raw archive in R2 from retrieval metadata;
 - [x] делаем lexical search по episodes/memories;
-- [ ] делаем manual read tools.
+- [x] делаем manual read tools.
 
 Результат:
 - hot context управляется автоматически (hooks) и интерактивно (tool);

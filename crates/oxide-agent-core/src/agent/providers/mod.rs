@@ -10,6 +10,7 @@ mod file_delivery;
 pub mod filehoster;
 pub mod manager_control_plane;
 pub mod media_file;
+pub mod memory;
 pub mod reminder;
 pub mod sandbox;
 pub mod silero_tts;
@@ -49,6 +50,7 @@ pub use manager_control_plane::{
     ManagerControlPlaneProvider, ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
 pub use media_file::MediaFileProvider;
+pub use memory::{memory_tool_names, MemoryProvider};
 pub use reminder::{
     reminder_tool_names, ReminderContext, ReminderProvider, ReminderScheduleEvent,
     ReminderScheduleNotifier,

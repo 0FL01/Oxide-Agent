@@ -19,9 +19,9 @@ use super::prompt::create_agent_system_prompt;
 use super::providers::{
     inject_approval_credentials, AgentsMdProvider, CompressionProvider, DelegationProvider,
     FileHosterProvider, KokoroTtsProvider, ManagerControlPlaneProvider, ManagerTopicLifecycle,
-    MediaFileProvider, ReminderContext, ReminderProvider, SandboxProvider, SshApprovalGrant,
-    SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider, StackLogsProvider, TodoList,
-    TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
+    MediaFileProvider, MemoryProvider, ReminderContext, ReminderProvider, SandboxProvider,
+    SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
+    StackLogsProvider, TodoList, TodosProvider, TopicInfraPreflightReport, YtdlpProvider,
 };
 use super::registry::ToolRegistry;
 use super::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
@@ -61,6 +61,7 @@ pub struct AgentExecutor {
     session: AgentSession,
     skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
+    memory_storage: Option<Arc<dyn StorageProvider>>,
     agents_md: Option<AgentsMdContext>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
     topic_infra: Option<TopicInfraContext>,
@@ -244,6 +245,7 @@ impl AgentExecutor {
             session,
             skill_registry,
             settings,
+            memory_storage: None,
             agents_md: None,
             manager_control_plane: None,
             topic_infra: None,
@@ -267,6 +269,7 @@ impl AgentExecutor {
     /// Attach a storage-backed persistent-memory repository for Stage-4 durable writes.
     #[must_use]
     pub fn with_storage_memory_repository(mut self, storage: Arc<dyn StorageProvider>) -> Self {
+        self.memory_storage = Some(Arc::clone(&storage));
         self.persistent_memory = Some(PersistentMemoryCoordinator::new(Arc::new(
             StorageMemoryRepository::new(storage),
         )));
@@ -541,6 +544,13 @@ impl AgentExecutor {
             YtdlpProvider::new(sandbox_scope.clone())
         };
         registry.register(Box::new(ytdlp_provider));
+
+        if let Some(storage) = &self.memory_storage {
+            registry.register(Box::new(MemoryProvider::new(
+                Arc::clone(storage),
+                self.session.memory_scope().clone(),
+            )));
+        }
 
         let mut delegation_provider = DelegationProvider::new(
             self.runner.llm_client(),

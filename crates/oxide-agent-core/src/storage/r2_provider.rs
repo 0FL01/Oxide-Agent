@@ -338,6 +338,86 @@ impl StorageProvider for R2Storage {
         .await
     }
 
+    async fn get_memory_thread(
+        &self,
+        thread_id: String,
+    ) -> Result<Option<ThreadRecord>, StorageError> {
+        with_storage_reason("get_memory_thread", self.get_memory_thread_inner(thread_id)).await
+    }
+
+    async fn get_memory_episode(
+        &self,
+        episode_id: String,
+    ) -> Result<Option<EpisodeRecord>, StorageError> {
+        with_storage_reason(
+            "get_memory_episode",
+            self.get_memory_episode_inner(episode_id),
+        )
+        .await
+    }
+
+    async fn list_memory_episodes_for_thread(
+        &self,
+        thread_id: String,
+        filter: oxide_agent_memory::EpisodeListFilter,
+    ) -> Result<Vec<EpisodeRecord>, StorageError> {
+        with_storage_reason(
+            "list_memory_episodes_for_thread",
+            self.list_memory_episodes_for_thread_inner(thread_id, filter),
+        )
+        .await
+    }
+
+    async fn get_memory_record(
+        &self,
+        memory_id: String,
+    ) -> Result<Option<MemoryRecord>, StorageError> {
+        with_storage_reason("get_memory_record", self.get_memory_record_inner(memory_id)).await
+    }
+
+    async fn list_memory_records(
+        &self,
+        context_key: String,
+        filter: oxide_agent_memory::MemoryListFilter,
+    ) -> Result<Vec<MemoryRecord>, StorageError> {
+        with_storage_reason(
+            "list_memory_records",
+            self.list_memory_records_inner(context_key, filter),
+        )
+        .await
+    }
+
+    async fn search_memory_episodes_lexical(
+        &self,
+        query: String,
+        filter: oxide_agent_memory::EpisodeSearchFilter,
+    ) -> Result<Vec<oxide_agent_memory::EpisodeSearchHit>, StorageError> {
+        with_storage_reason(
+            "search_memory_episodes_lexical",
+            self.search_memory_episodes_lexical_inner(query, filter),
+        )
+        .await
+    }
+
+    async fn search_memory_records_lexical(
+        &self,
+        query: String,
+        filter: oxide_agent_memory::MemorySearchFilter,
+    ) -> Result<Vec<oxide_agent_memory::MemorySearchHit>, StorageError> {
+        with_storage_reason(
+            "search_memory_records_lexical",
+            self.search_memory_records_lexical_inner(query, filter),
+        )
+        .await
+    }
+
+    async fn load_text_artifact(
+        &self,
+        storage_key: String,
+    ) -> Result<Option<String>, StorageError> {
+        with_storage_reason("load_text_artifact", self.load_text(&storage_key)).await
+    }
+
     /// Clear all context (history and memory) for a user
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
         self.clear_chat_history(user_id).await?;
