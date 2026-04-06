@@ -1,14 +1,15 @@
 //! Postgres-backed `MemoryRepository` implementation.
 
 use super::mapping::{
-    encode_cleanup_status, encode_episode_outcome, encode_memory_type, EpisodeRow, MemoryRow,
-    SessionStateRow, ThreadRow,
+    encode_cleanup_status, encode_episode_outcome, encode_memory_type, EpisodeRow,
+    EpisodeSearchRow, MemoryRow, MemorySearchRow, SessionStateRow, ThreadRow,
 };
 use super::migrator;
 use crate::repository::{MemoryRepository, RepositoryError};
 use crate::types::{
-    EpisodeId, EpisodeListFilter, EpisodeRecord, MemoryListFilter, MemoryRecord,
-    SessionStateRecord, ThreadId, ThreadRecord,
+    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
+    ThreadId, ThreadRecord,
 };
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::types::Json;
@@ -412,6 +413,197 @@ impl MemoryRepository for PgMemoryRepository {
             .map_err(|error| map_sqlx_error("list_memories", error))?;
 
             rows.into_iter().map(MemoryRecord::try_from).collect()
+        }
+    }
+
+    fn search_episodes_lexical(
+        &self,
+        query: &str,
+        filter: &EpisodeSearchFilter,
+    ) -> impl Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let query = query.trim().to_string();
+        let filter = filter.clone();
+        async move {
+            if query.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let limit = filter.limit.and_then(|value| i64::try_from(value).ok());
+            let outcome = filter.outcome.map(encode_episode_outcome);
+            let rows = sqlx::query_as::<_, EpisodeSearchRow>(
+                r#"
+                SELECT
+                    episodes.episode_id,
+                    episodes.thread_id,
+                    episodes.context_key,
+                    episodes.goal,
+                    episodes.summary,
+                    episodes.outcome,
+                    episodes.tools_used,
+                    episodes.artifacts,
+                    episodes.failures,
+                    episodes.importance,
+                    episodes.created_at,
+                    ts_rank_cd(
+                        to_tsvector(
+                            'simple',
+                            concat_ws(
+                                ' ',
+                                episodes.goal,
+                                episodes.summary,
+                                array_to_string(episodes.tools_used, ' '),
+                                array_to_string(episodes.failures, ' ')
+                            )
+                        ),
+                        websearch_to_tsquery('simple', $1)
+                    ) AS lexical_score,
+                    ts_headline(
+                        'simple',
+                        concat_ws(E'\n', episodes.goal, episodes.summary),
+                        websearch_to_tsquery('simple', $1),
+                        'MaxFragments=2, MaxWords=20, MinWords=8'
+                    ) AS lexical_snippet
+                FROM memory_episodes AS episodes
+                INNER JOIN memory_threads AS threads
+                    ON threads.thread_id = episodes.thread_id
+                WHERE to_tsvector(
+                        'simple',
+                        concat_ws(
+                            ' ',
+                            episodes.goal,
+                            episodes.summary,
+                            array_to_string(episodes.tools_used, ' '),
+                            array_to_string(episodes.failures, ' ')
+                        )
+                    ) @@ websearch_to_tsquery('simple', $1)
+                  AND ($2::text IS NULL OR episodes.context_key = $2)
+                  AND ($3::bigint IS NULL OR threads.user_id = $3)
+                  AND ($4::text IS NULL OR episodes.outcome = $4)
+                  AND ($5::real IS NULL OR episodes.importance >= $5)
+                  AND ($6::timestamptz IS NULL OR episodes.created_at >= $6)
+                  AND ($7::timestamptz IS NULL OR episodes.created_at <= $7)
+                ORDER BY lexical_score DESC,
+                         episodes.importance DESC,
+                         episodes.created_at DESC,
+                         episodes.episode_id ASC
+                LIMIT COALESCE($8, 20)
+                "#,
+            )
+            .bind(query)
+            .bind(filter.context_key)
+            .bind(filter.user_id)
+            .bind(outcome)
+            .bind(filter.min_importance)
+            .bind(filter.time_range.since)
+            .bind(filter.time_range.until)
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("search_episodes_lexical", error))?;
+
+            rows.into_iter().map(EpisodeSearchHit::try_from).collect()
+        }
+    }
+
+    fn search_memories_lexical(
+        &self,
+        query: &str,
+        filter: &MemorySearchFilter,
+    ) -> impl Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let query = query.trim().to_string();
+        let filter = filter.clone();
+        async move {
+            if query.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let limit = filter.limit.and_then(|value| i64::try_from(value).ok());
+            let memory_type = filter.memory_type.map(encode_memory_type);
+            let required_tags = if filter.tags.is_empty() {
+                None
+            } else {
+                Some(filter.tags)
+            };
+            let rows = sqlx::query_as::<_, MemorySearchRow>(
+                r#"
+                SELECT
+                    memories.memory_id,
+                    memories.context_key,
+                    memories.source_episode_id,
+                    memories.memory_type,
+                    memories.title,
+                    memories.content,
+                    memories.short_description,
+                    memories.importance,
+                    memories.confidence,
+                    memories.tags,
+                    memories.created_at,
+                    memories.updated_at,
+                    ts_rank_cd(
+                        to_tsvector(
+                            'simple',
+                            concat_ws(
+                                ' ',
+                                memories.title,
+                                memories.short_description,
+                                memories.content,
+                                array_to_string(memories.tags, ' ')
+                            )
+                        ),
+                        websearch_to_tsquery('simple', $1)
+                    ) AS lexical_score,
+                    ts_headline(
+                        'simple',
+                        concat_ws(E'\n', memories.title, memories.short_description, memories.content),
+                        websearch_to_tsquery('simple', $1),
+                        'MaxFragments=2, MaxWords=20, MinWords=8'
+                    ) AS lexical_snippet
+                FROM memory_records AS memories
+                LEFT JOIN memory_episodes AS episodes
+                    ON episodes.episode_id = memories.source_episode_id
+                LEFT JOIN memory_threads AS threads
+                    ON threads.thread_id = episodes.thread_id
+                WHERE to_tsvector(
+                        'simple',
+                        concat_ws(
+                            ' ',
+                            memories.title,
+                            memories.short_description,
+                            memories.content,
+                            array_to_string(memories.tags, ' ')
+                        )
+                    ) @@ websearch_to_tsquery('simple', $1)
+                  AND ($2::text IS NULL OR memories.context_key = $2)
+                  AND ($3::bigint IS NULL OR threads.user_id = $3)
+                  AND ($4::text IS NULL OR memories.memory_type = $4)
+                  AND ($5::real IS NULL OR memories.importance >= $5)
+                  AND ($6::text[] IS NULL OR memories.tags @> $6)
+                  AND ($7::timestamptz IS NULL OR memories.updated_at >= $7)
+                  AND ($8::timestamptz IS NULL OR memories.updated_at <= $8)
+                ORDER BY lexical_score DESC,
+                         memories.importance DESC,
+                         memories.confidence DESC,
+                         memories.updated_at DESC,
+                         memories.memory_id ASC
+                LIMIT COALESCE($9, 20)
+                "#,
+            )
+            .bind(query)
+            .bind(filter.context_key)
+            .bind(filter.user_id)
+            .bind(memory_type)
+            .bind(filter.min_importance)
+            .bind(required_tags)
+            .bind(filter.time_range.since)
+            .bind(filter.time_range.until)
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("search_memories_lexical", error))?;
+
+            rows.into_iter().map(MemorySearchHit::try_from).collect()
         }
     }
 

@@ -28,11 +28,10 @@
 - Core integration tests cover final response, archive refs, scope isolation, sub-agent no-write, and waiting-state finalization.
 
 ### Not Implemented Yet
-- Memory search/read/write tools.
+- Memory read/write tools.
 - Hybrid retrieval pipeline (lexical + vector + rerank).
 - Query router for deciding when retrieval is needed.
 - pgvector / semantic retrieval.
-- Full-text lexical retrieval over Postgres.
 - Background consolidation / dedup / TTL / decay.
 - Higher-signal extraction beyond the conservative Stage 5 baseline.
 
@@ -576,7 +575,7 @@ soft limit warning или по решению агента.
 - [x] добавляем compaction side-effects: persist high-signal data → long-term memory;
 - [x] добавляем ArchiveReference hints в hot context после каждой compression;
 - [x] отделяем raw archive in R2 from retrieval metadata;
-- [ ] делаем lexical search по episodes/memories;
+- [x] делаем lexical search по episodes/memories;
 - [ ] делаем manual read tools.
 
 Результат:
