@@ -1,8 +1,9 @@
 //! Scope-aware persistent-memory read tools.
 
 use crate::agent::persistent_memory::{
-    DurableMemoryRetriever, DurableMemorySearchItem, DurableMemorySearchRequest,
-    MemoryEmbeddingGenerator, PersistentMemoryStore,
+    DurableMemoryRetrievalDiagnostics, DurableMemoryRetriever, DurableMemorySearchItem,
+    DurableMemorySearchOutcome, DurableMemorySearchRequest, MemoryEmbeddingGenerator,
+    PersistentMemoryStore,
 };
 use crate::agent::provider::ToolProvider;
 use crate::agent::session::AgentMemoryScope;
@@ -12,18 +13,20 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_memory::{
-    stable_memory_content_hash, ArtifactRef, EpisodeListFilter, EpisodeRecord, MemoryRecord,
-    MemoryType, TimeRange,
+    stable_memory_content_hash, ArtifactRef, EmbeddingOwnerType, EpisodeListFilter, EpisodeRecord,
+    MemoryListFilter, MemoryRecord, MemoryType, TimeRange,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use tracing::info;
 use uuid::Uuid;
 
 const TOOL_MEMORY_SEARCH: &str = "memory_search";
 const TOOL_MEMORY_READ_EPISODE: &str = "memory_read_episode";
 const TOOL_MEMORY_READ_THREAD_SUMMARY: &str = "memory_read_thread_summary";
 const TOOL_MEMORY_READ_THREAD_WINDOW: &str = "memory_read_thread_window";
+const TOOL_MEMORY_DIAGNOSTICS: &str = "memory_diagnostics";
 const TOOL_MEMORY_WRITE_FACT: &str = "memory_write_fact";
 const TOOL_MEMORY_WRITE_PROCEDURE: &str = "memory_write_procedure";
 const TOOL_MEMORY_LINK_ARTIFACT: &str = "memory_link_artifact";
@@ -33,6 +36,8 @@ const MAX_SEARCH_LIMIT: usize = 20;
 const DEFAULT_THREAD_EPISODE_LIMIT: usize = 6;
 const DEFAULT_WINDOW_LIMIT: usize = 20;
 const MAX_WINDOW_LIMIT: usize = 50;
+const DEFAULT_DIAGNOSTICS_LIMIT: usize = 12;
+const MAX_DIAGNOSTICS_LIMIT: usize = 50;
 const ARCHIVE_MESSAGE_MAX_CHARS: usize = 500;
 const MEMORY_TITLE_MAX_CHARS: usize = 96;
 const MEMORY_SHORT_DESCRIPTION_MAX_CHARS: usize = 160;
@@ -130,6 +135,14 @@ struct MemoryReadThreadWindowArgs {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct MemoryDiagnosticsArgs {
+    context_key: Option<String>,
+    thread_id: Option<String>,
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MemoryWriteFactArgs {
@@ -186,6 +199,7 @@ pub fn memory_tool_names() -> Vec<String> {
         TOOL_MEMORY_READ_EPISODE.to_string(),
         TOOL_MEMORY_READ_THREAD_SUMMARY.to_string(),
         TOOL_MEMORY_READ_THREAD_WINDOW.to_string(),
+        TOOL_MEMORY_DIAGNOSTICS.to_string(),
         TOOL_MEMORY_WRITE_FACT.to_string(),
         TOOL_MEMORY_WRITE_PROCEDURE.to_string(),
         TOOL_MEMORY_LINK_ARTIFACT.to_string(),
@@ -316,6 +330,31 @@ impl MemoryProvider {
                         "thread_id": {"type": "string", "description": "Optional explicit thread id; defaults to current scope thread"},
                         "offset": {"type": "integer", "minimum": 0},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+                    },
+                    "additionalProperties": false
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_MEMORY_DIAGNOSTICS.to_string(),
+                description: "Inspect scoped durable-memory records, deletions, and embedding health"
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "context_key": {
+                            "type": "string",
+                            "description": "Optional explicit context; must match the current context"
+                        },
+                        "thread_id": {
+                            "type": "string",
+                            "description": "Optional explicit visible thread id for episode diagnostics"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAX_DIAGNOSTICS_LIMIT,
+                            "description": "How many recent memories and episodes to inspect"
+                        }
                     },
                     "additionalProperties": false
                 }),
@@ -511,6 +550,16 @@ impl MemoryProvider {
         )?;
         let (duplicate, stored) = self.create_memory_with_duplicate_guard(record).await?;
 
+        info!(
+            memory_write_source = "tool",
+            context_key = %stored.context_key,
+            memory_id = %stored.memory_id,
+            memory_type = memory_type_tag(stored.memory_type),
+            duplicate,
+            source_episode_id = stored.source_episode_id.as_deref().unwrap_or("none"),
+            "Explicit memory write telemetry"
+        );
+
         Ok(json!({
             "ok": true,
             "duplicate": duplicate,
@@ -539,6 +588,16 @@ impl MemoryProvider {
             },
         )?;
         let (duplicate, stored) = self.create_memory_with_duplicate_guard(record).await?;
+
+        info!(
+            memory_write_source = "tool",
+            context_key = %stored.context_key,
+            memory_id = %stored.memory_id,
+            memory_type = memory_type_tag(stored.memory_type),
+            duplicate,
+            source_episode_id = stored.source_episode_id.as_deref().unwrap_or("none"),
+            "Explicit memory write telemetry"
+        );
 
         Ok(json!({
             "ok": true,
@@ -606,9 +665,9 @@ impl MemoryProvider {
         let include_memories =
             args.types.is_empty() || args.types.contains(&SearchSourceType::Memory);
 
-        let results = self
+        let outcome = self
             .durable_memory_retriever()
-            .search(
+            .search_with_diagnostics(
                 &AgentMemoryScope::new(self.scope.user_id, &context_key, &self.scope.flow_id),
                 DurableMemorySearchRequest {
                     query: args.query.clone(),
@@ -623,7 +682,10 @@ impl MemoryProvider {
                 },
             )
             .await
-            .map_err(|error| anyhow!("failed to search durable memory: {error}"))?
+            .map_err(|error| anyhow!("failed to search durable memory: {error}"))?;
+        let diagnostics = retrieval_diagnostics(&outcome);
+        let results = outcome
+            .items
             .into_iter()
             .map(search_result)
             .collect::<Vec<_>>();
@@ -633,7 +695,139 @@ impl MemoryProvider {
             "query": args.query,
             "context_key": context_key,
             "result_count": results.len(),
+            "diagnostics": diagnostics,
             "results": results,
+        })
+        .to_string())
+    }
+
+    async fn execute_diagnostics(&self, arguments: &str) -> Result<String> {
+        let args: MemoryDiagnosticsArgs = Self::parse_args(arguments, TOOL_MEMORY_DIAGNOSTICS)?;
+        let limit = normalize_limit(args.limit, DEFAULT_DIAGNOSTICS_LIMIT, MAX_DIAGNOSTICS_LIMIT);
+        let context_key = self.resolve_context_key(args.context_key.as_deref())?;
+        let diagnostics_scope =
+            AgentMemoryScope::new(self.scope.user_id, &context_key, &self.scope.flow_id);
+        let thread_id = args
+            .thread_id
+            .unwrap_or_else(|| scoped_thread_id(&diagnostics_scope));
+
+        let mut memories = self
+            .store
+            .list_memories(
+                &context_key,
+                &MemoryListFilter {
+                    include_deleted: true,
+                    limit: Some(limit),
+                    ..MemoryListFilter::default()
+                },
+            )
+            .await
+            .map_err(|error| anyhow!("failed to list memory diagnostics records: {error}"))?;
+        memories.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.memory_id.cmp(&right.memory_id))
+        });
+
+        let mut embedding_counts = EmbeddingDiagnosticsCounts::default();
+        let mut recent_memories = Vec::with_capacity(memories.len());
+        for memory in memories {
+            let embedding = self
+                .store
+                .get_embedding(EmbeddingOwnerType::Memory, &memory.memory_id)
+                .await
+                .map_err(|error| {
+                    anyhow!(
+                        "failed to inspect memory embedding {}: {error}",
+                        memory.memory_id
+                    )
+                })?;
+            embedding_counts.observe(embedding.as_ref());
+            recent_memories.push(json!({
+                "memory": memory,
+                "embedding": embedding,
+                "embedding_status": embedding_status_label(embedding.as_ref()),
+            }));
+        }
+
+        let thread =
+            self.store.get_thread(&thread_id).await.map_err(|error| {
+                anyhow!("failed to read diagnostics thread {thread_id}: {error}")
+            })?;
+        let visible_thread = thread
+            .as_ref()
+            .filter(|thread| thread_is_visible(thread, &diagnostics_scope));
+
+        let mut recent_episodes = Vec::new();
+        if let Some(thread) = visible_thread {
+            let mut episodes = self
+                .store
+                .list_episodes_for_thread(
+                    &thread.thread_id,
+                    &EpisodeListFilter {
+                        limit: Some(limit),
+                        ..EpisodeListFilter::default()
+                    },
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!("failed to list thread episodes for diagnostics: {error}")
+                })?;
+            episodes.sort_by(|left, right| {
+                right
+                    .created_at
+                    .cmp(&left.created_at)
+                    .then_with(|| left.episode_id.cmp(&right.episode_id))
+            });
+            for episode in episodes {
+                let embedding = self
+                    .store
+                    .get_embedding(EmbeddingOwnerType::Episode, &episode.episode_id)
+                    .await
+                    .map_err(|error| {
+                        anyhow!(
+                            "failed to inspect episode embedding {}: {error}",
+                            episode.episode_id
+                        )
+                    })?;
+                embedding_counts.observe(embedding.as_ref());
+                recent_episodes.push(json!({
+                    "episode": episode,
+                    "embedding": embedding,
+                    "embedding_status": embedding_status_label(embedding.as_ref()),
+                }));
+            }
+        }
+
+        info!(
+            context_key = %context_key,
+            inspected_memory_count = recent_memories.len(),
+            inspected_episode_count = recent_episodes.len(),
+            embedding_ready_count = embedding_counts.ready,
+            embedding_pending_count = embedding_counts.pending,
+            embedding_failed_count = embedding_counts.failed,
+            embedding_missing_count = embedding_counts.missing,
+            "Durable memory diagnostics snapshot"
+        );
+
+        Ok(json!({
+            "ok": true,
+            "context_key": context_key,
+            "thread": {
+                "thread_id": thread_id,
+                "found": visible_thread.is_some(),
+                "title": visible_thread.map(|thread| thread.title.clone()),
+                "short_summary": visible_thread.map(|thread| thread.short_summary.clone()),
+            },
+            "recent_memories": recent_memories,
+            "recent_episodes": recent_episodes,
+            "embedding_status_counts": embedding_counts.as_json(),
+            "notes": [
+                "recent_memories spans the scoped context and includes soft-deleted records",
+                "recent_episodes only covers the inspected visible thread",
+                "embedding_status = missing means no embedding row exists for that owner"
+            ],
         })
         .to_string())
     }
@@ -844,6 +1038,7 @@ impl ToolProvider for MemoryProvider {
                 | TOOL_MEMORY_READ_EPISODE
                 | TOOL_MEMORY_READ_THREAD_SUMMARY
                 | TOOL_MEMORY_READ_THREAD_WINDOW
+                | TOOL_MEMORY_DIAGNOSTICS
                 | TOOL_MEMORY_WRITE_FACT
                 | TOOL_MEMORY_WRITE_PROCEDURE
                 | TOOL_MEMORY_LINK_ARTIFACT
@@ -862,6 +1057,7 @@ impl ToolProvider for MemoryProvider {
             TOOL_MEMORY_READ_EPISODE => self.execute_read_episode(arguments).await,
             TOOL_MEMORY_READ_THREAD_SUMMARY => self.execute_read_thread_summary(arguments).await,
             TOOL_MEMORY_READ_THREAD_WINDOW => self.execute_read_thread_window(arguments).await,
+            TOOL_MEMORY_DIAGNOSTICS => self.execute_diagnostics(arguments).await,
             TOOL_MEMORY_WRITE_FACT => self.execute_write_fact(arguments).await,
             TOOL_MEMORY_WRITE_PROCEDURE => self.execute_write_procedure(arguments).await,
             TOOL_MEMORY_LINK_ARTIFACT => self.execute_link_artifact(arguments).await,
@@ -907,6 +1103,83 @@ fn parse_optional_datetime(value: Option<&str>) -> Result<Option<DateTime<Utc>>>
 
 fn thread_is_visible(thread: &oxide_agent_memory::ThreadRecord, scope: &AgentMemoryScope) -> bool {
     thread.user_id == scope.user_id && thread.context_key == scope.context_key
+}
+
+#[derive(Default)]
+struct EmbeddingDiagnosticsCounts {
+    ready: usize,
+    pending: usize,
+    failed: usize,
+    missing: usize,
+}
+
+impl EmbeddingDiagnosticsCounts {
+    fn observe(&mut self, embedding: Option<&oxide_agent_memory::EmbeddingRecord>) {
+        match embedding.map(|embedding| embedding.status) {
+            Some(oxide_agent_memory::EmbeddingStatus::Ready) => self.ready += 1,
+            Some(oxide_agent_memory::EmbeddingStatus::Pending) => self.pending += 1,
+            Some(oxide_agent_memory::EmbeddingStatus::Failed) => self.failed += 1,
+            None => self.missing += 1,
+        }
+    }
+
+    fn as_json(&self) -> Value {
+        json!({
+            "ready": self.ready,
+            "pending": self.pending,
+            "failed": self.failed,
+            "missing": self.missing,
+        })
+    }
+}
+
+fn embedding_status_label(embedding: Option<&oxide_agent_memory::EmbeddingRecord>) -> &'static str {
+    match embedding.map(|embedding| embedding.status) {
+        Some(oxide_agent_memory::EmbeddingStatus::Ready) => "ready",
+        Some(oxide_agent_memory::EmbeddingStatus::Pending) => "pending",
+        Some(oxide_agent_memory::EmbeddingStatus::Failed) => "failed",
+        None => "missing",
+    }
+}
+
+fn retrieval_diagnostics(outcome: &DurableMemorySearchOutcome) -> Value {
+    retrieval_diagnostics_from_inner(&outcome.diagnostics)
+}
+
+fn retrieval_diagnostics_from_inner(diagnostics: &DurableMemoryRetrievalDiagnostics) -> Value {
+    json!({
+        "hit": diagnostics.hit(),
+        "empty_reason": diagnostics.empty_reason,
+        "requested_sources": {
+            "episodes": diagnostics.search_episodes,
+            "memories": diagnostics.search_memories,
+        },
+        "candidate_limit": diagnostics.candidate_limit,
+        "lexical_hits": {
+            "episodes": diagnostics.episode_lexical_hits,
+            "memories": diagnostics.memory_lexical_hits,
+        },
+        "vector_hits": {
+            "episodes": diagnostics.episode_vector_hits,
+            "memories": diagnostics.memory_vector_hits,
+        },
+        "vector_status": {
+            "episodes": diagnostics.episode_vector_status.as_str(),
+            "memories": diagnostics.memory_vector_status.as_str(),
+        },
+        "fused_candidate_count": diagnostics.fused_candidate_count,
+        "injected_item_count": diagnostics.injected_item_count,
+        "final_contribution": {
+            "lexical_only": diagnostics.lexical_only_items,
+            "vector_only": diagnostics.vector_only_items,
+            "hybrid": diagnostics.hybrid_items,
+        },
+        "filtered_out": {
+            "low_score": diagnostics.filtered_low_score,
+            "duplicate_snippet": diagnostics.filtered_duplicate_snippet,
+            "covered_by_episode": diagnostics.filtered_covered_episode,
+        },
+    })
 }
 
 fn search_result(item: DurableMemorySearchItem) -> Value {
@@ -1175,8 +1448,10 @@ mod tests {
     use chrono::TimeZone;
     use mockall::predicate::{eq, function};
     use oxide_agent_memory::{
-        ArtifactRef, EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
-        MemoryRecord, MemorySearchFilter, MemorySearchHit, ThreadRecord,
+        ArtifactRef, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
+        EmbeddingReadyUpdate, EmbeddingUpdateBase, EpisodeOutcome, EpisodeRecord,
+        EpisodeSearchFilter, EpisodeSearchHit, InMemoryMemoryRepository, MemoryRecord,
+        MemorySearchFilter, MemorySearchHit, ThreadRecord,
     };
 
     struct FakeEmbeddingGenerator;
@@ -1351,6 +1626,110 @@ mod tests {
         assert_eq!(parsed["result_count"], 2);
         assert_eq!(parsed["results"][0]["kind"], "memory");
         assert_eq!(parsed["results"][1]["kind"], "episode");
+        assert_eq!(parsed["diagnostics"]["hit"], true);
+        assert_eq!(parsed["diagnostics"]["vector_status"]["memories"], "hit");
+        assert_eq!(parsed["diagnostics"]["final_contribution"]["hybrid"], 1);
+        assert_eq!(
+            parsed["diagnostics"]["final_contribution"]["lexical_only"],
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_diagnostics_reports_deleted_records_and_embedding_statuses() {
+        let repository = Arc::new(InMemoryMemoryRepository::new());
+        repository
+            .upsert_thread(thread_record())
+            .await
+            .expect("thread should persist");
+        repository
+            .create_episode(episode_record())
+            .await
+            .expect("episode should persist");
+
+        let mut active_memory = memory_record();
+        active_memory.memory_id = "mem-active".to_string();
+        active_memory.title = "Active memory".to_string();
+        let mut deleted_memory = memory_record();
+        deleted_memory.memory_id = "mem-deleted".to_string();
+        deleted_memory.title = "Deleted memory".to_string();
+        deleted_memory.content = "Delete this memory after consolidation".to_string();
+        deleted_memory.content_hash = Some(stable_memory_content_hash(
+            deleted_memory.memory_type,
+            &deleted_memory.content,
+        ));
+
+        repository
+            .create_memory(active_memory.clone())
+            .await
+            .expect("active memory should persist");
+        repository
+            .create_memory(deleted_memory.clone())
+            .await
+            .expect("deleted memory should persist");
+        repository
+            .delete_memory(&deleted_memory.memory_id)
+            .await
+            .expect("deleted memory should soft-delete");
+
+        repository
+            .upsert_embedding_ready(EmbeddingReadyUpdate {
+                base: EmbeddingUpdateBase {
+                    owner_id: episode_record().episode_id,
+                    owner_type: EmbeddingOwnerType::Episode,
+                    model_id: "test-embed".to_string(),
+                    content_hash: "ep-hash".to_string(),
+                },
+                embedding: vec![0.1, 0.2],
+                indexed_at: ts(40),
+            })
+            .await
+            .expect("episode embedding should persist");
+        repository
+            .upsert_embedding_pending(EmbeddingPendingUpdate {
+                base: EmbeddingUpdateBase {
+                    owner_id: active_memory.memory_id.clone(),
+                    owner_type: EmbeddingOwnerType::Memory,
+                    model_id: "test-embed".to_string(),
+                    content_hash: "mem-active-hash".to_string(),
+                },
+                requested_at: ts(41),
+            })
+            .await
+            .expect("pending embedding should persist");
+        repository
+            .upsert_embedding_failure(EmbeddingFailureUpdate {
+                base: EmbeddingUpdateBase {
+                    owner_id: deleted_memory.memory_id.clone(),
+                    owner_type: EmbeddingOwnerType::Memory,
+                    model_id: "test-embed".to_string(),
+                    content_hash: "mem-deleted-hash".to_string(),
+                },
+                error: "embedding provider timeout".to_string(),
+                failed_at: ts(42),
+            })
+            .await
+            .expect("failed embedding should persist");
+
+        let repository_for_provider: Arc<dyn PersistentMemoryStore> = repository;
+        let provider = MemoryProvider::new_with_store(repository_for_provider, None, scope());
+        let result = provider
+            .execute(TOOL_MEMORY_DIAGNOSTICS, r#"{"limit":10}"#, None, None)
+            .await
+            .expect("memory diagnostics should succeed");
+
+        let parsed: Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(parsed["thread"]["found"], true);
+        assert_eq!(parsed["embedding_status_counts"]["ready"], 1);
+        assert_eq!(parsed["embedding_status_counts"]["pending"], 1);
+        assert_eq!(parsed["embedding_status_counts"]["failed"], 1);
+        assert_eq!(parsed["embedding_status_counts"]["missing"], 0);
+        assert_eq!(parsed["recent_memories"].as_array().map(Vec::len), Some(2));
+        assert!(parsed["recent_memories"]
+            .as_array()
+            .expect("memories array")
+            .iter()
+            .any(|entry| entry["memory"]["deleted_at"].is_string()));
     }
 
     #[tokio::test]

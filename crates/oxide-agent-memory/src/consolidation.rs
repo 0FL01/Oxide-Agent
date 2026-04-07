@@ -46,6 +46,14 @@ impl Default for ConsolidationPolicy {
 pub struct ConsolidatedContext {
     pub upserts: Vec<MemoryRecord>,
     pub deletions: Vec<String>,
+    pub diagnostics: ConsolidationDiagnostics,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConsolidationDiagnostics {
+    pub exact_merge_deletions: Vec<String>,
+    pub similarity_merge_deletions: Vec<String>,
+    pub expired_deletions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -83,6 +91,7 @@ impl ContextConsolidator {
 
         let mut upserts = HashMap::<String, MemoryRecord>::new();
         let mut deletions = HashSet::<String>::new();
+        let mut diagnostics = ConsolidationDiagnostics::default();
 
         let mut exact_groups = HashMap::<(MemoryType, String), Vec<usize>>::new();
         for (index, memory) in working.iter().enumerate() {
@@ -107,7 +116,9 @@ impl ContextConsolidator {
                     continue;
                 }
                 merged = merge_memories(merged, &working[index], now);
-                deletions.insert(working[index].memory_id.clone());
+                let deleted_id = working[index].memory_id.clone();
+                deletions.insert(deleted_id.clone());
+                diagnostics.exact_merge_deletions.push(deleted_id);
             }
             upserts.insert(merged.memory_id.clone(), merged.clone());
             working[winner] = merged;
@@ -131,7 +142,9 @@ impl ContextConsolidator {
                 let winner = select_winner(&working, &[left, right]);
                 let loser = if winner == left { right } else { left };
                 let merged = merge_memories(working[winner].clone(), &working[loser], now);
-                deletions.insert(working[loser].memory_id.clone());
+                let deleted_id = working[loser].memory_id.clone();
+                deletions.insert(deleted_id.clone());
+                diagnostics.similarity_merge_deletions.push(deleted_id);
                 upserts.insert(merged.memory_id.clone(), merged.clone());
                 working[winner] = merged;
                 consumed.insert(loser);
@@ -144,14 +157,20 @@ impl ContextConsolidator {
             }
             if self.should_expire(&memory, now) {
                 deletions.insert(memory.memory_id.clone());
+                diagnostics.expired_deletions.push(memory.memory_id.clone());
             } else if upserts.contains_key(&memory.memory_id) || memory.content_hash.is_some() {
                 upserts.entry(memory.memory_id.clone()).or_insert(memory);
             }
         }
 
+        diagnostics.exact_merge_deletions.sort();
+        diagnostics.similarity_merge_deletions.sort();
+        diagnostics.expired_deletions.sort();
+
         ConsolidatedContext {
             upserts: upserts.into_values().collect(),
             deletions: deletions.into_iter().collect(),
+            diagnostics,
         }
     }
 
