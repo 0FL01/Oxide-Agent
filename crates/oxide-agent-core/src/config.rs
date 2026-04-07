@@ -199,10 +199,15 @@ pub struct AgentSettings {
     /// Hard threshold that triggers immediate compaction.
     pub hard_compaction_tokens: Option<usize>,
 
-    /// Embedding provider name (mistral, openrouter, openai)
+    /// Embedding provider name (mistral, openrouter, openai, gemini)
     pub embedding_provider: Option<String>,
     /// Embedding model ID
     pub embedding_model_id: Option<String>,
+    /// Output embedding dimensionality.
+    /// When set, the embedding provider will truncate vectors to this size via
+    /// `output_dimensionality` (Gemini) or equivalent. Must be in 128..=3072.
+    /// Recommended values: 768, 1536, 3072. Defaults to 768.
+    pub embedding_dimensions: Option<u32>,
 
     /// Postgres connection string for typed persistent memory.
     pub memory_database_url: Option<String>,
@@ -367,6 +372,13 @@ impl AgentSettings {
             if let Ok(val) = std::env::var("EMBEDDING_MODEL_ID") {
                 if !val.is_empty() {
                     settings.embedding_model_id = Some(val);
+                }
+            }
+        }
+        if settings.embedding_dimensions.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_DIMENSIONS") {
+                if let Ok(parsed) = val.parse::<u32>() {
+                    settings.embedding_dimensions = Some(parsed);
                 }
             }
         }
@@ -1552,6 +1564,18 @@ pub fn get_embedding_model_id() -> Option<String> {
     std::env::var("EMBEDDING_MODEL_ID")
         .ok()
         .filter(|s| !s.is_empty())
+}
+
+/// Default embedding output dimensionality.
+pub const DEFAULT_EMBEDDING_DIMENSIONS: u32 = 768;
+
+/// Get embedding output dimensionality from env or default.
+#[must_use]
+pub fn get_embedding_dimensions() -> u32 {
+    std::env::var("EMBEDDING_DIMENSIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_EMBEDDING_DIMENSIONS)
 }
 
 /// Get embedding cache directory from env or default.

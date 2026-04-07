@@ -89,6 +89,30 @@ impl PgMemoryRepository {
 
         Ok(())
     }
+
+    /// Ensure the `memory_embeddings.embedding` column uses `VECTOR(dimensions)`.
+    ///
+    /// Compares the requested dimensionality with the actual PG column type.
+    /// If they differ, issues `ALTER TABLE … ALTER COLUMN … TYPE VECTOR(N)`
+    /// so that runtime queries agree with the stored data.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the ALTER cannot be executed (e.g. existing rows have a
+    /// different dimensionality — shrinking requires that no data with the
+    /// larger dimension exists).
+    pub async fn ensure_vector_dimension(&self, dimensions: u32) -> anyhow::Result<()> {
+        let current = query_vector_dimension(self.pool()).await?;
+        if current == dimensions {
+            return Ok(());
+        }
+        sqlx::query(&format!(
+            "ALTER TABLE memory_embeddings ALTER COLUMN embedding TYPE VECTOR({dimensions})"
+        ))
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
 }
 
 async fn ensure_extension_installed(pool: &PgPool, extension_name: &str) -> anyhow::Result<()> {
@@ -138,6 +162,66 @@ async fn ensure_column_exists(
         Ok(())
     } else {
         bail!("required Postgres column 'public.{table_name}.{column_name}' is missing")
+    }
+}
+
+/// Query the current vector dimensionality of `memory_embeddings.embedding`.
+///
+/// Returns `None` if the table/column does not exist or the type cannot be
+/// parsed (e.g. the column is not a `VECTOR(N)` type).
+async fn query_vector_dimension(pool: &PgPool) -> anyhow::Result<u32> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT a.atttypmod \
+         FROM pg_attribute a \
+         JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname = 'memory_embeddings' \
+           AND a.attname = 'embedding' \
+           AND n.nspname = 'public'",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    // pgvector stores the dimension in atttypmod as dimension + VARHDRSZ (4).
+    // If the column was created as VECTOR(768), atttypmod = 768 + 4 = 772.
+    let dim = row
+        .and_then(|(typmod_str,)| {
+            // atttypmod is returned as a string like "772" by default
+            typmod_str.parse::<i32>().ok()
+        })
+        .map(|v| (v as u32).saturating_sub(4));
+
+    // Fallback: try pg_catalog.format_type which returns something like
+    // "vector(768)".
+    if let Some(d) = dim.filter(|&d| d > 0) {
+        return Ok(d);
+    }
+
+    let ft: Option<(String,)> = sqlx::query_as(
+        "SELECT format_type(a.atttypid, a.atttypmod) \
+         FROM pg_attribute a \
+         JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname = 'memory_embeddings' \
+           AND a.attname = 'embedding' \
+           AND n.nspname = 'public'",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    match ft {
+        Some((ref type_name,)) if type_name.starts_with("vector(") => {
+            let inner = type_name
+                .trim_start_matches("vector(")
+                .trim_end_matches(')');
+            inner
+                .parse::<u32>()
+                .map_err(|_| anyhow::anyhow!("cannot parse vector dimension from '{type_name}'"))
+        }
+        Some((type_name,)) => {
+            bail!("unexpected column type for memory_embeddings.embedding: {type_name}")
+        }
+        None => bail!("cannot determine vector dimension for memory_embeddings.embedding"),
     }
 }
 

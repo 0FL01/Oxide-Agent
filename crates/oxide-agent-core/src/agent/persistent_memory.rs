@@ -63,6 +63,9 @@ pub async fn connect_postgres_memory_store(
             .unwrap_or(DEFAULT_MEMORY_DATABASE_STARTUP_TIMEOUT_SECS)
             .max(1),
     );
+    let embedding_dimensions = settings
+        .embedding_dimensions
+        .unwrap_or(crate::config::DEFAULT_EMBEDDING_DIMENSIONS);
 
     let mut last_error = None;
     for attempt in 1..=max_attempts {
@@ -86,6 +89,23 @@ pub async fn connect_postgres_memory_store(
             repository.check_health().await.map_err(|error| {
                 anyhow::anyhow!("Postgres persistent memory health check failed: {error}")
             })?;
+
+            // Align PG vector column dimensionality with the configured
+            // embedding output dimensionality. Migrations default to
+            // VECTOR(768); ALTER TABLE is a no-op when dimensions match.
+            repository
+                .ensure_vector_dimension(embedding_dimensions)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to align memory_embeddings vector dimension to {embedding_dimensions}: {error}"
+                    )
+                })?;
+
+            info!(
+                embedding_dimensions,
+                "Persistent memory vector dimensionality confirmed."
+            );
 
             Ok::<_, anyhow::Error>(repository)
         })
