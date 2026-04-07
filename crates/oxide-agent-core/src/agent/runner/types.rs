@@ -2,7 +2,7 @@
 
 use crate::agent::compaction::CompactionService;
 use crate::agent::context::AgentContext;
-use crate::agent::persistent_memory::PersistentMemoryCoordinator;
+use crate::agent::persistent_memory::{MemoryBehaviorRuntime, PersistentMemoryCoordinator};
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
@@ -122,6 +122,8 @@ pub struct AgentRunnerContext<'a> {
     pub session_id: Option<String>,
     /// Stable top-level memory scope when available.
     pub memory_scope: Option<AgentMemoryScope>,
+    /// Task-local Stage-14 memory behavior runtime.
+    pub memory_behavior: Option<Arc<MemoryBehaviorRuntime>>,
     /// Runner configuration.
     pub config: AgentRunnerConfig,
 }

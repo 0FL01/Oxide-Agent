@@ -8,9 +8,9 @@ use super::compaction::{
     CompactionSummarizerConfig, CompactionTrigger,
 };
 use super::hooks::{
-    CompletionCheckHook, DelegationGuardHook, Hook, HookContext, HookEvent, HookResult,
-    HotContextHealthHook, SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
-    WorkloadDistributorHook,
+    CompletionCheckHook, DelegationGuardHook, EpisodicExtractHook, Hook, HookContext, HookEvent,
+    HookResult, HotContextHealthHook, RetrievalAdvisorHook, SearchBudgetHook, TimeoutReportHook,
+    ToolAccessPolicyHook, WorkloadDistributorHook,
 };
 use super::memory::AgentMessage;
 use super::persistent_memory::{
@@ -205,6 +205,8 @@ impl AgentExecutor {
         runner.register_hook(Box::new(HotContextHealthHook::with_limits(
             settings.get_hot_context_limits(),
         )));
+        runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
+        runner.register_hook(Box::new(EpisodicExtractHook::new()));
         Self::register_policy_controlled_hook(
             &mut runner,
             WorkloadDistributorHook::new(),
@@ -855,6 +857,9 @@ impl AgentExecutor {
         initial_tool_call: Option<ToolCall>,
         clear_pending_request_id: Option<&str>,
     ) -> Result<AgentExecutionOutcome> {
+        if append_user_message {
+            self.session.reset_memory_behavior_runtime();
+        }
         self.session.start_task();
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
         if append_user_message {
@@ -1058,6 +1063,7 @@ impl AgentExecutor {
     ) -> AgentRunnerContext<'a> {
         let session_id = Some(session.session_id.to_string());
         let memory_scope = Some(session.memory_scope().clone());
+        let memory_behavior = Some(session.memory_behavior_runtime());
         AgentRunnerContext {
             task,
             system_prompt: &prepared.system_prompt,
@@ -1073,6 +1079,7 @@ impl AgentExecutor {
             persistent_memory: services.persistent_memory,
             session_id,
             memory_scope,
+            memory_behavior,
             config: prepared.runner_config.clone(),
         }
     }
