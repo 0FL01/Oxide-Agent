@@ -6,12 +6,76 @@ use super::types::{
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::persistent_memory::{PersistentRunContext, PersistentRunPhase};
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, TokenSnapshot};
 use crate::agent::session::PendingUserInput;
 use crate::agent::tool_bridge::sync_todos_from_arc;
-use tracing::warn;
+use tracing::{info, warn};
+
+const POST_RUN_HOT_CONTEXT_TARGET_TOKENS: usize = 16 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PostRunCleanupTelemetry {
+    before_hot_tokens: usize,
+    after_hot_tokens: usize,
+    reclaimed_hot_tokens: usize,
+    target_hot_tokens: usize,
+    target_met: bool,
+}
+
+impl PostRunCleanupTelemetry {
+    fn from_snapshots(before: &TokenSnapshot, after: &TokenSnapshot) -> Self {
+        let target_hot_tokens = POST_RUN_HOT_CONTEXT_TARGET_TOKENS;
+        let after_hot_tokens = after.hot_memory_tokens;
+
+        Self {
+            before_hot_tokens: before.hot_memory_tokens,
+            after_hot_tokens,
+            reclaimed_hot_tokens: before
+                .hot_memory_tokens
+                .saturating_sub(after.hot_memory_tokens),
+            target_hot_tokens,
+            target_met: after_hot_tokens <= target_hot_tokens,
+        }
+    }
+}
 
 impl AgentRunner {
+    fn log_post_run_cleanup(
+        task_id: &str,
+        phase: &'static str,
+        before: &TokenSnapshot,
+        after: &TokenSnapshot,
+    ) {
+        let telemetry = PostRunCleanupTelemetry::from_snapshots(before, after);
+
+        info!(
+            task_id = %task_id,
+            phase,
+            hot_memory_tokens_before = telemetry.before_hot_tokens,
+            hot_memory_tokens_after = telemetry.after_hot_tokens,
+            reclaimed_hot_tokens = telemetry.reclaimed_hot_tokens,
+            cleanup_target_tokens = telemetry.target_hot_tokens,
+            cleanup_target_met = telemetry.target_met,
+            budget_state_before = ?before.budget_state,
+            budget_state_after = ?after.budget_state,
+            projected_total_tokens_before = before.projected_total_tokens,
+            projected_total_tokens_after = after.projected_total_tokens,
+            headroom_tokens_before = before.headroom_tokens,
+            headroom_tokens_after = after.headroom_tokens,
+            "Post-run cleanup telemetry"
+        );
+
+        if !telemetry.target_met {
+            warn!(
+                task_id = %task_id,
+                phase,
+                hot_memory_tokens_after = telemetry.after_hot_tokens,
+                cleanup_target_tokens = telemetry.target_hot_tokens,
+                "Post-run cleanup left hot context above the target budget"
+            );
+        }
+    }
+
     async fn persist_post_run_memory(
         &self,
         ctx: &mut AgentRunnerContext<'_>,
@@ -200,9 +264,17 @@ impl AgentRunner {
         }
 
         self.save_final_response(ctx, &input.raw_json, input.reasoning);
+        let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         let _ = self
             .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
             .await?;
+        let post_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
+        Self::log_post_run_cleanup(
+            ctx.task_id,
+            "completed",
+            &pre_cleanup_snapshot,
+            &post_cleanup_snapshot,
+        );
         self.persist_post_run_memory(
             ctx,
             PersistentRunPhase::Completed {
@@ -236,14 +308,76 @@ impl AgentRunner {
 
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         self.save_final_response(ctx, &raw_json, reasoning);
+        let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         let _ = self
             .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
             .await?;
+        let post_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
+        Self::log_post_run_cleanup(
+            ctx.task_id,
+            "waiting_for_user_input",
+            &pre_cleanup_snapshot,
+            &post_cleanup_snapshot,
+        );
         self.persist_post_run_memory(ctx, PersistentRunPhase::WaitingForUserInput)
             .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
         Ok(Some(AgentRunResult::WaitingForUserInput(request)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PostRunCleanupTelemetry, POST_RUN_HOT_CONTEXT_TARGET_TOKENS};
+    use crate::agent::compaction::BudgetState;
+    use crate::agent::progress::TokenSnapshot;
+
+    fn snapshot(hot_memory_tokens: usize) -> TokenSnapshot {
+        TokenSnapshot {
+            hot_memory_tokens,
+            system_prompt_tokens: 1_024,
+            tool_schema_tokens: 512,
+            loaded_skill_tokens: 0,
+            total_input_tokens: hot_memory_tokens + 1_536,
+            reserved_output_tokens: 2_048,
+            hard_reserve_tokens: 512,
+            projected_total_tokens: hot_memory_tokens + 4_096,
+            context_window_tokens: 128_000,
+            headroom_tokens: 64_000,
+            budget_state: BudgetState::Healthy,
+            last_api_usage: None,
+        }
+    }
+
+    #[test]
+    fn post_run_cleanup_telemetry_marks_target_met() {
+        let telemetry = PostRunCleanupTelemetry::from_snapshots(
+            &snapshot(48_000),
+            &snapshot(POST_RUN_HOT_CONTEXT_TARGET_TOKENS - 256),
+        );
+
+        assert_eq!(telemetry.before_hot_tokens, 48_000);
+        assert_eq!(
+            telemetry.after_hot_tokens,
+            POST_RUN_HOT_CONTEXT_TARGET_TOKENS - 256
+        );
+        assert_eq!(telemetry.reclaimed_hot_tokens, 31_872);
+        assert!(telemetry.target_met);
+    }
+
+    #[test]
+    fn post_run_cleanup_telemetry_marks_target_miss() {
+        let telemetry = PostRunCleanupTelemetry::from_snapshots(
+            &snapshot(48_000),
+            &snapshot(POST_RUN_HOT_CONTEXT_TARGET_TOKENS + 1),
+        );
+
+        assert_eq!(
+            telemetry.target_hot_tokens,
+            POST_RUN_HOT_CONTEXT_TARGET_TOKENS
+        );
+        assert!(!telemetry.target_met);
     }
 }
