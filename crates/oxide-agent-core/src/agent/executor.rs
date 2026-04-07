@@ -562,10 +562,14 @@ impl AgentExecutor {
         registry.register(Box::new(ytdlp_provider));
 
         if let Some(storage) = &self.memory_storage {
-            registry.register(Box::new(MemoryProvider::new(
-                Arc::clone(storage),
-                self.session.memory_scope().clone(),
-            )));
+            let mut provider =
+                MemoryProvider::new(Arc::clone(storage), self.session.memory_scope().clone());
+            if self.runner.llm_client().is_embedding_available() {
+                provider = provider.with_query_embedding_generator(Arc::new(
+                    LlmMemoryEmbeddingGenerator::new(self.runner.llm_client()),
+                ));
+            }
+            registry.register(Box::new(provider));
         }
 
         let mut delegation_provider = DelegationProvider::new(

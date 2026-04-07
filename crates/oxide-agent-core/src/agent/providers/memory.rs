@@ -1,5 +1,9 @@
 //! Scope-aware persistent-memory read tools.
 
+use crate::agent::persistent_memory::{
+    DurableMemoryRetriever, DurableMemorySearchItem, DurableMemorySearchRequest,
+    MemoryEmbeddingGenerator,
+};
 use crate::agent::provider::ToolProvider;
 use crate::agent::session::AgentMemoryScope;
 use crate::llm::ToolDefinition;
@@ -8,8 +12,8 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_memory::{
-    stable_memory_content_hash, ArtifactRef, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter,
-    EpisodeSearchHit, MemoryRecord, MemorySearchFilter, MemorySearchHit, MemoryType, TimeRange,
+    stable_memory_content_hash, ArtifactRef, EpisodeListFilter, EpisodeRecord, MemoryRecord,
+    MemoryType, TimeRange,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -192,13 +196,36 @@ pub fn memory_tool_names() -> Vec<String> {
 pub struct MemoryProvider {
     storage: Arc<dyn StorageProvider>,
     scope: AgentMemoryScope,
+    query_embedding_generator: Option<Arc<dyn MemoryEmbeddingGenerator>>,
 }
 
 impl MemoryProvider {
     /// Create a provider bound to the current persistent-memory scope.
     #[must_use]
     pub fn new(storage: Arc<dyn StorageProvider>, scope: AgentMemoryScope) -> Self {
-        Self { storage, scope }
+        Self {
+            storage,
+            scope,
+            query_embedding_generator: None,
+        }
+    }
+
+    /// Attach an optional embedding generator so `memory_search` can run hybrid retrieval.
+    #[must_use]
+    pub fn with_query_embedding_generator(
+        mut self,
+        generator: Arc<dyn MemoryEmbeddingGenerator>,
+    ) -> Self {
+        self.query_embedding_generator = Some(generator);
+        self
+    }
+
+    fn durable_memory_retriever(&self) -> DurableMemoryRetriever {
+        let mut retriever = DurableMemoryRetriever::new(Arc::clone(&self.storage));
+        if let Some(generator) = self.query_embedding_generator.as_ref() {
+            retriever = retriever.with_query_embedding_generator(Arc::clone(generator));
+        }
+        retriever
     }
 
     fn tools_definitions() -> Vec<ToolDefinition> {
@@ -565,54 +592,28 @@ impl MemoryProvider {
         let include_memories =
             args.types.is_empty() || args.types.contains(&SearchSourceType::Memory);
 
-        let mut results = Vec::new();
-
-        if include_episodes {
-            let hits = self
-                .storage
-                .search_memory_episodes_lexical(
-                    args.query.clone(),
-                    EpisodeSearchFilter {
-                        context_key: Some(context_key.clone()),
-                        user_id: Some(self.scope.user_id),
-                        outcome: None,
-                        min_importance: None,
-                        time_range: time_range.clone(),
-                        limit: Some(limit),
-                    },
-                )
-                .await
-                .map_err(|error| anyhow!("failed to search episode memories: {error}"))?;
-            results.extend(hits.into_iter().map(search_episode_result));
-        }
-
-        if include_memories {
-            let hits = self
-                .storage
-                .search_memory_records_lexical(
-                    args.query.clone(),
-                    MemorySearchFilter {
-                        context_key: Some(context_key.clone()),
-                        user_id: Some(self.scope.user_id),
-                        memory_type: args.memory_type.map(Into::into),
-                        min_importance: None,
-                        tags: Vec::new(),
-                        time_range,
-                        limit: Some(limit),
-                    },
-                )
-                .await
-                .map_err(|error| anyhow!("failed to search reusable memories: {error}"))?;
-            results.extend(hits.into_iter().map(search_memory_result));
-        }
-
-        results.sort_by(|left, right| {
-            right["score"]
-                .as_f64()
-                .unwrap_or_default()
-                .total_cmp(&left["score"].as_f64().unwrap_or_default())
-        });
-        results.truncate(limit);
+        let results = self
+            .durable_memory_retriever()
+            .search(
+                &AgentMemoryScope::new(self.scope.user_id, &context_key, &self.scope.flow_id),
+                DurableMemorySearchRequest {
+                    query: args.query.clone(),
+                    search_episodes: include_episodes,
+                    search_memories: include_memories,
+                    memory_type: args.memory_type.map(Into::into),
+                    time_range,
+                    min_importance: None,
+                    limit,
+                    candidate_limit: Some(limit.max(DEFAULT_SEARCH_LIMIT)),
+                    rerank: false,
+                    allow_full_thread_read: true,
+                },
+            )
+            .await
+            .map_err(|error| anyhow!("failed to search durable memory: {error}"))?
+            .into_iter()
+            .map(search_result)
+            .collect::<Vec<_>>();
 
         Ok(json!({
             "ok": true,
@@ -888,37 +889,52 @@ fn thread_is_visible(thread: &oxide_agent_memory::ThreadRecord, scope: &AgentMem
     thread.user_id == scope.user_id && thread.context_key == scope.context_key
 }
 
-fn search_episode_result(hit: EpisodeSearchHit) -> Value {
-    json!({
-        "kind": "episode",
-        "score": hit.score,
-        "snippet": hit.snippet,
-        "episode_id": hit.record.episode_id,
-        "thread_id": hit.record.thread_id,
-        "goal": hit.record.goal,
-        "outcome": hit.record.outcome,
-        "importance": hit.record.importance,
-        "created_at": hit.record.created_at,
-    })
-}
-
-fn search_memory_result(hit: MemorySearchHit) -> Value {
-    json!({
-        "kind": "memory",
-        "score": hit.score,
-        "snippet": hit.snippet,
-        "memory_id": hit.record.memory_id,
-        "source_episode_id": hit.record.source_episode_id,
-        "memory_type": hit.record.memory_type,
-        "title": hit.record.title,
-        "short_description": hit.record.short_description,
-        "importance": hit.record.importance,
-        "confidence": hit.record.confidence,
-        "source": hit.record.source,
-        "reason": hit.record.reason,
-        "tags": hit.record.tags,
-        "updated_at": hit.record.updated_at,
-    })
+fn search_result(item: DurableMemorySearchItem) -> Value {
+    match item {
+        DurableMemorySearchItem::Episode {
+            record,
+            snippet,
+            score,
+            lexical_score,
+            vector_score,
+        } => json!({
+            "kind": "episode",
+            "score": score,
+            "lexical_score": lexical_score,
+            "vector_score": vector_score,
+            "snippet": snippet,
+            "episode_id": record.episode_id,
+            "thread_id": record.thread_id,
+            "goal": record.goal,
+            "outcome": record.outcome,
+            "importance": record.importance,
+            "created_at": record.created_at,
+        }),
+        DurableMemorySearchItem::Memory {
+            record,
+            snippet,
+            score,
+            lexical_score,
+            vector_score,
+        } => json!({
+            "kind": "memory",
+            "score": score,
+            "lexical_score": lexical_score,
+            "vector_score": vector_score,
+            "snippet": snippet,
+            "memory_id": record.memory_id,
+            "source_episode_id": record.source_episode_id,
+            "memory_type": record.memory_type,
+            "title": record.title,
+            "short_description": record.short_description,
+            "importance": record.importance,
+            "confidence": record.confidence,
+            "source": record.source,
+            "reason": record.reason,
+            "tags": record.tags,
+            "updated_at": record.updated_at,
+        }),
+    }
 }
 
 fn extract_archive_messages(
@@ -1134,9 +1150,26 @@ mod tests {
     use chrono::TimeZone;
     use mockall::predicate::{eq, function};
     use oxide_agent_memory::{
-        ArtifactRef, EpisodeOutcome, EpisodeRecord, EpisodeSearchHit, MemoryRecord,
-        MemorySearchHit, ThreadRecord,
+        ArtifactRef, EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+        MemoryRecord, MemorySearchFilter, MemorySearchHit, ThreadRecord,
     };
+
+    struct FakeEmbeddingGenerator;
+
+    #[async_trait]
+    impl MemoryEmbeddingGenerator for FakeEmbeddingGenerator {
+        async fn embed_document(
+            &self,
+            _text: &str,
+            _title: Option<&str>,
+        ) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+
+        async fn embed_query(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+    }
 
     fn scope() -> AgentMemoryScope {
         AgentMemoryScope::new(7, "topic-a", "flow-a")
@@ -1219,7 +1252,7 @@ mod tests {
                 function(|filter: &EpisodeSearchFilter| {
                     filter.context_key.as_deref() == Some("topic-a")
                         && filter.user_id == Some(7)
-                        && filter.limit == Some(5)
+                        && filter.limit == Some(8)
                 }),
             )
             .returning(|_, _| {
@@ -1230,13 +1263,24 @@ mod tests {
                 }])
             });
         storage
+            .expect_search_memory_episodes_vector()
+            .with(
+                function(|embedding: &Vec<f32>| embedding == &vec![1.0, 0.0]),
+                function(|filter: &EpisodeSearchFilter| {
+                    filter.context_key.as_deref() == Some("topic-a")
+                        && filter.user_id == Some(7)
+                        && filter.limit == Some(8)
+                }),
+            )
+            .returning(|_, _| Ok(Vec::new()));
+        storage
             .expect_search_memory_records_lexical()
             .with(
                 eq("R2_REGION".to_string()),
                 function(|filter: &MemorySearchFilter| {
                     filter.context_key.as_deref() == Some("topic-a")
                         && filter.user_id == Some(7)
-                        && filter.limit == Some(5)
+                        && filter.limit == Some(8)
                         && filter.memory_type == Some(MemoryType::Fact)
                 }),
             )
@@ -1247,8 +1291,27 @@ mod tests {
                     snippet: "memory hit".to_string(),
                 }])
             });
+        storage
+            .expect_search_memory_records_vector()
+            .with(
+                function(|embedding: &Vec<f32>| embedding == &vec![1.0, 0.0]),
+                function(|filter: &MemorySearchFilter| {
+                    filter.context_key.as_deref() == Some("topic-a")
+                        && filter.user_id == Some(7)
+                        && filter.limit == Some(8)
+                        && filter.memory_type == Some(MemoryType::Fact)
+                }),
+            )
+            .returning(|_, _| {
+                Ok(vec![MemorySearchHit {
+                    record: memory_record(),
+                    score: 0.95,
+                    snippet: "semantic memory hit".to_string(),
+                }])
+            });
 
-        let provider = MemoryProvider::new(Arc::new(storage), scope());
+        let provider = MemoryProvider::new(Arc::new(storage), scope())
+            .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
         let result = provider
             .execute(
                 TOOL_MEMORY_SEARCH,

@@ -12,7 +12,7 @@ use oxide_agent_memory::{
     EpisodeMemorySignals, EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
     MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
     MemoryType, RepositoryError, ReusableMemoryExtractor, SessionStateListFilter,
-    SessionStateRecord, ThreadRecord,
+    SessionStateRecord, ThreadRecord, TimeRange,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -633,6 +633,38 @@ pub struct DurableMemoryRetrievalOptions {
     pub top_k: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct DurableMemorySearchRequest {
+    pub query: String,
+    pub search_episodes: bool,
+    pub search_memories: bool,
+    pub memory_type: Option<MemoryType>,
+    pub time_range: TimeRange,
+    pub min_importance: Option<f32>,
+    pub limit: usize,
+    pub candidate_limit: Option<usize>,
+    pub rerank: bool,
+    pub allow_full_thread_read: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum DurableMemorySearchItem {
+    Episode {
+        record: EpisodeRecord,
+        snippet: String,
+        score: f32,
+        lexical_score: Option<f32>,
+        vector_score: Option<f32>,
+    },
+    Memory {
+        record: MemoryRecord,
+        snippet: String,
+        score: f32,
+        lexical_score: Option<f32>,
+        vector_score: Option<f32>,
+    },
+}
+
 #[derive(Clone)]
 pub struct DurableMemoryRetriever {
     storage: Arc<dyn StorageProvider>,
@@ -669,6 +701,37 @@ impl DurableMemoryRetriever {
         Ok(Some(retrieval.render_for_prompt()))
     }
 
+    pub(crate) async fn search(
+        &self,
+        scope: &AgentMemoryScope,
+        request: DurableMemorySearchRequest,
+    ) -> Result<Vec<DurableMemorySearchItem>> {
+        let query = request.query.trim();
+        if query.is_empty() || (!request.search_episodes && !request.search_memories) {
+            return Ok(Vec::new());
+        }
+
+        let plan = RetrievalPlan {
+            query: query.to_string(),
+            search_episodes: request.search_episodes,
+            search_memories: request.search_memories,
+            memory_type: request.memory_type,
+            min_importance: request.min_importance.unwrap_or(0.0),
+            top_k: request.limit.max(1),
+            allow_full_thread_read: request.allow_full_thread_read,
+            rerank_requested: request.rerank,
+        };
+        let candidate_limit = request
+            .candidate_limit
+            .unwrap_or_else(|| request.limit.max(HYBRID_RETRIEVAL_CANDIDATE_LIMIT));
+
+        Ok(self
+            .retrieve_with_plan(scope, plan, request.time_range, candidate_limit)
+            .await?
+            .map(DurableMemoryRetrieval::into_search_items)
+            .unwrap_or_default())
+    }
+
     async fn retrieve(
         &self,
         task: &str,
@@ -679,10 +742,28 @@ impl DurableMemoryRetriever {
             return Ok(None);
         };
 
+        self.retrieve_with_plan(
+            scope,
+            plan,
+            TimeRange::default(),
+            HYBRID_RETRIEVAL_CANDIDATE_LIMIT,
+        )
+        .await
+    }
+
+    async fn retrieve_with_plan(
+        &self,
+        scope: &AgentMemoryScope,
+        plan: RetrievalPlan,
+        time_range: TimeRange,
+        candidate_limit: usize,
+    ) -> Result<Option<DurableMemoryRetrieval>> {
+        let candidate_limit = candidate_limit.max(1);
+
         let mut candidates = Vec::new();
 
         if plan.search_episodes {
-            let filter = episode_search_filter(scope, &plan);
+            let filter = episode_search_filter(scope, &plan, time_range.clone(), candidate_limit);
             let lexical_hits = self
                 .storage
                 .search_memory_episodes_lexical(plan.query.clone(), filter.clone())
@@ -692,7 +773,7 @@ impl DurableMemoryRetriever {
         }
 
         if plan.search_memories {
-            let filter = memory_search_filter(scope, &plan);
+            let filter = memory_search_filter(scope, &plan, time_range, candidate_limit);
             let lexical_hits = self
                 .storage
                 .search_memory_records_lexical(plan.query.clone(), filter.clone())
@@ -829,6 +910,13 @@ struct DurableMemoryRetrieval {
 }
 
 impl DurableMemoryRetrieval {
+    fn into_search_items(self) -> Vec<DurableMemorySearchItem> {
+        self.items
+            .into_iter()
+            .map(DurableMemorySearchItem::from)
+            .collect()
+    }
+
     fn render_for_prompt(&self) -> String {
         let mut lines = vec![
             "Scoped durable memory context (use as evidence, not source of truth):".to_string(),
@@ -878,6 +966,39 @@ impl DurableMemoryRetrieval {
             );
         }
         lines.join("\n")
+    }
+}
+
+impl From<HybridCandidate> for DurableMemorySearchItem {
+    fn from(value: HybridCandidate) -> Self {
+        match value {
+            HybridCandidate::Episode {
+                record,
+                snippet,
+                score,
+                lexical_score,
+                vector_score,
+            } => Self::Episode {
+                record,
+                snippet,
+                score,
+                lexical_score,
+                vector_score,
+            },
+            HybridCandidate::Memory {
+                record,
+                snippet,
+                score,
+                lexical_score,
+                vector_score,
+            } => Self::Memory {
+                record,
+                snippet,
+                score,
+                lexical_score,
+                vector_score,
+            },
+        }
     }
 }
 
@@ -1125,26 +1246,36 @@ fn query_retrieval_plan(
     })
 }
 
-fn episode_search_filter(scope: &AgentMemoryScope, plan: &RetrievalPlan) -> EpisodeSearchFilter {
+fn episode_search_filter(
+    scope: &AgentMemoryScope,
+    plan: &RetrievalPlan,
+    time_range: TimeRange,
+    candidate_limit: usize,
+) -> EpisodeSearchFilter {
     EpisodeSearchFilter {
         context_key: Some(scope.context_key.clone()),
         user_id: Some(scope.user_id),
         outcome: None,
         min_importance: Some(plan.min_importance),
-        time_range: Default::default(),
-        limit: Some(HYBRID_RETRIEVAL_CANDIDATE_LIMIT),
+        time_range,
+        limit: Some(candidate_limit),
     }
 }
 
-fn memory_search_filter(scope: &AgentMemoryScope, plan: &RetrievalPlan) -> MemorySearchFilter {
+fn memory_search_filter(
+    scope: &AgentMemoryScope,
+    plan: &RetrievalPlan,
+    time_range: TimeRange,
+    candidate_limit: usize,
+) -> MemorySearchFilter {
     MemorySearchFilter {
         context_key: Some(scope.context_key.clone()),
         user_id: Some(scope.user_id),
         memory_type: plan.memory_type,
         min_importance: Some(plan.min_importance),
         tags: Vec::new(),
-        time_range: Default::default(),
-        limit: Some(HYBRID_RETRIEVAL_CANDIDATE_LIMIT),
+        time_range,
+        limit: Some(candidate_limit),
     }
 }
 
@@ -1550,9 +1681,10 @@ fn tool_memory_record(
 #[cfg(test)]
 mod tests {
     use super::{
-        DurableMemoryRetrievalOptions, DurableMemoryRetriever, HybridCandidate,
-        MemoryEmbeddingGenerator, PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer,
-        PersistentMemoryStore, PersistentRunContext, PersistentRunPhase,
+        DurableMemoryRetrievalOptions, DurableMemoryRetriever, DurableMemorySearchItem,
+        DurableMemorySearchRequest, HybridCandidate, MemoryEmbeddingGenerator,
+        PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer, PersistentMemoryStore,
+        PersistentRunContext, PersistentRunPhase,
     };
     use crate::agent::compaction::ArchiveRef;
     use crate::agent::memory::AgentMessage;
@@ -2036,6 +2168,105 @@ mod tests {
         assert!(rendered.contains("memory memory-1"));
         assert!(rendered.contains("episode episode-1"));
         assert!(rendered.contains("Open full thread only if needed"));
+    }
+
+    #[tokio::test]
+    async fn durable_memory_search_reuses_hybrid_retrieval_core() {
+        let episode = retrieval_episode();
+        let memory_for_lexical = retrieval_memory();
+        let memory_for_vector = retrieval_memory();
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_search_memory_episodes_lexical()
+            .times(2)
+            .returning({
+                let episode = episode.clone();
+                move |_, _| {
+                    Ok(vec![EpisodeSearchHit {
+                        record: episode.clone(),
+                        score: 0.4,
+                        snippet: "episode lexical".to_string(),
+                    }])
+                }
+            });
+        storage
+            .expect_search_memory_episodes_vector()
+            .times(2)
+            .returning(|_, _| Ok(Vec::new()));
+        storage
+            .expect_search_memory_records_lexical()
+            .times(2)
+            .returning({
+                let memory_for_lexical = memory_for_lexical.clone();
+                move |_, _| {
+                    Ok(vec![MemorySearchHit {
+                        record: memory_for_lexical.clone(),
+                        score: 0.3,
+                        snippet: "memory lexical".to_string(),
+                    }])
+                }
+            });
+        storage
+            .expect_search_memory_records_vector()
+            .times(2)
+            .returning({
+                let memory_for_vector = memory_for_vector.clone();
+                move |_, _| {
+                    Ok(vec![MemorySearchHit {
+                        record: memory_for_vector.clone(),
+                        score: 0.96,
+                        snippet: "memory semantic".to_string(),
+                    }])
+                }
+            });
+
+        let retriever = DurableMemoryRetriever::new(Arc::new(storage))
+            .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
+        let prompt_retrieval = retriever
+            .retrieve(
+                "how was the deploy fixed before?",
+                &retrieval_scope(),
+                DurableMemoryRetrievalOptions::default(),
+            )
+            .await
+            .expect("prompt retrieval should succeed")
+            .expect("prompt retrieval should yield items");
+        let search_items = retriever
+            .search(
+                &retrieval_scope(),
+                DurableMemorySearchRequest {
+                    query: "how was the deploy fixed before?".to_string(),
+                    search_episodes: true,
+                    search_memories: true,
+                    memory_type: Some(MemoryType::Procedure),
+                    time_range: Default::default(),
+                    min_importance: Some(0.45),
+                    limit: 5,
+                    candidate_limit: Some(8),
+                    rerank: false,
+                    allow_full_thread_read: true,
+                },
+            )
+            .await
+            .expect("tool search should succeed");
+
+        assert_eq!(prompt_retrieval.items.len(), search_items.len());
+        assert!(matches!(
+            prompt_retrieval.items[0],
+            HybridCandidate::Memory { .. }
+        ));
+        assert!(matches!(
+            prompt_retrieval.items[1],
+            HybridCandidate::Episode { .. }
+        ));
+        assert!(matches!(
+            search_items[0],
+            DurableMemorySearchItem::Memory { .. }
+        ));
+        assert!(matches!(
+            search_items[1],
+            DurableMemorySearchItem::Episode { .. }
+        ));
     }
 
     #[tokio::test]
