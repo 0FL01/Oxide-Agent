@@ -226,6 +226,17 @@ pub trait StorageProvider: Send + Sync {
                 .to_string(),
         ))
     }
+    /// Create or update a reusable persistent memory record.
+    async fn upsert_memory_record(
+        &self,
+        record: MemoryRecord,
+    ) -> Result<MemoryRecord, StorageError> {
+        let _ = record;
+        Err(StorageError::Config(
+            "reusable persistent memory upsert is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
     /// Upsert a persistent memory session-state record.
     async fn upsert_memory_session_state(
         &self,
@@ -283,6 +294,17 @@ pub trait StorageProvider: Send + Sync {
                 .to_string(),
         ))
     }
+    /// Soft-delete a reusable persistent memory record by identifier.
+    async fn delete_memory_record(
+        &self,
+        memory_id: String,
+    ) -> Result<Option<MemoryRecord>, StorageError> {
+        let _ = memory_id;
+        Err(StorageError::Config(
+            "reusable persistent memory deletion is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
     /// List reusable persistent memory records for one context.
     async fn list_memory_records(
         &self,
@@ -293,6 +315,28 @@ pub trait StorageProvider: Send + Sync {
         let _ = filter;
         Err(StorageError::Config(
             "reusable persistent memory listing is not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// Get a persistent session-state record by identifier.
+    async fn get_memory_session_state(
+        &self,
+        session_id: String,
+    ) -> Result<Option<SessionStateRecord>, StorageError> {
+        let _ = session_id;
+        Err(StorageError::Config(
+            "persistent memory session-state reads are not implemented for this storage provider"
+                .to_string(),
+        ))
+    }
+    /// List persistent session-state records.
+    async fn list_memory_session_states(
+        &self,
+        filter: oxide_agent_memory::SessionStateListFilter,
+    ) -> Result<Vec<SessionStateRecord>, StorageError> {
+        let _ = filter;
+        Err(StorageError::Config(
+            "persistent memory session-state listing is not implemented for this storage provider"
                 .to_string(),
         ))
     }

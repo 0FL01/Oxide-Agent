@@ -87,10 +87,12 @@ pub(crate) struct MemoryRow {
     pub importance: f32,
     pub confidence: f32,
     pub source: Option<String>,
+    pub content_hash: Option<String>,
     pub reason: Option<String>,
     pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 impl TryFrom<MemoryRow> for MemoryRecord {
@@ -108,10 +110,12 @@ impl TryFrom<MemoryRow> for MemoryRecord {
             importance: value.importance,
             confidence: value.confidence,
             source: value.source,
+            content_hash: value.content_hash,
             reason: value.reason,
             tags: value.tags,
             created_at: value.created_at,
             updated_at: value.updated_at,
+            deleted_at: value.deleted_at,
         })
     }
 }
@@ -171,10 +175,12 @@ pub(crate) struct MemorySearchRow {
     pub importance: f32,
     pub confidence: f32,
     pub source: Option<String>,
+    pub content_hash: Option<String>,
     pub reason: Option<String>,
     pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
     pub lexical_score: f32,
     pub lexical_snippet: String,
 }
@@ -195,10 +201,12 @@ impl TryFrom<MemorySearchRow> for MemorySearchHit {
                 importance: value.importance,
                 confidence: value.confidence,
                 source: value.source,
+                content_hash: value.content_hash,
                 reason: value.reason,
                 tags: value.tags,
                 created_at: value.created_at,
                 updated_at: value.updated_at,
+                deleted_at: value.deleted_at,
             },
             score: value.lexical_score,
             snippet: value.lexical_snippet,
@@ -495,10 +503,12 @@ mod tests {
             importance: 0.9,
             confidence: 0.95,
             source: Some("tool".to_string()),
+            content_hash: Some("hash-1".to_string()),
             reason: Some("user requested durable save".to_string()),
             tags: vec!["episode".to_string()],
             created_at: ts(4),
             updated_at: ts(5),
+            deleted_at: None,
         };
 
         let record = crate::types::MemoryRecord::try_from(row).expect("row should map");
@@ -541,10 +551,12 @@ mod tests {
             importance: 0.8,
             confidence: 0.9,
             source: Some("tool".to_string()),
+            content_hash: Some("hash-2".to_string()),
             reason: Some("promote stable retrieval hint".to_string()),
             tags: vec!["search".to_string()],
             created_at: ts(7),
             updated_at: ts(8),
+            deleted_at: None,
             lexical_score: 0.5,
             lexical_snippet: "R2_REGION exact lookup".to_string(),
         };

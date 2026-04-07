@@ -8,8 +8,8 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_memory::{
-    ArtifactRef, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
-    MemoryRecord, MemorySearchFilter, MemorySearchHit, MemoryType, TimeRange,
+    stable_memory_content_hash, ArtifactRef, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter,
+    EpisodeSearchHit, MemoryRecord, MemorySearchFilter, MemorySearchHit, MemoryType, TimeRange,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -992,6 +992,7 @@ fn build_explicit_memory_record(
     }
     let tags = normalize_tags(draft.user_tags, &system_tags);
     let now = Utc::now();
+    let content_hash = stable_memory_content_hash(memory_type, &content);
 
     Ok(MemoryRecord {
         memory_id: explicit_memory_id(&scope.context_key, memory_type, &content),
@@ -1004,10 +1005,12 @@ fn build_explicit_memory_record(
         importance: explicit_memory_importance(memory_type),
         confidence: explicit_memory_confidence(memory_type),
         source,
+        content_hash: Some(content_hash),
         reason,
         tags,
         created_at: now,
         updated_at: now,
+        deleted_at: None,
     })
 }
 
@@ -1194,10 +1197,15 @@ mod tests {
             importance: 0.95,
             confidence: 0.9,
             source: Some("test".to_string()),
+            content_hash: Some(stable_memory_content_hash(
+                MemoryType::Fact,
+                "Keep exact env var matching in lexical search",
+            )),
             reason: Some("fixture".to_string()),
             tags: vec!["search".to_string()],
             created_at: ts(31),
             updated_at: ts(32),
+            deleted_at: None,
         }
     }
 

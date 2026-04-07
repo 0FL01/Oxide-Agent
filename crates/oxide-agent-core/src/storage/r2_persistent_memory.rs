@@ -12,7 +12,7 @@ use oxide_agent_memory::{
     EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EmbeddingStatus,
     EpisodeEmbeddingCandidate, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter,
     EpisodeSearchHit, MemoryEmbeddingCandidate, MemoryListFilter, MemoryRecord, MemorySearchFilter,
-    MemorySearchHit, SessionStateRecord, ThreadRecord,
+    MemorySearchHit, SessionStateListFilter, SessionStateRecord, ThreadRecord,
 };
 
 const EPISODE_SNIPPET_LEN: usize = 160;
@@ -20,6 +20,7 @@ const MEMORY_SNIPPET_LEN: usize = 160;
 const MEMORY_THREADS_PREFIX: &str = "persistent_memory/threads/";
 const MEMORY_CONTEXTS_PREFIX: &str = "persistent_memory/contexts/";
 const MEMORY_EMBEDDINGS_PREFIX: &str = "persistent_memory/embeddings/";
+const MEMORY_SESSION_STATES_PREFIX: &str = "persistent_memory/session_states/";
 
 impl R2Storage {
     pub(super) async fn upsert_memory_thread_inner(
@@ -73,6 +74,18 @@ impl R2Storage {
                 "persistent memory {} already exists",
                 record.memory_id
             )));
+        }
+        self.save_json(&key, &record).await?;
+        Ok(record)
+    }
+
+    pub(super) async fn upsert_memory_record_inner(
+        &self,
+        mut record: MemoryRecord,
+    ) -> Result<MemoryRecord, StorageError> {
+        let key = persistent_memory_record_key(&record.context_key, &record.memory_id);
+        if let Some(existing) = self.load_json::<MemoryRecord>(&key).await? {
+            record.created_at = existing.created_at;
         }
         self.save_json(&key, &record).await?;
         Ok(record)
@@ -191,6 +204,23 @@ impl R2Storage {
         Ok(None)
     }
 
+    pub(super) async fn delete_memory_record_inner(
+        &self,
+        memory_id: String,
+    ) -> Result<Option<MemoryRecord>, StorageError> {
+        let Some(mut record) = self.get_memory_record_inner(memory_id).await? else {
+            return Ok(None);
+        };
+        if record.deleted_at.is_none() {
+            let now = chrono::Utc::now();
+            record.deleted_at = Some(now);
+            record.updated_at = now;
+            let key = persistent_memory_record_key(&record.context_key, &record.memory_id);
+            self.save_json(&key, &record).await?;
+        }
+        Ok(Some(record))
+    }
+
     pub(super) async fn list_memory_records_inner(
         &self,
         context_key: String,
@@ -201,6 +231,7 @@ impl R2Storage {
             .list_json_under_prefix::<MemoryRecord>(&prefix)
             .await?
             .into_iter()
+            .filter(|memory| filter.include_deleted || memory.deleted_at.is_none())
             .filter(|memory| match filter.memory_type {
                 Some(memory_type) => memory.memory_type == memory_type,
                 None => true,
@@ -344,6 +375,7 @@ impl R2Storage {
 
         let mut hits = memories
             .into_iter()
+            .filter(|memory| memory.deleted_at.is_none())
             .filter(|memory| matches_memory_search(memory, &filter, &episodes, &threads))
             .filter_map(|memory| {
                 let tags = memory.tags.join(" ");
@@ -641,6 +673,7 @@ impl R2Storage {
         };
         let mut hits = memories
             .into_iter()
+            .filter(|memory| memory.deleted_at.is_none())
             .filter(|memory| matches_memory_search(memory, &filter, &episodes, &threads))
             .filter_map(|memory| {
                 let embedding =
@@ -686,6 +719,45 @@ impl R2Storage {
             embeddings.insert((record.owner_type, record.owner_id.clone()), record);
         }
         Ok(embeddings)
+    }
+
+    pub(super) async fn get_memory_session_state_inner(
+        &self,
+        session_id: String,
+    ) -> Result<Option<SessionStateRecord>, StorageError> {
+        self.load_json(&persistent_memory_session_state_key(&session_id))
+            .await
+    }
+
+    pub(super) async fn list_memory_session_states_inner(
+        &self,
+        filter: SessionStateListFilter,
+    ) -> Result<Vec<SessionStateRecord>, StorageError> {
+        let mut states = self
+            .list_json_under_prefix::<SessionStateRecord>(MEMORY_SESSION_STATES_PREFIX)
+            .await?
+            .into_iter()
+            .filter(|state| match &filter.context_key {
+                Some(context_key) => &state.context_key == context_key,
+                None => true,
+            })
+            .filter(|state| {
+                filter.statuses.is_empty() || filter.statuses.contains(&state.cleanup_status)
+            })
+            .filter(|state| match filter.updated_before {
+                Some(updated_before) => state.updated_at <= updated_before,
+                None => true,
+            })
+            .collect::<Vec<_>>();
+        states.sort_by(|left, right| {
+            left.updated_at
+                .cmp(&right.updated_at)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
+        if let Some(limit) = filter.limit {
+            states.truncate(limit);
+        }
+        Ok(states)
     }
 }
 

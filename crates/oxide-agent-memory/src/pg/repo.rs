@@ -11,8 +11,8 @@ use crate::types::{
     EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
     EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
     EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
-    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
-    ThreadId, ThreadRecord,
+    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateListFilter,
+    SessionStateRecord, ThreadId, ThreadRecord,
 };
 use pgvector::Vector;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -293,12 +293,14 @@ impl MemoryRepository for PgMemoryRepository {
                     importance,
                     confidence,
                     source,
+                    content_hash,
                     reason,
                     tags,
                     created_at,
-                    updated_at
+                    updated_at,
+                    deleted_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 RETURNING
                     memory_id,
                     context_key,
@@ -310,10 +312,12 @@ impl MemoryRepository for PgMemoryRepository {
                     importance,
                     confidence,
                     source,
+                    content_hash,
                     reason,
                     tags,
                     created_at,
-                    updated_at
+                    updated_at,
+                    deleted_at
                 "#,
             )
             .bind(record.memory_id)
@@ -326,13 +330,101 @@ impl MemoryRepository for PgMemoryRepository {
             .bind(record.importance)
             .bind(record.confidence)
             .bind(record.source)
+            .bind(record.content_hash)
             .bind(record.reason)
             .bind(record.tags)
             .bind(record.created_at)
             .bind(record.updated_at)
+            .bind(record.deleted_at)
             .fetch_one(&pool)
             .await
             .map_err(|error| map_insert_error("create_memory", error))?;
+
+            MemoryRecord::try_from(row)
+        }
+    }
+
+    fn upsert_memory(
+        &self,
+        record: MemoryRecord,
+    ) -> impl Future<Output = Result<MemoryRecord, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            let row = sqlx::query_as::<_, MemoryRow>(
+                r#"
+                INSERT INTO memory_records (
+                    memory_id,
+                    context_key,
+                    source_episode_id,
+                    memory_type,
+                    title,
+                    content,
+                    short_description,
+                    importance,
+                    confidence,
+                    source,
+                    content_hash,
+                    reason,
+                    tags,
+                    created_at,
+                    updated_at,
+                    deleted_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                ON CONFLICT (memory_id) DO UPDATE
+                SET
+                    context_key = EXCLUDED.context_key,
+                    source_episode_id = EXCLUDED.source_episode_id,
+                    memory_type = EXCLUDED.memory_type,
+                    title = EXCLUDED.title,
+                    content = EXCLUDED.content,
+                    short_description = EXCLUDED.short_description,
+                    importance = EXCLUDED.importance,
+                    confidence = EXCLUDED.confidence,
+                    source = EXCLUDED.source,
+                    content_hash = EXCLUDED.content_hash,
+                    reason = EXCLUDED.reason,
+                    tags = EXCLUDED.tags,
+                    updated_at = EXCLUDED.updated_at,
+                    deleted_at = EXCLUDED.deleted_at
+                RETURNING
+                    memory_id,
+                    context_key,
+                    source_episode_id,
+                    memory_type,
+                    title,
+                    content,
+                    short_description,
+                    importance,
+                    confidence,
+                    source,
+                    content_hash,
+                    reason,
+                    tags,
+                    created_at,
+                    updated_at,
+                    deleted_at
+                "#,
+            )
+            .bind(record.memory_id)
+            .bind(record.context_key)
+            .bind(record.source_episode_id)
+            .bind(encode_memory_type(record.memory_type))
+            .bind(record.title)
+            .bind(record.content)
+            .bind(record.short_description)
+            .bind(record.importance)
+            .bind(record.confidence)
+            .bind(record.source)
+            .bind(record.content_hash)
+            .bind(record.reason)
+            .bind(record.tags)
+            .bind(record.created_at)
+            .bind(record.updated_at)
+            .bind(record.deleted_at)
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("upsert_memory", error))?;
 
             MemoryRecord::try_from(row)
         }
@@ -358,10 +450,12 @@ impl MemoryRepository for PgMemoryRepository {
                     importance,
                     confidence,
                     source,
+                    content_hash,
                     reason,
                     tags,
                     created_at,
-                    updated_at
+                    updated_at,
+                    deleted_at
                 FROM memory_records
                 WHERE memory_id = $1
                 "#,
@@ -370,6 +464,49 @@ impl MemoryRepository for PgMemoryRepository {
             .fetch_optional(&pool)
             .await
             .map_err(|error| map_sqlx_error("get_memory", error))?;
+
+            row.map(MemoryRecord::try_from).transpose()
+        }
+    }
+
+    fn delete_memory(
+        &self,
+        memory_id: &str,
+    ) -> impl Future<Output = Result<Option<MemoryRecord>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let memory_id = memory_id.to_string();
+        async move {
+            let deleted_at = chrono::Utc::now();
+            let row = sqlx::query_as::<_, MemoryRow>(
+                r#"
+                UPDATE memory_records
+                SET deleted_at = COALESCE(deleted_at, $2),
+                    updated_at = CASE WHEN deleted_at IS NULL THEN $2 ELSE updated_at END
+                WHERE memory_id = $1
+                RETURNING
+                    memory_id,
+                    context_key,
+                    source_episode_id,
+                    memory_type,
+                    title,
+                    content,
+                    short_description,
+                    importance,
+                    confidence,
+                    source,
+                    content_hash,
+                    reason,
+                    tags,
+                    created_at,
+                    updated_at,
+                    deleted_at
+                "#,
+            )
+            .bind(memory_id)
+            .bind(deleted_at)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("delete_memory", error))?;
 
             row.map(MemoryRecord::try_from).transpose()
         }
@@ -404,23 +541,27 @@ impl MemoryRepository for PgMemoryRepository {
                     importance,
                     confidence,
                     source,
+                    content_hash,
                     reason,
                     tags,
                     created_at,
-                    updated_at
+                    updated_at,
+                    deleted_at
                 FROM memory_records
                 WHERE context_key = $1
                   AND ($2::text IS NULL OR memory_type = $2)
                   AND ($3::real IS NULL OR importance >= $3)
                   AND ($4::text[] IS NULL OR tags @> $4)
+                  AND ($5::boolean OR deleted_at IS NULL)
                 ORDER BY updated_at DESC, memory_id ASC
-                LIMIT COALESCE($5, 100)
+                LIMIT COALESCE($6, 100)
                 "#,
             )
             .bind(context_key)
             .bind(memory_type)
             .bind(filter.min_importance)
             .bind(required_tags)
+            .bind(filter.include_deleted)
             .bind(limit)
             .fetch_all(&pool)
             .await
@@ -553,10 +694,12 @@ impl MemoryRepository for PgMemoryRepository {
                     memories.importance,
                     memories.confidence,
                     memories.source,
+                    memories.content_hash,
                     memories.reason,
                     memories.tags,
                     memories.created_at,
                     memories.updated_at,
+                    memories.deleted_at,
                     ts_rank_cd(
                         to_tsvector(
                             'simple',
@@ -609,6 +752,7 @@ impl MemoryRepository for PgMemoryRepository {
                   AND ($6::text[] IS NULL OR memories.tags @> $6)
                   AND ($7::timestamptz IS NULL OR memories.updated_at >= $7)
                   AND ($8::timestamptz IS NULL OR memories.updated_at <= $8)
+                  AND memories.deleted_at IS NULL
                 ORDER BY lexical_score DESC,
                          memories.importance DESC,
                          memories.confidence DESC,
@@ -1048,10 +1192,12 @@ impl MemoryRepository for PgMemoryRepository {
                     memories.importance,
                     memories.confidence,
                     memories.source,
+                    memories.content_hash,
                     memories.reason,
                     memories.tags,
                     memories.created_at,
                     memories.updated_at,
+                    memories.deleted_at,
                     CAST(1 - (embeddings.embedding <=> $1) AS real) AS lexical_score,
                     LEFT(
                         concat_ws(E'\n', memories.title, memories.short_description, memories.content),
@@ -1074,6 +1220,7 @@ impl MemoryRepository for PgMemoryRepository {
                   AND ($6::text[] IS NULL OR memories.tags @> $6)
                   AND ($7::timestamptz IS NULL OR memories.updated_at >= $7)
                   AND ($8::timestamptz IS NULL OR memories.updated_at <= $8)
+                  AND memories.deleted_at IS NULL
                 ORDER BY embeddings.embedding <=> $1 ASC,
                          memories.importance DESC,
                          memories.confidence DESC,
@@ -1188,6 +1335,56 @@ impl MemoryRepository for PgMemoryRepository {
             .map_err(|error| map_sqlx_error("get_session_state", error))?;
 
             row.map(SessionStateRecord::try_from).transpose()
+        }
+    }
+
+    fn list_session_states(
+        &self,
+        filter: &SessionStateListFilter,
+    ) -> impl Future<Output = Result<Vec<SessionStateRecord>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let filter = filter.clone();
+        async move {
+            let limit = filter.limit.and_then(|value| i64::try_from(value).ok());
+            let statuses = if filter.statuses.is_empty() {
+                None
+            } else {
+                Some(
+                    filter
+                        .statuses
+                        .into_iter()
+                        .map(encode_cleanup_status)
+                        .collect::<Vec<_>>(),
+                )
+            };
+            let rows = sqlx::query_as::<_, SessionStateRow>(
+                r#"
+                SELECT
+                    session_id,
+                    context_key,
+                    hot_token_estimate,
+                    last_compacted_at,
+                    last_finalized_at,
+                    cleanup_status,
+                    pending_episode_id,
+                    updated_at
+                FROM memory_session_state
+                WHERE ($1::text IS NULL OR context_key = $1)
+                  AND ($2::text[] IS NULL OR cleanup_status = ANY($2))
+                  AND ($3::timestamptz IS NULL OR updated_at <= $3)
+                ORDER BY updated_at ASC, session_id ASC
+                LIMIT COALESCE($4, 100)
+                "#,
+            )
+            .bind(filter.context_key)
+            .bind(statuses)
+            .bind(filter.updated_before)
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| map_sqlx_error("list_session_states", error))?;
+
+            rows.into_iter().map(SessionStateRecord::try_from).collect()
         }
     }
 }

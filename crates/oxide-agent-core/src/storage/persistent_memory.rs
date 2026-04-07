@@ -4,7 +4,7 @@ use oxide_agent_memory::{
     EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
     EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
     MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
-    RepositoryError, SessionStateRecord, ThreadId, ThreadRecord,
+    RepositoryError, SessionStateListFilter, SessionStateRecord, ThreadId, ThreadRecord,
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -88,9 +88,26 @@ impl MemoryRepository for StorageMemoryRepository {
             .map_err(map_storage_error)
     }
 
+    async fn upsert_memory(&self, record: MemoryRecord) -> Result<MemoryRecord, RepositoryError> {
+        self.storage
+            .upsert_memory_record(record)
+            .await
+            .map_err(map_storage_error)
+    }
+
     async fn get_memory(&self, memory_id: &str) -> Result<Option<MemoryRecord>, RepositoryError> {
         self.storage
             .get_memory_record(memory_id.to_string())
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn delete_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<MemoryRecord>, RepositoryError> {
+        self.storage
+            .delete_memory_record(memory_id.to_string())
             .await
             .map_err(map_storage_error)
     }
@@ -226,11 +243,22 @@ impl MemoryRepository for StorageMemoryRepository {
 
     async fn get_session_state(
         &self,
-        _session_id: &str,
+        session_id: &str,
     ) -> Result<Option<SessionStateRecord>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "get_session_state is not implemented for storage-backed memory repository".to_string(),
-        ))
+        self.storage
+            .get_memory_session_state(session_id.to_string())
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn list_session_states(
+        &self,
+        filter: &SessionStateListFilter,
+    ) -> Result<Vec<SessionStateRecord>, RepositoryError> {
+        self.storage
+            .list_memory_session_states(filter.clone())
+            .await
+            .map_err(map_storage_error)
     }
 }
 

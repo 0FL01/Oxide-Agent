@@ -7,8 +7,8 @@ use crate::types::{
     EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
     EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
     EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
-    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateRecord,
-    ThreadId, ThreadRecord,
+    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateListFilter,
+    SessionStateRecord, ThreadId, ThreadRecord,
 };
 
 /// Error type for memory repository operations.
@@ -75,8 +75,20 @@ pub trait MemoryRepository: Send + Sync {
         record: MemoryRecord,
     ) -> impl std::future::Future<Output = Result<MemoryRecord, RepositoryError>> + Send;
 
+    /// Create or update a reusable memory record.
+    fn upsert_memory(
+        &self,
+        record: MemoryRecord,
+    ) -> impl std::future::Future<Output = Result<MemoryRecord, RepositoryError>> + Send;
+
     /// Retrieve a single memory record by its identifier.
     fn get_memory(
+        &self,
+        memory_id: &str,
+    ) -> impl std::future::Future<Output = Result<Option<MemoryRecord>, RepositoryError>> + Send;
+
+    /// Soft-delete one reusable memory record.
+    fn delete_memory(
         &self,
         memory_id: &str,
     ) -> impl std::future::Future<Output = Result<Option<MemoryRecord>, RepositoryError>> + Send;
@@ -166,4 +178,10 @@ pub trait MemoryRepository: Send + Sync {
         &self,
         session_id: &str,
     ) -> impl std::future::Future<Output = Result<Option<SessionStateRecord>, RepositoryError>> + Send;
+
+    /// List session states with optional filtering.
+    fn list_session_states(
+        &self,
+        filter: &SessionStateListFilter,
+    ) -> impl std::future::Future<Output = Result<Vec<SessionStateRecord>, RepositoryError>> + Send;
 }

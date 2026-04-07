@@ -20,6 +20,7 @@ uuid = { version = "1.19.0", features = ["v4", "v5"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 thiserror = "2.0"
 anyhow = "1.0.102"
+sha2 = "0.10"
 sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json", "migrate", "macros"] }
 pgvector = { version = "0.4.1", features = ["sqlx"] }
 
