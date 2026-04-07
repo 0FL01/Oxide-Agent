@@ -210,6 +210,12 @@ pub struct AgentSettings {
     pub memory_database_max_connections: Option<u32>,
     /// Run embedded persistent-memory migrations during startup.
     pub memory_database_auto_migrate: Option<bool>,
+    /// Maximum number of startup attempts for Postgres persistent-memory init.
+    pub memory_database_startup_max_attempts: Option<u32>,
+    /// Delay between Postgres persistent-memory startup retries in milliseconds.
+    pub memory_database_startup_retry_delay_ms: Option<u64>,
+    /// Per-attempt timeout for Postgres persistent-memory startup in seconds.
+    pub memory_database_startup_timeout_secs: Option<u64>,
 
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
@@ -382,6 +388,18 @@ impl AgentSettings {
         if settings.memory_database_auto_migrate.is_none() {
             settings.memory_database_auto_migrate =
                 parse_optional_env_bool("MEMORY_DATABASE_AUTO_MIGRATE");
+        }
+        if settings.memory_database_startup_max_attempts.is_none() {
+            settings.memory_database_startup_max_attempts =
+                parse_optional_env_u32("MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS");
+        }
+        if settings.memory_database_startup_retry_delay_ms.is_none() {
+            settings.memory_database_startup_retry_delay_ms =
+                parse_optional_env_u64("MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS");
+        }
+        if settings.memory_database_startup_timeout_secs.is_none() {
+            settings.memory_database_startup_timeout_secs =
+                parse_optional_env_u64("MEMORY_DATABASE_STARTUP_TIMEOUT_SECS");
         }
 
         Ok(settings)
@@ -1319,6 +1337,38 @@ mod tests {
 
         env::remove_var("SEARXNG_ROTATION_ENGINES");
     }
+
+    #[test]
+    fn memory_database_startup_env_loading() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        env::set_var("ZAI_API_KEY", "dummy_zai_key");
+        env::set_var("CHAT_MODEL_ID", "test-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS", "9");
+        env::set_var("MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS", "1500");
+        env::set_var("MEMORY_DATABASE_STARTUP_TIMEOUT_SECS", "12");
+
+        let settings = AgentSettings::new()?;
+        assert_eq!(settings.memory_database_startup_max_attempts, Some(9));
+        assert_eq!(settings.memory_database_startup_retry_delay_ms, Some(1_500));
+        assert_eq!(settings.memory_database_startup_timeout_secs, Some(12));
+
+        for key in [
+            "ZAI_API_KEY",
+            "CHAT_MODEL_ID",
+            "CHAT_MODEL_PROVIDER",
+            "MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS",
+            "MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS",
+            "MEMORY_DATABASE_STARTUP_TIMEOUT_SECS",
+        ] {
+            env::remove_var(key);
+        }
+
+        Ok(())
+    }
 }
 
 /// Information about a supported LLM model.
@@ -1831,6 +1881,18 @@ fn parse_optional_env_bool(name: &str) -> Option<bool> {
             "0" | "false" | "no" | "off" => Some(false),
             _ => None,
         })
+}
+
+fn parse_optional_env_u32(name: &str) -> Option<u32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+}
+
+fn parse_optional_env_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
 /// Determine whether Tavily tools should be registered.

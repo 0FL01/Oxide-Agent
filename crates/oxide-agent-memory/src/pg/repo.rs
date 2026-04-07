@@ -14,6 +14,7 @@ use crate::types::{
     MemoryEmbeddingCandidate, MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit,
     SessionStateListFilter, SessionStateRecord, ThreadId, ThreadRecord,
 };
+use anyhow::bail;
 use pgvector::Vector;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::types::Json;
@@ -59,6 +60,84 @@ impl PgMemoryRepository {
     /// Run embedded memory-schema migrations.
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
         migrator().run(self.pool()).await
+    }
+
+    /// Verify that Postgres, pgvector, and the current typed-memory schema are ready.
+    pub async fn check_health(&self) -> anyhow::Result<()> {
+        sqlx::query_scalar::<_, i64>("SELECT 1")
+            .fetch_one(self.pool())
+            .await?;
+
+        ensure_extension_installed(self.pool(), "vector").await?;
+
+        for table in [
+            "memory_threads",
+            "memory_episodes",
+            "memory_records",
+            "memory_embeddings",
+            "memory_session_state",
+        ] {
+            ensure_table_exists(self.pool(), table).await?;
+        }
+
+        for (table, column) in [
+            ("memory_records", "content_hash"),
+            ("memory_records", "deleted_at"),
+        ] {
+            ensure_column_exists(self.pool(), table, column).await?;
+        }
+
+        Ok(())
+    }
+}
+
+async fn ensure_extension_installed(pool: &PgPool, extension_name: &str) -> anyhow::Result<()> {
+    let installed = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = $1)",
+    )
+    .bind(extension_name)
+    .fetch_one(pool)
+    .await?;
+
+    if installed {
+        Ok(())
+    } else {
+        bail!("required Postgres extension '{extension_name}' is not installed")
+    }
+}
+
+async fn ensure_table_exists(pool: &PgPool, table_name: &str) -> anyhow::Result<()> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1)",
+    )
+    .bind(table_name)
+    .fetch_one(pool)
+    .await?;
+
+    if exists {
+        Ok(())
+    } else {
+        bail!("required Postgres table 'public.{table_name}' is missing")
+    }
+}
+
+async fn ensure_column_exists(
+    pool: &PgPool,
+    table_name: &str,
+    column_name: &str,
+) -> anyhow::Result<()> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)",
+    )
+    .bind(table_name)
+    .bind(column_name)
+    .fetch_one(pool)
+    .await?;
+
+    if exists {
+        Ok(())
+    } else {
+        bail!("required Postgres column 'public.{table_name}.{column_name}' is missing")
     }
 }
 

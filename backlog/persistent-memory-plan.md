@@ -744,8 +744,17 @@ Audit baseline: `2026-04-07`, branch `feature/memento-mori`.
 5. **Если целевой backend остаётся Postgres/pgvector — довести его до deployable состояния.**
    - [x] Добавить `postgres`/`pgvector` service в `docker-compose.yml`.
    - [x] Добавить все нужные env vars в `.env.example`.
-   - Описать bootstrap/migrations/backup/restore.
-   - Добавить startup health checks и failure handling на случай недоступной БД.
+   - [x] Описать bootstrap/migrations/backup/restore.
+   - [x] Добавить startup health checks и failure handling на случай недоступной БД.
+
+   Operational notes:
+   - **Bootstrap**: canonical local/prod path идёт через `docker-compose.yml` service `postgres` на образе `pgvector/pgvector:pg17` и `MEMORY_DATABASE_URL`. При первом старте volume `postgres-data` инициализируется самим Postgres.
+   - **Migrations**: schema bootstrap не требует отдельного manual SQL step. При `MEMORY_DATABASE_AUTO_MIGRATE=true` runtime вызывает embedded SQLx migrations из `crates/oxide-agent-memory/migrations/` и сам создаёт `vector` extension, typed-memory tables, lexical indexes и consolidation columns.
+   - **Pre-provisioned DB**: если rollout требует отдельного change window, можно заранее прогнать те же embedded migrations вне runtime и запускать приложение с `MEMORY_DATABASE_AUTO_MIGRATE=false`; startup health-check всё равно валидирует наличие `pgvector`, базовых таблиц и последних schema columns.
+   - **Startup failure handling**: runtime должен ретраить transient startup failures через `MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS`, `MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS` и `MEMORY_DATABASE_STARTUP_TIMEOUT_SECS`, но после исчерпания попыток завершаться fail-fast с actionable error. Это защищает от тихого запуска без typed memory.
+   - **Health checks**: Compose health-check для `postgres` должен подтверждать не только `pg_isready`, но и реальный SQL query. Runtime дополнительно выполняет app-level health check после connect/migrate.
+   - **Backup**: основной backup unit — Postgres volume/database. Для docker-compose-окружения: `pg_dump --format=custom --dbname "$MEMORY_DATABASE_URL" > memory.dump` или filesystem snapshot `postgres-data` при остановленном контейнере. R2 archive/blobs бэкапятся отдельно, потому что durable metadata и cold artifacts разнесены.
+   - **Restore**: поднять `postgres`/pgvector, создать пустую БД/роль при необходимости, затем `pg_restore --clean --if-exists --dbname "$MEMORY_DATABASE_URL" memory.dump`. После restore запускать агент либо с `MEMORY_DATABASE_AUTO_MIGRATE=true`, либо с ручной проверкой, что embedded migrations уже на месте.
 
 6. **Если остаётся storage-backed backend — зафиксировать operational guarantees.**
    - Явно описать консистентность, latency, limits по list/search, strategy для embedding backfill и cleanup.
