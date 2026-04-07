@@ -1,15 +1,16 @@
 use crate::agent::memory::AgentMessage;
 use crate::agent::session::AgentMemoryScope;
 use crate::llm::{EmbeddingTaskType, LlmClient};
-use crate::storage::StorageProvider;
+use crate::storage::{StorageMemoryRepository, StorageProvider};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_memory::{
     stable_memory_content_hash, ArtifactRef, ConsolidationPolicy, ContextConsolidator,
     EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
-    EmbeddingReadyUpdate, EmbeddingUpdateBase, EpisodeFinalizationInput, EpisodeFinalizer,
-    EpisodeMemorySignals, EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    EmbeddingReadyUpdate, EmbeddingRecord, EmbeddingUpdateBase, EpisodeEmbeddingCandidate,
+    EpisodeFinalizationInput, EpisodeFinalizer, EpisodeListFilter, EpisodeMemorySignals,
+    EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
     MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
     MemoryType, RepositoryError, ReusableMemoryExtractor, SessionStateListFilter,
     SessionStateRecord, ThreadRecord, TimeRange,
@@ -24,6 +25,35 @@ const HYBRID_RETRIEVAL_CANDIDATE_LIMIT: usize = 8;
 const HYBRID_RETRIEVAL_TOP_K: usize = 5;
 const HYBRID_RETRIEVAL_MIN_SCORE: f32 = 0.45;
 const MEMORY_BEHAVIOR_MAX_DRAFTS: usize = 8;
+const DEFAULT_MEMORY_DATABASE_MAX_CONNECTIONS: u32 = 5;
+
+/// Connect the canonical Postgres-backed persistent-memory store for runtime use.
+pub async fn connect_postgres_memory_store(
+    settings: &crate::config::AgentSettings,
+) -> Result<Arc<dyn PersistentMemoryStore>> {
+    let database_url = settings
+        .memory_database_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("MEMORY_DATABASE_URL is required for Postgres persistent memory")
+        })?;
+    let repository = oxide_agent_memory::pg::PgMemoryRepository::connect_with_max_connections(
+        database_url,
+        settings
+            .memory_database_max_connections
+            .unwrap_or(DEFAULT_MEMORY_DATABASE_MAX_CONNECTIONS),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("failed to connect Postgres persistent memory: {error}"))?;
+    if settings.memory_database_auto_migrate.unwrap_or(true) {
+        repository.migrate().await.map_err(|error| {
+            anyhow::anyhow!("failed to migrate Postgres persistent memory: {error}")
+        })?;
+    }
+    Ok(Arc::new(repository))
+}
 
 /// Scope-aware policy for topic-native memory behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,32 +176,119 @@ impl MemoryBehaviorRuntime {
 /// Object-safe persistent-memory write surface used by the runner.
 #[async_trait]
 pub trait PersistentMemoryStore: Send + Sync {
+    /// Create or update one scoped memory thread.
     async fn upsert_thread(&self, record: ThreadRecord) -> Result<ThreadRecord, RepositoryError>;
+    /// Load one scoped memory thread by identifier.
+    async fn get_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>, RepositoryError>;
+    /// Persist one durable episode record.
     async fn create_episode(
         &self,
         record: oxide_agent_memory::EpisodeRecord,
     ) -> Result<oxide_agent_memory::EpisodeRecord, RepositoryError>;
+    /// Load one durable episode by identifier.
+    async fn get_episode(
+        &self,
+        episode_id: &str,
+    ) -> Result<Option<oxide_agent_memory::EpisodeRecord>, RepositoryError>;
+    /// List durable episodes for one thread.
+    async fn list_episodes_for_thread(
+        &self,
+        thread_id: &str,
+        filter: &EpisodeListFilter,
+    ) -> Result<Vec<oxide_agent_memory::EpisodeRecord>, RepositoryError>;
+    /// Link one artifact to an existing durable episode.
+    async fn link_episode_artifact(
+        &self,
+        episode_id: &str,
+        artifact: ArtifactRef,
+    ) -> Result<Option<oxide_agent_memory::EpisodeRecord>, RepositoryError>;
+    /// Persist one reusable memory record.
     async fn create_memory(
         &self,
         record: oxide_agent_memory::MemoryRecord,
     ) -> Result<oxide_agent_memory::MemoryRecord, RepositoryError>;
+    /// Create or update one reusable memory record.
     async fn upsert_memory(
         &self,
         record: oxide_agent_memory::MemoryRecord,
     ) -> Result<oxide_agent_memory::MemoryRecord, RepositoryError>;
+    /// Load one reusable memory record by identifier.
+    async fn get_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<oxide_agent_memory::MemoryRecord>, RepositoryError>;
+    /// Soft-delete one reusable memory record.
     async fn delete_memory(
         &self,
         memory_id: &str,
     ) -> Result<Option<oxide_agent_memory::MemoryRecord>, RepositoryError>;
+    /// List reusable memory records for one context.
     async fn list_memories(
         &self,
         context_key: &str,
         filter: &MemoryListFilter,
     ) -> Result<Vec<oxide_agent_memory::MemoryRecord>, RepositoryError>;
+    /// Execute lexical search over durable episodes.
+    async fn search_episodes_lexical(
+        &self,
+        query: &str,
+        filter: &EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, RepositoryError>;
+    /// Execute lexical search over reusable memories.
+    async fn search_memories_lexical(
+        &self,
+        query: &str,
+        filter: &MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, RepositoryError>;
+    /// Load embedding state for one durable-memory owner.
+    async fn get_embedding(
+        &self,
+        owner_type: EmbeddingOwnerType,
+        owner_id: &str,
+    ) -> Result<Option<EmbeddingRecord>, RepositoryError>;
+    /// Mark one durable-memory owner as pending embedding generation.
+    async fn upsert_embedding_pending(
+        &self,
+        update: EmbeddingPendingUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError>;
+    /// Persist one successful embedding vector.
+    async fn upsert_embedding_ready(
+        &self,
+        update: EmbeddingReadyUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError>;
+    /// Persist one failed embedding generation attempt.
+    async fn upsert_embedding_failure(
+        &self,
+        update: EmbeddingFailureUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError>;
+    /// List episode records that still need embedding backfill.
+    async fn list_episode_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> Result<Vec<EpisodeEmbeddingCandidate>, RepositoryError>;
+    /// List reusable memories that still need embedding backfill.
+    async fn list_memory_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> Result<Vec<MemoryEmbeddingCandidate>, RepositoryError>;
+    /// Execute vector similarity search over durable episodes.
+    async fn search_episodes_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, RepositoryError>;
+    /// Execute vector similarity search over reusable memories.
+    async fn search_memories_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, RepositoryError>;
+    /// Create or update one scoped session-state record.
     async fn upsert_session_state(
         &self,
         record: SessionStateRecord,
     ) -> Result<SessionStateRecord, RepositoryError>;
+    /// List session-state records matching one filter.
     async fn list_session_states(
         &self,
         filter: &SessionStateListFilter,
@@ -187,11 +304,38 @@ where
         MemoryRepository::upsert_thread(self, record).await
     }
 
+    async fn get_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>, RepositoryError> {
+        MemoryRepository::get_thread(self, &thread_id.to_string()).await
+    }
+
     async fn create_episode(
         &self,
         record: oxide_agent_memory::EpisodeRecord,
     ) -> Result<oxide_agent_memory::EpisodeRecord, RepositoryError> {
         MemoryRepository::create_episode(self, record).await
+    }
+
+    async fn get_episode(
+        &self,
+        episode_id: &str,
+    ) -> Result<Option<oxide_agent_memory::EpisodeRecord>, RepositoryError> {
+        MemoryRepository::get_episode(self, &episode_id.to_string()).await
+    }
+
+    async fn list_episodes_for_thread(
+        &self,
+        thread_id: &str,
+        filter: &EpisodeListFilter,
+    ) -> Result<Vec<oxide_agent_memory::EpisodeRecord>, RepositoryError> {
+        MemoryRepository::list_episodes_for_thread(self, &thread_id.to_string(), filter).await
+    }
+
+    async fn link_episode_artifact(
+        &self,
+        episode_id: &str,
+        artifact: ArtifactRef,
+    ) -> Result<Option<oxide_agent_memory::EpisodeRecord>, RepositoryError> {
+        MemoryRepository::link_episode_artifact(self, &episode_id.to_string(), artifact).await
     }
 
     async fn create_memory(
@@ -208,6 +352,13 @@ where
         MemoryRepository::upsert_memory(self, record).await
     }
 
+    async fn get_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<oxide_agent_memory::MemoryRecord>, RepositoryError> {
+        MemoryRepository::get_memory(self, memory_id).await
+    }
+
     async fn delete_memory(
         &self,
         memory_id: &str,
@@ -221,6 +372,81 @@ where
         filter: &MemoryListFilter,
     ) -> Result<Vec<oxide_agent_memory::MemoryRecord>, RepositoryError> {
         MemoryRepository::list_memories(self, context_key, filter).await
+    }
+
+    async fn search_episodes_lexical(
+        &self,
+        query: &str,
+        filter: &EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, RepositoryError> {
+        MemoryRepository::search_episodes_lexical(self, query, filter).await
+    }
+
+    async fn search_memories_lexical(
+        &self,
+        query: &str,
+        filter: &MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, RepositoryError> {
+        MemoryRepository::search_memories_lexical(self, query, filter).await
+    }
+
+    async fn get_embedding(
+        &self,
+        owner_type: EmbeddingOwnerType,
+        owner_id: &str,
+    ) -> Result<Option<EmbeddingRecord>, RepositoryError> {
+        MemoryRepository::get_embedding(self, owner_type, owner_id).await
+    }
+
+    async fn upsert_embedding_pending(
+        &self,
+        update: EmbeddingPendingUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError> {
+        MemoryRepository::upsert_embedding_pending(self, update).await
+    }
+
+    async fn upsert_embedding_ready(
+        &self,
+        update: EmbeddingReadyUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError> {
+        MemoryRepository::upsert_embedding_ready(self, update).await
+    }
+
+    async fn upsert_embedding_failure(
+        &self,
+        update: EmbeddingFailureUpdate,
+    ) -> Result<EmbeddingRecord, RepositoryError> {
+        MemoryRepository::upsert_embedding_failure(self, update).await
+    }
+
+    async fn list_episode_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> Result<Vec<EpisodeEmbeddingCandidate>, RepositoryError> {
+        MemoryRepository::list_episode_embedding_backfill_candidates(self, request).await
+    }
+
+    async fn list_memory_embedding_backfill_candidates(
+        &self,
+        request: &EmbeddingBackfillRequest,
+    ) -> Result<Vec<MemoryEmbeddingCandidate>, RepositoryError> {
+        MemoryRepository::list_memory_embedding_backfill_candidates(self, request).await
+    }
+
+    async fn search_episodes_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &EpisodeSearchFilter,
+    ) -> Result<Vec<EpisodeSearchHit>, RepositoryError> {
+        MemoryRepository::search_episodes_vector(self, query_embedding, filter).await
+    }
+
+    async fn search_memories_vector(
+        &self,
+        query_embedding: &[f32],
+        filter: &MemorySearchFilter,
+    ) -> Result<Vec<MemorySearchHit>, RepositoryError> {
+        MemoryRepository::search_memories_vector(self, query_embedding, filter).await
     }
 
     async fn upsert_session_state(
@@ -499,7 +725,7 @@ impl MemoryEmbeddingGenerator for LlmMemoryEmbeddingGenerator {
 
 #[derive(Clone)]
 pub struct PersistentMemoryEmbeddingIndexer {
-    storage: Arc<dyn StorageProvider>,
+    store: Arc<dyn PersistentMemoryStore>,
     generator: Arc<dyn MemoryEmbeddingGenerator>,
     model_id: String,
     backfill_limit: usize,
@@ -512,8 +738,18 @@ impl PersistentMemoryEmbeddingIndexer {
         generator: Arc<dyn MemoryEmbeddingGenerator>,
         model_id: impl Into<String>,
     ) -> Self {
+        let store: Arc<dyn PersistentMemoryStore> = Arc::new(StorageMemoryRepository::new(storage));
+        Self::new_with_store(store, generator, model_id)
+    }
+
+    #[must_use]
+    pub fn new_with_store(
+        store: Arc<dyn PersistentMemoryStore>,
+        generator: Arc<dyn MemoryEmbeddingGenerator>,
+        model_id: impl Into<String>,
+    ) -> Self {
         Self {
-            storage,
+            store,
             generator,
             model_id: model_id.into(),
             backfill_limit: EMBEDDING_BACKFILL_LIMIT,
@@ -528,8 +764,8 @@ impl PersistentMemoryEmbeddingIndexer {
             model_id: self.model_id.clone(),
             content_hash: embedding_content_hash(&text),
         };
-        self.storage
-            .upsert_memory_embedding_pending(EmbeddingPendingUpdate {
+        self.store
+            .upsert_embedding_pending(EmbeddingPendingUpdate {
                 base: base.clone(),
                 requested_at: Utc::now(),
             })
@@ -540,8 +776,8 @@ impl PersistentMemoryEmbeddingIndexer {
             .await
         {
             Ok(embedding) => {
-                self.storage
-                    .upsert_memory_embedding_ready(EmbeddingReadyUpdate {
+                self.store
+                    .upsert_embedding_ready(EmbeddingReadyUpdate {
                         base,
                         embedding,
                         indexed_at: Utc::now(),
@@ -550,8 +786,8 @@ impl PersistentMemoryEmbeddingIndexer {
                 Ok(())
             }
             Err(error) => {
-                self.storage
-                    .upsert_memory_embedding_failure(EmbeddingFailureUpdate {
+                self.store
+                    .upsert_embedding_failure(EmbeddingFailureUpdate {
                         base,
                         error: error.to_string(),
                         failed_at: Utc::now(),
@@ -570,8 +806,8 @@ impl PersistentMemoryEmbeddingIndexer {
             model_id: self.model_id.clone(),
             content_hash: embedding_content_hash(&text),
         };
-        self.storage
-            .upsert_memory_embedding_pending(EmbeddingPendingUpdate {
+        self.store
+            .upsert_embedding_pending(EmbeddingPendingUpdate {
                 base: base.clone(),
                 requested_at: Utc::now(),
             })
@@ -582,8 +818,8 @@ impl PersistentMemoryEmbeddingIndexer {
             .await
         {
             Ok(embedding) => {
-                self.storage
-                    .upsert_memory_embedding_ready(EmbeddingReadyUpdate {
+                self.store
+                    .upsert_embedding_ready(EmbeddingReadyUpdate {
                         base,
                         embedding,
                         indexed_at: Utc::now(),
@@ -592,8 +828,8 @@ impl PersistentMemoryEmbeddingIndexer {
                 Ok(())
             }
             Err(error) => {
-                self.storage
-                    .upsert_memory_embedding_failure(EmbeddingFailureUpdate {
+                self.store
+                    .upsert_embedding_failure(EmbeddingFailureUpdate {
                         base,
                         error: error.to_string(),
                         failed_at: Utc::now(),
@@ -610,15 +846,15 @@ impl PersistentMemoryEmbeddingIndexer {
             limit: Some(self.backfill_limit),
         };
         for candidate in self
-            .storage
-            .list_memory_episode_embedding_backfill_candidates(request.clone())
+            .store
+            .list_episode_embedding_backfill_candidates(&request)
             .await?
         {
             self.index_episode(&candidate.record).await?;
         }
         for candidate in self
-            .storage
-            .list_memory_record_embedding_backfill_candidates(request)
+            .store
+            .list_memory_embedding_backfill_candidates(&request)
             .await?
         {
             self.index_memory(&candidate.record).await?;
@@ -665,15 +901,22 @@ pub(crate) enum DurableMemorySearchItem {
 
 #[derive(Clone)]
 pub struct DurableMemoryRetriever {
-    storage: Arc<dyn StorageProvider>,
+    store: Arc<dyn PersistentMemoryStore>,
     generator: Option<Arc<dyn MemoryEmbeddingGenerator>>,
 }
 
 impl DurableMemoryRetriever {
+    #[cfg(test)]
     #[must_use]
     pub fn new(storage: Arc<dyn StorageProvider>) -> Self {
+        let store: Arc<dyn PersistentMemoryStore> = Arc::new(StorageMemoryRepository::new(storage));
+        Self::new_with_store(store)
+    }
+
+    #[must_use]
+    pub fn new_with_store(store: Arc<dyn PersistentMemoryStore>) -> Self {
         Self {
-            storage,
+            store,
             generator: None,
         }
     }
@@ -762,8 +1005,8 @@ impl DurableMemoryRetriever {
         if plan.search_episodes {
             let filter = episode_search_filter(scope, &plan, time_range.clone(), candidate_limit);
             let lexical_hits = self
-                .storage
-                .search_memory_episodes_lexical(plan.query.clone(), filter.clone())
+                .store
+                .search_episodes_lexical(&plan.query, &filter)
                 .await?;
             let vector_hits = self.search_episode_vectors(&plan, &filter).await;
             candidates.extend(fuse_episode_hits(lexical_hits, vector_hits));
@@ -772,8 +1015,8 @@ impl DurableMemoryRetriever {
         if plan.search_memories {
             let filter = memory_search_filter(scope, &plan, time_range, candidate_limit);
             let lexical_hits = self
-                .storage
-                .search_memory_records_lexical(plan.query.clone(), filter.clone())
+                .store
+                .search_memories_lexical(&plan.query, &filter)
                 .await?;
             let vector_hits = self.search_memory_vectors(&plan, &filter).await;
             candidates.extend(fuse_memory_hits(lexical_hits, vector_hits));
@@ -840,8 +1083,8 @@ impl DurableMemoryRetriever {
         };
 
         match self
-            .storage
-            .search_memory_episodes_vector(query_embedding, filter.clone())
+            .store
+            .search_episodes_vector(&query_embedding, filter)
             .await
         {
             Ok(hits) => hits,
@@ -870,8 +1113,8 @@ impl DurableMemoryRetriever {
         };
 
         match self
-            .storage
-            .search_memory_records_vector(query_embedding, filter.clone())
+            .store
+            .search_memories_vector(&query_embedding, filter)
             .await
         {
             Ok(hits) => hits,
@@ -1740,8 +1983,7 @@ mod tests {
             .await
             .expect("post-run persistence should succeed");
 
-        let episode = store
-            .get_episode(&"episode-1".to_string())
+        let episode = MemoryRepository::get_episode(store.as_ref(), &"episode-1".to_string())
             .await
             .expect("episode lookup should succeed")
             .expect("episode should exist");
@@ -1810,11 +2052,12 @@ mod tests {
             .expect("session state should exist");
         assert_eq!(state.cleanup_status, CleanupStatus::Idle);
         assert_eq!(state.pending_episode_id.as_deref(), Some("episode-1"));
-        assert!(store
-            .get_episode(&"episode-1".to_string())
-            .await
-            .expect("episode lookup should succeed")
-            .is_none());
+        assert!(
+            MemoryRepository::get_episode(store.as_ref(), &"episode-1".to_string())
+                .await
+                .expect("episode lookup should succeed")
+                .is_none()
+        );
         assert!(MemoryRepository::list_memories(
             store.as_ref(),
             "topic-a",
@@ -1917,16 +2160,18 @@ mod tests {
         assert!(topic_b_memories
             .iter()
             .all(|memory| memory.context_key == "topic-b"));
-        assert!(store
-            .get_episode(&"episode-a".to_string())
-            .await
-            .expect("episode-a lookup should succeed")
-            .is_some());
-        assert!(store
-            .get_episode(&"episode-b".to_string())
-            .await
-            .expect("episode-b lookup should succeed")
-            .is_some());
+        assert!(
+            MemoryRepository::get_episode(store.as_ref(), &"episode-a".to_string())
+                .await
+                .expect("episode-a lookup should succeed")
+                .is_some()
+        );
+        assert!(
+            MemoryRepository::get_episode(store.as_ref(), &"episode-b".to_string())
+                .await
+                .expect("episode-b lookup should succeed")
+                .is_some()
+        );
     }
 
     #[tokio::test]

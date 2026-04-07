@@ -2,12 +2,12 @@
 
 use crate::agent::persistent_memory::{
     DurableMemoryRetriever, DurableMemorySearchItem, DurableMemorySearchRequest,
-    MemoryEmbeddingGenerator,
+    MemoryEmbeddingGenerator, PersistentMemoryStore,
 };
 use crate::agent::provider::ToolProvider;
 use crate::agent::session::AgentMemoryScope;
 use crate::llm::ToolDefinition;
-use crate::storage::{StorageError, StorageProvider};
+use crate::storage::{StorageMemoryRepository, StorageProvider};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -194,7 +194,8 @@ pub fn memory_tool_names() -> Vec<String> {
 
 /// Provider for scope-aware persistent-memory read tools.
 pub struct MemoryProvider {
-    storage: Arc<dyn StorageProvider>,
+    store: Arc<dyn PersistentMemoryStore>,
+    artifact_storage: Option<Arc<dyn StorageProvider>>,
     scope: AgentMemoryScope,
     query_embedding_generator: Option<Arc<dyn MemoryEmbeddingGenerator>>,
 }
@@ -203,8 +204,21 @@ impl MemoryProvider {
     /// Create a provider bound to the current persistent-memory scope.
     #[must_use]
     pub fn new(storage: Arc<dyn StorageProvider>, scope: AgentMemoryScope) -> Self {
+        let store: Arc<dyn PersistentMemoryStore> =
+            Arc::new(StorageMemoryRepository::new(Arc::clone(&storage)));
+        Self::new_with_store(store, Some(storage), scope)
+    }
+
+    /// Create a provider from an explicit typed-memory backend.
+    #[must_use]
+    pub fn new_with_store(
+        store: Arc<dyn PersistentMemoryStore>,
+        artifact_storage: Option<Arc<dyn StorageProvider>>,
+        scope: AgentMemoryScope,
+    ) -> Self {
         Self {
-            storage,
+            store,
+            artifact_storage,
             scope,
             query_embedding_generator: None,
         }
@@ -221,7 +235,7 @@ impl MemoryProvider {
     }
 
     fn durable_memory_retriever(&self) -> DurableMemoryRetriever {
-        let mut retriever = DurableMemoryRetriever::new(Arc::clone(&self.storage));
+        let mut retriever = DurableMemoryRetriever::new_with_store(Arc::clone(&self.store));
         if let Some(generator) = self.query_embedding_generator.as_ref() {
             retriever = retriever.with_query_embedding_generator(Arc::clone(generator));
         }
@@ -406,8 +420,8 @@ impl MemoryProvider {
 
     async fn resolve_visible_episode(&self, episode_id: &str) -> Result<Option<EpisodeRecord>> {
         let Some(episode) = self
-            .storage
-            .get_memory_episode(episode_id.to_string())
+            .store
+            .get_episode(episode_id)
             .await
             .map_err(|error| anyhow!("failed to read memory episode: {error}"))?
         else {
@@ -415,8 +429,8 @@ impl MemoryProvider {
         };
 
         let Some(thread) = self
-            .storage
-            .get_memory_thread(episode.thread_id.clone())
+            .store
+            .get_thread(&episode.thread_id)
             .await
             .map_err(|error| anyhow!("failed to read episode thread: {error}"))?
         else {
@@ -452,12 +466,12 @@ impl MemoryProvider {
         &self,
         record: MemoryRecord,
     ) -> Result<(bool, MemoryRecord)> {
-        match self.storage.create_memory_record(record.clone()).await {
+        match self.store.create_memory(record.clone()).await {
             Ok(stored) => Ok((false, stored)),
-            Err(error) if is_duplicate_write_error(&error) => {
+            Err(error) if is_duplicate_repository_write_error(&error) => {
                 let existing = self
-                    .storage
-                    .get_memory_record(record.memory_id.clone())
+                    .store
+                    .get_memory(&record.memory_id)
                     .await
                     .map_err(|fetch_error| {
                         anyhow!(
@@ -555,8 +569,8 @@ impl MemoryProvider {
         )?;
 
         let Some(updated_episode) = self
-            .storage
-            .link_memory_episode_artifact(args.episode_id.clone(), artifact.clone())
+            .store
+            .link_episode_artifact(&args.episode_id, artifact.clone())
             .await
             .map_err(|error| anyhow!("failed to link episode artifact: {error}"))?
         else {
@@ -627,8 +641,8 @@ impl MemoryProvider {
     async fn execute_read_episode(&self, arguments: &str) -> Result<String> {
         let args: MemoryReadEpisodeArgs = Self::parse_args(arguments, TOOL_MEMORY_READ_EPISODE)?;
         let Some(episode) = self
-            .storage
-            .get_memory_episode(args.episode_id.clone())
+            .store
+            .get_episode(&args.episode_id)
             .await
             .map_err(|error| anyhow!("failed to read memory episode: {error}"))?
         else {
@@ -638,8 +652,8 @@ impl MemoryProvider {
         };
 
         let Some(thread) = self
-            .storage
-            .get_memory_thread(episode.thread_id.clone())
+            .store
+            .get_thread(&episode.thread_id)
             .await
             .map_err(|error| anyhow!("failed to read episode thread: {error}"))?
         else {
@@ -672,8 +686,8 @@ impl MemoryProvider {
             Self::parse_args(arguments, TOOL_MEMORY_READ_THREAD_SUMMARY)?;
         let thread_id = args.thread_id.unwrap_or_else(|| self.scoped_thread_id());
         let Some(thread) = self
-            .storage
-            .get_memory_thread(thread_id.clone())
+            .store
+            .get_thread(&thread_id)
             .await
             .map_err(|error| anyhow!("failed to read memory thread: {error}"))?
         else {
@@ -686,10 +700,10 @@ impl MemoryProvider {
 
         let episode_limit = normalize_limit(args.episode_limit, DEFAULT_THREAD_EPISODE_LIMIT, 20);
         let recent_episodes = self
-            .storage
-            .list_memory_episodes_for_thread(
-                thread_id.clone(),
-                EpisodeListFilter {
+            .store
+            .list_episodes_for_thread(
+                &thread_id,
+                &EpisodeListFilter {
                     min_importance: None,
                     outcome: None,
                     limit: Some(episode_limit),
@@ -720,8 +734,8 @@ impl MemoryProvider {
             Self::parse_args(arguments, TOOL_MEMORY_READ_THREAD_WINDOW)?;
         let thread_id = args.thread_id.unwrap_or_else(|| self.scoped_thread_id());
         let Some(thread) = self
-            .storage
-            .get_memory_thread(thread_id.clone())
+            .store
+            .get_thread(&thread_id)
             .await
             .map_err(|error| anyhow!("failed to read memory thread: {error}"))?
         else {
@@ -734,11 +748,16 @@ impl MemoryProvider {
 
         let offset = args.offset.unwrap_or(0);
         let limit = normalize_limit(args.limit, DEFAULT_WINDOW_LIMIT, MAX_WINDOW_LIMIT);
+        let Some(artifact_storage) = self.artifact_storage.as_ref() else {
+            return Err(anyhow!(
+                "memory thread window reads require artifact storage to be configured"
+            ));
+        };
         let mut episodes = self
-            .storage
-            .list_memory_episodes_for_thread(
-                thread_id.clone(),
-                EpisodeListFilter {
+            .store
+            .list_episodes_for_thread(
+                &thread_id,
+                &EpisodeListFilter {
                     min_importance: None,
                     outcome: None,
                     limit: Some(100),
@@ -758,7 +777,9 @@ impl MemoryProvider {
                 .filter(|artifact| artifact.storage_key.starts_with("archive/"))
             {
                 let payload = self
-                    .storage
+                    .artifact_storage
+                    .as_ref()
+                    .unwrap_or(artifact_storage)
                     .load_text_artifact(artifact.storage_key.clone())
                     .await
                     .map_err(|error| {
@@ -1138,8 +1159,13 @@ fn memory_type_tag(memory_type: MemoryType) -> &'static str {
     }
 }
 
-fn is_duplicate_write_error(error: &StorageError) -> bool {
-    matches!(error, StorageError::InvalidInput(message) if message.contains("already exists"))
+fn is_duplicate_repository_write_error(error: &oxide_agent_memory::RepositoryError) -> bool {
+    matches!(
+        error,
+        oxide_agent_memory::RepositoryError::Conflict(message)
+            | oxide_agent_memory::RepositoryError::Storage(message)
+                if message.contains("already exists")
+    )
 }
 
 #[cfg(test)]

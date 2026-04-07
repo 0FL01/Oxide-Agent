@@ -247,6 +247,29 @@ impl MemoryRepository for InMemoryMemoryRepository {
         }
     }
 
+    fn link_episode_artifact(
+        &self,
+        episode_id: &EpisodeId,
+        artifact: ArtifactRef,
+    ) -> impl Future<Output = Result<Option<EpisodeRecord>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let episode_id = episode_id.clone();
+        async move {
+            let mut guard = state.write().map_err(|_| Self::map_storage_error())?;
+            let Some(existing) = guard.episodes.get_mut(&episode_id) else {
+                return Ok(None);
+            };
+            if existing
+                .artifacts
+                .iter()
+                .all(|candidate| candidate.storage_key != artifact.storage_key)
+            {
+                existing.artifacts.push(artifact);
+            }
+            Ok(Some(existing.clone()))
+        }
+    }
+
     fn create_memory(
         &self,
         record: MemoryRecord,

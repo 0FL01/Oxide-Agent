@@ -7,6 +7,7 @@ use crate::config::{
     BotSettings,
 };
 use crate::startup_maintenance::run_startup_tool_drift_prune;
+use oxide_agent_core::agent::{connect_postgres_memory_store, PersistentMemoryStore};
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
@@ -19,11 +20,13 @@ use tracing::{error, info};
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
     let storage = init_storage(&settings).await;
+    let persistent_memory_store = init_persistent_memory_store(&settings).await;
     let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
     info!("LLM Client initialized.");
 
     if let Err(error) = run_startup_tool_drift_prune(
         Arc::clone(&storage),
+        Arc::clone(&persistent_memory_store),
         Arc::clone(&llm_client),
         Arc::clone(&settings),
     )
@@ -39,6 +42,7 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
         bot.clone(),
         storage.clone(),
         llm_client.clone(),
+        persistent_memory_store.clone(),
         settings.clone(),
     );
     let bot_state = init_bot_state();
@@ -50,6 +54,7 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![
             storage,
+            persistent_memory_store,
             llm_client,
             settings,
             bot_state,
@@ -74,6 +79,19 @@ async fn init_storage(settings: &BotSettings) -> Arc<storage::R2Storage> {
         }
         Err(e) => {
             error!("Failed to initialize R2 Storage: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn init_persistent_memory_store(settings: &BotSettings) -> Arc<dyn PersistentMemoryStore> {
+    match connect_postgres_memory_store(settings.agent.as_ref()).await {
+        Ok(store) => {
+            info!("Postgres persistent memory initialized.");
+            store
+        }
+        Err(error) => {
+            error!(%error, "Failed to initialize Postgres persistent memory");
             std::process::exit(1);
         }
     }
@@ -256,10 +274,17 @@ async fn handle_start_text(
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::handlers::handle_text(
-        bot, msg, storage, llm, dialogue, settings,
+        bot,
+        msg,
+        storage,
+        llm,
+        dialogue,
+        persistent_memory_store,
+        settings,
     ))
     .await
     {
@@ -274,10 +299,17 @@ async fn handle_start_voice(
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::handlers::handle_voice(
-        bot, msg, storage, llm, dialogue, settings,
+        bot,
+        msg,
+        storage,
+        llm,
+        dialogue,
+        persistent_memory_store,
+        settings,
     ))
     .await
     {
@@ -292,9 +324,20 @@ async fn handle_start_photo(
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings).await {
+    if let Err(e) = bot::handlers::handle_photo(
+        bot,
+        msg,
+        storage,
+        llm,
+        dialogue,
+        persistent_memory_store,
+        settings,
+    )
+    .await
+    {
         error!("Photo handler error: {}", e);
     }
     respond(())
@@ -306,9 +349,20 @@ async fn handle_start_video(
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_video(bot, msg, storage, llm, dialogue, settings).await {
+    if let Err(e) = bot::handlers::handle_video(
+        bot,
+        msg,
+        storage,
+        llm,
+        dialogue,
+        persistent_memory_store,
+        settings,
+    )
+    .await
+    {
         error!("Video handler error: {}", e);
     }
     respond(())
@@ -320,9 +374,19 @@ async fn handle_start_document(
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings).await
+    if let Err(e) = bot::handlers::handle_document(
+        bot,
+        msg,
+        dialogue,
+        storage,
+        llm,
+        persistent_memory_store,
+        settings,
+    )
+    .await
     {
         error!("Document handler error: {}", e);
     }
@@ -347,10 +411,17 @@ async fn handle_agent_message(
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::agent_handlers::handle_agent_message(
-        bot, msg, storage, llm, dialogue, settings,
+        bot,
+        msg,
+        storage,
+        llm,
+        dialogue,
+        persistent_memory_store,
+        settings,
     ))
     .await
     {
@@ -364,6 +435,7 @@ async fn handle_callback(
     q: CallbackQuery,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
     bot_state: Arc<InMemStorage<State>>,
 ) -> Result<(), teloxide::RequestError> {
@@ -384,8 +456,16 @@ async fn handle_callback(
     }
 
     if let Some(dialogue) = &dialogue {
-        match bot::handlers::handle_menu_callback(&bot, &q, &storage, &llm, &settings, dialogue)
-            .await
+        match bot::handlers::handle_menu_callback(
+            &bot,
+            &q,
+            &storage,
+            &llm,
+            &persistent_memory_store,
+            &settings,
+            dialogue,
+        )
+        .await
         {
             Ok(true) => {
                 return respond(());
@@ -410,14 +490,23 @@ async fn handle_callback(
         return respond(());
     };
 
-    if let Err(e) =
-        bot::agent_handlers::handle_agent_callback(bot, q, storage, llm, settings, dialogue).await
+    if let Err(e) = bot::agent_handlers::handle_agent_callback(
+        bot,
+        q,
+        storage,
+        llm,
+        persistent_memory_store,
+        settings,
+        dialogue,
+    )
+    .await
     {
         error!("Agent callback handler error: {}", e);
     }
     respond(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,
@@ -425,10 +514,18 @@ async fn handle_agent_confirmation(
     action: bot::state::ConfirmationType,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = bot::agent_handlers::handle_agent_confirmation(
-        bot, msg, dialogue, action, storage, llm, settings,
+        bot,
+        msg,
+        dialogue,
+        action,
+        storage,
+        llm,
+        persistent_memory_store,
+        settings,
     )
     .await
     {

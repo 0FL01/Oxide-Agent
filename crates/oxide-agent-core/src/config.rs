@@ -204,6 +204,13 @@ pub struct AgentSettings {
     /// Embedding model ID
     pub embedding_model_id: Option<String>,
 
+    /// Postgres connection string for typed persistent memory.
+    pub memory_database_url: Option<String>,
+    /// Maximum SQL connections for the persistent-memory Postgres pool.
+    pub memory_database_max_connections: Option<u32>,
+    /// Run embedded persistent-memory migrations during startup.
+    pub memory_database_auto_migrate: Option<bool>,
+
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
     /// Sub-agent timeout in seconds
@@ -356,6 +363,25 @@ impl AgentSettings {
                     settings.embedding_model_id = Some(val);
                 }
             }
+        }
+
+        if settings.memory_database_url.is_none() {
+            if let Ok(val) = std::env::var("MEMORY_DATABASE_URL") {
+                if !val.is_empty() {
+                    settings.memory_database_url = Some(val);
+                }
+            }
+        }
+        if settings.memory_database_max_connections.is_none() {
+            if let Ok(val) = std::env::var("MEMORY_DATABASE_MAX_CONNECTIONS") {
+                if let Ok(parsed) = val.parse::<u32>() {
+                    settings.memory_database_max_connections = Some(parsed);
+                }
+            }
+        }
+        if settings.memory_database_auto_migrate.is_none() {
+            settings.memory_database_auto_migrate =
+                parse_optional_env_bool("MEMORY_DATABASE_AUTO_MIGRATE");
         }
 
         Ok(settings)

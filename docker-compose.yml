@@ -1,6 +1,31 @@
 name: ${COMPOSE_PROJECT_NAME:-oxide-agent}
 
 services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: oxide_agent_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-oxide_agent}
+      - POSTGRES_USER=${POSTGRES_USER:-oxide_agent}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_me}
+      - TZ=Europe/Moscow
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oxide_agent} -d ${POSTGRES_DB:-oxide_agent}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
   sandbox_image:
     build:
       context: .
@@ -23,6 +48,9 @@ services:
       - CRAWL4AI_URL=http://127.0.0.1:11235
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
+      - MEMORY_DATABASE_URL=${MEMORY_DATABASE_URL:-postgres://oxide_agent:change_me@127.0.0.1:5432/oxide_agent}
+      - MEMORY_DATABASE_MAX_CONNECTIONS=${MEMORY_DATABASE_MAX_CONNECTIONS:-5}
+      - MEMORY_DATABASE_AUTO_MIGRATE=${MEMORY_DATABASE_AUTO_MIGRATE:-true}
       - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
@@ -34,6 +62,8 @@ services:
       - sandboxd-run:/run/sandboxd
     network_mode: host
     depends_on:
+      postgres:
+        condition: service_healthy
       sandboxd:
         condition: service_healthy
       crawl4ai:
@@ -166,4 +196,5 @@ services:
 
 volumes:
   browser-use-data:
+  postgres-data:
   sandboxd-run:

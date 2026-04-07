@@ -8,11 +8,11 @@ use super::mapping::{
 use super::migrator;
 use crate::repository::{MemoryRepository, RepositoryError};
 use crate::types::{
-    EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
-    EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
-    EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
-    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateListFilter,
-    SessionStateRecord, ThreadId, ThreadRecord,
+    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
+    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate,
+    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryEmbeddingCandidate, MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit,
+    SessionStateListFilter, SessionStateRecord, ThreadId, ThreadRecord,
 };
 use pgvector::Vector;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -35,8 +35,16 @@ impl PgMemoryRepository {
 
     /// Connect to Postgres and construct a repository.
     pub async fn connect(database_url: &str) -> Result<Self, Error> {
+        Self::connect_with_max_connections(database_url, 5).await
+    }
+
+    /// Connect to Postgres with an explicit pool size.
+    pub async fn connect_with_max_connections(
+        database_url: &str,
+        max_connections: u32,
+    ) -> Result<Self, Error> {
         let pool = PgPoolOptions::new()
-            .max_connections(5)
+            .max_connections(max_connections.max(1))
             .connect(database_url)
             .await?;
         Ok(Self::new(pool))
@@ -271,6 +279,94 @@ impl MemoryRepository for PgMemoryRepository {
             .map_err(|error| map_sqlx_error("list_episodes_for_thread", error))?;
 
             rows.into_iter().map(EpisodeRecord::try_from).collect()
+        }
+    }
+
+    fn link_episode_artifact(
+        &self,
+        episode_id: &EpisodeId,
+        artifact: ArtifactRef,
+    ) -> impl Future<Output = Result<Option<EpisodeRecord>, RepositoryError>> + Send {
+        let pool = self.pool.clone();
+        let episode_id = episode_id.clone();
+        async move {
+            let mut transaction = pool
+                .begin()
+                .await
+                .map_err(|error| map_sqlx_error("link_episode_artifact.begin", error))?;
+
+            let Some(row) = sqlx::query_as::<_, EpisodeRow>(
+                r#"
+                SELECT
+                    episode_id,
+                    thread_id,
+                    context_key,
+                    goal,
+                    summary,
+                    outcome,
+                    tools_used,
+                    artifacts,
+                    failures,
+                    importance,
+                    created_at
+                FROM memory_episodes
+                WHERE episode_id = $1
+                FOR UPDATE
+                "#,
+            )
+            .bind(&episode_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| map_sqlx_error("link_episode_artifact.select", error))?
+            else {
+                transaction.commit().await.map_err(|error| {
+                    map_sqlx_error("link_episode_artifact.commit_missing", error)
+                })?;
+                return Ok(None);
+            };
+
+            let mut episode = EpisodeRecord::try_from(row)
+                .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            if episode
+                .artifacts
+                .iter()
+                .all(|candidate| candidate.storage_key != artifact.storage_key)
+            {
+                episode.artifacts.push(artifact);
+                let updated_row = sqlx::query_as::<_, EpisodeRow>(
+                    r#"
+                    UPDATE memory_episodes
+                    SET artifacts = $2
+                    WHERE episode_id = $1
+                    RETURNING
+                        episode_id,
+                        thread_id,
+                        context_key,
+                        goal,
+                        summary,
+                        outcome,
+                        tools_used,
+                        artifacts,
+                        failures,
+                        importance,
+                        created_at
+                    "#,
+                )
+                .bind(&episode_id)
+                .bind(Json(episode.artifacts.clone()))
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(|error| map_sqlx_error("link_episode_artifact.update", error))?;
+                episode = EpisodeRecord::try_from(updated_row)
+                    .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            }
+
+            transaction
+                .commit()
+                .await
+                .map_err(|error| map_sqlx_error("link_episode_artifact.commit", error))?;
+
+            Ok(Some(episode))
         }
     }
 

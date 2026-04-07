@@ -8,7 +8,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::{
     executor::AgentExecutor, AgentMemory, AgentMemoryCheckpoint, AgentMemoryScope, AgentSession,
-    SessionId,
+    PersistentMemoryStore, SessionId,
 };
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
@@ -48,6 +48,7 @@ pub(crate) struct EnsureSessionContext<'a> {
     pub(crate) transport_ctx: SessionTransportContext,
     pub(crate) llm: &'a Arc<LlmClient>,
     pub(crate) storage: &'a Arc<dyn StorageProvider>,
+    pub(crate) persistent_memory_store: &'a Arc<dyn PersistentMemoryStore>,
     pub(crate) settings: &'a Arc<BotSettings>,
 }
 
@@ -311,7 +312,10 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
     inject_topic_agents_md_for_flow(&ctx, &mut session).await;
 
     let mut executor = AgentExecutor::new(ctx.llm.clone(), session, ctx.settings.agent.clone())
-        .with_storage_memory_repository(ctx.storage.clone());
+        .with_persistent_memory_store_and_artifact_storage(
+            ctx.persistent_memory_store.clone(),
+            ctx.storage.clone(),
+        );
     executor.set_agents_md_context(ctx.storage.clone(), ctx.user_id, ctx.context_key.clone());
     if manager_enabled {
         let topic_lifecycle = Arc::new(TelegramManagerTopicLifecycle::new(
