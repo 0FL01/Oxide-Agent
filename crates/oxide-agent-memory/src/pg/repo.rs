@@ -167,36 +167,9 @@ async fn ensure_column_exists(
 
 /// Query the current vector dimensionality of `memory_embeddings.embedding`.
 ///
-/// Returns `None` if the table/column does not exist or the type cannot be
-/// parsed (e.g. the column is not a `VECTOR(N)` type).
+/// Uses `pg_catalog.format_type()` which returns a human-readable type name
+/// like `vector(768)`, then extracts the dimension from the parentheses.
 async fn query_vector_dimension(pool: &PgPool) -> anyhow::Result<u32> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT a.atttypmod \
-         FROM pg_attribute a \
-         JOIN pg_class c ON c.oid = a.attrelid \
-         JOIN pg_namespace n ON n.oid = c.relnamespace \
-         WHERE c.relname = 'memory_embeddings' \
-           AND a.attname = 'embedding' \
-           AND n.nspname = 'public'",
-    )
-    .fetch_optional(pool)
-    .await?;
-
-    // pgvector stores the dimension in atttypmod as dimension + VARHDRSZ (4).
-    // If the column was created as VECTOR(768), atttypmod = 768 + 4 = 772.
-    let dim = row
-        .and_then(|(typmod_str,)| {
-            // atttypmod is returned as a string like "772" by default
-            typmod_str.parse::<i32>().ok()
-        })
-        .map(|v| (v as u32).saturating_sub(4));
-
-    // Fallback: try pg_catalog.format_type which returns something like
-    // "vector(768)".
-    if let Some(d) = dim.filter(|&d| d > 0) {
-        return Ok(d);
-    }
-
     let ft: Option<(String,)> = sqlx::query_as(
         "SELECT format_type(a.atttypid, a.atttypmod) \
          FROM pg_attribute a \
