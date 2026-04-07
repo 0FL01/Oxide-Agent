@@ -64,7 +64,8 @@ pub struct AgentExecutor {
     session: AgentSession,
     skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
-    memory_storage: Option<Arc<dyn StorageProvider>>,
+    memory_store: Option<Arc<dyn PersistentMemoryStore>>,
+    memory_artifact_storage: Option<Arc<dyn StorageProvider>>,
     agents_md: Option<AgentsMdContext>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
     topic_infra: Option<TopicInfraContext>,
@@ -250,7 +251,8 @@ impl AgentExecutor {
             session,
             skill_registry,
             settings,
-            memory_storage: None,
+            memory_store: None,
+            memory_artifact_storage: None,
             agents_md: None,
             manager_control_plane: None,
             topic_infra: None,
@@ -266,27 +268,47 @@ impl AgentExecutor {
 
     /// Attach a custom persistent-memory store used for Stage-4 durable writes.
     #[must_use]
-    pub fn with_persistent_memory_store(mut self, store: Arc<dyn PersistentMemoryStore>) -> Self {
-        self.persistent_memory = Some(PersistentMemoryCoordinator::new(store));
-        self
+    pub fn with_persistent_memory_store(self, store: Arc<dyn PersistentMemoryStore>) -> Self {
+        self.configure_persistent_memory(store, None)
+    }
+
+    /// Attach a custom persistent-memory store with artifact storage for archive reads.
+    #[must_use]
+    pub fn with_persistent_memory_store_and_artifact_storage(
+        self,
+        store: Arc<dyn PersistentMemoryStore>,
+        artifact_storage: Arc<dyn StorageProvider>,
+    ) -> Self {
+        self.configure_persistent_memory(store, Some(artifact_storage))
     }
 
     /// Attach a storage-backed persistent-memory repository for Stage-4 durable writes.
     #[must_use]
-    pub fn with_storage_memory_repository(mut self, storage: Arc<dyn StorageProvider>) -> Self {
-        self.memory_storage = Some(Arc::clone(&storage));
-        let repository = Arc::new(StorageMemoryRepository::new(Arc::clone(&storage)));
-        let mut coordinator = PersistentMemoryCoordinator::new(repository);
+    pub fn with_storage_memory_repository(self, storage: Arc<dyn StorageProvider>) -> Self {
+        let repository: Arc<dyn PersistentMemoryStore> =
+            Arc::new(StorageMemoryRepository::new(Arc::clone(&storage)));
+        self.configure_persistent_memory(repository, Some(storage))
+    }
+
+    fn configure_persistent_memory(
+        mut self,
+        store: Arc<dyn PersistentMemoryStore>,
+        artifact_storage: Option<Arc<dyn StorageProvider>>,
+    ) -> Self {
+        self.memory_store = Some(Arc::clone(&store));
+        self.memory_artifact_storage = artifact_storage;
+        let mut coordinator = PersistentMemoryCoordinator::new(Arc::clone(&store));
         if let (Some(model_id), true) = (
             self.settings.embedding_model_id.clone(),
             self.runner.llm_client().is_embedding_available(),
         ) {
-            coordinator =
-                coordinator.with_embedding_indexer(PersistentMemoryEmbeddingIndexer::new(
-                    storage,
+            coordinator = coordinator.with_embedding_indexer(
+                PersistentMemoryEmbeddingIndexer::new_with_store(
+                    store,
                     Arc::new(LlmMemoryEmbeddingGenerator::new(self.runner.llm_client())),
                     model_id,
-                ));
+                ),
+            );
         }
         self.persistent_memory = Some(coordinator);
         self
@@ -561,9 +583,12 @@ impl AgentExecutor {
         };
         registry.register(Box::new(ytdlp_provider));
 
-        if let Some(storage) = &self.memory_storage {
-            let mut provider =
-                MemoryProvider::new(Arc::clone(storage), self.session.memory_scope().clone());
+        if let Some(store) = &self.memory_store {
+            let mut provider = MemoryProvider::new_with_store(
+                Arc::clone(store),
+                self.memory_artifact_storage.clone(),
+                self.session.memory_scope().clone(),
+            );
             if self.runner.llm_client().is_embedding_available() {
                 provider = provider.with_query_embedding_generator(Arc::new(
                     LlmMemoryEmbeddingGenerator::new(self.runner.llm_client()),
@@ -973,12 +998,12 @@ impl AgentExecutor {
         let mut messages =
             AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
 
-        if let Some(storage) = &self.memory_storage {
+        if let Some(store) = &self.memory_store {
             let query_embeddings = self.runner.llm_client().is_embedding_available().then(|| {
                 Arc::new(LlmMemoryEmbeddingGenerator::new(self.runner.llm_client()))
                     as Arc<dyn super::persistent_memory::MemoryEmbeddingGenerator>
             });
-            let mut retriever = DurableMemoryRetriever::new(Arc::clone(storage));
+            let mut retriever = DurableMemoryRetriever::new_with_store(Arc::clone(store));
             if let Some(query_embeddings) = query_embeddings {
                 retriever = retriever.with_query_embedding_generator(query_embeddings);
             }

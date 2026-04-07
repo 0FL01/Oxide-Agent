@@ -737,15 +737,13 @@ Audit baseline: `2026-04-07`, branch `feature/memento-mori`.
 ### P0 — завершить storage/backend story
 
 4. **Выбрать и закрепить production backend для typed memory.**
-   - Сейчас runtime реально wired через `StorageProvider`.
-   - При этом план всё ещё декларирует `Postgres + full-text + pgvector` как целевой production stack.
-   - Нужно принять одно из двух решений:
-     - либо реально подключить `PgMemoryRepository` в runtime;
-     - либо официально признать storage-backed backend основным и переписать план/доки под это.
+   - Решение принято: canonical production backend — `Postgres + full-text + pgvector`.
+   - Telegram runtime должен инициализировать общий `PersistentMemoryStore` через Postgres на старте и падать при недоступной БД.
+   - `StorageMemoryRepository` остаётся compatibility/test adapter'ом и источником artifact blobs, но не production retrieval/write path.
 
 5. **Если целевой backend остаётся Postgres/pgvector — довести его до deployable состояния.**
-   - Добавить `postgres`/`pgvector` service в `docker-compose.yml`.
-   - Добавить все нужные env vars в `.env.example`.
+   - [x] Добавить `postgres`/`pgvector` service в `docker-compose.yml`.
+   - [x] Добавить все нужные env vars в `.env.example`.
    - Описать bootstrap/migrations/backup/restore.
    - Добавить startup health checks и failure handling на случай недоступной БД.
 

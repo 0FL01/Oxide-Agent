@@ -10,7 +10,7 @@ use anyhow::Result;
 use oxide_agent_core::agent::executor::AgentExecutor;
 use oxide_agent_core::agent::providers::{inspect_topic_infra_config, ReminderContext};
 use oxide_agent_core::agent::recovery::{prune_tool_history_by_availability, HistoryRepairOutcome};
-use oxide_agent_core::agent::{AgentMemoryScope, AgentSession, SessionId};
+use oxide_agent_core::agent::{AgentMemoryScope, AgentSession, PersistentMemoryStore, SessionId};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::{
     resolve_active_topic_binding, PersistedAgentMemoryRef, R2Storage, StorageProvider,
@@ -55,6 +55,7 @@ pub(crate) struct StartupToolDriftPruneStats {
 /// Run the cold-start tool drift cleanup pass for persisted Telegram agent memory.
 pub(crate) async fn run_startup_tool_drift_prune(
     storage: Arc<R2Storage>,
+    persistent_memory_store: Arc<dyn PersistentMemoryStore>,
     llm_client: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<Option<StartupToolDriftPruneStats>> {
@@ -64,11 +65,18 @@ pub(crate) async fn run_startup_tool_drift_prune(
     }
 
     let storage_for_run = Arc::clone(&storage);
+    let persistent_memory_store_for_run = Arc::clone(&persistent_memory_store);
     let llm_for_run = Arc::clone(&llm_client);
     let settings_for_run = Arc::clone(&settings);
     let stats = timeout(
         Duration::from_secs(config.timeout_secs),
-        run_startup_tool_drift_prune_inner(storage_for_run, llm_for_run, settings_for_run, config),
+        run_startup_tool_drift_prune_inner(
+            storage_for_run,
+            persistent_memory_store_for_run,
+            llm_for_run,
+            settings_for_run,
+            config,
+        ),
     )
     .await
     .map_err(|_| {
@@ -94,6 +102,7 @@ pub(crate) async fn run_startup_tool_drift_prune(
 
 async fn run_startup_tool_drift_prune_inner(
     storage: Arc<R2Storage>,
+    persistent_memory_store: Arc<dyn PersistentMemoryStore>,
     llm_client: Arc<LlmClient>,
     settings: Arc<BotSettings>,
     config: StartupToolDriftPruneConfig,
@@ -105,6 +114,7 @@ async fn run_startup_tool_drift_prune_inner(
         stats.scanned_records = stats.scanned_records.saturating_add(1);
         if let Err(error) = prune_single_memory_record(
             Arc::clone(&storage),
+            Arc::clone(&persistent_memory_store),
             Arc::clone(&llm_client),
             Arc::clone(&settings),
             &reference,
@@ -128,6 +138,7 @@ async fn run_startup_tool_drift_prune_inner(
 
 async fn prune_single_memory_record(
     storage: Arc<R2Storage>,
+    persistent_memory_store: Arc<dyn PersistentMemoryStore>,
     llm_client: Arc<LlmClient>,
     settings: Arc<BotSettings>,
     reference: &PersistedAgentMemoryRef,
@@ -167,6 +178,7 @@ async fn prune_single_memory_record(
     let available_tools = resolve_available_tools_for_memory(
         Arc::clone(&storage_dyn),
         llm_client,
+        persistent_memory_store,
         settings,
         reference,
         chat_id,
@@ -238,6 +250,7 @@ async fn prune_single_memory_record(
 async fn resolve_available_tools_for_memory(
     storage: Arc<dyn StorageProvider>,
     llm_client: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn PersistentMemoryStore>,
     settings: Arc<BotSettings>,
     reference: &PersistedAgentMemoryRef,
     chat_id: ChatId,
@@ -282,7 +295,10 @@ async fn resolve_available_tools_for_memory(
         ),
     );
     let mut executor = AgentExecutor::new(llm_client, session, settings.agent.clone())
-        .with_storage_memory_repository(storage.clone());
+        .with_persistent_memory_store_and_artifact_storage(
+            persistent_memory_store,
+            storage.clone(),
+        );
     executor.set_agents_md_context(
         storage.clone(),
         reference.user_id,

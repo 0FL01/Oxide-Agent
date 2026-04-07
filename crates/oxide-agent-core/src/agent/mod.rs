@@ -77,6 +77,7 @@ pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry,
 pub use identity::SessionId;
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::{AgentMemory, ExternalizedPayload, PrunedArtifact};
+pub use persistent_memory::{connect_postgres_memory_store, PersistentMemoryStore};
 pub use profile::{
     dm_default_blocked_tools, dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
     topic_agent_all_hooks, topic_agent_default_blocked_tools, topic_agent_manageable_hooks,

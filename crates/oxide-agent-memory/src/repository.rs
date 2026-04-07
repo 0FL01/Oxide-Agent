@@ -4,11 +4,11 @@
 //! subsystem. Concrete implementations may use in-memory stores, Postgres, etc.
 
 use crate::types::{
-    EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
-    EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
-    EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
-    MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit, SessionStateListFilter,
-    SessionStateRecord, ThreadId, ThreadRecord,
+    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
+    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate,
+    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryEmbeddingCandidate, MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit,
+    SessionStateListFilter, SessionStateRecord, ThreadId, ThreadRecord,
 };
 
 /// Error type for memory repository operations.
@@ -66,6 +66,13 @@ pub trait MemoryRepository: Send + Sync {
         thread_id: &ThreadId,
         filter: &EpisodeListFilter,
     ) -> impl std::future::Future<Output = Result<Vec<EpisodeRecord>, RepositoryError>> + Send;
+
+    /// Link one artifact to an episode.
+    fn link_episode_artifact(
+        &self,
+        episode_id: &EpisodeId,
+        artifact: ArtifactRef,
+    ) -> impl std::future::Future<Output = Result<Option<EpisodeRecord>, RepositoryError>> + Send;
 
     // -- Memory operations --
 

@@ -78,6 +78,7 @@ struct AgentCallbackContext {
     dialogue: AgentDialogue,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 }
 
@@ -174,6 +175,7 @@ async fn handle_loop_retry(
     ctx: &LoopCallbackContext,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let session_id = ensure_session_exists(EnsureSessionContext {
@@ -191,6 +193,7 @@ async fn handle_loop_retry(
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -488,6 +491,7 @@ async fn handle_agent_confirmation_callback(
                     ctx.msg.clone(),
                     ctx.storage.clone(),
                     ctx.llm.clone(),
+                    ctx.persistent_memory_store.clone(),
                     ctx.settings.clone(),
                 )
                 .await?;
@@ -498,6 +502,7 @@ async fn handle_agent_confirmation_callback(
                     loop_ctx.session_keys,
                     &ctx.storage,
                     &ctx.llm,
+                    &ctx.persistent_memory_store,
                     &ctx.settings,
                     &send_ctx,
                 )
@@ -720,6 +725,7 @@ async fn dispatch_agent_callback(
                 &ctx.loop_ctx,
                 ctx.storage.clone(),
                 ctx.llm.clone(),
+                ctx.persistent_memory_store.clone(),
                 ctx.settings,
             )
             .await
@@ -769,6 +775,7 @@ pub async fn handle_agent_callback(
     q: CallbackQuery,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
     dialogue: AgentDialogue,
 ) -> Result<()> {
@@ -810,6 +817,7 @@ pub async fn handle_agent_callback(
         dialogue,
         storage,
         llm,
+        persistent_memory_store,
         settings,
     };
 

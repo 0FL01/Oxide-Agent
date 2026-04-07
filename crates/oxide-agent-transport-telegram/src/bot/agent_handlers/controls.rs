@@ -164,6 +164,7 @@ pub(crate) async fn start_manual_compaction(
     msg: Message,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
@@ -194,6 +195,7 @@ pub(crate) async fn start_manual_compaction(
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -520,6 +522,7 @@ pub(crate) async fn handle_recreate_container_confirmation(
     session_keys: AgentModeSessionKeys,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
+    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: &Arc<BotSettings>,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
@@ -550,6 +553,7 @@ pub(crate) async fn handle_recreate_container_confirmation(
         },
         llm,
         storage,
+        persistent_memory_store,
         settings,
     })
     .await;
@@ -687,6 +691,7 @@ pub(crate) async fn confirm_destructive_action(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,
@@ -694,6 +699,7 @@ pub(crate) async fn handle_agent_confirmation(
     action: ConfirmationType,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
@@ -743,7 +749,15 @@ pub(crate) async fn handle_agent_confirmation(
                 .await?;
             }
             ConfirmationType::CompactContext => {
-                start_manual_compaction(bot.clone(), msg, storage, llm, settings).await?;
+                start_manual_compaction(
+                    bot.clone(),
+                    msg,
+                    storage,
+                    llm,
+                    persistent_memory_store.clone(),
+                    settings,
+                )
+                .await?;
             }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(
@@ -751,6 +765,7 @@ pub(crate) async fn handle_agent_confirmation(
                     session_keys,
                     &storage,
                     &llm,
+                    &persistent_memory_store,
                     &settings,
                     &send_ctx,
                 )

@@ -1,10 +1,11 @@
 use super::StorageProvider;
 use oxide_agent_memory::{
-    EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
-    EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter,
-    EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
-    MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
-    RepositoryError, SessionStateListFilter, SessionStateRecord, ThreadId, ThreadRecord,
+    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
+    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate,
+    EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryEmbeddingCandidate, MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter,
+    MemorySearchHit, RepositoryError, SessionStateListFilter, SessionStateRecord, ThreadId,
+    ThreadRecord,
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -77,6 +78,17 @@ impl MemoryRepository for StorageMemoryRepository {
     ) -> Result<Vec<EpisodeRecord>, RepositoryError> {
         self.storage
             .list_memory_episodes_for_thread(thread_id.clone(), filter.clone())
+            .await
+            .map_err(map_storage_error)
+    }
+
+    async fn link_episode_artifact(
+        &self,
+        episode_id: &EpisodeId,
+        artifact: ArtifactRef,
+    ) -> Result<Option<EpisodeRecord>, RepositoryError> {
+        self.storage
+            .link_memory_episode_artifact(episode_id.clone(), artifact)
             .await
             .map_err(map_storage_error)
     }
