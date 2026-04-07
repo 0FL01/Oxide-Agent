@@ -605,7 +605,6 @@ impl MemoryProvider {
                     min_importance: None,
                     limit,
                     candidate_limit: Some(limit.max(DEFAULT_SEARCH_LIMIT)),
-                    rerank: false,
                     allow_full_thread_read: true,
                 },
             )
