@@ -8,15 +8,19 @@ use chrono::Utc;
 use oxide_agent_memory::{
     ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
     EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingUpdateBase, EpisodeFinalizationInput,
-    EpisodeFinalizer, EpisodeMemorySignals, EpisodeRecord, MemoryRecord, MemoryRepository,
-    RepositoryError, ReusableMemoryExtractor, SessionStateRecord, ThreadRecord,
+    EpisodeFinalizer, EpisodeMemorySignals, EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter,
+    EpisodeSearchHit, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
+    MemoryType, RepositoryError, ReusableMemoryExtractor, SessionStateRecord, ThreadRecord,
 };
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::warn;
 
 const EMBEDDING_BACKFILL_LIMIT: usize = 8;
+const HYBRID_RETRIEVAL_CANDIDATE_LIMIT: usize = 8;
+const HYBRID_RETRIEVAL_TOP_K: usize = 5;
+const HYBRID_RETRIEVAL_MIN_SCORE: f32 = 0.45;
 
 /// Object-safe persistent-memory write surface used by the runner.
 #[async_trait]
@@ -368,6 +372,717 @@ impl PersistentMemoryEmbeddingIndexer {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DurableMemoryRetrievalOptions {
+    pub rerank: bool,
+    pub top_k: Option<usize>,
+}
+
+#[derive(Clone)]
+pub struct DurableMemoryRetriever {
+    storage: Arc<dyn StorageProvider>,
+    generator: Option<Arc<dyn MemoryEmbeddingGenerator>>,
+}
+
+impl DurableMemoryRetriever {
+    #[must_use]
+    pub fn new(storage: Arc<dyn StorageProvider>) -> Self {
+        Self {
+            storage,
+            generator: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_query_embedding_generator(
+        mut self,
+        generator: Arc<dyn MemoryEmbeddingGenerator>,
+    ) -> Self {
+        self.generator = Some(generator);
+        self
+    }
+
+    pub async fn render_prompt_context(
+        &self,
+        task: &str,
+        scope: &AgentMemoryScope,
+        options: DurableMemoryRetrievalOptions,
+    ) -> Result<Option<String>> {
+        let Some(retrieval) = self.retrieve(task, scope, options).await? else {
+            return Ok(None);
+        };
+        Ok(Some(retrieval.render_for_prompt()))
+    }
+
+    async fn retrieve(
+        &self,
+        task: &str,
+        scope: &AgentMemoryScope,
+        options: DurableMemoryRetrievalOptions,
+    ) -> Result<Option<DurableMemoryRetrieval>> {
+        let Some(plan) = query_retrieval_plan(task, options) else {
+            return Ok(None);
+        };
+
+        let mut candidates = Vec::new();
+
+        if plan.search_episodes {
+            let filter = episode_search_filter(scope, &plan);
+            let lexical_hits = self
+                .storage
+                .search_memory_episodes_lexical(plan.query.clone(), filter.clone())
+                .await?;
+            let vector_hits = self.search_episode_vectors(&plan, &filter).await;
+            candidates.extend(fuse_episode_hits(lexical_hits, vector_hits));
+        }
+
+        if plan.search_memories {
+            let filter = memory_search_filter(scope, &plan);
+            let lexical_hits = self
+                .storage
+                .search_memory_records_lexical(plan.query.clone(), filter.clone())
+                .await?;
+            let vector_hits = self.search_memory_vectors(&plan, &filter).await;
+            candidates.extend(fuse_memory_hits(lexical_hits, vector_hits));
+        }
+
+        candidates.sort_by(|left, right| {
+            right
+                .score()
+                .total_cmp(&left.score())
+                .then_with(|| right.rank_priority().total_cmp(&left.rank_priority()))
+                .then_with(|| left.stable_id().cmp(right.stable_id()))
+        });
+
+        let mut items = Vec::new();
+        let mut covered_episode_ids = HashSet::new();
+        let mut seen_snippets = HashSet::new();
+        for candidate in candidates {
+            if candidate.score() < HYBRID_RETRIEVAL_MIN_SCORE {
+                continue;
+            }
+
+            if !seen_snippets.insert(normalized_snippet_key(candidate.snippet())) {
+                continue;
+            }
+
+            if let Some(source_episode_id) = candidate.source_episode_id() {
+                if covered_episode_ids.contains(source_episode_id) {
+                    continue;
+                }
+            }
+
+            if let Some(episode_id) = candidate.primary_episode_id() {
+                covered_episode_ids.insert(episode_id.to_string());
+            }
+
+            items.push(candidate);
+            if items.len() >= plan.top_k {
+                break;
+            }
+        }
+
+        if items.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(DurableMemoryRetrieval {
+            plan,
+            items,
+            rerank_applied: false,
+        }))
+    }
+
+    async fn search_episode_vectors(
+        &self,
+        plan: &RetrievalPlan,
+        filter: &EpisodeSearchFilter,
+    ) -> Vec<EpisodeSearchHit> {
+        let Some(generator) = self.generator.as_ref() else {
+            return Vec::new();
+        };
+
+        let query_embedding = match generator.embed_query(&plan.query).await {
+            Ok(query_embedding) => query_embedding,
+            Err(error) => {
+                warn!(error = %error, query = %plan.query, "durable memory query embedding failed");
+                return Vec::new();
+            }
+        };
+
+        match self
+            .storage
+            .search_memory_episodes_vector(query_embedding, filter.clone())
+            .await
+        {
+            Ok(hits) => hits,
+            Err(error) => {
+                warn!(error = %error, query = %plan.query, "durable memory episode vector search failed");
+                Vec::new()
+            }
+        }
+    }
+
+    async fn search_memory_vectors(
+        &self,
+        plan: &RetrievalPlan,
+        filter: &MemorySearchFilter,
+    ) -> Vec<MemorySearchHit> {
+        let Some(generator) = self.generator.as_ref() else {
+            return Vec::new();
+        };
+
+        let query_embedding = match generator.embed_query(&plan.query).await {
+            Ok(query_embedding) => query_embedding,
+            Err(error) => {
+                warn!(error = %error, query = %plan.query, "durable memory query embedding failed");
+                return Vec::new();
+            }
+        };
+
+        match self
+            .storage
+            .search_memory_records_vector(query_embedding, filter.clone())
+            .await
+        {
+            Ok(hits) => hits,
+            Err(error) => {
+                warn!(error = %error, query = %plan.query, "durable memory record vector search failed");
+                Vec::new()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RetrievalPlan {
+    query: String,
+    search_episodes: bool,
+    search_memories: bool,
+    memory_type: Option<MemoryType>,
+    min_importance: f32,
+    top_k: usize,
+    allow_full_thread_read: bool,
+    rerank_requested: bool,
+}
+
+#[derive(Debug, Clone)]
+struct DurableMemoryRetrieval {
+    plan: RetrievalPlan,
+    items: Vec<HybridCandidate>,
+    rerank_applied: bool,
+}
+
+impl DurableMemoryRetrieval {
+    fn render_for_prompt(&self) -> String {
+        let mut lines = vec![
+            "Scoped durable memory context (use as evidence, not source of truth):".to_string(),
+            format!("- query: {}", self.plan.query),
+            format!(
+                "- sources: {}{}{}",
+                if self.plan.search_memories {
+                    "memories"
+                } else {
+                    ""
+                },
+                if self.plan.search_memories && self.plan.search_episodes {
+                    ", "
+                } else {
+                    ""
+                },
+                if self.plan.search_episodes {
+                    "episodes"
+                } else {
+                    ""
+                }
+            ),
+            format!(
+                "- rerank: {}",
+                if self.plan.rerank_requested && self.rerank_applied {
+                    "applied"
+                } else if self.plan.rerank_requested {
+                    "requested but disabled"
+                } else {
+                    "disabled"
+                }
+            ),
+        ];
+
+        for (index, item) in self.items.iter().enumerate() {
+            lines.extend(item.render(index + 1));
+        }
+
+        lines.push(
+            "Open full thread only if needed via memory_read_episode, memory_read_thread_summary, or memory_read_thread_window."
+                .to_string(),
+        );
+        if self.plan.allow_full_thread_read {
+            lines.push(
+                "Prefer a single targeted read using the refs below instead of loading full history eagerly."
+                    .to_string(),
+            );
+        }
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone)]
+enum HybridCandidate {
+    Episode {
+        record: EpisodeRecord,
+        snippet: String,
+        score: f32,
+        lexical_score: Option<f32>,
+        vector_score: Option<f32>,
+    },
+    Memory {
+        record: MemoryRecord,
+        snippet: String,
+        score: f32,
+        lexical_score: Option<f32>,
+        vector_score: Option<f32>,
+    },
+}
+
+impl HybridCandidate {
+    fn stable_id(&self) -> &str {
+        match self {
+            Self::Episode { record, .. } => &record.episode_id,
+            Self::Memory { record, .. } => &record.memory_id,
+        }
+    }
+
+    fn score(&self) -> f32 {
+        match self {
+            Self::Episode { score, .. } | Self::Memory { score, .. } => *score,
+        }
+    }
+
+    fn snippet(&self) -> &str {
+        match self {
+            Self::Episode { snippet, .. } | Self::Memory { snippet, .. } => snippet,
+        }
+    }
+
+    fn primary_episode_id(&self) -> Option<&str> {
+        match self {
+            Self::Episode { record, .. } => Some(&record.episode_id),
+            Self::Memory { record, .. } => record.source_episode_id.as_deref(),
+        }
+    }
+
+    fn source_episode_id(&self) -> Option<&str> {
+        match self {
+            Self::Episode { .. } => None,
+            Self::Memory { record, .. } => record.source_episode_id.as_deref(),
+        }
+    }
+
+    fn rank_priority(&self) -> f32 {
+        match self {
+            Self::Episode { record, .. } => record.importance,
+            Self::Memory { record, .. } => (record.importance + record.confidence) / 2.0,
+        }
+    }
+
+    fn render(&self, index: usize) -> Vec<String> {
+        match self {
+            Self::Episode {
+                record,
+                snippet,
+                score,
+                lexical_score,
+                vector_score,
+            } => vec![
+                format!(
+                    "{}. episode {} [score {:.2}] outcome={} importance={:.2}",
+                    index,
+                    record.episode_id,
+                    score,
+                    outcome_label(record.outcome),
+                    record.importance,
+                ),
+                format!("   evidence: {}", snippet),
+                format!(
+                    "   refs: thread_id={} episode_id={} lexical={:.2} vector={:.2}",
+                    record.thread_id,
+                    record.episode_id,
+                    lexical_score.unwrap_or_default(),
+                    vector_score.unwrap_or_default(),
+                ),
+            ],
+            Self::Memory {
+                record,
+                snippet,
+                score,
+                lexical_score,
+                vector_score,
+            } => vec![
+                format!(
+                    "{}. memory {} [score {:.2}] type={} importance={:.2} confidence={:.2}",
+                    index,
+                    record.memory_id,
+                    score,
+                    memory_type_label(record.memory_type),
+                    record.importance,
+                    record.confidence,
+                ),
+                format!(
+                    "   title: {}{}",
+                    record.title,
+                    if record.short_description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", record.short_description)
+                    }
+                ),
+                format!("   evidence: {}", snippet),
+                format!(
+                    "   refs: source_episode_id={} lexical={:.2} vector={:.2}",
+                    record.source_episode_id.as_deref().unwrap_or("none"),
+                    lexical_score.unwrap_or_default(),
+                    vector_score.unwrap_or_default(),
+                ),
+            ],
+        }
+    }
+}
+
+fn query_retrieval_plan(
+    task: &str,
+    options: DurableMemoryRetrievalOptions,
+) -> Option<RetrievalPlan> {
+    let query = task.trim();
+    if query.is_empty() {
+        return None;
+    }
+
+    let normalized = query.to_ascii_lowercase();
+    let token_count = normalized
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .count();
+    let is_smalltalk = token_count <= 6
+        && [
+            "thanks",
+            "thank you",
+            "hello",
+            "hi",
+            "ok",
+            "okay",
+            "got it",
+            "sounds good",
+        ]
+        .iter()
+        .any(|phrase| normalized == *phrase || normalized.starts_with(&format!("{phrase} ")));
+    if is_smalltalk {
+        return None;
+    }
+
+    let has_history_cue = contains_any(
+        &normalized,
+        &[
+            "previous",
+            "earlier",
+            "before",
+            "again",
+            "history",
+            "thread",
+            "episode",
+            "what happened",
+            "why did",
+            "why was",
+            "incident",
+            "regression",
+            "error",
+            "issue",
+            "debug",
+            "resolved",
+        ],
+    );
+    let has_procedure_cue = contains_any(
+        &normalized,
+        &[
+            "how",
+            "steps",
+            "procedure",
+            "workflow",
+            "run ",
+            "deploy",
+            "setup",
+            "configure",
+            "install",
+        ],
+    );
+    let has_constraint_cue = contains_any(
+        &normalized,
+        &[
+            "constraint",
+            "must",
+            "never",
+            "required",
+            "policy",
+            "guardrail",
+            "forbid",
+        ],
+    );
+    let has_preference_cue = contains_any(
+        &normalized,
+        &["prefer", "preference", "style", "guideline", "convention"],
+    );
+    let has_decision_cue = contains_any(&normalized, &["decision", "decided"]);
+
+    let search_episodes =
+        has_history_cue || normalized.contains("why") || normalized.contains("debug");
+    let search_memories = has_procedure_cue
+        || has_constraint_cue
+        || has_preference_cue
+        || has_decision_cue
+        || !search_episodes
+        || token_count >= 5;
+
+    let memory_type = if has_procedure_cue {
+        Some(MemoryType::Procedure)
+    } else if has_constraint_cue {
+        Some(MemoryType::Constraint)
+    } else if has_preference_cue {
+        Some(MemoryType::Preference)
+    } else if has_decision_cue {
+        Some(MemoryType::Decision)
+    } else {
+        None
+    };
+
+    Some(RetrievalPlan {
+        query: query.to_string(),
+        search_episodes,
+        search_memories,
+        memory_type,
+        min_importance: if has_history_cue { 0.45 } else { 0.55 },
+        top_k: options
+            .top_k
+            .unwrap_or(HYBRID_RETRIEVAL_TOP_K)
+            .clamp(1, HYBRID_RETRIEVAL_TOP_K),
+        allow_full_thread_read: has_history_cue
+            || normalized.contains("thread")
+            || normalized.contains("transcript"),
+        rerank_requested: options.rerank,
+    })
+}
+
+fn episode_search_filter(scope: &AgentMemoryScope, plan: &RetrievalPlan) -> EpisodeSearchFilter {
+    EpisodeSearchFilter {
+        context_key: Some(scope.context_key.clone()),
+        user_id: Some(scope.user_id),
+        outcome: None,
+        min_importance: Some(plan.min_importance),
+        time_range: Default::default(),
+        limit: Some(HYBRID_RETRIEVAL_CANDIDATE_LIMIT),
+    }
+}
+
+fn memory_search_filter(scope: &AgentMemoryScope, plan: &RetrievalPlan) -> MemorySearchFilter {
+    MemorySearchFilter {
+        context_key: Some(scope.context_key.clone()),
+        user_id: Some(scope.user_id),
+        memory_type: plan.memory_type,
+        min_importance: Some(plan.min_importance),
+        tags: Vec::new(),
+        time_range: Default::default(),
+        limit: Some(HYBRID_RETRIEVAL_CANDIDATE_LIMIT),
+    }
+}
+
+fn fuse_episode_hits(
+    lexical_hits: Vec<EpisodeSearchHit>,
+    vector_hits: Vec<EpisodeSearchHit>,
+) -> Vec<HybridCandidate> {
+    let lexical = normalize_scores(
+        lexical_hits
+            .iter()
+            .map(|hit| (hit.record.episode_id.clone(), hit.score))
+            .collect(),
+    );
+    let vector = normalize_scores(
+        vector_hits
+            .iter()
+            .map(|hit| (hit.record.episode_id.clone(), hit.score))
+            .collect(),
+    );
+
+    let mut by_id = HashMap::new();
+    for hit in lexical_hits {
+        by_id.insert(hit.record.episode_id.clone(), (Some(hit), None));
+    }
+    for hit in vector_hits {
+        by_id
+            .entry(hit.record.episode_id.clone())
+            .and_modify(
+                |entry: &mut (Option<EpisodeSearchHit>, Option<EpisodeSearchHit>)| {
+                    entry.1 = Some(hit.clone());
+                },
+            )
+            .or_insert((None, Some(hit)));
+    }
+
+    by_id
+        .into_iter()
+        .filter_map(|(episode_id, (lexical_hit, vector_hit))| {
+            let record = lexical_hit
+                .as_ref()
+                .map(|hit| hit.record.clone())
+                .or_else(|| vector_hit.as_ref().map(|hit| hit.record.clone()))?;
+            let snippet = lexical_hit
+                .as_ref()
+                .map(|hit| hit.snippet.clone())
+                .or_else(|| vector_hit.as_ref().map(|hit| hit.snippet.clone()))
+                .unwrap_or_default();
+            let lexical_score = lexical.get(&episode_id).copied();
+            let vector_score = vector.get(&episode_id).copied();
+            Some(HybridCandidate::Episode {
+                score: fused_score(lexical_score, vector_score, record.importance, None),
+                record,
+                snippet,
+                lexical_score,
+                vector_score,
+            })
+        })
+        .collect()
+}
+
+fn fuse_memory_hits(
+    lexical_hits: Vec<MemorySearchHit>,
+    vector_hits: Vec<MemorySearchHit>,
+) -> Vec<HybridCandidate> {
+    let lexical = normalize_scores(
+        lexical_hits
+            .iter()
+            .map(|hit| (hit.record.memory_id.clone(), hit.score))
+            .collect(),
+    );
+    let vector = normalize_scores(
+        vector_hits
+            .iter()
+            .map(|hit| (hit.record.memory_id.clone(), hit.score))
+            .collect(),
+    );
+
+    let mut by_id = HashMap::new();
+    for hit in lexical_hits {
+        by_id.insert(hit.record.memory_id.clone(), (Some(hit), None));
+    }
+    for hit in vector_hits {
+        by_id
+            .entry(hit.record.memory_id.clone())
+            .and_modify(
+                |entry: &mut (Option<MemorySearchHit>, Option<MemorySearchHit>)| {
+                    entry.1 = Some(hit.clone());
+                },
+            )
+            .or_insert((None, Some(hit)));
+    }
+
+    by_id
+        .into_iter()
+        .filter_map(|(memory_id, (lexical_hit, vector_hit))| {
+            let record = lexical_hit
+                .as_ref()
+                .map(|hit| hit.record.clone())
+                .or_else(|| vector_hit.as_ref().map(|hit| hit.record.clone()))?;
+            let snippet = lexical_hit
+                .as_ref()
+                .map(|hit| hit.snippet.clone())
+                .or_else(|| vector_hit.as_ref().map(|hit| hit.snippet.clone()))
+                .unwrap_or_default();
+            let lexical_score = lexical.get(&memory_id).copied();
+            let vector_score = vector.get(&memory_id).copied();
+            Some(HybridCandidate::Memory {
+                score: fused_score(
+                    lexical_score,
+                    vector_score,
+                    record.importance,
+                    Some(record.confidence),
+                ),
+                record,
+                snippet,
+                lexical_score,
+                vector_score,
+            })
+        })
+        .collect()
+}
+
+fn normalize_scores(scores: Vec<(String, f32)>) -> HashMap<String, f32> {
+    if scores.is_empty() {
+        return HashMap::new();
+    }
+
+    let (min_score, max_score) = scores.iter().fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(min_score, max_score), (_, score)| (min_score.min(*score), max_score.max(*score)),
+    );
+
+    scores
+        .into_iter()
+        .map(|(id, score)| {
+            let normalized = if (max_score - min_score).abs() < f32::EPSILON {
+                if score > 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                (score - min_score) / (max_score - min_score)
+            };
+            (id, normalized.clamp(0.0, 1.0))
+        })
+        .collect()
+}
+
+fn fused_score(
+    lexical_score: Option<f32>,
+    vector_score: Option<f32>,
+    importance: f32,
+    confidence: Option<f32>,
+) -> f32 {
+    let lexical = lexical_score.unwrap_or_default() * 0.45;
+    let vector = vector_score.unwrap_or_default() * 0.45;
+    let importance = importance.clamp(0.0, 1.0) * 0.07;
+    let confidence = confidence.unwrap_or(1.0).clamp(0.0, 1.0) * 0.03;
+    lexical + vector + importance + confidence
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn normalized_snippet_key(snippet: &str) -> String {
+    snippet
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn outcome_label(outcome: EpisodeOutcome) -> &'static str {
+    match outcome {
+        EpisodeOutcome::Success => "success",
+        EpisodeOutcome::Failure => "failure",
+        EpisodeOutcome::Partial => "partial",
+        EpisodeOutcome::Cancelled => "cancelled",
+    }
+}
+
+fn memory_type_label(memory_type: MemoryType) -> &'static str {
+    match memory_type {
+        MemoryType::Fact => "fact",
+        MemoryType::Preference => "preference",
+        MemoryType::Procedure => "procedure",
+        MemoryType::Decision => "decision",
+        MemoryType::Constraint => "constraint",
+    }
+}
+
 fn embedding_content_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -540,6 +1255,7 @@ fn collect_tools_used(messages: &[AgentMessage]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
+        DurableMemoryRetrievalOptions, DurableMemoryRetriever, HybridCandidate,
         MemoryEmbeddingGenerator, PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer,
         PersistentMemoryStore, PersistentRunContext, PersistentRunPhase,
     };
@@ -549,7 +1265,8 @@ mod tests {
     use crate::storage::MockStorageProvider;
     use oxide_agent_memory::{
         CleanupStatus, EmbeddingPendingUpdate, EmbeddingReadyUpdate, EpisodeEmbeddingCandidate,
-        EpisodeRecord, InMemoryMemoryRepository, MemoryListFilter, MemoryRepository, MemoryType,
+        EpisodeOutcome, EpisodeRecord, EpisodeSearchHit, InMemoryMemoryRepository,
+        MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchHit, MemoryType,
     };
     use std::sync::Arc;
 
@@ -861,5 +1578,128 @@ mod tests {
         );
 
         indexer.backfill().await.expect("backfill should succeed");
+    }
+
+    fn retrieval_scope() -> AgentMemoryScope {
+        AgentMemoryScope::new(42, "topic-a", "flow-a")
+    }
+
+    fn retrieval_episode() -> EpisodeRecord {
+        EpisodeRecord {
+            episode_id: "episode-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            context_key: "topic-a".to_string(),
+            goal: "Fix deploy regression".to_string(),
+            summary: "Earlier deploy broke staging until config was corrected.".to_string(),
+            outcome: EpisodeOutcome::Success,
+            tools_used: vec!["memory_search".to_string()],
+            artifacts: Vec::new(),
+            failures: Vec::new(),
+            importance: 0.82,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn retrieval_memory() -> MemoryRecord {
+        MemoryRecord {
+            memory_id: "memory-1".to_string(),
+            context_key: "topic-a".to_string(),
+            source_episode_id: Some("episode-9".to_string()),
+            memory_type: MemoryType::Procedure,
+            title: "Deploy fix procedure".to_string(),
+            content: "Rebuild config, then rerun the deploy with the staging profile.".to_string(),
+            short_description: "staging recovery steps".to_string(),
+            importance: 0.93,
+            confidence: 0.94,
+            source: Some("test".to_string()),
+            reason: Some("fixture".to_string()),
+            tags: vec!["deploy".to_string(), "staging".to_string()],
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_memory_retriever_skips_smalltalk_queries() {
+        let storage = MockStorageProvider::new();
+        let retriever = DurableMemoryRetriever::new(Arc::new(storage));
+
+        let retrieval = retriever
+            .retrieve(
+                "thanks",
+                &retrieval_scope(),
+                DurableMemoryRetrievalOptions::default(),
+            )
+            .await
+            .expect("smalltalk retrieval should not fail");
+
+        assert!(retrieval.is_none());
+    }
+
+    #[tokio::test]
+    async fn durable_memory_retriever_fuses_vector_and_lexical_hits() {
+        let episode = retrieval_episode();
+        let memory_for_lexical = retrieval_memory();
+        let memory_for_vector = retrieval_memory();
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_search_memory_episodes_lexical()
+            .times(1)
+            .return_once(move |_, _| {
+                Ok(vec![EpisodeSearchHit {
+                    record: episode,
+                    score: 0.4,
+                    snippet: "episode lexical".to_string(),
+                }])
+            });
+        storage
+            .expect_search_memory_episodes_vector()
+            .times(1)
+            .return_once(|_, _| Ok(Vec::new()));
+        storage
+            .expect_search_memory_records_lexical()
+            .times(1)
+            .return_once(move |_, _| {
+                Ok(vec![MemorySearchHit {
+                    record: memory_for_lexical,
+                    score: 0.3,
+                    snippet: "memory lexical".to_string(),
+                }])
+            });
+        storage
+            .expect_search_memory_records_vector()
+            .times(1)
+            .return_once(move |_, _| {
+                Ok(vec![MemorySearchHit {
+                    record: memory_for_vector,
+                    score: 0.96,
+                    snippet: "memory semantic".to_string(),
+                }])
+            });
+
+        let retriever = DurableMemoryRetriever::new(Arc::new(storage))
+            .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
+        let retrieval = retriever
+            .retrieve(
+                "how was the deploy fixed before?",
+                &retrieval_scope(),
+                DurableMemoryRetrievalOptions::default(),
+            )
+            .await
+            .expect("hybrid retrieval should succeed")
+            .expect("retrieval should produce candidates");
+
+        assert_eq!(retrieval.items.len(), 2);
+        assert!(matches!(retrieval.items[0], HybridCandidate::Memory { .. }));
+        assert!(matches!(
+            retrieval.items[1],
+            HybridCandidate::Episode { .. }
+        ));
+
+        let rendered = retrieval.render_for_prompt();
+        assert!(rendered.contains("Scoped durable memory context"));
+        assert!(rendered.contains("memory memory-1"));
+        assert!(rendered.contains("episode episode-1"));
+        assert!(rendered.contains("Open full thread only if needed"));
     }
 }

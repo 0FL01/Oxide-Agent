@@ -14,8 +14,8 @@ use super::hooks::{
 };
 use super::memory::AgentMessage;
 use super::persistent_memory::{
-    LlmMemoryEmbeddingGenerator, PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer,
-    PersistentMemoryStore,
+    DurableMemoryRetrievalOptions, DurableMemoryRetriever, LlmMemoryEmbeddingGenerator,
+    PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer, PersistentMemoryStore,
 };
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
@@ -961,13 +961,40 @@ impl AgentExecutor {
             self.execution_profile.prompt_instructions(),
         )
         .await;
+        let mut messages =
+            AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
+
+        if let Some(storage) = &self.memory_storage {
+            let query_embeddings = self.runner.llm_client().is_embedding_available().then(|| {
+                Arc::new(LlmMemoryEmbeddingGenerator::new(self.runner.llm_client()))
+                    as Arc<dyn super::persistent_memory::MemoryEmbeddingGenerator>
+            });
+            let mut retriever = DurableMemoryRetriever::new(Arc::clone(storage));
+            if let Some(query_embeddings) = query_embeddings {
+                retriever = retriever.with_query_embedding_generator(query_embeddings);
+            }
+            match retriever
+                .render_prompt_context(
+                    task,
+                    self.session.memory_scope(),
+                    DurableMemoryRetrievalOptions::default(),
+                )
+                .await
+            {
+                Ok(Some(context)) => messages.push(Message::system(&context)),
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(error = %error, task = %task, "durable memory retrieval failed")
+                }
+            }
+        }
 
         PreparedExecution {
             todos_arc,
             registry,
             tools,
             system_prompt,
-            messages: AgentRunner::convert_memory_to_messages(self.session.memory.get_messages()),
+            messages,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),
                 get_agent_max_iterations(),
@@ -1719,6 +1746,76 @@ mod tests {
             .expect("session state should exist");
         assert_eq!(state.cleanup_status, CleanupStatus::Idle);
         assert_eq!(state.pending_episode_id.as_deref(), Some(task_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn prepare_execution_injects_durable_memory_context() {
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_search_memory_episodes_lexical()
+            .times(1)
+            .return_once(|_, _| {
+                Ok(vec![oxide_agent_memory::EpisodeSearchHit {
+                    record: oxide_agent_memory::EpisodeRecord {
+                        episode_id: "episode-1".to_string(),
+                        thread_id: "thread-1".to_string(),
+                        context_key: "session:9".to_string(),
+                        goal: "Fix deploy regression".to_string(),
+                        summary: "Earlier deploy broke staging until config was corrected."
+                            .to_string(),
+                        outcome: oxide_agent_memory::EpisodeOutcome::Success,
+                        tools_used: vec!["memory_search".to_string()],
+                        artifacts: Vec::new(),
+                        failures: Vec::new(),
+                        importance: 0.82,
+                        created_at: chrono::Utc::now(),
+                    },
+                    score: 0.7,
+                    snippet: "episode hit".to_string(),
+                }])
+            });
+        storage
+            .expect_search_memory_records_lexical()
+            .times(1)
+            .return_once(|_, _| {
+                Ok(vec![oxide_agent_memory::MemorySearchHit {
+                    record: oxide_agent_memory::MemoryRecord {
+                        memory_id: "memory-1".to_string(),
+                        context_key: "session:9".to_string(),
+                        source_episode_id: Some("episode-9".to_string()),
+                        memory_type: oxide_agent_memory::MemoryType::Procedure,
+                        title: "Deploy fix procedure".to_string(),
+                        content: "Rebuild config, then rerun the deploy with the staging profile."
+                            .to_string(),
+                        short_description: "staging recovery steps".to_string(),
+                        importance: 0.95,
+                        confidence: 0.91,
+                        source: Some("test".to_string()),
+                        reason: Some("fixture".to_string()),
+                        tags: vec!["deploy".to_string()],
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                    },
+                    score: 0.9,
+                    snippet: "memory hit".to_string(),
+                }])
+            });
+
+        let mut executor = build_executor().with_storage_memory_repository(Arc::new(storage));
+        let prepared = executor
+            .prepare_execution("how was the deploy fixed before?", None)
+            .await;
+
+        let injected = prepared
+            .messages
+            .iter()
+            .find(|message| {
+                message.role == "system"
+                    && message.content.contains("Scoped durable memory context")
+            })
+            .expect("durable memory context should be injected");
+        assert!(injected.content.contains("memory memory-1"));
+        assert!(injected.content.contains("episode episode-1"));
     }
 
     #[tokio::test]
