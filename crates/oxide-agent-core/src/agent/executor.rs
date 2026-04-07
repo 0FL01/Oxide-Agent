@@ -1551,6 +1551,13 @@ mod tests {
         AgentExecutor::new(Arc::new(llm), session, settings)
     }
 
+    fn verbose_turn(label: &str, idx: usize, repeat: usize) -> String {
+        let repeated = std::iter::repeat_n(label, repeat)
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{label} turn {idx}: {repeated}")
+    }
+
     fn build_audit_record(options: AppendAuditEventOptions) -> AuditEventRecord {
         AuditEventRecord {
             schema_version: 1,
@@ -1782,6 +1789,63 @@ mod tests {
             .expect("session state should exist");
         assert_eq!(state.cleanup_status, CleanupStatus::Idle);
         assert_eq!(state.pending_episode_id.as_deref(), Some(task_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn execute_post_run_cleanup_leaves_small_hot_context() {
+        let store = Arc::new(InMemoryMemoryRepository::new());
+        let mut executor = build_executor_with_mock_response(
+            r#"{"thought":"done","tool_call":null,"final_answer":"cleanup complete","awaiting_user_input":null}"#,
+        )
+        .with_persistent_memory_store(store);
+
+        for idx in 0..36 {
+            executor
+                .session_mut()
+                .memory
+                .add_message(crate::agent::memory::AgentMessage::user(verbose_turn(
+                    "user-context",
+                    idx,
+                    220,
+                )));
+            executor.session_mut().memory.add_message(
+                crate::agent::memory::AgentMessage::assistant(verbose_turn(
+                    "assistant-context",
+                    idx,
+                    220,
+                )),
+            );
+        }
+
+        let tokens_before = executor.session().memory.token_count();
+        assert!(
+            tokens_before > 16 * 1024,
+            "fixture should exceed the Stage 19 residual budget target"
+        );
+
+        let result = executor.execute("verify post-run cleanup", None).await;
+
+        assert!(matches!(
+            result,
+            Ok(super::AgentExecutionOutcome::Completed(ref answer)) if answer == "cleanup complete"
+        ));
+
+        let tokens_after = executor.session().memory.token_count();
+        assert!(
+            tokens_after <= 16 * 1024,
+            "post-run cleanup should leave a small hot context (before={tokens_before}, after={tokens_after})"
+        );
+        assert!(
+            executor
+                .session()
+                .memory
+                .get_messages()
+                .iter()
+                .any(|message| {
+                    message.kind == crate::agent::compaction::AgentMessageKind::Summary
+                }),
+            "post-run cleanup should retain a structured summary"
+        );
     }
 
     #[tokio::test]

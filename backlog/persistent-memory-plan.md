@@ -427,8 +427,8 @@ Hot context не должен расти бесконтрольно.
 
 ### Compaction side-effects
 
-Каждая compression operation (вызванная инструментом `compress`, auto-compaction хуком,
-или `EndOfTaskMemoryHook`) обязана:
+Каждая compression operation (вызванная инструментом `compress`, auto-compaction хуком
+или PostRun cleanup path) обязана:
 
 1. **Persist to long-term memory** — перед truncate, извлечь из удаляемого контекста
    high-signal данные и записать в episodic/semantic memory:
@@ -455,14 +455,20 @@ Hot context не должен расти бесконтрольно.
 
 Реализуются в `agent/hooks/memory/`.
 
-### `EndOfTaskMemoryHook` (`AfterAgent`)
-Триггерит при финальном ответе (без pending tool calls):
-- Пишет episode summary в storage
-- Извлекает reusable memories (fact, procedure, constraint)
-- Запускает compaction pipeline с persist to long-term memory
-- Сбрасывает hot context до ~12-16k tokens
-- Сохраняет artifact refs
-- Оставляет в hot context ArchiveReference на записанный episode
+### PostRun finalization path
+Отдельный `EndOfTaskMemoryHook` больше не является частью дизайна.
+
+Canonical lifecycle теперь идёт через runner PostRun path:
+- `handle_final_response` / `handle_waiting_for_user_input`
+- `run_compaction_checkpoint(..., PostRun)`
+- `persist_post_run_memory(...)`
+
+Этот путь обязан:
+- запускать end-of-task / pause cleanup без отдельного hook;
+- писать episode summary / session state / reusable memories через top-level PostRun coordinator;
+- сбрасывать hot context до малого остаточного бюджета, насколько это позволяют pinned/protected-live entries;
+- оставлять structured summary + `ArchiveReference` в hot context;
+- оставаться top-level only: sub-agent'ы durable memory напрямую не пишут.
 
 ### `HotContextHealthHook` (`BeforeIteration`)
 Проверяет перед каждой итерацией:
@@ -762,14 +768,15 @@ Audit baseline: `2026-04-07`, branch `feature/memento-mori`.
 
 ### P1 — закрыть lifecycle/product gaps
 
-7. **Решить, нужен ли отдельный `EndOfTaskMemoryHook`.**
-   - Сейчас нужное поведение в основном реализовано через PostRun coordinator path.
-   - Если отдельный hook больше не нужен — обновить архитектурное описание.
-   - Если нужен для инвариантов/observability — реализовать его явно.
+7. [x] **Решить, нужен ли отдельный `EndOfTaskMemoryHook`.**
+   - Решение: **нет**, отдельный hook убран из дизайна.
+   - Canonical lifecycle/finalization path закреплён за PostRun runner flow + persistent-memory coordinator.
+   - Observability и residual-budget verification добавляются в PostRun path, а не в отдельный hook.
 
-8. **Жёстко верифицировать end-of-task cleanup target.**
-   - План требует почти полного hot-context reset после завершения задачи.
-   - Нужно убедиться тестами и метриками, что после финализации реально достигается нужный остаточный budget, а не только выполняется compaction pipeline.
+8. [x] **Жёстко верифицировать end-of-task cleanup target.**
+   - Добавить runner telemetry around pre/post PostRun cleanup snapshots.
+   - Держать operational target: residual hot context `<= 16k` tokens для обычного top-level финала, если это не блокируется pinned/protected-live state.
+   - Проверять это тестами на PostRun path, а не только по факту `CleanupStatus::Finalized`.
 
 9. **Решить судьбу user-facing memory/history cards.**
    - Prompt-side advisor cards уже есть.
