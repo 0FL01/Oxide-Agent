@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
     owner_type TEXT NOT NULL CHECK (owner_type IN ('episode', 'memory')),
     model_id TEXT NOT NULL,
     content_hash TEXT NOT NULL,
-    embedding VECTOR NULL,
+    embedding VECTOR(768) NULL,
     dimensions INTEGER NULL CHECK (dimensions IS NULL OR dimensions > 0),
     status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'failed')),
     last_error TEXT NULL,
