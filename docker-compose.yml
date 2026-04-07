@@ -15,7 +15,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oxide_agent} -d ${POSTGRES_DB:-oxide_agent}"]
+      test: ["CMD-SHELL", "export PGPASSWORD=${POSTGRES_PASSWORD:-change_me} && pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-oxide_agent} -d ${POSTGRES_DB:-oxide_agent} && psql -h 127.0.0.1 -U ${POSTGRES_USER:-oxide_agent} -d ${POSTGRES_DB:-oxide_agent} -Atqc 'SELECT 1'"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -51,6 +51,9 @@ services:
       - MEMORY_DATABASE_URL=${MEMORY_DATABASE_URL:-postgres://oxide_agent:change_me@127.0.0.1:5432/oxide_agent}
       - MEMORY_DATABASE_MAX_CONNECTIONS=${MEMORY_DATABASE_MAX_CONNECTIONS:-5}
       - MEMORY_DATABASE_AUTO_MIGRATE=${MEMORY_DATABASE_AUTO_MIGRATE:-true}
+      - MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS=${MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS:-12}
+      - MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS=${MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS:-2000}
+      - MEMORY_DATABASE_STARTUP_TIMEOUT_SECS=${MEMORY_DATABASE_STARTUP_TIMEOUT_SECS:-10}
       - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false

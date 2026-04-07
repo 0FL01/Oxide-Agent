@@ -18,6 +18,8 @@ use oxide_agent_memory::{
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::time::{sleep, timeout};
 use tracing::warn;
 
 const EMBEDDING_BACKFILL_LIMIT: usize = 8;
@@ -26,6 +28,9 @@ const HYBRID_RETRIEVAL_TOP_K: usize = 5;
 const HYBRID_RETRIEVAL_MIN_SCORE: f32 = 0.45;
 const MEMORY_BEHAVIOR_MAX_DRAFTS: usize = 8;
 const DEFAULT_MEMORY_DATABASE_MAX_CONNECTIONS: u32 = 5;
+const DEFAULT_MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS: u32 = 6;
+const DEFAULT_MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS: u64 = 2_000;
+const DEFAULT_MEMORY_DATABASE_STARTUP_TIMEOUT_SECS: u64 = 10;
 
 /// Connect the canonical Postgres-backed persistent-memory store for runtime use.
 pub async fn connect_postgres_memory_store(
@@ -39,20 +44,84 @@ pub async fn connect_postgres_memory_store(
         .ok_or_else(|| {
             anyhow::anyhow!("MEMORY_DATABASE_URL is required for Postgres persistent memory")
         })?;
-    let repository = oxide_agent_memory::pg::PgMemoryRepository::connect_with_max_connections(
-        database_url,
+    let max_connections = settings
+        .memory_database_max_connections
+        .unwrap_or(DEFAULT_MEMORY_DATABASE_MAX_CONNECTIONS);
+    let auto_migrate = settings.memory_database_auto_migrate.unwrap_or(true);
+    let max_attempts = settings
+        .memory_database_startup_max_attempts
+        .unwrap_or(DEFAULT_MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS)
+        .max(1);
+    let retry_delay = Duration::from_millis(
         settings
-            .memory_database_max_connections
-            .unwrap_or(DEFAULT_MEMORY_DATABASE_MAX_CONNECTIONS),
-    )
-    .await
-    .map_err(|error| anyhow::anyhow!("failed to connect Postgres persistent memory: {error}"))?;
-    if settings.memory_database_auto_migrate.unwrap_or(true) {
-        repository.migrate().await.map_err(|error| {
-            anyhow::anyhow!("failed to migrate Postgres persistent memory: {error}")
-        })?;
+            .memory_database_startup_retry_delay_ms
+            .unwrap_or(DEFAULT_MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS),
+    );
+    let attempt_timeout = Duration::from_secs(
+        settings
+            .memory_database_startup_timeout_secs
+            .unwrap_or(DEFAULT_MEMORY_DATABASE_STARTUP_TIMEOUT_SECS)
+            .max(1),
+    );
+
+    let mut last_error = None;
+    for attempt in 1..=max_attempts {
+        let init_result = timeout(attempt_timeout, async {
+            let repository =
+                oxide_agent_memory::pg::PgMemoryRepository::connect_with_max_connections(
+                    database_url,
+                    max_connections,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to connect Postgres persistent memory: {error}")
+                })?;
+
+            if auto_migrate {
+                repository.migrate().await.map_err(|error| {
+                    anyhow::anyhow!("failed to migrate Postgres persistent memory: {error}")
+                })?;
+            }
+
+            repository.check_health().await.map_err(|error| {
+                anyhow::anyhow!("Postgres persistent memory health check failed: {error}")
+            })?;
+
+            Ok::<_, anyhow::Error>(repository)
+        })
+        .await;
+
+        match init_result {
+            Ok(Ok(repository)) => return Ok(Arc::new(repository)),
+            Ok(Err(error)) => last_error = Some(error),
+            Err(_) => {
+                last_error = Some(anyhow::anyhow!(
+                    "timed out after {}s while initializing Postgres persistent memory",
+                    attempt_timeout.as_secs()
+                ));
+            }
+        }
+
+        if attempt < max_attempts {
+            if let Some(error) = last_error.as_ref() {
+                warn!(
+                    attempt,
+                    max_attempts,
+                    retry_delay_ms = retry_delay.as_millis(),
+                    %error,
+                    "Retrying Postgres persistent memory startup"
+                );
+            }
+            sleep(retry_delay).await;
+        }
     }
-    Ok(Arc::new(repository))
+
+    let last_error = last_error.unwrap_or_else(|| anyhow::anyhow!("unknown startup failure"));
+    Err(anyhow::anyhow!(
+        "failed to initialize Postgres persistent memory after {max_attempts} attempts: {last_error}. \
+         Verify MEMORY_DATABASE_URL, Postgres service health, and whether MEMORY_DATABASE_AUTO_MIGRATE \
+         should bootstrap the embedded schema/pgvector extension."
+    ))
 }
 
 /// Scope-aware policy for topic-native memory behavior.
