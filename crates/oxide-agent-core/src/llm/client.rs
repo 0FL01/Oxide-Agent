@@ -11,7 +11,7 @@ use super::{
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
-    embedding: Option<(embeddings::EmbeddingProvider, String)>,
+    embedding: Option<(embeddings::EmbeddingProvider, String, u32)>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Narrator model ID
@@ -31,7 +31,7 @@ pub struct LlmClient {
 impl LlmClient {
     fn create_embedding_provider(
         settings: &crate::config::AgentSettings,
-    ) -> Option<(embeddings::EmbeddingProvider, String)> {
+    ) -> Option<(embeddings::EmbeddingProvider, String, u32)> {
         let provider_name = settings.embedding_provider.as_ref()?;
         let model_id = settings.embedding_model_id.clone()?;
 
@@ -49,7 +49,11 @@ impl LlmClient {
             }
         };
 
-        Some((provider, model_id))
+        let dimensions = settings
+            .embedding_dimensions
+            .unwrap_or(crate::config::DEFAULT_EMBEDDING_DIMENSIONS);
+
+        Some((provider, model_id, dimensions))
     }
 
     fn provider_key(name: &str) -> String {
@@ -646,19 +650,29 @@ impl LlmClient {
         task_type: Option<embeddings::EmbeddingTaskType>,
         title: Option<&str>,
     ) -> Result<Vec<f32>, LlmError> {
-        let (provider, model) = self.embedding.as_ref().ok_or_else(|| {
+        let (provider, model, dimensions) = self.embedding.as_ref().ok_or_else(|| {
             LlmError::MissingConfig("embedding provider not configured".to_string())
         })?;
 
-        provider.generate(text, model, task_type, title).await
+        provider
+            .generate(text, model, task_type, title, Some(*dimensions))
+            .await
     }
 
     /// Probe embedding dimension by making a test request.
     ///
     /// Returns `None` if embedding provider is not configured or the probe fails.
     pub async fn probe_embedding_dimension(&self) -> Option<usize> {
-        let (provider, model) = self.embedding.as_ref()?;
+        let (provider, model, _) = self.embedding.as_ref()?;
         provider.probe_dimension(model).await
+    }
+
+    /// Return the configured embedding output dimensionality.
+    ///
+    /// Returns `None` if embedding provider is not configured.
+    #[must_use]
+    pub fn embedding_dimensions(&self) -> Option<u32> {
+        self.embedding.as_ref().map(|(_, _, dim)| *dim)
     }
 
     /// Transcribe audio to text

@@ -1,4 +1,4 @@
-//! OpenAI-compatible embedding provider.
+//! Embedding provider abstraction with dimension control and normalization.
 
 use super::{http, LlmError};
 use crate::llm::support::http::create_http_client_builder;
@@ -42,13 +42,21 @@ impl OpenAiCompatibleEmbeddingProvider {
         }
     }
 
-    async fn generate(&self, text: &str, model: &str) -> Result<Vec<f32>, LlmError> {
+    async fn generate(
+        &self,
+        text: &str,
+        model: &str,
+        dimensions: Option<u32>,
+    ) -> Result<Vec<f32>, LlmError> {
         let url = format!("{}/embeddings", self.api_base);
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "input": text
         });
+        if let Some(dim) = dimensions {
+            body["dimensions"] = serde_json::json!(dim);
+        }
 
         let response = self
             .http_client
@@ -108,15 +116,22 @@ impl EmbeddingProvider {
     }
 
     /// Generate embedding vector for given text using the specified model.
+    ///
+    /// When `dimensions` is set, the provider truncates the output vector to
+    /// that size. For Gemini, this uses `output_dimensionality`; for
+    /// OpenAI-compatible endpoints, the `dimensions` request field.
+    /// Vectors shorter than 3072 dimensions are L2-normalized in-place
+    /// (Gemini only auto-normalizes the full 3072-dim output).
     pub async fn generate(
         &self,
         text: &str,
         model: &str,
         task_type: Option<EmbeddingTaskType>,
         title: Option<&str>,
+        dimensions: Option<u32>,
     ) -> Result<Vec<f32>, LlmError> {
-        match self {
-            Self::OpenAiCompatible(provider) => provider.generate(text, model).await,
+        let mut vec = match self {
+            Self::OpenAiCompatible(provider) => provider.generate(text, model, dimensions).await?,
             Self::Gemini { api_key } => {
                 let client = GeminiBuilder::new(api_key.clone())
                     .with_model(Model::Custom(normalize_gemini_model(model)))
@@ -133,18 +148,45 @@ impl EmbeddingProvider {
                 if let Some(title) = title.filter(|value| !value.is_empty()) {
                     builder = builder.with_title(title.to_string());
                 }
+                if let Some(dim) = dimensions {
+                    builder = builder.with_output_dimensionality(dim as i32);
+                }
                 let response = builder.execute().await.map_err(map_gemini_error)?;
-                Ok(response.embedding.values)
+                response.embedding.values
             }
+        };
+
+        // Gemini only auto-normalizes at the native 3072 dimensions.
+        // For truncated outputs (768, 1536, …) we must L2-normalize ourselves.
+        if dimensions.is_some_and(|d| d < 3072) {
+            l2_normalize(&mut vec);
         }
+
+        Ok(vec)
     }
 
     /// Probe the embedding dimension by generating a test embedding.
     pub async fn probe_dimension(&self, model: &str) -> Option<usize> {
-        self.generate("test", model, None, None)
+        self.generate("test", model, None, None, None)
             .await
             .ok()
             .map(|v| v.len())
+    }
+}
+
+/// L2-normalize a vector in-place.
+///
+/// After truncation via `output_dimensionality` the resulting sub-vector is
+/// **not** unit-length. Cosine similarity (the default distance metric for
+/// pgvector `<=>`) assumes normalized inputs for correct ranking, so we
+/// normalise explicitly.
+fn l2_normalize(v: &mut [f32]) {
+    let norm_sq: f32 = v.iter().map(|x| x * x).sum();
+    if norm_sq > 0.0 {
+        let inv = 1.0 / norm_sq.sqrt();
+        for x in v.iter_mut() {
+            *x *= inv;
+        }
     }
 }
 
