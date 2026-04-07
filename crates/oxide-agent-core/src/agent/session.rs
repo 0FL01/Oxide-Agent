@@ -6,6 +6,7 @@
 use super::compaction::CompactionScope;
 use super::identity::SessionId;
 use super::memory::AgentMemory;
+use super::persistent_memory::MemoryBehaviorRuntime;
 // use super::providers::TodoList;
 use crate::config::AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS;
 use crate::llm::InvocationId;
@@ -323,6 +324,8 @@ pub struct AgentSession {
     checkpoint_state: Arc<AsyncMutex<MemoryCheckpointState>>,
     /// Serializes actual checkpoint writes so stale background tasks cannot win.
     checkpoint_persist_lock: Arc<AsyncMutex<()>>,
+    /// Task-local Stage-14 memory behavior capture runtime.
+    memory_behavior_runtime: Arc<MemoryBehaviorRuntime>,
 }
 
 impl AgentSession {
@@ -372,6 +375,7 @@ impl AgentSession {
             memory_checkpoint: None,
             checkpoint_state: Arc::new(AsyncMutex::new(MemoryCheckpointState::default())),
             checkpoint_persist_lock: Arc::new(AsyncMutex::new(())),
+            memory_behavior_runtime: Arc::new(MemoryBehaviorRuntime::new()),
         }
     }
 
@@ -384,6 +388,17 @@ impl AgentSession {
     #[must_use]
     pub fn memory_scope(&self) -> &AgentMemoryScope {
         &self.memory_scope
+    }
+
+    /// Access the task-local Stage-14 memory behavior runtime.
+    #[must_use]
+    pub fn memory_behavior_runtime(&self) -> Arc<MemoryBehaviorRuntime> {
+        Arc::clone(&self.memory_behavior_runtime)
+    }
+
+    /// Clear captured Stage-14 memory behavior signals before a fresh top-level task run.
+    pub fn reset_memory_behavior_runtime(&self) {
+        self.memory_behavior_runtime.reset();
     }
 
     /// Build the compaction/archive scope for this session.

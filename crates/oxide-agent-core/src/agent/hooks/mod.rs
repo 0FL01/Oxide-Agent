@@ -6,6 +6,7 @@
 pub mod completion;
 pub mod delegation_guard;
 pub mod hot_context;
+pub mod memory;
 pub mod registry;
 pub mod search_budget;
 pub mod sub_agent_safety;
@@ -17,6 +18,7 @@ pub mod workload;
 pub use completion::CompletionCheckHook;
 pub use delegation_guard::DelegationGuardHook;
 pub use hot_context::HotContextHealthHook;
+pub use memory::{EpisodicExtractHook, RetrievalAdvisorHook};
 pub use registry::{Hook, HookRegistry};
 pub use search_budget::SearchBudgetHook;
 pub use sub_agent_safety::{SubAgentSafetyConfig, SubAgentSafetyHook};

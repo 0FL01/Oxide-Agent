@@ -1988,7 +1988,7 @@ async fn topic_agent_hooks_get_reports_manageable_and_protected_hooks() {
         serde_json::from_str(&response).expect("response must be valid json");
     assert_eq!(
         parsed["hooks"]["active_hooks"].as_array().map(Vec::len),
-        Some(5)
+        Some(7)
     );
     assert_eq!(parsed["hooks"]["disabled_hooks"], json!(["search_budget"]));
     assert!(parsed["hooks"]["hook_statuses"]

@@ -494,6 +494,7 @@ impl DelegationProvider {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: prepared.runner_config.clone(),
         }
     }

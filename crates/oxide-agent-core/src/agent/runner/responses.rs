@@ -28,6 +28,11 @@ impl AgentRunner {
         ) else {
             return;
         };
+        let tool_memory_drafts = ctx
+            .memory_behavior
+            .as_ref()
+            .map(|runtime| runtime.snapshot())
+            .unwrap_or_default();
 
         if let Err(error) = persistent_memory
             .persist_post_run(PersistentRunContext {
@@ -37,6 +42,7 @@ impl AgentRunner {
                 task: ctx.task,
                 messages: ctx.agent.memory().get_messages(),
                 hot_token_estimate: ctx.agent.memory().token_count(),
+                tool_memory_drafts,
                 phase,
             })
             .await

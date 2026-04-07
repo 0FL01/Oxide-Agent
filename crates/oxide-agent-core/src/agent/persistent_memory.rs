@@ -4,25 +4,144 @@ use crate::llm::{EmbeddingTaskType, LlmClient};
 use crate::storage::StorageProvider;
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use oxide_agent_memory::{
-    ArtifactRef, ConsolidationPolicy, ContextConsolidator, EmbeddingBackfillRequest,
-    EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate, EmbeddingReadyUpdate,
-    EmbeddingUpdateBase, EpisodeFinalizationInput, EpisodeFinalizer, EpisodeMemorySignals,
-    EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryListFilter,
-    MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit, MemoryType,
-    RepositoryError, ReusableMemoryExtractor, SessionStateListFilter, SessionStateRecord,
-    ThreadRecord,
+    stable_memory_content_hash, ArtifactRef, ConsolidationPolicy, ContextConsolidator,
+    EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
+    EmbeddingReadyUpdate, EmbeddingUpdateBase, EpisodeFinalizationInput, EpisodeFinalizer,
+    EpisodeMemorySignals, EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
+    MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
+    MemoryType, RepositoryError, ReusableMemoryExtractor, SessionStateListFilter,
+    SessionStateRecord, ThreadRecord,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::warn;
 
 const EMBEDDING_BACKFILL_LIMIT: usize = 8;
 const HYBRID_RETRIEVAL_CANDIDATE_LIMIT: usize = 8;
 const HYBRID_RETRIEVAL_TOP_K: usize = 5;
 const HYBRID_RETRIEVAL_MIN_SCORE: f32 = 0.45;
+const MEMORY_BEHAVIOR_MAX_DRAFTS: usize = 8;
+
+/// Scope-aware policy for topic-native memory behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicMemoryPolicy {
+    /// Human-readable label used in advisory cards.
+    pub context_label: String,
+    /// Whether procedural memories may be extracted from tool activity.
+    pub allow_procedure_capture: bool,
+    /// Whether failure memories may be extracted from tool activity.
+    pub allow_failure_capture: bool,
+    /// Whether preference extraction from repeated patterns is allowed.
+    pub allow_preference_capture: bool,
+    /// Whether a retrieval advisor may suggest durable-memory reads.
+    pub allow_manual_read_advice: bool,
+    /// Whether history-card guidance should be shown.
+    pub allow_history_cards: bool,
+}
+
+impl TopicMemoryPolicy {
+    #[must_use]
+    pub fn from_scope(scope: Option<&AgentMemoryScope>) -> Self {
+        let synthetic = scope
+            .map(|scope| scope.context_key.starts_with("session:"))
+            .unwrap_or(true);
+        let context_label = scope
+            .map(|scope| {
+                if synthetic {
+                    "this conversation".to_string()
+                } else {
+                    format!("topic '{}'", scope.context_key)
+                }
+            })
+            .unwrap_or_else(|| "this conversation".to_string());
+
+        Self {
+            context_label,
+            allow_procedure_capture: true,
+            allow_failure_capture: true,
+            allow_preference_capture: !synthetic,
+            allow_manual_read_advice: true,
+            allow_history_cards: !synthetic,
+        }
+    }
+}
+
+/// Tool-derived reusable-memory draft captured during the live agent run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolDerivedMemoryDraft {
+    pub memory_type: MemoryType,
+    pub title: String,
+    pub content: String,
+    pub short_description: String,
+    pub importance: f32,
+    pub confidence: f32,
+    pub source: String,
+    pub reason: String,
+    pub tags: Vec<String>,
+    pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Default)]
+struct MemoryBehaviorState {
+    drafts: Vec<ToolDerivedMemoryDraft>,
+    pattern_counts: HashMap<String, usize>,
+    emitted_patterns: HashSet<String>,
+}
+
+/// Task-local runtime used by Stage-14 hooks to capture memory behavior signals.
+#[derive(Debug, Default)]
+pub struct MemoryBehaviorRuntime {
+    state: Mutex<MemoryBehaviorState>,
+}
+
+impl MemoryBehaviorRuntime {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = MemoryBehaviorState::default();
+        }
+    }
+
+    pub fn record_draft(&self, draft: ToolDerivedMemoryDraft) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.drafts.iter().any(|existing| {
+            existing.memory_type == draft.memory_type && existing.content == draft.content
+        }) {
+            return;
+        }
+        if state.drafts.len() >= MEMORY_BEHAVIOR_MAX_DRAFTS {
+            return;
+        }
+        state.drafts.push(draft);
+    }
+
+    #[must_use]
+    pub fn observe_pattern(&self, pattern: &str, threshold: usize) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let count = state.pattern_counts.entry(pattern.to_string()).or_insert(0);
+        *count = count.saturating_add(1);
+        *count >= threshold && state.emitted_patterns.insert(pattern.to_string())
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<ToolDerivedMemoryDraft> {
+        self.state
+            .lock()
+            .map(|state| state.drafts.clone())
+            .unwrap_or_default()
+    }
+}
 
 /// Object-safe persistent-memory write surface used by the runner.
 #[async_trait]
@@ -132,6 +251,7 @@ pub struct PersistentRunContext<'a> {
     pub task: &'a str,
     pub messages: &'a [AgentMessage],
     pub hot_token_estimate: usize,
+    pub tool_memory_drafts: Vec<ToolDerivedMemoryDraft>,
     pub phase: PersistentRunPhase<'a>,
 }
 
@@ -206,8 +326,12 @@ impl PersistentMemoryCoordinator {
             }
         }
         if let Some(episode) = episode.as_ref() {
-            self.persist_reusable_memories(episode, summary_signal.as_ref())
-                .await;
+            self.persist_reusable_memories(
+                episode,
+                summary_signal.as_ref(),
+                &ctx.tool_memory_drafts,
+            )
+            .await;
         }
         if let Some(indexer) = self.embedding_indexer.as_ref() {
             if let Err(error) = indexer.backfill().await {
@@ -225,17 +349,25 @@ impl PersistentMemoryCoordinator {
         &self,
         episode: &oxide_agent_memory::EpisodeRecord,
         summary_signal: Option<&PersistentSummarySignal>,
+        tool_memory_drafts: &[ToolDerivedMemoryDraft],
     ) {
-        let Some(summary_signal) = summary_signal else {
-            return;
-        };
+        let signals = summary_signal
+            .map(|summary_signal| EpisodeMemorySignals {
+                decisions: summary_signal.decisions.clone(),
+                constraints: summary_signal.constraints.clone(),
+                discoveries: summary_signal.discoveries.clone(),
+            })
+            .unwrap_or_default();
+        let extracted = self.extractor.extract(episode, &signals);
+        let mut memories = Vec::new();
+        memories.extend(extracted);
+        memories.extend(
+            tool_memory_drafts
+                .iter()
+                .filter_map(|draft| tool_memory_record(episode, draft)),
+        );
 
-        let signals = EpisodeMemorySignals {
-            decisions: summary_signal.decisions.clone(),
-            constraints: summary_signal.constraints.clone(),
-            discoveries: summary_signal.discoveries.clone(),
-        };
-        for memory in self.extractor.extract(episode, &signals) {
+        for memory in memories {
             match self.store.upsert_memory(memory).await {
                 Ok(memory) => {
                     if let Some(indexer) = self.embedding_indexer.as_ref() {
@@ -1375,6 +1507,46 @@ fn collect_tools_used(messages: &[AgentMessage]) -> Vec<String> {
     tools
 }
 
+fn tool_memory_record(
+    episode: &EpisodeRecord,
+    draft: &ToolDerivedMemoryDraft,
+) -> Option<MemoryRecord> {
+    if draft.content.trim().is_empty() {
+        return None;
+    }
+
+    let content_hash = stable_memory_content_hash(draft.memory_type, &draft.content);
+    let mut tags = draft.tags.clone();
+    tags.push("tool_extract".to_string());
+    tags.push(memory_type_label(draft.memory_type).to_string());
+    tags.sort();
+    tags.dedup();
+
+    Some(MemoryRecord {
+        memory_id: format!(
+            "tool-extract:{}:{}:{}",
+            episode.episode_id,
+            memory_type_label(draft.memory_type),
+            &content_hash[..12.min(content_hash.len())]
+        ),
+        context_key: episode.context_key.clone(),
+        source_episode_id: Some(episode.episode_id.clone()),
+        memory_type: draft.memory_type,
+        title: draft.title.clone(),
+        content: draft.content.clone(),
+        short_description: draft.short_description.clone(),
+        importance: draft.importance.max(episode.importance).min(1.0),
+        confidence: draft.confidence,
+        source: Some(draft.source.clone()),
+        content_hash: Some(content_hash),
+        reason: Some(draft.reason.clone()),
+        tags,
+        created_at: draft.captured_at,
+        updated_at: draft.captured_at,
+        deleted_at: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1448,6 +1620,7 @@ mod tests {
                 task: "Implement Stage 4",
                 messages: &messages,
                 hot_token_estimate: 77,
+                tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
                     final_answer: "Done",
                 },
@@ -1512,6 +1685,7 @@ mod tests {
                 task: "Need browser URL",
                 messages: &[],
                 hot_token_estimate: 21,
+                tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::WaitingForUserInput,
             })
             .await
@@ -1584,6 +1758,7 @@ mod tests {
                 task: "topic a task",
                 messages: &topic_a_messages,
                 hot_token_estimate: 128,
+                tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
                     final_answer: "done",
                 },
@@ -1599,6 +1774,7 @@ mod tests {
                 task: "topic b task",
                 messages: &topic_b_messages,
                 hot_token_estimate: 256,
+                tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
                     final_answer: "done",
                 },
@@ -1879,6 +2055,7 @@ mod tests {
                 task: "keep memory hygiene",
                 messages: &messages,
                 hot_token_estimate: 32,
+                tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
                     final_answer: "done",
                 },
@@ -1893,6 +2070,7 @@ mod tests {
                 task: "keep memory hygiene again",
                 messages: &messages,
                 hot_token_estimate: 40,
+                tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
                     final_answer: "done",
                 },

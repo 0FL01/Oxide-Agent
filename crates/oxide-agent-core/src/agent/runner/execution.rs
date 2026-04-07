@@ -1702,6 +1702,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -1776,6 +1777,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -1837,6 +1839,7 @@ mod tests {
             persistent_memory: Some(&coordinator),
             session_id: Some("sub-session".to_string()),
             memory_scope: Some(crate::agent::AgentMemoryScope::new(42, "topic-a", "flow-a")),
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256)
                 .with_sub_agent(true),
         };
@@ -1886,6 +1889,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 128),
         };
 
@@ -1962,6 +1966,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 256),
         };
 
@@ -2038,6 +2043,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 256),
         };
 
@@ -2116,6 +2122,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 256),
         };
 
@@ -2210,6 +2217,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -2306,6 +2314,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -2349,6 +2358,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
         };
 
@@ -2392,6 +2402,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
         };
         let mut response = ChatResponse {
@@ -2472,6 +2483,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
                 .with_model_provider("primary")
                 .with_model_routes(vec![
@@ -2576,6 +2588,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
                 .with_model_provider("primary")
                 .with_model_routes(vec![
@@ -2657,6 +2670,7 @@ mod tests {
             persistent_memory: None,
             session_id: None,
             memory_scope: None,
+            memory_behavior: None,
             config: AgentRunnerConfig::new("deepseek-ai/deepseek-r1".to_string(), 1, 1, 30, 256)
                 .with_model_provider("nvidia")
                 .with_model_routes(vec![

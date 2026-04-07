@@ -3,6 +3,8 @@
 //! Defines the data structures used for agent lifecycle hooks.
 
 use super::super::providers::TodoList;
+use crate::agent::persistent_memory::MemoryBehaviorRuntime;
+use crate::agent::session::AgentMemoryScope;
 use crate::llm::ToolDefinition;
 
 /// Events in the agent lifecycle that can trigger hooks
@@ -103,6 +105,10 @@ pub struct HookContext<'a> {
     pub is_sub_agent: bool,
     /// Tools exposed to the current agent execution.
     pub available_tools: &'a [ToolDefinition],
+    /// Stable durable-memory scope when available.
+    pub memory_scope: Option<&'a AgentMemoryScope>,
+    /// Task-local Stage-14 memory behavior runtime.
+    pub memory_behavior: Option<&'a MemoryBehaviorRuntime>,
 }
 
 impl<'a> HookContext<'a> {
@@ -125,6 +131,8 @@ impl<'a> HookContext<'a> {
             max_tokens: usize::MAX,
             is_sub_agent: false,
             available_tools: &[],
+            memory_scope: None,
+            memory_behavior: None,
         }
     }
 
@@ -147,6 +155,23 @@ impl<'a> HookContext<'a> {
     #[must_use]
     pub fn with_available_tools(mut self, available_tools: &'a [ToolDefinition]) -> Self {
         self.available_tools = available_tools;
+        self
+    }
+
+    /// Add durable-memory scope metadata to the hook context.
+    #[must_use]
+    pub const fn with_memory_scope(mut self, memory_scope: Option<&'a AgentMemoryScope>) -> Self {
+        self.memory_scope = memory_scope;
+        self
+    }
+
+    /// Add the task-local Stage-14 memory behavior runtime to the hook context.
+    #[must_use]
+    pub const fn with_memory_behavior(
+        mut self,
+        memory_behavior: Option<&'a MemoryBehaviorRuntime>,
+    ) -> Self {
+        self.memory_behavior = memory_behavior;
         self
     }
 

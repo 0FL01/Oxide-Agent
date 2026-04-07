@@ -99,6 +99,8 @@ const TOPIC_AGENT_MANAGEABLE_HOOKS: &[&str] = &[
     "delegation_guard",
     "search_budget",
     "timeout_report",
+    "retrieval_advisor",
+    "episodic_extract",
 ];
 
 const TOPIC_AGENT_PROTECTED_HOOKS: &[&str] = &["completion_check", "tool_access_policy"];
