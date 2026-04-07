@@ -64,7 +64,7 @@ impl PgMemoryRepository {
 
     /// Verify that Postgres, pgvector, and the current typed-memory schema are ready.
     pub async fn check_health(&self) -> anyhow::Result<()> {
-        sqlx::query_scalar::<_, i64>("SELECT 1")
+        sqlx::query_scalar::<_, i64>("SELECT 1::INT8")
             .fetch_one(self.pool())
             .await?;
 
