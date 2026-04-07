@@ -95,7 +95,7 @@ pub struct EpisodeRecord {
 pub type MemoryId = String;
 
 /// Kind of semantic / procedural memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryType {
     /// A verifiable fact about the project / topic.
@@ -136,6 +136,9 @@ pub struct MemoryRecord {
     /// Explicit origin for auditability (e.g. tool, extractor, user request).
     #[serde(default)]
     pub source: Option<String>,
+    /// Stable fingerprint of normalized memory content for cross-episode deduplication.
+    #[serde(default)]
+    pub content_hash: Option<String>,
     /// Why this memory was stored.
     #[serde(default)]
     pub reason: Option<String>,
@@ -145,6 +148,9 @@ pub struct MemoryRecord {
     pub created_at: DateTime<Utc>,
     /// When the memory was last updated.
     pub updated_at: DateTime<Utc>,
+    /// When the memory was superseded or expired and should stop participating in retrieval.
+    #[serde(default)]
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +250,21 @@ pub struct MemoryListFilter {
     pub min_importance: Option<f32>,
     /// Filter by tag presence.
     pub tags: Vec<String>,
+    /// Include soft-deleted records in the result set.
+    pub include_deleted: bool,
+    /// Maximum number of results to return.
+    pub limit: Option<usize>,
+}
+
+/// Filter parameters for listing tracked session states.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionStateListFilter {
+    /// Restrict results to one transport context.
+    pub context_key: Option<String>,
+    /// Restrict results to the provided cleanup statuses.
+    pub statuses: Vec<CleanupStatus>,
+    /// Only return records updated before or at this timestamp.
+    pub updated_before: Option<DateTime<Utc>>,
     /// Maximum number of results to return.
     pub limit: Option<usize>,
 }

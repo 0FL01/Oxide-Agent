@@ -1,5 +1,6 @@
 //! Conservative reusable-memory extraction from finalized episodes.
 
+use crate::consolidation::stable_memory_content_hash;
 use crate::types::{EpisodeOutcome, EpisodeRecord, MemoryRecord, MemoryType};
 use uuid::Uuid;
 
@@ -190,6 +191,7 @@ fn build_memory_record(
             .min(1.0),
         confidence: base_confidence(memory_type),
         source: Some("post_run_extract".to_string()),
+        content_hash: Some(stable_memory_content_hash(memory_type, content)),
         reason: Some("conservative reusable-memory extraction from finalized episode".to_string()),
         tags: vec![
             "episode".to_string(),
@@ -197,6 +199,7 @@ fn build_memory_record(
         ],
         created_at: episode.created_at,
         updated_at: episode.created_at,
+        deleted_at: None,
     }
 }
 

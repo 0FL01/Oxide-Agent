@@ -6,11 +6,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use oxide_agent_memory::{
-    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
-    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingUpdateBase, EpisodeFinalizationInput,
-    EpisodeFinalizer, EpisodeMemorySignals, EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter,
-    EpisodeSearchHit, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
-    MemoryType, RepositoryError, ReusableMemoryExtractor, SessionStateRecord, ThreadRecord,
+    ArtifactRef, ConsolidationPolicy, ContextConsolidator, EmbeddingBackfillRequest,
+    EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate, EmbeddingReadyUpdate,
+    EmbeddingUpdateBase, EpisodeFinalizationInput, EpisodeFinalizer, EpisodeMemorySignals,
+    EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryListFilter,
+    MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit, MemoryType,
+    RepositoryError, ReusableMemoryExtractor, SessionStateListFilter, SessionStateRecord,
+    ThreadRecord,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -34,10 +36,27 @@ pub trait PersistentMemoryStore: Send + Sync {
         &self,
         record: oxide_agent_memory::MemoryRecord,
     ) -> Result<oxide_agent_memory::MemoryRecord, RepositoryError>;
+    async fn upsert_memory(
+        &self,
+        record: oxide_agent_memory::MemoryRecord,
+    ) -> Result<oxide_agent_memory::MemoryRecord, RepositoryError>;
+    async fn delete_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<oxide_agent_memory::MemoryRecord>, RepositoryError>;
+    async fn list_memories(
+        &self,
+        context_key: &str,
+        filter: &MemoryListFilter,
+    ) -> Result<Vec<oxide_agent_memory::MemoryRecord>, RepositoryError>;
     async fn upsert_session_state(
         &self,
         record: SessionStateRecord,
     ) -> Result<SessionStateRecord, RepositoryError>;
+    async fn list_session_states(
+        &self,
+        filter: &SessionStateListFilter,
+    ) -> Result<Vec<SessionStateRecord>, RepositoryError>;
 }
 
 #[async_trait]
@@ -63,11 +82,40 @@ where
         MemoryRepository::create_memory(self, record).await
     }
 
+    async fn upsert_memory(
+        &self,
+        record: oxide_agent_memory::MemoryRecord,
+    ) -> Result<oxide_agent_memory::MemoryRecord, RepositoryError> {
+        MemoryRepository::upsert_memory(self, record).await
+    }
+
+    async fn delete_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<oxide_agent_memory::MemoryRecord>, RepositoryError> {
+        MemoryRepository::delete_memory(self, memory_id).await
+    }
+
+    async fn list_memories(
+        &self,
+        context_key: &str,
+        filter: &MemoryListFilter,
+    ) -> Result<Vec<oxide_agent_memory::MemoryRecord>, RepositoryError> {
+        MemoryRepository::list_memories(self, context_key, filter).await
+    }
+
     async fn upsert_session_state(
         &self,
         record: SessionStateRecord,
     ) -> Result<SessionStateRecord, RepositoryError> {
         MemoryRepository::upsert_session_state(self, record).await
+    }
+
+    async fn list_session_states(
+        &self,
+        filter: &SessionStateListFilter,
+    ) -> Result<Vec<SessionStateRecord>, RepositoryError> {
+        MemoryRepository::list_session_states(self, filter).await
     }
 }
 
@@ -92,6 +140,7 @@ pub struct PersistentMemoryCoordinator {
     store: Arc<dyn PersistentMemoryStore>,
     finalizer: EpisodeFinalizer,
     extractor: ReusableMemoryExtractor,
+    consolidator: ContextConsolidator,
     embedding_indexer: Option<PersistentMemoryEmbeddingIndexer>,
 }
 
@@ -102,6 +151,7 @@ impl PersistentMemoryCoordinator {
             store,
             finalizer: EpisodeFinalizer,
             extractor: ReusableMemoryExtractor::new(),
+            consolidator: ContextConsolidator::new(ConsolidationPolicy::default()),
             embedding_indexer: None,
         }
     }
@@ -165,6 +215,9 @@ impl PersistentMemoryCoordinator {
             }
         }
         self.store.upsert_session_state(plan.session_state).await?;
+        self.run_context_maintenance(&ctx.scope.context_key, Utc::now())
+            .await;
+        self.run_watchdog_pass(Utc::now()).await;
         Ok(())
     }
 
@@ -183,7 +236,7 @@ impl PersistentMemoryCoordinator {
             discoveries: summary_signal.discoveries.clone(),
         };
         for memory in self.extractor.extract(episode, &signals) {
-            match self.store.create_memory(memory).await {
+            match self.store.upsert_memory(memory).await {
                 Ok(memory) => {
                     if let Some(indexer) = self.embedding_indexer.as_ref() {
                         if let Err(error) = indexer.index_memory(&memory).await {
@@ -194,6 +247,76 @@ impl PersistentMemoryCoordinator {
                 Err(error) => {
                     warn!(error = %error, episode_id = %episode.episode_id, "Reusable memory extraction write failed");
                 }
+            }
+        }
+    }
+
+    async fn run_context_maintenance(&self, context_key: &str, now: chrono::DateTime<Utc>) {
+        let memories = match self
+            .store
+            .list_memories(
+                context_key,
+                &MemoryListFilter {
+                    include_deleted: true,
+                    limit: Some(256),
+                    ..MemoryListFilter::default()
+                },
+            )
+            .await
+        {
+            Ok(memories) => memories,
+            Err(error) => {
+                warn!(error = %error, context_key, "persistent memory maintenance list failed");
+                return;
+            }
+        };
+
+        let plan = self.consolidator.consolidate(&memories, now);
+        for memory in plan.upserts {
+            match self.store.upsert_memory(memory.clone()).await {
+                Ok(memory) => {
+                    if let Some(indexer) = self.embedding_indexer.as_ref() {
+                        if let Err(error) = indexer.index_memory(&memory).await {
+                            warn!(error = %error, memory_id = %memory.memory_id, "persistent memory maintenance reindex failed");
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(error = %error, context_key, "persistent memory maintenance upsert failed");
+                }
+            }
+        }
+        for memory_id in plan.deletions {
+            if let Err(error) = self.store.delete_memory(&memory_id).await {
+                warn!(error = %error, %memory_id, context_key, "persistent memory maintenance delete failed");
+            }
+        }
+    }
+
+    async fn run_watchdog_pass(&self, now: chrono::DateTime<Utc>) {
+        let states = match self
+            .store
+            .list_session_states(&SessionStateListFilter {
+                statuses: vec![
+                    oxide_agent_memory::CleanupStatus::Idle,
+                    oxide_agent_memory::CleanupStatus::Cleaning,
+                ],
+                limit: Some(32),
+                ..SessionStateListFilter::default()
+            })
+            .await
+        {
+            Ok(states) => states,
+            Err(error) => {
+                warn!(error = %error, "persistent memory watchdog list failed");
+                return;
+            }
+        };
+        let stale = self.consolidator.stale_sessions(&states, now);
+        let mut seen_contexts = HashSet::new();
+        for state in stale {
+            if seen_contexts.insert(state.context_key.clone()) {
+                self.run_context_maintenance(&state.context_key, now).await;
             }
         }
     }
@@ -1263,10 +1386,12 @@ mod tests {
     use crate::agent::memory::AgentMessage;
     use crate::agent::session::AgentMemoryScope;
     use crate::storage::MockStorageProvider;
+    use chrono::TimeZone;
     use oxide_agent_memory::{
         CleanupStatus, EmbeddingPendingUpdate, EmbeddingReadyUpdate, EpisodeEmbeddingCandidate,
         EpisodeOutcome, EpisodeRecord, EpisodeSearchHit, InMemoryMemoryRepository,
         MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchHit, MemoryType,
+        SessionStateRecord,
     };
     use std::sync::Arc;
 
@@ -1352,10 +1477,13 @@ mod tests {
         assert_eq!(session_state.cleanup_status, CleanupStatus::Finalized);
         assert_eq!(session_state.pending_episode_id, None);
 
-        let memories = store
-            .list_memories("topic-a", &MemoryListFilter::default())
-            .await
-            .expect("memory lookup should succeed");
+        let memories = MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-a",
+            &MemoryListFilter::default(),
+        )
+        .await
+        .expect("memory lookup should succeed");
         assert_eq!(memories.len(), 3);
         assert!(memories
             .iter()
@@ -1401,11 +1529,14 @@ mod tests {
             .await
             .expect("episode lookup should succeed")
             .is_none());
-        assert!(store
-            .list_memories("topic-a", &MemoryListFilter::default())
-            .await
-            .expect("memory lookup should succeed")
-            .is_empty());
+        assert!(MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-a",
+            &MemoryListFilter::default()
+        )
+        .await
+        .expect("memory lookup should succeed")
+        .is_empty());
     }
 
     #[tokio::test]
@@ -1475,14 +1606,20 @@ mod tests {
             .await
             .expect("topic-b persistence should succeed");
 
-        let topic_a_memories = store
-            .list_memories("topic-a", &MemoryListFilter::default())
-            .await
-            .expect("topic-a memory lookup should succeed");
-        let topic_b_memories = store
-            .list_memories("topic-b", &MemoryListFilter::default())
-            .await
-            .expect("topic-b memory lookup should succeed");
+        let topic_a_memories = MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-a",
+            &MemoryListFilter::default(),
+        )
+        .await
+        .expect("topic-a memory lookup should succeed");
+        let topic_b_memories = MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-b",
+            &MemoryListFilter::default(),
+        )
+        .await
+        .expect("topic-b memory lookup should succeed");
 
         assert_eq!(topic_a_memories.len(), 3);
         assert_eq!(topic_b_memories.len(), 3);
@@ -1612,11 +1749,33 @@ mod tests {
             importance: 0.93,
             confidence: 0.94,
             source: Some("test".to_string()),
+            content_hash: Some(oxide_agent_memory::stable_memory_content_hash(
+                MemoryType::Procedure,
+                "Rebuild config, then rerun the deploy with the staging profile.",
+            )),
             reason: Some("fixture".to_string()),
             tags: vec!["deploy".to_string(), "staging".to_string()],
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            deleted_at: None,
         }
+    }
+
+    fn ts(seconds: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc
+            .timestamp_opt(seconds, 0)
+            .single()
+            .expect("valid timestamp")
+    }
+
+    fn repeated_summary_messages() -> Vec<AgentMessage> {
+        vec![AgentMessage::from_compaction_summary(crate::agent::CompactionSummary {
+            goal: "Keep memory hygiene".to_string(),
+            decisions: vec!["Use persistent memory coordinator for durable writes".to_string()],
+            constraints: vec!["Sub-agent runs must never persist durable memory records".to_string()],
+            discoveries: vec!["PostRun persistence is handled in crates/oxide-agent-core/src/agent/runner/responses.rs".to_string()],
+            ..crate::agent::CompactionSummary::default()
+        })]
     }
 
     #[tokio::test]
@@ -1701,5 +1860,175 @@ mod tests {
         assert!(rendered.contains("memory memory-1"));
         assert!(rendered.contains("episode episode-1"));
         assert!(rendered.contains("Open full thread only if needed"));
+    }
+
+    #[tokio::test]
+    async fn persist_post_run_consolidates_duplicate_memories() {
+        let store = Arc::new(InMemoryMemoryRepository::new());
+        let store_for_coordinator = Arc::clone(&store);
+        let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+        let coordinator = PersistentMemoryCoordinator::new(store_for_coordinator);
+        let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
+        let messages = repeated_summary_messages();
+
+        coordinator
+            .persist_post_run(PersistentRunContext {
+                session_id: "session-1",
+                task_id: "episode-1",
+                scope: &scope,
+                task: "keep memory hygiene",
+                messages: &messages,
+                hot_token_estimate: 32,
+                phase: PersistentRunPhase::Completed {
+                    final_answer: "done",
+                },
+            })
+            .await
+            .expect("first persistence should succeed");
+        coordinator
+            .persist_post_run(PersistentRunContext {
+                session_id: "session-2",
+                task_id: "episode-2",
+                scope: &scope,
+                task: "keep memory hygiene again",
+                messages: &messages,
+                hot_token_estimate: 40,
+                phase: PersistentRunPhase::Completed {
+                    final_answer: "done",
+                },
+            })
+            .await
+            .expect("second persistence should succeed");
+
+        let active = MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-a",
+            &MemoryListFilter::default(),
+        )
+        .await
+        .expect("active memories should list");
+        let all = MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-a",
+            &MemoryListFilter {
+                include_deleted: true,
+                ..MemoryListFilter::default()
+            },
+        )
+        .await
+        .expect("full memory listing should succeed");
+
+        assert_eq!(active.len(), 3);
+        assert_eq!(all.len(), 6);
+        assert_eq!(
+            all.iter()
+                .filter(|memory| memory.deleted_at.is_some())
+                .count(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn watchdog_pass_consolidates_stale_context() {
+        let store = Arc::new(InMemoryMemoryRepository::new());
+        MemoryRepository::create_memory(
+            store.as_ref(),
+            MemoryRecord {
+                memory_id: "memory-a".to_string(),
+                context_key: "topic-a".to_string(),
+                source_episode_id: Some("episode-a".to_string()),
+                memory_type: MemoryType::Fact,
+                title: "Fact a".to_string(),
+                content: "Use cargo check before build".to_string(),
+                short_description: "cargo check before build".to_string(),
+                importance: 0.7,
+                confidence: 0.8,
+                source: Some("test".to_string()),
+                content_hash: Some(oxide_agent_memory::stable_memory_content_hash(
+                    MemoryType::Fact,
+                    "Use cargo check before build",
+                )),
+                reason: None,
+                tags: vec!["fact".to_string()],
+                created_at: ts(10),
+                updated_at: ts(10),
+                deleted_at: None,
+            },
+        )
+        .await
+        .expect("first memory should store");
+        MemoryRepository::create_memory(
+            store.as_ref(),
+            MemoryRecord {
+                memory_id: "memory-b".to_string(),
+                context_key: "topic-a".to_string(),
+                source_episode_id: Some("episode-b".to_string()),
+                memory_type: MemoryType::Fact,
+                title: "Fact b".to_string(),
+                content: "Use cargo check before build".to_string(),
+                short_description: "cargo check before build".to_string(),
+                importance: 0.6,
+                confidence: 0.7,
+                source: Some("test".to_string()),
+                content_hash: Some(oxide_agent_memory::stable_memory_content_hash(
+                    MemoryType::Fact,
+                    "Use cargo check before build",
+                )),
+                reason: None,
+                tags: vec!["fact".to_string()],
+                created_at: ts(20),
+                updated_at: ts(20),
+                deleted_at: None,
+            },
+        )
+        .await
+        .expect("second memory should store");
+        MemoryRepository::upsert_session_state(
+            store.as_ref(),
+            SessionStateRecord {
+                session_id: "session-a".to_string(),
+                context_key: "topic-a".to_string(),
+                hot_token_estimate: 64,
+                last_compacted_at: None,
+                last_finalized_at: None,
+                cleanup_status: CleanupStatus::Idle,
+                pending_episode_id: None,
+                updated_at: ts(0),
+            },
+        )
+        .await
+        .expect("session state should store");
+
+        let store_for_coordinator = Arc::clone(&store);
+        let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+        let coordinator = PersistentMemoryCoordinator::new(store_for_coordinator);
+        coordinator.run_watchdog_pass(ts(100_000)).await;
+
+        let active = MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-a",
+            &MemoryListFilter::default(),
+        )
+        .await
+        .expect("active memories should list");
+        let deleted = MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-a",
+            &MemoryListFilter {
+                include_deleted: true,
+                ..MemoryListFilter::default()
+            },
+        )
+        .await
+        .expect("deleted memories should list");
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(
+            deleted
+                .iter()
+                .filter(|memory| memory.deleted_at.is_some())
+                .count(),
+            1
+        );
     }
 }

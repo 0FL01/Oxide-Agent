@@ -327,6 +327,17 @@ impl StorageProvider for R2Storage {
         .await
     }
 
+    async fn upsert_memory_record(
+        &self,
+        record: MemoryRecord,
+    ) -> Result<MemoryRecord, StorageError> {
+        with_storage_reason(
+            "upsert_memory_record",
+            self.upsert_memory_record_inner(record),
+        )
+        .await
+    }
+
     async fn link_memory_episode_artifact(
         &self,
         episode_id: String,
@@ -387,6 +398,17 @@ impl StorageProvider for R2Storage {
         with_storage_reason("get_memory_record", self.get_memory_record_inner(memory_id)).await
     }
 
+    async fn delete_memory_record(
+        &self,
+        memory_id: String,
+    ) -> Result<Option<MemoryRecord>, StorageError> {
+        with_storage_reason(
+            "delete_memory_record",
+            self.delete_memory_record_inner(memory_id),
+        )
+        .await
+    }
+
     async fn list_memory_records(
         &self,
         context_key: String,
@@ -395,6 +417,28 @@ impl StorageProvider for R2Storage {
         with_storage_reason(
             "list_memory_records",
             self.list_memory_records_inner(context_key, filter),
+        )
+        .await
+    }
+
+    async fn get_memory_session_state(
+        &self,
+        session_id: String,
+    ) -> Result<Option<SessionStateRecord>, StorageError> {
+        with_storage_reason(
+            "get_memory_session_state",
+            self.get_memory_session_state_inner(session_id),
+        )
+        .await
+    }
+
+    async fn list_memory_session_states(
+        &self,
+        filter: oxide_agent_memory::SessionStateListFilter,
+    ) -> Result<Vec<SessionStateRecord>, StorageError> {
+        with_storage_reason(
+            "list_memory_session_states",
+            self.list_memory_session_states_inner(filter),
         )
         .await
     }

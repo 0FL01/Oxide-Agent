@@ -1,8 +1,8 @@
 use chrono::Utc;
 use oxide_agent_memory::{
-    ArchiveBlobStore, ArtifactRef, CleanupStatus, EpisodeListFilter, EpisodeOutcome, EpisodeRecord,
-    InMemoryArchiveBlobStore, InMemoryMemoryRepository, MemoryListFilter, MemoryRecord,
-    MemoryRepository, MemoryType, SessionStateRecord, ThreadRecord,
+    stable_memory_content_hash, ArchiveBlobStore, ArtifactRef, CleanupStatus, EpisodeListFilter,
+    EpisodeOutcome, EpisodeRecord, InMemoryArchiveBlobStore, InMemoryMemoryRepository,
+    MemoryListFilter, MemoryRecord, MemoryRepository, MemoryType, SessionStateRecord, ThreadRecord,
 };
 
 fn record_times() -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
@@ -67,10 +67,15 @@ async fn in_memory_memory_crate_supports_core_contracts() {
         importance: 0.8,
         confidence: 0.9,
         source: Some("test".to_string()),
+        content_hash: Some(stable_memory_content_hash(
+            MemoryType::Decision,
+            "use hybrid memory",
+        )),
         reason: Some("contract fixture".to_string()),
         tags: vec!["memory".to_string(), "decision".to_string()],
         created_at,
         updated_at,
+        deleted_at: None,
     })
     .await
     .expect("memory stored");

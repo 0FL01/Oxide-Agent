@@ -7,8 +7,8 @@ use crate::types::{
     EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EmbeddingStatus,
     EpisodeEmbeddingCandidate, EpisodeId, EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter,
     EpisodeSearchHit, MemoryEmbeddingCandidate, MemoryId, MemoryListFilter, MemoryRecord,
-    MemorySearchFilter, MemorySearchHit, SessionStateId, SessionStateRecord, ThreadId,
-    ThreadRecord,
+    MemorySearchFilter, MemorySearchHit, SessionStateId, SessionStateListFilter,
+    SessionStateRecord, ThreadId, ThreadRecord,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -268,6 +268,20 @@ impl MemoryRepository for InMemoryMemoryRepository {
         }
     }
 
+    fn upsert_memory(
+        &self,
+        record: MemoryRecord,
+    ) -> impl Future<Output = Result<MemoryRecord, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        async move {
+            let mut guard = state.write().map_err(|_| Self::map_storage_error())?;
+            guard
+                .memories
+                .insert(record.memory_id.clone(), record.clone());
+            Ok(record)
+        }
+    }
+
     fn get_memory(
         &self,
         memory_id: &str,
@@ -277,6 +291,25 @@ impl MemoryRepository for InMemoryMemoryRepository {
         async move {
             let guard = state.read().map_err(|_| Self::map_storage_error())?;
             Ok(guard.memories.get(&memory_id).cloned())
+        }
+    }
+
+    fn delete_memory(
+        &self,
+        memory_id: &str,
+    ) -> impl Future<Output = Result<Option<MemoryRecord>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let memory_id = memory_id.to_string();
+        async move {
+            let mut guard = state.write().map_err(|_| Self::map_storage_error())?;
+            let now = Utc::now();
+            Ok(guard.memories.get_mut(&memory_id).map(|memory| {
+                if memory.deleted_at.is_none() {
+                    memory.deleted_at = Some(now);
+                    memory.updated_at = now;
+                }
+                memory.clone()
+            }))
         }
     }
 
@@ -294,6 +327,7 @@ impl MemoryRepository for InMemoryMemoryRepository {
                 .memories
                 .values()
                 .filter(|memory| memory.context_key == context_key)
+                .filter(|memory| filter.include_deleted || memory.deleted_at.is_none())
                 .filter(|memory| match filter.memory_type {
                     Some(memory_type) => memory.memory_type == memory_type,
                     None => true,
@@ -425,6 +459,7 @@ impl MemoryRepository for InMemoryMemoryRepository {
             let mut hits: Vec<_> = guard
                 .memories
                 .values()
+                .filter(|memory| memory.deleted_at.is_none())
                 .filter(|memory| match &filter.context_key {
                     Some(context_key) => &memory.context_key == context_key,
                     None => true,
@@ -772,6 +807,7 @@ impl MemoryRepository for InMemoryMemoryRepository {
             let mut hits = guard
                 .memories
                 .values()
+                .filter(|memory| memory.deleted_at.is_none())
                 .filter(|memory| match &filter.context_key {
                     Some(context_key) => &memory.context_key == context_key,
                     None => true,
@@ -860,6 +896,42 @@ impl MemoryRepository for InMemoryMemoryRepository {
             Ok(guard.session_states.get(&session_id).cloned())
         }
     }
+
+    fn list_session_states(
+        &self,
+        filter: &SessionStateListFilter,
+    ) -> impl Future<Output = Result<Vec<SessionStateRecord>, RepositoryError>> + Send {
+        let state = Arc::clone(&self.state);
+        let filter = filter.clone();
+        async move {
+            let guard = state.read().map_err(|_| Self::map_storage_error())?;
+            let mut states = guard
+                .session_states
+                .values()
+                .filter(|record| match &filter.context_key {
+                    Some(context_key) => &record.context_key == context_key,
+                    None => true,
+                })
+                .filter(|record| {
+                    filter.statuses.is_empty() || filter.statuses.contains(&record.cleanup_status)
+                })
+                .filter(|record| match filter.updated_before {
+                    Some(updated_before) => record.updated_at <= updated_before,
+                    None => true,
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            states.sort_by(|left, right| {
+                left.updated_at
+                    .cmp(&right.updated_at)
+                    .then_with(|| left.session_id.cmp(&right.session_id))
+            });
+            if let Some(limit) = filter.limit {
+                states.truncate(limit);
+            }
+            Ok(states)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -946,6 +1018,7 @@ impl ArchiveBlobStore for InMemoryArchiveBlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consolidation::stable_memory_content_hash;
     use crate::types::{
         ArtifactRef, CleanupStatus, EmbeddingBackfillRequest, EmbeddingFailureUpdate,
         EmbeddingOwnerType, EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingUpdateBase,
@@ -1016,10 +1089,15 @@ mod tests {
             importance: 0.9,
             confidence: 0.7,
             source: Some("test".to_string()),
+            content_hash: Some(stable_memory_content_hash(
+                kind,
+                &format!("content {memory_id}"),
+            )),
             reason: None,
             tags: tags.into_iter().map(ToOwned::to_owned).collect(),
             created_at: utc(updated_at - 10),
             updated_at: utc(updated_at),
+            deleted_at: None,
         }
     }
 
@@ -1118,6 +1196,7 @@ mod tests {
             memory_type: Some(MemoryType::Fact),
             min_importance: None,
             tags: vec!["topic".to_string(), "rust".to_string()],
+            include_deleted: false,
             limit: Some(10),
         };
 
@@ -1164,6 +1243,36 @@ mod tests {
             .expect("session state should exist");
         assert_eq!(loaded.context_key, "topic-a");
         assert_eq!(loaded.hot_token_estimate, 123);
+    }
+
+    #[tokio::test]
+    async fn delete_memory_hides_record_from_default_listing() {
+        let repo = InMemoryMemoryRepository::new();
+        repo.create_memory(memory_record("mem-1", MemoryType::Fact, vec!["topic"], 100))
+            .await
+            .expect("memory should store");
+        repo.delete_memory("mem-1")
+            .await
+            .expect("delete should succeed");
+
+        let visible = repo
+            .list_memories("topic-a", &MemoryListFilter::default())
+            .await
+            .expect("listing should succeed");
+        assert!(visible.is_empty());
+
+        let deleted = repo
+            .list_memories(
+                "topic-a",
+                &MemoryListFilter {
+                    include_deleted: true,
+                    ..MemoryListFilter::default()
+                },
+            )
+            .await
+            .expect("deleted listing should succeed");
+        assert_eq!(deleted.len(), 1);
+        assert!(deleted[0].deleted_at.is_some());
     }
 
     #[tokio::test]
