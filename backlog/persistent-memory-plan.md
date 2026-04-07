@@ -785,16 +785,18 @@ Audit baseline: `2026-04-07`, branch `feature/memento-mori`.
 
 ### P1 — observability и эксплуатация
 
-10. **Добавить telemetry для memory subsystem.**
-    - retrieval hit/miss;
-    - lexical vs vector contribution;
-    - number of retrieved items injected into prompt;
-    - memory write counts by type;
-    - consolidation merges/deletes/expirations;
-    - embedding backfill failures/retries.
+10. [x] **Добавить telemetry для memory subsystem.**
+    - [x] retrieval hit/miss;
+    - [x] lexical vs vector contribution;
+    - [x] number of retrieved items injected into prompt;
+    - [x] memory write counts by type;
+    - [x] consolidation merges/deletes/expirations;
+    - [x] embedding backfill failures/retries.
 
-11. **Добавить operator-facing diagnostics.**
-    - Нужен понятный способ посмотреть: какие memories были созданы, что удалил consolidator, почему retrieval ничего не вернул, сколько embeddings pending/failed.
+11. [x] **Добавить operator-facing diagnostics.**
+    - `memory_search` теперь возвращает structured diagnostics с `empty_reason`, lexical/vector hit counts и contribution breakdown.
+    - `memory_diagnostics` показывает recent context-scoped memories (включая soft-deleted), recent visible-thread episodes и embedding status counts `ready/pending/failed/missing`.
+    - Consolidation / PostRun / embedding backfill пишут structured telemetry по созданным и удалённым memory records.
 
 ### P1 — тестовое покрытие
 

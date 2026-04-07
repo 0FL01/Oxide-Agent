@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
-use tracing::warn;
+use tracing::{info, warn};
 
 const EMBEDDING_BACKFILL_LIMIT: usize = 8;
 const HYBRID_RETRIEVAL_CANDIDATE_LIMIT: usize = 8;
@@ -614,6 +614,16 @@ impl PersistentMemoryCoordinator {
         } else {
             None
         };
+        if let Some(episode) = episode.as_ref() {
+            info!(
+                episode_id = %episode.episode_id,
+                context_key = %episode.context_key,
+                outcome = outcome_label(episode.outcome),
+                artifact_count = episode.artifacts.len(),
+                tool_count = episode.tools_used.len(),
+                "Persistent episode finalized"
+            );
+        }
         if let (Some(indexer), Some(episode)) = (self.embedding_indexer.as_ref(), episode.as_ref())
         {
             if let Err(error) = indexer.index_episode(episode).await {
@@ -662,9 +672,33 @@ impl PersistentMemoryCoordinator {
                 .filter_map(|draft| tool_memory_record(episode, draft)),
         );
 
+        let mut fact_writes = 0usize;
+        let mut preference_writes = 0usize;
+        let mut procedure_writes = 0usize;
+        let mut decision_writes = 0usize;
+        let mut constraint_writes = 0usize;
+        let mut failed_writes = 0usize;
+        let mut stored_memory_ids = Vec::new();
+
         for memory in memories {
             match self.store.upsert_memory(memory).await {
                 Ok(memory) => {
+                    match memory.memory_type {
+                        MemoryType::Fact => fact_writes += 1,
+                        MemoryType::Preference => preference_writes += 1,
+                        MemoryType::Procedure => procedure_writes += 1,
+                        MemoryType::Decision => decision_writes += 1,
+                        MemoryType::Constraint => constraint_writes += 1,
+                    }
+                    stored_memory_ids.push(memory.memory_id.clone());
+                    info!(
+                        memory_write_source = "post_run",
+                        context_key = %memory.context_key,
+                        episode_id = %episode.episode_id,
+                        memory_id = %memory.memory_id,
+                        memory_type = memory_type_label(memory.memory_type),
+                        "Persistent reusable memory write"
+                    );
                     if let Some(indexer) = self.embedding_indexer.as_ref() {
                         if let Err(error) = indexer.index_memory(&memory).await {
                             warn!(error = %error, memory_id = %memory.memory_id, "reusable memory embedding write failed");
@@ -672,9 +706,27 @@ impl PersistentMemoryCoordinator {
                     }
                 }
                 Err(error) => {
+                    failed_writes += 1;
                     warn!(error = %error, episode_id = %episode.episode_id, "Reusable memory extraction write failed");
                 }
             }
+        }
+
+        if !stored_memory_ids.is_empty() || failed_writes > 0 {
+            info!(
+                memory_write_source = "post_run",
+                episode_id = %episode.episode_id,
+                context_key = %episode.context_key,
+                stored_memory_count = stored_memory_ids.len(),
+                failed_memory_writes = failed_writes,
+                fact_writes,
+                preference_writes,
+                procedure_writes,
+                decision_writes,
+                constraint_writes,
+                stored_memory_ids = ?stored_memory_ids,
+                "Post-run memory write telemetry"
+            );
         }
     }
 
@@ -699,7 +751,28 @@ impl PersistentMemoryCoordinator {
         };
 
         let plan = self.consolidator.consolidate(&memories, now);
-        for memory in plan.upserts {
+        if !plan.upserts.is_empty() || !plan.deletions.is_empty() {
+            let upserted_memory_ids = plan
+                .upserts
+                .iter()
+                .map(|memory| memory.memory_id.clone())
+                .collect::<Vec<_>>();
+            info!(
+                context_key,
+                upsert_count = plan.upserts.len(),
+                deletion_count = plan.deletions.len(),
+                exact_merge_deletion_count = plan.diagnostics.exact_merge_deletions.len(),
+                similarity_merge_deletion_count = plan.diagnostics.similarity_merge_deletions.len(),
+                expiration_deletion_count = plan.diagnostics.expired_deletions.len(),
+                upserted_memory_ids = ?upserted_memory_ids,
+                deleted_memory_ids = ?plan.deletions,
+                "Persistent memory consolidation telemetry"
+            );
+        }
+        let oxide_agent_memory::ConsolidatedContext {
+            upserts, deletions, ..
+        } = plan;
+        for memory in upserts {
             match self.store.upsert_memory(memory.clone()).await {
                 Ok(memory) => {
                     if let Some(indexer) = self.embedding_indexer.as_ref() {
@@ -713,7 +786,7 @@ impl PersistentMemoryCoordinator {
                 }
             }
         }
-        for memory_id in plan.deletions {
+        for memory_id in deletions {
             if let Err(error) = self.store.delete_memory(&memory_id).await {
                 warn!(error = %error, %memory_id, context_key, "persistent memory maintenance delete failed");
             }
@@ -914,20 +987,89 @@ impl PersistentMemoryEmbeddingIndexer {
             model_id: self.model_id.clone(),
             limit: Some(self.backfill_limit),
         };
-        for candidate in self
+        let episode_candidates = self
             .store
             .list_episode_embedding_backfill_candidates(&request)
-            .await?
-        {
-            self.index_episode(&candidate.record).await?;
-        }
-        for candidate in self
+            .await?;
+        let memory_candidates = self
             .store
             .list_memory_embedding_backfill_candidates(&request)
-            .await?
-        {
-            self.index_memory(&candidate.record).await?;
+            .await?;
+        let episode_candidate_count = episode_candidates.len();
+        let memory_candidate_count = memory_candidates.len();
+        let summarize_candidates = |statuses: Vec<Option<EmbeddingRecord>>| {
+            statuses.into_iter().fold(
+                (0usize, 0usize, 0usize),
+                |(pending, failed, missing), embedding| match embedding
+                    .map(|embedding| embedding.status)
+                {
+                    Some(oxide_agent_memory::EmbeddingStatus::Pending) => {
+                        (pending + 1, failed, missing)
+                    }
+                    Some(oxide_agent_memory::EmbeddingStatus::Failed) => {
+                        (pending, failed + 1, missing)
+                    }
+                    Some(oxide_agent_memory::EmbeddingStatus::Ready) => (pending, failed, missing),
+                    None => (pending, failed, missing + 1),
+                },
+            )
+        };
+        let (episode_pending_before, episode_failed_before, episode_missing_before) =
+            summarize_candidates(
+                episode_candidates
+                    .iter()
+                    .map(|candidate| candidate.embedding.clone())
+                    .collect(),
+            );
+        let (memory_pending_before, memory_failed_before, memory_missing_before) =
+            summarize_candidates(
+                memory_candidates
+                    .iter()
+                    .map(|candidate| candidate.embedding.clone())
+                    .collect(),
+            );
+
+        let mut episode_failures = 0usize;
+        let mut memory_failures = 0usize;
+        let mut first_error = None;
+        for candidate in episode_candidates {
+            if let Err(error) = self.index_episode(&candidate.record).await {
+                episode_failures += 1;
+                warn!(error = %error, episode_id = %candidate.record.episode_id, "persistent memory backfill episode indexing failed");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
         }
+        for candidate in memory_candidates {
+            if let Err(error) = self.index_memory(&candidate.record).await {
+                memory_failures += 1;
+                warn!(error = %error, memory_id = %candidate.record.memory_id, "persistent memory backfill memory indexing failed");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        info!(
+            model_id = %self.model_id,
+            episode_candidate_count,
+            episode_pending_before,
+            episode_failed_before,
+            episode_missing_before,
+            episode_backfill_failures = episode_failures,
+            memory_candidate_count,
+            memory_pending_before,
+            memory_failed_before,
+            memory_missing_before,
+            memory_backfill_failures = memory_failures,
+            "Persistent memory embedding backfill telemetry"
+        );
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+
         Ok(())
     }
 }
@@ -968,6 +1110,122 @@ pub(crate) enum DurableMemorySearchItem {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetrievalVectorStatus {
+    Disabled,
+    Miss,
+    Hit,
+    EmbeddingFailed,
+    SearchFailed,
+}
+
+impl RetrievalVectorStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Miss => "miss",
+            Self::Hit => "hit",
+            Self::EmbeddingFailed => "embedding_failed",
+            Self::SearchFailed => "search_failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DurableMemoryRetrievalDiagnostics {
+    pub query: String,
+    pub search_episodes: bool,
+    pub search_memories: bool,
+    pub candidate_limit: usize,
+    pub episode_lexical_hits: usize,
+    pub episode_vector_hits: usize,
+    pub memory_lexical_hits: usize,
+    pub memory_vector_hits: usize,
+    pub fused_candidate_count: usize,
+    pub injected_item_count: usize,
+    pub lexical_only_items: usize,
+    pub vector_only_items: usize,
+    pub hybrid_items: usize,
+    pub filtered_low_score: usize,
+    pub filtered_duplicate_snippet: usize,
+    pub filtered_covered_episode: usize,
+    pub empty_reason: Option<&'static str>,
+    pub episode_vector_status: RetrievalVectorStatus,
+    pub memory_vector_status: RetrievalVectorStatus,
+}
+
+impl DurableMemoryRetrievalDiagnostics {
+    fn skipped(query: impl Into<String>, empty_reason: &'static str) -> Self {
+        Self {
+            query: query.into(),
+            search_episodes: false,
+            search_memories: false,
+            candidate_limit: 0,
+            episode_lexical_hits: 0,
+            episode_vector_hits: 0,
+            memory_lexical_hits: 0,
+            memory_vector_hits: 0,
+            fused_candidate_count: 0,
+            injected_item_count: 0,
+            lexical_only_items: 0,
+            vector_only_items: 0,
+            hybrid_items: 0,
+            filtered_low_score: 0,
+            filtered_duplicate_snippet: 0,
+            filtered_covered_episode: 0,
+            empty_reason: Some(empty_reason),
+            episode_vector_status: RetrievalVectorStatus::Disabled,
+            memory_vector_status: RetrievalVectorStatus::Disabled,
+        }
+    }
+
+    fn with_plan(plan: &RetrievalPlan, candidate_limit: usize) -> Self {
+        Self {
+            query: plan.query.clone(),
+            search_episodes: plan.search_episodes,
+            search_memories: plan.search_memories,
+            candidate_limit,
+            episode_lexical_hits: 0,
+            episode_vector_hits: 0,
+            memory_lexical_hits: 0,
+            memory_vector_hits: 0,
+            fused_candidate_count: 0,
+            injected_item_count: 0,
+            lexical_only_items: 0,
+            vector_only_items: 0,
+            hybrid_items: 0,
+            filtered_low_score: 0,
+            filtered_duplicate_snippet: 0,
+            filtered_covered_episode: 0,
+            empty_reason: None,
+            episode_vector_status: RetrievalVectorStatus::Disabled,
+            memory_vector_status: RetrievalVectorStatus::Disabled,
+        }
+    }
+
+    pub const fn hit(&self) -> bool {
+        self.injected_item_count > 0
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DurableMemoryRetrievalOutcome {
+    retrieval: Option<DurableMemoryRetrieval>,
+    diagnostics: DurableMemoryRetrievalDiagnostics,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DurableMemorySearchOutcome {
+    pub items: Vec<DurableMemorySearchItem>,
+    pub diagnostics: DurableMemoryRetrievalDiagnostics,
+}
+
+#[derive(Debug, Clone)]
+struct VectorSearchOutcome<T> {
+    hits: Vec<T>,
+    status: RetrievalVectorStatus,
+}
+
 #[derive(Clone)]
 pub struct DurableMemoryRetriever {
     store: Arc<dyn PersistentMemoryStore>,
@@ -999,26 +1257,78 @@ impl DurableMemoryRetriever {
         self
     }
 
+    fn log_retrieval_telemetry(
+        channel: &'static str,
+        diagnostics: &DurableMemoryRetrievalDiagnostics,
+    ) {
+        info!(
+            retrieval_channel = channel,
+            query = %diagnostics.query,
+            retrieval_hit = diagnostics.hit(),
+            search_episodes = diagnostics.search_episodes,
+            search_memories = diagnostics.search_memories,
+            candidate_limit = diagnostics.candidate_limit,
+            episode_lexical_hits = diagnostics.episode_lexical_hits,
+            episode_vector_hits = diagnostics.episode_vector_hits,
+            memory_lexical_hits = diagnostics.memory_lexical_hits,
+            memory_vector_hits = diagnostics.memory_vector_hits,
+            episode_vector_status = diagnostics.episode_vector_status.as_str(),
+            memory_vector_status = diagnostics.memory_vector_status.as_str(),
+            fused_candidate_count = diagnostics.fused_candidate_count,
+            injected_item_count = diagnostics.injected_item_count,
+            lexical_only_items = diagnostics.lexical_only_items,
+            vector_only_items = diagnostics.vector_only_items,
+            hybrid_items = diagnostics.hybrid_items,
+            filtered_low_score = diagnostics.filtered_low_score,
+            filtered_duplicate_snippet = diagnostics.filtered_duplicate_snippet,
+            filtered_covered_episode = diagnostics.filtered_covered_episode,
+            empty_reason = diagnostics.empty_reason.unwrap_or("none"),
+            "Durable memory retrieval telemetry"
+        );
+    }
+
     pub async fn render_prompt_context(
         &self,
         task: &str,
         scope: &AgentMemoryScope,
         options: DurableMemoryRetrievalOptions,
     ) -> Result<Option<String>> {
-        let Some(retrieval) = self.retrieve(task, scope, options).await? else {
-            return Ok(None);
-        };
-        Ok(Some(retrieval.render_for_prompt()))
+        let outcome = self.retrieve_outcome_for_task(task, scope, options).await?;
+        Self::log_retrieval_telemetry("prompt", &outcome.diagnostics);
+        Ok(outcome
+            .retrieval
+            .map(|retrieval| retrieval.render_for_prompt()))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn search(
         &self,
         scope: &AgentMemoryScope,
         request: DurableMemorySearchRequest,
     ) -> Result<Vec<DurableMemorySearchItem>> {
+        Ok(self.search_with_diagnostics(scope, request).await?.items)
+    }
+
+    pub(crate) async fn search_with_diagnostics(
+        &self,
+        scope: &AgentMemoryScope,
+        request: DurableMemorySearchRequest,
+    ) -> Result<DurableMemorySearchOutcome> {
         let query = request.query.trim();
         if query.is_empty() || (!request.search_episodes && !request.search_memories) {
-            return Ok(Vec::new());
+            let diagnostics = DurableMemoryRetrievalDiagnostics::skipped(
+                query,
+                if query.is_empty() {
+                    "empty_query"
+                } else {
+                    "no_sources_requested"
+                },
+            );
+            Self::log_retrieval_telemetry("tool", &diagnostics);
+            return Ok(DurableMemorySearchOutcome {
+                items: Vec::new(),
+                diagnostics,
+            });
         }
 
         let plan = RetrievalPlan {
@@ -1034,21 +1344,46 @@ impl DurableMemoryRetriever {
             .candidate_limit
             .unwrap_or_else(|| request.limit.max(HYBRID_RETRIEVAL_CANDIDATE_LIMIT));
 
-        Ok(self
+        let outcome = self
             .retrieve_with_plan(scope, plan, request.time_range, candidate_limit)
-            .await?
-            .map(DurableMemoryRetrieval::into_search_items)
-            .unwrap_or_default())
+            .await?;
+        Self::log_retrieval_telemetry("tool", &outcome.diagnostics);
+        Ok(DurableMemorySearchOutcome {
+            items: outcome
+                .retrieval
+                .map(DurableMemoryRetrieval::into_search_items)
+                .unwrap_or_default(),
+            diagnostics: outcome.diagnostics,
+        })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     async fn retrieve(
         &self,
         task: &str,
         scope: &AgentMemoryScope,
         options: DurableMemoryRetrievalOptions,
     ) -> Result<Option<DurableMemoryRetrieval>> {
+        Ok(self
+            .retrieve_outcome_for_task(task, scope, options)
+            .await?
+            .retrieval)
+    }
+
+    async fn retrieve_outcome_for_task(
+        &self,
+        task: &str,
+        scope: &AgentMemoryScope,
+        options: DurableMemoryRetrievalOptions,
+    ) -> Result<DurableMemoryRetrievalOutcome> {
         let Some(plan) = query_retrieval_plan(task, options) else {
-            return Ok(None);
+            return Ok(DurableMemoryRetrievalOutcome {
+                retrieval: None,
+                diagnostics: DurableMemoryRetrievalDiagnostics::skipped(
+                    task,
+                    "query_filtered_as_smalltalk",
+                ),
+            });
         };
 
         self.retrieve_with_plan(
@@ -1066,8 +1401,9 @@ impl DurableMemoryRetriever {
         plan: RetrievalPlan,
         time_range: TimeRange,
         candidate_limit: usize,
-    ) -> Result<Option<DurableMemoryRetrieval>> {
+    ) -> Result<DurableMemoryRetrievalOutcome> {
         let candidate_limit = candidate_limit.max(1);
+        let mut diagnostics = DurableMemoryRetrievalDiagnostics::with_plan(&plan, candidate_limit);
 
         let mut candidates = Vec::new();
 
@@ -1077,8 +1413,11 @@ impl DurableMemoryRetriever {
                 .store
                 .search_episodes_lexical(&plan.query, &filter)
                 .await?;
+            diagnostics.episode_lexical_hits = lexical_hits.len();
             let vector_hits = self.search_episode_vectors(&plan, &filter).await;
-            candidates.extend(fuse_episode_hits(lexical_hits, vector_hits));
+            diagnostics.episode_vector_status = vector_hits.status;
+            diagnostics.episode_vector_hits = vector_hits.hits.len();
+            candidates.extend(fuse_episode_hits(lexical_hits, vector_hits.hits));
         }
 
         if plan.search_memories {
@@ -1087,9 +1426,14 @@ impl DurableMemoryRetriever {
                 .store
                 .search_memories_lexical(&plan.query, &filter)
                 .await?;
+            diagnostics.memory_lexical_hits = lexical_hits.len();
             let vector_hits = self.search_memory_vectors(&plan, &filter).await;
-            candidates.extend(fuse_memory_hits(lexical_hits, vector_hits));
+            diagnostics.memory_vector_status = vector_hits.status;
+            diagnostics.memory_vector_hits = vector_hits.hits.len();
+            candidates.extend(fuse_memory_hits(lexical_hits, vector_hits.hits));
         }
+
+        diagnostics.fused_candidate_count = candidates.len();
 
         candidates.sort_by(|left, right| {
             right
@@ -1104,15 +1448,18 @@ impl DurableMemoryRetriever {
         let mut seen_snippets = HashSet::new();
         for candidate in candidates {
             if candidate.score() < HYBRID_RETRIEVAL_MIN_SCORE {
+                diagnostics.filtered_low_score += 1;
                 continue;
             }
 
             if !seen_snippets.insert(normalized_snippet_key(candidate.snippet())) {
+                diagnostics.filtered_duplicate_snippet += 1;
                 continue;
             }
 
             if let Some(source_episode_id) = candidate.source_episode_id() {
                 if covered_episode_ids.contains(source_episode_id) {
+                    diagnostics.filtered_covered_episode += 1;
                     continue;
                 }
             }
@@ -1127,27 +1474,67 @@ impl DurableMemoryRetriever {
             }
         }
 
-        if items.is_empty() {
-            return Ok(None);
+        diagnostics.injected_item_count = items.len();
+        for candidate in &items {
+            match candidate {
+                HybridCandidate::Episode {
+                    lexical_score,
+                    vector_score,
+                    ..
+                }
+                | HybridCandidate::Memory {
+                    lexical_score,
+                    vector_score,
+                    ..
+                } => match (lexical_score.is_some(), vector_score.is_some()) {
+                    (true, true) => diagnostics.hybrid_items += 1,
+                    (true, false) => diagnostics.lexical_only_items += 1,
+                    (false, true) => diagnostics.vector_only_items += 1,
+                    (false, false) => {}
+                },
+            }
         }
 
-        Ok(Some(DurableMemoryRetrieval { plan, items }))
+        if items.is_empty() {
+            diagnostics.empty_reason = Some(if diagnostics.fused_candidate_count == 0 {
+                "no_search_hits"
+            } else if diagnostics.filtered_low_score == diagnostics.fused_candidate_count {
+                "all_candidates_below_score_threshold"
+            } else {
+                "all_candidates_deduplicated_or_covered"
+            });
+            return Ok(DurableMemoryRetrievalOutcome {
+                retrieval: None,
+                diagnostics,
+            });
+        }
+
+        Ok(DurableMemoryRetrievalOutcome {
+            retrieval: Some(DurableMemoryRetrieval { plan, items }),
+            diagnostics,
+        })
     }
 
     async fn search_episode_vectors(
         &self,
         plan: &RetrievalPlan,
         filter: &EpisodeSearchFilter,
-    ) -> Vec<EpisodeSearchHit> {
+    ) -> VectorSearchOutcome<EpisodeSearchHit> {
         let Some(generator) = self.generator.as_ref() else {
-            return Vec::new();
+            return VectorSearchOutcome {
+                hits: Vec::new(),
+                status: RetrievalVectorStatus::Disabled,
+            };
         };
 
         let query_embedding = match generator.embed_query(&plan.query).await {
             Ok(query_embedding) => query_embedding,
             Err(error) => {
                 warn!(error = %error, query = %plan.query, "durable memory query embedding failed");
-                return Vec::new();
+                return VectorSearchOutcome {
+                    hits: Vec::new(),
+                    status: RetrievalVectorStatus::EmbeddingFailed,
+                };
             }
         };
 
@@ -1156,10 +1543,20 @@ impl DurableMemoryRetriever {
             .search_episodes_vector(&query_embedding, filter)
             .await
         {
-            Ok(hits) => hits,
+            Ok(hits) => VectorSearchOutcome {
+                status: if hits.is_empty() {
+                    RetrievalVectorStatus::Miss
+                } else {
+                    RetrievalVectorStatus::Hit
+                },
+                hits,
+            },
             Err(error) => {
                 warn!(error = %error, query = %plan.query, "durable memory episode vector search failed");
-                Vec::new()
+                VectorSearchOutcome {
+                    hits: Vec::new(),
+                    status: RetrievalVectorStatus::SearchFailed,
+                }
             }
         }
     }
@@ -1168,16 +1565,22 @@ impl DurableMemoryRetriever {
         &self,
         plan: &RetrievalPlan,
         filter: &MemorySearchFilter,
-    ) -> Vec<MemorySearchHit> {
+    ) -> VectorSearchOutcome<MemorySearchHit> {
         let Some(generator) = self.generator.as_ref() else {
-            return Vec::new();
+            return VectorSearchOutcome {
+                hits: Vec::new(),
+                status: RetrievalVectorStatus::Disabled,
+            };
         };
 
         let query_embedding = match generator.embed_query(&plan.query).await {
             Ok(query_embedding) => query_embedding,
             Err(error) => {
                 warn!(error = %error, query = %plan.query, "durable memory query embedding failed");
-                return Vec::new();
+                return VectorSearchOutcome {
+                    hits: Vec::new(),
+                    status: RetrievalVectorStatus::EmbeddingFailed,
+                };
             }
         };
 
@@ -1186,10 +1589,20 @@ impl DurableMemoryRetriever {
             .search_memories_vector(&query_embedding, filter)
             .await
         {
-            Ok(hits) => hits,
+            Ok(hits) => VectorSearchOutcome {
+                status: if hits.is_empty() {
+                    RetrievalVectorStatus::Miss
+                } else {
+                    RetrievalVectorStatus::Hit
+                },
+                hits,
+            },
             Err(error) => {
                 warn!(error = %error, query = %plan.query, "durable memory record vector search failed");
-                Vec::new()
+                VectorSearchOutcome {
+                    hits: Vec::new(),
+                    status: RetrievalVectorStatus::SearchFailed,
+                }
             }
         }
     }
@@ -2560,6 +2973,44 @@ mod tests {
             search_items[1],
             DurableMemorySearchItem::Episode { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn durable_memory_search_reports_empty_reason_when_search_returns_no_candidates() {
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_search_memory_episodes_lexical()
+            .times(1)
+            .return_once(|_, _| Ok(Vec::new()));
+        storage
+            .expect_search_memory_records_lexical()
+            .times(1)
+            .return_once(|_, _| Ok(Vec::new()));
+
+        let retriever = DurableMemoryRetriever::new(Arc::new(storage));
+        let outcome = retriever
+            .search_with_diagnostics(
+                &retrieval_scope(),
+                DurableMemorySearchRequest {
+                    query: "how was the deploy fixed before?".to_string(),
+                    search_episodes: true,
+                    search_memories: true,
+                    memory_type: None,
+                    time_range: Default::default(),
+                    min_importance: None,
+                    limit: 5,
+                    candidate_limit: Some(8),
+                    allow_full_thread_read: true,
+                },
+            )
+            .await
+            .expect("diagnostic search should succeed");
+
+        assert!(outcome.items.is_empty());
+        assert_eq!(outcome.diagnostics.empty_reason, Some("no_search_hits"));
+        assert_eq!(outcome.diagnostics.episode_lexical_hits, 0);
+        assert_eq!(outcome.diagnostics.injected_item_count, 0);
+        assert_eq!(outcome.diagnostics.filtered_low_score, 0);
     }
 
     #[tokio::test]
