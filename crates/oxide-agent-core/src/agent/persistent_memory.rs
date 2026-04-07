@@ -629,7 +629,6 @@ impl PersistentMemoryEmbeddingIndexer {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DurableMemoryRetrievalOptions {
-    pub rerank: bool,
     pub top_k: Option<usize>,
 }
 
@@ -643,7 +642,6 @@ pub(crate) struct DurableMemorySearchRequest {
     pub min_importance: Option<f32>,
     pub limit: usize,
     pub candidate_limit: Option<usize>,
-    pub rerank: bool,
     pub allow_full_thread_read: bool,
 }
 
@@ -719,7 +717,6 @@ impl DurableMemoryRetriever {
             min_importance: request.min_importance.unwrap_or(0.0),
             top_k: request.limit.max(1),
             allow_full_thread_read: request.allow_full_thread_read,
-            rerank_requested: request.rerank,
         };
         let candidate_limit = request
             .candidate_limit
@@ -822,11 +819,7 @@ impl DurableMemoryRetriever {
             return Ok(None);
         }
 
-        Ok(Some(DurableMemoryRetrieval {
-            plan,
-            items,
-            rerank_applied: false,
-        }))
+        Ok(Some(DurableMemoryRetrieval { plan, items }))
     }
 
     async fn search_episode_vectors(
@@ -899,14 +892,12 @@ struct RetrievalPlan {
     min_importance: f32,
     top_k: usize,
     allow_full_thread_read: bool,
-    rerank_requested: bool,
 }
 
 #[derive(Debug, Clone)]
 struct DurableMemoryRetrieval {
     plan: RetrievalPlan,
     items: Vec<HybridCandidate>,
-    rerank_applied: bool,
 }
 
 impl DurableMemoryRetrieval {
@@ -937,16 +928,6 @@ impl DurableMemoryRetrieval {
                     "episodes"
                 } else {
                     ""
-                }
-            ),
-            format!(
-                "- rerank: {}",
-                if self.plan.rerank_requested && self.rerank_applied {
-                    "applied"
-                } else if self.plan.rerank_requested {
-                    "requested but disabled"
-                } else {
-                    "disabled"
                 }
             ),
         ];
@@ -1242,7 +1223,6 @@ fn query_retrieval_plan(
         allow_full_thread_read: has_history_cue
             || normalized.contains("thread")
             || normalized.contains("transcript"),
-        rerank_requested: options.rerank,
     })
 }
 
@@ -2243,7 +2223,6 @@ mod tests {
                     min_importance: Some(0.45),
                     limit: 5,
                     candidate_limit: Some(8),
-                    rerank: false,
                     allow_full_thread_read: true,
                 },
             )

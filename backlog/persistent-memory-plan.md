@@ -7,7 +7,7 @@
 Ключевая идея:
 - не использовать один общий RAG по всем старым сообщениям;
 - разделить память на типы;
-- использовать hybrid retrieval: lexical + semantic + rerank;
+- использовать hybrid retrieval: lexical + semantic + fusion;
 - хранить raw history отдельно от индексируемой памяти;
 - держать hot context маленьким и агрессивно чистить его.
 
@@ -29,7 +29,7 @@
 
 ### Not Implemented Yet
 - Memory write tools.
-- Hybrid retrieval pipeline (lexical + vector + rerank).
+- Hybrid retrieval pipeline (lexical + vector fusion, без rerank).
 - Query router for deciding when retrieval is needed.
 - pgvector / semantic retrieval.
 - Background consolidation / dedup / TTL / decay.
@@ -44,7 +44,7 @@
 - **Hybrid RAG**
   - full-text / lexical search
   - embeddings / vector search
-  - optional reranking поверх объединённых кандидатов
+  - fusion lexical/vector кандидатов без отдельного reranker-а
 
 - **Typed Memory**
   - `working memory`
@@ -90,7 +90,7 @@
 Hybrid retrieval даёт лучшее покрытие:
 - lexical ловит точные сущности;
 - vector ловит semantic similarity;
-- reranker повышает качество top-K.
+- fusion объединяет оба сигнала без отдельного latency/cost layer.
 
 ---
 
@@ -325,10 +325,10 @@ R2 не используется как primary retrieval engine.
 
 RRF можно добавить позже, но на старте не обязателен.
 
-### Step 4. Rerank
-Опционально прогоняем top-N кандидатов через reranker.
+### Step 4. Final ranking
+На текущем этапе отдельный reranker исключён из дизайна.
 
-На первом этапе можно отключить, если latency или цена важнее.
+Финальный top-K формируется fusion-ранжированием lexical/vector кандидатов.
 
 ### Step 5. Context injection
 В prompt отдаём:
@@ -592,7 +592,6 @@ soft limit warning или по решению агента.
 - [ ] embeddings для episodes/memories;
 - [ ] pgvector search;
 - [ ] weighted fusion;
-- [ ] optional rerank;
 - [ ] context injection policy.
 
 Результат:
@@ -636,7 +635,6 @@ soft limit warning или по решению агента.
 
 ### Retrieval
 - сначала lexical + vector
-- потом optional rerank
 - потом top-K injection
 
 ### Scope
@@ -670,8 +668,7 @@ soft limit warning или по решению агента.
 - строить память через:
   - episodic summaries,
   - extracted reusable memories,
-  - hybrid retrieval,
-  - optional reranking;
+  - hybrid retrieval с fusion-ранжированием;
 - ввести aggressive hot-context control:
   - end-of-task reset,
   - preflight compaction,
@@ -729,9 +726,9 @@ Audit baseline: `2026-04-07`, branch `feature/memento-mori`.
    - Но `memory_search` всё ещё lexical-only.
    - Нужно перевести `memory_search` на общий retrieval engine, чтобы агент получал одинаковое качество поиска и в auto-path, и в explicit tool-path.
 
-2. **Закрыть вопрос с rerank.**
-   - В коде уже есть `rerank_requested`, но реального reranker pipeline нет.
-   - Нужно либо реализовать optional rerank, либо убрать этот флаг из контракта и документации, чтобы не было ложного ощущения готовности.
+2. **Rerank исключён из текущего дизайна.**
+   - Флаг `rerank_requested` и связанные misleading references нужно удалить из контракта и документации.
+   - Текущий production-target: hybrid lexical + vector fusion без отдельного reranker pipeline.
 
 3. **Добавить retrieval quality tests.**
    - Нужны интеграционные тесты на lexical-only edge cases, semantic-match cases и hybrid fusion ranking.
@@ -813,7 +810,7 @@ Audit baseline: `2026-04-07`, branch `feature/memento-mori`.
 - automatic retrieval и `memory_search` используют один и тот же hybrid retrieval core;
 - выбран и документирован один production backend story;
 - deploy-конфигурация (`docker-compose.yml`, `.env.example`, migrations) соответствует выбранному backend;
-- rerank либо реально работает, либо честно исключён из дизайна;
+- отдельный rerank честно исключён из текущего дизайна, пока не появится eval-set и понятный budget на latency/cost;
 - PostRun lifecycle, cleanup и consolidation покрыты e2e/integration тестами;
 - есть telemetry и operator diagnostics для retrieval / writes / cleanup / embeddings;
 - ветка с памятью влита в реальный rollout branch, а не существует отдельно от production path.
