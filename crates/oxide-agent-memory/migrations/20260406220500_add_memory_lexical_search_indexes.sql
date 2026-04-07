@@ -3,13 +3,10 @@ CREATE INDEX IF NOT EXISTS memory_episodes_lexical_search_idx
     USING GIN (
         to_tsvector(
             'simple',
-            concat_ws(
-                ' ',
-                goal,
-                summary,
-                array_to_string(tools_used, ' '),
-                array_to_string(failures, ' ')
-            )
+            coalesce(goal, '') || ' ' ||
+            coalesce(summary, '') || ' ' ||
+            coalesce(array_to_string(tools_used, ' '), '') || ' ' ||
+            coalesce(array_to_string(failures, ' '), '')
         )
     );
 
@@ -18,12 +15,9 @@ CREATE INDEX IF NOT EXISTS memory_records_lexical_search_idx
     USING GIN (
         to_tsvector(
             'simple',
-            concat_ws(
-                ' ',
-                title,
-                short_description,
-                content,
-                array_to_string(tags, ' ')
-            )
+            coalesce(title, '') || ' ' ||
+            coalesce(short_description, '') || ' ' ||
+            coalesce(content, '') || ' ' ||
+            coalesce(array_to_string(tags, ' '), '')
         )
     );
