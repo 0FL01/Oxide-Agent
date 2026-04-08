@@ -208,6 +208,7 @@ impl MemoryClassifierBackend for LlmMemoryClassifierBackend {
                 &messages,
                 &[],
                 route,
+                None,
                 true,
             )
             .await?;

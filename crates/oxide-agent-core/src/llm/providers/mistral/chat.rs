@@ -49,6 +49,7 @@ pub fn build_tool_chat_body(
     tools: &[ToolDefinition],
     model_id: &str,
     max_tokens: u32,
+    temperature: Option<f32>,
     id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
     let messages = prepare_structured_messages(system_prompt, history, id_mapper);
@@ -56,11 +57,13 @@ pub fn build_tool_chat_body(
         "model": model_id,
         "messages": messages,
         "max_tokens": max_tokens,
-        "temperature": if is_reasoning_model(model_id) {
-            MISTRAL_REASONING_TEMPERATURE
-        } else {
-            MISTRAL_TOOL_TEMPERATURE
-        },
+        "temperature": temperature.unwrap_or_else(|| {
+            if is_reasoning_model(model_id) {
+                MISTRAL_REASONING_TEMPERATURE
+            } else {
+                MISTRAL_TOOL_TEMPERATURE
+            }
+        }),
         "tool_choice": "auto",
         "parallel_tool_calls": true
     });
@@ -187,6 +190,7 @@ pub async fn chat_with_tools(
         tools,
         model_id,
         max_tokens,
+        temperature,
         json_mode: _,
     } = request;
 
@@ -199,6 +203,7 @@ pub async fn chat_with_tools(
             tools,
             model_id,
             max_tokens,
+            temperature,
             &mut mapper,
         )
     };

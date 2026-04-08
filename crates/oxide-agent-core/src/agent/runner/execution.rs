@@ -258,6 +258,7 @@ impl AgentRunner {
                     ctx.messages,
                     ctx.tools,
                     &ctx.config.model_name,
+                    ctx.config.temperature,
                     json_mode,
                 )
                 .await;
@@ -363,6 +364,7 @@ impl AgentRunner {
                         ctx.messages,
                         ctx.tools,
                         &route,
+                        ctx.config.temperature,
                         json_mode,
                     )
                     .await;
@@ -692,6 +694,7 @@ impl AgentRunner {
                 ctx.messages,
                 ctx.tools,
                 &ctx.config.model_name,
+                ctx.config.temperature,
                 json_mode,
             )
             .await

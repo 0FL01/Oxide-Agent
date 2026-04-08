@@ -31,11 +31,29 @@ mod provider_tests {
             &[],
             "mistral-large-latest",
             4096,
+            None,
             &mut id_mapper,
         );
 
         assert!(body.get("reasoning_effort").is_none());
         assert_eq!(body["temperature"], json!(MISTRAL_TOOL_TEMPERATURE));
+    }
+
+    #[test]
+    fn tool_body_uses_explicit_temperature_override() {
+        let mut id_mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "mistral-large-latest",
+            4096,
+            Some(0.23),
+            &mut id_mapper,
+        );
+
+        let temperature = body["temperature"].as_f64().expect("temperature present");
+        assert!((temperature - 0.23).abs() < 1e-6);
     }
 
     #[test]
@@ -234,6 +252,7 @@ mod provider_tests {
             &tools,
             "mistral-large-latest",
             4096,
+            None,
             &mut id_mapper,
         );
 
@@ -268,6 +287,7 @@ mod provider_tests {
             &[],
             "mistral-large-latest",
             4096,
+            None,
             &mut id_mapper,
         );
 

@@ -382,6 +382,7 @@ impl LlmProvider for OpenRouterProvider {
             tools,
             model_id,
             max_tokens,
+            temperature,
             json_mode: _,
         } = request;
         let url = "https://openrouter.ai/api/v1/chat/completions";
@@ -393,7 +394,7 @@ impl LlmProvider for OpenRouterProvider {
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": OPENROUTER_CHAT_TEMPERATURE
+            "temperature": temperature.unwrap_or(OPENROUTER_CHAT_TEMPERATURE)
         });
 
         if !openai_tools.is_empty() {

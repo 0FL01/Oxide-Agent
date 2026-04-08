@@ -32,6 +32,8 @@ pub struct AgentRunnerConfig {
     pub timeout_secs: u64,
     /// Reserved output token budget for the active model.
     pub model_max_output_tokens: u32,
+    /// Optional temperature override for main-agent tool calls.
+    pub temperature: Option<f32>,
     /// Active provider name for the current model.
     pub model_provider: Option<String>,
     /// Optional weighted fallback routes for this execution.
@@ -55,6 +57,7 @@ impl AgentRunnerConfig {
             is_sub_agent: false,
             timeout_secs,
             model_max_output_tokens,
+            temperature: None,
             model_provider: None,
             model_routes: Vec::new(),
         }
@@ -71,6 +74,13 @@ impl AgentRunnerConfig {
     #[must_use]
     pub fn with_model_provider(mut self, model_provider: impl Into<String>) -> Self {
         self.model_provider = Some(model_provider.into());
+        self
+    }
+
+    /// Set the main-agent temperature override.
+    #[must_use]
+    pub fn with_temperature(mut self, temperature: Option<f32>) -> Self {
+        self.temperature = temperature;
         self
     }
 
