@@ -3,7 +3,7 @@ mod stream;
 
 use super::ZaiProvider;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
-use crate::llm::{ChatResponse, LlmError, Message, TokenUsage, ToolCall, ToolDefinition};
+use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, Message, TokenUsage, ToolCall};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use serde_json::json;
@@ -11,8 +11,8 @@ use tracing::warn;
 use zai_rs::model::chat::ChatCompletion;
 use zai_rs::model::chat_base_response::{ChatCompletionResponse, ToolCallMessage, Usage};
 use zai_rs::model::chat_message_types::{TextMessage, VisionMessage, VisionRichContent};
-use zai_rs::model::chat_models::{GLM4_5_air, GLM4_5v, GLM5_turbo, GLM4_7, GLM5};
-use zai_rs::model::tools::ThinkingType;
+use zai_rs::model::chat_models::{GLM4_5_air, GLM4_5v, GLM5_turbo, GLM4_6, GLM4_7, GLM5};
+use zai_rs::model::tools::{ResponseFormat, ThinkingType};
 use zai_rs::model::traits::{Chat, ModelName, ThinkEnable};
 use zai_rs::ZaiError;
 
@@ -27,6 +27,7 @@ const ZAI_IMAGE_MAX_TOKENS: u32 = 4000;
 #[derive(Debug)]
 enum ZaiModel {
     Main(GLM4_7),
+    Classic(GLM4_6),
     Sub(GLM4_5_air),
     Vision(GLM4_5v),
     Flagship5_1,
@@ -45,6 +46,10 @@ impl ZaiProvider {
     ) -> Result<String, LlmError> {
         let response = match select_model(model_id)? {
             ZaiModel::Main(model) => {
+                self.text_chat_completion(model, system_prompt, history, user_message, max_tokens)
+                    .await?
+            }
+            ZaiModel::Classic(model) => {
                 self.text_chat_completion(model, system_prompt, history, user_message, max_tokens)
                     .await?
             }
@@ -110,15 +115,21 @@ impl ZaiProvider {
 
     pub(super) async fn chat_with_tools_sdk(
         &self,
-        system_prompt: &str,
-        history: &[Message],
-        tools: &[ToolDefinition],
-        model_id: &str,
-        max_tokens: u32,
-        temperature: Option<f32>,
+        request: ChatWithToolsRequest<'_>,
     ) -> Result<ChatResponse, LlmError> {
+        let ChatWithToolsRequest {
+            system_prompt,
+            messages: history,
+            tools,
+            model_id,
+            max_tokens,
+            temperature,
+            json_mode,
+        } = request;
         let messages = convert_to_text_messages(system_prompt, history, None);
         let converted_tools = convert_tools(tools);
+        let has_tools = !converted_tools.is_empty();
+        let use_native_json_mode = should_use_native_json_mode(json_mode, has_tools);
 
         match select_model(model_id)? {
             ZaiModel::Main(model) => {
@@ -129,12 +140,39 @@ impl ZaiProvider {
                     &self.api_base,
                     max_tokens,
                     temperature,
+                    use_native_json_mode,
                 )?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
-                let client = client.enable_stream().with_tool_stream(true);
-                stream_text_response(client).await
+                if use_native_json_mode {
+                    let response = client.send().await.map_err(map_zai_error)?;
+                    map_chat_response(response)
+                } else {
+                    let client = client.enable_stream().with_tool_stream(true);
+                    stream_text_response(client).await
+                }
+            }
+            ZaiModel::Classic(model) => {
+                let mut client = build_text_request(
+                    model,
+                    messages,
+                    &self.api_key,
+                    &self.api_base,
+                    max_tokens,
+                    temperature,
+                    use_native_json_mode,
+                )?;
+                if !converted_tools.is_empty() {
+                    client = client.add_tools(converted_tools);
+                }
+                if use_native_json_mode {
+                    let response = client.send().await.map_err(map_zai_error)?;
+                    map_chat_response(response)
+                } else {
+                    let client = client.enable_stream().with_tool_stream(true);
+                    stream_text_response(client).await
+                }
             }
             ZaiModel::Sub(model) => {
                 let mut client = build_text_request(
@@ -144,16 +182,29 @@ impl ZaiProvider {
                     &self.api_base,
                     max_tokens,
                     temperature,
+                    use_native_json_mode,
                 )?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
-                let client = client.enable_stream();
-                stream_text_response(client).await
+                if use_native_json_mode {
+                    let response = client.send().await.map_err(map_zai_error)?;
+                    map_chat_response(response)
+                } else {
+                    let client = client.enable_stream();
+                    stream_text_response(client).await
+                }
             }
             ZaiModel::Flagship5_1 => {
-                self.chat_with_tools_raw(messages, converted_tools, "glm-5.1", max_tokens)
-                    .await
+                self.chat_with_tools_raw(
+                    messages,
+                    converted_tools,
+                    "glm-5.1",
+                    max_tokens,
+                    temperature,
+                    use_native_json_mode,
+                )
+                .await
             }
             ZaiModel::Flagship5(model) => {
                 let mut client = build_text_request(
@@ -163,12 +214,18 @@ impl ZaiProvider {
                     &self.api_base,
                     max_tokens,
                     temperature,
+                    use_native_json_mode,
                 )?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
-                let client = client.enable_stream();
-                stream_text_response(client).await
+                if use_native_json_mode {
+                    let response = client.send().await.map_err(map_zai_error)?;
+                    map_chat_response(response)
+                } else {
+                    let client = client.enable_stream();
+                    stream_text_response(client).await
+                }
             }
             ZaiModel::Turbo5(model) => {
                 let mut client = build_text_request(
@@ -178,12 +235,18 @@ impl ZaiProvider {
                     &self.api_base,
                     max_tokens,
                     temperature,
+                    use_native_json_mode,
                 )?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
-                let client = client.enable_stream();
-                stream_text_response(client).await
+                if use_native_json_mode {
+                    let response = client.send().await.map_err(map_zai_error)?;
+                    map_chat_response(response)
+                } else {
+                    let client = client.enable_stream();
+                    stream_text_response(client).await
+                }
             }
             ZaiModel::Vision(_) => Err(LlmError::Unknown(
                 "ZAI vision model does not support tool calling".to_string(),
@@ -211,6 +274,7 @@ impl ZaiProvider {
             &self.api_base,
             max_tokens,
             None,
+            false,
         )?;
         client.send().await.map_err(map_zai_error)
     }
@@ -237,16 +301,20 @@ impl ZaiProvider {
         tools: Vec<zai_rs::model::tools::Tools>,
         model_id: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
+        json_mode: bool,
     ) -> Result<ChatResponse, LlmError> {
-        let body = json!({
+        let has_tools = !tools.is_empty();
+        let mut body = json!({
             "model": model_id,
             "messages": messages,
             "tools": tools,
             "thinking": ThinkingType::Enabled,
-            "temperature": ZAI_TEMPERATURE,
+            "temperature": temperature.unwrap_or(ZAI_TEMPERATURE),
             "max_tokens": max_tokens,
             "stream": false,
         });
+        maybe_apply_json_mode_to_raw_body(&mut body, json_mode, has_tools);
         let response = send_raw_request(&self.api_key, &self.api_base, body).await?;
         map_chat_response(response)
     }
@@ -256,6 +324,7 @@ fn select_model(model_id: &str) -> Result<ZaiModel, LlmError> {
     let normalized = model_id.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "glm-4.7" | "glm-4" | "mainagent" => Ok(ZaiModel::Main(GLM4_7 {})),
+        "glm-4.6" => Ok(ZaiModel::Classic(GLM4_6 {})),
         "glm-4.5-air" | "glm-4-air" | "subagent" => Ok(ZaiModel::Sub(GLM4_5_air {})),
         "glm-4.5v" | "glm-4v" => Ok(ZaiModel::Vision(GLM4_5v {})),
         "glm-5.1" | "flagship5.1" | "flagship51" => Ok(ZaiModel::Flagship5_1),
@@ -274,6 +343,7 @@ fn build_text_request<N>(
     api_base: &str,
     max_tokens: u32,
     temperature: Option<f32>,
+    json_mode: bool,
 ) -> Result<ChatCompletion<N, TextMessage>, LlmError>
 where
     N: ModelName + Chat + ThinkEnable + Serialize,
@@ -290,11 +360,29 @@ where
         .with_max_tokens(max_tokens)
         .with_thinking(ThinkingType::Enabled);
 
+    if json_mode {
+        client.body_mut().response_format = Some(ResponseFormat::JsonObject);
+    }
+
     for message in iter {
         client = client.add_messages(message);
     }
 
     Ok(client)
+}
+
+fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
+    json_mode && !has_tools
+}
+
+fn maybe_apply_json_mode_to_raw_body(
+    body: &mut serde_json::Value,
+    json_mode: bool,
+    has_tools: bool,
+) {
+    if should_use_native_json_mode(json_mode, has_tools) {
+        body["response_format"] = json!({ "type": "json_object" });
+    }
 }
 
 fn build_vision_request(
@@ -527,8 +615,14 @@ fn is_stream_transport_error(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_stream_transport_error, map_zai_error, select_model};
+    use super::{
+        build_text_request, is_stream_transport_error, map_zai_error, select_model,
+        should_use_native_json_mode,
+    };
     use crate::llm::LlmError;
+    use serde_json::json;
+    use zai_rs::model::chat_message_types::TextMessage;
+    use zai_rs::model::chat_models::GLM4_6;
     use zai_rs::ZaiError;
 
     // ── select_model tests ──────────────────────────────────────────────
@@ -601,11 +695,55 @@ mod tests {
         assert!(select_model("glm-4.7").is_ok());
         assert!(select_model("glm-4").is_ok());
         assert!(select_model("mainagent").is_ok());
+        assert!(select_model("glm-4.6").is_ok());
         assert!(select_model("glm-4.5-air").is_ok());
         assert!(select_model("glm-4-air").is_ok());
         assert!(select_model("subagent").is_ok());
         assert!(select_model("glm-4.5v").is_ok());
         assert!(select_model("glm-4v").is_ok());
+    }
+
+    #[test]
+    fn native_json_mode_is_used_only_for_no_tool_requests() {
+        assert!(should_use_native_json_mode(true, false));
+        assert!(!should_use_native_json_mode(true, true));
+        assert!(!should_use_native_json_mode(false, false));
+    }
+
+    #[test]
+    fn build_text_request_sets_response_format_for_json_mode() {
+        let mut client = build_text_request(
+            GLM4_6 {},
+            vec![TextMessage::system("system prompt")],
+            "test-key",
+            "https://example.invalid/v1/chat/completions",
+            256,
+            None,
+            true,
+        )
+        .expect("build request");
+
+        let body = serde_json::to_value(client.body_mut()).expect("serialize request body");
+
+        assert_eq!(body["response_format"]["type"], json!("json_object"));
+    }
+
+    #[test]
+    fn build_text_request_omits_response_format_without_json_mode() {
+        let mut client = build_text_request(
+            GLM4_6 {},
+            vec![TextMessage::system("system prompt")],
+            "test-key",
+            "https://example.invalid/v1/chat/completions",
+            256,
+            None,
+            false,
+        )
+        .expect("build request");
+
+        let body = serde_json::to_value(client.body_mut()).expect("serialize request body");
+
+        assert!(body.get("response_format").is_none());
     }
 
     // ── error mapping tests ─────────────────────────────────────────────
