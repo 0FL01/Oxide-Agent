@@ -53,6 +53,7 @@ struct LoopCallbackContext {
     manager_default_chat_id: Option<ChatId>,
     thread_spec: TelegramThreadSpec,
     outbound_thread: OutboundThreadParams,
+    attach_detach_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,6 +245,7 @@ async fn handle_loop_retry(
     }
 
     let retry_ctx = ctx.clone();
+    let attach_detach_enabled = ctx.attach_detach_enabled;
     tokio::spawn(async move {
         let error_bot = retry_ctx.bot.clone();
         if let Err(e) = run_agent_task_with_text(RunAgentTaskTextContext {
@@ -258,6 +260,7 @@ async fn handle_loop_retry(
             message_thread_id: retry_ctx.outbound_thread.message_thread_id,
             use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
             use_inline_flow_controls: use_inline_flow_controls(retry_ctx.thread_spec),
+            attach_detach_enabled,
         })
         .await
         {
@@ -379,6 +382,7 @@ async fn handle_ssh_approval_callback(
     let retry_ctx = ctx.loop_ctx.clone();
     let storage = ctx.storage.clone();
     let request_id_for_resume = request_id.clone();
+    let attach_detach_enabled = ctx.settings.telegram.attach_detach_enabled;
     tokio::spawn(async move {
         let error_bot = retry_ctx.bot.clone();
         if let Err(e) = run_approved_ssh_resume(RunApprovedSshResumeContext {
@@ -393,6 +397,7 @@ async fn handle_ssh_approval_callback(
             message_thread_id: retry_ctx.outbound_thread.message_thread_id,
             use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
             use_inline_flow_controls: use_inline_flow_controls(retry_ctx.thread_spec),
+            attach_detach_enabled,
         })
         .await
         {
@@ -548,6 +553,7 @@ async fn handle_cancel_task_confirmation_callback(
             ctx.loop_ctx.thread_spec,
             ctx.loop_ctx.outbound_thread.message_thread_id,
             &ctx.loop_ctx.agent_flow_id,
+            ctx.settings.telegram.attach_detach_enabled,
         )
         .await
     } else {
@@ -743,6 +749,7 @@ async fn dispatch_agent_callback(
                 ctx.loop_ctx.thread_spec,
                 ctx.loop_ctx.outbound_thread.message_thread_id,
                 &ctx.loop_ctx.agent_flow_id,
+                ctx.settings.telegram.attach_detach_enabled,
             )
             .await
         }
@@ -812,6 +819,7 @@ pub async fn handle_agent_callback(
             manager_default_chat_id: manager_default_chat_id(&settings, chat_id, thread_spec),
             thread_spec,
             outbound_thread: outbound_thread_from_callback(&q),
+            attach_detach_enabled: settings.telegram.attach_detach_enabled,
         },
         msg,
         dialogue,
@@ -829,6 +837,7 @@ pub async fn cancel_agent_task(
     msg: Message,
     _dialogue: AgentDialogue,
     storage: Arc<dyn StorageProvider>,
+    settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
@@ -861,8 +870,16 @@ pub async fn cancel_agent_task(
             session_id,
             msg.chat.id,
             DefaultAgentView::task_cancelling(cleared_todos),
-            cancel_status_reply_markup(thread_spec, &agent_flow_id),
-            cancel_status_inline_markup(use_inline_flow_controls(thread_spec), &agent_flow_id),
+            cancel_status_reply_markup(
+                thread_spec,
+                &agent_flow_id,
+                settings.telegram.attach_detach_enabled,
+            ),
+            cancel_status_inline_markup(
+                use_inline_flow_controls(thread_spec),
+                &agent_flow_id,
+                settings.telegram.attach_detach_enabled,
+            ),
             outbound_thread,
         )
         .await?;
@@ -877,6 +894,7 @@ async fn cancel_agent_task_by_id(
     thread_spec: TelegramThreadSpec,
     message_thread_id: Option<ThreadId>,
     agent_flow_id: &str,
+    attach_detach_enabled: bool,
 ) -> Result<()> {
     let session_id = resolve_existing_session_id(session_keys)
         .await
@@ -902,8 +920,12 @@ async fn cancel_agent_task_by_id(
             session_id,
             chat_id,
             DefaultAgentView::task_cancelling(cleared_todos),
-            cancel_status_reply_markup(thread_spec, agent_flow_id),
-            cancel_status_inline_markup(use_inline_flow_controls(thread_spec), agent_flow_id),
+            cancel_status_reply_markup(thread_spec, agent_flow_id, attach_detach_enabled),
+            cancel_status_inline_markup(
+                use_inline_flow_controls(thread_spec),
+                agent_flow_id,
+                attach_detach_enabled,
+            ),
             outbound_thread,
         )
         .await?;

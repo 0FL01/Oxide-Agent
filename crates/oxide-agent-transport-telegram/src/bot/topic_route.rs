@@ -1074,6 +1074,7 @@ mod tests {
                 manager_allowed_users_str: None,
                 manager_home_chat_id: None,
                 manager_home_thread_id: None,
+                attach_detach_enabled: true,
                 manager_home_agent_id: None,
                 topic_configs: vec![TelegramTopicSettings {
                     chat_id: -1001,

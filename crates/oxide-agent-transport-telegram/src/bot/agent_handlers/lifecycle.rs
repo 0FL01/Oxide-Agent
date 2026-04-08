@@ -39,6 +39,7 @@ struct PreSpawnAgentMessageContext<'a> {
     sandbox_scope: &'a SandboxScope,
     active_session: &'a ActiveSessionConfig,
     outbound_thread: OutboundThreadParams,
+    attach_detach_enabled: bool,
 }
 
 /// Activate agent mode for a user
@@ -285,6 +286,7 @@ pub async fn handle_agent_message(
         sandbox_scope: &sandbox_scope,
         active_session: &active_session,
         outbound_thread,
+        attach_detach_enabled: settings.telegram.attach_detach_enabled,
     })
     .await?
     {
@@ -303,6 +305,7 @@ pub async fn handle_agent_message(
         message_thread_id: outbound_thread.message_thread_id,
         use_inline_progress_controls: use_inline_topic_controls(thread_spec),
         use_inline_flow_controls: use_inline_flow_controls(thread_spec),
+        attach_detach_enabled: settings.telegram.attach_detach_enabled,
         session_id,
     });
 
@@ -311,8 +314,12 @@ pub async fn handle_agent_message(
 }
 
 async fn handle_pre_spawn_agent_message(ctx: PreSpawnAgentMessageContext<'_>) -> Result<bool> {
-    let dispatch_ctx =
-        build_batched_text_task_context(ctx.bot, ctx.active_session, ctx.outbound_thread);
+    let dispatch_ctx = build_batched_text_task_context(
+        ctx.bot,
+        ctx.active_session,
+        ctx.outbound_thread,
+        ctx.attach_detach_enabled,
+    );
     if handle_batched_text_input_if_needed(BatchedTextInputCheck {
         msg: ctx.msg,
         bot: ctx.bot,
@@ -325,6 +332,7 @@ async fn handle_pre_spawn_agent_message(ctx: PreSpawnAgentMessageContext<'_>) ->
         chat_id: ctx.active_session.chat_id,
         context_key: &ctx.active_session.context_key,
         agent_flow_id: &ctx.active_session.agent_flow_id,
+        attach_detach_enabled: ctx.attach_detach_enabled,
     })
     .await?
     {
@@ -372,10 +380,12 @@ async fn handle_agent_control_command(
     dialogue: AgentDialogue,
     storage: Arc<dyn StorageProvider>,
     _llm: Arc<LlmClient>,
-    _settings: Arc<BotSettings>,
+    settings: Arc<BotSettings>,
 ) -> Result<()> {
     match command {
-        AgentControlCommand::CancelTask => cancel_agent_task(bot, msg, dialogue, storage).await,
+        AgentControlCommand::CancelTask => {
+            cancel_agent_task(bot, msg, dialogue, storage, settings).await
+        }
         AgentControlCommand::ClearMemory => {
             confirm_destructive_action(ConfirmationType::ClearMemory, bot, msg, dialogue).await
         }
@@ -387,6 +397,6 @@ async fn handle_agent_control_command(
                 .await
         }
         AgentControlCommand::ExitAgentMode => exit_agent_mode(bot, msg, dialogue, storage).await,
-        AgentControlCommand::ShowControls => show_agent_controls(bot, msg, storage).await,
+        AgentControlCommand::ShowControls => show_agent_controls(bot, msg, storage, settings).await,
     }
 }

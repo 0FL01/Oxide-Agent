@@ -520,7 +520,12 @@ async fn send_chat_flow_controls_in_thread(
     chat_id: ChatId,
     chat_uuid: &str,
     outbound_thread: OutboundThreadParams,
+    attach_detach_enabled: bool,
 ) -> Result<()> {
+    if !attach_detach_enabled {
+        return Ok(());
+    }
+
     let mut req = bot.send_message(chat_id, "Flow controls:");
     if let Some(thread_id) = outbound_thread.message_thread_id {
         req = req.message_thread_id(thread_id);
@@ -1325,6 +1330,7 @@ async fn process_llm_request(
                 msg.chat.id,
                 &chat_uuid,
                 options.outbound_thread,
+                settings.telegram.attach_detach_enabled,
             )
             .await?;
         }
@@ -1583,8 +1589,14 @@ pub async fn handle_photo(
                 outbound_thread.message_thread_id,
             )
             .await?;
-            send_chat_flow_controls_in_thread(&bot, msg.chat.id, &chat_uuid, outbound_thread)
-                .await?;
+            send_chat_flow_controls_in_thread(
+                &bot,
+                msg.chat.id,
+                &chat_uuid,
+                outbound_thread,
+                settings.telegram.attach_detach_enabled,
+            )
+            .await?;
             touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         }
         Err(e) => {
@@ -1706,8 +1718,14 @@ pub async fn handle_video(
                 outbound_thread.message_thread_id,
             )
             .await?;
-            send_chat_flow_controls_in_thread(&bot, msg.chat.id, &chat_uuid, outbound_thread)
-                .await?;
+            send_chat_flow_controls_in_thread(
+                &bot,
+                msg.chat.id,
+                &chat_uuid,
+                outbound_thread,
+                settings.telegram.attach_detach_enabled,
+            )
+            .await?;
             touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         }
         Err(e) => {
@@ -1826,6 +1844,7 @@ mod tests {
                 manager_allowed_users_str: None,
                 manager_home_chat_id: None,
                 manager_home_thread_id: None,
+                attach_detach_enabled: true,
                 manager_home_agent_id: None,
                 topic_configs: Vec::new(),
             },

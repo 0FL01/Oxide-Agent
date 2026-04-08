@@ -13,6 +13,10 @@ fn default_manager_home_thread_id() -> i32 {
     1
 }
 
+fn default_attach_detach_enabled() -> bool {
+    true
+}
+
 /// Telegram per-topic configuration.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +63,12 @@ pub struct TelegramSettings {
     /// Forum thread id for the manager control-plane home topic.
     #[serde(default, alias = "managerHomeThreadId")]
     pub manager_home_thread_id: Option<i32>,
+    /// Enables Attach/Detach flow controls in Agent Mode and Chat Mode.
+    #[serde(
+        default = "default_attach_detach_enabled",
+        alias = "attachDetachEnabled"
+    )]
+    pub attach_detach_enabled: bool,
     /// Agent profile id used in the manager control-plane home topic.
     #[serde(default, alias = "managerHomeAgentId")]
     pub manager_home_agent_id: Option<String>,
@@ -264,6 +274,7 @@ mod tests {
             manager_allowed_users_str: None,
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         };
@@ -449,6 +460,7 @@ mod tests {
             manager_allowed_users_str: None,
             manager_home_chat_id: Some(-10001),
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         };
@@ -473,6 +485,7 @@ mod tests {
             manager_allowed_users_str: None,
             manager_home_chat_id: Some(-10001),
             manager_home_thread_id: Some(1),
+            attach_detach_enabled: true,
             manager_home_agent_id: Some("control-plane".to_string()),
             topic_configs: vec![super::TelegramTopicSettings {
                 chat_id: -10001,
@@ -494,5 +507,52 @@ mod tests {
         assert!(!topic.require_mention);
         assert!(topic.skills.is_empty());
         assert_eq!(topic.system_prompt, None);
+    }
+
+    #[test]
+    fn attach_detach_defaults_to_enabled() {
+        let raw = r#"
+        {
+          "telegram_token": "dummy"
+        }
+        "#;
+
+        let loaded = Config::builder()
+            .add_source(File::from_str(raw, FileFormat::Json))
+            .build();
+        let cfg = match loaded {
+            Ok(config) => config.try_deserialize::<TelegramSettings>(),
+            Err(err) => panic!("failed to build config: {err}"),
+        };
+        let settings = match cfg {
+            Ok(settings) => settings,
+            Err(err) => panic!("failed to deserialize settings: {err}"),
+        };
+
+        assert!(settings.attach_detach_enabled);
+    }
+
+    #[test]
+    fn deserializes_attach_detach_toggle() {
+        let raw = r#"
+        {
+          "telegram_token": "dummy",
+          "attachDetachEnabled": false
+        }
+        "#;
+
+        let loaded = Config::builder()
+            .add_source(File::from_str(raw, FileFormat::Json))
+            .build();
+        let cfg = match loaded {
+            Ok(config) => config.try_deserialize::<TelegramSettings>(),
+            Err(err) => panic!("failed to build config: {err}"),
+        };
+        let settings = match cfg {
+            Ok(settings) => settings,
+            Err(err) => panic!("failed to deserialize settings: {err}"),
+        };
+
+        assert!(!settings.attach_detach_enabled);
     }
 }
