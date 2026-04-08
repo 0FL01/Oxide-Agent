@@ -286,12 +286,23 @@ impl AgentRunner {
             &pre_cleanup_snapshot,
             &post_cleanup_snapshot,
         );
+        let mut durable_messages = pre_compaction_messages;
+        durable_messages.extend(
+            ctx.agent
+                .memory()
+                .get_messages()
+                .iter()
+                .filter(|message| {
+                    message.summary_payload().is_some() || message.archive_ref_payload().is_some()
+                })
+                .cloned(),
+        );
         self.persist_post_run_memory(
             ctx,
             PersistentRunPhase::Completed {
                 final_answer: &final_response,
             },
-            Some(&pre_compaction_messages),
+            Some(&durable_messages),
         )
         .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
@@ -332,10 +343,21 @@ impl AgentRunner {
             &pre_cleanup_snapshot,
             &post_cleanup_snapshot,
         );
+        let mut durable_messages = pre_compaction_messages;
+        durable_messages.extend(
+            ctx.agent
+                .memory()
+                .get_messages()
+                .iter()
+                .filter(|message| {
+                    message.summary_payload().is_some() || message.archive_ref_payload().is_some()
+                })
+                .cloned(),
+        );
         self.persist_post_run_memory(
             ctx,
             PersistentRunPhase::WaitingForUserInput,
-            Some(&pre_compaction_messages),
+            Some(&durable_messages),
         )
         .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);

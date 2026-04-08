@@ -8,14 +8,15 @@ use super::compaction::{
     CompactionSummarizerConfig, CompactionTrigger,
 };
 use super::hooks::{
-    CompletionCheckHook, DelegationGuardHook, EpisodicExtractHook, Hook, HookContext, HookEvent,
-    HookResult, HotContextHealthHook, RetrievalAdvisorHook, SearchBudgetHook, TimeoutReportHook,
+    CompletionCheckHook, DelegationGuardHook, Hook, HookContext, HookEvent, HookResult,
+    HotContextHealthHook, RetrievalAdvisorHook, SearchBudgetHook, TimeoutReportHook,
     ToolAccessPolicyHook, WorkloadDistributorHook,
 };
 use super::memory::AgentMessage;
 use super::persistent_memory::{
     DurableMemoryRetrievalOptions, DurableMemoryRetriever, LlmMemoryEmbeddingGenerator,
-    PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer, PersistentMemoryStore,
+    LlmPostRunMemoryWriter, PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer,
+    PersistentMemoryStore, PostRunMemoryWriterConfig,
 };
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use super::prompt::create_agent_system_prompt;
@@ -207,7 +208,6 @@ impl AgentExecutor {
             settings.get_hot_context_limits(),
         )));
         runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
-        runner.register_hook(Box::new(EpisodicExtractHook::new()));
         Self::register_policy_controlled_hook(
             &mut runner,
             WorkloadDistributorHook::new(),
@@ -298,6 +298,16 @@ impl AgentExecutor {
         self.memory_store = Some(Arc::clone(&store));
         self.memory_artifact_storage = artifact_storage;
         let mut coordinator = PersistentMemoryCoordinator::new(Arc::clone(&store));
+        let (_, _, _, post_run_writer_timeout_secs) =
+            self.settings.get_configured_compaction_model();
+        coordinator = coordinator.with_memory_writer(Arc::new(LlmPostRunMemoryWriter::new(
+            self.runner.llm_client(),
+            PostRunMemoryWriterConfig {
+                model_routes: self.settings.get_configured_compaction_model_routes(false),
+                timeout_secs: post_run_writer_timeout_secs,
+                ..PostRunMemoryWriterConfig::default()
+            },
+        )));
         if let (Some(model_id), true) = (
             self.settings.embedding_model_id.clone(),
             self.runner.llm_client().is_embedding_available(),

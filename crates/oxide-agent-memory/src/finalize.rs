@@ -16,6 +16,10 @@ pub struct EpisodeFinalizationInput {
     pub session_id: String,
     pub episode_id: String,
     pub goal: String,
+    pub thread_short_summary: Option<String>,
+    pub episode_summary: Option<String>,
+    pub episode_outcome: Option<EpisodeOutcome>,
+    pub episode_importance: Option<f32>,
     pub final_answer: Option<String>,
     pub compaction_summary: Option<String>,
     pub tools_used: Vec<String>,
@@ -48,8 +52,10 @@ impl EpisodeFinalizer {
             title: truncate_chars(&input.goal, TITLE_MAX_CHARS),
             short_summary: truncate_chars(
                 &select_short_summary(
+                    input.thread_short_summary.as_deref(),
                     input.compaction_summary.as_deref(),
                     input.final_answer.as_deref(),
+                    input.episode_summary.as_deref(),
                     &input.goal,
                 ),
                 SHORT_SUMMARY_MAX_CHARS,
@@ -64,16 +70,17 @@ impl EpisodeFinalizer {
 
         let (episode, cleanup_status, pending_episode_id, last_finalized_at) =
             if let Some(final_answer) = input.final_answer.as_deref() {
-                let summary =
-                    compose_episode_summary(final_answer, input.compaction_summary.as_deref());
+                let summary = input.episode_summary.unwrap_or_else(|| {
+                    compose_episode_summary(final_answer, input.compaction_summary.as_deref())
+                });
                 let episode_tools = input.tools_used.clone();
                 let episode_artifacts = input.artifacts.clone();
                 let episode_failures = input.failures.clone();
-                let outcome = if has_failures {
+                let outcome = input.episode_outcome.unwrap_or(if has_failures {
                     EpisodeOutcome::Partial
                 } else {
                     EpisodeOutcome::Success
-                };
+                });
                 let episode = EpisodeRecord {
                     episode_id: input.episode_id.clone(),
                     thread_id,
@@ -84,13 +91,13 @@ impl EpisodeFinalizer {
                     tools_used: episode_tools,
                     artifacts: episode_artifacts,
                     failures: episode_failures,
-                    importance: estimate_importance(
+                    importance: input.episode_importance.unwrap_or(estimate_importance(
                         input.compaction_summary.is_some(),
                         !final_answer.trim().is_empty(),
                         has_artifacts,
                         used_tools,
                         has_failures,
-                    ),
+                    )),
                     created_at: input.finalized_at,
                 };
                 (
@@ -145,13 +152,25 @@ fn compose_episode_summary(final_answer: &str, compaction_summary: Option<&str>)
 }
 
 fn select_short_summary(
+    thread_short_summary: Option<&str>,
     compaction_summary: Option<&str>,
     final_answer: Option<&str>,
+    episode_summary: Option<&str>,
     goal: &str,
 ) -> String {
-    compaction_summary
+    thread_short_summary
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            episode_summary
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            compaction_summary
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
         .or_else(|| {
             final_answer
                 .map(str::trim)
@@ -222,6 +241,10 @@ mod tests {
             session_id: "session-1".to_string(),
             episode_id: "episode-1".to_string(),
             goal: "Implement Stage 4".to_string(),
+            thread_short_summary: None,
+            episode_summary: None,
+            episode_outcome: None,
+            episode_importance: None,
             final_answer: Some("Done".to_string()),
             compaction_summary: Some("Important summary".to_string()),
             tools_used: vec!["read_file".to_string()],
@@ -251,6 +274,10 @@ mod tests {
             session_id: "session-1".to_string(),
             episode_id: "episode-1".to_string(),
             goal: "Need more input".to_string(),
+            thread_short_summary: None,
+            episode_summary: None,
+            episode_outcome: None,
+            episode_importance: None,
             final_answer: None,
             compaction_summary: Some("Waiting summary".to_string()),
             tools_used: vec![],
