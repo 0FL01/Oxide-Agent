@@ -211,7 +211,7 @@ pub struct AgentSettings {
     /// Output embedding dimensionality.
     /// When set, the embedding provider will truncate vectors to this size via
     /// `output_dimensionality` (Gemini) or equivalent. Must be in 128..=3072.
-    /// Recommended values: 768, 1536, 3072. Defaults to 768.
+    /// Recommended values: 1024, 1536, 3072. Defaults to 1024.
     pub embedding_dimensions: Option<u32>,
 
     /// Postgres connection string for typed persistent memory.
@@ -1615,7 +1615,7 @@ pub fn get_embedding_model_id() -> Option<String> {
 }
 
 /// Default embedding output dimensionality.
-pub const DEFAULT_EMBEDDING_DIMENSIONS: u32 = 768;
+pub const DEFAULT_EMBEDDING_DIMENSIONS: u32 = 1024;
 
 /// Get embedding output dimensionality from env or default.
 #[must_use]
