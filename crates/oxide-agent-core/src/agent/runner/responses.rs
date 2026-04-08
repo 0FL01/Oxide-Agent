@@ -77,6 +77,14 @@ impl AgentRunner {
         }
     }
 
+    fn has_explicit_remember_intent(task: &str, messages: &[AgentMessage]) -> bool {
+        contains_explicit_remember_phrase(task)
+            || messages.iter().any(|message| {
+                matches!(message.role, crate::agent::memory::MessageRole::User)
+                    && contains_explicit_remember_phrase(&message.content)
+            })
+    }
+
     async fn persist_post_run_memory(
         &self,
         ctx: &mut AgentRunnerContext<'_>,
@@ -104,6 +112,7 @@ impl AgentRunner {
         // truncated the live messages to a single summary, losing all the original
         // user turns, tool results and artifacts that the episode finalizer needs.
         let messages = pre_compaction_messages.unwrap_or_else(|| ctx.agent.memory().get_messages());
+        let explicit_remember_intent = Self::has_explicit_remember_intent(ctx.task, messages);
 
         if let Err(error) = persistent_memory
             .persist_post_run(PersistentRunContext {
@@ -112,6 +121,7 @@ impl AgentRunner {
                 scope,
                 task: ctx.task,
                 messages,
+                explicit_remember_intent,
                 hot_token_estimate: ctx.agent.memory().token_count(),
                 tool_memory_drafts,
                 phase,
@@ -367,10 +377,36 @@ impl AgentRunner {
     }
 }
 
+fn contains_explicit_remember_phrase(value: &str) -> bool {
+    let normalized = value.to_lowercase();
+    [
+        "remember this",
+        "remember that",
+        "please remember",
+        "save this",
+        "save that",
+        "don't forget",
+        "do not forget",
+        "keep this in mind",
+        "запомни",
+        "запомните",
+        "не забуд",
+        "сохрани это",
+        "сохрани как",
+        "запиши это",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PostRunCleanupTelemetry, POST_RUN_HOT_CONTEXT_TARGET_TOKENS};
+    use super::{
+        contains_explicit_remember_phrase, AgentRunner, PostRunCleanupTelemetry,
+        POST_RUN_HOT_CONTEXT_TARGET_TOKENS,
+    };
     use crate::agent::compaction::BudgetState;
+    use crate::agent::memory::AgentMessage;
     use crate::agent::progress::TokenSnapshot;
 
     fn snapshot(hot_memory_tokens: usize) -> TokenSnapshot {
@@ -418,5 +454,29 @@ mod tests {
             POST_RUN_HOT_CONTEXT_TARGET_TOKENS
         );
         assert!(!telemetry.target_met);
+    }
+
+    #[test]
+    fn explicit_remember_phrase_detector_handles_english_and_russian() {
+        assert!(contains_explicit_remember_phrase(
+            "Please remember this deployment workaround"
+        ));
+        assert!(contains_explicit_remember_phrase(
+            "Не забудь этот флаг конфигурации"
+        ));
+        assert!(!contains_explicit_remember_phrase(
+            "Can you explain the previous deployment workaround?"
+        ));
+    }
+
+    #[test]
+    fn explicit_remember_intent_detects_user_messages() {
+        let messages = vec![AgentMessage::user_turn(
+            "Please remember this staging-only workaround.",
+        )];
+        assert!(AgentRunner::has_explicit_remember_intent(
+            "Investigate deploy issue",
+            &messages,
+        ));
     }
 }

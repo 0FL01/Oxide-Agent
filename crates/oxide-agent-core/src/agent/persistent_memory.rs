@@ -567,6 +567,7 @@ pub struct PersistentRunContext<'a> {
     pub scope: &'a AgentMemoryScope,
     pub task: &'a str,
     pub messages: &'a [AgentMessage],
+    pub explicit_remember_intent: bool,
     pub hot_token_estimate: usize,
     pub tool_memory_drafts: Vec<ToolDerivedMemoryDraft>,
     pub phase: PersistentRunPhase<'a>,
@@ -611,6 +612,7 @@ pub(crate) struct PostRunMemoryWriterInput<'a> {
     pub task: &'a str,
     pub final_answer: &'a str,
     pub messages: &'a [AgentMessage],
+    pub explicit_remember_intent: bool,
     pub tools_used: &'a [String],
     pub artifacts: &'a [ArtifactRef],
     pub compaction_summary: Option<&'a str>,
@@ -826,6 +828,7 @@ Your job:
 Rules:
 - Only write memories that would still matter in a future session.
 - Prefer project facts, user preferences, procedures, decisions, and constraints.
+- If `explicit_remember_intent` is true, preserve the explicitly requested durable information when it is grounded in the transcript and reusable later.
 - Do not invent facts not grounded in the provided conversation.
 - Keep summaries concise and specific.
 - `importance` and `confidence` must be floats between 0.0 and 1.0.
@@ -861,6 +864,14 @@ fn build_post_run_memory_writer_user_message(input: &PostRunMemoryWriterInput<'_
     let mut sections = vec![
         format!("Task ID: {}", input.task_id),
         format!("Context key: {}", input.scope.context_key),
+        format!(
+            "Explicit remember intent: {}",
+            if input.explicit_remember_intent {
+                "true"
+            } else {
+                "false"
+            }
+        ),
         format!("User task:\n{}", input.task.trim()),
         format!("Final answer:\n{}", input.final_answer.trim()),
     ];
@@ -1096,6 +1107,7 @@ impl PersistentMemoryCoordinator {
                         task: ctx.task,
                         final_answer,
                         messages: ctx.messages,
+                        explicit_remember_intent: ctx.explicit_remember_intent,
                         tools_used: &tools_used,
                         artifacts: &artifacts,
                         compaction_summary: summary_signal
@@ -2918,6 +2930,10 @@ mod tests {
                 .map(|(memory_type, title, content)| {
                     let content_hash =
                         oxide_agent_memory::stable_memory_content_hash(memory_type, &content);
+                    let mut tags = vec!["llm_post_run".to_string()];
+                    if input.explicit_remember_intent {
+                        tags.push("explicit_remember".to_string());
+                    }
                     MemoryRecord {
                         memory_id: format!(
                             "fake:{}:{}:{}",
@@ -2928,15 +2944,15 @@ mod tests {
                         context_key: input.scope.context_key.clone(),
                         source_episode_id: Some(input.task_id.to_string()),
                         memory_type,
-                        title: title.to_string(),
-                        content: content.to_string(),
-                        short_description: content.to_string(),
+                        title,
+                        short_description: content.clone(),
+                        content,
                         importance: 0.9,
                         confidence: 0.95,
                         source: Some("fake_post_run_writer".to_string()),
                         content_hash: Some(content_hash),
                         reason: Some("test llm writer".to_string()),
-                        tags: vec!["llm_post_run".to_string()],
+                        tags,
                         created_at: now,
                         updated_at: now,
                         deleted_at: None,
@@ -3012,6 +3028,7 @@ mod tests {
                 scope: &scope,
                 task: "Implement Stage 4",
                 messages: &messages,
+                explicit_remember_intent: false,
                 hot_token_estimate: 77,
                 tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
@@ -3077,6 +3094,7 @@ mod tests {
                 scope: &scope,
                 task: "Need browser URL",
                 messages: &[],
+                explicit_remember_intent: false,
                 hot_token_estimate: 21,
                 tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::WaitingForUserInput,
@@ -3105,6 +3123,47 @@ mod tests {
         .await
         .expect("memory lookup should succeed")
         .is_empty());
+    }
+
+    #[tokio::test]
+    async fn persist_completed_run_propagates_explicit_remember_intent_to_writer() {
+        let store = Arc::new(InMemoryMemoryRepository::new());
+        let store_for_coordinator = Arc::clone(&store);
+        let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+        let coordinator = test_coordinator(store_for_coordinator);
+        let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
+        let messages = vec![AgentMessage::user_turn(
+            "Please remember this deployment workaround for later.",
+        )];
+
+        coordinator
+            .persist_post_run(PersistentRunContext {
+                session_id: "session-remember",
+                task_id: "episode-remember",
+                scope: &scope,
+                task: "Remember this deployment workaround",
+                messages: &messages,
+                explicit_remember_intent: true,
+                hot_token_estimate: 33,
+                tool_memory_drafts: Vec::new(),
+                phase: PersistentRunPhase::Completed {
+                    final_answer: "Saved in memory after completion.",
+                },
+            })
+            .await
+            .expect("remember-intent persistence should succeed");
+
+        let memories = MemoryRepository::list_memories(
+            store.as_ref(),
+            "topic-a",
+            &MemoryListFilter::default(),
+        )
+        .await
+        .expect("memory lookup should succeed");
+        assert!(!memories.is_empty());
+        assert!(memories
+            .iter()
+            .all(|memory| memory.tags.iter().any(|tag| tag == "explicit_remember")));
     }
 
     #[tokio::test]
@@ -3151,6 +3210,7 @@ mod tests {
                 scope: &topic_a_scope,
                 task: "topic a task",
                 messages: &topic_a_messages,
+                explicit_remember_intent: false,
                 hot_token_estimate: 128,
                 tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
@@ -3167,6 +3227,7 @@ mod tests {
                 scope: &topic_b_scope,
                 task: "topic b task",
                 messages: &topic_b_messages,
+                explicit_remember_intent: false,
                 hot_token_estimate: 256,
                 tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
@@ -3586,6 +3647,7 @@ mod tests {
                 scope: &scope,
                 task: "keep memory hygiene",
                 messages: &messages,
+                explicit_remember_intent: false,
                 hot_token_estimate: 32,
                 tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
@@ -3601,6 +3663,7 @@ mod tests {
                 scope: &scope,
                 task: "keep memory hygiene again",
                 messages: &messages,
+                explicit_remember_intent: false,
                 hot_token_estimate: 40,
                 tool_memory_drafts: Vec::new(),
                 phase: PersistentRunPhase::Completed {
