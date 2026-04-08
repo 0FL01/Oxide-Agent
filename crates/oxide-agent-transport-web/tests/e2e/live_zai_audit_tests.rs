@@ -3,7 +3,9 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use oxide_agent_core::agent::memory::{AgentMessage, MessageRole};
+use oxide_agent_core::agent::PersistentMemoryStore;
 use oxide_agent_core::agent::SessionId;
+use oxide_agent_memory::{EpisodeSearchFilter, MemorySearchFilter};
 use oxide_agent_transport_web::session::{TaskStatus, WebSessionManager};
 use serde_json::Value;
 
@@ -11,7 +13,7 @@ use crate::helpers::{
     create_session_http_with_user, create_task_http_with_body, fetch_task_events,
     fetch_task_progress, spawn_test_server,
 };
-use crate::setup::{cleanup_web_sandbox, setup_live_zai_test};
+use crate::setup::{cleanup_web_sandbox, setup_live_zai_test, setup_live_zai_test_with_postgres};
 
 const MAX_ATTEMPTS: usize = 3;
 const LIVE_ANCHOR_MAX_ATTEMPTS: usize = 2;
@@ -81,6 +83,55 @@ async fn latest_assistant_response(
         .rev()
         .find(|message| message.role == MessageRole::Assistant)
         .map(|message| message.content.clone())
+}
+
+async fn wait_for_durable_memory_hit(
+    store: &dyn PersistentMemoryStore,
+    user_id: i64,
+    token: &str,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let memory_hits = PersistentMemoryStore::search_memories_lexical(
+            store,
+            token,
+            &MemorySearchFilter {
+                context_key: Some("default".to_string()),
+                user_id: Some(user_id),
+                limit: Some(5),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("memory search should succeed");
+        if !memory_hits.is_empty() {
+            return true;
+        }
+
+        let episode_hits = PersistentMemoryStore::search_episodes_lexical(
+            store,
+            token,
+            &EpisodeSearchFilter {
+                context_key: Some("default".to_string()),
+                user_id: Some(user_id),
+                limit: Some(5),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("episode search should succeed");
+        if !episode_hits.is_empty() {
+            return true;
+        }
+
+        if Instant::now() >= deadline {
+            return false;
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 #[tokio::test]
@@ -291,6 +342,136 @@ async fn e2e_zai_seeded_initial_anchor_missing_after_healthy_cleanup() {
     }
 
     server.abort();
+}
+
+#[tokio::test]
+#[ignore = "Requires RUN_LLM_E2E_CHECKS=1, ZAI_API_KEY, MEMORY_DATABASE_URL, Postgres, Docker sandbox, and network access"]
+async fn e2e_zai_postgres_memory_survives_session_and_process_restart() {
+    if std::env::var("RUN_LLM_E2E_CHECKS").as_deref() != Ok("1") {
+        eprintln!("[LIVE-ZAI] Skipping Postgres durable memory test: RUN_LLM_E2E_CHECKS != 1");
+        return;
+    }
+
+    let ((app_state, memory_store), user_id, token) = {
+        let setup = match setup_live_zai_test_with_postgres().await {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("[LIVE-ZAI] Skipping Postgres durable memory test: {error}");
+                return;
+            }
+        };
+        let user_id = unique_test_user_id();
+        let token = format!("DURABLE_TOKEN_{user_id:x}_kakoune");
+        (setup, user_id, token)
+    };
+
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+    let first_sid = derive_session_id(&session_id, user_id);
+    let first_executor = session_manager
+        .session_registry()
+        .get(&first_sid)
+        .await
+        .expect("first session should exist in registry");
+    assert!(
+        first_executor.read().await.has_persistent_memory(),
+        "first executor missing durable persistent-memory wiring"
+    );
+    let remember_prompt = format!(
+        "Запомни для будущих разговоров дословно: {token}. Это моя важная постоянная заметка. Ответь коротко, что запомнил.",
+    );
+    let task_id =
+        create_task_http_with_body(&client, &base_url, &session_id, &remember_prompt).await;
+    let first_status =
+        wait_for_terminal_task_status(session_manager.as_ref(), &task_id, Duration::from_secs(240))
+            .await;
+    let first_progress = fetch_task_progress(&client, &base_url, &session_id, &task_id)
+        .await
+        .json::<Value>()
+        .await
+        .expect("failed to decode first task progress");
+
+    assert!(
+        matches!(first_status, TaskStatus::Completed),
+        "remember task failed: {:?}; progress={first_progress:?}",
+        first_status
+    );
+
+    let durable_hit = wait_for_durable_memory_hit(
+        memory_store.as_ref(),
+        user_id,
+        &token,
+        Duration::from_secs(30),
+    )
+    .await;
+    assert!(
+        durable_hit,
+        "durable memory token was not persisted to Postgres: {token}"
+    );
+
+    cleanup_live_attempt(&client, &base_url, &session_id, user_id).await;
+    server.abort();
+
+    let (recall_state, _recall_store) = setup_live_zai_test_with_postgres()
+        .await
+        .expect("second Postgres-backed app state should initialize");
+    let recall_session_manager = recall_state.session_manager();
+    let (recall_server, recall_base_url) = spawn_test_server(recall_state).await;
+
+    let recall_session_id = create_session_http_with_user(&client, &recall_base_url, user_id).await;
+    let recall_sid = derive_session_id(&recall_session_id, user_id);
+    let recall_executor = recall_session_manager
+        .session_registry()
+        .get(&recall_sid)
+        .await
+        .expect("recall session should exist in registry");
+    assert!(
+        recall_executor.read().await.has_persistent_memory(),
+        "recall executor missing durable persistent-memory wiring"
+    );
+    let recall_task_id = create_task_http_with_body(
+        &client,
+        &recall_base_url,
+        &recall_session_id,
+        "Какую точную постоянную заметку я просил запомнить раньше? Ответь только самой строкой.",
+    )
+    .await;
+    let recall_status = wait_for_terminal_task_status(
+        recall_session_manager.as_ref(),
+        &recall_task_id,
+        Duration::from_secs(240),
+    )
+    .await;
+    let recall_progress = fetch_task_progress(
+        &client,
+        &recall_base_url,
+        &recall_session_id,
+        &recall_task_id,
+    )
+    .await
+    .json::<Value>()
+    .await
+    .expect("failed to decode recall task progress");
+    let recall_response =
+        latest_assistant_response(recall_session_manager.as_ref(), &recall_session_id, user_id)
+            .await
+            .unwrap_or_default();
+
+    cleanup_live_attempt(&client, &recall_base_url, &recall_session_id, user_id).await;
+    recall_server.abort();
+
+    assert!(
+        matches!(recall_status, TaskStatus::Completed),
+        "recall task failed: {:?}; progress={recall_progress:?}",
+        recall_status
+    );
+    assert!(
+        recall_response.contains(&token),
+        "recalled response did not contain durable token; token={token}; response={recall_response:?}; progress={recall_progress:?}"
+    );
 }
 
 async fn run_live_audit_scenario(
