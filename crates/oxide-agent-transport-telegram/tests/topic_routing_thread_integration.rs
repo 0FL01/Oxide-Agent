@@ -420,6 +420,7 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
         manager_allowed_users_str: None,
         manager_home_chat_id: None,
         manager_home_thread_id: None,
+        attach_detach_enabled: true,
         manager_home_agent_id: None,
         topic_configs: vec![
             topic(-100_123, Some(42), false, true, Some("support-only")),
@@ -484,6 +485,7 @@ fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies
         manager_allowed_users_str: None,
         manager_home_chat_id: None,
         manager_home_thread_id: None,
+        attach_detach_enabled: true,
         manager_home_agent_id: None,
         topic_configs: vec![topic(-100_123, Some(42), true, true, Some("topic-prompt"))],
     };
@@ -565,6 +567,7 @@ async fn resolve_topic_route_prefers_dynamic_binding_over_static_topic_config() 
             manager_allowed_users_str: None,
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: vec![TelegramTopicSettings {
                 chat_id: -1001,

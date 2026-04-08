@@ -51,6 +51,7 @@ fn test_batch() -> PendingTextInputBatch {
             message_thread_id: None,
             use_inline_progress_controls: false,
             use_inline_flow_controls: false,
+            attach_detach_enabled: true,
         },
         MessageId(10),
         "x".repeat(AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS),
@@ -491,6 +492,7 @@ fn test_settings(manager_users: Option<&str>) -> Arc<BotSettings> {
             manager_allowed_users_str: manager_users.map(str::to_string),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -668,6 +670,7 @@ fn cancel_status_reply_markup_uses_flow_controls_in_topics() {
     let markup = cancel_status_reply_markup(
         resolve_thread_spec_from_context(true, true, Some(thread_id)),
         "flow-a",
+        true,
     );
 
     let ReplyMarkup::InlineKeyboard(keyboard) = markup else {
@@ -683,6 +686,7 @@ fn cancel_status_reply_markup_uses_flow_controls_in_private_chats() {
     let markup = cancel_status_reply_markup(
         resolve_thread_spec_from_context(false, false, None),
         "flow-a",
+        true,
     );
 
     let ReplyMarkup::InlineKeyboard(keyboard) = markup else {
@@ -691,6 +695,21 @@ fn cancel_status_reply_markup_uses_flow_controls_in_private_chats() {
 
     assert_eq!(keyboard.inline_keyboard.len(), 1);
     assert_eq!(keyboard.inline_keyboard[0].len(), 2);
+}
+
+#[test]
+fn cancel_status_reply_markup_hides_flow_controls_when_disabled() {
+    let markup = cancel_status_reply_markup(
+        resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42)))),
+        "flow-a",
+        false,
+    );
+
+    let ReplyMarkup::InlineKeyboard(keyboard) = markup else {
+        panic!("topic cancel status should use inline keyboard");
+    };
+
+    assert!(keyboard.inline_keyboard.is_empty());
 }
 
 #[test]
@@ -773,6 +792,7 @@ fn manager_default_chat_id_is_restricted_to_configured_manager_home() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: Some(-100_123),
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -803,6 +823,7 @@ fn manager_control_plane_access_is_restricted_to_configured_manager_home() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: Some(-100_123),
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -843,6 +864,7 @@ fn manager_control_plane_access_requires_dedicated_allowlist_entry() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -875,6 +897,7 @@ fn manager_control_plane_access_is_disabled_in_direct_messages() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -901,6 +924,7 @@ fn manager_control_plane_access_is_disabled_in_non_forum_groups() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -927,6 +951,7 @@ fn manager_control_plane_access_disabled_when_allowlist_is_empty() {
             manager_allowed_users_str: None,
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -953,6 +978,7 @@ fn manager_control_plane_gating_disables_tools_inside_created_topics() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },

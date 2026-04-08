@@ -37,6 +37,7 @@ pub(crate) struct BatchedTextTaskContext {
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
     pub(crate) use_inline_flow_controls: bool,
+    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -64,6 +65,7 @@ pub(crate) struct BatchedTextInputCheck<'a> {
     pub(crate) chat_id: ChatId,
     pub(crate) context_key: &'a str,
     pub(crate) agent_flow_id: &'a str,
+    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -105,6 +107,7 @@ pub(crate) fn build_batched_text_task_context(
     bot: &Bot,
     active_session: &ActiveSessionConfig,
     outbound_thread: OutboundThreadParams,
+    attach_detach_enabled: bool,
 ) -> BatchedTextTaskContext {
     BatchedTextTaskContext {
         bot: bot.clone(),
@@ -117,6 +120,7 @@ pub(crate) fn build_batched_text_task_context(
         message_thread_id: outbound_thread.message_thread_id,
         use_inline_progress_controls: use_inline_topic_controls(active_session.thread_spec),
         use_inline_flow_controls: use_inline_flow_controls(active_session.thread_spec),
+        attach_detach_enabled,
     }
 }
 
@@ -166,6 +170,7 @@ pub(crate) async fn handle_batched_text_input_if_needed(
             message_thread_id: ctx.outbound_thread.message_thread_id,
             use_inline_progress_controls: use_inline_topic_controls(ctx.thread_spec),
             use_inline_flow_controls: use_inline_flow_controls(ctx.thread_spec),
+            attach_detach_enabled: ctx.attach_detach_enabled,
         },
         ctx.msg.id,
         text,
@@ -395,6 +400,7 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
             message_thread_id: ctx.message_thread_id,
             use_inline_progress_controls: ctx.use_inline_progress_controls,
             use_inline_flow_controls: ctx.use_inline_flow_controls,
+            attach_detach_enabled: ctx.attach_detach_enabled,
         })
         .await;
     }
@@ -411,6 +417,7 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         message_thread_id: ctx.message_thread_id,
         use_inline_progress_controls: ctx.use_inline_progress_controls,
         use_inline_flow_controls: ctx.use_inline_flow_controls,
+        attach_detach_enabled: ctx.attach_detach_enabled,
     })
     .await
 }

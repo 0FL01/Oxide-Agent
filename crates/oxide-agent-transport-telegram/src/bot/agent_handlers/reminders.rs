@@ -229,6 +229,7 @@ async fn process_due_reminder(
         message_thread_id: build_outbound_thread_params(prepared.thread_spec).message_thread_id,
         use_inline_progress_controls: use_inline_topic_controls(prepared.thread_spec),
         use_inline_flow_controls: use_inline_flow_controls(prepared.thread_spec),
+        attach_detach_enabled: settings.telegram.attach_detach_enabled,
     })
     .await;
 

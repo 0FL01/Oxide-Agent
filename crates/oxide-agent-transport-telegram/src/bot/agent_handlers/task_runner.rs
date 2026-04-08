@@ -37,6 +37,7 @@ pub(crate) struct AgentTaskContext {
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
     pub(crate) use_inline_flow_controls: bool,
+    pub(crate) attach_detach_enabled: bool,
     pub(crate) session_id: SessionId,
 }
 
@@ -53,6 +54,7 @@ pub(crate) struct RunAgentTaskTextContext {
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
     pub(crate) use_inline_flow_controls: bool,
+    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -68,6 +70,7 @@ pub(crate) struct RunApprovedSshResumeContext {
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
     pub(crate) use_inline_flow_controls: bool,
+    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -83,6 +86,7 @@ pub(crate) struct RunUserInputResumeContext {
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
     pub(crate) use_inline_flow_controls: bool,
+    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -97,6 +101,7 @@ pub(crate) struct RunManualCompactionContext {
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
     pub(crate) use_inline_flow_controls: bool,
+    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -111,6 +116,7 @@ struct TaskDeliveryContext {
     message_thread_id: Option<ThreadId>,
     use_inline_progress_controls: bool,
     use_inline_flow_controls: bool,
+    attach_detach_enabled: bool,
 }
 
 struct TaskProgressRuntime {
@@ -134,6 +140,7 @@ impl From<&RunAgentTaskTextContext> for TaskDeliveryContext {
             message_thread_id: value.message_thread_id,
             use_inline_progress_controls: value.use_inline_progress_controls,
             use_inline_flow_controls: value.use_inline_flow_controls,
+            attach_detach_enabled: value.attach_detach_enabled,
         }
     }
 }
@@ -151,6 +158,7 @@ impl From<&RunApprovedSshResumeContext> for TaskDeliveryContext {
             message_thread_id: value.message_thread_id,
             use_inline_progress_controls: value.use_inline_progress_controls,
             use_inline_flow_controls: value.use_inline_flow_controls,
+            attach_detach_enabled: value.attach_detach_enabled,
         }
     }
 }
@@ -168,6 +176,7 @@ impl From<&RunUserInputResumeContext> for TaskDeliveryContext {
             message_thread_id: value.message_thread_id,
             use_inline_progress_controls: value.use_inline_progress_controls,
             use_inline_flow_controls: value.use_inline_flow_controls,
+            attach_detach_enabled: value.attach_detach_enabled,
         }
     }
 }
@@ -185,6 +194,7 @@ impl From<&RunManualCompactionContext> for TaskDeliveryContext {
             message_thread_id: value.message_thread_id,
             use_inline_progress_controls: value.use_inline_progress_controls,
             use_inline_flow_controls: value.use_inline_flow_controls,
+            attach_detach_enabled: value.attach_detach_enabled,
         }
     }
 }
@@ -247,6 +257,7 @@ pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         message_thread_id: ctx.message_thread_id,
         use_inline_progress_controls: ctx.use_inline_progress_controls,
         use_inline_flow_controls: ctx.use_inline_flow_controls,
+        attach_detach_enabled: ctx.attach_detach_enabled,
     })
     .await
 }
@@ -494,7 +505,13 @@ async fn deliver_task_result(
             .await;
             let final_markup = ctx
                 .use_inline_flow_controls
-                .then(|| crate::bot::views::agent_flow_inline_keyboard(&ctx.agent_flow_id));
+                .then(|| {
+                    crate::bot::views::agent_flow_inline_keyboard_with_toggle(
+                        &ctx.agent_flow_id,
+                        ctx.attach_detach_enabled,
+                    )
+                })
+                .filter(|markup| !markup.inline_keyboard.is_empty());
             send_long_message_in_thread_with_final_markup(
                 &ctx.bot,
                 ctx.chat_id,
@@ -565,7 +582,11 @@ async fn deliver_task_result(
         ctx.session_id,
         ctx.chat_id,
         cancelled,
-        cancel_status_inline_markup(ctx.use_inline_flow_controls, &ctx.agent_flow_id),
+        cancel_status_inline_markup(
+            ctx.use_inline_flow_controls,
+            &ctx.agent_flow_id,
+            ctx.attach_detach_enabled,
+        ),
     )
     .await;
 
