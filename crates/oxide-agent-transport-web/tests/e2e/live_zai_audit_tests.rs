@@ -10,8 +10,8 @@ use oxide_agent_transport_web::session::{TaskStatus, WebSessionManager};
 use serde_json::Value;
 
 use crate::helpers::{
-    create_session_http_with_user, create_task_http_with_body, fetch_task_events,
-    fetch_task_progress, spawn_test_server,
+    create_session_http_with_user, create_session_http_with_user_and_context,
+    create_task_http_with_body, fetch_task_events, fetch_task_progress, spawn_test_server,
 };
 use crate::setup::{cleanup_web_sandbox, setup_live_zai_test, setup_live_zai_test_with_postgres};
 
@@ -88,6 +88,7 @@ async fn latest_assistant_response(
 async fn wait_for_durable_memory_hit(
     store: &dyn PersistentMemoryStore,
     user_id: i64,
+    context_key: &str,
     token: &str,
     timeout: Duration,
 ) -> bool {
@@ -98,7 +99,7 @@ async fn wait_for_durable_memory_hit(
             store,
             token,
             &MemorySearchFilter {
-                context_key: Some("default".to_string()),
+                context_key: Some(context_key.to_string()),
                 user_id: Some(user_id),
                 limit: Some(5),
                 ..Default::default()
@@ -114,7 +115,7 @@ async fn wait_for_durable_memory_hit(
             store,
             token,
             &EpisodeSearchFilter {
-                context_key: Some("default".to_string()),
+                context_key: Some(context_key.to_string()),
                 user_id: Some(user_id),
                 limit: Some(5),
                 ..Default::default()
@@ -132,6 +133,44 @@ async fn wait_for_durable_memory_hit(
 
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+async fn durable_memory_hit_exists(
+    store: &dyn PersistentMemoryStore,
+    user_id: i64,
+    context_key: &str,
+    token: &str,
+) -> bool {
+    let memory_hits = PersistentMemoryStore::search_memories_lexical(
+        store,
+        token,
+        &MemorySearchFilter {
+            context_key: Some(context_key.to_string()),
+            user_id: Some(user_id),
+            limit: Some(5),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("memory search should succeed");
+    if !memory_hits.is_empty() {
+        return true;
+    }
+
+    let episode_hits = PersistentMemoryStore::search_episodes_lexical(
+        store,
+        token,
+        &EpisodeSearchFilter {
+            context_key: Some(context_key.to_string()),
+            user_id: Some(user_id),
+            limit: Some(5),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("episode search should succeed");
+
+    !episode_hits.is_empty()
 }
 
 #[tokio::test]
@@ -403,6 +442,7 @@ async fn e2e_zai_postgres_memory_survives_session_and_process_restart() {
     let durable_hit = wait_for_durable_memory_hit(
         memory_store.as_ref(),
         user_id,
+        "default",
         &token,
         Duration::from_secs(30),
     )
@@ -471,6 +511,269 @@ async fn e2e_zai_postgres_memory_survives_session_and_process_restart() {
     assert!(
         recall_response.contains(&token),
         "recalled response did not contain durable token; token={token}; response={recall_response:?}; progress={recall_progress:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires RUN_LLM_E2E_CHECKS=1, ZAI_API_KEY, MEMORY_DATABASE_URL, Postgres, Docker sandbox, and network access"]
+async fn e2e_zai_postgres_memory_keeps_contexts_isolated_across_restart() {
+    if std::env::var("RUN_LLM_E2E_CHECKS").as_deref() != Ok("1") {
+        eprintln!("[LIVE-ZAI] Skipping cross-context Postgres durable memory test: RUN_LLM_E2E_CHECKS != 1");
+        return;
+    }
+
+    let ((app_state, memory_store), user_id, context_a, context_b, token_a, token_b) = {
+        let setup = match setup_live_zai_test_with_postgres().await {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "[LIVE-ZAI] Skipping cross-context Postgres durable memory test: {error}"
+                );
+                return;
+            }
+        };
+        let user_id = unique_test_user_id();
+        let context_a = format!("daily-work-{:x}", user_id);
+        let context_b = format!("daily-home-{:x}", user_id);
+        let token_a = format!("CTX_A_TOKEN_{user_id:x}_espresso");
+        let token_b = format!("CTX_B_TOKEN_{user_id:x}_notion");
+        (setup, user_id, context_a, context_b, token_a, token_b)
+    };
+
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+
+    let session_a =
+        create_session_http_with_user_and_context(&client, &base_url, user_id, Some(&context_a))
+            .await;
+    let sid_a = derive_session_id(&session_a, user_id);
+    let executor_a = session_manager
+        .session_registry()
+        .get(&sid_a)
+        .await
+        .expect("context-a session should exist in registry");
+    assert!(
+        executor_a.read().await.has_persistent_memory(),
+        "context-a executor missing durable persistent-memory wiring"
+    );
+    let remember_a = format!(
+        "Запомни для будущих разговоров в этой теме дословно: {token_a}. Это относится только к этой теме. Ответь коротко, что запомнил.",
+    );
+    let task_a = create_task_http_with_body(&client, &base_url, &session_a, &remember_a).await;
+    let status_a =
+        wait_for_terminal_task_status(session_manager.as_ref(), &task_a, Duration::from_secs(240))
+            .await;
+    let progress_a = fetch_task_progress(&client, &base_url, &session_a, &task_a)
+        .await
+        .json::<Value>()
+        .await
+        .expect("failed to decode context-a progress");
+    assert!(
+        matches!(status_a, TaskStatus::Completed),
+        "context-a remember task failed: {:?}; progress={progress_a:?}",
+        status_a
+    );
+
+    let session_b =
+        create_session_http_with_user_and_context(&client, &base_url, user_id, Some(&context_b))
+            .await;
+    let sid_b = derive_session_id(&session_b, user_id);
+    let executor_b = session_manager
+        .session_registry()
+        .get(&sid_b)
+        .await
+        .expect("context-b session should exist in registry");
+    assert!(
+        executor_b.read().await.has_persistent_memory(),
+        "context-b executor missing durable persistent-memory wiring"
+    );
+    let remember_b = format!(
+        "Запомни для будущих разговоров в этой теме дословно: {token_b}. Это относится только к этой теме. Ответь коротко, что запомнил.",
+    );
+    let task_b = create_task_http_with_body(&client, &base_url, &session_b, &remember_b).await;
+    let status_b =
+        wait_for_terminal_task_status(session_manager.as_ref(), &task_b, Duration::from_secs(240))
+            .await;
+    let progress_b = fetch_task_progress(&client, &base_url, &session_b, &task_b)
+        .await
+        .json::<Value>()
+        .await
+        .expect("failed to decode context-b progress");
+    assert!(
+        matches!(status_b, TaskStatus::Completed),
+        "context-b remember task failed: {:?}; progress={progress_b:?}",
+        status_b
+    );
+
+    assert!(
+        wait_for_durable_memory_hit(
+            memory_store.as_ref(),
+            user_id,
+            &context_a,
+            &token_a,
+            Duration::from_secs(30),
+        )
+        .await,
+        "context-a durable memory token was not persisted: {token_a}"
+    );
+    assert!(
+        wait_for_durable_memory_hit(
+            memory_store.as_ref(),
+            user_id,
+            &context_b,
+            &token_b,
+            Duration::from_secs(30),
+        )
+        .await,
+        "context-b durable memory token was not persisted: {token_b}"
+    );
+    assert!(
+        !durable_memory_hit_exists(memory_store.as_ref(), user_id, &context_a, &token_b).await,
+        "context-a unexpectedly contains context-b token in durable storage"
+    );
+    assert!(
+        !durable_memory_hit_exists(memory_store.as_ref(), user_id, &context_b, &token_a).await,
+        "context-b unexpectedly contains context-a token in durable storage"
+    );
+
+    cleanup_live_attempt(&client, &base_url, &session_a, user_id).await;
+    cleanup_live_attempt(&client, &base_url, &session_b, user_id).await;
+    server.abort();
+
+    let (recall_state, recall_store) = setup_live_zai_test_with_postgres()
+        .await
+        .expect("second Postgres-backed app state should initialize");
+    let recall_session_manager = recall_state.session_manager();
+    let (recall_server, recall_base_url) = spawn_test_server(recall_state).await;
+
+    let recall_session_a = create_session_http_with_user_and_context(
+        &client,
+        &recall_base_url,
+        user_id,
+        Some(&context_a),
+    )
+    .await;
+    let recall_sid_a = derive_session_id(&recall_session_a, user_id);
+    let recall_executor_a = recall_session_manager
+        .session_registry()
+        .get(&recall_sid_a)
+        .await
+        .expect("recall context-a session should exist in registry");
+    assert!(
+        recall_executor_a.read().await.has_persistent_memory(),
+        "recall context-a executor missing durable persistent-memory wiring"
+    );
+    let recall_task_a = create_task_http_with_body(
+        &client,
+        &recall_base_url,
+        &recall_session_a,
+        "Какую точную постоянную заметку я просил запомнить раньше в этой теме? Ответь только самой строкой.",
+    )
+    .await;
+    let recall_status_a = wait_for_terminal_task_status(
+        recall_session_manager.as_ref(),
+        &recall_task_a,
+        Duration::from_secs(240),
+    )
+    .await;
+    let recall_progress_a =
+        fetch_task_progress(&client, &recall_base_url, &recall_session_a, &recall_task_a)
+            .await
+            .json::<Value>()
+            .await
+            .expect("failed to decode recall context-a progress");
+    let recall_response_a =
+        latest_assistant_response(recall_session_manager.as_ref(), &recall_session_a, user_id)
+            .await
+            .unwrap_or_default();
+
+    let recall_session_b = create_session_http_with_user_and_context(
+        &client,
+        &recall_base_url,
+        user_id,
+        Some(&context_b),
+    )
+    .await;
+    let recall_sid_b = derive_session_id(&recall_session_b, user_id);
+    let recall_executor_b = recall_session_manager
+        .session_registry()
+        .get(&recall_sid_b)
+        .await
+        .expect("recall context-b session should exist in registry");
+    assert!(
+        recall_executor_b.read().await.has_persistent_memory(),
+        "recall context-b executor missing durable persistent-memory wiring"
+    );
+    let recall_task_b = create_task_http_with_body(
+        &client,
+        &recall_base_url,
+        &recall_session_b,
+        "Какую точную постоянную заметку я просил запомнить раньше в этой теме? Ответь только самой строкой.",
+    )
+    .await;
+    let recall_status_b = wait_for_terminal_task_status(
+        recall_session_manager.as_ref(),
+        &recall_task_b,
+        Duration::from_secs(240),
+    )
+    .await;
+    let recall_progress_b =
+        fetch_task_progress(&client, &recall_base_url, &recall_session_b, &recall_task_b)
+            .await
+            .json::<Value>()
+            .await
+            .expect("failed to decode recall context-b progress");
+    let recall_response_b =
+        latest_assistant_response(recall_session_manager.as_ref(), &recall_session_b, user_id)
+            .await
+            .unwrap_or_default();
+
+    cleanup_live_attempt(&client, &recall_base_url, &recall_session_a, user_id).await;
+    cleanup_live_attempt(&client, &recall_base_url, &recall_session_b, user_id).await;
+    recall_server.abort();
+
+    assert!(
+        matches!(recall_status_a, TaskStatus::Completed),
+        "recall context-a task failed: {:?}; progress={recall_progress_a:?}",
+        recall_status_a
+    );
+    assert!(
+        matches!(recall_status_b, TaskStatus::Completed),
+        "recall context-b task failed: {:?}; progress={recall_progress_b:?}",
+        recall_status_b
+    );
+    assert!(
+        recall_response_a.contains(&token_a),
+        "context-a recall did not contain its token; token={token_a}; response={recall_response_a:?}; progress={recall_progress_a:?}"
+    );
+    assert!(
+        !recall_response_a.contains(&token_b),
+        "context-a recall leaked context-b token; token={token_b}; response={recall_response_a:?}; progress={recall_progress_a:?}"
+    );
+    assert!(
+        recall_response_b.contains(&token_b),
+        "context-b recall did not contain its token; token={token_b}; response={recall_response_b:?}; progress={recall_progress_b:?}"
+    );
+    assert!(
+        !recall_response_b.contains(&token_a),
+        "context-b recall leaked context-a token; token={token_a}; response={recall_response_b:?}; progress={recall_progress_b:?}"
+    );
+    assert!(
+        durable_memory_hit_exists(recall_store.as_ref(), user_id, &context_a, &token_a).await,
+        "restarted store lost context-a token"
+    );
+    assert!(
+        durable_memory_hit_exists(recall_store.as_ref(), user_id, &context_b, &token_b).await,
+        "restarted store lost context-b token"
+    );
+    assert!(
+        !durable_memory_hit_exists(recall_store.as_ref(), user_id, &context_a, &token_b).await,
+        "restarted store shows context-b token in context-a"
+    );
+    assert!(
+        !durable_memory_hit_exists(recall_store.as_ref(), user_id, &context_b, &token_a).await,
+        "restarted store shows context-a token in context-b"
     );
 }
 
