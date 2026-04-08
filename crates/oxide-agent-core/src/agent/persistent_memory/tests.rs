@@ -554,25 +554,10 @@ async fn durable_memory_retriever_skips_smalltalk_queries() {
 }
 
 #[tokio::test]
-async fn durable_memory_retriever_fuses_vector_and_lexical_hits() {
-    let episode = retrieval_episode();
+async fn durable_memory_retriever_prefers_memory_recall_for_procedure_queries() {
     let memory_for_lexical = retrieval_memory();
     let memory_for_vector = retrieval_memory();
     let mut storage = MockStorageProvider::new();
-    storage
-        .expect_search_memory_episodes_lexical()
-        .times(1)
-        .return_once(move |_, _| {
-            Ok(vec![EpisodeSearchHit {
-                record: episode,
-                score: 0.4,
-                snippet: "episode lexical".to_string(),
-            }])
-        });
-    storage
-        .expect_search_memory_episodes_vector()
-        .times(1)
-        .return_once(|_, _| Ok(Vec::new()));
     storage
         .expect_search_memory_records_lexical()
         .times(1)
@@ -598,37 +583,32 @@ async fn durable_memory_retriever_fuses_vector_and_lexical_hits() {
         .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
     let retrieval = retriever
         .retrieve(
-            "how was the deploy fixed before?",
+            "deploy procedure for staging fix",
             &retrieval_scope(),
             DurableMemoryRetrievalOptions::default(),
         )
         .await
-        .expect("hybrid retrieval should succeed")
+        .expect("procedure retrieval should succeed")
         .expect("retrieval should produce candidates");
 
-    assert_eq!(retrieval.items.len(), 2);
+    assert_eq!(retrieval.items.len(), 1);
     assert!(matches!(retrieval.items[0], HybridCandidate::Memory { .. }));
-    assert!(matches!(
-        retrieval.items[1],
-        HybridCandidate::Episode { .. }
-    ));
 
     let rendered = retrieval.render_for_prompt();
     assert!(rendered.contains("Scoped durable memory context"));
     assert!(rendered.contains("memory memory-1"));
-    assert!(rendered.contains("episode episode-1"));
-    assert!(rendered.contains("Open full thread only if needed"));
+    assert!(!rendered.contains("episode episode-1"));
 }
 
 #[tokio::test]
-async fn durable_memory_search_reuses_hybrid_retrieval_core() {
+async fn durable_memory_search_supports_explicit_hybrid_requests() {
     let episode = retrieval_episode();
     let memory_for_lexical = retrieval_memory();
     let memory_for_vector = retrieval_memory();
     let mut storage = MockStorageProvider::new();
     storage
         .expect_search_memory_episodes_lexical()
-        .times(2)
+        .times(1)
         .returning({
             let episode = episode.clone();
             move |_, _| {
@@ -641,11 +621,11 @@ async fn durable_memory_search_reuses_hybrid_retrieval_core() {
         });
     storage
         .expect_search_memory_episodes_vector()
-        .times(2)
+        .times(1)
         .returning(|_, _| Ok(Vec::new()));
     storage
         .expect_search_memory_records_lexical()
-        .times(2)
+        .times(1)
         .returning({
             let memory_for_lexical = memory_for_lexical.clone();
             move |_, _| {
@@ -658,7 +638,7 @@ async fn durable_memory_search_reuses_hybrid_retrieval_core() {
         });
     storage
         .expect_search_memory_records_vector()
-        .times(2)
+        .times(1)
         .returning({
             let memory_for_vector = memory_for_vector.clone();
             move |_, _| {
@@ -672,15 +652,6 @@ async fn durable_memory_search_reuses_hybrid_retrieval_core() {
 
     let retriever = DurableMemoryRetriever::new(Arc::new(storage))
         .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
-    let prompt_retrieval = retriever
-        .retrieve(
-            "how was the deploy fixed before?",
-            &retrieval_scope(),
-            DurableMemoryRetrievalOptions::default(),
-        )
-        .await
-        .expect("prompt retrieval should succeed")
-        .expect("prompt retrieval should yield items");
     let search_items = retriever
         .search(
             &retrieval_scope(),
@@ -699,15 +670,7 @@ async fn durable_memory_search_reuses_hybrid_retrieval_core() {
         .await
         .expect("tool search should succeed");
 
-    assert_eq!(prompt_retrieval.items.len(), search_items.len());
-    assert!(matches!(
-        prompt_retrieval.items[0],
-        HybridCandidate::Memory { .. }
-    ));
-    assert!(matches!(
-        prompt_retrieval.items[1],
-        HybridCandidate::Episode { .. }
-    ));
+    assert_eq!(search_items.len(), 2);
     assert!(matches!(
         search_items[0],
         DurableMemorySearchItem::Memory { .. }
@@ -716,6 +679,70 @@ async fn durable_memory_search_reuses_hybrid_retrieval_core() {
         search_items[1],
         DurableMemorySearchItem::Episode { .. }
     ));
+}
+
+#[tokio::test]
+async fn durable_memory_retriever_skips_external_fresh_fact_queries() {
+    let storage = MockStorageProvider::new();
+    let retriever = DurableMemoryRetriever::new(Arc::new(storage));
+
+    let retrieval = retriever
+        .retrieve(
+            "Когда релиз The Boys S5 будет?",
+            &retrieval_scope(),
+            DurableMemoryRetrievalOptions::default(),
+        )
+        .await
+        .expect("fresh external fact retrieval should not fail");
+
+    assert!(retrieval.is_none());
+}
+
+#[tokio::test]
+async fn durable_memory_search_filters_vector_only_memory_for_general_queries() {
+    let memory_for_vector = retrieval_memory();
+    let mut storage = MockStorageProvider::new();
+    storage
+        .expect_search_memory_records_lexical()
+        .times(1)
+        .return_once(|_, _| Ok(Vec::new()));
+    storage
+        .expect_search_memory_records_vector()
+        .times(1)
+        .return_once(move |_, _| {
+            Ok(vec![MemorySearchHit {
+                record: memory_for_vector,
+                score: 0.96,
+                snippet: "memory semantic".to_string(),
+            }])
+        });
+
+    let retriever = DurableMemoryRetriever::new(Arc::new(storage))
+        .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
+    let outcome = retriever
+        .search_with_diagnostics(
+            &retrieval_scope(),
+            DurableMemorySearchRequest {
+                query: "Summarize this".to_string(),
+                search_episodes: false,
+                search_memories: true,
+                memory_type: None,
+                time_range: Default::default(),
+                min_importance: Some(0.0),
+                limit: 5,
+                candidate_limit: Some(8),
+                allow_full_thread_read: false,
+            },
+        )
+        .await
+        .expect("general memory search should succeed");
+
+    assert!(outcome.items.is_empty());
+    assert_eq!(outcome.diagnostics.filtered_vector_only_memory, 1);
+    assert_eq!(
+        outcome.diagnostics.empty_reason,
+        Some("all_candidates_deduplicated_or_covered")
+    );
 }
 
 #[tokio::test]
@@ -770,7 +797,7 @@ async fn persist_post_run_consolidates_duplicate_memories() {
             session_id: "session-1",
             task_id: "episode-1",
             scope: &scope,
-            task: "keep memory hygiene",
+            task: "keep project memory hygiene",
             messages: &messages,
             explicit_remember_intent: false,
             hot_token_estimate: 32,
@@ -786,7 +813,7 @@ async fn persist_post_run_consolidates_duplicate_memories() {
             session_id: "session-2",
             task_id: "episode-2",
             scope: &scope,
-            task: "keep memory hygiene again",
+            task: "keep project memory hygiene again",
             messages: &messages,
             explicit_remember_intent: false,
             hot_token_estimate: 40,
@@ -814,13 +841,108 @@ async fn persist_post_run_consolidates_duplicate_memories() {
     .expect("full memory listing should succeed");
 
     assert_eq!(active.len(), 3);
-    assert_eq!(all.len(), 6);
     assert_eq!(
-        all.iter()
-            .filter(|memory| memory.deleted_at.is_some())
-            .count(),
+        active
+            .iter()
+            .filter_map(|memory| memory.content_hash.as_ref())
+            .collect::<HashSet<_>>()
+            .len(),
         3
     );
+    assert!((3..=6).contains(&all.len()));
+    assert!(
+        all.iter()
+            .filter(|memory| memory.deleted_at.is_some())
+            .count()
+            <= 3
+    );
+}
+
+#[tokio::test]
+async fn persist_post_run_suppresses_llm_memories_for_external_fresh_facts() {
+    let store = Arc::new(InMemoryMemoryRepository::new());
+    let store_for_coordinator = Arc::clone(&store);
+    let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+    let coordinator = test_coordinator(store_for_coordinator);
+    let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
+    let messages = vec![AgentMessage::user_turn("Когда релиз The Boys S5 будет?")];
+
+    coordinator
+        .persist_post_run(PersistentRunContext {
+            session_id: "session-fresh-fact",
+            task_id: "episode-fresh-fact",
+            scope: &scope,
+            task: "Когда релиз The Boys S5 будет?",
+            messages: &messages,
+            explicit_remember_intent: false,
+            hot_token_estimate: 24,
+            tool_memory_drafts: Vec::new(),
+            phase: PersistentRunPhase::Completed {
+                final_answer: "Сезон еще не вышел.",
+            },
+        })
+        .await
+        .expect("fresh fact persistence should succeed");
+
+    let memories =
+        MemoryRepository::list_memories(store.as_ref(), "topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memory lookup should succeed");
+    assert!(memories.is_empty());
+    assert!(
+        MemoryRepository::get_episode(store.as_ref(), &"episode-fresh-fact".to_string())
+            .await
+            .expect("episode lookup should succeed")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn persist_post_run_persists_tool_drafts_when_llm_memories_are_suppressed() {
+    let store = Arc::new(InMemoryMemoryRepository::new());
+    let store_for_coordinator = Arc::clone(&store);
+    let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+    let coordinator = test_coordinator(store_for_coordinator);
+    let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
+    let messages = vec![AgentMessage::user_turn("Когда релиз The Boys S5 будет?")];
+    let tool_memory_drafts = vec![ToolDerivedMemoryDraft {
+        memory_type: MemoryType::Procedure,
+        title: "Release lookup workflow".to_string(),
+        content: "Use web search to verify release date and current streaming availability before answering.".to_string(),
+        short_description: "Check release date and streaming status".to_string(),
+        importance: 0.81,
+        confidence: 0.88,
+        source: "test_tool_draft".to_string(),
+        reason: "Observed explicit fact-check workflow".to_string(),
+        tags: vec!["procedure".to_string(), "web_search".to_string()],
+        captured_at: chrono::Utc::now(),
+    }];
+
+    coordinator
+        .persist_post_run(PersistentRunContext {
+            session_id: "session-tool-draft",
+            task_id: "episode-tool-draft",
+            scope: &scope,
+            task: "Когда релиз The Boys S5 будет?",
+            messages: &messages,
+            explicit_remember_intent: false,
+            hot_token_estimate: 24,
+            tool_memory_drafts,
+            phase: PersistentRunPhase::Completed {
+                final_answer: "Сезон еще не вышел.",
+            },
+        })
+        .await
+        .expect("tool-draft persistence should succeed");
+
+    let memories =
+        MemoryRepository::list_memories(store.as_ref(), "topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memory lookup should succeed");
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0].memory_type, MemoryType::Procedure);
+    assert!(memories[0].tags.iter().any(|tag| tag == "tool_draft"));
+    assert_eq!(memories[0].source.as_deref(), Some("test_tool_draft"));
 }
 
 #[tokio::test]

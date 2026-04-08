@@ -40,6 +40,7 @@ impl PersistentMemoryCoordinator {
     }
 
     pub async fn persist_post_run(&self, ctx: PersistentRunContext<'_>) -> Result<()> {
+        let task_class = classify_memory_task(ctx.task);
         let summary_signal = latest_summary_signal(ctx.messages);
         let artifacts = collect_artifacts(ctx.messages);
         let tools_used = collect_tools_used(ctx.messages);
@@ -65,9 +66,7 @@ impl PersistentMemoryCoordinator {
                         explicit_remember_intent: ctx.explicit_remember_intent,
                         tools_used: &tools_used,
                         artifacts: &artifacts,
-                        compaction_summary: summary_signal
-                            .as_ref()
-                            .map(|signal| signal.summary_text.as_str()),
+                        tool_memory_drafts: &ctx.tool_memory_drafts,
                     })
                     .await?,
             )
@@ -130,8 +129,42 @@ impl PersistentMemoryCoordinator {
                 warn!(error = %error, episode_id = %episode.episode_id, "episode embedding write failed");
             }
         }
-        if let (Some(episode), Some(llm_write)) = (episode.as_ref(), llm_write.as_ref()) {
-            self.persist_llm_memories(episode, &llm_write.memories)
+        let mut llm_memories =
+            if allow_llm_durable_memory_writes(task_class, ctx.explicit_remember_intent) {
+                llm_write
+                    .as_ref()
+                    .map(|write| write.memories.clone())
+                    .unwrap_or_default()
+            } else {
+                if let Some(write) = llm_write
+                    .as_ref()
+                    .filter(|write| !write.memories.is_empty())
+                {
+                    info!(
+                        task_class = task_class.as_str(),
+                        explicit_remember_intent = ctx.explicit_remember_intent,
+                        filtered_memory_count = write.memories.len(),
+                        task_id = ctx.task_id,
+                        "Post-run admission filtered LLM durable memories"
+                    );
+                }
+                Vec::new()
+            };
+        let tool_memories = build_tool_draft_memories(&ctx);
+        let tool_hashes = tool_memories
+            .iter()
+            .filter_map(|memory| memory.content_hash.clone())
+            .collect::<HashSet<_>>();
+        llm_memories.retain(|memory| {
+            memory
+                .content_hash
+                .as_ref()
+                .is_none_or(|content_hash| !tool_hashes.contains(content_hash))
+        });
+        if let Some(episode) = episode.as_ref() {
+            self.persist_generated_memories(episode, &tool_memories, "tool_draft")
+                .await;
+            self.persist_generated_memories(episode, &llm_memories, "llm_post_run")
                 .await;
         }
         if let Some(indexer) = self.embedding_indexer.as_ref() {
@@ -146,10 +179,11 @@ impl PersistentMemoryCoordinator {
         Ok(())
     }
 
-    async fn persist_llm_memories(
+    async fn persist_generated_memories(
         &self,
         episode: &oxide_agent_memory::EpisodeRecord,
         memories: &[MemoryRecord],
+        source_label: &'static str,
     ) {
         let mut fact_writes = 0usize;
         let mut preference_writes = 0usize;
@@ -171,12 +205,12 @@ impl PersistentMemoryCoordinator {
                     }
                     stored_memory_ids.push(memory.memory_id.clone());
                     info!(
-                        memory_write_source = "llm_post_run",
+                        memory_write_source = source_label,
                         context_key = %memory.context_key,
                         episode_id = %episode.episode_id,
                         memory_id = %memory.memory_id,
                         memory_type = memory_type_label(memory.memory_type),
-                        "Persistent LLM memory write"
+                        "Persistent durable memory write"
                     );
                     if let Some(indexer) = self.embedding_indexer.as_ref() {
                         if let Err(error) = indexer.index_memory(&memory).await {
@@ -193,7 +227,7 @@ impl PersistentMemoryCoordinator {
 
         if !stored_memory_ids.is_empty() || failed_writes > 0 {
             info!(
-                memory_write_source = "llm_post_run",
+                memory_write_source = source_label,
                 episode_id = %episode.episode_id,
                 context_key = %episode.context_key,
                 stored_memory_count = stored_memory_ids.len(),
@@ -204,7 +238,7 @@ impl PersistentMemoryCoordinator {
                 decision_writes,
                 constraint_writes,
                 stored_memory_ids = ?stored_memory_ids,
-                "Post-run memory write telemetry"
+                "Post-run durable memory write telemetry"
             );
         }
     }
@@ -299,6 +333,74 @@ impl PersistentMemoryCoordinator {
             }
         }
     }
+}
+
+fn build_tool_draft_memories(ctx: &PersistentRunContext<'_>) -> Vec<MemoryRecord> {
+    let mut seen_hashes = HashSet::new();
+
+    ctx.tool_memory_drafts
+        .iter()
+        .filter_map(|draft| {
+            let content = draft.content.trim();
+            if content.is_empty() {
+                return None;
+            }
+
+            let content_hash = stable_memory_content_hash(draft.memory_type, content);
+            if !seen_hashes.insert(content_hash.clone()) {
+                return None;
+            }
+
+            let title = draft.title.trim();
+            let short_description = draft.short_description.trim();
+            let mut tags = draft
+                .tags
+                .iter()
+                .map(|tag| tag.trim())
+                .filter(|tag| !tag.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            if !draft.source.trim().is_empty() {
+                tags.push(draft.source.trim().to_string());
+            }
+            tags.push("tool_draft".to_string());
+            tags.push(memory_type_label(draft.memory_type).to_string());
+            tags.sort();
+            tags.dedup();
+
+            Some(MemoryRecord {
+                memory_id: format!(
+                    "tool-draft:{}:{}:{}",
+                    ctx.task_id,
+                    memory_type_label(draft.memory_type),
+                    &content_hash[..12.min(content_hash.len())]
+                ),
+                context_key: ctx.scope.context_key.clone(),
+                source_episode_id: Some(ctx.task_id.to_string()),
+                memory_type: draft.memory_type,
+                title: if title.is_empty() {
+                    format!("{} memory", memory_type_label(draft.memory_type))
+                } else {
+                    title.to_string()
+                },
+                content: content.to_string(),
+                short_description: if short_description.is_empty() {
+                    content.to_string()
+                } else {
+                    short_description.to_string()
+                },
+                importance: draft.importance.clamp(0.0, 1.0),
+                confidence: draft.confidence.clamp(0.0, 1.0),
+                source: Some(draft.source.trim().to_string()).filter(|source| !source.is_empty()),
+                content_hash: Some(content_hash),
+                reason: Some(draft.reason.trim().to_string()).filter(|reason| !reason.is_empty()),
+                tags,
+                created_at: draft.captured_at,
+                updated_at: draft.captured_at,
+                deleted_at: None,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]

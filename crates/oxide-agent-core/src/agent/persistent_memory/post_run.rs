@@ -60,7 +60,7 @@ pub(crate) struct PostRunMemoryWriterInput<'a> {
     pub explicit_remember_intent: bool,
     pub tools_used: &'a [String],
     pub artifacts: &'a [ArtifactRef],
-    pub compaction_summary: Option<&'a str>,
+    pub tool_memory_drafts: &'a [ToolDerivedMemoryDraft],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -272,6 +272,8 @@ Rules:
 - Only write memories that would still matter in a future session.
 - Prefer project facts, user preferences, procedures, decisions, and constraints.
 - If `explicit_remember_intent` is true, preserve the explicitly requested durable information when it is grounded in the transcript and reusable later.
+- If tool-derived durable memory drafts are provided, treat them as the strongest grounded signals.
+- Never create durable memories from historical compaction summaries or archive references.
 - Do not invent facts not grounded in the provided conversation.
 - Keep summaries concise and specific.
 - `importance` and `confidence` must be floats between 0.0 and 1.0.
@@ -319,14 +321,6 @@ fn build_post_run_memory_writer_user_message(input: &PostRunMemoryWriterInput<'_
         format!("Final answer:\n{}", input.final_answer.trim()),
     ];
 
-    if let Some(summary) = input
-        .compaction_summary
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        sections.push(format!("Compaction summary:\n{summary}"));
-    }
-
     if !input.tools_used.is_empty() {
         sections.push(format!("Tools used:\n- {}", input.tools_used.join("\n- ")));
     }
@@ -348,9 +342,24 @@ fn build_post_run_memory_writer_user_message(input: &PostRunMemoryWriterInput<'_
         sections.push(format!("Artifacts:\n{artifacts}"));
     }
 
+    if !input.tool_memory_drafts.is_empty() {
+        let drafts = input
+            .tool_memory_drafts
+            .iter()
+            .map(render_tool_memory_draft)
+            .collect::<Vec<_>>()
+            .join("\n");
+        sections.push(format!(
+            "Observed tool-derived durable memory drafts:\n{drafts}"
+        ));
+    }
+
     let transcript = input
         .messages
         .iter()
+        .filter(|message| {
+            message.summary_payload().is_none() && message.archive_ref_payload().is_none()
+        })
         .rev()
         .take(POST_RUN_MEMORY_WRITER_MAX_TRANSCRIPT_MESSAGES)
         .collect::<Vec<_>>()
@@ -361,6 +370,21 @@ fn build_post_run_memory_writer_user_message(input: &PostRunMemoryWriterInput<'_
         .join("\n\n");
     sections.push(format!("Transcript excerpt:\n{transcript}"));
     sections.join("\n\n")
+}
+
+fn render_tool_memory_draft(draft: &ToolDerivedMemoryDraft) -> String {
+    format!(
+        "- type={} title={} content={} reason={} tags={}",
+        memory_type_label(draft.memory_type),
+        truncate_chars(draft.title.trim(), MEMORY_TITLE_MAX_CHARS),
+        truncate_chars(draft.content.trim(), MEMORY_CONTENT_MAX_CHARS),
+        truncate_chars(draft.reason.trim(), 160),
+        if draft.tags.is_empty() {
+            "none".to_string()
+        } else {
+            draft.tags.join(",")
+        }
+    )
 }
 
 fn render_post_run_message(message: &AgentMessage) -> String {

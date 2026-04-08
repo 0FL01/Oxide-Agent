@@ -64,6 +64,7 @@ impl RetrievalVectorStatus {
 #[derive(Debug, Clone)]
 pub(crate) struct DurableMemoryRetrievalDiagnostics {
     pub query: String,
+    pub task_class: &'static str,
     pub search_episodes: bool,
     pub search_memories: bool,
     pub candidate_limit: usize,
@@ -77,6 +78,7 @@ pub(crate) struct DurableMemoryRetrievalDiagnostics {
     pub vector_only_items: usize,
     pub hybrid_items: usize,
     pub filtered_low_score: usize,
+    pub filtered_vector_only_memory: usize,
     pub filtered_duplicate_snippet: usize,
     pub filtered_covered_episode: usize,
     pub empty_reason: Option<&'static str>,
@@ -88,6 +90,7 @@ impl DurableMemoryRetrievalDiagnostics {
     fn skipped(query: impl Into<String>, empty_reason: &'static str) -> Self {
         Self {
             query: query.into(),
+            task_class: MemoryTaskClass::General.as_str(),
             search_episodes: false,
             search_memories: false,
             candidate_limit: 0,
@@ -101,6 +104,7 @@ impl DurableMemoryRetrievalDiagnostics {
             vector_only_items: 0,
             hybrid_items: 0,
             filtered_low_score: 0,
+            filtered_vector_only_memory: 0,
             filtered_duplicate_snippet: 0,
             filtered_covered_episode: 0,
             empty_reason: Some(empty_reason),
@@ -112,6 +116,7 @@ impl DurableMemoryRetrievalDiagnostics {
     fn with_plan(plan: &RetrievalPlan, candidate_limit: usize) -> Self {
         Self {
             query: plan.query.clone(),
+            task_class: plan.task_class.as_str(),
             search_episodes: plan.search_episodes,
             search_memories: plan.search_memories,
             candidate_limit,
@@ -125,6 +130,7 @@ impl DurableMemoryRetrievalDiagnostics {
             vector_only_items: 0,
             hybrid_items: 0,
             filtered_low_score: 0,
+            filtered_vector_only_memory: 0,
             filtered_duplicate_snippet: 0,
             filtered_covered_episode: 0,
             empty_reason: None,
@@ -194,6 +200,7 @@ impl DurableMemoryRetriever {
         info!(
             retrieval_channel = channel,
             query = %diagnostics.query,
+            task_class = diagnostics.task_class,
             retrieval_hit = diagnostics.hit(),
             search_episodes = diagnostics.search_episodes,
             search_memories = diagnostics.search_memories,
@@ -210,6 +217,7 @@ impl DurableMemoryRetriever {
             vector_only_items = diagnostics.vector_only_items,
             hybrid_items = diagnostics.hybrid_items,
             filtered_low_score = diagnostics.filtered_low_score,
+            filtered_vector_only_memory = diagnostics.filtered_vector_only_memory,
             filtered_duplicate_snippet = diagnostics.filtered_duplicate_snippet,
             filtered_covered_episode = diagnostics.filtered_covered_episode,
             empty_reason = diagnostics.empty_reason.unwrap_or("none"),
@@ -263,6 +271,7 @@ impl DurableMemoryRetriever {
 
         let plan = RetrievalPlan {
             query: query.to_string(),
+            task_class: classify_memory_task(query),
             search_episodes: request.search_episodes,
             search_memories: request.search_memories,
             memory_type: request.memory_type,
@@ -306,14 +315,20 @@ impl DurableMemoryRetriever {
         scope: &AgentMemoryScope,
         options: DurableMemoryRetrievalOptions,
     ) -> Result<DurableMemoryRetrievalOutcome> {
-        let Some(plan) = query_retrieval_plan(task, options) else {
-            return Ok(DurableMemoryRetrievalOutcome {
-                retrieval: None,
-                diagnostics: DurableMemoryRetrievalDiagnostics::skipped(
-                    task,
-                    "query_filtered_as_smalltalk",
-                ),
-            });
+        let plan = match query_retrieval_plan(task, options) {
+            QueryPlanningOutcome::Plan(plan) => plan,
+            QueryPlanningOutcome::Skip {
+                task_class,
+                empty_reason,
+            } => {
+                let mut diagnostics =
+                    DurableMemoryRetrievalDiagnostics::skipped(task, empty_reason);
+                diagnostics.task_class = task_class.as_str();
+                return Ok(DurableMemoryRetrievalOutcome {
+                    retrieval: None,
+                    diagnostics,
+                });
+            }
         };
 
         self.retrieve_with_plan(
@@ -379,6 +394,19 @@ impl DurableMemoryRetriever {
         for candidate in candidates {
             if candidate.score() < HYBRID_RETRIEVAL_MIN_SCORE {
                 diagnostics.filtered_low_score += 1;
+                continue;
+            }
+
+            if matches!(
+                candidate,
+                HybridCandidate::Memory {
+                    lexical_score: None,
+                    vector_score: Some(_),
+                    ..
+                }
+            ) && !plan.task_class.allows_vector_only_memory()
+            {
+                diagnostics.filtered_vector_only_memory += 1;
                 continue;
             }
 
@@ -541,6 +569,7 @@ impl DurableMemoryRetriever {
 #[derive(Debug, Clone)]
 struct RetrievalPlan {
     query: String,
+    task_class: MemoryTaskClass,
     search_episodes: bool,
     search_memories: bool,
     memory_type: Option<MemoryType>,
@@ -760,124 +789,76 @@ impl HybridCandidate {
     }
 }
 
+enum QueryPlanningOutcome {
+    Skip {
+        task_class: MemoryTaskClass,
+        empty_reason: &'static str,
+    },
+    Plan(RetrievalPlan),
+}
+
 fn query_retrieval_plan(
     task: &str,
     options: DurableMemoryRetrievalOptions,
-) -> Option<RetrievalPlan> {
+) -> QueryPlanningOutcome {
     let query = task.trim();
     if query.is_empty() {
-        return None;
+        return QueryPlanningOutcome::Skip {
+            task_class: MemoryTaskClass::General,
+            empty_reason: "empty_query",
+        };
     }
 
-    let normalized = query.to_ascii_lowercase();
-    let token_count = normalized
-        .split_whitespace()
-        .filter(|token| !token.is_empty())
-        .count();
-    let is_smalltalk = token_count <= 6
-        && [
-            "thanks",
-            "thank you",
-            "hello",
-            "hi",
-            "ok",
-            "okay",
-            "got it",
-            "sounds good",
-        ]
-        .iter()
-        .any(|phrase| normalized == *phrase || normalized.starts_with(&format!("{phrase} ")));
-    if is_smalltalk {
-        return None;
+    let task_class = classify_memory_task(query);
+    if task_class == MemoryTaskClass::Smalltalk {
+        return QueryPlanningOutcome::Skip {
+            task_class,
+            empty_reason: "query_filtered_as_smalltalk",
+        };
+    }
+    if matches!(
+        task_class,
+        MemoryTaskClass::ExternalFreshFact | MemoryTaskClass::General
+    ) {
+        return QueryPlanningOutcome::Skip {
+            task_class,
+            empty_reason: "query_class_disallows_prompt_memory",
+        };
     }
 
-    let has_history_cue = contains_any(
-        &normalized,
-        &[
-            "previous",
-            "earlier",
-            "before",
-            "again",
-            "history",
-            "thread",
-            "episode",
-            "what happened",
-            "why did",
-            "why was",
-            "incident",
-            "regression",
-            "error",
-            "issue",
-            "debug",
-            "resolved",
-        ],
-    );
-    let has_procedure_cue = contains_any(
-        &normalized,
-        &[
-            "how",
-            "steps",
-            "procedure",
-            "workflow",
-            "run ",
-            "deploy",
-            "setup",
-            "configure",
-            "install",
-        ],
-    );
-    let has_constraint_cue = contains_any(
-        &normalized,
-        &[
-            "constraint",
-            "must",
-            "never",
-            "required",
-            "policy",
-            "guardrail",
-            "forbid",
-        ],
-    );
-    let has_preference_cue = contains_any(
-        &normalized,
-        &["prefer", "preference", "style", "guideline", "convention"],
-    );
-    let has_decision_cue = contains_any(&normalized, &["decision", "decided"]);
+    let (search_episodes, search_memories, memory_type, min_importance, allow_full_thread_read) =
+        match task_class {
+            MemoryTaskClass::EpisodeHistory => (true, false, None, 0.45, true),
+            MemoryTaskClass::ProcedureHowTo => {
+                (false, true, Some(MemoryType::Procedure), 0.55, false)
+            }
+            MemoryTaskClass::ConstraintPolicy => {
+                (false, true, Some(MemoryType::Constraint), 0.55, false)
+            }
+            MemoryTaskClass::PreferenceRecall => {
+                (false, true, Some(MemoryType::Preference), 0.55, false)
+            }
+            MemoryTaskClass::DecisionRecall => {
+                (false, true, Some(MemoryType::Decision), 0.55, false)
+            }
+            MemoryTaskClass::DurableProjectFact => (false, true, None, 0.55, false),
+            MemoryTaskClass::Smalltalk
+            | MemoryTaskClass::ExternalFreshFact
+            | MemoryTaskClass::General => unreachable!("skip classes handled above"),
+        };
 
-    let search_episodes =
-        has_history_cue || normalized.contains("why") || normalized.contains("debug");
-    let search_memories = has_procedure_cue
-        || has_constraint_cue
-        || has_preference_cue
-        || has_decision_cue
-        || !search_episodes
-        || token_count >= 5;
-
-    let memory_type = if has_procedure_cue {
-        Some(MemoryType::Procedure)
-    } else if has_constraint_cue {
-        Some(MemoryType::Constraint)
-    } else if has_preference_cue {
-        Some(MemoryType::Preference)
-    } else if has_decision_cue {
-        Some(MemoryType::Decision)
-    } else {
-        None
-    };
-
-    Some(RetrievalPlan {
+    QueryPlanningOutcome::Plan(RetrievalPlan {
         query: query.to_string(),
+        task_class,
         search_episodes,
         search_memories,
         memory_type,
-        min_importance: if has_history_cue { 0.45 } else { 0.55 },
+        min_importance,
         top_k: options
             .top_k
             .unwrap_or(HYBRID_RETRIEVAL_TOP_K)
             .clamp(1, HYBRID_RETRIEVAL_TOP_K),
-        allow_full_thread_read: has_history_cue
-            || normalized.contains("thread")
-            || normalized.contains("transcript"),
+        allow_full_thread_read,
     })
 }
 
@@ -1071,10 +1052,6 @@ fn fused_score(
     let importance = importance.clamp(0.0, 1.0) * 0.07;
     let confidence = confidence.unwrap_or(1.0).clamp(0.0, 1.0) * 0.03;
     lexical + vector + importance + confidence
-}
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 fn normalized_snippet_key(snippet: &str) -> String {
