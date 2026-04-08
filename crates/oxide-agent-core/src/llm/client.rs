@@ -11,7 +11,7 @@ use super::{
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
-    embedding: Option<(embeddings::EmbeddingProvider, String, u32)>,
+    embedding: Option<(embeddings::EmbeddingProvider, String, u32, Option<u32>)>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Narrator model ID
@@ -31,20 +31,21 @@ pub struct LlmClient {
 impl LlmClient {
     fn create_embedding_provider(
         settings: &crate::config::AgentSettings,
-    ) -> Option<(embeddings::EmbeddingProvider, String, u32)> {
+    ) -> Option<(embeddings::EmbeddingProvider, String, u32, Option<u32>)> {
         let provider_name = settings.embedding_provider.as_ref()?;
         let model_id = settings.embedding_model_id.clone()?;
+        let provider_name = provider_name.to_ascii_lowercase();
 
-        let api_key = match provider_name.to_lowercase().as_str() {
+        let api_key = match provider_name.as_str() {
             "mistral" => settings.mistral_api_key.clone()?,
             "openrouter" => settings.openrouter_api_key.clone()?,
             "gemini" | "google" => settings.gemini_api_key.clone()?,
             _ => return None,
         };
-        let provider = match provider_name.to_lowercase().as_str() {
+        let provider = match provider_name.as_str() {
             "gemini" | "google" => embeddings::EmbeddingProvider::new_gemini(api_key),
             _ => {
-                let api_base = embeddings::get_api_base(provider_name)?;
+                let api_base = embeddings::get_api_base(&provider_name)?;
                 embeddings::EmbeddingProvider::new_openai_compatible(api_key, api_base.to_string())
             }
         };
@@ -52,8 +53,12 @@ impl LlmClient {
         let dimensions = settings
             .embedding_dimensions
             .unwrap_or(crate::config::DEFAULT_EMBEDDING_DIMENSIONS);
+        let request_dimensions = match provider_name.as_str() {
+            "mistral" => None,
+            _ => Some(dimensions),
+        };
 
-        Some((provider, model_id, dimensions))
+        Some((provider, model_id, dimensions, request_dimensions))
     }
 
     fn provider_key(name: &str) -> String {
@@ -650,12 +655,13 @@ impl LlmClient {
         task_type: Option<embeddings::EmbeddingTaskType>,
         title: Option<&str>,
     ) -> Result<Vec<f32>, LlmError> {
-        let (provider, model, dimensions) = self.embedding.as_ref().ok_or_else(|| {
-            LlmError::MissingConfig("embedding provider not configured".to_string())
-        })?;
+        let (provider, model, _, request_dimensions) =
+            self.embedding.as_ref().ok_or_else(|| {
+                LlmError::MissingConfig("embedding provider not configured".to_string())
+            })?;
 
         provider
-            .generate(text, model, task_type, title, Some(*dimensions))
+            .generate(text, model, task_type, title, *request_dimensions)
             .await
     }
 
@@ -663,7 +669,7 @@ impl LlmClient {
     ///
     /// Returns `None` if embedding provider is not configured or the probe fails.
     pub async fn probe_embedding_dimension(&self) -> Option<usize> {
-        let (provider, model, _) = self.embedding.as_ref()?;
+        let (provider, model, _, _) = self.embedding.as_ref()?;
         provider.probe_dimension(model).await
     }
 
@@ -672,7 +678,7 @@ impl LlmClient {
     /// Returns `None` if embedding provider is not configured.
     #[must_use]
     pub fn embedding_dimensions(&self) -> Option<u32> {
-        self.embedding.as_ref().map(|(_, _, dim)| *dim)
+        self.embedding.as_ref().map(|(_, _, dim, _)| *dim)
     }
 
     /// Transcribe audio to text
@@ -1064,5 +1070,43 @@ mod tests {
                 if message.contains("video understanding")
                     && message.contains("gemini/openrouter")
         ));
+    }
+
+    #[test]
+    fn mistral_embeddings_default_to_1024_without_request_dimensions() {
+        let settings = AgentSettings {
+            embedding_provider: Some("mistral".to_string()),
+            embedding_model_id: Some("mistral-embed".to_string()),
+            mistral_api_key: Some("test-mistral-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        assert_eq!(llm.embedding_dimensions(), Some(1024));
+
+        let embedding = llm
+            .embedding
+            .as_ref()
+            .expect("embedding should be configured");
+        assert!(embedding.3.is_none());
+    }
+
+    #[test]
+    fn openai_compatible_embeddings_keep_request_dimensions() {
+        let settings = AgentSettings {
+            embedding_provider: Some("openrouter".to_string()),
+            embedding_model_id: Some("test-embedding".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        assert_eq!(llm.embedding_dimensions(), Some(1024));
+
+        let embedding = llm
+            .embedding
+            .as_ref()
+            .expect("embedding should be configured");
+        assert_eq!(embedding.3, Some(1024));
     }
 }
