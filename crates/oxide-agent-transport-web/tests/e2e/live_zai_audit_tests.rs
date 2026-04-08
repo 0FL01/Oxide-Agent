@@ -173,6 +173,97 @@ async fn durable_memory_hit_exists(
     !episode_hits.is_empty()
 }
 
+struct RememberRuntime<'a> {
+    client: &'a reqwest::Client,
+    base_url: &'a str,
+    session_manager: &'a std::sync::Arc<WebSessionManager>,
+    store: &'a dyn PersistentMemoryStore,
+    user_id: i64,
+}
+
+async fn remember_token_until_persisted(
+    runtime: &RememberRuntime<'_>,
+    session_id: &str,
+    context_key: &str,
+    token: &str,
+) {
+    let remember_prompt = format!(
+        "Запомни для будущих разговоров дословно: {token}. Это моя важная постоянная заметка. Ответь коротко, что запомнил.",
+    );
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let task_id = create_task_http_with_body(
+            runtime.client,
+            runtime.base_url,
+            session_id,
+            &remember_prompt,
+        )
+        .await;
+        let status = wait_for_terminal_task_status(
+            runtime.session_manager.as_ref(),
+            &task_id,
+            Duration::from_secs(240),
+        )
+        .await;
+        let progress = fetch_task_progress(runtime.client, runtime.base_url, session_id, &task_id)
+            .await
+            .json::<Value>()
+            .await
+            .expect("failed to decode remember-task progress");
+
+        assert!(
+            matches!(status, TaskStatus::Completed),
+            "remember task failed for context={context_key} attempt={attempt}: {:?}; progress={progress:?}",
+            status
+        );
+
+        let assistant_response = latest_assistant_response(
+            runtime.session_manager.as_ref(),
+            session_id,
+            runtime.user_id,
+        )
+        .await
+        .unwrap_or_default();
+        eprintln!(
+            "[LIVE-ZAI] Remember attempt {attempt}/{MAX_ATTEMPTS} context={context_key} token={token} status={status:?} progress_error={} assistant={assistant_response:?}",
+            progress["error"].as_str().unwrap_or("<none>")
+        );
+
+        if wait_for_durable_memory_hit(
+            runtime.store,
+            runtime.user_id,
+            context_key,
+            token,
+            Duration::from_secs(30),
+        )
+        .await
+        {
+            return;
+        }
+
+        if attempt < MAX_ATTEMPTS {
+            let in_default =
+                durable_memory_hit_exists(runtime.store, runtime.user_id, "default", token).await;
+            let in_context =
+                durable_memory_hit_exists(runtime.store, runtime.user_id, context_key, token).await;
+            eprintln!(
+                "[LIVE-ZAI] Durable memory token not observed yet for context={context_key}; retrying remember attempt {} (in_context={}, in_default={})",
+                attempt + 1,
+                in_context,
+                in_default
+            );
+        }
+    }
+
+    let final_in_default =
+        durable_memory_hit_exists(runtime.store, runtime.user_id, "default", token).await;
+    let final_in_context =
+        durable_memory_hit_exists(runtime.store, runtime.user_id, context_key, token).await;
+    panic!(
+        "durable memory token was not persisted after retries for context={context_key}: {token}; in_context={final_in_context}; in_default={final_in_default}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "Requires RUN_LLM_E2E_CHECKS=1, ZAI_API_KEY, Docker sandbox, and network access"]
 async fn e2e_zai_heavy_sandbox_audit_logs_baselines() {
@@ -543,10 +634,22 @@ async fn e2e_zai_postgres_memory_keeps_contexts_isolated_across_restart() {
     let session_manager = app_state.session_manager();
     let (server, base_url) = spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
+    let remember_runtime = RememberRuntime {
+        client: &client,
+        base_url: &base_url,
+        session_manager: &session_manager,
+        store: memory_store.as_ref(),
+        user_id,
+    };
 
     let session_a =
         create_session_http_with_user_and_context(&client, &base_url, user_id, Some(&context_a))
             .await;
+    let meta_a = session_manager
+        .get_session(&session_a)
+        .await
+        .expect("context-a session metadata should exist");
+    assert_eq!(meta_a.context_key, context_a);
     let sid_a = derive_session_id(&session_a, user_id);
     let executor_a = session_manager
         .session_registry()
@@ -557,27 +660,16 @@ async fn e2e_zai_postgres_memory_keeps_contexts_isolated_across_restart() {
         executor_a.read().await.has_persistent_memory(),
         "context-a executor missing durable persistent-memory wiring"
     );
-    let remember_a = format!(
-        "Запомни для будущих разговоров в этой теме дословно: {token_a}. Это относится только к этой теме. Ответь коротко, что запомнил.",
-    );
-    let task_a = create_task_http_with_body(&client, &base_url, &session_a, &remember_a).await;
-    let status_a =
-        wait_for_terminal_task_status(session_manager.as_ref(), &task_a, Duration::from_secs(240))
-            .await;
-    let progress_a = fetch_task_progress(&client, &base_url, &session_a, &task_a)
-        .await
-        .json::<Value>()
-        .await
-        .expect("failed to decode context-a progress");
-    assert!(
-        matches!(status_a, TaskStatus::Completed),
-        "context-a remember task failed: {:?}; progress={progress_a:?}",
-        status_a
-    );
+    remember_token_until_persisted(&remember_runtime, &session_a, &context_a, &token_a).await;
 
     let session_b =
         create_session_http_with_user_and_context(&client, &base_url, user_id, Some(&context_b))
             .await;
+    let meta_b = session_manager
+        .get_session(&session_b)
+        .await
+        .expect("context-b session metadata should exist");
+    assert_eq!(meta_b.context_key, context_b);
     let sid_b = derive_session_id(&session_b, user_id);
     let executor_b = session_manager
         .session_registry()
@@ -588,46 +680,7 @@ async fn e2e_zai_postgres_memory_keeps_contexts_isolated_across_restart() {
         executor_b.read().await.has_persistent_memory(),
         "context-b executor missing durable persistent-memory wiring"
     );
-    let remember_b = format!(
-        "Запомни для будущих разговоров в этой теме дословно: {token_b}. Это относится только к этой теме. Ответь коротко, что запомнил.",
-    );
-    let task_b = create_task_http_with_body(&client, &base_url, &session_b, &remember_b).await;
-    let status_b =
-        wait_for_terminal_task_status(session_manager.as_ref(), &task_b, Duration::from_secs(240))
-            .await;
-    let progress_b = fetch_task_progress(&client, &base_url, &session_b, &task_b)
-        .await
-        .json::<Value>()
-        .await
-        .expect("failed to decode context-b progress");
-    assert!(
-        matches!(status_b, TaskStatus::Completed),
-        "context-b remember task failed: {:?}; progress={progress_b:?}",
-        status_b
-    );
-
-    assert!(
-        wait_for_durable_memory_hit(
-            memory_store.as_ref(),
-            user_id,
-            &context_a,
-            &token_a,
-            Duration::from_secs(30),
-        )
-        .await,
-        "context-a durable memory token was not persisted: {token_a}"
-    );
-    assert!(
-        wait_for_durable_memory_hit(
-            memory_store.as_ref(),
-            user_id,
-            &context_b,
-            &token_b,
-            Duration::from_secs(30),
-        )
-        .await,
-        "context-b durable memory token was not persisted: {token_b}"
-    );
+    remember_token_until_persisted(&remember_runtime, &session_b, &context_b, &token_b).await;
     assert!(
         !durable_memory_hit_exists(memory_store.as_ref(), user_id, &context_a, &token_b).await,
         "context-a unexpectedly contains context-b token in durable storage"

@@ -43,6 +43,7 @@ impl PersistentMemoryCoordinator {
         let summary_signal = latest_summary_signal(ctx.messages);
         let artifacts = collect_artifacts(ctx.messages);
         let tools_used = collect_tools_used(ctx.messages);
+        let explicit_memories = build_explicit_remember_memories(&ctx);
         let final_answer = match ctx.phase {
             PersistentRunPhase::Completed { final_answer } => Some(final_answer.to_string()),
             PersistentRunPhase::WaitingForUserInput => None,
@@ -128,7 +129,18 @@ impl PersistentMemoryCoordinator {
                 warn!(error = %error, episode_id = %episode.episode_id, "episode embedding write failed");
             }
         }
-        let mut llm_memories = if ctx.classification.write_policy.allow_llm_durable_writes {
+        let allow_explicit_remember_override = ctx.explicit_remember_intent
+            && !ctx.classification.write_policy.allow_llm_durable_writes;
+        let mut llm_memories = if ctx.classification.write_policy.allow_llm_durable_writes
+            || allow_explicit_remember_override
+        {
+            if allow_explicit_remember_override {
+                info!(
+                    task_class = ctx.classification.class.as_str(),
+                    task_id = ctx.task_id,
+                    "Explicit remember intent overrides conservative durable-memory admission"
+                );
+            }
             llm_write
                 .as_ref()
                 .map(|write| write.memories.clone())
@@ -172,10 +184,22 @@ impl PersistentMemoryCoordinator {
                 .as_ref()
                 .is_none_or(|content_hash| !tool_hashes.contains(content_hash))
         });
+        let llm_hashes = llm_memories
+            .iter()
+            .filter_map(|memory| memory.content_hash.clone())
+            .collect::<HashSet<_>>();
+        let mut explicit_memories = explicit_memories;
+        explicit_memories.retain(|memory| {
+            memory.content_hash.as_ref().is_none_or(|content_hash| {
+                !tool_hashes.contains(content_hash) && !llm_hashes.contains(content_hash)
+            })
+        });
         if let Some(episode) = episode.as_ref() {
             self.persist_generated_memories(episode, &tool_memories, "tool_draft")
                 .await;
             self.persist_generated_memories(episode, &llm_memories, "llm_post_run")
+                .await;
+            self.persist_generated_memories(episode, &explicit_memories, "explicit_remember")
                 .await;
         }
         if let Some(indexer) = self.embedding_indexer.as_ref() {
@@ -412,6 +436,121 @@ fn build_tool_draft_memories(ctx: &PersistentRunContext<'_>) -> Vec<MemoryRecord
             })
         })
         .collect()
+}
+
+fn build_explicit_remember_memories(ctx: &PersistentRunContext<'_>) -> Vec<MemoryRecord> {
+    if !ctx.explicit_remember_intent {
+        return Vec::new();
+    }
+
+    let now = Utc::now();
+    let mut seen_hashes = HashSet::new();
+    let mut memories = Vec::new();
+
+    for content in explicit_remember_candidates(ctx.task, ctx.messages) {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let content_hash = stable_memory_content_hash(MemoryType::Fact, trimmed);
+        if !seen_hashes.insert(content_hash.clone()) {
+            continue;
+        }
+
+        memories.push(MemoryRecord {
+            memory_id: format!(
+                "explicit-remember:{}:{}",
+                ctx.task_id,
+                &content_hash[..12.min(content_hash.len())]
+            ),
+            context_key: ctx.scope.context_key.clone(),
+            source_episode_id: Some(ctx.task_id.to_string()),
+            memory_type: MemoryType::Fact,
+            title: "Explicitly remembered note".to_string(),
+            content: trimmed.to_string(),
+            short_description: truncate_chars(trimmed, 160),
+            importance: 0.98,
+            confidence: 0.98,
+            source: Some("explicit_remember_intent".to_string()),
+            content_hash: Some(content_hash),
+            reason: Some("Captured directly from an explicit user remember request".to_string()),
+            tags: vec![
+                "explicit_remember".to_string(),
+                "fact".to_string(),
+                "user_requested".to_string(),
+            ],
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        });
+    }
+
+    memories
+}
+
+fn explicit_remember_candidates(task: &str, messages: &[AgentMessage]) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Some(candidate) = extract_explicit_remember_payload(task) {
+        candidates.push(candidate);
+    }
+
+    for message in messages {
+        if message.role != crate::agent::memory::MessageRole::User {
+            continue;
+        }
+        if let Some(candidate) = extract_explicit_remember_payload(&message.content) {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates
+}
+
+fn extract_explicit_remember_payload(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(payload) = extract_after_delimiter(trimmed, ':') {
+        return Some(payload);
+    }
+    if let Some(payload) = extract_after_delimiter(trimmed, '：') {
+        return Some(payload);
+    }
+    extract_quoted_payload(trimmed)
+}
+
+fn extract_after_delimiter(text: &str, delimiter: char) -> Option<String> {
+    let (_, tail) = text.split_once(delimiter)?;
+    let candidate = tail
+        .trim()
+        .split(['\n', '.', '!', '?'])
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | '`'))
+        .trim();
+    (!candidate.is_empty()).then(|| candidate.to_string())
+}
+
+fn extract_quoted_payload(text: &str) -> Option<String> {
+    for quote in ['"', '\'', '`'] {
+        let mut parts = text.split(quote);
+        let _ = parts.next();
+        if let Some(candidate) = parts.next() {
+            let candidate = candidate.trim();
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 #[derive(Debug, Clone)]
