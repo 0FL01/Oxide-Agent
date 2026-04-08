@@ -157,6 +157,8 @@ pub struct AgentSettings {
     pub agent_model_max_output_tokens: Option<u32>,
     /// Agent model context window tokens override
     pub agent_model_context_window_tokens: Option<u32>,
+    /// Agent model temperature override.
+    pub agent_model_temperature: Option<f32>,
     /// Optional weighted fallback routes for the main agent model.
     #[serde(default)]
     pub agent_model_routes: Option<Vec<ModelInfo>>,
@@ -333,6 +335,10 @@ impl AgentSettings {
             if !val.is_empty() {
                 settings.r2_region = val;
             }
+        }
+
+        if settings.agent_model_temperature.is_none() {
+            settings.agent_model_temperature = parse_optional_env_f32("AGENT_MODEL_TEMPERATURE");
         }
 
         settings.apply_tool_provider_env_fallbacks();
@@ -799,6 +805,11 @@ impl AgentSettings {
             .unwrap_or_else(|| self.resolve_execution_model(false))
     }
 
+    /// Returns the configured temperature for the main agent.
+    pub fn get_configured_agent_temperature(&self) -> Option<f32> {
+        self.agent_model_temperature
+    }
+
     /// Returns the configured weighted routes for the main agent.
     pub fn get_configured_agent_model_routes(&self) -> Vec<ModelInfo> {
         let routes = self
@@ -1067,6 +1078,7 @@ mod tests {
         env::set_var("R2_ENDPOINT_URL", "https://example.com");
         env::set_var("CHAT_MODEL_ID", "test-model");
         env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
         env::set_var("SOFT_WARNING_TOKENS", "12345");
         env::set_var("HARD_COMPACTION_TOKENS", "23456");
 
@@ -1075,6 +1087,7 @@ mod tests {
             settings.r2_endpoint_url,
             Some("https://example.com".to_string())
         );
+        assert_eq!(settings.get_configured_agent_temperature(), Some(0.42));
         let hot_context_limits = settings.get_hot_context_limits();
         assert_eq!(hot_context_limits.soft_warning_tokens, 12_345);
         assert_eq!(hot_context_limits.hard_compaction_tokens, 23_456);
@@ -1082,6 +1095,7 @@ mod tests {
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("CHAT_MODEL_ID");
         env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("AGENT_MODEL_TEMPERATURE");
         env::remove_var("SOFT_WARNING_TOKENS");
         env::remove_var("HARD_COMPACTION_TOKENS");
 
@@ -1959,6 +1973,12 @@ fn parse_optional_env_u32(name: &str) -> Option<u32> {
     std::env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<u32>().ok())
+}
+
+fn parse_optional_env_f32(name: &str) -> Option<f32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
 }
 
 fn parse_optional_env_u64(name: &str) -> Option<u64> {

@@ -423,6 +423,7 @@ impl LlmClient {
         messages: &[Message],
         tools: &[ToolDefinition],
         model_name: &str,
+        temperature: Option<f32>,
         json_mode: bool,
     ) -> Result<ChatResponse, LlmError> {
         let model_info = self.get_model_info(model_name)?;
@@ -432,19 +433,21 @@ impl LlmClient {
             messages,
             tools,
             &model_info,
+            temperature,
             json_mode,
         )
         .await
     }
 
     /// Perform a single tool-enabled chat attempt for an explicit model route.
-    #[instrument(skip(self, system_prompt, messages, tools, model_info))]
+    #[instrument(skip(self, system_prompt, messages, tools, model_info, temperature))]
     pub async fn chat_with_tools_single_attempt_for_model_info(
         &self,
         system_prompt: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
         model_info: &crate::config::ModelInfo,
+        temperature: Option<f32>,
         json_mode: bool,
     ) -> Result<ChatResponse, LlmError> {
         let provider = self.get_provider(&model_info.provider)?;
@@ -474,6 +477,7 @@ impl LlmClient {
             tools,
             model_id: &model_info.id,
             max_tokens: model_info.max_output_tokens,
+            temperature,
             json_mode,
         };
         provider.chat_with_tools(request).await
@@ -555,6 +559,7 @@ impl LlmClient {
                 tools,
                 model_id: &model_info.id,
                 max_tokens: model_info.max_output_tokens,
+                temperature: None,
                 json_mode,
             };
             let result = provider.chat_with_tools(request).await;
@@ -888,6 +893,8 @@ impl LlmClient {
 mod tests {
     use super::LlmClient;
     use crate::config::AgentSettings;
+    use crate::llm::{ChatResponse, MockLlmProvider};
+    use std::sync::Arc;
 
     #[test]
     fn media_resolver_prefers_explicit_media_route_for_video() {
@@ -1070,6 +1077,52 @@ mod tests {
                 if message.contains("video understanding")
                     && message.contains("gemini/openrouter")
         ));
+    }
+
+    #[tokio::test]
+    async fn main_agent_tool_request_uses_configured_temperature() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-openrouter".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let mut llm = LlmClient::new(&settings);
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().return_once(|request| {
+            assert_eq!(request.temperature, Some(0.17));
+            Ok(ChatResponse {
+                content: Some("ok".to_string()),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+                usage: None,
+            })
+        });
+        llm.register_provider("openrouter".to_string(), Arc::new(provider));
+
+        let model = crate::config::ModelInfo {
+            id: "chat-openrouter".to_string(),
+            provider: "openrouter".to_string(),
+            max_output_tokens: 1024,
+            context_window_tokens: 8192,
+            weight: 1,
+        };
+
+        let response = llm
+            .chat_with_tools_single_attempt_for_model_info(
+                "You are helpful.",
+                &[],
+                &[],
+                &model,
+                Some(0.17),
+                false,
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.content.as_deref(), Some("ok"));
     }
 
     #[test]

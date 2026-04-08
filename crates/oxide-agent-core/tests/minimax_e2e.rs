@@ -75,6 +75,7 @@ async fn test_minimax_simple_chat() -> Result<()> {
             tools: &[],
             model_id: "MiniMax-M2.7",
             max_tokens: 50,
+            temperature: None,
             json_mode: false,
         })
         .await;
@@ -148,6 +149,7 @@ async fn test_minimax_single_tool_call() -> Result<()> {
             tools: &tools,
             model_id: "MiniMax-M2.7",
             max_tokens: 1024,
+            temperature: None,
             json_mode: false,
         })
         .await;
@@ -230,6 +232,7 @@ async fn test_minimax_tool_call_with_result() -> Result<()> {
             tools: &tools,
             model_id: "MiniMax-M2.7",
             max_tokens: 1024,
+            temperature: None,
             json_mode: false,
         })
         .await;
@@ -287,6 +290,7 @@ async fn test_minimax_tool_call_with_result() -> Result<()> {
             tools: &tools,
             model_id: "MiniMax-M2.7",
             max_tokens: 1024,
+            temperature: None,
             json_mode: false,
         })
         .await;
@@ -362,6 +366,7 @@ async fn test_minimax_multiple_tool_calls_parallel() -> Result<()> {
             tools: &tools,
             model_id: "MiniMax-M2.7",
             max_tokens: 1024,
+            temperature: None,
             json_mode: false,
         })
         .await;
@@ -423,6 +428,7 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
             tools: &tools,
             model_id: "MiniMax-M2.7",
             max_tokens: 1024,
+            temperature: None,
             json_mode: false,
         })
         .await;
@@ -472,6 +478,7 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
             tools: &tools,
             model_id: "MiniMax-M2.7",
             max_tokens: 1024,
+            temperature: None,
             json_mode: false,
         })
         .await;

@@ -85,9 +85,17 @@ impl LlmProvider for ZaiProvider {
             tools,
             model_id,
             max_tokens,
+            temperature,
             json_mode: _json_mode,
         } = request;
-        self.chat_with_tools_sdk(system_prompt, history, tools, model_id, max_tokens)
-            .await
+        self.chat_with_tools_sdk(
+            system_prompt,
+            history,
+            tools,
+            model_id,
+            max_tokens,
+            temperature,
+        )
+        .await
     }
 }

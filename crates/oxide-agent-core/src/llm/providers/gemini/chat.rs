@@ -122,6 +122,7 @@ impl LlmProvider for GeminiProvider {
             tools,
             model_id,
             max_tokens,
+            temperature,
             json_mode,
         } = request;
 
@@ -129,7 +130,7 @@ impl LlmProvider for GeminiProvider {
         let mut request_builder = Self::apply_model_defaults(client.generate_content(), model_id)
             .with_system_prompt(system_prompt)
             .with_messages(Self::history_to_sdk_messages(messages))
-            .with_temperature(GEMINI_CHAT_TEMPERATURE)
+            .with_temperature(temperature.unwrap_or(GEMINI_CHAT_TEMPERATURE))
             .with_max_output_tokens(Self::max_output_tokens(max_tokens))
             .with_safety_settings(Self::safety_settings());
 

@@ -59,6 +59,7 @@ impl MiniMaxProvider {
         tools: &[crate::llm::ToolDefinition],
         model_id: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
     ) -> Result<MessageCreateParams, LlmError> {
         // Build claudius messages: system + history (including tool results)
         let claudius_messages = to_claudius_messages(messages);
@@ -68,7 +69,7 @@ impl MiniMaxProvider {
 
         let params = MessageCreateParams::new(max_tokens, claudius_messages, model)
             .with_system_string(system_prompt.to_string())
-            .with_temperature(MINIMAX_TOOL_TEMPERATURE)
+            .with_temperature(temperature.unwrap_or(MINIMAX_TOOL_TEMPERATURE))
             .map_err(|e| LlmError::ApiError(format!("Invalid temperature: {}", e)))?
             .with_tools(tool_params);
 
@@ -201,10 +202,18 @@ impl LlmProvider for MiniMaxProvider {
             tools,
             model_id,
             max_tokens,
+            temperature,
             json_mode: _,
         } = request;
 
-        let params = Self::build_tool_params(system_prompt, history, tools, model_id, max_tokens)?;
+        let params = Self::build_tool_params(
+            system_prompt,
+            history,
+            tools,
+            model_id,
+            max_tokens,
+            temperature,
+        )?;
 
         self.send_request(params).await
     }
@@ -253,6 +262,7 @@ mod tests {
             &tools,
             "MiniMax-M2",
             4096,
+            None,
         )
         .expect("should create params");
 
@@ -271,6 +281,7 @@ mod tests {
             &[],
             "MiniMax-M2",
             4096,
+            None,
         )
         .expect("should create params");
 

@@ -115,14 +115,21 @@ impl ZaiProvider {
         tools: &[ToolDefinition],
         model_id: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
     ) -> Result<ChatResponse, LlmError> {
         let messages = convert_to_text_messages(system_prompt, history, None);
         let converted_tools = convert_tools(tools);
 
         match select_model(model_id)? {
             ZaiModel::Main(model) => {
-                let mut client =
-                    build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
+                let mut client = build_text_request(
+                    model,
+                    messages,
+                    &self.api_key,
+                    &self.api_base,
+                    max_tokens,
+                    temperature,
+                )?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
@@ -130,8 +137,14 @@ impl ZaiProvider {
                 stream_text_response(client).await
             }
             ZaiModel::Sub(model) => {
-                let mut client =
-                    build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
+                let mut client = build_text_request(
+                    model,
+                    messages,
+                    &self.api_key,
+                    &self.api_base,
+                    max_tokens,
+                    temperature,
+                )?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
@@ -143,8 +156,14 @@ impl ZaiProvider {
                     .await
             }
             ZaiModel::Flagship5(model) => {
-                let mut client =
-                    build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
+                let mut client = build_text_request(
+                    model,
+                    messages,
+                    &self.api_key,
+                    &self.api_base,
+                    max_tokens,
+                    temperature,
+                )?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
@@ -152,8 +171,14 @@ impl ZaiProvider {
                 stream_text_response(client).await
             }
             ZaiModel::Turbo5(model) => {
-                let mut client =
-                    build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
+                let mut client = build_text_request(
+                    model,
+                    messages,
+                    &self.api_key,
+                    &self.api_base,
+                    max_tokens,
+                    temperature,
+                )?;
                 if !converted_tools.is_empty() {
                     client = client.add_tools(converted_tools);
                 }
@@ -179,8 +204,14 @@ impl ZaiProvider {
         (N, TextMessage): zai_rs::model::traits::Bounded,
     {
         let messages = convert_to_text_messages(system_prompt, history, Some(user_message));
-        let client =
-            build_text_request(model, messages, &self.api_key, &self.api_base, max_tokens)?;
+        let client = build_text_request(
+            model,
+            messages,
+            &self.api_key,
+            &self.api_base,
+            max_tokens,
+            None,
+        )?;
         client.send().await.map_err(map_zai_error)
     }
 
@@ -242,6 +273,7 @@ fn build_text_request<N>(
     api_key: &str,
     api_base: &str,
     max_tokens: u32,
+    temperature: Option<f32>,
 ) -> Result<ChatCompletion<N, TextMessage>, LlmError>
 where
     N: ModelName + Chat + ThinkEnable + Serialize,
@@ -254,7 +286,7 @@ where
 
     let mut client = ChatCompletion::new(model, first, api_key.to_string())
         .with_url(api_base)
-        .with_temperature(ZAI_TEMPERATURE)
+        .with_temperature(temperature.unwrap_or(ZAI_TEMPERATURE))
         .with_max_tokens(max_tokens)
         .with_thinking(ThinkingType::Enabled);
 

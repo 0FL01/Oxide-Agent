@@ -1071,6 +1071,7 @@ impl AgentExecutor {
                 model.max_output_tokens,
             )
             .with_model_provider(model.provider.clone())
+            .with_temperature(self.settings.get_configured_agent_temperature())
             .with_model_routes(model_routes),
         }
     }

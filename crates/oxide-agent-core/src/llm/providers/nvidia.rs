@@ -219,6 +219,7 @@ fn build_tool_chat_body(
     tools: &[ToolDefinition],
     model_id: &str,
     max_tokens: u32,
+    temperature: Option<f32>,
     json_mode: bool,
 ) -> Value {
     let messages = prepare_structured_messages(system_prompt, history);
@@ -229,7 +230,7 @@ fn build_tool_chat_body(
         "model": model_id,
         "messages": messages,
         "max_tokens": max_tokens,
-        "temperature": NVIDIA_CHAT_TEMPERATURE,
+        "temperature": temperature.unwrap_or(NVIDIA_CHAT_TEMPERATURE),
         "stream": false,
     });
 
@@ -442,6 +443,7 @@ impl LlmProvider for NvidiaProvider {
             tools,
             model_id,
             max_tokens,
+            temperature,
             json_mode,
         } = request;
 
@@ -459,6 +461,7 @@ impl LlmProvider for NvidiaProvider {
             tools,
             model_id,
             max_tokens,
+            temperature,
             json_mode,
         );
 
@@ -512,6 +515,7 @@ mod tests {
             &[sample_tool()],
             "nvidia/model",
             4096,
+            None,
             true,
         );
 
@@ -524,7 +528,15 @@ mod tests {
 
     #[test]
     fn adds_response_format_when_json_mode_without_tools() {
-        let body = build_tool_chat_body("You are helpful.", &[], &[], "nvidia/model", 4096, true);
+        let body = build_tool_chat_body(
+            "You are helpful.",
+            &[],
+            &[],
+            "nvidia/model",
+            4096,
+            None,
+            true,
+        );
 
         assert_eq!(body["response_format"]["type"], json!("json_object"));
     }
@@ -619,6 +631,7 @@ mod tests {
             &[sample_tool()],
             "nvidia/model",
             4096,
+            None,
             false,
         );
 

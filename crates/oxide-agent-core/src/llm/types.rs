@@ -531,6 +531,8 @@ pub struct ChatWithToolsRequest<'a> {
     pub model_id: &'a str,
     /// Maximum number of output tokens.
     pub max_tokens: u32,
+    /// Optional temperature override for the request.
+    pub temperature: Option<f32>,
     /// Whether structured JSON mode is required.
     pub json_mode: bool,
 }
