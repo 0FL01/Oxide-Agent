@@ -321,6 +321,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::default(),
         };
 

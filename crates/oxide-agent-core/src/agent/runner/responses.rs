@@ -6,7 +6,9 @@ use super::types::{
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
-use crate::agent::persistent_memory::{PersistentRunContext, PersistentRunPhase};
+use crate::agent::persistent_memory::{
+    MemoryClassificationDecision, PersistentRunContext, PersistentRunPhase,
+};
 use crate::agent::progress::{AgentEvent, TokenSnapshot};
 use crate::agent::session::PendingUserInput;
 use crate::agent::tool_bridge::sync_todos_from_arc;
@@ -113,6 +115,13 @@ impl AgentRunner {
         // user turns, tool results and artifacts that the episode finalizer needs.
         let messages = pre_compaction_messages.unwrap_or_else(|| ctx.agent.memory().get_messages());
         let explicit_remember_intent = Self::has_explicit_remember_intent(ctx.task, messages);
+        let classification = ctx.memory_classification.clone().unwrap_or_else(|| {
+            warn!(
+                task_id = %ctx.task_id,
+                "Persistent memory classification missing, using conservative safe mode"
+            );
+            MemoryClassificationDecision::conservative_safe_mode()
+        });
 
         if let Err(error) = persistent_memory
             .persist_post_run(PersistentRunContext {
@@ -120,6 +129,7 @@ impl AgentRunner {
                 task_id: ctx.task_id,
                 scope,
                 task: ctx.task,
+                classification,
                 messages,
                 explicit_remember_intent,
                 hot_token_estimate: ctx.agent.memory().token_count(),

@@ -119,6 +119,132 @@ fn test_coordinator(store: Arc<dyn PersistentMemoryStore>) -> PersistentMemoryCo
     PersistentMemoryCoordinator::new(store).with_memory_writer(Arc::new(FakePostRunMemoryWriter))
 }
 
+fn classification_for(class: MemoryClassificationClass) -> MemoryClassificationDecision {
+    match class {
+        MemoryClassificationClass::Smalltalk
+        | MemoryClassificationClass::ExternalFreshFact
+        | MemoryClassificationClass::General => {
+            let mut decision = MemoryClassificationDecision::conservative_safe_mode();
+            decision.class = class;
+            decision
+        }
+        MemoryClassificationClass::EpisodeHistory => MemoryClassificationDecision {
+            class,
+            read_policy: MemoryReadPolicy {
+                inject_prompt_memory: true,
+                search_episodes: true,
+                search_memories: false,
+                memory_type: None,
+                allow_vector_only_memory: false,
+                min_importance: 0.45,
+                top_k: 3,
+                allow_full_thread_read: true,
+            },
+            write_policy: MemoryWritePolicy::default(),
+            confidence: 0.92,
+        },
+        MemoryClassificationClass::ProcedureHowTo => MemoryClassificationDecision {
+            class,
+            read_policy: MemoryReadPolicy {
+                inject_prompt_memory: true,
+                search_episodes: false,
+                search_memories: true,
+                memory_type: Some(MemoryType::Procedure),
+                allow_vector_only_memory: true,
+                min_importance: 0.55,
+                top_k: 3,
+                allow_full_thread_read: false,
+            },
+            write_policy: MemoryWritePolicy {
+                allow_llm_durable_writes: true,
+                allow_tool_draft_writes: true,
+                episode_only: false,
+            },
+            confidence: 0.93,
+        },
+        MemoryClassificationClass::ConstraintPolicy => MemoryClassificationDecision {
+            class,
+            read_policy: MemoryReadPolicy {
+                inject_prompt_memory: true,
+                search_episodes: false,
+                search_memories: true,
+                memory_type: Some(MemoryType::Constraint),
+                allow_vector_only_memory: true,
+                min_importance: 0.55,
+                top_k: 3,
+                allow_full_thread_read: false,
+            },
+            write_policy: MemoryWritePolicy {
+                allow_llm_durable_writes: true,
+                allow_tool_draft_writes: true,
+                episode_only: false,
+            },
+            confidence: 0.9,
+        },
+        MemoryClassificationClass::PreferenceRecall => MemoryClassificationDecision {
+            class,
+            read_policy: MemoryReadPolicy {
+                inject_prompt_memory: true,
+                search_episodes: false,
+                search_memories: true,
+                memory_type: Some(MemoryType::Preference),
+                allow_vector_only_memory: true,
+                min_importance: 0.55,
+                top_k: 3,
+                allow_full_thread_read: false,
+            },
+            write_policy: MemoryWritePolicy {
+                allow_llm_durable_writes: true,
+                allow_tool_draft_writes: true,
+                episode_only: false,
+            },
+            confidence: 0.9,
+        },
+        MemoryClassificationClass::DecisionRecall => MemoryClassificationDecision {
+            class,
+            read_policy: MemoryReadPolicy {
+                inject_prompt_memory: true,
+                search_episodes: false,
+                search_memories: true,
+                memory_type: Some(MemoryType::Decision),
+                allow_vector_only_memory: true,
+                min_importance: 0.55,
+                top_k: 3,
+                allow_full_thread_read: false,
+            },
+            write_policy: MemoryWritePolicy {
+                allow_llm_durable_writes: true,
+                allow_tool_draft_writes: true,
+                episode_only: false,
+            },
+            confidence: 0.9,
+        },
+        MemoryClassificationClass::DurableProjectFact => MemoryClassificationDecision {
+            class,
+            read_policy: MemoryReadPolicy {
+                inject_prompt_memory: true,
+                search_episodes: false,
+                search_memories: true,
+                memory_type: None,
+                allow_vector_only_memory: true,
+                min_importance: 0.55,
+                top_k: 3,
+                allow_full_thread_read: false,
+            },
+            write_policy: MemoryWritePolicy {
+                allow_llm_durable_writes: true,
+                allow_tool_draft_writes: true,
+                episode_only: false,
+            },
+            confidence: 0.9,
+        },
+    }
+}
+
+fn writes_allowed_classification() -> MemoryClassificationDecision {
+    classification_for(MemoryClassificationClass::DurableProjectFact)
+}
+
 #[async_trait::async_trait]
 impl MemoryEmbeddingGenerator for FakeEmbeddingGenerator {
     async fn embed_document(&self, _text: &str, _title: Option<&str>) -> anyhow::Result<Vec<f32>> {
@@ -164,6 +290,7 @@ async fn persist_completed_run_writes_episode_and_session_state() {
             task_id: "episode-1",
             scope: &scope,
             task: "Implement Stage 4",
+            classification: writes_allowed_classification(),
             messages: &messages,
             explicit_remember_intent: false,
             hot_token_estimate: 77,
@@ -227,6 +354,7 @@ async fn persist_waiting_for_user_input_only_updates_session_state() {
             task_id: "episode-1",
             scope: &scope,
             task: "Need browser URL",
+            classification: MemoryClassificationDecision::conservative_safe_mode(),
             messages: &[],
             explicit_remember_intent: false,
             hot_token_estimate: 21,
@@ -276,6 +404,7 @@ async fn persist_completed_run_propagates_explicit_remember_intent_to_writer() {
             task_id: "episode-remember",
             scope: &scope,
             task: "Remember this deployment workaround",
+            classification: writes_allowed_classification(),
             messages: &messages,
             explicit_remember_intent: true,
             hot_token_estimate: 33,
@@ -340,6 +469,7 @@ async fn persist_post_run_keeps_topic_scopes_isolated() {
             task_id: "episode-a",
             scope: &topic_a_scope,
             task: "topic a task",
+            classification: writes_allowed_classification(),
             messages: &topic_a_messages,
             explicit_remember_intent: false,
             hot_token_estimate: 128,
@@ -357,6 +487,7 @@ async fn persist_post_run_keeps_topic_scopes_isolated() {
             task_id: "episode-b",
             scope: &topic_b_scope,
             task: "topic b task",
+            classification: writes_allowed_classification(),
             messages: &topic_b_messages,
             explicit_remember_intent: false,
             hot_token_estimate: 256,
@@ -537,18 +668,20 @@ fn repeated_summary_messages() -> Vec<AgentMessage> {
 }
 
 #[tokio::test]
-async fn durable_memory_retriever_skips_smalltalk_queries() {
+async fn durable_memory_retriever_skips_when_classifier_disallows_prompt_memory() {
     let storage = MockStorageProvider::new();
     let retriever = DurableMemoryRetriever::new(Arc::new(storage));
+    let classification = classification_for(MemoryClassificationClass::Smalltalk);
 
     let retrieval = retriever
         .retrieve(
-            "thanks",
+            "Any task text works here",
+            &classification,
             &retrieval_scope(),
             DurableMemoryRetrievalOptions::default(),
         )
         .await
-        .expect("smalltalk retrieval should not fail");
+        .expect("policy-blocked retrieval should not fail");
 
     assert!(retrieval.is_none());
 }
@@ -581,9 +714,11 @@ async fn durable_memory_retriever_prefers_memory_recall_for_procedure_queries() 
 
     let retriever = DurableMemoryRetriever::new(Arc::new(storage))
         .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
+    let classification = classification_for(MemoryClassificationClass::ProcedureHowTo);
     let retrieval = retriever
         .retrieve(
             "deploy procedure for staging fix",
+            &classification,
             &retrieval_scope(),
             DurableMemoryRetrievalOptions::default(),
         )
@@ -598,6 +733,41 @@ async fn durable_memory_retriever_prefers_memory_recall_for_procedure_queries() 
     assert!(rendered.contains("Scoped durable memory context"));
     assert!(rendered.contains("memory memory-1"));
     assert!(!rendered.contains("episode episode-1"));
+}
+
+#[tokio::test]
+async fn durable_memory_retriever_uses_episode_history_policy() {
+    let episode = retrieval_episode();
+    let mut storage = MockStorageProvider::new();
+    storage
+        .expect_search_memory_episodes_lexical()
+        .times(1)
+        .return_once(move |_, _| {
+            Ok(vec![EpisodeSearchHit {
+                record: episode,
+                score: 0.78,
+                snippet: "earlier deploy incident".to_string(),
+            }])
+        });
+
+    let retriever = DurableMemoryRetriever::new(Arc::new(storage));
+    let classification = classification_for(MemoryClassificationClass::EpisodeHistory);
+    let retrieval = retriever
+        .retrieve(
+            "What happened during the last deploy incident?",
+            &classification,
+            &retrieval_scope(),
+            DurableMemoryRetrievalOptions::default(),
+        )
+        .await
+        .expect("episode-history retrieval should succeed")
+        .expect("retrieval should produce episode candidates");
+
+    assert_eq!(retrieval.items.len(), 1);
+    assert!(matches!(
+        retrieval.items[0],
+        HybridCandidate::Episode { .. }
+    ));
 }
 
 #[tokio::test]
@@ -685,10 +855,12 @@ async fn durable_memory_search_supports_explicit_hybrid_requests() {
 async fn durable_memory_retriever_skips_external_fresh_fact_queries() {
     let storage = MockStorageProvider::new();
     let retriever = DurableMemoryRetriever::new(Arc::new(storage));
+    let classification = classification_for(MemoryClassificationClass::ExternalFreshFact);
 
     let retrieval = retriever
         .retrieve(
             "Когда релиз The Boys S5 будет?",
+            &classification,
             &retrieval_scope(),
             DurableMemoryRetrievalOptions::default(),
         )
@@ -699,7 +871,7 @@ async fn durable_memory_retriever_skips_external_fresh_fact_queries() {
 }
 
 #[tokio::test]
-async fn durable_memory_search_filters_vector_only_memory_for_general_queries() {
+async fn durable_memory_retriever_filters_vector_only_memory_when_policy_disallows_it() {
     let memory_for_vector = retrieval_memory();
     let mut storage = MockStorageProvider::new();
     storage
@@ -719,30 +891,32 @@ async fn durable_memory_search_filters_vector_only_memory_for_general_queries() 
 
     let retriever = DurableMemoryRetriever::new(Arc::new(storage))
         .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
-    let outcome = retriever
-        .search_with_diagnostics(
+    let classification = MemoryClassificationDecision {
+        class: MemoryClassificationClass::General,
+        read_policy: MemoryReadPolicy {
+            inject_prompt_memory: true,
+            search_episodes: false,
+            search_memories: true,
+            memory_type: None,
+            allow_vector_only_memory: false,
+            min_importance: 0.0,
+            top_k: 3,
+            allow_full_thread_read: false,
+        },
+        write_policy: MemoryWritePolicy::default(),
+        confidence: 0.5,
+    };
+    let retrieval = retriever
+        .retrieve(
+            "Summarize this",
+            &classification,
             &retrieval_scope(),
-            DurableMemorySearchRequest {
-                query: "Summarize this".to_string(),
-                search_episodes: false,
-                search_memories: true,
-                memory_type: None,
-                time_range: Default::default(),
-                min_importance: Some(0.0),
-                limit: 5,
-                candidate_limit: Some(8),
-                allow_full_thread_read: false,
-            },
+            DurableMemoryRetrievalOptions::default(),
         )
         .await
-        .expect("general memory search should succeed");
+        .expect("policy-driven retrieval should succeed");
 
-    assert!(outcome.items.is_empty());
-    assert_eq!(outcome.diagnostics.filtered_vector_only_memory, 1);
-    assert_eq!(
-        outcome.diagnostics.empty_reason,
-        Some("all_candidates_deduplicated_or_covered")
-    );
+    assert!(retrieval.is_none());
 }
 
 #[tokio::test]
@@ -798,6 +972,7 @@ async fn persist_post_run_consolidates_duplicate_memories() {
             task_id: "episode-1",
             scope: &scope,
             task: "keep project memory hygiene",
+            classification: writes_allowed_classification(),
             messages: &messages,
             explicit_remember_intent: false,
             hot_token_estimate: 32,
@@ -814,6 +989,7 @@ async fn persist_post_run_consolidates_duplicate_memories() {
             task_id: "episode-2",
             scope: &scope,
             task: "keep project memory hygiene again",
+            classification: writes_allowed_classification(),
             messages: &messages,
             explicit_remember_intent: false,
             hot_token_estimate: 40,
@@ -873,6 +1049,7 @@ async fn persist_post_run_suppresses_llm_memories_for_external_fresh_facts() {
             task_id: "episode-fresh-fact",
             scope: &scope,
             task: "Когда релиз The Boys S5 будет?",
+            classification: classification_for(MemoryClassificationClass::ExternalFreshFact),
             messages: &messages,
             explicit_remember_intent: false,
             hot_token_estimate: 24,
@@ -895,6 +1072,55 @@ async fn persist_post_run_suppresses_llm_memories_for_external_fresh_facts() {
             .expect("episode lookup should succeed")
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn conservative_safe_mode_blocks_prompt_memory_and_llm_writes() {
+    let storage = MockStorageProvider::new();
+    let retriever = DurableMemoryRetriever::new(Arc::new(storage));
+    let classification = MemoryClassificationDecision::conservative_safe_mode();
+
+    let retrieval = retriever
+        .retrieve(
+            "Remember this for later",
+            &classification,
+            &retrieval_scope(),
+            DurableMemoryRetrievalOptions::default(),
+        )
+        .await
+        .expect("safe-mode retrieval should not fail");
+    assert!(retrieval.is_none());
+
+    let store = Arc::new(InMemoryMemoryRepository::new());
+    let store_for_coordinator = Arc::clone(&store);
+    let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+    let coordinator = test_coordinator(store_for_coordinator);
+    let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
+    let messages = vec![AgentMessage::user_turn("Remember this for later")];
+
+    coordinator
+        .persist_post_run(PersistentRunContext {
+            session_id: "session-safe-mode",
+            task_id: "episode-safe-mode",
+            scope: &scope,
+            task: "Remember this for later",
+            classification,
+            messages: &messages,
+            explicit_remember_intent: true,
+            hot_token_estimate: 12,
+            tool_memory_drafts: Vec::new(),
+            phase: PersistentRunPhase::Completed {
+                final_answer: "Stored conservatively.",
+            },
+        })
+        .await
+        .expect("safe-mode persistence should succeed");
+
+    let memories =
+        MemoryRepository::list_memories(store.as_ref(), "topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memory lookup should succeed");
+    assert!(memories.is_empty());
 }
 
 #[tokio::test]
@@ -924,6 +1150,7 @@ async fn persist_post_run_persists_tool_drafts_when_llm_memories_are_suppressed(
             task_id: "episode-tool-draft",
             scope: &scope,
             task: "Когда релиз The Boys S5 будет?",
+            classification: classification_for(MemoryClassificationClass::ExternalFreshFact),
             messages: &messages,
             explicit_remember_intent: false,
             hot_token_estimate: 24,

@@ -40,7 +40,6 @@ impl PersistentMemoryCoordinator {
     }
 
     pub async fn persist_post_run(&self, ctx: PersistentRunContext<'_>) -> Result<()> {
-        let task_class = classify_memory_task(ctx.task);
         let summary_signal = latest_summary_signal(ctx.messages);
         let artifacts = collect_artifacts(ctx.messages);
         let tools_used = collect_tools_used(ctx.messages);
@@ -129,28 +128,40 @@ impl PersistentMemoryCoordinator {
                 warn!(error = %error, episode_id = %episode.episode_id, "episode embedding write failed");
             }
         }
-        let mut llm_memories =
-            if allow_llm_durable_memory_writes(task_class, ctx.explicit_remember_intent) {
-                llm_write
-                    .as_ref()
-                    .map(|write| write.memories.clone())
-                    .unwrap_or_default()
-            } else {
-                if let Some(write) = llm_write
-                    .as_ref()
-                    .filter(|write| !write.memories.is_empty())
-                {
-                    info!(
-                        task_class = task_class.as_str(),
-                        explicit_remember_intent = ctx.explicit_remember_intent,
-                        filtered_memory_count = write.memories.len(),
-                        task_id = ctx.task_id,
-                        "Post-run admission filtered LLM durable memories"
-                    );
-                }
-                Vec::new()
-            };
-        let tool_memories = build_tool_draft_memories(&ctx);
+        let mut llm_memories = if ctx.classification.write_policy.allow_llm_durable_writes {
+            llm_write
+                .as_ref()
+                .map(|write| write.memories.clone())
+                .unwrap_or_default()
+        } else {
+            if let Some(write) = llm_write
+                .as_ref()
+                .filter(|write| !write.memories.is_empty())
+            {
+                info!(
+                    task_class = ctx.classification.class.as_str(),
+                    explicit_remember_intent = ctx.explicit_remember_intent,
+                    filtered_memory_count = write.memories.len(),
+                    task_id = ctx.task_id,
+                    "Post-run admission filtered LLM durable memories"
+                );
+            }
+            Vec::new()
+        };
+        let tool_memories = if ctx.classification.write_policy.allow_tool_draft_writes {
+            build_tool_draft_memories(&ctx)
+        } else {
+            let filtered_count = build_tool_draft_memories(&ctx).len();
+            if filtered_count > 0 {
+                info!(
+                    task_class = ctx.classification.class.as_str(),
+                    filtered_memory_count = filtered_count,
+                    task_id = ctx.task_id,
+                    "Post-run admission filtered tool-derived durable memories"
+                );
+            }
+            Vec::new()
+        };
         let tool_hashes = tool_memories
             .iter()
             .filter_map(|memory| memory.content_hash.clone())
