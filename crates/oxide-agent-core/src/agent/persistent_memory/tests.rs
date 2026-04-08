@@ -11,6 +11,8 @@ struct FakeEmbeddingGenerator;
 
 struct FakePostRunMemoryWriter;
 
+struct EmptyPostRunMemoryWriter;
+
 #[async_trait::async_trait]
 impl PostRunMemoryWriter for FakePostRunMemoryWriter {
     async fn write(
@@ -115,8 +117,34 @@ impl PostRunMemoryWriter for FakePostRunMemoryWriter {
     }
 }
 
+#[async_trait::async_trait]
+impl PostRunMemoryWriter for EmptyPostRunMemoryWriter {
+    async fn write(
+        &self,
+        input: &PostRunMemoryWriterInput<'_>,
+    ) -> anyhow::Result<ValidatedPostRunMemoryWrite> {
+        Ok(ValidatedPostRunMemoryWrite {
+            thread_short_summary: Some(format!("{} summary", input.task)),
+            episode: ValidatedPostRunEpisode {
+                summary: format!("Completed task: {}", input.task),
+                outcome: EpisodeOutcome::Success,
+                failures: Vec::new(),
+                importance: 0.9,
+            },
+            memories: Vec::new(),
+        })
+    }
+}
+
 fn test_coordinator(store: Arc<dyn PersistentMemoryStore>) -> PersistentMemoryCoordinator {
     PersistentMemoryCoordinator::new(store).with_memory_writer(Arc::new(FakePostRunMemoryWriter))
+}
+
+fn test_coordinator_with_writer(
+    store: Arc<dyn PersistentMemoryStore>,
+    writer: Arc<dyn PostRunMemoryWriter>,
+) -> PersistentMemoryCoordinator {
+    PersistentMemoryCoordinator::new(store).with_memory_writer(writer)
 }
 
 fn classification_for(class: MemoryClassificationClass) -> MemoryClassificationDecision {
@@ -1075,7 +1103,7 @@ async fn persist_post_run_suppresses_llm_memories_for_external_fresh_facts() {
 }
 
 #[tokio::test]
-async fn conservative_safe_mode_blocks_prompt_memory_and_llm_writes() {
+async fn conservative_safe_mode_blocks_prompt_memory_but_honors_explicit_remember_writes() {
     let storage = MockStorageProvider::new();
     let retriever = DurableMemoryRetriever::new(Arc::new(storage));
     let classification = MemoryClassificationDecision::conservative_safe_mode();
@@ -1120,7 +1148,93 @@ async fn conservative_safe_mode_blocks_prompt_memory_and_llm_writes() {
         MemoryRepository::list_memories(store.as_ref(), "topic-a", &MemoryListFilter::default())
             .await
             .expect("memory lookup should succeed");
+    assert!(!memories.is_empty());
+    assert!(memories
+        .iter()
+        .all(|memory| memory.tags.iter().any(|tag| tag == "explicit_remember")));
+}
+
+#[tokio::test]
+async fn conservative_safe_mode_without_explicit_remember_still_blocks_llm_writes() {
+    let store = Arc::new(InMemoryMemoryRepository::new());
+    let store_for_coordinator = Arc::clone(&store);
+    let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+    let coordinator = test_coordinator(store_for_coordinator);
+    let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
+    let messages = vec![AgentMessage::user_turn("Summarize this for later")];
+
+    coordinator
+        .persist_post_run(PersistentRunContext {
+            session_id: "session-safe-mode-no-remember",
+            task_id: "episode-safe-mode-no-remember",
+            scope: &scope,
+            task: "Summarize this for later",
+            classification: MemoryClassificationDecision::conservative_safe_mode(),
+            messages: &messages,
+            explicit_remember_intent: false,
+            hot_token_estimate: 12,
+            tool_memory_drafts: Vec::new(),
+            phase: PersistentRunPhase::Completed {
+                final_answer: "Stored conservatively.",
+            },
+        })
+        .await
+        .expect("safe-mode persistence should succeed");
+
+    let memories =
+        MemoryRepository::list_memories(store.as_ref(), "topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memory lookup should succeed");
     assert!(memories.is_empty());
+}
+
+#[tokio::test]
+async fn explicit_remember_fallback_persists_verbatim_payload_when_writer_returns_no_memories() {
+    let store = Arc::new(InMemoryMemoryRepository::new());
+    let store_for_coordinator = Arc::clone(&store);
+    let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+    let coordinator =
+        test_coordinator_with_writer(store_for_coordinator, Arc::new(EmptyPostRunMemoryWriter));
+    let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
+    let token = "CTX_A_TOKEN_deadbeef_espresso";
+    let prompt = format!(
+        "Запомни для будущих разговоров дословно: {token}. Это моя важная постоянная заметка."
+    );
+    let messages = vec![AgentMessage::user_turn(prompt.clone())];
+
+    coordinator
+        .persist_post_run(PersistentRunContext {
+            session_id: "session-explicit-fallback",
+            task_id: "episode-explicit-fallback",
+            scope: &scope,
+            task: &prompt,
+            classification: MemoryClassificationDecision::conservative_safe_mode(),
+            messages: &messages,
+            explicit_remember_intent: true,
+            hot_token_estimate: 16,
+            tool_memory_drafts: Vec::new(),
+            phase: PersistentRunPhase::Completed {
+                final_answer: "Запомнил.",
+            },
+        })
+        .await
+        .expect("explicit remember fallback should persist");
+
+    let memories =
+        MemoryRepository::list_memories(store.as_ref(), "topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memory lookup should succeed");
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0].content, token);
+    assert_eq!(memories[0].context_key, "topic-a");
+    assert_eq!(
+        memories[0].source.as_deref(),
+        Some("explicit_remember_intent")
+    );
+    assert!(memories[0]
+        .tags
+        .iter()
+        .any(|tag| tag == "explicit_remember"));
 }
 
 #[tokio::test]
