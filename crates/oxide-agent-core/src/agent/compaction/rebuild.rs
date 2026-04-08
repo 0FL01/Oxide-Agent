@@ -11,6 +11,60 @@ use crate::agent::memory::AgentMessage;
 use crate::llm::InvocationId;
 use tracing::warn;
 
+/// Aggressive PostRun truncate: replace entire hot context with summary + archive ref.
+///
+/// Unlike [`rebuild_hot_context`] which preserves Pinned/ProtectedLive/recent-window entries,
+/// this function wipes the message list clean and inserts only the session summary and an
+/// optional archive reference. System prompt, tools schema, AGENTS.md, and memory retrieval
+/// context are all re-injected by `prepare_execution()` on the next task, so they do not
+/// need to survive the truncation.
+#[must_use]
+pub fn truncate_to_summary(
+    messages: &[AgentMessage],
+    summary: Option<CompactionSummary>,
+    archive_ref: Option<ArchiveRef>,
+) -> (Vec<AgentMessage>, RebuildOutcome) {
+    let summary = match summary.and_then(normalize_summary) {
+        Some(s) => s,
+        None => return (messages.to_vec(), RebuildOutcome::default()),
+    };
+
+    let total_before = messages.len();
+    let mut rebuilt = Vec::with_capacity(2);
+
+    rebuilt.push(AgentMessage::from_compaction_summary(summary));
+
+    let inserted_archive_reference = if let Some(archive_ref) = archive_ref {
+        rebuilt.push(AgentMessage::archive_reference_with_ref(
+            format_archive_reference(&archive_ref),
+            Some(archive_ref),
+        ));
+        true
+    } else {
+        false
+    };
+
+    let outcome = RebuildOutcome {
+        applied: true,
+        inserted_summary: true,
+        inserted_archive_reference,
+        dropped_message_count: total_before.saturating_sub(rebuilt.len()),
+        dropped_indices: (0..total_before).collect(),
+        preserved_recent_indices: Vec::new(),
+    };
+
+    warn!(
+        inserted_summary = outcome.inserted_summary,
+        inserted_archive_reference = outcome.inserted_archive_reference,
+        dropped_message_count = outcome.dropped_message_count,
+        messages_before = total_before,
+        messages_after = rebuilt.len(),
+        "PostRun truncate-to-summary: hot context replaced with summary"
+    );
+
+    (rebuilt, outcome)
+}
+
 /// Rebuild hot memory into pinned, live, structured-summary, and recent-raw slices.
 #[must_use]
 pub fn rebuild_hot_context(
@@ -215,7 +269,7 @@ fn append_matching_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{rebuild_hot_context, remove_orphaned_tool_results};
+    use super::{rebuild_hot_context, remove_orphaned_tool_results, truncate_to_summary};
     use crate::agent::compaction::{
         classify_hot_memory, AgentMessageKind, ClassifiedMemoryEntry, CompactionRetention,
         CompactionSnapshot, CompactionSummary,
@@ -535,5 +589,84 @@ mod tests {
 
         assert_eq!(preserved, vec![false, false]);
         assert!(rebuilt.is_empty());
+    }
+
+    #[test]
+    fn truncate_to_summary_replaces_everything_with_summary_and_archive_ref() {
+        let messages = vec![
+            AgentMessage::topic_agents_md("# Topic AGENTS\nPreserve identity."),
+            AgentMessage::system_context("Execution policy"),
+            AgentMessage::user_task("Ship stage 8"),
+            AgentMessage::user("Older request"),
+            AgentMessage::assistant("Older response"),
+            AgentMessage::user("Recent request 1"),
+            AgentMessage::assistant("Recent response 1"),
+            AgentMessage::user("Recent request 2"),
+            AgentMessage::assistant("Recent response 2"),
+        ];
+        let summary = CompactionSummary {
+            goal: "Ship stage 8".to_string(),
+            decisions: vec!["Truncated entire hot context.".to_string()],
+            remaining_work: vec!["Wire runner lifecycle next.".to_string()],
+            ..CompactionSummary::default()
+        };
+        let archive_ref = crate::agent::ArchiveRef {
+            archive_id: "archive-1".to_string(),
+            created_at: 1,
+            title: "Compacted history: Ship stage 8".to_string(),
+            storage_key: "archive/topic/flow/history-archive-1.json".to_string(),
+        };
+
+        let (rebuilt, outcome) =
+            truncate_to_summary(&messages, Some(summary.clone()), Some(archive_ref.clone()));
+
+        assert!(outcome.applied);
+        assert!(outcome.inserted_summary);
+        assert!(outcome.inserted_archive_reference);
+        assert_eq!(outcome.dropped_message_count, 7);
+        assert!(outcome.preserved_recent_indices.is_empty());
+        assert_eq!(rebuilt.len(), 2);
+        assert_eq!(
+            rebuilt[0].resolved_kind(),
+            crate::agent::AgentMessageKind::Summary
+        );
+        assert_eq!(rebuilt[0].summary_payload(), Some(&summary));
+        assert_eq!(rebuilt[1].archive_ref_payload(), Some(&archive_ref));
+    }
+
+    #[test]
+    fn truncate_to_summary_without_archive_ref_produces_single_message() {
+        let messages = vec![
+            AgentMessage::user("Request"),
+            AgentMessage::assistant("Response"),
+        ];
+        let summary = CompactionSummary {
+            goal: "Task done".to_string(),
+            ..CompactionSummary::default()
+        };
+
+        let (rebuilt, outcome) = truncate_to_summary(&messages, Some(summary), None);
+
+        assert!(outcome.applied);
+        assert!(outcome.inserted_summary);
+        assert!(!outcome.inserted_archive_reference);
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(
+            rebuilt[0].resolved_kind(),
+            crate::agent::AgentMessageKind::Summary
+        );
+    }
+
+    #[test]
+    fn truncate_to_summary_is_noop_without_summary() {
+        let messages = vec![
+            AgentMessage::user("Request"),
+            AgentMessage::assistant("Response"),
+        ];
+
+        let (rebuilt, outcome) = truncate_to_summary(&messages, None, None);
+
+        assert!(!outcome.applied);
+        assert_eq!(rebuilt.len(), 2);
     }
 }

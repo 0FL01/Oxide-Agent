@@ -27,7 +27,7 @@ pub use externalize::{
 };
 pub use prompt::{build_compaction_user_message, compaction_system_prompt};
 pub use prune::prune_hot_memory;
-pub use rebuild::rebuild_hot_context;
+pub use rebuild::{rebuild_hot_context, truncate_to_summary};
 pub use service::CompactionService;
 pub use summarizer::{CompactionSummarizer, CompactionSummarizerConfig};
 pub use types::{
