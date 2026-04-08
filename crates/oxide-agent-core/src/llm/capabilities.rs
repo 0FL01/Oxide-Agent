@@ -164,9 +164,18 @@ pub fn provider_capabilities_for_model(model_info: &ModelInfo) -> ProviderCapabi
         let model_capabilities = providers::nvidia::model_capabilities(&model_info.id);
         capabilities.supports_tool_calling = model_capabilities.supports_tool_calling;
         capabilities.supports_structured_output = model_capabilities.supports_structured_output;
+    } else if model_info.provider.eq_ignore_ascii_case("zai") {
+        capabilities.supports_structured_output = zai_supports_structured_output(&model_info.id);
     }
 
     capabilities
+}
+
+fn zai_supports_structured_output(model_id: &str) -> bool {
+    matches!(
+        model_id.trim().to_ascii_lowercase().as_str(),
+        "glm-4.7" | "glm-4" | "mainagent" | "glm-4.6" | "glm-4.5-air" | "glm-4-air" | "subagent"
+    )
 }
 
 #[must_use]
@@ -249,6 +258,32 @@ mod tests {
         assert!(capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "best_effort");
+    }
+
+    #[test]
+    fn provider_capabilities_for_zai_model_apply_model_specific_overrides() {
+        let structured = crate::config::ModelInfo {
+            id: "glm-4.6".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "zai".to_string(),
+            weight: 1,
+        };
+        let conservative = crate::config::ModelInfo {
+            id: "glm-5".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "zai".to_string(),
+            weight: 1,
+        };
+
+        let structured_capabilities = provider_capabilities_for_model(&structured);
+        let conservative_capabilities = provider_capabilities_for_model(&conservative);
+
+        assert!(structured_capabilities.supports_tool_calling);
+        assert!(structured_capabilities.supports_structured_output);
+        assert!(conservative_capabilities.supports_tool_calling);
+        assert!(!conservative_capabilities.supports_structured_output);
     }
 
     #[test]

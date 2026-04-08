@@ -79,23 +79,6 @@ impl LlmProvider for ZaiProvider {
         &self,
         request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
-        let ChatWithToolsRequest {
-            system_prompt,
-            messages: history,
-            tools,
-            model_id,
-            max_tokens,
-            temperature,
-            json_mode: _json_mode,
-        } = request;
-        self.chat_with_tools_sdk(
-            system_prompt,
-            history,
-            tools,
-            model_id,
-            max_tokens,
-            temperature,
-        )
-        .await
+        self.chat_with_tools_sdk(request).await
     }
 }
