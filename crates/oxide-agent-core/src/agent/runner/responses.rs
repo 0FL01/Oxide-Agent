@@ -175,7 +175,6 @@ impl AgentRunner {
 
             let input = FinalResponseInput {
                 final_answer: failure.raw_json.clone(),
-                raw_json: failure.raw_json,
                 reasoning: None,
             };
 
@@ -212,20 +211,22 @@ impl AgentRunner {
     fn save_final_response(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        raw_json: &str,
+        rendered_response: &str,
         reasoning: Option<String>,
     ) {
         if let Some(reasoning_content) = reasoning {
             ctx.agent.memory_mut().add_message(
                 crate::agent::memory::AgentMessage::assistant_with_reasoning(
-                    raw_json,
+                    rendered_response,
                     reasoning_content,
                 ),
             );
         } else {
             ctx.agent
                 .memory_mut()
-                .add_message(crate::agent::memory::AgentMessage::assistant(raw_json));
+                .add_message(crate::agent::memory::AgentMessage::assistant(
+                    rendered_response,
+                ));
         }
     }
 
@@ -257,8 +258,8 @@ impl AgentRunner {
             }
             let retry_message = format!("[SYSTEM: {reason}]\n\n{}", context.unwrap_or_default());
             ctx.messages
-                .push(crate::llm::Message::assistant(&input.raw_json));
-            self.save_final_response(ctx, &input.raw_json, input.reasoning);
+                .push(crate::llm::Message::assistant(&final_response));
+            self.save_final_response(ctx, &final_response, input.reasoning);
             ctx.messages
                 .push(crate::llm::Message::system(&retry_message));
             ctx.agent
@@ -283,14 +284,14 @@ impl AgentRunner {
             }
 
             ctx.messages
-                .push(crate::llm::Message::assistant(&input.raw_json));
-            self.save_final_response(ctx, &input.raw_json, input.reasoning);
+                .push(crate::llm::Message::assistant(&final_response));
+            self.save_final_response(ctx, &final_response, input.reasoning);
             let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
             Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
             return Ok(None);
         }
 
-        self.save_final_response(ctx, &input.raw_json, input.reasoning);
+        self.save_final_response(ctx, &final_response, input.reasoning);
         // Snapshot messages before PostRun compaction — the truncation will wipe the
         // live message list but the episode finalizer needs the original history to
         // extract artifacts, tools used and summary signal.
@@ -341,7 +342,7 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
-        raw_json: String,
+        _raw_json: String,
         reasoning: Option<String>,
         request: PendingUserInput,
     ) -> anyhow::Result<Option<AgentRunResult>> {
@@ -350,7 +351,7 @@ impl AgentRunner {
         }
 
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
-        self.save_final_response(ctx, &raw_json, reasoning);
+        self.save_final_response(ctx, &request.prompt, reasoning);
         let pre_compaction_messages: Vec<AgentMessage> = ctx.agent.memory().get_messages().to_vec();
         let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         let _ = self

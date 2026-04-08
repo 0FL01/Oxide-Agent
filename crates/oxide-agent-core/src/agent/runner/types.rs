@@ -206,8 +206,6 @@ pub(super) struct StructuredOutputFailure {
 pub(super) struct FinalResponseInput {
     /// Final answer text.
     pub final_answer: String,
-    /// Raw JSON string from the model.
-    pub raw_json: String,
     /// Optional reasoning content from the model.
     pub reasoning: Option<String>,
 }
