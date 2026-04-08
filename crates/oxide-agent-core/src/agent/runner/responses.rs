@@ -5,6 +5,7 @@ use super::types::{
 };
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
+use crate::agent::memory::AgentMessage;
 use crate::agent::persistent_memory::{PersistentRunContext, PersistentRunPhase};
 use crate::agent::progress::{AgentEvent, TokenSnapshot};
 use crate::agent::session::PendingUserInput;
@@ -80,6 +81,7 @@ impl AgentRunner {
         &self,
         ctx: &mut AgentRunnerContext<'_>,
         phase: PersistentRunPhase<'_>,
+        pre_compaction_messages: Option<&[AgentMessage]>,
     ) {
         if ctx.config.is_sub_agent {
             return;
@@ -98,13 +100,18 @@ impl AgentRunner {
             .map(|runtime| runtime.snapshot())
             .unwrap_or_default();
 
+        // Use pre-compaction messages when available (PostRun path): compaction may have
+        // truncated the live messages to a single summary, losing all the original
+        // user turns, tool results and artifacts that the episode finalizer needs.
+        let messages = pre_compaction_messages.unwrap_or_else(|| ctx.agent.memory().get_messages());
+
         if let Err(error) = persistent_memory
             .persist_post_run(PersistentRunContext {
                 session_id,
                 task_id: ctx.task_id,
                 scope,
                 task: ctx.task,
-                messages: ctx.agent.memory().get_messages(),
+                messages,
                 hot_token_estimate: ctx.agent.memory().token_count(),
                 tool_memory_drafts,
                 phase,
@@ -264,6 +271,10 @@ impl AgentRunner {
         }
 
         self.save_final_response(ctx, &input.raw_json, input.reasoning);
+        // Snapshot messages before PostRun compaction — the truncation will wipe the
+        // live message list but the episode finalizer needs the original history to
+        // extract artifacts, tools used and summary signal.
+        let pre_compaction_messages: Vec<AgentMessage> = ctx.agent.memory().get_messages().to_vec();
         let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         let _ = self
             .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
@@ -280,6 +291,7 @@ impl AgentRunner {
             PersistentRunPhase::Completed {
                 final_answer: &final_response,
             },
+            Some(&pre_compaction_messages),
         )
         .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
@@ -308,6 +320,7 @@ impl AgentRunner {
 
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         self.save_final_response(ctx, &raw_json, reasoning);
+        let pre_compaction_messages: Vec<AgentMessage> = ctx.agent.memory().get_messages().to_vec();
         let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         let _ = self
             .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
@@ -319,8 +332,12 @@ impl AgentRunner {
             &pre_cleanup_snapshot,
             &post_cleanup_snapshot,
         );
-        self.persist_post_run_memory(ctx, PersistentRunPhase::WaitingForUserInput)
-            .await;
+        self.persist_post_run_memory(
+            ctx,
+            PersistentRunPhase::WaitingForUserInput,
+            Some(&pre_compaction_messages),
+        )
+        .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
