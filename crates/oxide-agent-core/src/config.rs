@@ -194,6 +194,11 @@ pub struct AgentSettings {
     /// Compaction summary model timeout override in seconds
     pub compaction_model_timeout_secs: Option<u64>,
 
+    /// Dedicated persistent-memory classifier model provider override.
+    pub memory_classifier_provider: Option<String>,
+    /// Dedicated persistent-memory classifier model override.
+    pub memory_classifier_model: Option<String>,
+
     /// Soft warning threshold for hot-context growth.
     pub soft_warning_tokens: Option<usize>,
     /// Hard threshold that triggers immediate compaction.
@@ -664,6 +669,24 @@ impl AgentSettings {
         ))
     }
 
+    fn memory_classifier_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.memory_classifier_model.as_ref()?;
+        let provider = self.memory_classifier_provider.as_ref()?;
+        let context_window_tokens = self
+            .chat_model_context_window_tokens
+            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
+
+        Some((
+            id.clone(),
+            Self::build_model_info(
+                id,
+                provider,
+                MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS,
+                context_window_tokens,
+            ),
+        ))
+    }
+
     fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
@@ -733,6 +756,10 @@ impl AgentSettings {
         }
 
         if let Some((name, info)) = self.compaction_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
+        if let Some((name, info)) = self.memory_classifier_model_spec() {
             Self::upsert_model(&mut models, name, info);
         }
 
@@ -961,6 +988,21 @@ impl AgentSettings {
             .into_iter()
             .filter(|route| seen.insert(Self::route_dedupe_key(route)))
             .collect()
+    }
+
+    /// Returns the configured persistent-memory classifier model route.
+    pub fn get_configured_memory_classifier_model(&self) -> ModelInfo {
+        self.memory_classifier_model_spec()
+            .map(|(_, info)| info)
+            .unwrap_or_else(|| {
+                Self::build_model_info(
+                    DEFAULT_MEMORY_CLASSIFIER_MODEL,
+                    DEFAULT_MEMORY_CLASSIFIER_PROVIDER,
+                    MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS,
+                    self.chat_model_context_window_tokens
+                        .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS),
+                )
+            })
     }
 
     /// Returns model info by its display name
@@ -1477,6 +1519,12 @@ pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
 pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
 /// Default sub-agent model context window tokens.
 pub const DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
+/// Default persistent-memory classifier provider.
+pub const DEFAULT_MEMORY_CLASSIFIER_PROVIDER: &str = "mistral";
+/// Default persistent-memory classifier model.
+pub const DEFAULT_MEMORY_CLASSIFIER_MODEL: &str = "mistral-small-2603";
+/// Reserved output budget for the persistent-memory classifier.
+pub const MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS: u32 = 512;
 /// Internal main-agent context budget cap.
 pub const AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
 /// Internal sub-agent context budget cap.

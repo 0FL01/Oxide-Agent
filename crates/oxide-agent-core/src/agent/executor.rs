@@ -15,7 +15,8 @@ use super::hooks::{
 use super::memory::AgentMessage;
 use super::persistent_memory::{
     DurableMemoryRetrievalOptions, DurableMemoryRetriever, LlmMemoryEmbeddingGenerator,
-    LlmPostRunMemoryWriter, PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer,
+    LlmMemoryTaskClassifier, LlmPostRunMemoryWriter, MemoryClassificationDecision,
+    MemoryTaskClassifier, PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer,
     PersistentMemoryStore, PostRunMemoryWriterConfig,
 };
 use super::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
@@ -76,6 +77,7 @@ pub struct AgentExecutor {
     hook_policy_state: Arc<RwLock<HookAccessPolicy>>,
     compaction_service: CompactionService,
     persistent_memory: Option<PersistentMemoryCoordinator>,
+    memory_classifier: Option<Arc<dyn MemoryTaskClassifier>>,
     last_topic_infra_preflight_summary: Option<String>,
 }
 
@@ -118,6 +120,7 @@ struct PreparedExecution {
     tools: Vec<ToolDefinition>,
     system_prompt: String,
     messages: Vec<Message>,
+    memory_classification: Option<MemoryClassificationDecision>,
     runner_config: AgentRunnerConfig,
 }
 
@@ -262,6 +265,7 @@ impl AgentExecutor {
             hook_policy_state,
             compaction_service,
             persistent_memory: None,
+            memory_classifier: None,
             last_topic_infra_preflight_summary: None,
         }
     }
@@ -297,6 +301,10 @@ impl AgentExecutor {
     ) -> Self {
         self.memory_store = Some(Arc::clone(&store));
         self.memory_artifact_storage = artifact_storage;
+        self.memory_classifier = Some(Arc::new(LlmMemoryTaskClassifier::new(
+            self.runner.llm_client(),
+            self.settings.get_configured_memory_classifier_model(),
+        )));
         let mut coordinator = PersistentMemoryCoordinator::new(Arc::clone(&store));
         let (_, _, _, post_run_writer_timeout_secs) =
             self.settings.get_configured_compaction_model();
@@ -1007,8 +1015,22 @@ impl AgentExecutor {
         .await;
         let mut messages =
             AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
+        let mut memory_classification = None;
 
-        if let Some(store) = &self.memory_store {
+        if let (Some(store), Some(classifier)) = (&self.memory_store, &self.memory_classifier) {
+            let classification = match classifier.classify(task).await {
+                Ok(decision) => decision,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        task = %task,
+                        "persistent-memory classifier failed; using conservative safe mode"
+                    );
+                    MemoryClassificationDecision::conservative_safe_mode()
+                }
+            };
+            memory_classification = Some(classification.clone());
+
             let query_embeddings = self.runner.llm_client().is_embedding_available().then(|| {
                 Arc::new(LlmMemoryEmbeddingGenerator::new(self.runner.llm_client()))
                     as Arc<dyn super::persistent_memory::MemoryEmbeddingGenerator>
@@ -1020,6 +1042,7 @@ impl AgentExecutor {
             match retriever
                 .render_prompt_context(
                     task,
+                    &classification,
                     self.session.memory_scope(),
                     DurableMemoryRetrievalOptions::default(),
                 )
@@ -1039,6 +1062,7 @@ impl AgentExecutor {
             tools,
             system_prompt,
             messages,
+            memory_classification,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),
                 get_agent_max_iterations(),
@@ -1119,6 +1143,7 @@ impl AgentExecutor {
             session_id,
             memory_scope,
             memory_behavior,
+            memory_classification: prepared.memory_classification.clone(),
             config: prepared.runner_config.clone(),
         }
     }

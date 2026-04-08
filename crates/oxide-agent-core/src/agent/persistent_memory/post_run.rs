@@ -23,6 +23,7 @@ pub struct PersistentRunContext<'a> {
     pub task_id: &'a str,
     pub scope: &'a AgentMemoryScope,
     pub task: &'a str,
+    pub(crate) classification: MemoryClassificationDecision,
     pub messages: &'a [AgentMessage],
     pub explicit_remember_intent: bool,
     pub hot_token_estimate: usize,
@@ -411,10 +412,18 @@ fn parse_post_run_memory_writer_response(response: &str) -> Option<PostRunMemory
 }
 
 fn extract_json_payload(response: &str) -> &str {
-    lazy_regex!(r"(?s)```(?:json)?\s*(\{.*\})\s*```")
-        .captures(response)
-        .and_then(|captures| captures.get(1))
-        .map_or_else(|| response.trim(), |json| json.as_str().trim())
+    let trimmed = response.trim();
+    if let Some(stripped) = trimmed.strip_prefix("```") {
+        let stripped = stripped
+            .strip_prefix("json")
+            .or_else(|| stripped.strip_prefix("JSON"))
+            .unwrap_or(stripped)
+            .trim();
+        if let Some(inner) = stripped.strip_suffix("```") {
+            return inner.trim();
+        }
+    }
+    trimmed
 }
 
 fn validate_post_run_memory_writer_response(

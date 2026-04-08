@@ -64,7 +64,7 @@ impl RetrievalVectorStatus {
 #[derive(Debug, Clone)]
 pub(crate) struct DurableMemoryRetrievalDiagnostics {
     pub query: String,
-    pub task_class: &'static str,
+    pub task_class: String,
     pub search_episodes: bool,
     pub search_memories: bool,
     pub candidate_limit: usize,
@@ -87,10 +87,14 @@ pub(crate) struct DurableMemoryRetrievalDiagnostics {
 }
 
 impl DurableMemoryRetrievalDiagnostics {
-    fn skipped(query: impl Into<String>, empty_reason: &'static str) -> Self {
+    fn skipped(
+        query: impl Into<String>,
+        task_class: impl Into<String>,
+        empty_reason: &'static str,
+    ) -> Self {
         Self {
             query: query.into(),
-            task_class: MemoryTaskClass::General.as_str(),
+            task_class: task_class.into(),
             search_episodes: false,
             search_memories: false,
             candidate_limit: 0,
@@ -116,7 +120,7 @@ impl DurableMemoryRetrievalDiagnostics {
     fn with_plan(plan: &RetrievalPlan, candidate_limit: usize) -> Self {
         Self {
             query: plan.query.clone(),
-            task_class: plan.task_class.as_str(),
+            task_class: plan.class_label.clone(),
             search_episodes: plan.search_episodes,
             search_memories: plan.search_memories,
             candidate_limit,
@@ -228,10 +232,13 @@ impl DurableMemoryRetriever {
     pub async fn render_prompt_context(
         &self,
         task: &str,
+        classification: &MemoryClassificationDecision,
         scope: &AgentMemoryScope,
         options: DurableMemoryRetrievalOptions,
     ) -> Result<Option<String>> {
-        let outcome = self.retrieve_outcome_for_task(task, scope, options).await?;
+        let outcome = self
+            .retrieve_outcome_for_task(task, classification, scope, options)
+            .await?;
         Self::log_retrieval_telemetry("prompt", &outcome.diagnostics);
         Ok(outcome
             .retrieval
@@ -253,38 +260,28 @@ impl DurableMemoryRetriever {
         request: DurableMemorySearchRequest,
     ) -> Result<DurableMemorySearchOutcome> {
         let query = request.query.trim();
-        if query.is_empty() || (!request.search_episodes && !request.search_memories) {
-            let diagnostics = DurableMemoryRetrievalDiagnostics::skipped(
-                query,
-                if query.is_empty() {
-                    "empty_query"
-                } else {
-                    "no_sources_requested"
-                },
-            );
-            Self::log_retrieval_telemetry("tool", &diagnostics);
-            return Ok(DurableMemorySearchOutcome {
-                items: Vec::new(),
-                diagnostics,
-            });
-        }
-
-        let plan = RetrievalPlan {
-            query: query.to_string(),
-            task_class: classify_memory_task(query),
-            search_episodes: request.search_episodes,
-            search_memories: request.search_memories,
-            memory_type: request.memory_type,
-            min_importance: request.min_importance.unwrap_or(0.0),
-            top_k: request.limit.max(1),
-            allow_full_thread_read: request.allow_full_thread_read,
+        let plan = match RetrievalPlan::from_search_request(&request) {
+            Ok(plan) => plan,
+            Err(empty_reason) => {
+                let diagnostics = DurableMemoryRetrievalDiagnostics::skipped(
+                    query,
+                    "explicit_search",
+                    empty_reason,
+                );
+                Self::log_retrieval_telemetry("tool", &diagnostics);
+                return Ok(DurableMemorySearchOutcome {
+                    items: Vec::new(),
+                    diagnostics,
+                });
+            }
         };
+
         let candidate_limit = request
             .candidate_limit
             .unwrap_or_else(|| request.limit.max(HYBRID_RETRIEVAL_CANDIDATE_LIMIT));
 
         let outcome = self
-            .retrieve_with_plan(scope, plan, request.time_range, candidate_limit)
+            .retrieve_with_plan(scope, plan, request.time_range.clone(), candidate_limit)
             .await?;
         Self::log_retrieval_telemetry("tool", &outcome.diagnostics);
         Ok(DurableMemorySearchOutcome {
@@ -300,11 +297,12 @@ impl DurableMemoryRetriever {
     pub(crate) async fn retrieve(
         &self,
         task: &str,
+        classification: &MemoryClassificationDecision,
         scope: &AgentMemoryScope,
         options: DurableMemoryRetrievalOptions,
     ) -> Result<Option<DurableMemoryRetrieval>> {
         Ok(self
-            .retrieve_outcome_for_task(task, scope, options)
+            .retrieve_outcome_for_task(task, classification, scope, options)
             .await?
             .retrieval)
     }
@@ -312,18 +310,18 @@ impl DurableMemoryRetriever {
     async fn retrieve_outcome_for_task(
         &self,
         task: &str,
+        classification: &MemoryClassificationDecision,
         scope: &AgentMemoryScope,
         options: DurableMemoryRetrievalOptions,
     ) -> Result<DurableMemoryRetrievalOutcome> {
-        let plan = match query_retrieval_plan(task, options) {
-            QueryPlanningOutcome::Plan(plan) => plan,
-            QueryPlanningOutcome::Skip {
-                task_class,
-                empty_reason,
-            } => {
-                let mut diagnostics =
-                    DurableMemoryRetrievalDiagnostics::skipped(task, empty_reason);
-                diagnostics.task_class = task_class.as_str();
+        let plan = match RetrievalPlan::from_classifier(task, classification, options) {
+            Ok(plan) => plan,
+            Err(empty_reason) => {
+                let diagnostics = DurableMemoryRetrievalDiagnostics::skipped(
+                    task,
+                    classification.class.as_str(),
+                    empty_reason,
+                );
                 return Ok(DurableMemoryRetrievalOutcome {
                     retrieval: None,
                     diagnostics,
@@ -404,7 +402,7 @@ impl DurableMemoryRetriever {
                     vector_score: Some(_),
                     ..
                 }
-            ) && !plan.task_class.allows_vector_only_memory()
+            ) && !plan.allow_vector_only_memory
             {
                 diagnostics.filtered_vector_only_memory += 1;
                 continue;
@@ -569,13 +567,14 @@ impl DurableMemoryRetriever {
 #[derive(Debug, Clone)]
 struct RetrievalPlan {
     query: String,
-    task_class: MemoryTaskClass,
+    class_label: String,
     search_episodes: bool,
     search_memories: bool,
     memory_type: Option<MemoryType>,
     min_importance: f32,
     top_k: usize,
     allow_full_thread_read: bool,
+    allow_vector_only_memory: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -789,77 +788,61 @@ impl HybridCandidate {
     }
 }
 
-enum QueryPlanningOutcome {
-    Skip {
-        task_class: MemoryTaskClass,
-        empty_reason: &'static str,
-    },
-    Plan(RetrievalPlan),
-}
+impl RetrievalPlan {
+    fn from_classifier(
+        task: &str,
+        classification: &MemoryClassificationDecision,
+        options: DurableMemoryRetrievalOptions,
+    ) -> Result<Self, &'static str> {
+        let query = task.trim();
+        if query.is_empty() {
+            return Err("empty_query");
+        }
 
-fn query_retrieval_plan(
-    task: &str,
-    options: DurableMemoryRetrievalOptions,
-) -> QueryPlanningOutcome {
-    let query = task.trim();
-    if query.is_empty() {
-        return QueryPlanningOutcome::Skip {
-            task_class: MemoryTaskClass::General,
-            empty_reason: "empty_query",
-        };
+        let read_policy = &classification.read_policy;
+        if !read_policy.inject_prompt_memory
+            || (!read_policy.search_episodes && !read_policy.search_memories)
+        {
+            return Err("query_class_disallows_prompt_memory");
+        }
+
+        Ok(Self {
+            query: query.to_string(),
+            class_label: classification.class.as_str().to_string(),
+            search_episodes: read_policy.search_episodes,
+            search_memories: read_policy.search_memories,
+            memory_type: read_policy.memory_type,
+            min_importance: read_policy.min_importance.clamp(0.0, 1.0),
+            top_k: options
+                .top_k
+                .unwrap_or(read_policy.top_k)
+                .clamp(1, HYBRID_RETRIEVAL_TOP_K),
+            allow_full_thread_read: read_policy.allow_full_thread_read,
+            allow_vector_only_memory: read_policy.allow_vector_only_memory,
+        })
     }
 
-    let task_class = classify_memory_task(query);
-    if task_class == MemoryTaskClass::Smalltalk {
-        return QueryPlanningOutcome::Skip {
-            task_class,
-            empty_reason: "query_filtered_as_smalltalk",
-        };
-    }
-    if matches!(
-        task_class,
-        MemoryTaskClass::ExternalFreshFact | MemoryTaskClass::General
-    ) {
-        return QueryPlanningOutcome::Skip {
-            task_class,
-            empty_reason: "query_class_disallows_prompt_memory",
-        };
-    }
+    fn from_search_request(request: &DurableMemorySearchRequest) -> Result<Self, &'static str> {
+        let query = request.query.trim();
+        if query.is_empty() {
+            return Err("empty_query");
+        }
+        if !request.search_episodes && !request.search_memories {
+            return Err("no_sources_requested");
+        }
 
-    let (search_episodes, search_memories, memory_type, min_importance, allow_full_thread_read) =
-        match task_class {
-            MemoryTaskClass::EpisodeHistory => (true, false, None, 0.45, true),
-            MemoryTaskClass::ProcedureHowTo => {
-                (false, true, Some(MemoryType::Procedure), 0.55, false)
-            }
-            MemoryTaskClass::ConstraintPolicy => {
-                (false, true, Some(MemoryType::Constraint), 0.55, false)
-            }
-            MemoryTaskClass::PreferenceRecall => {
-                (false, true, Some(MemoryType::Preference), 0.55, false)
-            }
-            MemoryTaskClass::DecisionRecall => {
-                (false, true, Some(MemoryType::Decision), 0.55, false)
-            }
-            MemoryTaskClass::DurableProjectFact => (false, true, None, 0.55, false),
-            MemoryTaskClass::Smalltalk
-            | MemoryTaskClass::ExternalFreshFact
-            | MemoryTaskClass::General => unreachable!("skip classes handled above"),
-        };
-
-    QueryPlanningOutcome::Plan(RetrievalPlan {
-        query: query.to_string(),
-        task_class,
-        search_episodes,
-        search_memories,
-        memory_type,
-        min_importance,
-        top_k: options
-            .top_k
-            .unwrap_or(HYBRID_RETRIEVAL_TOP_K)
-            .clamp(1, HYBRID_RETRIEVAL_TOP_K),
-        allow_full_thread_read,
-    })
+        Ok(Self {
+            query: query.to_string(),
+            class_label: "explicit_search".to_string(),
+            search_episodes: request.search_episodes,
+            search_memories: request.search_memories,
+            memory_type: request.memory_type,
+            min_importance: request.min_importance.unwrap_or(0.0).clamp(0.0, 1.0),
+            top_k: request.limit.max(1),
+            allow_full_thread_read: request.allow_full_thread_read,
+            allow_vector_only_memory: true,
+        })
+    }
 }
 
 fn episode_search_filter(
