@@ -207,9 +207,22 @@ pub async fn create_session_http_with_user(
     base_url: &str,
     user_id: i64,
 ) -> String {
+    create_session_http_with_user_and_context(client, base_url, user_id, None).await
+}
+
+/// Create a session via HTTP for a specific user and context.
+pub async fn create_session_http_with_user_and_context(
+    client: &reqwest::Client,
+    base_url: &str,
+    user_id: i64,
+    context_key: Option<&str>,
+) -> String {
     let response: serde_json::Value = client
         .post(format!("{base_url}/sessions"))
-        .json(&serde_json::json!({ "user_id": user_id }))
+        .json(&serde_json::json!({
+            "user_id": user_id,
+            "context_key": context_key,
+        }))
         .send()
         .await
         .expect("failed to create session")
