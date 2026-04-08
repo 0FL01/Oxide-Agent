@@ -782,7 +782,6 @@ impl AgentRunner {
 
             let input = FinalResponseInput {
                 final_answer,
-                raw_json,
                 reasoning: response.reasoning_content,
             };
 
@@ -1087,6 +1086,77 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<Option<AgentRunResult>> {
+        if let Ok(parsed) = parse_structured_output(&raw_output, ctx.tools) {
+            warn!(
+                model = %ctx.config.model_name,
+                provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                "Model returned structured-output JSON while structured output was disabled; applying fallback parser"
+            );
+
+            state.structured_output_failures = 0;
+            let awaiting_user_input = parsed.awaiting_user_input;
+            let final_answer = parsed.final_answer;
+            let tool_calls = parsed
+                .tool_call
+                .map(|tool_call| vec![self.build_tool_call(tool_call)])
+                .unwrap_or_default();
+
+            self.spawn_narrative_task(reasoning.as_deref(), &tool_calls, ctx.progress_tx);
+
+            if let Some(request) = awaiting_user_input {
+                return self
+                    .handle_waiting_for_user_input(ctx, state, raw_output, reasoning, request)
+                    .await;
+            }
+
+            if tool_calls.is_empty() {
+                let final_answer = final_answer
+                    .unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
+
+                if self.content_loop_detected(final_answer.as_str()).await {
+                    return Err(self
+                        .loop_detected_error(
+                            ctx,
+                            state,
+                            crate::agent::loop_detection::LoopType::ContentLoop,
+                        )
+                        .await);
+                }
+
+                let input = FinalResponseInput {
+                    final_answer,
+                    reasoning,
+                };
+
+                return self.handle_final_response(ctx, state, input).await;
+            }
+
+            if self.tool_loop_detected(&tool_calls).await {
+                return Err(self
+                    .loop_detected_error(
+                        ctx,
+                        state,
+                        crate::agent::loop_detection::LoopType::ToolCallLoop,
+                    )
+                    .await);
+            }
+
+            return self
+                .handle_tool_calls_response(
+                    &mut ChatResponse {
+                        content: Some(raw_output.clone()),
+                        tool_calls,
+                        finish_reason: "stop".to_string(),
+                        reasoning_content: reasoning,
+                        usage: None,
+                    },
+                    &raw_output,
+                    ctx,
+                    state,
+                )
+                .await;
+        }
+
         self.spawn_narrative_task(reasoning.as_deref(), &[], ctx.progress_tx);
 
         let final_answer = if raw_output.trim().is_empty() {
@@ -1107,7 +1177,6 @@ impl AgentRunner {
 
         let input = FinalResponseInput {
             final_answer,
-            raw_json: raw_output,
             reasoning,
         };
 
@@ -1863,6 +1932,58 @@ mod tests {
             .await
             .expect("episode lookup should succeed")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn run_unstructured_mode_parses_accidental_structured_final_answer() {
+        let llm_client = build_llm_client_for_provider(
+            accidental_structured_final_answer_provider(),
+            "openrouter",
+            "chat-openrouter",
+        );
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Какие инструменты тебе доступны?"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Какие инструменты тебе доступны?",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-unstructured-structured-fallback",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config: AgentRunnerConfig::new("chat-openrouter".to_string(), 1, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(
+            matches!(result, AgentRunResult::Final(answer) if answer == "Tools: `read_file`, `write_file`")
+        );
+        let last_message = ctx
+            .agent
+            .memory()
+            .get_messages()
+            .last()
+            .expect("assistant response should be saved");
+        assert_eq!(last_message.content, "Tools: `read_file`, `write_file`");
+        assert!(!last_message.content.contains("\"final_answer\""));
     }
 
     #[tokio::test]
@@ -2731,14 +2852,22 @@ mod tests {
     }
 
     fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {
+        build_llm_client_for_provider(provider, "mock", "mock-model")
+    }
+
+    fn build_llm_client_for_provider(
+        provider: MockLlmProvider,
+        provider_name: &str,
+        model_name: &str,
+    ) -> Arc<LlmClient> {
         let settings = AgentSettings {
-            agent_model_id: Some("mock-model".to_string()),
-            agent_model_provider: Some("mock".to_string()),
+            agent_model_id: Some(model_name.to_string()),
+            agent_model_provider: Some(provider_name.to_string()),
             agent_model_max_output_tokens: Some(256),
             ..AgentSettings::default()
         };
         let mut llm_client = LlmClient::new(&settings);
-        llm_client.register_provider("mock".to_string(), Arc::new(provider));
+        llm_client.register_provider(provider_name.to_string(), Arc::new(provider));
         Arc::new(llm_client)
     }
 
@@ -2832,6 +2961,24 @@ mod tests {
         provider
             .expect_analyze_image()
             .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+    }
+
+    fn accidental_structured_final_answer_provider() -> MockLlmProvider {
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().return_once(|_| {
+            Ok(ChatResponse {
+                content: Some(
+                    r#"{"thought":"Tool list ready","tool_call":null,"final_answer":"Tools: `read_file`, `write_file`","awaiting_user_input":null}"#
+                        .to_string(),
+                ),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+                usage: None,
+            })
+        });
+        stub_non_chat_methods(&mut provider);
         provider
     }
 
