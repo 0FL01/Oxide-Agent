@@ -1,20 +1,22 @@
 use crate::agent::memory::AgentMessage;
 use crate::agent::session::AgentMemoryScope;
-use crate::llm::{EmbeddingTaskType, LlmClient};
+use crate::config::ModelInfo;
+use crate::llm::{EmbeddingTaskType, LlmClient, LlmError};
 use crate::storage::{StorageMemoryRepository, StorageProvider};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use lazy_regex::lazy_regex;
 use oxide_agent_memory::{
     stable_memory_content_hash, ArtifactRef, ConsolidationPolicy, ContextConsolidator,
     EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
     EmbeddingReadyUpdate, EmbeddingRecord, EmbeddingUpdateBase, EpisodeEmbeddingCandidate,
-    EpisodeFinalizationInput, EpisodeFinalizer, EpisodeListFilter, EpisodeMemorySignals,
-    EpisodeOutcome, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate,
-    MemoryListFilter, MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit,
-    MemoryType, RepositoryError, ReusableMemoryExtractor, SessionStateListFilter,
-    SessionStateRecord, ThreadRecord, TimeRange,
+    EpisodeFinalizationInput, EpisodeFinalizer, EpisodeListFilter, EpisodeOutcome, EpisodeRecord,
+    EpisodeSearchFilter, EpisodeSearchHit, MemoryEmbeddingCandidate, MemoryListFilter,
+    MemoryRecord, MemoryRepository, MemorySearchFilter, MemorySearchHit, MemoryType,
+    RepositoryError, SessionStateListFilter, SessionStateRecord, ThreadRecord, TimeRange,
 };
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -570,13 +572,475 @@ pub struct PersistentRunContext<'a> {
     pub phase: PersistentRunPhase<'a>,
 }
 
+const DEFAULT_POST_RUN_MEMORY_WRITER_TIMEOUT_SECS: u64 = 8;
+const DEFAULT_POST_RUN_MEMORY_WRITER_MAX_ATTEMPTS: usize = 3;
+const DEFAULT_POST_RUN_MEMORY_WRITER_INITIAL_BACKOFF_MS: u64 = 1_000;
+const DEFAULT_POST_RUN_MEMORY_WRITER_MAX_BACKOFF_MS: u64 = 8_000;
+const POST_RUN_MEMORY_WRITER_MAX_TRANSCRIPT_MESSAGES: usize = 32;
+const POST_RUN_MEMORY_WRITER_MAX_MESSAGE_CHARS: usize = 1_200;
+const POST_RUN_MEMORY_WRITER_MAX_MEMORIES: usize = 8;
+const THREAD_SHORT_SUMMARY_MAX_CHARS: usize = 220;
+const MEMORY_TITLE_MAX_CHARS: usize = 96;
+const MEMORY_CONTENT_MAX_CHARS: usize = 320;
+const MEMORY_SHORT_DESCRIPTION_MAX_CHARS: usize = 160;
+
+#[derive(Debug, Clone)]
+pub(crate) struct PostRunMemoryWriterConfig {
+    pub model_routes: Vec<ModelInfo>,
+    pub timeout_secs: u64,
+    pub max_attempts: usize,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+impl Default for PostRunMemoryWriterConfig {
+    fn default() -> Self {
+        Self {
+            model_routes: Vec::new(),
+            timeout_secs: DEFAULT_POST_RUN_MEMORY_WRITER_TIMEOUT_SECS,
+            max_attempts: DEFAULT_POST_RUN_MEMORY_WRITER_MAX_ATTEMPTS,
+            initial_backoff_ms: DEFAULT_POST_RUN_MEMORY_WRITER_INITIAL_BACKOFF_MS,
+            max_backoff_ms: DEFAULT_POST_RUN_MEMORY_WRITER_MAX_BACKOFF_MS,
+        }
+    }
+}
+
+pub(crate) struct PostRunMemoryWriterInput<'a> {
+    pub task_id: &'a str,
+    pub scope: &'a AgentMemoryScope,
+    pub task: &'a str,
+    pub final_answer: &'a str,
+    pub messages: &'a [AgentMessage],
+    pub tools_used: &'a [String],
+    pub artifacts: &'a [ArtifactRef],
+    pub compaction_summary: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PostRunMemoryWriterResponse {
+    pub thread_short_summary: Option<String>,
+    pub episode: PostRunEpisodeDraft,
+    #[serde(default)]
+    pub memories: Vec<PostRunMemoryDraft>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PostRunEpisodeDraft {
+    pub summary: String,
+    pub outcome: EpisodeOutcome,
+    #[serde(default)]
+    pub failures: Vec<String>,
+    pub importance: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PostRunMemoryDraft {
+    pub memory_type: MemoryType,
+    pub title: String,
+    pub content: String,
+    pub short_description: String,
+    pub importance: f32,
+    pub confidence: f32,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ValidatedPostRunMemoryWrite {
+    thread_short_summary: Option<String>,
+    episode: ValidatedPostRunEpisode,
+    memories: Vec<MemoryRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ValidatedPostRunEpisode {
+    summary: String,
+    outcome: EpisodeOutcome,
+    failures: Vec<String>,
+    importance: f32,
+}
+
+#[async_trait]
+pub(crate) trait PostRunMemoryWriter: Send + Sync {
+    async fn write(
+        &self,
+        input: &PostRunMemoryWriterInput<'_>,
+    ) -> Result<ValidatedPostRunMemoryWrite>;
+}
+
+#[derive(Clone)]
+pub(crate) struct LlmPostRunMemoryWriter {
+    llm_client: Arc<LlmClient>,
+    config: PostRunMemoryWriterConfig,
+}
+
+impl LlmPostRunMemoryWriter {
+    #[must_use]
+    pub fn new(llm_client: Arc<LlmClient>, config: PostRunMemoryWriterConfig) -> Self {
+        Self { llm_client, config }
+    }
+
+    async fn call_llm(&self, user_message: &str, route: &ModelInfo) -> Result<String, LlmError> {
+        let max_attempts = self.config.max_attempts.max(1);
+        for attempt in 1..=max_attempts {
+            let llm_call = self.llm_client.chat_completion_for_model_info(
+                post_run_memory_writer_system_prompt(),
+                &[],
+                user_message,
+                route,
+            );
+
+            match timeout(Duration::from_secs(self.config.timeout_secs), llm_call).await {
+                Ok(Ok(response)) => return Ok(response),
+                Ok(Err(error)) => {
+                    let Some(backoff) = self.retry_backoff_for_error(&error, attempt) else {
+                        return Err(error);
+                    };
+                    warn!(
+                        model = %route.id,
+                        provider = %route.provider,
+                        attempt,
+                        max_attempts,
+                        backoff_ms = backoff.as_millis(),
+                        error = %error,
+                        "PostRun memory writer attempt failed, retrying route"
+                    );
+                    sleep(backoff).await;
+                }
+                Err(_) => {
+                    let Some(backoff) = self.retry_backoff_for_timeout(attempt) else {
+                        return Err(LlmError::Unknown(format!(
+                            "PostRun memory writer timed out after {}s",
+                            self.config.timeout_secs
+                        )));
+                    };
+                    warn!(
+                        model = %route.id,
+                        provider = %route.provider,
+                        attempt,
+                        max_attempts,
+                        timeout_secs = self.config.timeout_secs,
+                        backoff_ms = backoff.as_millis(),
+                        "PostRun memory writer attempt timed out, retrying route"
+                    );
+                    sleep(backoff).await;
+                }
+            }
+        }
+
+        Err(LlmError::ApiError(
+            "PostRun memory writer retry attempts exhausted".to_string(),
+        ))
+    }
+
+    fn retry_backoff_for_error(&self, error: &LlmError, attempt: usize) -> Option<Duration> {
+        if attempt >= self.config.max_attempts.max(1) || !LlmClient::is_retryable_error(error) {
+            return None;
+        }
+
+        match error {
+            LlmError::RateLimit {
+                wait_secs: Some(wait_secs),
+                ..
+            } => {
+                let wait_with_buffer = wait_secs.saturating_add(1);
+                let backoff = Duration::from_secs(wait_with_buffer);
+                (backoff <= self.max_backoff()).then_some(backoff)
+            }
+            _ => Some(self.exponential_backoff(attempt)),
+        }
+    }
+
+    fn retry_backoff_for_timeout(&self, attempt: usize) -> Option<Duration> {
+        (attempt < self.config.max_attempts.max(1)).then(|| self.exponential_backoff(attempt))
+    }
+
+    fn exponential_backoff(&self, attempt: usize) -> Duration {
+        let exponent = (attempt.saturating_sub(1)).min(31) as u32;
+        let multiplier = 2u64.pow(exponent);
+        let backoff_ms = self
+            .config
+            .initial_backoff_ms
+            .saturating_mul(multiplier)
+            .min(self.config.max_backoff_ms);
+        Duration::from_millis(backoff_ms)
+    }
+
+    fn max_backoff(&self) -> Duration {
+        Duration::from_millis(self.config.max_backoff_ms)
+    }
+}
+
+#[async_trait]
+impl PostRunMemoryWriter for LlmPostRunMemoryWriter {
+    async fn write(
+        &self,
+        input: &PostRunMemoryWriterInput<'_>,
+    ) -> Result<ValidatedPostRunMemoryWrite> {
+        let user_message = build_post_run_memory_writer_user_message(input);
+        let mut last_error = None;
+
+        for route in self
+            .config
+            .model_routes
+            .iter()
+            .filter(|route| !route.id.trim().is_empty() && !route.provider.trim().is_empty())
+        {
+            if !self.llm_client.is_provider_available(&route.provider) {
+                continue;
+            }
+
+            match self.call_llm(&user_message, route).await {
+                Ok(response) => match parse_post_run_memory_writer_response(&response) {
+                    Some(parsed) => {
+                        return validate_post_run_memory_writer_response(input, parsed);
+                    }
+                    None => {
+                        last_error = Some(anyhow::anyhow!(
+                            "PostRun memory writer returned invalid JSON"
+                        ));
+                    }
+                },
+                Err(error) => {
+                    last_error = Some(anyhow::anyhow!(error.to_string()));
+                }
+            }
+        }
+
+        Err(last_error
+            .unwrap_or_else(|| anyhow::anyhow!("No available PostRun memory writer routes")))
+    }
+}
+
+fn post_run_memory_writer_system_prompt() -> &'static str {
+    r#"You write durable memory records for an autonomous software agent.
+
+Return JSON only. No markdown. No prose outside JSON.
+
+Your job:
+1. Produce one compact episode summary for the completed task.
+2. Produce only reusable long-term memories worth retrieving later.
+3. Ignore transient noise, raw tool payloads, progress chatter, and duplicated facts.
+
+Rules:
+- Only write memories that would still matter in a future session.
+- Prefer project facts, user preferences, procedures, decisions, and constraints.
+- Do not invent facts not grounded in the provided conversation.
+- Keep summaries concise and specific.
+- `importance` and `confidence` must be floats between 0.0 and 1.0.
+- `outcome` must be one of: success, partial, failure, cancelled.
+- `memory_type` must be one of: fact, preference, procedure, decision, constraint.
+- Output at most 8 memories.
+
+Schema:
+{
+  "thread_short_summary": "optional short thread summary",
+  "episode": {
+    "summary": "what happened and what matters",
+    "outcome": "success|partial|failure|cancelled",
+    "failures": ["notable failures if any"],
+    "importance": 0.0
+  },
+  "memories": [
+    {
+      "memory_type": "fact|preference|procedure|decision|constraint",
+      "title": "short title",
+      "content": "full reusable memory text",
+      "short_description": "compact preview",
+      "importance": 0.0,
+      "confidence": 0.0,
+      "tags": ["tag"],
+      "reason": "why this should be remembered"
+    }
+  ]
+}"#
+}
+
+fn build_post_run_memory_writer_user_message(input: &PostRunMemoryWriterInput<'_>) -> String {
+    let mut sections = vec![
+        format!("Task ID: {}", input.task_id),
+        format!("Context key: {}", input.scope.context_key),
+        format!("User task:\n{}", input.task.trim()),
+        format!("Final answer:\n{}", input.final_answer.trim()),
+    ];
+
+    if let Some(summary) = input
+        .compaction_summary
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("Compaction summary:\n{summary}"));
+    }
+
+    if !input.tools_used.is_empty() {
+        sections.push(format!("Tools used:\n- {}", input.tools_used.join("\n- ")));
+    }
+
+    if !input.artifacts.is_empty() {
+        let artifacts = input
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                format!(
+                    "- {} | {} | {}",
+                    artifact.storage_key,
+                    artifact.description,
+                    artifact.content_type.as_deref().unwrap_or("unknown")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        sections.push(format!("Artifacts:\n{artifacts}"));
+    }
+
+    let transcript = input
+        .messages
+        .iter()
+        .rev()
+        .take(POST_RUN_MEMORY_WRITER_MAX_TRANSCRIPT_MESSAGES)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(render_post_run_message)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    sections.push(format!("Transcript excerpt:\n{transcript}"));
+    sections.join("\n\n")
+}
+
+fn render_post_run_message(message: &AgentMessage) -> String {
+    let role = match message.role {
+        crate::agent::memory::MessageRole::System => "system",
+        crate::agent::memory::MessageRole::User => "user",
+        crate::agent::memory::MessageRole::Assistant => "assistant",
+        crate::agent::memory::MessageRole::Tool => "tool",
+    };
+    let kind = format!("{:?}", message.resolved_kind());
+    let content = truncate_chars(
+        message.content.trim(),
+        POST_RUN_MEMORY_WRITER_MAX_MESSAGE_CHARS,
+    );
+    if let Some(tool_name) = message.tool_name.as_deref() {
+        format!("[{role}/{kind}/{tool_name}]\n{content}")
+    } else {
+        format!("[{role}/{kind}]\n{content}")
+    }
+}
+
+fn parse_post_run_memory_writer_response(response: &str) -> Option<PostRunMemoryWriterResponse> {
+    serde_json::from_str(extract_json_payload(response)).ok()
+}
+
+fn extract_json_payload(response: &str) -> &str {
+    lazy_regex!(r"(?s)```(?:json)?\s*(\{.*\})\s*```")
+        .captures(response)
+        .and_then(|captures| captures.get(1))
+        .map_or_else(|| response.trim(), |json| json.as_str().trim())
+}
+
+fn validate_post_run_memory_writer_response(
+    input: &PostRunMemoryWriterInput<'_>,
+    parsed: PostRunMemoryWriterResponse,
+) -> Result<ValidatedPostRunMemoryWrite> {
+    let now = Utc::now();
+    let episode_summary = truncate_chars(parsed.episode.summary.trim(), 2_000);
+    if episode_summary.is_empty() {
+        return Err(anyhow::anyhow!(
+            "PostRun memory writer produced empty episode summary"
+        ));
+    }
+
+    let failures = parsed
+        .episode
+        .failures
+        .into_iter()
+        .map(|item| truncate_chars(item.trim(), 240))
+        .filter(|item| !item.is_empty())
+        .take(6)
+        .collect::<Vec<_>>();
+
+    let mut seen_hashes = HashSet::new();
+    let mut memories = Vec::new();
+    for draft in parsed
+        .memories
+        .into_iter()
+        .take(POST_RUN_MEMORY_WRITER_MAX_MEMORIES)
+    {
+        let content = truncate_chars(draft.content.trim(), MEMORY_CONTENT_MAX_CHARS);
+        if content.is_empty() {
+            continue;
+        }
+        let content_hash = stable_memory_content_hash(draft.memory_type, &content);
+        if !seen_hashes.insert(content_hash.clone()) {
+            continue;
+        }
+
+        let mut tags = draft
+            .tags
+            .into_iter()
+            .map(|tag| truncate_chars(tag.trim(), 32))
+            .filter(|tag| !tag.is_empty())
+            .collect::<Vec<_>>();
+        tags.push("llm_post_run".to_string());
+        tags.push(memory_type_label(draft.memory_type).to_string());
+        tags.sort();
+        tags.dedup();
+
+        memories.push(MemoryRecord {
+            memory_id: format!(
+                "llm-post-run:{}:{}:{}",
+                input.task_id,
+                memory_type_label(draft.memory_type),
+                &content_hash[..12.min(content_hash.len())]
+            ),
+            context_key: input.scope.context_key.clone(),
+            source_episode_id: Some(input.task_id.to_string()),
+            memory_type: draft.memory_type,
+            title: truncate_chars(draft.title.trim(), MEMORY_TITLE_MAX_CHARS),
+            content,
+            short_description: truncate_chars(
+                draft.short_description.trim(),
+                MEMORY_SHORT_DESCRIPTION_MAX_CHARS,
+            ),
+            importance: draft.importance.clamp(0.0, 1.0),
+            confidence: draft.confidence.clamp(0.0, 1.0),
+            source: Some("llm_post_run_writer".to_string()),
+            content_hash: Some(content_hash),
+            reason: Some(truncate_chars(draft.reason.trim(), 240)),
+            tags,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        });
+    }
+
+    Ok(ValidatedPostRunMemoryWrite {
+        thread_short_summary: parsed
+            .thread_short_summary
+            .map(|value| truncate_chars(value.trim(), THREAD_SHORT_SUMMARY_MAX_CHARS))
+            .filter(|value| !value.is_empty()),
+        episode: ValidatedPostRunEpisode {
+            summary: episode_summary,
+            outcome: parsed.episode.outcome,
+            failures,
+            importance: parsed.episode.importance.clamp(0.0, 1.0),
+        },
+        memories,
+    })
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
 #[derive(Clone)]
 pub struct PersistentMemoryCoordinator {
     store: Arc<dyn PersistentMemoryStore>,
     finalizer: EpisodeFinalizer,
-    extractor: ReusableMemoryExtractor,
     consolidator: ContextConsolidator,
     embedding_indexer: Option<PersistentMemoryEmbeddingIndexer>,
+    memory_writer: Option<Arc<dyn PostRunMemoryWriter>>,
 }
 
 impl PersistentMemoryCoordinator {
@@ -585,9 +1049,9 @@ impl PersistentMemoryCoordinator {
         Self {
             store,
             finalizer: EpisodeFinalizer,
-            extractor: ReusableMemoryExtractor::new(),
             consolidator: ContextConsolidator::new(ConsolidationPolicy::default()),
             embedding_indexer: None,
+            memory_writer: None,
         }
     }
 
@@ -600,6 +1064,15 @@ impl PersistentMemoryCoordinator {
         self
     }
 
+    #[must_use]
+    pub(crate) fn with_memory_writer(
+        mut self,
+        memory_writer: Arc<dyn PostRunMemoryWriter>,
+    ) -> Self {
+        self.memory_writer = Some(memory_writer);
+        self
+    }
+
     pub async fn persist_post_run(&self, ctx: PersistentRunContext<'_>) -> Result<()> {
         let summary_signal = latest_summary_signal(ctx.messages);
         let artifacts = collect_artifacts(ctx.messages);
@@ -608,6 +1081,33 @@ impl PersistentMemoryCoordinator {
             PersistentRunPhase::Completed { final_answer } => Some(final_answer.to_string()),
             PersistentRunPhase::WaitingForUserInput => None,
         };
+
+        let llm_write = if let Some(final_answer) = final_answer.as_deref() {
+            let Some(memory_writer) = self.memory_writer.as_ref() else {
+                return Err(anyhow::anyhow!(
+                    "PostRun memory writer is required for completed durable memory writes"
+                ));
+            };
+            Some(
+                memory_writer
+                    .write(&PostRunMemoryWriterInput {
+                        task_id: ctx.task_id,
+                        scope: ctx.scope,
+                        task: ctx.task,
+                        final_answer,
+                        messages: ctx.messages,
+                        tools_used: &tools_used,
+                        artifacts: &artifacts,
+                        compaction_summary: summary_signal
+                            .as_ref()
+                            .map(|signal| signal.summary_text.as_str()),
+                    })
+                    .await?,
+            )
+        } else {
+            None
+        };
+
         let plan = self.finalizer.build_plan(EpisodeFinalizationInput {
             user_id: ctx.scope.user_id,
             context_key: ctx.scope.context_key.clone(),
@@ -615,15 +1115,28 @@ impl PersistentMemoryCoordinator {
             session_id: ctx.session_id.to_string(),
             episode_id: ctx.task_id.to_string(),
             goal: ctx.task.to_string(),
+            thread_short_summary: llm_write
+                .as_ref()
+                .and_then(|write| write.thread_short_summary.clone()),
+            episode_summary: llm_write
+                .as_ref()
+                .map(|write| write.episode.summary.clone()),
+            episode_outcome: llm_write.as_ref().map(|write| write.episode.outcome),
+            episode_importance: llm_write.as_ref().map(|write| write.episode.importance),
             final_answer,
             compaction_summary: summary_signal
                 .as_ref()
                 .map(|signal| signal.summary_text.clone()),
             tools_used,
             artifacts,
-            failures: summary_signal
+            failures: llm_write
                 .as_ref()
-                .map_or_else(Vec::new, |signal| signal.failures.clone()),
+                .map(|write| write.episode.failures.clone())
+                .unwrap_or_else(|| {
+                    summary_signal
+                        .as_ref()
+                        .map_or_else(Vec::new, |signal| signal.failures.clone())
+                }),
             hot_token_estimate: ctx.hot_token_estimate,
             finalized_at: Utc::now(),
         });
@@ -650,13 +1163,9 @@ impl PersistentMemoryCoordinator {
                 warn!(error = %error, episode_id = %episode.episode_id, "episode embedding write failed");
             }
         }
-        if let Some(episode) = episode.as_ref() {
-            self.persist_reusable_memories(
-                episode,
-                summary_signal.as_ref(),
-                &ctx.tool_memory_drafts,
-            )
-            .await;
+        if let (Some(episode), Some(llm_write)) = (episode.as_ref(), llm_write.as_ref()) {
+            self.persist_llm_memories(episode, &llm_write.memories)
+                .await;
         }
         if let Some(indexer) = self.embedding_indexer.as_ref() {
             if let Err(error) = indexer.backfill().await {
@@ -670,28 +1179,11 @@ impl PersistentMemoryCoordinator {
         Ok(())
     }
 
-    async fn persist_reusable_memories(
+    async fn persist_llm_memories(
         &self,
         episode: &oxide_agent_memory::EpisodeRecord,
-        summary_signal: Option<&PersistentSummarySignal>,
-        tool_memory_drafts: &[ToolDerivedMemoryDraft],
+        memories: &[MemoryRecord],
     ) {
-        let signals = summary_signal
-            .map(|summary_signal| EpisodeMemorySignals {
-                decisions: summary_signal.decisions.clone(),
-                constraints: summary_signal.constraints.clone(),
-                discoveries: summary_signal.discoveries.clone(),
-            })
-            .unwrap_or_default();
-        let extracted = self.extractor.extract(episode, &signals);
-        let mut memories = Vec::new();
-        memories.extend(extracted);
-        memories.extend(
-            tool_memory_drafts
-                .iter()
-                .filter_map(|draft| tool_memory_record(episode, draft)),
-        );
-
         let mut fact_writes = 0usize;
         let mut preference_writes = 0usize;
         let mut procedure_writes = 0usize;
@@ -700,7 +1192,7 @@ impl PersistentMemoryCoordinator {
         let mut failed_writes = 0usize;
         let mut stored_memory_ids = Vec::new();
 
-        for memory in memories {
+        for memory in memories.iter().cloned() {
             match self.store.upsert_memory(memory).await {
                 Ok(memory) => {
                     match memory.memory_type {
@@ -712,12 +1204,12 @@ impl PersistentMemoryCoordinator {
                     }
                     stored_memory_ids.push(memory.memory_id.clone());
                     info!(
-                        memory_write_source = "post_run",
+                        memory_write_source = "llm_post_run",
                         context_key = %memory.context_key,
                         episode_id = %episode.episode_id,
                         memory_id = %memory.memory_id,
                         memory_type = memory_type_label(memory.memory_type),
-                        "Persistent reusable memory write"
+                        "Persistent LLM memory write"
                     );
                     if let Some(indexer) = self.embedding_indexer.as_ref() {
                         if let Err(error) = indexer.index_memory(&memory).await {
@@ -727,14 +1219,14 @@ impl PersistentMemoryCoordinator {
                 }
                 Err(error) => {
                     failed_writes += 1;
-                    warn!(error = %error, episode_id = %episode.episode_id, "Reusable memory extraction write failed");
+                    warn!(error = %error, episode_id = %episode.episode_id, "LLM memory write failed");
                 }
             }
         }
 
         if !stored_memory_ids.is_empty() || failed_writes > 0 {
             info!(
-                memory_write_source = "post_run",
+                memory_write_source = "llm_post_run",
                 episode_id = %episode.episode_id,
                 context_key = %episode.context_key,
                 stored_memory_count = stored_memory_ids.len(),
@@ -2225,9 +2717,6 @@ fn memory_embedding_text(memory: &MemoryRecord) -> String {
 #[derive(Debug, Clone)]
 struct PersistentSummarySignal {
     summary_text: String,
-    decisions: Vec<String>,
-    constraints: Vec<String>,
-    discoveries: Vec<String>,
     failures: Vec<String>,
 }
 
@@ -2241,27 +2730,6 @@ fn latest_summary_signal(messages: &[AgentMessage]) -> Option<PersistentSummaryS
 
         latest_summary = Some(PersistentSummarySignal {
             summary_text: message.content.trim().to_string(),
-            decisions: summary
-                .decisions
-                .iter()
-                .map(|item| item.trim())
-                .filter(|item| !item.is_empty())
-                .map(ToOwned::to_owned)
-                .collect(),
-            constraints: summary
-                .constraints
-                .iter()
-                .map(|item| item.trim())
-                .filter(|item| !item.is_empty())
-                .map(ToOwned::to_owned)
-                .collect(),
-            discoveries: summary
-                .discoveries
-                .iter()
-                .map(|item| item.trim())
-                .filter(|item| !item.is_empty())
-                .map(ToOwned::to_owned)
-                .collect(),
             failures: summary
                 .risks
                 .iter()
@@ -2363,53 +2831,14 @@ fn collect_tools_used(messages: &[AgentMessage]) -> Vec<String> {
     tools
 }
 
-fn tool_memory_record(
-    episode: &EpisodeRecord,
-    draft: &ToolDerivedMemoryDraft,
-) -> Option<MemoryRecord> {
-    if draft.content.trim().is_empty() {
-        return None;
-    }
-
-    let content_hash = stable_memory_content_hash(draft.memory_type, &draft.content);
-    let mut tags = draft.tags.clone();
-    tags.push("tool_extract".to_string());
-    tags.push(memory_type_label(draft.memory_type).to_string());
-    tags.sort();
-    tags.dedup();
-
-    Some(MemoryRecord {
-        memory_id: format!(
-            "tool-extract:{}:{}:{}",
-            episode.episode_id,
-            memory_type_label(draft.memory_type),
-            &content_hash[..12.min(content_hash.len())]
-        ),
-        context_key: episode.context_key.clone(),
-        source_episode_id: Some(episode.episode_id.clone()),
-        memory_type: draft.memory_type,
-        title: draft.title.clone(),
-        content: draft.content.clone(),
-        short_description: draft.short_description.clone(),
-        importance: draft.importance.max(episode.importance).min(1.0),
-        confidence: draft.confidence,
-        source: Some(draft.source.clone()),
-        content_hash: Some(content_hash),
-        reason: Some(draft.reason.clone()),
-        tags,
-        created_at: draft.captured_at,
-        updated_at: draft.captured_at,
-        deleted_at: None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         DurableMemoryRetrievalOptions, DurableMemoryRetriever, DurableMemorySearchItem,
         DurableMemorySearchRequest, HybridCandidate, MemoryEmbeddingGenerator,
         PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer, PersistentMemoryStore,
-        PersistentRunContext, PersistentRunPhase,
+        PersistentRunContext, PersistentRunPhase, PostRunMemoryWriter, PostRunMemoryWriterInput,
+        ValidatedPostRunEpisode, ValidatedPostRunMemoryWrite,
     };
     use crate::agent::compaction::ArchiveRef;
     use crate::agent::memory::AgentMessage;
@@ -2425,6 +2854,113 @@ mod tests {
     use std::sync::Arc;
 
     struct FakeEmbeddingGenerator;
+
+    struct FakePostRunMemoryWriter;
+
+    #[async_trait::async_trait]
+    impl PostRunMemoryWriter for FakePostRunMemoryWriter {
+        async fn write(
+            &self,
+            input: &PostRunMemoryWriterInput<'_>,
+        ) -> anyhow::Result<ValidatedPostRunMemoryWrite> {
+            let context_label = input.scope.context_key.replace('-', " ");
+            let now = chrono::Utc::now();
+            let memory_specs = if input.task.contains("hygiene") {
+                vec![
+                    (
+                        MemoryType::Decision,
+                        "Memory hygiene decision".to_string(),
+                        "Use cargo check before build".to_string(),
+                    ),
+                    (
+                        MemoryType::Constraint,
+                        "Memory hygiene constraint".to_string(),
+                        "Keep duplicate durable memories merged by content hash".to_string(),
+                    ),
+                    (
+                        MemoryType::Fact,
+                        "Memory hygiene fact".to_string(),
+                        "Persistent memory consolidation marks superseded duplicates as deleted"
+                            .to_string(),
+                    ),
+                ]
+            } else {
+                vec![
+                    (
+                        MemoryType::Decision,
+                        format!("{} decision", context_label),
+                        format!(
+                            "Use durable memory isolation for {}",
+                            input.scope.context_key
+                        ),
+                    ),
+                    (
+                        MemoryType::Constraint,
+                        format!("{} constraint", context_label),
+                        format!(
+                            "{} durable memory records must stay isolated",
+                            input.scope.context_key
+                        ),
+                    ),
+                    (
+                        MemoryType::Fact,
+                        format!("{} fact", context_label),
+                        format!(
+                            "{} records are stored under their own context key",
+                            input.scope.context_key
+                        ),
+                    ),
+                ]
+            };
+
+            let memories = memory_specs
+                .into_iter()
+                .map(|(memory_type, title, content)| {
+                    let content_hash =
+                        oxide_agent_memory::stable_memory_content_hash(memory_type, &content);
+                    MemoryRecord {
+                        memory_id: format!(
+                            "fake:{}:{}:{}",
+                            input.task_id,
+                            super::memory_type_label(memory_type),
+                            &content_hash[..12.min(content_hash.len())]
+                        ),
+                        context_key: input.scope.context_key.clone(),
+                        source_episode_id: Some(input.task_id.to_string()),
+                        memory_type,
+                        title: title.to_string(),
+                        content: content.to_string(),
+                        short_description: content.to_string(),
+                        importance: 0.9,
+                        confidence: 0.95,
+                        source: Some("fake_post_run_writer".to_string()),
+                        content_hash: Some(content_hash),
+                        reason: Some("test llm writer".to_string()),
+                        tags: vec!["llm_post_run".to_string()],
+                        created_at: now,
+                        updated_at: now,
+                        deleted_at: None,
+                    }
+                })
+                .collect();
+
+            Ok(ValidatedPostRunMemoryWrite {
+                thread_short_summary: Some(format!("{} summary", input.task)),
+                episode: ValidatedPostRunEpisode {
+                    summary: format!("Completed task: {}", input.task),
+                    outcome: EpisodeOutcome::Success,
+                    failures: Vec::new(),
+                    importance: 0.9,
+                },
+                memories,
+            })
+        }
+    }
+
+    fn test_coordinator(store: Arc<dyn PersistentMemoryStore>) -> PersistentMemoryCoordinator {
+        PersistentMemoryCoordinator::new(store)
+            .with_memory_writer(Arc::new(FakePostRunMemoryWriter))
+    }
 
     #[async_trait::async_trait]
     impl MemoryEmbeddingGenerator for FakeEmbeddingGenerator {
@@ -2446,7 +2982,7 @@ mod tests {
         let store = Arc::new(InMemoryMemoryRepository::new());
         let store_for_coordinator = Arc::clone(&store);
         let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
-        let coordinator = PersistentMemoryCoordinator::new(store_for_coordinator);
+        let coordinator = test_coordinator(store_for_coordinator);
         let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
         let messages = vec![
             AgentMessage::tool("tool-1", "read_file", "content"),
@@ -2490,8 +3026,9 @@ mod tests {
             .expect("episode lookup should succeed")
             .expect("episode should exist");
         assert_eq!(episode.goal, "Implement Stage 4");
+        assert_eq!(episode.summary, "Completed task: Implement Stage 4");
         assert_eq!(episode.tools_used, vec!["read_file".to_string()]);
-        assert_eq!(episode.failures, vec!["Need follow-up test".to_string()]);
+        assert!(episode.failures.is_empty());
         assert_eq!(episode.artifacts.len(), 1);
         assert_eq!(
             episode.artifacts[0].storage_key,
@@ -2575,7 +3112,7 @@ mod tests {
         let store = Arc::new(InMemoryMemoryRepository::new());
         let store_for_coordinator = Arc::clone(&store);
         let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
-        let coordinator = PersistentMemoryCoordinator::new(store_for_coordinator);
+        let coordinator = test_coordinator(store_for_coordinator);
 
         let topic_a_scope = AgentMemoryScope::new(42, "topic-a", "flow-a");
         let topic_b_scope = AgentMemoryScope::new(42, "topic-b", "flow-b");
@@ -3038,7 +3575,7 @@ mod tests {
         let store = Arc::new(InMemoryMemoryRepository::new());
         let store_for_coordinator = Arc::clone(&store);
         let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
-        let coordinator = PersistentMemoryCoordinator::new(store_for_coordinator);
+        let coordinator = test_coordinator(store_for_coordinator);
         let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
         let messages = repeated_summary_messages();
 
