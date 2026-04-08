@@ -3,6 +3,7 @@
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::{SandboxManager, SandboxScope};
+use oxide_agent_core::{agent::connect_postgres_memory_store, agent::PersistentMemoryStore};
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_transport_web::session::WebSessionManager;
 use oxide_agent_transport_web::AppState;
@@ -135,6 +136,58 @@ pub fn setup_live_zai_test() -> anyhow::Result<AppState> {
     let registry = SessionRegistry::new();
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
     Ok(AppState::new(Arc::new(session_manager)))
+}
+
+pub async fn setup_live_zai_test_with_postgres(
+) -> anyhow::Result<(AppState, Arc<dyn PersistentMemoryStore>)> {
+    let _ = dotenvy::dotenv();
+
+    let api_key = env::var("ZAI_API_KEY")
+        .ok()
+        .filter(|value| !value.is_empty() && value != "dummy")
+        .ok_or_else(|| anyhow::anyhow!("ZAI_API_KEY is required for live ZAI E2E tests"))?;
+    let memory_database_url = env::var("MEMORY_DATABASE_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("MEMORY_DATABASE_URL is required for Postgres memory E2E tests")
+        })?;
+    let embedding_dimensions = env::var("EMBEDDING_DIMENSIONS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(768);
+
+    let mut settings = AgentSettings {
+        agent_model_id: Some("glm-4.7".to_string()),
+        agent_model_provider: Some("zai".to_string()),
+        memory_classifier_model: Some("glm-4.7".to_string()),
+        memory_classifier_provider: Some("zai".to_string()),
+        compaction_model_id: Some("glm-4.7".to_string()),
+        compaction_model_provider: Some("zai".to_string()),
+        agent_model_max_output_tokens: Some(32_000),
+        agent_model_context_window_tokens: Some(200_000),
+        embedding_dimensions: Some(embedding_dimensions),
+        agent_timeout_secs: Some(900),
+        zai_api_key: Some(api_key),
+        memory_database_url: Some(memory_database_url),
+        memory_database_auto_migrate: Some(true),
+        ..AgentSettings::default()
+    };
+    if let Ok(base) = env::var("ZAI_API_BASE") {
+        if !base.is_empty() {
+            settings.zai_api_base = base;
+        }
+    } else {
+        settings.zai_api_base = ZAI_API_BASE.to_string();
+    }
+    let agent_settings = Arc::new(settings);
+    let memory_store = connect_postgres_memory_store(agent_settings.as_ref()).await?;
+
+    let llm = Arc::new(LlmClient::new(&agent_settings));
+    let registry = SessionRegistry::new();
+    let session_manager = WebSessionManager::new(registry, llm, Arc::clone(&agent_settings))
+        .with_persistent_memory_store(Arc::clone(&memory_store));
+    Ok((AppState::new(Arc::new(session_manager)), memory_store))
 }
 
 /// Best-effort cleanup for the persistent web sandbox container used by a test user.

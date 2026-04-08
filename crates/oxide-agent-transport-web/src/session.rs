@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
-    AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
+    AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, PersistentMemoryStore, SessionId,
 };
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
@@ -149,6 +149,8 @@ pub struct WebSessionManager {
     llm: Arc<LlmClient>,
     /// Agent settings (copied from config).
     agent_settings: Arc<AgentSettings>,
+    /// Optional canonical durable-memory store injection.
+    persistent_memory_store: Option<Arc<dyn PersistentMemoryStore>>,
     /// Per-session metadata.
     sessions: Arc<RwLock<HashMap<String, SessionMeta>>>,
     /// Per-task metadata and timelines.
@@ -172,10 +174,21 @@ impl WebSessionManager {
             storage: Arc::new(InMemoryStorage::new()),
             llm,
             agent_settings,
+            persistent_memory_store: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             tasks: Arc::new(RwLock::new(HashMap::new())),
             running_tasks: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Inject the canonical durable-memory store.
+    #[must_use]
+    pub fn with_persistent_memory_store(
+        mut self,
+        persistent_memory_store: Arc<dyn PersistentMemoryStore>,
+    ) -> Self {
+        self.persistent_memory_store = Some(persistent_memory_store);
+        self
     }
 
     /// Storage shared by all sessions managed here.
@@ -240,6 +253,9 @@ impl WebSessionManager {
         let mut executor =
             AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone())
                 .with_storage_memory_repository(self.storage());
+        if let Some(store) = self.persistent_memory_store.as_ref() {
+            executor = executor.with_persistent_memory_store(Arc::clone(store));
+        }
         executor.set_agents_md_context(self.storage(), user_id, context_key.clone());
         executor.set_reminder_context(ReminderContext {
             storage: self.storage(),

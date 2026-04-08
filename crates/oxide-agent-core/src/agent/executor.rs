@@ -509,6 +509,14 @@ impl AgentExecutor {
         self.session.last_task.as_deref()
     }
 
+    /// Whether durable persistent-memory orchestration is configured.
+    #[must_use]
+    pub fn has_persistent_memory(&self) -> bool {
+        self.persistent_memory.is_some()
+            && self.memory_store.is_some()
+            && self.memory_classifier.is_some()
+    }
+
     /// Clone the runtime context inbox handle for concurrent transport writes.
     #[must_use]
     pub fn runtime_context_inbox(&self) -> RuntimeContextInbox {
