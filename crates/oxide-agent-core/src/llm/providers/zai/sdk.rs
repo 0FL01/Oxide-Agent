@@ -358,7 +358,7 @@ where
         .with_url(api_base)
         .with_temperature(temperature.unwrap_or(ZAI_TEMPERATURE))
         .with_max_tokens(max_tokens)
-        .with_thinking(ThinkingType::Enabled);
+        .with_thinking(thinking_type_for_json_mode(json_mode));
 
     if json_mode {
         client.body_mut().response_format = Some(ResponseFormat::JsonObject);
@@ -375,12 +375,21 @@ fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
     json_mode && !has_tools
 }
 
+fn thinking_type_for_json_mode(json_mode: bool) -> ThinkingType {
+    if json_mode {
+        ThinkingType::Disabled
+    } else {
+        ThinkingType::Enabled
+    }
+}
+
 fn maybe_apply_json_mode_to_raw_body(
     body: &mut serde_json::Value,
     json_mode: bool,
     has_tools: bool,
 ) {
     if should_use_native_json_mode(json_mode, has_tools) {
+        body["thinking"] = json!(ThinkingType::Disabled);
         body["response_format"] = json!({ "type": "json_object" });
     }
 }
@@ -460,18 +469,23 @@ fn map_chat_response(response: ChatCompletionResponse) -> Result<ChatResponse, L
         .and_then(|choices| choices.first())
         .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))?;
 
-    let content = extract_text_content(choice.message.content.clone());
+    let content =
+        extract_text_content(choice.message.content.clone()).filter(|text| !text.trim().is_empty());
     let reasoning_content = choice
         .message
         .reasoning_content
         .clone()
-        .filter(|text| !text.is_empty());
+        .filter(|text| !text.trim().is_empty());
     let finish_reason = choice
         .finish_reason
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
     let tool_calls = map_tool_calls(choice.message.tool_calls.as_deref());
     let usage = response.usage.map(map_usage);
+
+    if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
+        return Err(LlmError::ApiError("Empty response".to_string()));
+    }
 
     Ok(ChatResponse {
         content,
@@ -616,13 +630,17 @@ fn is_stream_transport_error(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_text_request, is_stream_transport_error, map_zai_error, select_model,
-        should_use_native_json_mode,
+        build_text_request, is_stream_transport_error, map_chat_response, map_zai_error,
+        maybe_apply_json_mode_to_raw_body, select_model, should_use_native_json_mode,
     };
     use crate::llm::LlmError;
     use serde_json::json;
+    use zai_rs::model::chat_base_response::{
+        ChatCompletionResponse, Choice, Message as ResponseMessage,
+    };
     use zai_rs::model::chat_message_types::TextMessage;
     use zai_rs::model::chat_models::GLM4_6;
+    use zai_rs::model::tools::ThinkingType;
     use zai_rs::ZaiError;
 
     // ── select_model tests ──────────────────────────────────────────────
@@ -726,6 +744,7 @@ mod tests {
         let body = serde_json::to_value(client.body_mut()).expect("serialize request body");
 
         assert_eq!(body["response_format"]["type"], json!("json_object"));
+        assert_eq!(body["thinking"]["type"], json!("disabled"));
     }
 
     #[test]
@@ -744,6 +763,41 @@ mod tests {
         let body = serde_json::to_value(client.body_mut()).expect("serialize request body");
 
         assert!(body.get("response_format").is_none());
+        assert_eq!(body["thinking"]["type"], json!("enabled"));
+    }
+
+    #[test]
+    fn raw_body_switches_to_disabled_thinking_for_native_json_mode() {
+        let mut body = json!({
+            "thinking": ThinkingType::Enabled,
+        });
+
+        maybe_apply_json_mode_to_raw_body(&mut body, true, false);
+
+        assert_eq!(body["response_format"]["type"], json!("json_object"));
+        assert_eq!(body["thinking"]["type"], json!("disabled"));
+    }
+
+    #[test]
+    fn map_chat_response_rejects_empty_content_without_reasoning_or_tools() {
+        let response = ChatCompletionResponse {
+            choices: Some(vec![Choice {
+                index: 0,
+                message: ResponseMessage {
+                    role: Some("assistant".to_string()),
+                    content: Some(json!("")),
+                    reasoning_content: None,
+                    audio: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }]),
+            ..ChatCompletionResponse::default()
+        };
+
+        let err = map_chat_response(response).expect_err("empty response should error");
+
+        assert!(matches!(err, LlmError::ApiError(message) if message == "Empty response"));
     }
 
     // ── error mapping tests ─────────────────────────────────────────────
