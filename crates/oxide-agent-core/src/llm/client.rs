@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use tracing::{debug, info, instrument, trace, warn};
@@ -212,6 +213,23 @@ impl LlmClient {
         let http_client = support::http::create_http_client();
 
         let mut providers = HashMap::new();
+
+        if let Some(auth_path) = settings
+            .chatgpt_auth_path
+            .as_ref()
+            .filter(|path| !path.trim().is_empty())
+        {
+            if Path::new(auth_path).exists() {
+                Self::insert_provider(
+                    &mut providers,
+                    "chatgpt",
+                    Arc::new(providers::ChatGptProvider::new_with_client(
+                        auth_path.clone(),
+                        http_client.clone(),
+                    )),
+                );
+            }
+        }
 
         if let Some(api_key) = settings.groq_api_key.as_ref() {
             Self::insert_provider(

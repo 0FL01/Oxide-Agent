@@ -129,6 +129,7 @@ impl ProviderCapabilities {
 #[must_use]
 pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
     match provider_name.to_ascii_lowercase().as_str() {
+        "chatgpt" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
         "minimax" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, false),
         "mistral" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         "openrouter" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
@@ -143,6 +144,7 @@ pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
 /// Returns media modality support for a provider.
 pub fn provider_media_capabilities(provider_name: &str) -> MediaCapabilities {
     match provider_name.to_ascii_lowercase().as_str() {
+        "chatgpt" => MediaCapabilities::new(false, false, false),
         "gemini" | "openrouter" => MediaCapabilities::new(true, true, true),
         "mistral" => MediaCapabilities::new(true, false, false),
         _ => MediaCapabilities::new(false, false, false),
