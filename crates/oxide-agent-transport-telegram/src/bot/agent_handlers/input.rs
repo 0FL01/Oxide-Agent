@@ -364,6 +364,20 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         }
     }
 
+    if super::queue_followup_during_completed_response_delivery(&ctx.session_id, task_text.clone())
+        .await
+    {
+        crate::bot::resilient::send_message_resilient_with_thread(
+            &ctx.bot,
+            ctx.chat_id,
+            "✏️ Update received before final reply delivery. I’m revising the answer.",
+            None,
+            ctx.message_thread_id,
+        )
+        .await?;
+        return Ok(());
+    }
+
     if !SESSION_REGISTRY.contains(&ctx.session_id).await {
         warn!(session_id = %ctx.session_id, "Session expired before preprocessed input could be processed");
         crate::bot::resilient::send_message_resilient_with_thread(
