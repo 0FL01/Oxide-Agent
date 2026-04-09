@@ -65,6 +65,35 @@ pub fn empty_unstructured_response() -> ChatResponse {
     }
 }
 
+/// Build a structured final-answer ChatResponse.
+pub fn structured_final_answer_response(final_answer: &str) -> ChatResponse {
+    unstructured_text_response(
+        &serde_json::json!({
+            "thought": "done",
+            "tool_call": null,
+            "final_answer": final_answer,
+            "awaiting_user_input": null,
+        })
+        .to_string(),
+    )
+}
+
+/// Build a structured awaiting-user-input ChatResponse.
+pub fn structured_awaiting_user_input_response(kind: &str, prompt: &str) -> ChatResponse {
+    unstructured_text_response(
+        &serde_json::json!({
+            "thought": "blocked_on_user",
+            "tool_call": null,
+            "final_answer": null,
+            "awaiting_user_input": {
+                "kind": kind,
+                "prompt": prompt,
+            },
+        })
+        .to_string(),
+    )
+}
+
 /// Wait until the narrator provider reaches at least `minimum_calls`.
 pub async fn wait_for_narrator_calls(
     narrator_provider: &super::providers::ControlledNarratorProvider,
