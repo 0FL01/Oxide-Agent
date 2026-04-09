@@ -193,35 +193,40 @@ impl MemoryClassifierBackend for LlmMemoryClassifierBackend {
                 route.provider
             )));
         }
-        if !LlmClient::supports_structured_output_for_model(route) {
-            return Err(LlmError::ApiError(format!(
-                "memory classifier route {}:{} does not support structured output",
-                route.provider, route.id
-            )));
+
+        if LlmClient::supports_structured_output_for_model(route) {
+            let messages = vec![Message::user(prompt)];
+            let response = self
+                .llm_client
+                .chat_with_tools_single_attempt_for_model_info(
+                    memory_classifier_system_prompt(),
+                    &messages,
+                    &[],
+                    route,
+                    None,
+                    true,
+                )
+                .await?;
+
+            if !response.tool_calls.is_empty() {
+                return Err(LlmError::ApiError(
+                    "memory classifier unexpectedly returned tool calls".to_string(),
+                ));
+            }
+
+            response.content.ok_or_else(|| {
+                LlmError::ApiError("memory classifier returned empty response body".to_string())
+            })
+        } else {
+            self.llm_client
+                .chat_completion_for_model_info(
+                    memory_classifier_system_prompt(),
+                    &[],
+                    prompt,
+                    route,
+                )
+                .await
         }
-
-        let messages = vec![Message::user(prompt)];
-        let response = self
-            .llm_client
-            .chat_with_tools_single_attempt_for_model_info(
-                memory_classifier_system_prompt(),
-                &messages,
-                &[],
-                route,
-                None,
-                true,
-            )
-            .await?;
-
-        if !response.tool_calls.is_empty() {
-            return Err(LlmError::ApiError(
-                "memory classifier unexpectedly returned tool calls".to_string(),
-            ));
-        }
-
-        response.content.ok_or_else(|| {
-            LlmError::ApiError("memory classifier returned empty response body".to_string())
-        })
     }
 }
 
@@ -265,6 +270,50 @@ impl LlmMemoryTaskClassifier {
             .min(self.config.max_backoff_ms);
         Some(Duration::from_millis(backoff_ms))
     }
+
+    fn should_retry_after_failure(
+        &self,
+        failure: &ClassifierAttemptFailure,
+        attempt: usize,
+    ) -> Option<Duration> {
+        if !failure.retryable {
+            return None;
+        }
+
+        self.backoff_for_retry(attempt)
+    }
+}
+
+struct ClassifierAttemptFailure {
+    error: anyhow::Error,
+    retryable: bool,
+}
+
+impl ClassifierAttemptFailure {
+    fn retryable(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            retryable: true,
+        }
+    }
+
+    fn permanent(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            retryable: false,
+        }
+    }
+}
+
+fn is_retryable_classifier_llm_error(error: &LlmError) -> bool {
+    match error {
+        LlmError::MissingConfig(_) => false,
+        LlmError::ApiError(message) => {
+            !message.contains("does not support structured output")
+                && !message.contains("not implemented")
+        }
+        _ => true,
+    }
 }
 
 #[async_trait]
@@ -272,7 +321,7 @@ impl MemoryTaskClassifier for LlmMemoryTaskClassifier {
     async fn classify(&self, task: &str) -> Result<MemoryClassificationDecision> {
         let prompt = build_memory_classifier_user_prompt(task);
         let max_attempts = self.config.max_attempts.max(1);
-        let mut last_error: Option<anyhow::Error> = None;
+        let mut last_failure: Option<ClassifierAttemptFailure> = None;
 
         for attempt in 1..=max_attempts {
             let llm_call = self.backend.classify_once(&prompt, &self.config.model);
@@ -281,36 +330,46 @@ impl MemoryTaskClassifier for LlmMemoryTaskClassifier {
             match result {
                 Ok(Ok(response)) => match parse_memory_classification_response(&response) {
                     Ok(parsed) => return Ok(parsed.normalized()),
-                    Err(error) => last_error = Some(error),
+                    Err(error) => last_failure = Some(ClassifierAttemptFailure::retryable(error)),
                 },
-                Ok(Err(error)) => last_error = Some(anyhow::anyhow!(error.to_string())),
+                Ok(Err(error)) => {
+                    let failure = if is_retryable_classifier_llm_error(&error) {
+                        ClassifierAttemptFailure::retryable(anyhow::anyhow!(error.to_string()))
+                    } else {
+                        ClassifierAttemptFailure::permanent(anyhow::anyhow!(error.to_string()))
+                    };
+                    last_failure = Some(failure);
+                }
                 Err(_) => {
-                    last_error = Some(anyhow::anyhow!(
+                    last_failure = Some(ClassifierAttemptFailure::retryable(anyhow::anyhow!(
                         "memory classifier timed out after {}s",
                         self.config.timeout_secs
-                    ));
+                    )));
                 }
             }
 
-            let Some(backoff) = self.backoff_for_retry(attempt) else {
+            let Some(failure) = last_failure.as_ref() else {
+                break;
+            };
+            let Some(backoff) = self.should_retry_after_failure(failure, attempt) else {
                 break;
             };
 
-            if let Some(error) = last_error.as_ref() {
-                warn!(
-                    model = %self.config.model.id,
-                    provider = %self.config.model.provider,
-                    attempt,
-                    max_attempts,
-                    backoff_ms = backoff.as_millis(),
-                    error = %error,
-                    "Memory classifier attempt failed, retrying"
-                );
-            }
+            warn!(
+                model = %self.config.model.id,
+                provider = %self.config.model.provider,
+                attempt,
+                max_attempts,
+                backoff_ms = backoff.as_millis(),
+                error = %failure.error,
+                "Memory classifier attempt failed, retrying"
+            );
             sleep(backoff).await;
         }
 
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("memory classifier failed")))
+        Err(last_failure
+            .map(|failure| failure.error)
+            .unwrap_or_else(|| anyhow::anyhow!("memory classifier failed")))
     }
 }
 
@@ -423,10 +482,14 @@ fn extract_classifier_json_payload(response: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentSettings;
+    use crate::llm::MockLlmProvider;
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct FakeBackend {
         responses: Mutex<VecDeque<Result<String, LlmError>>>,
+        calls: AtomicUsize,
     }
 
     #[async_trait]
@@ -436,6 +499,7 @@ mod tests {
             _prompt: &str,
             _route: &ModelInfo,
         ) -> Result<String, LlmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             self.responses
                 .lock()
                 .expect("backend mutex poisoned")
@@ -448,6 +512,7 @@ mod tests {
         LlmMemoryTaskClassifier::new_with_backend(
             Arc::new(FakeBackend {
                 responses: Mutex::new(responses.into()),
+                calls: AtomicUsize::new(0),
             }),
             MemoryTaskClassifierConfig {
                 model: ModelInfo {
@@ -457,6 +522,22 @@ mod tests {
                     context_window_tokens: 32_000,
                     weight: 1,
                 },
+                timeout_secs: 1,
+                max_attempts: 3,
+                initial_backoff_ms: 0,
+                max_backoff_ms: 0,
+            },
+        )
+    }
+
+    fn fake_classifier_with_backend(
+        backend: Arc<FakeBackend>,
+        model: ModelInfo,
+    ) -> LlmMemoryTaskClassifier {
+        LlmMemoryTaskClassifier::new_with_backend(
+            backend,
+            MemoryTaskClassifierConfig {
+                model,
                 timeout_secs: 1,
                 max_attempts: 3,
                 initial_backoff_ms: 0,
@@ -506,5 +587,83 @@ mod tests {
         assert!(!decision.read_policy.search_memories);
         assert_eq!(decision.read_policy.top_k, 5);
         assert!(decision.write_policy.episode_only);
+    }
+
+    #[tokio::test]
+    async fn classifier_uses_plain_text_fallback_for_routes_without_structured_output() {
+        let settings = AgentSettings {
+            minimax_api_key: Some("test-minimax-key".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut llm = LlmClient::new(&settings);
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().times(0);
+        provider
+            .expect_chat_completion()
+            .times(1)
+            .return_once(|system_prompt, history, user_message, model_id, max_tokens| {
+                assert!(system_prompt.contains("Return exactly one JSON object"));
+                assert!(history.is_empty());
+                assert!(user_message.contains("restart the staging deploy"));
+                assert_eq!(model_id, "MiniMax-M2.7");
+                assert_eq!(max_tokens, 512);
+                Ok(r#"{"class":"procedure_howto","read_policy":{"inject_prompt_memory":true,"search_episodes":false,"search_memories":true,"memory_type":"procedure","allow_vector_only_memory":true,"min_importance":0.72,"top_k":4,"allow_full_thread_read":false},"write_policy":{"allow_llm_durable_writes":true,"allow_tool_draft_writes":true,"episode_only":false},"confidence":0.94}"#.to_string())
+            });
+
+        llm.register_provider("minimax".to_string(), Arc::new(provider));
+
+        let classifier = LlmMemoryTaskClassifier::new(
+            Arc::new(llm),
+            ModelInfo {
+                id: "MiniMax-M2.7".to_string(),
+                provider: "minimax".to_string(),
+                max_output_tokens: 512,
+                context_window_tokens: 32_000,
+                weight: 1,
+            },
+        );
+
+        let decision = classifier
+            .classify("how do we restart the staging deploy?")
+            .await
+            .expect("classifier should use plain-text fallback");
+
+        assert_eq!(decision.class, MemoryClassificationClass::ProcedureHowTo);
+        assert!(decision.read_policy.inject_prompt_memory);
+        assert_eq!(
+            decision.read_policy.memory_type,
+            Some(MemoryType::Procedure)
+        );
+    }
+
+    #[tokio::test]
+    async fn classifier_does_not_retry_missing_config_failures() {
+        let backend = Arc::new(FakeBackend {
+            responses: Mutex::new(
+                vec![Err(LlmError::MissingConfig(
+                    "missing classifier route".to_string(),
+                ))]
+                .into(),
+            ),
+            calls: AtomicUsize::new(0),
+        });
+        let classifier = fake_classifier_with_backend(
+            Arc::clone(&backend),
+            ModelInfo {
+                id: "mistral-small-2603".to_string(),
+                provider: "mistral".to_string(),
+                max_output_tokens: 512,
+                context_window_tokens: 32_000,
+                weight: 1,
+            },
+        );
+
+        let error = classifier
+            .classify("how do we deploy staging?")
+            .await
+            .expect_err("classifier should fail without retries");
+
+        assert!(error.to_string().contains("missing classifier route"));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     }
 }

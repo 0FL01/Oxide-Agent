@@ -150,6 +150,18 @@ fn current_model_route(config: &AgentRunnerConfig) -> Option<crate::config::Mode
     })
 }
 
+fn retrieval_fallback_classification() -> MemoryClassificationDecision {
+    let mut decision = MemoryClassificationDecision::conservative_safe_mode();
+    decision.read_policy.inject_prompt_memory = true;
+    decision.read_policy.search_episodes = true;
+    decision.read_policy.search_memories = true;
+    decision.read_policy.allow_vector_only_memory = false;
+    decision.read_policy.min_importance = 0.8;
+    decision.read_policy.top_k = 3;
+    decision.read_policy.allow_full_thread_read = false;
+    decision
+}
+
 enum TimedRunResult {
     Final(String),
     WaitingForApproval,
@@ -301,9 +313,17 @@ impl AgentExecutor {
     ) -> Self {
         self.memory_store = Some(Arc::clone(&store));
         self.memory_artifact_storage = artifact_storage;
+        let classifier_model = self.settings.get_configured_memory_classifier_model();
+        if !crate::llm::LlmClient::supports_structured_output_for_model(&classifier_model) {
+            warn!(
+                provider = %classifier_model.provider,
+                model = %classifier_model.id,
+                "configured memory classifier route lacks structured output; using text JSON fallback"
+            );
+        }
         self.memory_classifier = Some(Arc::new(LlmMemoryTaskClassifier::new(
             self.runner.llm_client(),
-            self.settings.get_configured_memory_classifier_model(),
+            classifier_model,
         )));
         let mut coordinator = PersistentMemoryCoordinator::new(Arc::clone(&store));
         let (_, _, _, post_run_writer_timeout_secs) =
@@ -1026,15 +1046,18 @@ impl AgentExecutor {
         let mut memory_classification = None;
 
         if let (Some(store), Some(classifier)) = (&self.memory_store, &self.memory_classifier) {
-            let classification = match classifier.classify(task).await {
-                Ok(decision) => decision,
+            let (classification, retrieval_classification) = match classifier.classify(task).await {
+                Ok(decision) => (decision.clone(), decision),
                 Err(error) => {
                     warn!(
                         error = %error,
                         task = %task,
-                        "persistent-memory classifier failed; using conservative safe mode"
+                        "persistent-memory classifier failed; using conservative write mode and retrieval fallback"
                     );
-                    MemoryClassificationDecision::conservative_safe_mode()
+                    (
+                        MemoryClassificationDecision::conservative_safe_mode(),
+                        retrieval_fallback_classification(),
+                    )
                 }
             };
             memory_classification = Some(classification.clone());
@@ -1050,7 +1073,7 @@ impl AgentExecutor {
             match retriever
                 .render_prompt_context(
                     task,
-                    &classification,
+                    &retrieval_classification,
                     self.session.memory_scope(),
                     DurableMemoryRetrievalOptions::default(),
                 )
@@ -1458,6 +1481,11 @@ mod tests {
 
     use super::{AgentExecutor, PolicyControlledHook};
     use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
+    use crate::agent::persistent_memory::{
+        MemoryClassificationDecision, MemoryTaskClassifier, PersistentMemoryCoordinator,
+        PostRunMemoryWriter, PostRunMemoryWriterInput, ValidatedPostRunEpisode,
+        ValidatedPostRunMemoryWrite,
+    };
     use crate::agent::profile::HookAccessPolicy;
     use crate::agent::providers::TodoList;
     use crate::agent::providers::{
@@ -1481,6 +1509,56 @@ mod tests {
 
     struct RecordingTopicLifecycle {
         create_calls: StdMutex<Vec<ForumTopicCreateRequest>>,
+    }
+
+    struct StubMemoryTaskClassifier {
+        result: StdMutex<Option<Result<MemoryClassificationDecision>>>,
+    }
+
+    struct StubPostRunMemoryWriter;
+
+    impl StubMemoryTaskClassifier {
+        fn success(decision: MemoryClassificationDecision) -> Self {
+            Self {
+                result: StdMutex::new(Some(Ok(decision))),
+            }
+        }
+
+        fn failure(error: anyhow::Error) -> Self {
+            Self {
+                result: StdMutex::new(Some(Err(error))),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryTaskClassifier for StubMemoryTaskClassifier {
+        async fn classify(&self, _task: &str) -> Result<MemoryClassificationDecision> {
+            self.result
+                .lock()
+                .expect("stub classifier mutex poisoned")
+                .take()
+                .expect("stub classifier must only be called once")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PostRunMemoryWriter for StubPostRunMemoryWriter {
+        async fn write(
+            &self,
+            input: &PostRunMemoryWriterInput<'_>,
+        ) -> Result<ValidatedPostRunMemoryWrite> {
+            Ok(ValidatedPostRunMemoryWrite {
+                thread_short_summary: Some(format!("{} summary", input.task)),
+                episode: ValidatedPostRunEpisode {
+                    summary: format!("Completed task: {}", input.task),
+                    outcome: oxide_agent_memory::EpisodeOutcome::Success,
+                    failures: Vec::new(),
+                    importance: 0.9,
+                },
+                memories: Vec::new(),
+            })
+        }
     }
 
     impl RecordingTopicLifecycle {
@@ -1763,10 +1841,19 @@ mod tests {
     #[tokio::test]
     async fn execute_persists_episode_after_final_response() {
         let store = Arc::new(InMemoryMemoryRepository::new());
+        let store_for_coordinator: Arc<dyn crate::agent::persistent_memory::PersistentMemoryStore> =
+            store.clone();
         let mut executor = build_executor_with_mock_response(
             r#"{"thought":"done","tool_call":null,"final_answer":"persisted ok","awaiting_user_input":null}"#,
         )
         .with_persistent_memory_store(store.clone());
+        executor.memory_classifier = Some(Arc::new(StubMemoryTaskClassifier::success(
+            super::retrieval_fallback_classification(),
+        )));
+        executor.persistent_memory = Some(
+            PersistentMemoryCoordinator::new(store_for_coordinator)
+                .with_memory_writer(Arc::new(StubPostRunMemoryWriter)),
+        );
 
         let result = executor.execute("persist final response", None).await;
 
@@ -1951,6 +2038,9 @@ mod tests {
             });
 
         let mut executor = build_executor().with_storage_memory_repository(Arc::new(storage));
+        executor.memory_classifier = Some(Arc::new(StubMemoryTaskClassifier::success(
+            super::retrieval_fallback_classification(),
+        )));
         let prepared = executor
             .prepare_execution("how was the deploy fixed before?", None)
             .await;
@@ -1965,6 +2055,91 @@ mod tests {
             .expect("durable memory context should be injected");
         assert!(injected.content.contains("memory memory-1"));
         assert!(injected.content.contains("episode episode-1"));
+    }
+
+    #[tokio::test]
+    async fn prepare_execution_uses_retrieval_fallback_when_classifier_fails() {
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_search_memory_episodes_lexical()
+            .times(1)
+            .return_once(|_, _| {
+                Ok(vec![oxide_agent_memory::EpisodeSearchHit {
+                    record: oxide_agent_memory::EpisodeRecord {
+                        episode_id: "episode-1".to_string(),
+                        thread_id: "thread-1".to_string(),
+                        context_key: "session:9".to_string(),
+                        goal: "Fix deploy regression".to_string(),
+                        summary: "Earlier deploy broke staging until config was corrected."
+                            .to_string(),
+                        outcome: oxide_agent_memory::EpisodeOutcome::Success,
+                        tools_used: vec!["memory_search".to_string()],
+                        artifacts: Vec::new(),
+                        failures: Vec::new(),
+                        importance: 0.82,
+                        created_at: chrono::Utc::now(),
+                    },
+                    score: 0.7,
+                    snippet: "episode hit".to_string(),
+                }])
+            });
+        storage
+            .expect_search_memory_records_lexical()
+            .times(1)
+            .return_once(|_, _| {
+                Ok(vec![oxide_agent_memory::MemorySearchHit {
+                    record: oxide_agent_memory::MemoryRecord {
+                        memory_id: "memory-1".to_string(),
+                        context_key: "session:9".to_string(),
+                        source_episode_id: Some("episode-9".to_string()),
+                        memory_type: oxide_agent_memory::MemoryType::Procedure,
+                        title: "Deploy fix procedure".to_string(),
+                        content: "Rebuild config, then rerun the deploy with the staging profile."
+                            .to_string(),
+                        short_description: "staging recovery steps".to_string(),
+                        importance: 0.95,
+                        confidence: 0.91,
+                        source: Some("test".to_string()),
+                        content_hash: Some(oxide_agent_memory::stable_memory_content_hash(
+                            oxide_agent_memory::MemoryType::Procedure,
+                            "Rebuild config, then rerun the deploy with the staging profile.",
+                        )),
+                        reason: Some("fixture".to_string()),
+                        tags: vec!["deploy".to_string()],
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                        deleted_at: None,
+                    },
+                    score: 0.9,
+                    snippet: "memory hit".to_string(),
+                }])
+            });
+
+        let mut executor = build_executor().with_storage_memory_repository(Arc::new(storage));
+        executor.memory_classifier = Some(Arc::new(StubMemoryTaskClassifier::failure(
+            anyhow::anyhow!("classifier route misconfigured"),
+        )));
+
+        let prepared = executor
+            .prepare_execution("how was the deploy fixed before?", None)
+            .await;
+
+        let injected = prepared
+            .messages
+            .iter()
+            .find(|message| {
+                message.role == "system"
+                    && message.content.contains("Scoped durable memory context")
+            })
+            .expect("retrieval fallback should still inject durable memory context");
+        assert!(injected.content.contains("memory memory-1"));
+        assert!(injected.content.contains("episode episode-1"));
+
+        let stored_classification = prepared
+            .memory_classification
+            .expect("prepared execution should keep write-safe fallback classification");
+        assert!(!stored_classification.read_policy.inject_prompt_memory);
+        assert!(!stored_classification.write_policy.allow_llm_durable_writes);
     }
 
     #[tokio::test]
