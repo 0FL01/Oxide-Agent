@@ -368,6 +368,8 @@ impl LlmClient {
         model_info: &crate::config::ModelInfo,
     ) -> Result<String, LlmError> {
         let provider = self.get_provider(&model_info.provider)?;
+        let (system_prompt, history) =
+            support::history::fold_system_messages_into_prompt(system_prompt, history);
 
         debug!(
             model = model_info.id,
@@ -384,8 +386,8 @@ impl LlmClient {
         let start = std::time::Instant::now();
         let result = provider
             .chat_completion(
-                system_prompt,
-                history,
+                &system_prompt,
+                &history,
                 user_message,
                 &model_info.id,
                 model_info.max_output_tokens,
@@ -452,6 +454,8 @@ impl LlmClient {
     ) -> Result<ChatResponse, LlmError> {
         let provider = self.get_provider(&model_info.provider)?;
         let capabilities = Self::provider_capabilities_for_model(model_info);
+        let (system_prompt, messages) =
+            support::history::fold_system_messages_into_prompt(system_prompt, messages);
 
         if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
             return Err(LlmError::ApiError(format!(
@@ -460,7 +464,7 @@ impl LlmClient {
             )));
         }
 
-        support::history::validate_tool_history(messages, capabilities)?;
+        support::history::validate_tool_history(&messages, capabilities)?;
 
         debug!(
             model = model_info.id,
@@ -472,8 +476,8 @@ impl LlmClient {
         );
 
         let request = ChatWithToolsRequest {
-            system_prompt,
-            messages,
+            system_prompt: &system_prompt,
+            messages: &messages,
             tools,
             model_id: &model_info.id,
             max_tokens: model_info.max_output_tokens,
@@ -530,6 +534,8 @@ impl LlmClient {
     ) -> Result<ChatResponse, LlmError> {
         let model_info = self.get_model_info(model_name)?;
         let capabilities = Self::provider_capabilities_for_model(&model_info);
+        let (system_prompt, messages) =
+            support::history::fold_system_messages_into_prompt(system_prompt, messages);
 
         if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
             return Err(LlmError::ApiError(format!(
@@ -538,7 +544,7 @@ impl LlmClient {
             )));
         }
 
-        support::history::validate_tool_history(messages, capabilities)?;
+        support::history::validate_tool_history(&messages, capabilities)?;
 
         let provider = self.get_provider(&model_info.provider)?;
 
@@ -554,8 +560,8 @@ impl LlmClient {
         for attempt in 1..=Self::MAX_RETRIES {
             let start = std::time::Instant::now();
             let request = ChatWithToolsRequest {
-                system_prompt,
-                messages,
+                system_prompt: &system_prompt,
+                messages: &messages,
                 tools,
                 model_id: &model_info.id,
                 max_tokens: model_info.max_output_tokens,
@@ -893,7 +899,7 @@ impl LlmClient {
 mod tests {
     use super::LlmClient;
     use crate::config::AgentSettings;
-    use crate::llm::{ChatResponse, MockLlmProvider};
+    use crate::llm::{ChatResponse, Message, MockLlmProvider};
     use std::sync::Arc;
 
     #[test]
@@ -1119,6 +1125,102 @@ mod tests {
                 Some(0.17),
                 false,
             )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.content.as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn chat_completion_folds_system_history_into_prompt() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-openrouter".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let mut llm = LlmClient::new(&settings);
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_chat_completion()
+            .return_once(|system_prompt, history, user_message, model_id, max_tokens| {
+                assert_eq!(
+                    system_prompt,
+                    "You are helpful.\n\n[TOPIC_AGENTS_MD]\nAlways start with TL;DR.\n\n[SYSTEM: retry with strict JSON]"
+                );
+                assert_eq!(history.len(), 2);
+                assert_eq!(history[0].role, "user");
+                assert_eq!(history[0].content, "older request");
+                assert_eq!(history[1].role, "assistant");
+                assert_eq!(history[1].content, "older answer");
+                assert_eq!(user_message, "new request");
+                assert_eq!(model_id, "chat-openrouter");
+                assert_eq!(max_tokens, 1024);
+                Ok("ok".to_string())
+            });
+        llm.register_provider("openrouter".to_string(), Arc::new(provider));
+
+        let model = crate::config::ModelInfo {
+            id: "chat-openrouter".to_string(),
+            provider: "openrouter".to_string(),
+            max_output_tokens: 1024,
+            context_window_tokens: 8192,
+            weight: 1,
+        };
+        let history = vec![
+            Message::system("[TOPIC_AGENTS_MD]\nAlways start with TL;DR."),
+            Message::user("older request"),
+            Message::system("[SYSTEM: retry with strict JSON]"),
+            Message::assistant("older answer"),
+        ];
+
+        let response = llm
+            .chat_completion_for_model_info("You are helpful.", &history, "new request", &model)
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response, "ok");
+    }
+
+    #[tokio::test]
+    async fn tool_requests_fold_system_history_into_prompt() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-openrouter".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            openrouter_api_key: Some("test-openrouter-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let mut llm = LlmClient::new(&settings);
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().return_once(|request| {
+            assert_eq!(
+                request.system_prompt,
+                "You are helpful.\n\n[TOPIC_AGENTS_MD]\nAlways start with TL;DR.\n\n[SYSTEM: retry with strict JSON]"
+            );
+            assert_eq!(request.messages.len(), 2);
+            assert_eq!(request.messages[0].role, "user");
+            assert_eq!(request.messages[1].role, "assistant");
+            Ok(ChatResponse {
+                content: Some("ok".to_string()),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+                usage: None,
+            })
+        });
+        llm.register_provider("openrouter".to_string(), Arc::new(provider));
+
+        let history = vec![
+            Message::system("[TOPIC_AGENTS_MD]\nAlways start with TL;DR."),
+            Message::user("older request"),
+            Message::system("[SYSTEM: retry with strict JSON]"),
+            Message::assistant("older answer"),
+        ];
+
+        let response = llm
+            .chat_with_tools("You are helpful.", &history, &[], "chat-openrouter", false)
             .await
             .expect("request should succeed");
 
