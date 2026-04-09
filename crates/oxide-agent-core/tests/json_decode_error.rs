@@ -95,7 +95,7 @@ impl LlmProvider for JsonDecodeRetryMock {
 }
 
 /// Test that JSON decoding errors are detected and retried
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_retried_on_failure() {
     let settings = AgentSettings {
         chat_model_id: Some("test-model".to_string()),
@@ -110,9 +110,17 @@ async fn test_json_decoding_error_retried_on_failure() {
     ));
     client.register_provider("mock-provider".to_string(), mock.clone());
 
-    let result = client
-        .chat_with_tools("sys", &[], &[], "test-model", false)
-        .await;
+    let handle = tokio::spawn(async move {
+        client
+            .chat_with_tools("sys", &[], &[], "test-model", false)
+            .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(301)).await;
+    tokio::task::yield_now().await;
+
+    let result = handle.await.expect("retry task panicked");
 
     // Verify the error is a JsonError
     assert!(
@@ -130,16 +138,16 @@ async fn test_json_decoding_error_retried_on_failure() {
     );
 
     // Verify multiple calls were made (JSON errors ARE retried now!)
-    // With MAX_RETRIES = 5, we expect 5 failed attempts
     let call_count = mock.call_count().load(Ordering::SeqCst);
     assert_eq!(
-        call_count, 5,
-        "JSON errors should be retried (expected 5 attempts)"
+        call_count,
+        LlmClient::MAX_RETRIES,
+        "JSON errors should be retried through the configured retry budget"
     );
 }
 
 /// Test that JSON decoding errors eventually succeed after retry
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_succeeds_after_retry() {
     let settings = AgentSettings {
         chat_model_id: Some("test-model".to_string()),
@@ -155,9 +163,17 @@ async fn test_json_decoding_error_succeeds_after_retry() {
     ));
     client.register_provider("mock-provider".to_string(), mock.clone());
 
-    let result = client
-        .chat_with_tools("sys", &[], &[], "test-model", false)
-        .await;
+    let handle = tokio::spawn(async move {
+        client
+            .chat_with_tools("sys", &[], &[], "test-model", false)
+            .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+
+    let result = handle.await.expect("retry task panicked");
 
     // Verify the request eventually succeeded
     assert!(
