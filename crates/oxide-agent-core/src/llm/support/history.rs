@@ -2,6 +2,34 @@ use std::collections::HashSet;
 
 use super::super::{InvocationId, LlmError, Message, ProviderCapabilities, ToolCallCorrelation};
 
+#[must_use]
+pub(crate) fn fold_system_messages_into_prompt(
+    system_prompt: &str,
+    messages: &[Message],
+) -> (String, Vec<Message>) {
+    let mut normalized_prompt = system_prompt.trim().to_string();
+    let mut normalized_messages = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        if message.role == "system" {
+            let content = message.content.trim();
+            if content.is_empty() {
+                continue;
+            }
+
+            if !normalized_prompt.is_empty() {
+                normalized_prompt.push_str("\n\n");
+            }
+            normalized_prompt.push_str(content);
+            continue;
+        }
+
+        normalized_messages.push(message.clone());
+    }
+
+    (normalized_prompt, normalized_messages)
+}
+
 fn extract_expected_invocation_ids(message: &Message) -> Result<HashSet<InvocationId>, LlmError> {
     let mut expected_ids = HashSet::new();
 
@@ -171,7 +199,7 @@ fn has_empty_explicit_provider_tool_call_id(correlation: &ToolCallCorrelation) -
 
 #[cfg(test)]
 mod tests {
-    use super::validate_tool_history;
+    use super::{fold_system_messages_into_prompt, validate_tool_history};
     use crate::llm::{
         LlmError, Message, ProviderCapabilities, ToolCall, ToolCallCorrelation, ToolCallFunction,
         ToolHistoryMode,
@@ -186,6 +214,39 @@ mod tests {
             },
             false,
         )
+    }
+
+    #[test]
+    fn fold_system_messages_appends_system_history_to_prompt() {
+        let messages = vec![
+            Message::system("[TOPIC_AGENTS_MD]\nAlways start with TL;DR."),
+            Message::user("Hello"),
+            Message::system("[SYSTEM: retry with strict JSON]"),
+            Message::assistant("Hi"),
+        ];
+
+        let (system_prompt, normalized_messages) =
+            fold_system_messages_into_prompt("Base system prompt.", &messages);
+
+        assert_eq!(
+            system_prompt,
+            "Base system prompt.\n\n[TOPIC_AGENTS_MD]\nAlways start with TL;DR.\n\n[SYSTEM: retry with strict JSON]"
+        );
+        assert_eq!(normalized_messages.len(), 2);
+        assert_eq!(normalized_messages[0].role, "user");
+        assert_eq!(normalized_messages[1].role, "assistant");
+    }
+
+    #[test]
+    fn fold_system_messages_skips_empty_system_entries() {
+        let messages = vec![Message::system("   "), Message::user("Hello")];
+
+        let (system_prompt, normalized_messages) =
+            fold_system_messages_into_prompt("Base system prompt.", &messages);
+
+        assert_eq!(system_prompt, "Base system prompt.");
+        assert_eq!(normalized_messages.len(), 1);
+        assert_eq!(normalized_messages[0].role, "user");
     }
 
     #[test]
