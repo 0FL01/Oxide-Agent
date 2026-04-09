@@ -359,7 +359,9 @@ fn build_post_run_memory_writer_user_message(input: &PostRunMemoryWriterInput<'_
         .messages
         .iter()
         .filter(|message| {
-            message.summary_payload().is_none() && message.archive_ref_payload().is_none()
+            message.summary_payload().is_none()
+                && message.archive_ref_payload().is_none()
+                && message.breadcrumb_payload().is_none()
         })
         .rev()
         .take(POST_RUN_MEMORY_WRITER_MAX_TRANSCRIPT_MESSAGES)

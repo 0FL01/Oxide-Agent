@@ -1,25 +1,28 @@
 //! Hot-context rebuild after pruning and summary compaction.
 
 use super::archive::ArchiveRef;
+use super::budget::estimate_message_tokens;
 use super::summary::{
     collect_existing_structured_summaries, merge_summaries_bounded, normalize_summary,
 };
 use super::types::{
-    AgentMessageKind, CompactionRetention, CompactionSnapshot, CompactionSummary, RebuildOutcome,
+    AgentMessageKind, BreadcrumbCard, CompactionRetention, CompactionSnapshot, CompactionSummary,
+    RebuildOutcome,
 };
 use crate::agent::memory::AgentMessage;
 use crate::llm::InvocationId;
 use tracing::warn;
 
-/// Aggressive PostRun truncate: replace entire hot context with summary + archive ref.
-///
-/// Unlike [`rebuild_hot_context`] which preserves Pinned/ProtectedLive/recent-window entries,
-/// this function wipes the message list clean and inserts only the session summary and an
-/// optional archive reference. System prompt, tools schema, AGENTS.md, and memory retrieval
-/// context are all re-injected by `prepare_execution()` on the next task, so they do not
-/// need to survive the truncation.
+const POST_RUN_RECENT_RAW_TARGET_TOKENS: usize = 8 * 1024;
+const POST_RUN_MAX_RECENT_USER_REQUESTS: usize = 2;
+const POST_RUN_MAX_RECENT_ASSISTANT_UPDATES: usize = 2;
+const POST_RUN_MAX_RECENT_TOOL_OUTCOMES: usize = 3;
+const POST_RUN_MAX_AUTHORITATIVE_ITEMS: usize = 6;
+
+/// PostRun truncate: rebuild a compact retained working set instead of wiping memory down to
+/// summary-only state.
 #[must_use]
-pub fn truncate_to_summary(
+pub fn truncate_to_working_set(
     messages: &[AgentMessage],
     summary: Option<CompactionSummary>,
     archive_ref: Option<ArchiveRef>,
@@ -30,8 +33,29 @@ pub fn truncate_to_summary(
     };
 
     let total_before = messages.len();
-    let mut rebuilt = Vec::with_capacity(2);
+    let mut rebuilt = Vec::new();
+    let mut preserved = vec![false; messages.len()];
 
+    if let Some((index, message)) = messages
+        .iter()
+        .enumerate()
+        .find(|(_, message)| message.resolved_kind() == AgentMessageKind::TopicAgentsMd)
+    {
+        preserved[index] = true;
+        rebuilt.push(message.clone());
+    }
+
+    if let Some(index) = latest_matching_index(messages, |kind| kind == AgentMessageKind::UserTask)
+    {
+        if !preserved[index] {
+            preserved[index] = true;
+            rebuilt.push(messages[index].clone());
+        }
+    }
+
+    rebuilt.push(AgentMessage::from_breadcrumb_card(build_breadcrumb_card(
+        messages, &summary,
+    )));
     rebuilt.push(AgentMessage::from_compaction_summary(summary));
 
     let inserted_archive_reference = if let Some(archive_ref) = archive_ref {
@@ -44,22 +68,66 @@ pub fn truncate_to_summary(
         false
     };
 
+    let preserved_recent_indices = collect_post_run_raw_tail_indices(messages, &preserved);
+    for index in &preserved_recent_indices {
+        preserved[*index] = true;
+        rebuilt.push(messages[*index].clone());
+    }
+
+    let snapshot = CompactionSnapshot {
+        entries: messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| super::types::ClassifiedMemoryEntry {
+                index,
+                kind: message.resolved_kind(),
+                retention: message.retention(),
+                estimated_tokens: estimate_message_tokens(message),
+                content_chars: message.content.chars().count(),
+                has_reasoning: message.reasoning.is_some(),
+                tool_name: message.tool_name.clone(),
+                is_externalized: message.is_externalized(),
+                archive_ref: message.archive_ref_payload().cloned().or_else(|| {
+                    message
+                        .externalized_payload
+                        .as_ref()
+                        .map(|payload| payload.archive_ref.clone())
+                }),
+                is_pruned: message.is_pruned(),
+                preserve_in_raw_window: preserved_recent_indices.contains(&index),
+            })
+            .collect(),
+        ..CompactionSnapshot::default()
+    };
+
+    remove_orphaned_tool_results(&snapshot, messages, &mut preserved, &mut rebuilt);
+
     let outcome = RebuildOutcome {
         applied: true,
         inserted_summary: true,
+        inserted_breadcrumb: true,
         inserted_archive_reference,
-        dropped_message_count: total_before.saturating_sub(rebuilt.len()),
-        dropped_indices: (0..total_before).collect(),
-        preserved_recent_indices: Vec::new(),
+        dropped_message_count: preserved
+            .iter()
+            .filter(|is_preserved| !**is_preserved)
+            .count(),
+        dropped_indices: preserved
+            .iter()
+            .enumerate()
+            .filter_map(|(index, is_preserved)| (!is_preserved).then_some(index))
+            .collect(),
+        preserved_recent_indices,
     };
 
     warn!(
         inserted_summary = outcome.inserted_summary,
+        inserted_breadcrumb = outcome.inserted_breadcrumb,
         inserted_archive_reference = outcome.inserted_archive_reference,
         dropped_message_count = outcome.dropped_message_count,
         messages_before = total_before,
         messages_after = rebuilt.len(),
-        "PostRun truncate-to-summary: hot context replaced with summary"
+        preserved_recent_count = outcome.preserved_recent_indices.len(),
+        "PostRun truncate-to-working-set: hot context replaced with retained working set"
     );
 
     (rebuilt, outcome)
@@ -100,6 +168,7 @@ pub fn rebuild_hot_context(
     let mut preserved = vec![false; messages.len()];
     let mut outcome = RebuildOutcome {
         inserted_summary: true,
+        inserted_breadcrumb: false,
         preserved_recent_indices: snapshot
             .entries
             .iter()
@@ -158,6 +227,7 @@ pub fn rebuild_hot_context(
     if outcome.applied {
         warn!(
             inserted_summary = outcome.inserted_summary,
+            inserted_breadcrumb = outcome.inserted_breadcrumb,
             inserted_archive_reference = outcome.inserted_archive_reference,
             dropped_message_count = outcome.dropped_message_count,
             dropped_indices = ?outcome.dropped_indices,
@@ -175,6 +245,195 @@ fn format_archive_reference(archive_ref: &ArchiveRef) -> String {
         "[archived context chunk]\narchive_id: {}\ntitle: {}\nstorage_key: {}",
         archive_ref.archive_id, archive_ref.title, archive_ref.storage_key
     )
+}
+
+fn build_breadcrumb_card(messages: &[AgentMessage], summary: &CompactionSummary) -> BreadcrumbCard {
+    BreadcrumbCard {
+        current_goal: if summary.goal.trim().is_empty() {
+            latest_text(messages, |kind| kind == AgentMessageKind::UserTask).unwrap_or_default()
+        } else {
+            summary.goal.trim().to_string()
+        },
+        authoritative_state: summary
+            .constraints
+            .iter()
+            .chain(summary.decisions.iter())
+            .chain(summary.relevant_files_entities.iter())
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+            .take(POST_RUN_MAX_AUTHORITATIVE_ITEMS)
+            .map(ToOwned::to_owned)
+            .collect(),
+        recent_user_requests: collect_recent_texts(
+            messages,
+            POST_RUN_MAX_RECENT_USER_REQUESTS,
+            |kind| {
+                matches!(
+                    kind,
+                    AgentMessageKind::UserTask
+                        | AgentMessageKind::UserTurn
+                        | AgentMessageKind::RuntimeContext
+                )
+            },
+            |message| truncate_chars(&message.content, 240),
+        ),
+        recent_assistant_updates: collect_recent_texts(
+            messages,
+            POST_RUN_MAX_RECENT_ASSISTANT_UPDATES,
+            |kind| {
+                matches!(
+                    kind,
+                    AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
+                )
+            },
+            |message| truncate_chars(&message.content, 240),
+        ),
+        recent_tool_outcomes: collect_recent_texts(
+            messages,
+            POST_RUN_MAX_RECENT_TOOL_OUTCOMES,
+            |kind| kind == AgentMessageKind::ToolResult,
+            |message| {
+                let tool_name = message.tool_name.as_deref().unwrap_or("tool");
+                format!("{tool_name}: {}", truncate_chars(&message.content, 240))
+            },
+        ),
+        next_steps: summary
+            .remaining_work
+            .iter()
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        open_questions: summary
+            .risks
+            .iter()
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+    }
+}
+
+fn collect_post_run_raw_tail_indices(messages: &[AgentMessage], preserved: &[bool]) -> Vec<usize> {
+    let mut selected = Vec::new();
+    let mut protected_tokens = 0usize;
+
+    for (index, message) in messages.iter().enumerate().rev() {
+        if preserved.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        if !is_post_run_tail_kind(message.resolved_kind()) {
+            continue;
+        }
+
+        let estimated_tokens = estimate_message_tokens(message);
+        if !selected.is_empty()
+            && protected_tokens.saturating_add(estimated_tokens) > POST_RUN_RECENT_RAW_TARGET_TOKENS
+        {
+            continue;
+        }
+
+        selected.push(index);
+        protected_tokens = protected_tokens.saturating_add(estimated_tokens);
+    }
+
+    ensure_latest_anchor(&mut selected, messages, preserved, |kind| {
+        matches!(
+            kind,
+            AgentMessageKind::UserTurn | AgentMessageKind::RuntimeContext
+        )
+    });
+    ensure_latest_anchor(&mut selected, messages, preserved, |kind| {
+        matches!(
+            kind,
+            AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
+        )
+    });
+
+    selected.sort_unstable();
+    selected.dedup();
+    selected
+}
+
+fn ensure_latest_anchor(
+    selected: &mut Vec<usize>,
+    messages: &[AgentMessage],
+    preserved: &[bool],
+    predicate: impl Fn(AgentMessageKind) -> bool,
+) {
+    let Some(index) = messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(index, message)| {
+            !preserved.get(*index).copied().unwrap_or(false) && predicate(message.resolved_kind())
+        })
+        .map(|(index, _)| index)
+    else {
+        return;
+    };
+
+    if !selected.contains(&index) {
+        selected.push(index);
+    }
+}
+
+fn is_post_run_tail_kind(kind: AgentMessageKind) -> bool {
+    matches!(
+        kind,
+        AgentMessageKind::UserTask
+            | AgentMessageKind::RuntimeContext
+            | AgentMessageKind::UserTurn
+            | AgentMessageKind::AssistantResponse
+            | AgentMessageKind::AssistantReasoning
+            | AgentMessageKind::AssistantToolCall
+            | AgentMessageKind::ToolResult
+    )
+}
+
+fn latest_matching_index(
+    messages: &[AgentMessage],
+    predicate: impl Fn(AgentMessageKind) -> bool,
+) -> Option<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| predicate(message.resolved_kind()))
+        .map(|(index, _)| index)
+}
+
+fn latest_text(
+    messages: &[AgentMessage],
+    predicate: impl Fn(AgentMessageKind) -> bool,
+) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| predicate(message.resolved_kind()))
+        .map(|message| truncate_chars(&message.content, 240))
+}
+
+fn collect_recent_texts(
+    messages: &[AgentMessage],
+    limit: usize,
+    predicate: impl Fn(AgentMessageKind) -> bool,
+    render: impl Fn(&AgentMessage) -> String,
+) -> Vec<String> {
+    let mut items = messages
+        .iter()
+        .rev()
+        .filter(|message| predicate(message.resolved_kind()))
+        .map(render)
+        .filter(|item| !item.trim().is_empty())
+        .take(limit)
+        .collect::<Vec<_>>();
+    items.reverse();
+    items
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 /// Remove orphaned tool results whose corresponding tool_calls were dropped by compaction.
@@ -269,7 +528,7 @@ fn append_matching_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{rebuild_hot_context, remove_orphaned_tool_results, truncate_to_summary};
+    use super::{rebuild_hot_context, remove_orphaned_tool_results, truncate_to_working_set};
     use crate::agent::compaction::{
         classify_hot_memory, AgentMessageKind, ClassifiedMemoryEntry, CompactionRetention,
         CompactionSnapshot, CompactionSummary,
@@ -534,6 +793,7 @@ mod tests {
                 pruned_artifact: None,
                 structured_summary: None,
                 archive_ref: None,
+                breadcrumb_card: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::ToolResult,
@@ -549,6 +809,7 @@ mod tests {
                 pruned_artifact: None,
                 structured_summary: None,
                 archive_ref: None,
+                breadcrumb_card: None,
             },
         ];
         let snapshot = CompactionSnapshot {
@@ -592,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn truncate_to_summary_replaces_everything_with_summary_and_archive_ref() {
+    fn truncate_to_working_set_preserves_breadcrumb_summary_archive_and_recent_tail() {
         let messages = vec![
             AgentMessage::topic_agents_md("# Topic AGENTS\nPreserve identity."),
             AgentMessage::system_context("Execution policy"),
@@ -618,24 +879,42 @@ mod tests {
         };
 
         let (rebuilt, outcome) =
-            truncate_to_summary(&messages, Some(summary.clone()), Some(archive_ref.clone()));
+            truncate_to_working_set(&messages, Some(summary.clone()), Some(archive_ref.clone()));
 
         assert!(outcome.applied);
         assert!(outcome.inserted_summary);
+        assert!(outcome.inserted_breadcrumb);
         assert!(outcome.inserted_archive_reference);
-        assert_eq!(outcome.dropped_message_count, 7);
-        assert!(outcome.preserved_recent_indices.is_empty());
-        assert_eq!(rebuilt.len(), 2);
+        assert!(outcome.dropped_message_count >= 1);
+        assert!(!outcome.preserved_recent_indices.is_empty());
         assert_eq!(
             rebuilt[0].resolved_kind(),
+            crate::agent::AgentMessageKind::TopicAgentsMd
+        );
+        assert_eq!(
+            rebuilt[1].resolved_kind(),
+            crate::agent::AgentMessageKind::UserTask
+        );
+        assert_eq!(
+            rebuilt[2].resolved_kind(),
+            crate::agent::AgentMessageKind::Breadcrumb
+        );
+        assert_eq!(
+            rebuilt[3].resolved_kind(),
             crate::agent::AgentMessageKind::Summary
         );
-        assert_eq!(rebuilt[0].summary_payload(), Some(&summary));
-        assert_eq!(rebuilt[1].archive_ref_payload(), Some(&archive_ref));
+        assert_eq!(rebuilt[3].summary_payload(), Some(&summary));
+        assert_eq!(rebuilt[4].archive_ref_payload(), Some(&archive_ref));
+        assert!(rebuilt
+            .iter()
+            .any(|message| message.content == "Recent request 2"));
+        assert!(rebuilt
+            .iter()
+            .any(|message| message.content == "Recent response 2"));
     }
 
     #[test]
-    fn truncate_to_summary_without_archive_ref_produces_single_message() {
+    fn truncate_to_working_set_without_archive_ref_keeps_breadcrumb_and_summary() {
         let messages = vec![
             AgentMessage::user("Request"),
             AgentMessage::assistant("Response"),
@@ -645,26 +924,33 @@ mod tests {
             ..CompactionSummary::default()
         };
 
-        let (rebuilt, outcome) = truncate_to_summary(&messages, Some(summary), None);
+        let (rebuilt, outcome) = truncate_to_working_set(&messages, Some(summary), None);
 
         assert!(outcome.applied);
         assert!(outcome.inserted_summary);
+        assert!(outcome.inserted_breadcrumb);
         assert!(!outcome.inserted_archive_reference);
-        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(rebuilt.len(), 4);
         assert_eq!(
             rebuilt[0].resolved_kind(),
+            crate::agent::AgentMessageKind::Breadcrumb
+        );
+        assert_eq!(
+            rebuilt[1].resolved_kind(),
             crate::agent::AgentMessageKind::Summary
         );
+        assert_eq!(rebuilt[2].content, "Request");
+        assert_eq!(rebuilt[3].content, "Response");
     }
 
     #[test]
-    fn truncate_to_summary_is_noop_without_summary() {
+    fn truncate_to_working_set_is_noop_without_summary() {
         let messages = vec![
             AgentMessage::user("Request"),
             AgentMessage::assistant("Response"),
         ];
 
-        let (rebuilt, outcome) = truncate_to_summary(&messages, None, None);
+        let (rebuilt, outcome) = truncate_to_working_set(&messages, None, None);
 
         assert!(!outcome.applied);
         assert_eq!(rebuilt.len(), 2);

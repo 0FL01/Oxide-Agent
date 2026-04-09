@@ -314,7 +314,9 @@ impl AgentRunner {
                 .get_messages()
                 .iter()
                 .filter(|message| {
-                    message.summary_payload().is_some() || message.archive_ref_payload().is_some()
+                    message.summary_payload().is_some()
+                        || message.archive_ref_payload().is_some()
+                        || message.breadcrumb_payload().is_some()
                 })
                 .cloned(),
         );
@@ -371,7 +373,9 @@ impl AgentRunner {
                 .get_messages()
                 .iter()
                 .filter(|message| {
-                    message.summary_payload().is_some() || message.archive_ref_payload().is_some()
+                    message.summary_payload().is_some()
+                        || message.archive_ref_payload().is_some()
+                        || message.breadcrumb_payload().is_some()
                 })
                 .cloned(),
         );
