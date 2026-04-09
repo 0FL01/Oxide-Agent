@@ -7,7 +7,7 @@ use super::dedup_superseded::{dedup_superseded_tool_results, DedupSupersededCont
 use super::error_retry_collapse::collapse_error_retries;
 use super::externalize::{externalize_hot_memory, NoopPayloadSink, PayloadSink};
 use super::prune::prune_hot_memory;
-use super::rebuild::{rebuild_hot_context, truncate_to_summary};
+use super::rebuild::{rebuild_hot_context, truncate_to_working_set};
 use super::summarizer::CompactionSummarizer;
 use super::types::{
     ArchivePersistenceOutcome, BudgetEstimate, CompactionOutcome, CompactionPolicy,
@@ -332,7 +332,7 @@ impl CompactionService {
         let (rebuilt_messages, rebuild) = if let Some(summary) = summary_generation.summary.clone()
         {
             if matches!(request.trigger, super::CompactionTrigger::PostRun) {
-                truncate_to_summary(
+                truncate_to_working_set(
                     agent.memory().get_messages(),
                     Some(summary),
                     archive_persistence.archive_refs.first().cloned(),

@@ -27,11 +27,11 @@ pub use externalize::{
 };
 pub use prompt::{build_compaction_user_message, compaction_system_prompt};
 pub use prune::prune_hot_memory;
-pub use rebuild::{rebuild_hot_context, truncate_to_summary};
+pub use rebuild::{rebuild_hot_context, truncate_to_working_set};
 pub use service::CompactionService;
 pub use summarizer::{CompactionSummarizer, CompactionSummarizerConfig};
 pub use types::{
-    AgentMessageKind, ArchivePersistenceOutcome, BudgetEstimate, BudgetState,
+    AgentMessageKind, ArchivePersistenceOutcome, BreadcrumbCard, BudgetEstimate, BudgetState,
     ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome, CompactionPolicy,
     CompactionRequest, CompactionRetention, CompactionScope, CompactionSnapshot, CompactionSummary,
     CompactionTrigger, DedupSupersededOutcome, ErrorRetryCollapseOutcome, ExternalizationOutcome,

@@ -455,6 +455,7 @@ mod tests {
                 pruned_artifact: None,
                 structured_summary: None,
                 archive_ref: None,
+                breadcrumb_card: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::Legacy,
@@ -470,6 +471,7 @@ mod tests {
                 pruned_artifact: None,
                 structured_summary: None,
                 archive_ref: None,
+                breadcrumb_card: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::Legacy,
@@ -485,6 +487,7 @@ mod tests {
                 pruned_artifact: None,
                 structured_summary: None,
                 archive_ref: None,
+                breadcrumb_card: None,
             },
         ];
 
