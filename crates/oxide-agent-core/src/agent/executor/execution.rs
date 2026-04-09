@@ -507,4 +507,22 @@ impl AgentExecutor {
         self.run_execution(&task, progress_tx, false, None, None)
             .await
     }
+
+    /// Continue the saved task after queuing additional runtime context.
+    pub async fn continue_after_runtime_context(
+        &mut self,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentExecutionOutcome> {
+        let task = self
+            .last_task()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("no saved task to continue"))?;
+
+        if !self.session.has_pending_runtime_context() {
+            return Err(anyhow!("session has no queued runtime context"));
+        }
+
+        self.run_execution(&task, progress_tx, false, None, None)
+            .await
+    }
 }

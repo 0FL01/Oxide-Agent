@@ -19,10 +19,13 @@ use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardMarkup, MessageId, ParseMode, ThreadId};
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 #[derive(Clone)]
@@ -126,6 +129,30 @@ struct TaskProgressRuntime {
     max_iterations: usize,
     tx: tokio::sync::mpsc::Sender<AgentEvent>,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CompletedResponseDeliveryPhase {
+    #[default]
+    Executing,
+    Finalizing,
+    TerminalSendStarted,
+}
+
+#[derive(Debug, Default)]
+struct CompletedResponseDeliveryState {
+    phase: CompletedResponseDeliveryPhase,
+    pending_followups: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CompletedResponseDeliveryAction {
+    Deliver,
+    Restart(Vec<String>),
+}
+
+static COMPLETED_RESPONSE_DELIVERY: LazyLock<
+    Mutex<HashMap<SessionId, CompletedResponseDeliveryState>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 impl From<&RunAgentTaskTextContext> for TaskDeliveryContext {
     fn from(value: &RunAgentTaskTextContext) -> Self {
@@ -349,45 +376,101 @@ where
     Exec: FnOnce(tokio::sync::mpsc::Sender<AgentEvent>) -> Fut,
     Fut: Future<Output = Result<AgentExecutionOutcome>>,
 {
-    let runtime = start_task_progress_runtime(&ctx).await?;
-    let TaskProgressRuntime {
-        progress_message_id,
-        progress_reply_markup,
-        progress_handle,
-        max_iterations,
-        tx,
-    } = runtime;
-    let result = execute(tx).await;
-    let progress_text = finish_task_progress_runtime(progress_handle, max_iterations).await;
+    let mut runtime = start_task_progress_runtime(&ctx).await?;
+    mark_completed_response_execution_started(ctx.session_id).await;
+    let mut result = execute(runtime.tx.clone()).await;
 
-    save_memory_after_task(
-        ctx.session_id,
-        ctx.user_id,
-        &ctx.context_key,
-        &ctx.agent_flow_id,
-        &ctx.storage,
-    )
-    .await;
+    loop {
+        let completed = matches!(result, Ok(AgentExecutionOutcome::Completed(_)));
+        if completed {
+            begin_completed_response_finalization(ctx.session_id).await;
+        }
 
-    deliver_task_result(
-        &ctx,
-        result,
-        &progress_text,
-        progress_message_id,
-        progress_reply_markup,
-    )
-    .await
+        let progress_text =
+            finish_task_progress_runtime(runtime.progress_handle, runtime.max_iterations).await;
+
+        if completed {
+            match prepare_completed_response_delivery(&ctx.session_id).await {
+                CompletedResponseDeliveryAction::Restart(followups) => {
+                    info!(
+                        session_id = %ctx.session_id,
+                        followup_count = followups.len(),
+                        "Restarting task before completed response delivery"
+                    );
+                    runtime = match restart_task_progress_runtime(&ctx, runtime.progress_message_id)
+                        .await
+                    {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            clear_completed_response_delivery_state(&ctx.session_id).await;
+                            return Err(error);
+                        }
+                    };
+                    result = execute_agent_task_continuation(
+                        ctx.session_id,
+                        followups,
+                        Some(runtime.tx.clone()),
+                    )
+                    .await;
+                    continue;
+                }
+                CompletedResponseDeliveryAction::Deliver => {}
+            }
+        }
+
+        save_memory_after_task(
+            ctx.session_id,
+            ctx.user_id,
+            &ctx.context_key,
+            &ctx.agent_flow_id,
+            &ctx.storage,
+        )
+        .await;
+
+        let delivery_result = deliver_task_result(
+            &ctx,
+            result,
+            &progress_text,
+            runtime.progress_message_id,
+            runtime.progress_reply_markup,
+        )
+        .await;
+        clear_completed_response_delivery_state(&ctx.session_id).await;
+        return delivery_result;
+    }
 }
 
 async fn start_task_progress_runtime(ctx: &TaskDeliveryContext) -> Result<TaskProgressRuntime> {
     start_task_progress_runtime_with_text(ctx, DefaultAgentView::task_processing()).await
 }
 
+async fn restart_task_progress_runtime(
+    ctx: &TaskDeliveryContext,
+    progress_message_id: MessageId,
+) -> Result<TaskProgressRuntime> {
+    let progress_reply_markup = ctx
+        .use_inline_progress_controls
+        .then_some(crate::bot::views::progress_inline_keyboard());
+    crate::bot::resilient::edit_message_safe_resilient_with_markup(
+        &ctx.bot,
+        ctx.chat_id,
+        progress_message_id,
+        DefaultAgentView::task_processing(),
+        progress_reply_markup.clone(),
+    )
+    .await;
+
+    Ok(bind_task_progress_runtime(
+        ctx,
+        progress_message_id,
+        progress_reply_markup,
+    ))
+}
+
 async fn start_task_progress_runtime_with_text(
     ctx: &TaskDeliveryContext,
     initial_text: &str,
 ) -> Result<TaskProgressRuntime> {
-    let max_iterations = get_agent_max_iterations();
     let progress_reply_markup = ctx
         .use_inline_progress_controls
         .then_some(crate::bot::views::progress_inline_keyboard());
@@ -401,24 +484,97 @@ async fn start_task_progress_runtime_with_text(
     )
     .await?;
 
+    Ok(bind_task_progress_runtime(
+        ctx,
+        progress_msg.id,
+        progress_reply_markup,
+    ))
+}
+
+fn bind_task_progress_runtime(
+    ctx: &TaskDeliveryContext,
+    progress_message_id: MessageId,
+    progress_reply_markup: Option<InlineKeyboardMarkup>,
+) -> TaskProgressRuntime {
+    let max_iterations = get_agent_max_iterations();
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
     let transport = TelegramAgentTransport::new(
         ctx.bot.clone(),
         ctx.chat_id,
-        progress_msg.id,
+        progress_message_id,
         ctx.message_thread_id,
         ctx.use_inline_progress_controls,
     );
     let cfg = ProgressRuntimeConfig::new(max_iterations);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
-    Ok(TaskProgressRuntime {
-        progress_message_id: progress_msg.id,
+    TaskProgressRuntime {
+        progress_message_id,
         progress_reply_markup,
         progress_handle,
         max_iterations,
         tx,
-    })
+    }
+}
+
+pub(crate) async fn mark_completed_response_execution_started(session_id: SessionId) {
+    let mut states = COMPLETED_RESPONSE_DELIVERY.lock().await;
+    states.insert(
+        session_id,
+        CompletedResponseDeliveryState {
+            phase: CompletedResponseDeliveryPhase::Executing,
+            pending_followups: Vec::new(),
+        },
+    );
+}
+
+pub(crate) async fn begin_completed_response_finalization(session_id: SessionId) {
+    let mut states = COMPLETED_RESPONSE_DELIVERY.lock().await;
+    let state = states.entry(session_id).or_default();
+    state.phase = CompletedResponseDeliveryPhase::Finalizing;
+}
+
+pub(crate) async fn queue_followup_during_completed_response_delivery(
+    session_id: &SessionId,
+    content: String,
+) -> bool {
+    let mut states = COMPLETED_RESPONSE_DELIVERY.lock().await;
+    let Some(state) = states.get_mut(session_id) else {
+        return false;
+    };
+
+    if state.phase != CompletedResponseDeliveryPhase::Finalizing {
+        return false;
+    }
+
+    state.pending_followups.push(content);
+    true
+}
+
+pub(crate) async fn prepare_completed_response_delivery(
+    session_id: &SessionId,
+) -> CompletedResponseDeliveryAction {
+    let mut states = COMPLETED_RESPONSE_DELIVERY.lock().await;
+    let Some(state) = states.get_mut(session_id) else {
+        return CompletedResponseDeliveryAction::Deliver;
+    };
+
+    if state.phase != CompletedResponseDeliveryPhase::Finalizing {
+        return CompletedResponseDeliveryAction::Deliver;
+    }
+
+    if state.pending_followups.is_empty() {
+        state.phase = CompletedResponseDeliveryPhase::TerminalSendStarted;
+        return CompletedResponseDeliveryAction::Deliver;
+    }
+
+    state.phase = CompletedResponseDeliveryPhase::Executing;
+    CompletedResponseDeliveryAction::Restart(std::mem::take(&mut state.pending_followups))
+}
+
+pub(crate) async fn clear_completed_response_delivery_state(session_id: &SessionId) {
+    let mut states = COMPLETED_RESPONSE_DELIVERY.lock().await;
+    states.remove(session_id);
 }
 
 async fn deliver_manual_compaction_result(
@@ -623,6 +779,36 @@ async fn execute_agent_task(
 
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
     executor.execute(task, progress_tx).await
+}
+
+async fn execute_agent_task_continuation(
+    session_id: SessionId,
+    followups: Vec<String>,
+    progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+) -> Result<AgentExecutionOutcome> {
+    let executor_arc = SESSION_REGISTRY
+        .get(&session_id)
+        .await
+        .ok_or_else(|| anyhow!("No agent session found"))?;
+    let cancellation_token = SESSION_REGISTRY
+        .get_cancellation_token(&session_id)
+        .await
+        .ok_or_else(|| anyhow!("No cancellation token found"))?;
+
+    let mut executor = executor_arc.write().await;
+    if executor.is_timed_out() {
+        executor.reset();
+        return Err(anyhow!(
+            "Previous session timed out. Starting a new session."
+        ));
+    }
+
+    for followup in followups {
+        executor.enqueue_runtime_context(followup);
+    }
+
+    executor.session_mut().cancellation_token = (*cancellation_token).clone();
+    executor.continue_after_runtime_context(progress_tx).await
 }
 
 pub(crate) async fn execute_ssh_approval_resume(

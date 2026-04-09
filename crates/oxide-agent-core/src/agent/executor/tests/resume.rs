@@ -83,3 +83,50 @@ async fn resume_after_user_input_rejects_sessions_without_pending_request() {
 
     assert!(error.to_string().contains("not waiting for user input"));
 }
+
+#[tokio::test]
+async fn continue_after_runtime_context_continues_saved_task_without_new_user_task() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"done","tool_call":null,"final_answer":"continued ok","awaiting_user_input":null}"#,
+    );
+    executor.session_mut().remember_task("original task");
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user_task(
+            "original task",
+        ));
+    executor.enqueue_runtime_context("new clarification".to_string());
+
+    let result = executor.continue_after_runtime_context(None).await;
+
+    assert!(matches!(
+        result,
+        Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "continued ok"
+    ));
+
+    let user_task_count = executor
+        .session()
+        .memory
+        .get_messages()
+        .iter()
+        .filter(|message| message.kind == crate::agent::compaction::AgentMessageKind::UserTask)
+        .count();
+    assert_eq!(user_task_count, 1);
+
+    let runtime_context = executor.session().drain_runtime_context();
+    assert!(runtime_context.is_empty());
+}
+
+#[tokio::test]
+async fn continue_after_runtime_context_rejects_sessions_without_queued_context() {
+    let mut executor = build_executor();
+    executor.session_mut().remember_task("original task");
+
+    let error = match executor.continue_after_runtime_context(None).await {
+        Ok(_) => panic!("continuation should fail without queued runtime context"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("no queued runtime context"));
+}

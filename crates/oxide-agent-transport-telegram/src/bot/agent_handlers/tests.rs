@@ -1,14 +1,18 @@
 use super::{
-    agent_mode_session_keys, assemble_text_batch, cancel_status_reply_markup,
-    cleanup_abandoned_empty_flow, clear_pending_cancel_confirmation, clear_pending_cancel_message,
-    derive_agent_mode_session_id, ensure_session_exists, manager_control_plane_enabled,
-    manager_default_chat_id, merge_prompt_instructions, parse_agent_callback_action,
-    parse_agent_control_command, pending_cancel_confirmation, pending_cancel_message,
-    remember_pending_cancel_confirmation, remember_pending_cancel_message,
-    remove_sessions_with_compat, resolve_execution_profile, select_existing_session_id,
-    session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
-    should_merge_text_batch, take_pending_cancel_confirmation, take_pending_cancel_message,
-    use_inline_flow_controls, AgentCallbackAction, AgentControlCommand, BatchedTextTaskContext,
+    agent_mode_session_keys, assemble_text_batch, begin_completed_response_finalization,
+    cancel_status_reply_markup, cleanup_abandoned_empty_flow,
+    clear_completed_response_delivery_state, clear_pending_cancel_confirmation,
+    clear_pending_cancel_message, derive_agent_mode_session_id, ensure_session_exists,
+    manager_control_plane_enabled, manager_default_chat_id,
+    mark_completed_response_execution_started, merge_prompt_instructions,
+    parse_agent_callback_action, parse_agent_control_command, pending_cancel_confirmation,
+    pending_cancel_message, prepare_completed_response_delivery,
+    queue_followup_during_completed_response_delivery, remember_pending_cancel_confirmation,
+    remember_pending_cancel_message, remove_sessions_with_compat, resolve_execution_profile,
+    select_existing_session_id, session_manager_control_plane_enabled,
+    should_create_fresh_flow_on_detach, should_merge_text_batch, take_pending_cancel_confirmation,
+    take_pending_cancel_message, use_inline_flow_controls, AgentCallbackAction,
+    AgentControlCommand, BatchedTextTaskContext, CompletedResponseDeliveryAction,
     EnsureSessionContext, PendingTextInputBatch, PendingTextInputPart, SessionTransportContext,
     AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, SESSION_REGISTRY,
 };
@@ -1422,6 +1426,54 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
     );
 
     remove_sessions_with_compat(keys).await;
+}
+
+#[tokio::test]
+async fn completed_response_delivery_buffers_followups_for_restart() {
+    let session_id = SessionId::from(9001_i64);
+    clear_completed_response_delivery_state(&session_id).await;
+    mark_completed_response_execution_started(session_id).await;
+    begin_completed_response_finalization(session_id).await;
+
+    assert!(
+        queue_followup_during_completed_response_delivery(
+            &session_id,
+            "clarify the model".to_string(),
+        )
+        .await
+    );
+
+    let action = prepare_completed_response_delivery(&session_id).await;
+    assert_eq!(
+        action,
+        CompletedResponseDeliveryAction::Restart(vec!["clarify the model".to_string()])
+    );
+    assert!(
+        !queue_followup_during_completed_response_delivery(&session_id, "too late".to_string(),)
+            .await
+    );
+
+    clear_completed_response_delivery_state(&session_id).await;
+}
+
+#[tokio::test]
+async fn completed_response_delivery_commits_terminal_send_without_followups() {
+    let session_id = SessionId::from(9002_i64);
+    clear_completed_response_delivery_state(&session_id).await;
+    mark_completed_response_execution_started(session_id).await;
+    begin_completed_response_finalization(session_id).await;
+
+    let action = prepare_completed_response_delivery(&session_id).await;
+    assert_eq!(action, CompletedResponseDeliveryAction::Deliver);
+    assert!(
+        !queue_followup_during_completed_response_delivery(
+            &session_id,
+            "arrived after terminal send".to_string(),
+        )
+        .await
+    );
+
+    clear_completed_response_delivery_state(&session_id).await;
 }
 
 #[tokio::test]
