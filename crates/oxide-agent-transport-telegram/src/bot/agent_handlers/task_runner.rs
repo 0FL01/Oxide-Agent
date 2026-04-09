@@ -376,9 +376,21 @@ where
     Exec: FnOnce(tokio::sync::mpsc::Sender<AgentEvent>) -> Fut,
     Fut: Future<Output = Result<AgentExecutionOutcome>>,
 {
-    let mut runtime = start_task_progress_runtime(&ctx).await?;
+    let TaskProgressRuntime {
+        progress_message_id,
+        progress_reply_markup,
+        progress_handle,
+        max_iterations,
+        tx,
+    } = start_task_progress_runtime(&ctx).await?;
+    let mut progress_message_id = progress_message_id;
+    let mut progress_reply_markup = progress_reply_markup;
+    let mut progress_handle = progress_handle;
+    let mut max_iterations = max_iterations;
     mark_completed_response_execution_started(ctx.session_id).await;
-    let mut result = execute(runtime.tx.clone()).await;
+    // Keep sender ownership with the active execution pass so the progress runtime
+    // can observe channel closure and terminate once the pass finishes.
+    let mut result = execute(tx).await;
 
     loop {
         let completed = matches!(result, Ok(AgentExecutionOutcome::Completed(_)));
@@ -386,8 +398,7 @@ where
             begin_completed_response_finalization(ctx.session_id).await;
         }
 
-        let progress_text =
-            finish_task_progress_runtime(runtime.progress_handle, runtime.max_iterations).await;
+        let progress_text = finish_task_progress_runtime(progress_handle, max_iterations).await;
 
         if completed {
             match prepare_completed_response_delivery(&ctx.session_id).await {
@@ -397,19 +408,22 @@ where
                         followup_count = followups.len(),
                         "Restarting task before completed response delivery"
                     );
-                    runtime = match restart_task_progress_runtime(&ctx, runtime.progress_message_id)
-                        .await
-                    {
-                        Ok(runtime) => runtime,
-                        Err(error) => {
-                            clear_completed_response_delivery_state(&ctx.session_id).await;
-                            return Err(error);
-                        }
-                    };
+                    let runtime =
+                        match restart_task_progress_runtime(&ctx, progress_message_id).await {
+                            Ok(runtime) => runtime,
+                            Err(error) => {
+                                clear_completed_response_delivery_state(&ctx.session_id).await;
+                                return Err(error);
+                            }
+                        };
+                    progress_message_id = runtime.progress_message_id;
+                    progress_reply_markup = runtime.progress_reply_markup;
+                    progress_handle = runtime.progress_handle;
+                    max_iterations = runtime.max_iterations;
                     result = execute_agent_task_continuation(
                         ctx.session_id,
                         followups,
-                        Some(runtime.tx.clone()),
+                        Some(runtime.tx),
                     )
                     .await;
                     continue;
@@ -431,8 +445,8 @@ where
             &ctx,
             result,
             &progress_text,
-            runtime.progress_message_id,
-            runtime.progress_reply_markup,
+            progress_message_id,
+            progress_reply_markup,
         )
         .await;
         clear_completed_response_delivery_state(&ctx.session_id).await;
