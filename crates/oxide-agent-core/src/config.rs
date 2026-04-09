@@ -60,6 +60,8 @@ pub const OPENROUTER_AUDIO_TRANSCRIBE_PROMPT: &str = concat!(
 /// Agent settings loaded from environment variables.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AgentSettings {
+    /// ChatGPT OAuth auth file path.
+    pub chatgpt_auth_path: Option<String>,
     /// Groq API key
     pub groq_api_key: Option<String>,
     /// Mistral API key
@@ -339,6 +341,14 @@ impl AgentSettings {
 
         if settings.agent_model_temperature.is_none() {
             settings.agent_model_temperature = parse_optional_env_f32("AGENT_MODEL_TEMPERATURE");
+        }
+
+        if settings.chatgpt_auth_path.is_none() {
+            if let Ok(val) = std::env::var("CHATGPT_AUTH_PATH") {
+                if !val.is_empty() {
+                    settings.chatgpt_auth_path = Some(val);
+                }
+            }
         }
 
         settings.apply_tool_provider_env_fallbacks();

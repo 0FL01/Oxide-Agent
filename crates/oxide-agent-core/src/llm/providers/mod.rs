@@ -1,4 +1,6 @@
 #[allow(missing_docs)]
+pub mod chatgpt;
+#[allow(missing_docs)]
 pub mod gemini;
 #[allow(missing_docs)]
 pub mod groq;
@@ -18,6 +20,7 @@ mod tool_result_encoder;
 #[allow(missing_docs)]
 pub mod zai;
 
+pub use chatgpt::ChatGptProvider;
 pub use gemini::GeminiProvider;
 pub use groq::GroqProvider;
 pub use minimax::MiniMaxProvider;

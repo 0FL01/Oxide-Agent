@@ -83,6 +83,7 @@ RUN groupadd --system --gid 10001 oxide \
 WORKDIR /app
 COPY --from=builder /app/target/release/oxide-agent-telegram-bot /app/oxide-agent-telegram-bot
 COPY --from=builder /app/target/release/oxide-agent-sandboxd /app/oxide-agent-sandboxd
+COPY --from=builder /app/target/release/chatgpt-login /app/chatgpt-login
 COPY --from=ssh-mcp-binary /usr/local/bin/ssh-mcp /usr/local/bin/ssh-mcp
 COPY --from=jira-mcp-binary /usr/local/bin/jira-mcp /usr/local/bin/jira-mcp
 COPY --from=mattermost-mcp-binary /usr/local/bin/mattermost-mcp /usr/local/bin/mattermost-mcp
