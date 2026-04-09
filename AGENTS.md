@@ -32,7 +32,8 @@ Default branch: `testing`.
 ## Workspace Overview
 
 ### Основные crate'ы
-- `crates/oxide-agent-core` - домен агента: execution loop, hooks, skills, compaction, storage facade, LLM providers, sandbox facade, reminder/SSH/manager providers.
+- `crates/oxide-agent-core` - домен агента: execution loop, hooks, skills, compaction, storage facade, LLM providers, sandbox facade, persistent memory (classifier, retrieval, embeddings, post-run), reminder/SSH/manager providers.
+- `crates/oxide-agent-memory` - domain model, Postgres repository, consolidation, finalization и hybrid retrieval (lexical + vector) для persistent agent memory.
 - `crates/oxide-agent-runtime` - runtime-оркестрация сессий и transport-agnostic progress runtime.
 - `crates/oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
 - `crates/oxide-agent-transport-web` - E2E test web transport: HTTP API (axum), in-memory storage, scripted LLM provider, SSE streaming, latency milestone tracking.
@@ -40,7 +41,8 @@ Default branch: `testing`.
 - `crates/oxide-agent-telegram-bot` - бинарь запуска Telegram-бота.
 
 ### Где обычно искать код
-- `crates/oxide-agent-core/src/agent/` - executor, runner, hooks, loop detection, skills, compaction, providers.
+- `crates/oxide-agent-core/src/agent/` - executor (slices: config, execution, registry, compaction, policy_hooks, types), runner, hooks, loop detection, skills, compaction, persistent memory (classifier, retrieval, embeddings, post-run, coordinator), providers.
+- `crates/oxide-agent-memory/src/` - domain types, repository trait, Postgres repo, consolidation, finalization, in-memory harness.
 - `crates/oxide-agent-core/src/storage/` - storage facade, R2 backend, control-plane records, reminder persistence.
 - `crates/oxide-agent-core/src/llm/providers/` - реализации LLM-провайдеров.
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - lifecycle Agent Mode, controls, callbacks, task runner, reminders.
@@ -60,6 +62,7 @@ Default branch: `testing`.
 - `Topic AGENTS.md` хранится отдельно в storage и инжектится prompt composer'ом; `skills/AGENT.md` больше не является дефолтным источником системного промпта.
 - Sandbox работает либо напрямую через Docker backend, либо через broker backend; при `SANDBOX_BACKEND=broker` доступ к `docker.sock` остается только у `oxide-agent-sandboxd`.
 - Manager CRUD идет через provider `manager_control_plane` с audit trail и RBAC на уровне Telegram transport (`manager_allowed_users`).
+- `oxide-agent-memory` определяет domain model и repository trait; `oxide-agent-core` реализует orchestration (classifier, coordinator, embeddings, post-run) поверх него.
 
 ## Ключевые подсистемы
 
@@ -71,6 +74,20 @@ Default branch: `testing`.
 - **History repair** - tool_call_id validation before LLM calls; orphaned tool results prevented during compaction.
 - **Cold-start tool drift pruning** - removes stale tool calls from persisted memories; configurable via `STARTUP_TOOL_DRIFT_PRUNE_*` env vars.
 - Narrator - separate model for thought/narrative summarization.
+- **Configurable temperature** - `AGENT_MODEL_TEMPERATURE` env var для overrides генерации main-agent'а.
+
+### Persistent memory
+- Код: `agent/persistent_memory/{classifier,coordinator,retrieval,embeddings,post_run,store,behavior}.rs` в core; domain model в `oxide-agent-memory`.
+- Postgres backend (pgvector + tsvector); hybrid retrieval (lexical + vector + fusion scoring).
+- **LLM Memory Classifier** — 9-классовая таксономия (Smalltalk, EpisodeHistory, ExternalFreshFact, ProcedureHowTo, ConstraintPolicy, PreferenceRecall, DecisionRecall, DurableProjectFact, General); выдаёт read/write policy.
+- **Post-run memory writer** — LLM-based извлечение reusable memories из завершённого таска (до 8 записей): Fact, Preference, Procedure, Decision, Constraint.
+- **Episode finalizer** — детерминистическая генерация Thread + Episode + SessionState records.
+- **Context consolidator** — importance decay, exact + similarity dedup, TTL expiry, stale session cleanup.
+- **Embedding indexer** — async генерация embeddings + backfill; dimensions настраивается через `EMBEDDING_DIMENSIONS` (default 1024).
+- **Retrieval advisor hook** — инжектирует контекстные карточки memory search suggestion, history, episode.
+- **Behavior hooks** — `EpisodicExtractHook` захватывает tool-derived memory drafts (write_file -> Procedure, failed exec -> Fact, repeated edits -> Preference).
+- Memory read tools: `memory_search`, `memory_read_episode`, `memory_read_thread_summary`, `memory_read_thread_window`, `memory_diagnostics`.
+- Config: `MEMORY_DATABASE_URL`, `MEMORY_DATABASE_MAX_CONNECTIONS`, `MEMORY_DATABASE_AUTO_MIGRATE`, `EMBEDDING_DIMENSIONS`, classifier env vars.
 
 ### Agent Mode compaction
 - Pipeline: budget estimation -> classify -> externalize -> prune -> summarize -> rebuild hot context.
@@ -127,7 +144,8 @@ Default branch: `testing`.
 ### Sandbox и SSH infrastructure
 - Sandbox facade: `crates/oxide-agent-core/src/sandbox/manager.rs`; backends - direct Docker или broker через `sandbox/broker.rs`.
 - `SandboxScope` дает стабильную идентичность контейнера для persistent sandbox reuse.
-- SSH tools: `exec`, `sudo_exec`, `read_file`, `apply_file_edit`, `check_process`, `ssh_send_file_to_user`.
+- SSH tools: `exec`, `sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`, `check_process`.
+- Native upstream file tools (ssh-mcp binary) используются для `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`; legacy python fallback для не-absolute paths.
 - Secret refs поддерживают `env:KEY` и `storage:PATH`; секреты не должны попадать в prompts или memory.
 - `recreate_sandbox` - exclusive lock, reset workspace; blocked для sub-agents.
 
@@ -136,6 +154,7 @@ Default branch: `testing`.
 - Компоненты: `SshApprovalRegistry`, `SshApprovalRequestView`, `SshApprovalGrant`, `ApprovalState`.
 - Approval нужен для dangerous commands, чувствительных путей и режимов из `approval_required_modes`.
 - Гранты topic-scoped, single-use, TTL 600s; после approve задача автоматически переигрывается.
+- **Note**: SSH approval flow в настоящее время disabled — pending payloads теряются между request и grant; нативные upstream tools используются напрямую.
 
 ### Reminder system
 - Основной код: `agent/providers/reminder.rs` + storage records в `storage/reminder.rs` и `r2_reminder.rs`.
@@ -162,12 +181,13 @@ Default branch: `testing`.
 - Providers: `gemini`, `groq`, `mistral`, `minimax/`, `nvidia`, `openrouter`, `zai`.
 - Browser-use bridge LLM resolution (disabled): отдельный от core провайдеров; поддерживает `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing relaxed для `zai`/`zhipuai`/`glm`.
 - HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
+- Embedding dimensions: default 1024, configurable via `EMBEDDING_DIMENSIONS`; Mistral provider skip dimensions param (auto-handles truncation).
 - Voice transcription: `voxtral` (Mistral) с retry backoff (5 attempts, 3s→48s).
 - NVIDIA NIM provider: `nvidia/llama-3.3-nemotron-super-49b-v1`, `nvidia/nemotron-mini`, `minimaxai/minimax-m*`.
 - LLM module structure: `capabilities.rs` (model capabilities), `client.rs` (HTTP orchestration), `support/` (backoff, history, http utils), `types.rs` (domain types).
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (включая `ssh_send_file_to_user`), yt-dlp, reminders, agents_md, TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose логи; disabled by default для topic agents, blocked для sub-agents).
+- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (native upstream file tools + legacy fallback), yt-dlp, reminders, agents_md, **persistent memory** (search, episode read, thread summary/window, diagnostics), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose логи; disabled by default для topic agents, blocked для sub-agents).
 - Расширяй в `agent/providers/`; сохраняй transport-agnostic контракт.
 
 ## Telegram transport
@@ -189,7 +209,8 @@ Default branch: `testing`.
 
 - Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Конфигурационные файлы опциональны (`required(false)`).
-- Ключевые: search/embedding provider, SearXNG (`SEARXNG_URL`), narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`).
+- Ключевые: search/embedding provider, SearXNG (`SEARXNG_URL`), narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, persistent memory (`MEMORY_DATABASE_URL`, `EMBEDDING_DIMENSIONS`), Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`).
+- Telegram transport config: `ATTACH_DETACH_ENABLED` (default true).
 
 ## Практика разработки
 
