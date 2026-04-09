@@ -73,6 +73,32 @@ pub fn setup_web_test_with_custom_providers(
     AppState::new(Arc::new(session_manager))
 }
 
+/// Set up AppState with a structured-output-capable main-agent route.
+pub fn setup_web_test_with_structured_main_provider(
+    provider: Arc<SequencedZaiProvider>,
+    narrator_provider: Arc<ControlledNarratorProvider>,
+) -> AppState {
+    let agent_settings = Arc::new(AgentSettings {
+        agent_model_id: Some("gemini-2.0-flash".to_string()),
+        agent_model_provider: Some("gemini".to_string()),
+        narrator_model_id: Some("narrator-model".to_string()),
+        narrator_model_provider: Some("narrator".to_string()),
+        agent_timeout_secs: Some(5),
+        ..AgentSettings::default()
+    });
+
+    let llm = {
+        let mut llm = LlmClient::new(&agent_settings);
+        llm.register_provider("gemini".to_string(), provider);
+        llm.register_provider("narrator".to_string(), narrator_provider);
+        Arc::new(llm)
+    };
+
+    let registry = SessionRegistry::new();
+    let session_manager = WebSessionManager::new(registry, llm, agent_settings);
+    AppState::new(Arc::new(session_manager))
+}
+
 /// Set up test infrastructure with the default ScriptedLlmProvider.
 pub async fn setup_test() -> AppState {
     use oxide_agent_transport_web::scripted_llm::{ScriptedLlmProvider, ScriptedResponse};
