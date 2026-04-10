@@ -56,6 +56,43 @@ impl ChatGptProvider {
     async fn chat_request(&self, body: Value) -> Result<StreamedChatGptResponse, LlmError> {
         let session = self.auth.get_valid_session().await?;
 
+        let response = self.send_chat_request(&session, &body).await?;
+        match response {
+            ChatRequestOutcome::Success(response) => parse_streaming_response(response).await,
+            ChatRequestOutcome::UnsupportedParameter {
+                parameter,
+                status,
+                response_body,
+                request_body,
+            } => {
+                let Some(retried_body) = remove_unsupported_parameter(request_body, &parameter)
+                else {
+                    return Err(LlmError::ApiError(format!(
+                        "ChatGPT API error: {status} - {response_body}"
+                    )));
+                };
+
+                match self.send_chat_request(&session, &retried_body).await? {
+                    ChatRequestOutcome::Success(response) => {
+                        parse_streaming_response(response).await
+                    }
+                    ChatRequestOutcome::UnsupportedParameter {
+                        status,
+                        response_body,
+                        ..
+                    } => Err(LlmError::ApiError(format!(
+                        "ChatGPT API error: {status} - {response_body}"
+                    ))),
+                }
+            }
+        }
+    }
+
+    async fn send_chat_request(
+        &self,
+        session: &auth::ChatGptSession,
+        body: &Value,
+    ) -> Result<ChatRequestOutcome, LlmError> {
         let mut request = self
             .http_client
             .post(CHATGPT_CODEX_API_ENDPOINT)
@@ -63,7 +100,7 @@ impl ChatGptProvider {
             .header("Content-Type", "application/json");
 
         if !session.account_id.is_empty() {
-            request = request.header("ChatGPT-Account-Id", session.account_id);
+            request = request.header("ChatGPT-Account-Id", session.account_id.clone());
         }
 
         let response = request
@@ -72,8 +109,8 @@ impl ChatGptProvider {
             .await
             .map_err(|error| LlmError::NetworkError(error.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 let wait_secs = parse_retry_after(response.headers());
                 let body = response.text().await.unwrap_or_default();
@@ -83,14 +120,33 @@ impl ChatGptProvider {
                 });
             }
 
-            let body = response.text().await.unwrap_or_default();
+            let response_body = response.text().await.unwrap_or_default();
+            if let Some(parameter) = parse_unsupported_parameter(&response_body) {
+                return Ok(ChatRequestOutcome::UnsupportedParameter {
+                    parameter,
+                    status,
+                    response_body,
+                    request_body: body.clone(),
+                });
+            }
+
             return Err(LlmError::ApiError(format!(
-                "ChatGPT API error: {status} - {body}"
+                "ChatGPT API error: {status} - {response_body}"
             )));
         }
 
-        parse_streaming_response(response).await
+        Ok(ChatRequestOutcome::Success(response))
     }
+}
+
+enum ChatRequestOutcome {
+    Success(reqwest::Response),
+    UnsupportedParameter {
+        parameter: String,
+        status: reqwest::StatusCode,
+        response_body: String,
+        request_body: Value,
+    },
 }
 
 #[async_trait]
@@ -194,10 +250,11 @@ fn build_chat_request_body(
         "model": model_id,
         "instructions": instructions,
         "input": input,
-        "max_output_tokens": max_tokens,
         "stream": true,
         "store": false,
     });
+
+    let _ = max_tokens;
 
     if let Some(temperature) = temperature.filter(|_| !model_id.starts_with("gpt-5")) {
         body["temperature"] = json!(temperature);
@@ -222,6 +279,20 @@ fn build_chat_request_body(
     }
 
     body
+}
+
+fn parse_unsupported_parameter(body: &str) -> Option<String> {
+    let parsed = serde_json::from_str::<Value>(body).ok()?;
+    let detail = parsed.get("detail")?.as_str()?;
+    detail
+        .strip_prefix("Unsupported parameter: ")
+        .map(ToString::to_string)
+}
+
+fn remove_unsupported_parameter(mut body: Value, parameter: &str) -> Option<Value> {
+    let object = body.as_object_mut()?;
+    object.remove(parameter)?;
+    Some(body)
 }
 
 fn prepare_responses_request(system_prompt: &str, history: &[Message]) -> (String, Vec<Value>) {
@@ -499,6 +570,7 @@ mod tests {
 
         assert_eq!(body["instructions"], json!("system"));
         assert_eq!(body["stream"], json!(true));
+        assert!(body.get("max_output_tokens").is_none());
         assert_eq!(body["text"]["format"]["type"], json!("json_object"));
         assert_eq!(body["reasoning"]["effort"], json!("medium"));
         assert_eq!(body["truncation"], json!("auto"));
@@ -585,5 +657,31 @@ mod tests {
             state.usage.as_ref().map(|usage| usage.total_tokens),
             Some(14)
         );
+    }
+
+    #[test]
+    fn unsupported_parameter_parser_extracts_field_name() {
+        assert_eq!(
+            super::parse_unsupported_parameter(
+                r#"{"detail":"Unsupported parameter: max_output_tokens"}"#
+            )
+            .as_deref(),
+            Some("max_output_tokens")
+        );
+    }
+
+    #[test]
+    fn unsupported_parameter_removal_drops_requested_key() {
+        let body = json!({
+            "model": "gpt-5.4-mini",
+            "max_output_tokens": 1024,
+            "stream": true,
+        });
+
+        let updated =
+            super::remove_unsupported_parameter(body, "max_output_tokens").expect("updated body");
+
+        assert!(updated.get("max_output_tokens").is_none());
+        assert_eq!(updated["stream"], json!(true));
     }
 }
