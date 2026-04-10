@@ -37,18 +37,27 @@ impl LlmClient {
         let model_id = settings.embedding_model_id.clone()?;
         let provider_name = provider_name.to_ascii_lowercase();
 
-        let api_key = match provider_name.as_str() {
-            "mistral" => settings.mistral_api_key.clone()?,
-            "openrouter" => settings.openrouter_api_key.clone()?,
-            "gemini" | "google" => settings.gemini_api_key.clone()?,
-            _ => return None,
-        };
         let provider = match provider_name.as_str() {
-            "gemini" | "google" => embeddings::EmbeddingProvider::new_gemini(api_key),
-            _ => {
+            "gemini" | "google" => {
+                let api_key = settings.gemini_api_key.clone()?;
+                embeddings::EmbeddingProvider::new_gemini(api_key)
+            }
+            "mistral" => {
+                let api_key = settings.mistral_api_key.clone()?;
                 let api_base = embeddings::get_api_base(&provider_name)?;
                 embeddings::EmbeddingProvider::new_openai_compatible(api_key, api_base.to_string())
             }
+            "openrouter" => {
+                let api_key = settings.openrouter_api_key.clone()?;
+                let api_base = embeddings::get_api_base(&provider_name)?;
+                embeddings::EmbeddingProvider::new_openai_compatible(api_key, api_base.to_string())
+            }
+            "openai-base" => {
+                let api_key = settings.embedding_openai_api_key.clone()?;
+                let api_base = settings.embedding_openai_base_url.clone()?;
+                embeddings::EmbeddingProvider::new_openai_compatible(api_key, api_base)
+            }
+            _ => return None,
         };
 
         let dimensions = settings
@@ -1281,5 +1290,26 @@ mod tests {
             .as_ref()
             .expect("embedding should be configured");
         assert_eq!(embedding.3, Some(1024));
+    }
+
+    #[test]
+    fn openai_base_embeddings_use_custom_base_url_and_dimensions() {
+        let settings = AgentSettings {
+            embedding_provider: Some("openai-base".to_string()),
+            embedding_model_id: Some("user2-base".to_string()),
+            embedding_openai_base_url: Some("http://127.0.0.1:8002/v1".to_string()),
+            embedding_openai_api_key: Some("test-openai-base-key".to_string()),
+            embedding_dimensions: Some(768),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+        assert_eq!(llm.embedding_dimensions(), Some(768));
+
+        let embedding = llm
+            .embedding
+            .as_ref()
+            .expect("embedding should be configured");
+        assert_eq!(embedding.3, Some(768));
     }
 }

@@ -1323,9 +1323,7 @@ async fn topic_agent_tools_disable_accepts_stack_logs_provider_alias() {
 #[cfg(feature = "browser_use")]
 #[tokio::test]
 async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::config::test_env_async_mutex().lock().await;
     std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
     std::env::set_var("BROWSER_USE_ENABLED", "true");
 
@@ -1380,9 +1378,7 @@ async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled(
 #[cfg(feature = "browser_use")]
 #[tokio::test]
 async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let _guard = crate::config::test_env_async_mutex().lock().await;
     std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
     std::env::set_var("BROWSER_USE_ENABLED", "true");
     let mut mock = crate::storage::MockStorageProvider::new();
