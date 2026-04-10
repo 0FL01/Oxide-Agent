@@ -212,6 +212,12 @@ pub struct AgentSettings {
     pub embedding_provider: Option<String>,
     /// Embedding model ID
     pub embedding_model_id: Option<String>,
+    /// Custom OpenAI-compatible embeddings base URL.
+    /// Used by the `openai-base` embedding provider.
+    pub embedding_openai_base_url: Option<String>,
+    /// Custom OpenAI-compatible embeddings API key.
+    /// Used by the `openai-base` embedding provider.
+    pub embedding_openai_api_key: Option<String>,
     /// Output embedding dimensionality.
     /// When set, the embedding provider will truncate vectors to this size via
     /// `output_dimensionality` (Gemini) or equivalent. Must be in 128..=3072.
@@ -393,6 +399,20 @@ impl AgentSettings {
             if let Ok(val) = std::env::var("EMBEDDING_MODEL_ID") {
                 if !val.is_empty() {
                     settings.embedding_model_id = Some(val);
+                }
+            }
+        }
+        if settings.embedding_openai_base_url.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_OPENAI_BASE_URL") {
+                if !val.is_empty() {
+                    settings.embedding_openai_base_url = Some(val);
+                }
+            }
+        }
+        if settings.embedding_openai_api_key.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_OPENAI_API_KEY") {
+                if !val.is_empty() {
+                    settings.embedding_openai_api_key = Some(val);
                 }
             }
         }
@@ -1069,6 +1089,14 @@ pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
     ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
 }
 
+#[cfg(all(test, feature = "browser_use"))]
+pub(crate) fn test_env_async_mutex() -> &'static tokio::sync::Mutex<()> {
+    use std::sync::OnceLock;
+
+    static ENV_MUTEX: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    ENV_MUTEX.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1091,6 +1119,8 @@ mod tests {
         env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
         env::set_var("SOFT_WARNING_TOKENS", "12345");
         env::set_var("HARD_COMPACTION_TOKENS", "23456");
+        env::set_var("EMBEDDING_OPENAI_BASE_URL", "http://127.0.0.1:8002/v1");
+        env::set_var("EMBEDDING_OPENAI_API_KEY", "test-embedding-key");
 
         let settings = AgentSettings::new()?;
         assert_eq!(
@@ -1101,6 +1131,14 @@ mod tests {
         let hot_context_limits = settings.get_hot_context_limits();
         assert_eq!(hot_context_limits.soft_warning_tokens, 12_345);
         assert_eq!(hot_context_limits.hard_compaction_tokens, 23_456);
+        assert_eq!(
+            settings.embedding_openai_base_url,
+            Some("http://127.0.0.1:8002/v1".to_string())
+        );
+        assert_eq!(
+            settings.embedding_openai_api_key,
+            Some("test-embedding-key".to_string())
+        );
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("CHAT_MODEL_ID");
@@ -1108,6 +1146,8 @@ mod tests {
         env::remove_var("AGENT_MODEL_TEMPERATURE");
         env::remove_var("SOFT_WARNING_TOKENS");
         env::remove_var("HARD_COMPACTION_TOKENS");
+        env::remove_var("EMBEDDING_OPENAI_BASE_URL");
+        env::remove_var("EMBEDDING_OPENAI_API_KEY");
 
         // 2. Test empty env var
         env::set_var("R2_ENDPOINT_URL", "");
@@ -1634,6 +1674,22 @@ pub fn get_embedding_provider() -> Option<String> {
 #[must_use]
 pub fn get_embedding_model_id() -> Option<String> {
     std::env::var("EMBEDDING_MODEL_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Get custom OpenAI-compatible embeddings base URL from env.
+#[must_use]
+pub fn get_embedding_openai_base_url() -> Option<String> {
+    std::env::var("EMBEDDING_OPENAI_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Get custom OpenAI-compatible embeddings API key from env.
+#[must_use]
+pub fn get_embedding_openai_api_key() -> Option<String> {
+    std::env::var("EMBEDDING_OPENAI_API_KEY")
         .ok()
         .filter(|s| !s.is_empty())
 }

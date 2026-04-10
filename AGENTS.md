@@ -83,7 +83,7 @@ Default branch: `testing`.
 - **Post-run memory writer** — LLM-based извлечение reusable memories из завершённого таска (до 8 записей): Fact, Preference, Procedure, Decision, Constraint.
 - **Episode finalizer** — детерминистическая генерация Thread + Episode + SessionState records.
 - **Context consolidator** — importance decay, exact + similarity dedup, TTL expiry, stale session cleanup.
-- **Embedding indexer** — async генерация embeddings + backfill; dimensions настраивается через `EMBEDDING_DIMENSIONS` (default 1024).
+- **Embedding indexer** — async генерация embeddings + backfill; dimensions настраивается через `EMBEDDING_DIMENSIONS` (default 1024), custom OpenAI-compatible endpoints можно подключать через `openai-base` + `EMBEDDING_OPENAI_BASE_URL`.
 - **Retrieval advisor hook** — инжектирует контекстные карточки memory search suggestion, history, episode.
 - **Behavior hooks** — `EpisodicExtractHook` захватывает tool-derived memory drafts (write_file -> Procedure, failed exec -> Fact, repeated edits -> Preference).
 - Memory read tools: `memory_search`, `memory_read_episode`, `memory_read_thread_summary`, `memory_read_thread_window`, `memory_diagnostics`.
@@ -181,7 +181,7 @@ Default branch: `testing`.
 - Providers: `gemini`, `groq`, `mistral`, `minimax/`, `nvidia`, `openrouter`, `zai`.
 - Browser-use bridge LLM resolution (disabled): отдельный от core провайдеров; поддерживает `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing relaxed для `zai`/`zhipuai`/`glm`.
 - HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
-- Embedding dimensions: default 1024, configurable via `EMBEDDING_DIMENSIONS`; Mistral provider skip dimensions param (auto-handles truncation).
+- Embedding dimensions: default 1024, configurable via `EMBEDDING_DIMENSIONS`; Mistral provider skip dimensions param (auto-handles truncation); custom OpenAI-compatible embeddings доступны через `EMBEDDING_PROVIDER=openai-base` + `EMBEDDING_OPENAI_BASE_URL`.
 - Voice transcription: `voxtral` (Mistral) с retry backoff (5 attempts, 3s→48s).
 - NVIDIA NIM provider: `nvidia/llama-3.3-nemotron-super-49b-v1`, `nvidia/nemotron-mini`, `minimaxai/minimax-m*`.
 - LLM module structure: `capabilities.rs` (model capabilities), `client.rs` (HTTP orchestration), `support/` (backoff, history, http utils), `types.rs` (domain types).

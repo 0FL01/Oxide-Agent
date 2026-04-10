@@ -1472,9 +1472,7 @@ mod tests {
     #[cfg(feature = "browser_use")]
     #[tokio::test]
     async fn topic_agent_tool_catalog_includes_browser_use_tools_when_enabled() {
-        let _guard = crate::config::test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::config::test_env_async_mutex().lock().await;
         std::env::set_var("BROWSER_USE_ENABLED", "true");
         std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
 
