@@ -222,6 +222,15 @@ impl AgentRunner {
         let model_info = self.llm_client.get_model_info(&ctx.config.model_name)?;
         let capabilities = LlmClient::provider_capabilities_for_model(&model_info);
 
+        if Self::json_mode_forbids_route(json_mode, &model_info) {
+            let error = LlmError::ApiError(format!(
+                "Structured-output agent calls are disabled for {} model `{}`; configure a non-ChatGPT route for json_mode",
+                model_info.provider, model_info.id
+            ));
+            Self::emit_llm_error(ctx.progress_tx, &error).await;
+            return Err(anyhow!("LLM call failed: {error}"));
+        }
+
         Self::log_llm_route_selected(
             ctx,
             state,
@@ -577,6 +586,7 @@ impl AgentRunner {
         exhausted_routes: &std::collections::HashSet<String>,
     ) -> Option<usize> {
         let now = Instant::now();
+        let json_mode = self.requires_structured_output(&ctx.config);
         self.route_failover_state
             .route_quarantine
             .retain(|_, until| *until > now);
@@ -585,7 +595,12 @@ impl AgentRunner {
             return None;
         }
 
-        if self.route_is_available(&ctx.config.model_routes[0], exhausted_routes, now) {
+        if self.route_is_available(
+            &ctx.config.model_routes[0],
+            exhausted_routes,
+            now,
+            json_mode,
+        ) {
             return Some(0);
         }
 
@@ -596,7 +611,7 @@ impl AgentRunner {
             .enumerate()
             .skip(1)
             .filter_map(|(index, route)| {
-                self.route_is_available(route, exhausted_routes, now)
+                self.route_is_available(route, exhausted_routes, now, json_mode)
                     .then_some((index, route.weight.max(1) as usize))
             })
             .collect();
@@ -626,15 +641,21 @@ impl AgentRunner {
         route: &ModelInfo,
         exhausted_routes: &std::collections::HashSet<String>,
         now: Instant,
+        json_mode: bool,
     ) -> bool {
         let route_key = Self::route_key(route);
-        !exhausted_routes.contains(&route_key)
+        !Self::json_mode_forbids_route(json_mode, route)
+            && !exhausted_routes.contains(&route_key)
             && self.llm_client.is_provider_available(&route.provider)
             && self
                 .route_failover_state
                 .route_quarantine
                 .get(&route_key)
                 .is_none_or(|until| *until <= now)
+    }
+
+    fn json_mode_forbids_route(json_mode: bool, route: &ModelInfo) -> bool {
+        json_mode && route.provider.eq_ignore_ascii_case("chatgpt")
     }
 
     fn quarantine_model_route(&mut self, route: &ModelInfo, duration: Duration) {
@@ -1794,6 +1815,28 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content == "Older request about compaction."));
+    }
+
+    #[test]
+    fn json_mode_forbids_chatgpt_routes_only() {
+        let chatgpt_route = ModelInfo {
+            id: "gpt-5.4-mini".to_string(),
+            provider: "chatgpt".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        };
+        let zai_route = ModelInfo {
+            id: "glm-4.7".to_string(),
+            provider: "zai".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        };
+
+        assert!(AgentRunner::json_mode_forbids_route(true, &chatgpt_route));
+        assert!(!AgentRunner::json_mode_forbids_route(false, &chatgpt_route));
+        assert!(!AgentRunner::json_mode_forbids_route(true, &zai_route));
     }
 
     #[tokio::test]
