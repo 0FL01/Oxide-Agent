@@ -19,6 +19,8 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 
 const CHATGPT_CODEX_API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+const JSON_OBJECT_INSTRUCTIONS_SUFFIX: &str =
+    "Return valid JSON only. The response must be a single JSON object with no markdown or extra text.";
 
 /// ChatGPT headless OAuth provider.
 #[derive(Debug, Clone)]
@@ -246,6 +248,12 @@ fn build_chat_request_body(
     temperature: Option<f32>,
     json_mode: bool,
 ) -> Value {
+    let instructions = if json_mode && tools.is_empty() {
+        ensure_json_instructions(instructions)
+    } else {
+        instructions.to_string()
+    };
+
     let mut body = json!({
         "model": model_id,
         "instructions": instructions,
@@ -279,6 +287,18 @@ fn build_chat_request_body(
     }
 
     body
+}
+
+fn ensure_json_instructions(instructions: &str) -> String {
+    if instructions.to_ascii_lowercase().contains("json") {
+        return instructions.to_string();
+    }
+
+    if instructions.trim().is_empty() {
+        JSON_OBJECT_INSTRUCTIONS_SUFFIX.to_string()
+    } else {
+        format!("{instructions}\n\n{JSON_OBJECT_INSTRUCTIONS_SUFFIX}")
+    }
 }
 
 fn parse_unsupported_parameter(body: &str) -> Option<String> {
@@ -396,21 +416,30 @@ async fn parse_streaming_response(
         ..StreamedChatGptResponse::default()
     };
     let mut buffer = String::new();
+    let mut pending_bytes = Vec::new();
     let mut current_text_item_id: Option<String> = None;
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| LlmError::NetworkError(error.to_string()))?;
-        let chunk =
-            std::str::from_utf8(&chunk).map_err(|error| LlmError::JsonError(error.to_string()))?;
-        buffer.push_str(chunk);
-        buffer = buffer.replace("\r\n", "\n");
+        pending_bytes.extend_from_slice(&chunk);
+        if let Some(decoded) = decode_utf8_prefix(&mut pending_bytes)? {
+            buffer.push_str(&decoded);
+        }
+        normalize_newlines_in_place(&mut buffer);
 
         while let Some(boundary) = buffer.find("\n\n") {
             let raw_event = buffer[..boundary].to_string();
             buffer = buffer[(boundary + 2)..].to_string();
             process_sse_event(&raw_event, &mut state, &mut current_text_item_id)?;
         }
+    }
+
+    if !pending_bytes.is_empty() {
+        let tail = String::from_utf8(pending_bytes)
+            .map_err(|error| LlmError::JsonError(error.to_string()))?;
+        buffer.push_str(&tail);
+        normalize_newlines_in_place(&mut buffer);
     }
 
     if !buffer.trim().is_empty() {
@@ -533,6 +562,39 @@ fn process_sse_event(
     Ok(())
 }
 
+fn decode_utf8_prefix(pending_bytes: &mut Vec<u8>) -> Result<Option<String>, LlmError> {
+    match std::str::from_utf8(pending_bytes) {
+        Ok(valid) => {
+            let decoded = valid.to_string();
+            pending_bytes.clear();
+            Ok((!decoded.is_empty()).then_some(decoded))
+        }
+        Err(error) => {
+            let valid_up_to = error.valid_up_to();
+            if let Some(error_len) = error.error_len() {
+                return Err(LlmError::JsonError(format!(
+                    "invalid utf-8 in ChatGPT stream at {valid_up_to} (len {error_len})"
+                )));
+            }
+
+            if valid_up_to == 0 {
+                return Ok(None);
+            }
+
+            let decoded = String::from_utf8(pending_bytes[..valid_up_to].to_vec())
+                .map_err(|error| LlmError::JsonError(error.to_string()))?;
+            pending_bytes.drain(..valid_up_to);
+            Ok(Some(decoded))
+        }
+    }
+}
+
+fn normalize_newlines_in_place(buffer: &mut String) {
+    if buffer.contains('\r') {
+        *buffer = buffer.replace("\r\n", "\n");
+    }
+}
+
 fn parse_usage(value: &Value) -> Option<TokenUsage> {
     Some(TokenUsage {
         prompt_tokens: value
@@ -550,7 +612,7 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_request_body, prepare_responses_request, process_sse_event,
+        build_chat_request_body, decode_utf8_prefix, prepare_responses_request, process_sse_event,
         StreamedChatGptResponse,
     };
     use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
@@ -568,12 +630,29 @@ mod tests {
             true,
         );
 
-        assert_eq!(body["instructions"], json!("system"));
+        assert!(body["instructions"]
+            .as_str()
+            .is_some_and(|value| value.contains("JSON")));
         assert_eq!(body["stream"], json!(true));
         assert!(body.get("max_output_tokens").is_none());
         assert_eq!(body["text"]["format"]["type"], json!("json_object"));
         assert_eq!(body["reasoning"]["effort"], json!("medium"));
         assert_eq!(body["truncation"], json!("auto"));
+    }
+
+    #[test]
+    fn json_mode_preserves_existing_json_instructions() {
+        let body = build_chat_request_body(
+            "Return JSON only.",
+            vec![json!({"role":"user","content":[{"type":"input_text","text":"hi"}]})],
+            &[],
+            "gpt-5.4",
+            10,
+            None,
+            true,
+        );
+
+        assert_eq!(body["instructions"], json!("Return JSON only."));
     }
 
     #[test]
@@ -683,5 +762,22 @@ mod tests {
 
         assert!(updated.get("max_output_tokens").is_none());
         assert_eq!(updated["stream"], json!(true));
+    }
+
+    #[test]
+    fn decode_utf8_prefix_handles_split_multibyte_sequences() {
+        let mut pending = vec![0xF0, 0x9F];
+        assert!(decode_utf8_prefix(&mut pending)
+            .expect("partial utf8")
+            .is_none());
+
+        pending.extend_from_slice(&[0x99, 0x82]);
+        assert_eq!(
+            decode_utf8_prefix(&mut pending)
+                .expect("completed utf8")
+                .as_deref(),
+            Some("🙂")
+        );
+        assert!(pending.is_empty());
     }
 }
