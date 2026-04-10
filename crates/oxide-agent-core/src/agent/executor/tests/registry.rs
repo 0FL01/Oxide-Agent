@@ -204,3 +204,37 @@ async fn agents_md_context_enables_self_editing_tools() {
     assert_eq!(parsed["found"], true);
     assert_eq!(parsed["topic_id"], "topic-a");
 }
+
+#[tokio::test]
+async fn delegation_tool_inherits_agents_md_context_from_executor() {
+    let mut mock = MockStorageProvider::new();
+    mock.expect_get_topic_agents_md()
+        .with(eq(77_i64), eq("topic-a".to_string()))
+        .return_once(|_, _| {
+            Err(crate::storage::StorageError::Config(
+                "storage unavailable".to_string(),
+            ))
+        });
+
+    let mut executor = build_executor();
+    executor.set_agents_md_context(Arc::new(mock), 77, "topic-a".to_string());
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    let error = registry
+        .execute(
+            "delegate_to_sub_agent",
+            &json!({
+                "task": "Inspect the workspace.",
+                "tools": ["write_todos"]
+            })
+            .to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect_err("delegation should fail when inherited AGENTS.md cannot be loaded");
+
+    assert!(error
+        .to_string()
+        .contains("Failed to load topic AGENTS.md for sub-agent bootstrap"));
+}
