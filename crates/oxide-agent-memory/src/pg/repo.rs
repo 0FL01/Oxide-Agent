@@ -1292,10 +1292,12 @@ impl MemoryRepository for PgMemoryRepository {
                     memories.importance,
                     memories.confidence,
                     memories.source,
+                    memories.content_hash,
                     memories.reason,
                     memories.tags,
                     memories.created_at,
-                    memories.updated_at
+                    memories.updated_at,
+                    memories.deleted_at
                 FROM memory_records AS memories
                 LEFT JOIN memory_embeddings AS embeddings
                     ON embeddings.owner_type = 'memory'
