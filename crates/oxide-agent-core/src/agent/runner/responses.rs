@@ -155,6 +155,19 @@ impl AgentRunner {
             "Structured output validation failed"
         );
 
+        if should_salvage_structured_output_failure(&failure.raw_json) {
+            warn!(
+                raw_preview = %crate::utils::truncate_str(&failure.raw_json, 200),
+                "Structured output failed but response looks like a final prose answer; salvaging without retry"
+            );
+            state.structured_output_failures = 0;
+            let input = FinalResponseInput {
+                final_answer: failure.raw_json,
+                reasoning: None,
+            };
+            return self.handle_final_response(ctx, state, input).await;
+        }
+
         state.structured_output_failures += 1;
 
         // Fail-fast: if we have too many consecutive failures, treat raw response as final answer
@@ -414,11 +427,38 @@ fn contains_explicit_remember_phrase(value: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
+fn should_salvage_structured_output_failure(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.starts_with('{')
+        || trimmed.starts_with('[')
+        || trimmed.starts_with("```")
+        || trimmed.starts_with("<")
+        || trimmed.starts_with("[SYSTEM:")
+    {
+        return false;
+    }
+
+    let has_sentence_content = trimmed.chars().filter(|ch| !ch.is_whitespace()).count() >= 24
+        && trimmed.chars().any(char::is_alphabetic);
+    if !has_sentence_content {
+        return false;
+    }
+
+    let unfinished_tail = ['{', '[', ':', ',', '-', '"']
+        .iter()
+        .any(|tail| trimmed.ends_with(*tail));
+    !unfinished_tail
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_explicit_remember_phrase, AgentRunner, PostRunCleanupTelemetry,
-        POST_RUN_HOT_CONTEXT_TARGET_TOKENS,
+        contains_explicit_remember_phrase, should_salvage_structured_output_failure, AgentRunner,
+        PostRunCleanupTelemetry, POST_RUN_HOT_CONTEXT_TARGET_TOKENS,
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::memory::AgentMessage;
@@ -493,5 +533,24 @@ mod tests {
             "Investigate deploy issue",
             &messages,
         ));
+    }
+
+    #[test]
+    fn salvage_detector_accepts_plain_final_prose() {
+        assert!(should_salvage_structured_output_failure(
+            "**TL;DR**\n\nВ Молдове есть официальный режим для digital nomad с минимальным доходом около 52 200 MDL в месяц."
+        ));
+    }
+
+    #[test]
+    fn salvage_detector_rejects_json_like_or_truncated_content() {
+        assert!(!should_salvage_structured_output_failure(
+            r#"{"final_answer":"hello"}"#
+        ));
+        assert!(!should_salvage_structured_output_failure(
+            "```json\n{}\n```"
+        ));
+        assert!(!should_salvage_structured_output_failure("tool_call:"));
+        assert!(!should_salvage_structured_output_failure("short answer"));
     }
 }
