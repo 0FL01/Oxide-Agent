@@ -14,6 +14,7 @@ use crate::agent::structured_output::parse_structured_output;
 use crate::config::ModelInfo;
 use crate::llm::{ChatResponse, LlmClient, LlmError, ProviderCapabilities};
 use anyhow::{anyhow, Result};
+use std::borrow::Cow;
 use std::future::Future;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -207,7 +208,6 @@ impl AgentRunner {
         state: &mut RunState,
     ) -> Result<ChatResponse> {
         let max_retries = LlmClient::MAX_RETRIES;
-        let json_mode = self.requires_structured_output(&ctx.config);
         let provider_name = ctx
             .config
             .model_provider
@@ -220,6 +220,7 @@ impl AgentRunner {
             .unwrap_or_else(|| "unknown".to_string());
         let model_name = ctx.config.model_name.clone();
         let model_info = self.llm_client.get_model_info(&ctx.config.model_name)?;
+        let json_mode = Self::structured_output_required_for_model(&model_info);
         let capabilities = LlmClient::provider_capabilities_for_model(&model_info);
 
         if Self::json_mode_forbids_route(json_mode, &model_info) {
@@ -326,7 +327,7 @@ impl AgentRunner {
             ctx.config.model_max_output_tokens = route.max_output_tokens;
             ctx.config.model_provider = Some(route.provider.clone());
 
-            let json_mode = self.requires_structured_output(&ctx.config);
+            let json_mode = Self::structured_output_required_for_model(&route);
             let provider_name = route.provider.clone();
             let capabilities = LlmClient::provider_capabilities_for_model(&route);
 
@@ -586,7 +587,7 @@ impl AgentRunner {
         exhausted_routes: &std::collections::HashSet<String>,
     ) -> Option<usize> {
         let now = Instant::now();
-        let json_mode = self.requires_structured_output(&ctx.config);
+        let json_mode = self.structured_output_required_for_config(&ctx.config);
         self.route_failover_state
             .route_quarantine
             .retain(|_, until| *until > now);
@@ -672,18 +673,49 @@ impl AgentRunner {
         format!("{}:{}", route.provider, route.id)
     }
 
-    fn requires_structured_output(&self, config: &super::types::AgentRunnerConfig) -> bool {
-        match self.llm_client.get_model_info(&config.model_name) {
-            Ok(info) => LlmClient::supports_structured_output_for_model(&info),
+    fn active_model_info_for_config<'a>(
+        &self,
+        config: &'a super::types::AgentRunnerConfig,
+    ) -> Result<Cow<'a, ModelInfo>, LlmError> {
+        if let Some(provider) = config.model_provider.as_ref() {
+            return Ok(Cow::Owned(ModelInfo {
+                id: config.model_name.clone(),
+                max_output_tokens: config.model_max_output_tokens,
+                context_window_tokens: 0,
+                provider: provider.clone(),
+                weight: 1,
+            }));
+        }
+
+        if let Some(route) = config.model_routes.first() {
+            return Ok(Cow::Borrowed(route));
+        }
+
+        self.llm_client
+            .get_model_info(&config.model_name)
+            .map(Cow::Owned)
+    }
+
+    fn structured_output_required_for_config(
+        &self,
+        config: &super::types::AgentRunnerConfig,
+    ) -> bool {
+        match self.active_model_info_for_config(config) {
+            Ok(info) => Self::structured_output_required_for_model(info.as_ref()),
             Err(error) => {
                 warn!(
                     model = config.model_name,
+                    provider = config.model_provider.as_deref().unwrap_or("unknown"),
                     error = %error,
                     "Failed to resolve model info; defaulting to structured output"
                 );
                 true
             }
         }
+    }
+
+    fn structured_output_required_for_model(model_info: &ModelInfo) -> bool {
+        LlmClient::supports_structured_output_for_model(model_info)
     }
 
     pub(super) async fn await_until_cancelled<T, F>(
@@ -708,7 +740,7 @@ impl AgentRunner {
     ) -> Result<ChatResponse, LlmError> {
         // This method is kept for backwards compatibility.
         // Use call_llm_with_tools for retry handling with UI events.
-        let json_mode = self.requires_structured_output(&ctx.config);
+        let json_mode = self.structured_output_required_for_config(&ctx.config);
         self.llm_client
             .chat_with_tools_single_attempt(
                 ctx.system_prompt,
@@ -742,7 +774,7 @@ impl AgentRunner {
                 .await;
         }
 
-        if !self.requires_structured_output(&ctx.config) {
+        if !self.structured_output_required_for_config(&ctx.config) {
             let reasoning = response.reasoning_content.take();
             return self
                 .handle_unstructured_response(reasoning, raw_json.clone(), ctx, state)
@@ -1837,6 +1869,39 @@ mod tests {
         assert!(AgentRunner::json_mode_forbids_route(true, &chatgpt_route));
         assert!(!AgentRunner::json_mode_forbids_route(false, &chatgpt_route));
         assert!(!AgentRunner::json_mode_forbids_route(true, &zai_route));
+    }
+
+    #[test]
+    fn structured_output_requirement_uses_active_provider_without_registry_lookup() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("glm-4.7".to_string(), 8, 4, 60, 4096)
+            .with_model_provider("zai")
+            .with_model_routes(vec![ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(runner.structured_output_required_for_config(&config));
+    }
+
+    #[test]
+    fn structured_output_requirement_uses_primary_route_before_selection() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("missing-model-name".to_string(), 8, 4, 60, 4096)
+            .with_model_routes(vec![ModelInfo {
+                id: "glm-4.7".to_string(),
+                provider: "zai".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(runner.structured_output_required_for_config(&config));
     }
 
     #[tokio::test]
