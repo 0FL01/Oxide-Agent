@@ -13,6 +13,7 @@ use crate::llm::{
     ToolDefinition,
 };
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -24,6 +25,14 @@ const CHATGPT_CODEX_API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/
 pub struct ChatGptProvider {
     http_client: HttpClient,
     auth: ChatGptAuthManager,
+}
+
+#[derive(Debug, Default)]
+struct StreamedChatGptResponse {
+    content: Option<String>,
+    tool_calls: Vec<ToolCall>,
+    finish_reason: String,
+    usage: Option<TokenUsage>,
 }
 
 impl ChatGptProvider {
@@ -44,7 +53,7 @@ impl ChatGptProvider {
         Self { http_client, auth }
     }
 
-    async fn chat_request(&self, body: Value) -> Result<Value, LlmError> {
+    async fn chat_request(&self, body: Value) -> Result<StreamedChatGptResponse, LlmError> {
         let session = self.auth.get_valid_session().await?;
 
         let mut request = self
@@ -80,10 +89,7 @@ impl ChatGptProvider {
             )));
         }
 
-        response
-            .json()
-            .await
-            .map_err(|error| LlmError::JsonError(error.to_string()))
+        parse_streaming_response(response).await
     }
 }
 
@@ -104,7 +110,8 @@ impl LlmProvider for ChatGptProvider {
             build_chat_request_body(&instructions, input, &[], model_id, max_tokens, None, false);
         let response = self.chat_request(body).await?;
 
-        extract_response_text(&response)
+        response
+            .content
             .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }
 
@@ -157,30 +164,19 @@ impl LlmProvider for ChatGptProvider {
         );
         let response = self.chat_request(body).await?;
 
-        let content = extract_response_text(&response);
-        let tool_calls = parse_tool_calls(&response)?;
+        let content = response.content;
+        let tool_calls = response.tool_calls;
 
         if content.is_none() && tool_calls.is_empty() {
             return Err(LlmError::ApiError("Empty response".to_string()));
         }
 
-        let finish_reason = response["incomplete_details"]["reason"]
-            .as_str()
-            .unwrap_or({
-                if tool_calls.is_empty() {
-                    "stop"
-                } else {
-                    "tool_calls"
-                }
-            })
-            .to_string();
-
         Ok(ChatResponse {
             content,
             tool_calls,
-            finish_reason,
+            finish_reason: response.finish_reason,
             reasoning_content: None,
-            usage: response.get("usage").and_then(parse_usage),
+            usage: response.usage,
         })
     }
 }
@@ -199,7 +195,7 @@ fn build_chat_request_body(
         "instructions": instructions,
         "input": input,
         "max_output_tokens": max_tokens,
-        "stream": false,
+        "stream": true,
         "store": false,
     });
 
@@ -321,62 +317,149 @@ fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
         .collect()
 }
 
-fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
-    let Some(array) = value.get("output").and_then(Value::as_array) else {
-        return Err(LlmError::JsonError(
-            "Invalid responses output format from ChatGPT OAuth".to_string(),
-        ));
+async fn parse_streaming_response(
+    response: reqwest::Response,
+) -> Result<StreamedChatGptResponse, LlmError> {
+    let mut state = StreamedChatGptResponse {
+        finish_reason: "unknown".to_string(),
+        ..StreamedChatGptResponse::default()
     };
+    let mut buffer = String::new();
+    let mut current_text_item_id: Option<String> = None;
+    let mut stream = response.bytes_stream();
 
-    let mut tool_calls = Vec::with_capacity(array.len());
-    for call in array {
-        if call.get("type").and_then(Value::as_str) != Some("function_call") {
-            continue;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| LlmError::NetworkError(error.to_string()))?;
+        let chunk =
+            std::str::from_utf8(&chunk).map_err(|error| LlmError::JsonError(error.to_string()))?;
+        buffer.push_str(chunk);
+        buffer = buffer.replace("\r\n", "\n");
+
+        while let Some(boundary) = buffer.find("\n\n") {
+            let raw_event = buffer[..boundary].to_string();
+            buffer = buffer[(boundary + 2)..].to_string();
+            process_sse_event(&raw_event, &mut state, &mut current_text_item_id)?;
         }
-        let Some(name) = call.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let arguments = call
-            .get("arguments")
-            .and_then(|value| {
-                value
-                    .as_str()
-                    .map(ToString::to_string)
-                    .or_else(|| serde_json::to_string(value).ok())
-            })
-            .unwrap_or_default();
-        let wire_id = call
-            .get("call_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.trim().is_empty());
-        tool_calls.push(match wire_id {
-            Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
-                wire_id,
-                None,
-                name.to_string(),
-                arguments,
-            ),
-            None => {
-                CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name.to_string(), arguments)
-            }
-        });
     }
 
-    Ok(tool_calls)
+    if !buffer.trim().is_empty() {
+        process_sse_event(&buffer, &mut state, &mut current_text_item_id)?;
+    }
+
+    if state.finish_reason == "unknown" {
+        state.finish_reason = if state.tool_calls.is_empty() {
+            "stop".to_string()
+        } else {
+            "tool_calls".to_string()
+        };
+    }
+
+    Ok(state)
 }
 
-fn extract_response_text(response: &Value) -> Option<String> {
-    let output = response.get("output")?.as_array()?;
-    let texts: Vec<&str> = output
-        .iter()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
-        .filter_map(|item| item.get("content").and_then(Value::as_array))
-        .flatten()
-        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
-        .filter_map(|part| part.get("text").and_then(Value::as_str))
-        .collect();
+fn process_sse_event(
+    raw_event: &str,
+    state: &mut StreamedChatGptResponse,
+    current_text_item_id: &mut Option<String>,
+) -> Result<(), LlmError> {
+    let payload = raw_event
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if payload.is_empty() || payload == "[DONE]" {
+        return Ok(());
+    }
 
-    (!texts.is_empty()).then(|| texts.join("\n"))
+    let value: Value =
+        serde_json::from_str(&payload).map_err(|error| LlmError::JsonError(error.to_string()))?;
+    match value.get("type").and_then(Value::as_str) {
+        Some("response.output_text.delta") => {
+            let delta = value
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if delta.is_empty() {
+                return Ok(());
+            }
+            let item_id = value
+                .get("item_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let content = state.content.get_or_insert_with(String::new);
+            if !content.is_empty()
+                && item_id.is_some()
+                && current_text_item_id.as_ref() != item_id.as_ref()
+            {
+                content.push('\n');
+            }
+            content.push_str(delta);
+            *current_text_item_id = item_id;
+        }
+        Some("response.output_item.done") => {
+            if let Some(item) = value.get("item") {
+                if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                    let Some(name) = item.get("name").and_then(Value::as_str) else {
+                        return Ok(());
+                    };
+                    let arguments = item
+                        .get("arguments")
+                        .and_then(|value| {
+                            value
+                                .as_str()
+                                .map(ToString::to_string)
+                                .or_else(|| serde_json::to_string(value).ok())
+                        })
+                        .unwrap_or_default();
+                    let wire_id = item
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.trim().is_empty());
+                    state.tool_calls.push(match wire_id {
+                        Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
+                            wire_id,
+                            None,
+                            name.to_string(),
+                            arguments,
+                        ),
+                        None => CHAT_LIKE_TOOL_PROFILE
+                            .inbound_uncorrelated_tool_call(name.to_string(), arguments),
+                    });
+                }
+            }
+        }
+        Some("response.completed") | Some("response.incomplete") => {
+            let reason = value
+                .get("response")
+                .and_then(|response| response.get("incomplete_details"))
+                .and_then(|details| details.get("reason"))
+                .and_then(Value::as_str);
+            state.finish_reason = reason
+                .unwrap_or(if state.tool_calls.is_empty() {
+                    "stop"
+                } else {
+                    "tool_calls"
+                })
+                .to_string();
+            state.usage = value
+                .get("response")
+                .and_then(|response| response.get("usage"))
+                .and_then(parse_usage);
+        }
+        Some("error") => {
+            let message = value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown ChatGPT stream error");
+            return Err(LlmError::ApiError(format!(
+                "ChatGPT stream error: {message}"
+            )));
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 fn parse_usage(value: &Value) -> Option<TokenUsage> {
@@ -396,7 +479,8 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_request_body, extract_response_text, parse_tool_calls, prepare_responses_request,
+        build_chat_request_body, prepare_responses_request, process_sse_event,
+        StreamedChatGptResponse,
     };
     use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
     use serde_json::json;
@@ -414,6 +498,7 @@ mod tests {
         );
 
         assert_eq!(body["instructions"], json!("system"));
+        assert_eq!(body["stream"], json!(true));
         assert_eq!(body["text"]["format"]["type"], json!("json_object"));
         assert_eq!(body["reasoning"]["effort"], json!("medium"));
         assert_eq!(body["truncation"], json!("auto"));
@@ -454,37 +539,51 @@ mod tests {
     }
 
     #[test]
-    fn parse_tool_calls_preserves_provider_ids() {
-        let tool_calls = parse_tool_calls(&json!({
-            "output": [
-                {
-                    "type": "function_call",
-                    "call_id": "call-chatgpt-2",
-                    "name": "search",
-                    "arguments": "{\"query\":\"oxide\"}"
-                }
-            ]
-        }))
+    fn sse_function_call_preserves_provider_ids() {
+        let mut state = StreamedChatGptResponse::default();
+        let mut current_text_item_id = None;
+        process_sse_event(
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call-chatgpt-2\",\"name\":\"search\",\"arguments\":\"{\\\"query\\\":\\\"oxide\\\"}\",\"status\":\"completed\"}}",
+            &mut state,
+            &mut current_text_item_id,
+        )
         .expect("tool calls parse");
 
-        assert_ne!(tool_calls[0].invocation_id().as_str(), "call-chatgpt-2");
-        assert_eq!(tool_calls[0].wire_tool_call_id(), "call-chatgpt-2");
+        assert_ne!(
+            state.tool_calls[0].invocation_id().as_str(),
+            "call-chatgpt-2"
+        );
+        assert_eq!(state.tool_calls[0].wire_tool_call_id(), "call-chatgpt-2");
     }
 
     #[test]
-    fn extract_response_text_reads_responses_message_output() {
-        let content = extract_response_text(&json!({
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        { "type": "output_text", "text": "hello" },
-                        { "type": "output_text", "text": "world" }
-                    ]
-                }
-            ]
-        }));
+    fn sse_text_and_finish_are_assembled() {
+        let mut state = StreamedChatGptResponse::default();
+        let mut current_text_item_id = None;
+        process_sse_event(
+            "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"hello\"}",
+            &mut state,
+            &mut current_text_item_id,
+        )
+        .expect("text delta");
+        process_sse_event(
+            "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\" world\"}",
+            &mut state,
+            &mut current_text_item_id,
+        )
+        .expect("text delta");
+        process_sse_event(
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}}",
+            &mut state,
+            &mut current_text_item_id,
+        )
+        .expect("finish");
 
-        assert_eq!(content.as_deref(), Some("hello\nworld"));
+        assert_eq!(state.content.as_deref(), Some("hello world"));
+        assert_eq!(state.finish_reason, "stop");
+        assert_eq!(
+            state.usage.as_ref().map(|usage| usage.total_tokens),
+            Some(14)
+        );
     }
 }
