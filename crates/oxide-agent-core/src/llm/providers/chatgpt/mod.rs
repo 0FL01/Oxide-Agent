@@ -248,6 +248,12 @@ fn build_chat_request_body(
     temperature: Option<f32>,
     json_mode: bool,
 ) -> Value {
+    let input = if json_mode && tools.is_empty() {
+        ensure_json_input_marker(input)
+    } else {
+        input
+    };
+
     let instructions = if json_mode && tools.is_empty() {
         ensure_json_instructions(instructions)
     } else {
@@ -298,6 +304,37 @@ fn ensure_json_instructions(instructions: &str) -> String {
         JSON_OBJECT_INSTRUCTIONS_SUFFIX.to_string()
     } else {
         format!("{instructions}\n\n{JSON_OBJECT_INSTRUCTIONS_SUFFIX}")
+    }
+}
+
+fn ensure_json_input_marker(mut input: Vec<Value>) -> Vec<Value> {
+    if input_contains_json_word(&input) {
+        return input;
+    }
+
+    input.insert(
+        0,
+        json!({
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "Return valid JSON only.",
+            }],
+        }),
+    );
+    input
+}
+
+fn input_contains_json_word(input: &[Value]) -> bool {
+    input.iter().any(value_contains_json_word)
+}
+
+fn value_contains_json_word(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.to_ascii_lowercase().contains("json"),
+        Value::Array(items) => items.iter().any(value_contains_json_word),
+        Value::Object(map) => map.values().any(value_contains_json_word),
+        _ => false,
     }
 }
 
@@ -633,6 +670,10 @@ mod tests {
         assert!(body["instructions"]
             .as_str()
             .is_some_and(|value| value.contains("JSON")));
+        assert_eq!(
+            body["input"][0]["content"][0]["text"],
+            json!("Return valid JSON only.")
+        );
         assert_eq!(body["stream"], json!(true));
         assert!(body.get("max_output_tokens").is_none());
         assert_eq!(body["text"]["format"]["type"], json!("json_object"));
@@ -653,6 +694,31 @@ mod tests {
         );
 
         assert_eq!(body["instructions"], json!("Return JSON only."));
+        assert_eq!(
+            body["input"][0]["content"][0]["text"],
+            json!("Return valid JSON only.")
+        );
+    }
+
+    #[test]
+    fn json_mode_preserves_existing_json_word_in_input() {
+        let body = build_chat_request_body(
+            "system",
+            vec![
+                json!({"role":"user","content":[{"type":"input_text","text":"Please answer in JSON."}]}),
+            ],
+            &[],
+            "gpt-5.4",
+            10,
+            None,
+            true,
+        );
+
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            body["input"][0]["content"][0]["text"],
+            json!("Please answer in JSON.")
+        );
     }
 
     #[test]
