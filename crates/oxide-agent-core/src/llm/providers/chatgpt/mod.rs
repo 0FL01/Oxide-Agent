@@ -35,7 +35,12 @@ impl ChatGptProvider {
 
     #[must_use]
     pub fn new_with_client(auth_path: impl Into<PathBuf>, http_client: HttpClient) -> Self {
-        let auth = ChatGptAuthManager::new(auth_path.into(), http_client.clone());
+        let auth_path = auth_path.into();
+        let auth_path = auth_path
+            .to_str()
+            .and_then(|path| auth::resolve_auth_file_path(Some(path)).ok())
+            .unwrap_or(auth_path);
+        let auth = ChatGptAuthManager::new(auth_path, http_client.clone());
         Self { http_client, auth }
     }
 
@@ -92,22 +97,14 @@ impl LlmProvider for ChatGptProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        let mut messages = prepare_structured_messages(system_prompt, history);
-        messages.push(json!({
-            "role": "user",
-            "content": user_message,
-        }));
+        let (instructions, mut input) = prepare_responses_request(system_prompt, history);
+        input.push(user_input_item(user_message));
 
-        let body = build_chat_request_body(messages, &[], model_id, max_tokens, None, false);
+        let body =
+            build_chat_request_body(&instructions, input, &[], model_id, max_tokens, None, false);
         let response = self.chat_request(body).await?;
 
-        response
-            .get("choices")
-            .and_then(|choices| choices.get(0))
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string)
+        extract_response_text(&response)
             .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }
 
@@ -148,8 +145,10 @@ impl LlmProvider for ChatGptProvider {
             json_mode,
         } = request;
 
+        let (instructions, input) = prepare_responses_request(system_prompt, messages);
         let body = build_chat_request_body(
-            prepare_structured_messages(system_prompt, messages),
+            &instructions,
+            input,
             tools,
             model_id,
             max_tokens,
@@ -158,37 +157,22 @@ impl LlmProvider for ChatGptProvider {
         );
         let response = self.chat_request(body).await?;
 
-        let content = response
-            .get("choices")
-            .and_then(|choices| choices.get(0))
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string);
-
-        let tool_calls_value = response
-            .get("choices")
-            .and_then(|choices| choices.get(0))
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("tool_calls"));
-        let tool_calls = match tool_calls_value {
-            Some(value) if value.is_null() => Vec::new(),
-            Some(value) if value.is_array() => parse_tool_calls(value)?,
-            Some(_) => {
-                return Err(LlmError::JsonError(
-                    "Invalid tool_calls format from ChatGPT OAuth".to_string(),
-                ))
-            }
-            None => Vec::new(),
-        };
+        let content = extract_response_text(&response);
+        let tool_calls = parse_tool_calls(&response)?;
 
         if content.is_none() && tool_calls.is_empty() {
             return Err(LlmError::ApiError("Empty response".to_string()));
         }
 
-        let finish_reason = response["choices"][0]["finish_reason"]
+        let finish_reason = response["incomplete_details"]["reason"]
             .as_str()
-            .unwrap_or("unknown")
+            .unwrap_or({
+                if tool_calls.is_empty() {
+                    "stop"
+                } else {
+                    "tool_calls"
+                }
+            })
             .to_string();
 
         Ok(ChatResponse {
@@ -202,7 +186,8 @@ impl LlmProvider for ChatGptProvider {
 }
 
 fn build_chat_request_body(
-    messages: Vec<Value>,
+    instructions: &str,
+    input: Vec<Value>,
     tools: &[ToolDefinition],
     model_id: &str,
     max_tokens: u32,
@@ -211,12 +196,14 @@ fn build_chat_request_body(
 ) -> Value {
     let mut body = json!({
         "model": model_id,
-        "messages": messages,
-        "max_tokens": max_tokens,
+        "instructions": instructions,
+        "input": input,
+        "max_output_tokens": max_tokens,
         "stream": false,
+        "store": false,
     });
 
-    if let Some(temperature) = temperature {
+    if let Some(temperature) = temperature.filter(|_| !model_id.starts_with("gpt-5")) {
         body["temperature"] = json!(temperature);
     }
 
@@ -226,85 +213,98 @@ fn build_chat_request_body(
     }
 
     if json_mode && tools.is_empty() {
-        body["response_format"] = json!({ "type": "json_object" });
+        body["text"] = json!({
+            "format": {
+                "type": "json_object"
+            }
+        });
     }
 
     if model_id.starts_with("gpt-5") {
         body["reasoning"] = json!({ "effort": "medium" });
+        body["truncation"] = json!("auto");
     }
 
     body
 }
 
-fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<Value> {
-    let mut messages = vec![json!({
-        "role": "system",
-        "content": system_prompt,
-    })];
+fn prepare_responses_request(system_prompt: &str, history: &[Message]) -> (String, Vec<Value>) {
+    let mut instructions = system_prompt.trim().to_string();
+    let mut input = Vec::new();
 
     for msg in history {
         match msg.role.as_str() {
             "system" => {
-                messages.push(json!({
-                    "role": "system",
-                    "content": msg.content,
-                }));
+                if !msg.content.trim().is_empty() {
+                    if !instructions.is_empty() {
+                        instructions.push_str("\n\n");
+                    }
+                    instructions.push_str(msg.content.trim());
+                }
             }
             "assistant" => {
-                let mut message = json!({
-                    "role": "assistant",
-                    "content": msg.content,
-                });
-
-                if let Some(tool_calls) = &msg.tool_calls {
-                    let api_tool_calls: Vec<Value> = tool_calls
-                        .iter()
-                        .filter_map(|tool_call| {
-                            CHAT_LIKE_TOOL_PROFILE
-                                .encode_tool_call(tool_call)
-                                .and_then(|call| call.into_chat_like())
-                                .map(|call| {
-                                    json!({
-                                        "id": call.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": call.name,
-                                            "arguments": call.arguments,
-                                        }
-                                    })
-                                })
-                        })
-                        .collect();
-
-                    if !api_tool_calls.is_empty() {
-                        message["tool_calls"] = json!(api_tool_calls);
-                    }
+                if !msg.content.trim().is_empty() {
+                    input.push(json!({
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": msg.content,
+                        }],
+                    }));
                 }
 
-                messages.push(message);
+                if let Some(tool_calls) = &msg.tool_calls {
+                    input.extend(tool_calls.iter().filter_map(|tool_call| {
+                        CHAT_LIKE_TOOL_PROFILE
+                            .encode_tool_call(tool_call)
+                            .and_then(|call| call.into_chat_like())
+                            .map(|call| {
+                                json!({
+                                    "type": "function_call",
+                                    "call_id": call.id,
+                                    "name": call.name,
+                                    "arguments": call.arguments,
+                                })
+                            })
+                    }));
+                }
             }
             "tool" => {
-                if let Some(result) = CHAT_LIKE_TOOL_PROFILE
-                    .encode_tool_result(msg)
-                    .and_then(|result| result.into_chat_like())
+                if let Some(result) = msg
+                    .resolved_tool_call_correlation()
+                    .map(|correlation| correlation.wire_tool_call_id().to_string())
+                    .or_else(|| msg.tool_call_id.clone())
                 {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": result.tool_call_id,
-                        "content": result.content,
+                    input.push(json!({
+                        "type": "function_call_output",
+                        "call_id": result,
+                        "output": msg.content,
                     }));
                 }
             }
             _ => {
-                messages.push(json!({
+                input.push(json!({
                     "role": "user",
-                    "content": msg.content,
+                    "content": [{
+                        "type": "input_text",
+                        "text": msg.content,
+                    }],
                 }));
             }
         }
     }
 
-    messages
+    (instructions, input)
+}
+
+fn user_input_item(content: &str) -> Value {
+    json!({
+        "role": "user",
+        "content": [{
+            "type": "input_text",
+            "text": content,
+        }],
+    })
 }
 
 fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
@@ -313,32 +313,30 @@ fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
         .map(|tool| {
             json!({
                 "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                }
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
             })
         })
         .collect()
 }
 
 fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
-    let Some(array) = value.as_array() else {
+    let Some(array) = value.get("output").and_then(Value::as_array) else {
         return Err(LlmError::JsonError(
-            "Invalid tool_calls format from ChatGPT OAuth".to_string(),
+            "Invalid responses output format from ChatGPT OAuth".to_string(),
         ));
     };
 
     let mut tool_calls = Vec::with_capacity(array.len());
     for call in array {
-        let Some(function) = call.get("function") else {
+        if call.get("type").and_then(Value::as_str) != Some("function_call") {
+            continue;
+        }
+        let Some(name) = call.get("name").and_then(Value::as_str) else {
             continue;
         };
-        let Some(name) = function.get("name").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let arguments = function
+        let arguments = call
             .get("arguments")
             .and_then(|value| {
                 value
@@ -348,8 +346,8 @@ fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
             })
             .unwrap_or_default();
         let wire_id = call
-            .get("id")
-            .and_then(|value| value.as_str())
+            .get("call_id")
+            .and_then(Value::as_str)
             .filter(|id| !id.trim().is_empty());
         tool_calls.push(match wire_id {
             Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
@@ -367,24 +365,47 @@ fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
     Ok(tool_calls)
 }
 
+fn extract_response_text(response: &Value) -> Option<String> {
+    let output = response.get("output")?.as_array()?;
+    let texts: Vec<&str> = output
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+        .filter_map(|item| item.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect();
+
+    (!texts.is_empty()).then(|| texts.join("\n"))
+}
+
 fn parse_usage(value: &Value) -> Option<TokenUsage> {
     Some(TokenUsage {
-        prompt_tokens: value.get("prompt_tokens")?.as_u64()? as u32,
-        completion_tokens: value.get("completion_tokens")?.as_u64()? as u32,
+        prompt_tokens: value
+            .get("input_tokens")
+            .or_else(|| value.get("prompt_tokens"))?
+            .as_u64()? as u32,
+        completion_tokens: value
+            .get("output_tokens")
+            .or_else(|| value.get("completion_tokens"))?
+            .as_u64()? as u32,
         total_tokens: value.get("total_tokens")?.as_u64()? as u32,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_chat_request_body, parse_tool_calls, prepare_structured_messages};
+    use super::{
+        build_chat_request_body, extract_response_text, parse_tool_calls, prepare_responses_request,
+    };
     use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
     use serde_json::json;
 
     #[test]
     fn json_mode_uses_json_object_without_tools() {
         let body = build_chat_request_body(
-            vec![json!({"role":"user","content":"hi"})],
+            "system",
+            vec![json!({"role":"user","content":[{"type":"input_text","text":"hi"}]})],
             &[],
             "gpt-5.4",
             10,
@@ -392,8 +413,10 @@ mod tests {
             true,
         );
 
-        assert_eq!(body["response_format"]["type"], json!("json_object"));
+        assert_eq!(body["instructions"], json!("system"));
+        assert_eq!(body["text"]["format"]["type"], json!("json_object"));
         assert_eq!(body["reasoning"]["effort"], json!("medium"));
+        assert_eq!(body["truncation"], json!("auto"));
     }
 
     #[test]
@@ -423,27 +446,45 @@ mod tests {
             ),
         ];
 
-        let messages = prepare_structured_messages("system", &history);
+        let (instructions, input) = prepare_responses_request("system", &history);
 
-        assert_eq!(messages[1]["tool_calls"][0]["id"], json!("call-chatgpt-1"));
-        assert_eq!(messages[2]["tool_call_id"], json!("call-chatgpt-1"));
+        assert_eq!(instructions, "system");
+        assert_eq!(input[1]["call_id"], json!("call-chatgpt-1"));
+        assert_eq!(input[2]["call_id"], json!("call-chatgpt-1"));
     }
 
     #[test]
     fn parse_tool_calls_preserves_provider_ids() {
-        let tool_calls = parse_tool_calls(&json!([
-            {
-                "id": "call-chatgpt-2",
-                "type": "function",
-                "function": {
+        let tool_calls = parse_tool_calls(&json!({
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call-chatgpt-2",
                     "name": "search",
                     "arguments": "{\"query\":\"oxide\"}"
                 }
-            }
-        ]))
+            ]
+        }))
         .expect("tool calls parse");
 
         assert_ne!(tool_calls[0].invocation_id().as_str(), "call-chatgpt-2");
         assert_eq!(tool_calls[0].wire_tool_call_id(), "call-chatgpt-2");
+    }
+
+    #[test]
+    fn extract_response_text_reads_responses_message_output() {
+        let content = extract_response_text(&json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "hello" },
+                        { "type": "output_text", "text": "world" }
+                    ]
+                }
+            ]
+        }));
+
+        assert_eq!(content.as_deref(), Some("hello\nworld"));
     }
 }

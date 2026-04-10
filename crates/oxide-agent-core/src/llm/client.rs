@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::{debug, info, instrument, trace, warn};
@@ -270,12 +270,14 @@ impl LlmClient {
             .as_ref()
             .filter(|path| !path.trim().is_empty())
         {
-            if Path::new(auth_path).exists() {
+            let resolved_auth_path = providers::chatgpt::resolve_auth_file_path(Some(auth_path))
+                .unwrap_or_else(|_| PathBuf::from(auth_path));
+            if resolved_auth_path.exists() {
                 Self::insert_provider(
                     &mut providers,
                     "chatgpt",
                     Arc::new(providers::ChatGptProvider::new_with_client(
-                        auth_path.clone(),
+                        resolved_auth_path,
                         http_client.clone(),
                     )),
                 );
