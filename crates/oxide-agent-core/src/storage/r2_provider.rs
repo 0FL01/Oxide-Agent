@@ -537,11 +537,12 @@ impl StorageProvider for R2Storage {
     async fn search_memory_episodes_vector(
         &self,
         query_embedding: Vec<f32>,
+        model_id: String,
         filter: oxide_agent_memory::EpisodeSearchFilter,
     ) -> Result<Vec<oxide_agent_memory::EpisodeSearchHit>, StorageError> {
         with_storage_reason(
             "search_memory_episodes_vector",
-            self.search_memory_episodes_vector_inner(query_embedding, filter),
+            self.search_memory_episodes_vector_inner(query_embedding, model_id, filter),
         )
         .await
     }
@@ -549,11 +550,12 @@ impl StorageProvider for R2Storage {
     async fn search_memory_records_vector(
         &self,
         query_embedding: Vec<f32>,
+        model_id: String,
         filter: oxide_agent_memory::MemorySearchFilter,
     ) -> Result<Vec<oxide_agent_memory::MemorySearchHit>, StorageError> {
         with_storage_reason(
             "search_memory_records_vector",
-            self.search_memory_records_vector_inner(query_embedding, filter),
+            self.search_memory_records_vector_inner(query_embedding, model_id, filter),
         )
         .await
     }

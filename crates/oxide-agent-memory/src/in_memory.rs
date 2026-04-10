@@ -740,10 +740,12 @@ impl MemoryRepository for InMemoryMemoryRepository {
     fn search_episodes_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &EpisodeSearchFilter,
     ) -> impl Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send {
         let state = Arc::clone(&self.state);
         let query_embedding = query_embedding.to_vec();
+        let model_id = model_id.to_string();
         let filter = filter.clone();
         async move {
             if query_embedding.is_empty() {
@@ -785,6 +787,9 @@ impl MemoryRepository for InMemoryMemoryRepository {
                     let embedding = guard
                         .embeddings
                         .get(&(EmbeddingOwnerType::Episode, episode.episode_id.clone()))?;
+                    if embedding.model_id != model_id {
+                        return None;
+                    }
                     let vector = embedding.embedding.as_ref()?;
                     let score = cosine_similarity(&query_embedding, vector)?;
                     (score > 0.0).then(|| EpisodeSearchHit {
@@ -816,10 +821,12 @@ impl MemoryRepository for InMemoryMemoryRepository {
     fn search_memories_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &MemorySearchFilter,
     ) -> impl Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send {
         let state = Arc::clone(&self.state);
         let query_embedding = query_embedding.to_vec();
+        let model_id = model_id.to_string();
         let filter = filter.clone();
         async move {
             if query_embedding.is_empty() {
@@ -865,6 +872,9 @@ impl MemoryRepository for InMemoryMemoryRepository {
                     let embedding = guard
                         .embeddings
                         .get(&(EmbeddingOwnerType::Memory, memory.memory_id.clone()))?;
+                    if embedding.model_id != model_id {
+                        return None;
+                    }
                     let vector = embedding.embedding.as_ref()?;
                     let score = cosine_similarity(&query_embedding, vector)?;
                     (score > 0.0).then(|| MemorySearchHit {
@@ -1486,6 +1496,7 @@ mod tests {
         let episode_hits = repo
             .search_episodes_vector(
                 &[1.0, 0.0],
+                "gemini-embedding-001",
                 &EpisodeSearchFilter {
                     context_key: Some("topic-a".to_string()),
                     user_id: Some(1),
@@ -1502,6 +1513,7 @@ mod tests {
         let memory_hits = repo
             .search_memories_vector(
                 &[1.0, 0.0],
+                "gemini-embedding-001",
                 &MemorySearchFilter {
                     context_key: Some("topic-a".to_string()),
                     user_id: Some(1),

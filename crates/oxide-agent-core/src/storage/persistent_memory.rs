@@ -221,10 +221,15 @@ impl MemoryRepository for StorageMemoryRepository {
     async fn search_episodes_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &EpisodeSearchFilter,
     ) -> Result<Vec<EpisodeSearchHit>, RepositoryError> {
         self.storage
-            .search_memory_episodes_vector(query_embedding.to_vec(), filter.clone())
+            .search_memory_episodes_vector(
+                query_embedding.to_vec(),
+                model_id.to_string(),
+                filter.clone(),
+            )
             .await
             .map_err(map_storage_error)
     }
@@ -232,10 +237,15 @@ impl MemoryRepository for StorageMemoryRepository {
     async fn search_memories_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &MemorySearchFilter,
     ) -> Result<Vec<MemorySearchHit>, RepositoryError> {
         self.storage
-            .search_memory_records_vector(query_embedding.to_vec(), filter.clone())
+            .search_memory_records_vector(
+                query_embedding.to_vec(),
+                model_id.to_string(),
+                filter.clone(),
+            )
             .await
             .map_err(map_storage_error)
     }

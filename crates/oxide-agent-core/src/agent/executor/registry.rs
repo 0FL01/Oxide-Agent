@@ -96,6 +96,9 @@ impl AgentExecutor {
                 provider = provider.with_query_embedding_generator(Arc::new(
                     LlmMemoryEmbeddingGenerator::new(self.runner.llm_client()),
                 ));
+                if let Some(model_id) = self.runner.llm_client().embedding_profile_id() {
+                    provider = provider.with_query_embedding_model_id(model_id.to_string());
+                }
             }
             registry.register(Box::new(provider));
         }

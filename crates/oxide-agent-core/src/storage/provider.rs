@@ -438,9 +438,11 @@ pub trait StorageProvider: Send + Sync {
     async fn search_memory_episodes_vector(
         &self,
         query_embedding: Vec<f32>,
+        model_id: String,
         filter: EpisodeSearchFilter,
     ) -> Result<Vec<EpisodeSearchHit>, StorageError> {
         let _ = query_embedding;
+        let _ = model_id;
         let _ = filter;
         Err(StorageError::Config(
             "persistent memory episode vector search is not implemented for this storage provider"
@@ -451,9 +453,11 @@ pub trait StorageProvider: Send + Sync {
     async fn search_memory_records_vector(
         &self,
         query_embedding: Vec<f32>,
+        model_id: String,
         filter: MemorySearchFilter,
     ) -> Result<Vec<MemorySearchHit>, StorageError> {
         let _ = query_embedding;
+        let _ = model_id;
         let _ = filter;
         Err(StorageError::Config(
             "persistent memory record vector search is not implemented for this storage provider"

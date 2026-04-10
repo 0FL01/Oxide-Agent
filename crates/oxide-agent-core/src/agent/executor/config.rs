@@ -156,7 +156,10 @@ impl AgentExecutor {
             },
         )));
         if let (Some(model_id), true) = (
-            self.settings.embedding_model_id.clone(),
+            self.runner
+                .llm_client()
+                .embedding_profile_id()
+                .map(ToOwned::to_owned),
             self.runner.llm_client().is_embedding_available(),
         ) {
             coordinator = coordinator.with_embedding_indexer(

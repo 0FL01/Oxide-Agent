@@ -732,7 +732,7 @@ async fn durable_memory_retriever_prefers_memory_recall_for_procedure_queries() 
     storage
         .expect_search_memory_records_vector()
         .times(1)
-        .return_once(move |_, _| {
+        .return_once(move |_, _, _| {
             Ok(vec![MemorySearchHit {
                 record: memory_for_vector,
                 score: 0.96,
@@ -741,7 +741,8 @@ async fn durable_memory_retriever_prefers_memory_recall_for_procedure_queries() 
         });
 
     let retriever = DurableMemoryRetriever::new(Arc::new(storage))
-        .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
+        .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator))
+        .with_query_embedding_model_id("test-profile");
     let classification = classification_for(MemoryClassificationClass::ProcedureHowTo);
     let retrieval = retriever
         .retrieve(
@@ -820,7 +821,7 @@ async fn durable_memory_search_supports_explicit_hybrid_requests() {
     storage
         .expect_search_memory_episodes_vector()
         .times(1)
-        .returning(|_, _| Ok(Vec::new()));
+        .returning(|_, _, _| Ok(Vec::new()));
     storage
         .expect_search_memory_records_lexical()
         .times(1)
@@ -839,7 +840,7 @@ async fn durable_memory_search_supports_explicit_hybrid_requests() {
         .times(1)
         .returning({
             let memory_for_vector = memory_for_vector.clone();
-            move |_, _| {
+            move |_, _, _| {
                 Ok(vec![MemorySearchHit {
                     record: memory_for_vector.clone(),
                     score: 0.96,
@@ -849,7 +850,8 @@ async fn durable_memory_search_supports_explicit_hybrid_requests() {
         });
 
     let retriever = DurableMemoryRetriever::new(Arc::new(storage))
-        .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
+        .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator))
+        .with_query_embedding_model_id("test-profile");
     let search_items = retriever
         .search(
             &retrieval_scope(),
@@ -909,7 +911,7 @@ async fn durable_memory_retriever_filters_vector_only_memory_when_policy_disallo
     storage
         .expect_search_memory_records_vector()
         .times(1)
-        .return_once(move |_, _| {
+        .return_once(move |_, _, _| {
             Ok(vec![MemorySearchHit {
                 record: memory_for_vector,
                 score: 0.96,
@@ -918,7 +920,8 @@ async fn durable_memory_retriever_filters_vector_only_memory_when_policy_disallo
         });
 
     let retriever = DurableMemoryRetriever::new(Arc::new(storage))
-        .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
+        .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator))
+        .with_query_embedding_model_id("test-profile");
     let classification = MemoryClassificationDecision {
         class: MemoryClassificationClass::General,
         read_policy: MemoryReadPolicy {
