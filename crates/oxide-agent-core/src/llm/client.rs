@@ -12,7 +12,13 @@ use super::{
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
-    embedding: Option<(embeddings::EmbeddingProvider, String, u32, Option<u32>)>,
+    embedding: Option<(
+        embeddings::EmbeddingProvider,
+        String,
+        String,
+        u32,
+        Option<u32>,
+    )>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Narrator model ID
@@ -32,10 +38,22 @@ pub struct LlmClient {
 impl LlmClient {
     fn create_embedding_provider(
         settings: &crate::config::AgentSettings,
-    ) -> Option<(embeddings::EmbeddingProvider, String, u32, Option<u32>)> {
+    ) -> Option<(
+        embeddings::EmbeddingProvider,
+        String,
+        String,
+        u32,
+        Option<u32>,
+    )> {
         let provider_name = settings.embedding_provider.as_ref()?;
         let model_id = settings.embedding_model_id.clone()?;
+        let profile_id = settings
+            .get_embedding_profile_id()
+            .unwrap_or_else(|| model_id.clone());
         let provider_name = provider_name.to_ascii_lowercase();
+        let prompt_style = settings.embedding_prompt_style.clone().unwrap_or_default();
+        let query_prefix = settings.embedding_query_prefix.clone();
+        let document_prefix = settings.embedding_document_prefix.clone();
 
         let provider = match provider_name.as_str() {
             "gemini" | "google" => {
@@ -45,17 +63,35 @@ impl LlmClient {
             "mistral" => {
                 let api_key = settings.mistral_api_key.clone()?;
                 let api_base = embeddings::get_api_base(&provider_name)?;
-                embeddings::EmbeddingProvider::new_openai_compatible(api_key, api_base.to_string())
+                embeddings::EmbeddingProvider::new_openai_compatible(
+                    api_key,
+                    api_base.to_string(),
+                    prompt_style,
+                    query_prefix,
+                    document_prefix,
+                )
             }
             "openrouter" => {
                 let api_key = settings.openrouter_api_key.clone()?;
                 let api_base = embeddings::get_api_base(&provider_name)?;
-                embeddings::EmbeddingProvider::new_openai_compatible(api_key, api_base.to_string())
+                embeddings::EmbeddingProvider::new_openai_compatible(
+                    api_key,
+                    api_base.to_string(),
+                    prompt_style,
+                    query_prefix,
+                    document_prefix,
+                )
             }
             "openai-base" => {
                 let api_key = settings.embedding_openai_api_key.clone()?;
                 let api_base = settings.embedding_openai_base_url.clone()?;
-                embeddings::EmbeddingProvider::new_openai_compatible(api_key, api_base)
+                embeddings::EmbeddingProvider::new_openai_compatible(
+                    api_key,
+                    api_base,
+                    prompt_style,
+                    query_prefix,
+                    document_prefix,
+                )
             }
             _ => return None,
         };
@@ -68,7 +104,13 @@ impl LlmClient {
             _ => Some(dimensions),
         };
 
-        Some((provider, model_id, dimensions, request_dimensions))
+        Some((
+            provider,
+            model_id,
+            profile_id,
+            dimensions,
+            request_dimensions,
+        ))
     }
 
     fn provider_key(name: &str) -> String {
@@ -693,7 +735,7 @@ impl LlmClient {
         task_type: Option<embeddings::EmbeddingTaskType>,
         title: Option<&str>,
     ) -> Result<Vec<f32>, LlmError> {
-        let (provider, model, _, request_dimensions) =
+        let (provider, model, _, _, request_dimensions) =
             self.embedding.as_ref().ok_or_else(|| {
                 LlmError::MissingConfig("embedding provider not configured".to_string())
             })?;
@@ -707,7 +749,7 @@ impl LlmClient {
     ///
     /// Returns `None` if embedding provider is not configured or the probe fails.
     pub async fn probe_embedding_dimension(&self) -> Option<usize> {
-        let (provider, model, _, _) = self.embedding.as_ref()?;
+        let (provider, model, _, _, _) = self.embedding.as_ref()?;
         provider.probe_dimension(model).await
     }
 
@@ -716,7 +758,15 @@ impl LlmClient {
     /// Returns `None` if embedding provider is not configured.
     #[must_use]
     pub fn embedding_dimensions(&self) -> Option<u32> {
-        self.embedding.as_ref().map(|(_, _, dim, _)| *dim)
+        self.embedding.as_ref().map(|(_, _, _, dim, _)| *dim)
+    }
+
+    /// Return the active embedding profile identifier used for cache/index isolation.
+    #[must_use]
+    pub fn embedding_profile_id(&self) -> Option<&str> {
+        self.embedding
+            .as_ref()
+            .map(|(_, _, profile_id, _, _)| profile_id.as_str())
     }
 
     /// Transcribe audio to text
@@ -1270,7 +1320,7 @@ mod tests {
             .embedding
             .as_ref()
             .expect("embedding should be configured");
-        assert!(embedding.3.is_none());
+        assert!(embedding.4.is_none());
     }
 
     #[test]
@@ -1289,7 +1339,7 @@ mod tests {
             .embedding
             .as_ref()
             .expect("embedding should be configured");
-        assert_eq!(embedding.3, Some(1024));
+        assert_eq!(embedding.4, Some(1024));
     }
 
     #[test]
@@ -1300,6 +1350,7 @@ mod tests {
             embedding_openai_base_url: Some("http://127.0.0.1:8002/v1".to_string()),
             embedding_openai_api_key: Some("test-openai-base-key".to_string()),
             embedding_dimensions: Some(768),
+            embedding_prompt_style: Some(crate::config::EmbeddingPromptStyle::User2),
             ..AgentSettings::default()
         };
 
@@ -1310,6 +1361,10 @@ mod tests {
             .embedding
             .as_ref()
             .expect("embedding should be configured");
-        assert_eq!(embedding.3, Some(768));
+        assert_eq!(embedding.4, Some(768));
+        assert!(llm
+            .embedding_profile_id()
+            .expect("profile id configured")
+            .contains("prompt-user2"));
     }
 }

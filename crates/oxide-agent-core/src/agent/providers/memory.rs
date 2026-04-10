@@ -129,6 +129,7 @@ pub struct MemoryProvider {
     artifact_storage: Option<Arc<dyn StorageProvider>>,
     scope: AgentMemoryScope,
     query_embedding_generator: Option<Arc<dyn MemoryEmbeddingGenerator>>,
+    query_embedding_model_id: Option<String>,
 }
 
 impl MemoryProvider {
@@ -152,6 +153,7 @@ impl MemoryProvider {
             artifact_storage,
             scope,
             query_embedding_generator: None,
+            query_embedding_model_id: None,
         }
     }
 
@@ -165,10 +167,20 @@ impl MemoryProvider {
         self
     }
 
+    /// Attach the active embedding profile identifier for vector-search isolation.
+    #[must_use]
+    pub fn with_query_embedding_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.query_embedding_model_id = Some(model_id.into());
+        self
+    }
+
     fn durable_memory_retriever(&self) -> DurableMemoryRetriever {
         let mut retriever = DurableMemoryRetriever::new_with_store(Arc::clone(&self.store));
         if let Some(generator) = self.query_embedding_generator.as_ref() {
             retriever = retriever.with_query_embedding_generator(Arc::clone(generator));
+        }
+        if let Some(model_id) = self.query_embedding_model_id.as_ref() {
+            retriever = retriever.with_query_embedding_model_id(model_id.clone());
         }
         retriever
     }
@@ -1043,13 +1055,14 @@ mod tests {
             .expect_search_memory_episodes_vector()
             .with(
                 function(|embedding: &Vec<f32>| embedding == &vec![1.0, 0.0]),
+                eq("test-profile".to_string()),
                 function(|filter: &EpisodeSearchFilter| {
                     filter.context_key.as_deref() == Some("topic-a")
                         && filter.user_id == Some(7)
                         && filter.limit == Some(8)
                 }),
             )
-            .returning(|_, _| Ok(Vec::new()));
+            .returning(|_, _, _| Ok(Vec::new()));
         storage
             .expect_search_memory_records_lexical()
             .with(
@@ -1072,6 +1085,7 @@ mod tests {
             .expect_search_memory_records_vector()
             .with(
                 function(|embedding: &Vec<f32>| embedding == &vec![1.0, 0.0]),
+                eq("test-profile".to_string()),
                 function(|filter: &MemorySearchFilter| {
                     filter.context_key.as_deref() == Some("topic-a")
                         && filter.user_id == Some(7)
@@ -1079,7 +1093,7 @@ mod tests {
                         && filter.memory_type == Some(MemoryType::Fact)
                 }),
             )
-            .returning(|_, _| {
+            .returning(|_, _, _| {
                 Ok(vec![MemorySearchHit {
                     record: memory_record(),
                     score: 0.95,
@@ -1088,7 +1102,8 @@ mod tests {
             });
 
         let provider = MemoryProvider::new(Arc::new(storage), scope())
-            .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator));
+            .with_query_embedding_generator(Arc::new(FakeEmbeddingGenerator))
+            .with_query_embedding_model_id("test-profile");
         let result = provider
             .execute(
                 TOOL_MEMORY_SEARCH,

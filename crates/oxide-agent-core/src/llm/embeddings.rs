@@ -1,6 +1,7 @@
 //! Embedding provider abstraction with dimension control and normalization.
 
 use super::{http, LlmError};
+use crate::config::EmbeddingPromptStyle;
 use crate::llm::support::http::create_http_client_builder;
 use gemini_rust::{GeminiBuilder, Model, TaskType};
 use serde::Deserialize;
@@ -30,15 +31,27 @@ pub(crate) struct OpenAiCompatibleEmbeddingProvider {
     http_client: reqwest::Client,
     api_key: String,
     api_base: String,
+    prompt_style: EmbeddingPromptStyle,
+    query_prefix: Option<String>,
+    document_prefix: Option<String>,
 }
 
 impl OpenAiCompatibleEmbeddingProvider {
     #[must_use]
-    fn new(api_key: String, api_base: String) -> Self {
+    fn new(
+        api_key: String,
+        api_base: String,
+        prompt_style: EmbeddingPromptStyle,
+        query_prefix: Option<String>,
+        document_prefix: Option<String>,
+    ) -> Self {
         Self {
             http_client: http::create_http_client(),
             api_key,
             api_base,
+            prompt_style,
+            query_prefix,
+            document_prefix,
         }
     }
 
@@ -46,13 +59,15 @@ impl OpenAiCompatibleEmbeddingProvider {
         &self,
         text: &str,
         model: &str,
+        task_type: Option<EmbeddingTaskType>,
         dimensions: Option<u32>,
     ) -> Result<Vec<f32>, LlmError> {
         let url = format!("{}/embeddings", self.api_base);
+        let input = self.prepare_input(text, task_type);
 
         let mut body = serde_json::json!({
             "model": model,
-            "input": text
+            "input": input
         });
         if let Some(dim) = dimensions {
             body["dimensions"] = serde_json::json!(dim);
@@ -89,6 +104,30 @@ impl OpenAiCompatibleEmbeddingProvider {
             .map(|d| d.embedding)
             .ok_or_else(|| LlmError::ApiError("Empty embedding response".to_string()))
     }
+
+    fn prepare_input(&self, text: &str, task_type: Option<EmbeddingTaskType>) -> String {
+        match (&self.prompt_style, task_type) {
+            (EmbeddingPromptStyle::None, _) | (_, None) => text.to_string(),
+            (EmbeddingPromptStyle::User2, Some(EmbeddingTaskType::RetrievalQuery)) => {
+                format!("search_query: {text}")
+            }
+            (EmbeddingPromptStyle::User2, Some(EmbeddingTaskType::RetrievalDocument)) => {
+                format!("search_document: {text}")
+            }
+            (EmbeddingPromptStyle::E5, Some(EmbeddingTaskType::RetrievalQuery)) => {
+                format!("query: {text}")
+            }
+            (EmbeddingPromptStyle::E5, Some(EmbeddingTaskType::RetrievalDocument)) => {
+                format!("passage: {text}")
+            }
+            (EmbeddingPromptStyle::Custom, Some(EmbeddingTaskType::RetrievalQuery)) => {
+                prefix_embedding_input(self.query_prefix.as_deref(), text)
+            }
+            (EmbeddingPromptStyle::Custom, Some(EmbeddingTaskType::RetrievalDocument)) => {
+                prefix_embedding_input(self.document_prefix.as_deref(), text)
+            }
+        }
+    }
 }
 
 /// Universal embedding provider wrapper.
@@ -105,8 +144,20 @@ pub(crate) enum EmbeddingProvider {
 impl EmbeddingProvider {
     /// Create a new OpenAI-compatible embedding provider instance.
     #[must_use]
-    pub fn new_openai_compatible(api_key: String, api_base: String) -> Self {
-        Self::OpenAiCompatible(OpenAiCompatibleEmbeddingProvider::new(api_key, api_base))
+    pub fn new_openai_compatible(
+        api_key: String,
+        api_base: String,
+        prompt_style: EmbeddingPromptStyle,
+        query_prefix: Option<String>,
+        document_prefix: Option<String>,
+    ) -> Self {
+        Self::OpenAiCompatible(OpenAiCompatibleEmbeddingProvider::new(
+            api_key,
+            api_base,
+            prompt_style,
+            query_prefix,
+            document_prefix,
+        ))
     }
 
     /// Create a new Gemini embedding provider instance.
@@ -131,7 +182,11 @@ impl EmbeddingProvider {
         dimensions: Option<u32>,
     ) -> Result<Vec<f32>, LlmError> {
         let mut vec = match self {
-            Self::OpenAiCompatible(provider) => provider.generate(text, model, dimensions).await?,
+            Self::OpenAiCompatible(provider) => {
+                provider
+                    .generate(text, model, task_type, dimensions)
+                    .await?
+            }
             Self::Gemini { api_key } => {
                 let client = GeminiBuilder::new(api_key.clone())
                     .with_model(Model::Custom(normalize_gemini_model(model)))
@@ -187,6 +242,13 @@ fn l2_normalize(v: &mut [f32]) {
         for x in v.iter_mut() {
             *x *= inv;
         }
+    }
+}
+
+fn prefix_embedding_input(prefix: Option<&str>, text: &str) -> String {
+    match prefix.filter(|value| !value.is_empty()) {
+        Some(prefix) => format!("{prefix}{text}"),
+        None => text.to_string(),
     }
 }
 
@@ -247,5 +309,130 @@ fn map_gemini_error(error: gemini_rust::ClientError) -> LlmError {
         ClientError::InvalidResourceName { name } => {
             LlmError::ApiError(format!("Invalid Gemini resource name: {name}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn openai_prompt_style_prefixes_user2_queries_and_documents() {
+        let provider = OpenAiCompatibleEmbeddingProvider::new(
+            "key".to_string(),
+            "http://127.0.0.1:1/v1".to_string(),
+            EmbeddingPromptStyle::User2,
+            None,
+            None,
+        );
+
+        assert_eq!(
+            provider.prepare_input("find deploy fix", Some(EmbeddingTaskType::RetrievalQuery)),
+            "search_query: find deploy fix"
+        );
+        assert_eq!(
+            provider.prepare_input(
+                "deploy fix procedure",
+                Some(EmbeddingTaskType::RetrievalDocument)
+            ),
+            "search_document: deploy fix procedure"
+        );
+        assert_eq!(provider.prepare_input("plain", None), "plain");
+    }
+
+    #[test]
+    fn openai_prompt_style_supports_custom_prefixes() {
+        let provider = OpenAiCompatibleEmbeddingProvider::new(
+            "key".to_string(),
+            "http://127.0.0.1:1/v1".to_string(),
+            EmbeddingPromptStyle::Custom,
+            Some("q: ".to_string()),
+            Some("d: ".to_string()),
+        );
+
+        assert_eq!(
+            provider.prepare_input("hello", Some(EmbeddingTaskType::RetrievalQuery)),
+            "q: hello"
+        );
+        assert_eq!(
+            provider.prepare_input("hello", Some(EmbeddingTaskType::RetrievalDocument)),
+            "d: hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_compatible_request_serializes_prefixed_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut header_bytes = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let header_end;
+            loop {
+                let read = stream.read(&mut buffer).expect("read request");
+                header_bytes.extend_from_slice(&buffer[..read]);
+                if let Some(pos) = header_bytes
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                {
+                    header_end = pos + 4;
+                    break;
+                }
+            }
+            let header_text = String::from_utf8_lossy(&header_bytes[..header_end]);
+            let content_length = header_text
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+                .expect("content-length header");
+
+            let mut body = header_bytes[header_end..].to_vec();
+            while body.len() < content_length {
+                let read = stream.read(&mut buffer).expect("read request body");
+                body.extend_from_slice(&buffer[..read]);
+            }
+
+            let response = r#"{"data":[{"embedding":[1.0,0.0]}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            )
+            .expect("write response");
+
+            serde_json::from_slice::<serde_json::Value>(&body).expect("valid json body")
+        });
+
+        let provider = OpenAiCompatibleEmbeddingProvider::new(
+            "test-key".to_string(),
+            format!("http://{addr}/v1"),
+            EmbeddingPromptStyle::User2,
+            None,
+            None,
+        );
+
+        let embedding = provider
+            .generate(
+                "deploy fix",
+                "user2-base",
+                Some(EmbeddingTaskType::RetrievalQuery),
+                Some(768),
+            )
+            .await
+            .expect("embedding request succeeds");
+        assert_eq!(embedding, vec![1.0, 0.0]);
+
+        let body = server.join().expect("join server");
+        assert_eq!(body["model"], "user2-base");
+        assert_eq!(body["input"], "search_query: deploy fix");
+        assert_eq!(body["dimensions"], 768);
     }
 }

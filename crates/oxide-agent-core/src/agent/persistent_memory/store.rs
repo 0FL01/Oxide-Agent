@@ -215,12 +215,14 @@ pub trait PersistentMemoryStore: Send + Sync {
     async fn search_episodes_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &EpisodeSearchFilter,
     ) -> Result<Vec<EpisodeSearchHit>, RepositoryError>;
     /// Execute vector similarity search over reusable memories.
     async fn search_memories_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &MemorySearchFilter,
     ) -> Result<Vec<MemorySearchHit>, RepositoryError>;
     /// Create or update one scoped session-state record.
@@ -376,17 +378,19 @@ where
     async fn search_episodes_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &EpisodeSearchFilter,
     ) -> Result<Vec<EpisodeSearchHit>, RepositoryError> {
-        MemoryRepository::search_episodes_vector(self, query_embedding, filter).await
+        MemoryRepository::search_episodes_vector(self, query_embedding, model_id, filter).await
     }
 
     async fn search_memories_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &MemorySearchFilter,
     ) -> Result<Vec<MemorySearchHit>, RepositoryError> {
-        MemoryRepository::search_memories_vector(self, query_embedding, filter).await
+        MemoryRepository::search_memories_vector(self, query_embedding, model_id, filter).await
     }
 
     async fn upsert_session_state(

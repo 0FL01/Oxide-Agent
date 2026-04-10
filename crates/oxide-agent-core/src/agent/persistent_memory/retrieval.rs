@@ -170,6 +170,7 @@ struct VectorSearchOutcome<T> {
 pub struct DurableMemoryRetriever {
     store: Arc<dyn PersistentMemoryStore>,
     generator: Option<Arc<dyn MemoryEmbeddingGenerator>>,
+    query_embedding_model_id: Option<String>,
 }
 
 impl DurableMemoryRetriever {
@@ -185,6 +186,7 @@ impl DurableMemoryRetriever {
         Self {
             store,
             generator: None,
+            query_embedding_model_id: None,
         }
     }
 
@@ -194,6 +196,12 @@ impl DurableMemoryRetriever {
         generator: Arc<dyn MemoryEmbeddingGenerator>,
     ) -> Self {
         self.generator = Some(generator);
+        self
+    }
+
+    #[must_use]
+    pub fn with_query_embedding_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.query_embedding_model_id = Some(model_id.into());
         self
     }
 
@@ -496,7 +504,11 @@ impl DurableMemoryRetriever {
 
         match self
             .store
-            .search_episodes_vector(&query_embedding, filter)
+            .search_episodes_vector(
+                &query_embedding,
+                self.query_embedding_model_id.as_deref().unwrap_or_default(),
+                filter,
+            )
             .await
         {
             Ok(hits) => VectorSearchOutcome {
@@ -542,7 +554,11 @@ impl DurableMemoryRetriever {
 
         match self
             .store
-            .search_memories_vector(&query_embedding, filter)
+            .search_memories_vector(
+                &query_embedding,
+                self.query_embedding_model_id.as_deref().unwrap_or_default(),
+                filter,
+            )
             .await
         {
             Ok(hits) => VectorSearchOutcome {

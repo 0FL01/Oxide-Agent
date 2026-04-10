@@ -297,6 +297,9 @@ impl AgentExecutor {
             if let Some(query_embeddings) = query_embeddings {
                 retriever = retriever.with_query_embedding_generator(query_embeddings);
             }
+            if let Some(model_id) = self.runner.llm_client().embedding_profile_id() {
+                retriever = retriever.with_query_embedding_model_id(model_id.to_string());
+            }
             match retriever
                 .render_prompt_context(
                     task,

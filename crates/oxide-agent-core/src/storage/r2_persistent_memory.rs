@@ -580,6 +580,7 @@ impl R2Storage {
     pub(super) async fn search_memory_episodes_vector_inner(
         &self,
         query_embedding: Vec<f32>,
+        model_id: String,
         filter: EpisodeSearchFilter,
     ) -> Result<Vec<EpisodeSearchHit>, StorageError> {
         if query_embedding.is_empty() {
@@ -609,6 +610,9 @@ impl R2Storage {
             .filter_map(|episode| {
                 let embedding =
                     embeddings.get(&(EmbeddingOwnerType::Episode, episode.episode_id.clone()))?;
+                if embedding.model_id != model_id {
+                    return None;
+                }
                 let vector = embedding.embedding.as_ref()?;
                 let score = cosine_similarity(&query_embedding, vector)?;
                 (score > 0.0).then(|| EpisodeSearchHit {
@@ -638,6 +642,7 @@ impl R2Storage {
     pub(super) async fn search_memory_records_vector_inner(
         &self,
         query_embedding: Vec<f32>,
+        model_id: String,
         filter: MemorySearchFilter,
     ) -> Result<Vec<MemorySearchHit>, StorageError> {
         if query_embedding.is_empty() {
@@ -678,6 +683,9 @@ impl R2Storage {
             .filter_map(|memory| {
                 let embedding =
                     embeddings.get(&(EmbeddingOwnerType::Memory, memory.memory_id.clone()))?;
+                if embedding.model_id != model_id {
+                    return None;
+                }
                 let vector = embedding.embedding.as_ref()?;
                 let score = cosine_similarity(&query_embedding, vector)?;
                 (score > 0.0).then(|| MemorySearchHit {

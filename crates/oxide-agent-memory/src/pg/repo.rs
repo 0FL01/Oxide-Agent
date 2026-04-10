@@ -1331,10 +1331,12 @@ impl MemoryRepository for PgMemoryRepository {
     fn search_episodes_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &EpisodeSearchFilter,
     ) -> impl Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send {
         let pool = self.pool.clone();
         let query_embedding = query_embedding.to_vec();
+        let model_id = model_id.to_string();
         let filter = filter.clone();
         async move {
             if query_embedding.is_empty() {
@@ -1362,24 +1364,26 @@ impl MemoryRepository for PgMemoryRepository {
                 INNER JOIN memory_embeddings AS embeddings
                     ON embeddings.owner_type = 'episode'
                    AND embeddings.owner_id = episodes.episode_id
+                   AND embeddings.model_id = $2
                    AND embeddings.status = 'ready'
                    AND embeddings.embedding IS NOT NULL
                 INNER JOIN memory_threads AS threads
                     ON threads.thread_id = episodes.thread_id
-                WHERE ($2::text IS NULL OR episodes.context_key = $2)
-                  AND ($3::bigint IS NULL OR threads.user_id = $3)
-                  AND ($4::text IS NULL OR episodes.outcome = $4)
-                  AND ($5::real IS NULL OR episodes.importance >= $5)
-                  AND ($6::timestamptz IS NULL OR episodes.created_at >= $6)
-                  AND ($7::timestamptz IS NULL OR episodes.created_at <= $7)
+                WHERE ($3::text IS NULL OR episodes.context_key = $3)
+                  AND ($4::bigint IS NULL OR threads.user_id = $4)
+                  AND ($5::text IS NULL OR episodes.outcome = $5)
+                  AND ($6::real IS NULL OR episodes.importance >= $6)
+                  AND ($7::timestamptz IS NULL OR episodes.created_at >= $7)
+                  AND ($8::timestamptz IS NULL OR episodes.created_at <= $8)
                 ORDER BY embeddings.embedding <=> $1 ASC,
                          episodes.importance DESC,
                          episodes.created_at DESC,
                          episodes.episode_id ASC
-                LIMIT COALESCE($8, 20)
+                LIMIT COALESCE($9, 20)
                 "#,
             )
             .bind(Vector::from(query_embedding))
+            .bind(model_id)
             .bind(filter.context_key)
             .bind(filter.user_id)
             .bind(outcome)
@@ -1397,10 +1401,12 @@ impl MemoryRepository for PgMemoryRepository {
     fn search_memories_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &MemorySearchFilter,
     ) -> impl Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send {
         let pool = self.pool.clone();
         let query_embedding = query_embedding.to_vec();
+        let model_id = model_id.to_string();
         let filter = filter.clone();
         async move {
             if query_embedding.is_empty() {
@@ -1441,29 +1447,31 @@ impl MemoryRepository for PgMemoryRepository {
                 INNER JOIN memory_embeddings AS embeddings
                     ON embeddings.owner_type = 'memory'
                    AND embeddings.owner_id = memories.memory_id
+                   AND embeddings.model_id = $2
                    AND embeddings.status = 'ready'
                    AND embeddings.embedding IS NOT NULL
                 LEFT JOIN memory_episodes AS episodes
                     ON episodes.episode_id = memories.source_episode_id
                 LEFT JOIN memory_threads AS threads
                     ON threads.thread_id = episodes.thread_id
-                WHERE ($2::text IS NULL OR memories.context_key = $2)
-                  AND ($3::bigint IS NULL OR threads.user_id = $3)
-                  AND ($4::text IS NULL OR memories.memory_type = $4)
-                  AND ($5::real IS NULL OR memories.importance >= $5)
-                  AND ($6::text[] IS NULL OR memories.tags @> $6)
-                  AND ($7::timestamptz IS NULL OR memories.updated_at >= $7)
-                  AND ($8::timestamptz IS NULL OR memories.updated_at <= $8)
+                WHERE ($3::text IS NULL OR memories.context_key = $3)
+                  AND ($4::bigint IS NULL OR threads.user_id = $4)
+                  AND ($5::text IS NULL OR memories.memory_type = $5)
+                  AND ($6::real IS NULL OR memories.importance >= $6)
+                  AND ($7::text[] IS NULL OR memories.tags @> $7)
+                  AND ($8::timestamptz IS NULL OR memories.updated_at >= $8)
+                  AND ($9::timestamptz IS NULL OR memories.updated_at <= $9)
                   AND memories.deleted_at IS NULL
                 ORDER BY embeddings.embedding <=> $1 ASC,
                          memories.importance DESC,
                          memories.confidence DESC,
                          memories.updated_at DESC,
                          memories.memory_id ASC
-                LIMIT COALESCE($9, 20)
+                LIMIT COALESCE($10, 20)
                 "#,
             )
             .bind(Vector::from(query_embedding))
+            .bind(model_id)
             .bind(filter.context_key)
             .bind(filter.user_id)
             .bind(memory_type)

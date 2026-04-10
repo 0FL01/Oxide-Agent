@@ -162,6 +162,7 @@ pub trait MemoryRepository: Send + Sync {
     fn search_episodes_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &EpisodeSearchFilter,
     ) -> impl std::future::Future<Output = Result<Vec<EpisodeSearchHit>, RepositoryError>> + Send;
 
@@ -169,6 +170,7 @@ pub trait MemoryRepository: Send + Sync {
     fn search_memories_vector(
         &self,
         query_embedding: &[f32],
+        model_id: &str,
         filter: &MemorySearchFilter,
     ) -> impl std::future::Future<Output = Result<Vec<MemorySearchHit>, RepositoryError>> + Send;
 
