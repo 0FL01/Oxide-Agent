@@ -129,7 +129,7 @@ impl ProviderCapabilities {
 #[must_use]
 pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
     match provider_name.to_ascii_lowercase().as_str() {
-        "chatgpt" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
+        "chatgpt" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
         "minimax" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, false),
         "mistral" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
         "openrouter" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
@@ -232,6 +232,15 @@ mod tests {
 
         assert!(capabilities.supports_tool_calling);
         assert!(capabilities.supports_structured_output);
+        assert_eq!(capabilities.tool_history_label(), "best_effort");
+    }
+
+    #[test]
+    fn chatgpt_capabilities_disable_structured_output() {
+        let capabilities = super::provider_capabilities("chatgpt");
+
+        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "best_effort");
     }
 

@@ -1889,6 +1889,70 @@ mod tests {
     }
 
     #[test]
+    fn structured_output_requirement_disables_chatgpt_primary_route() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("gpt-5.4-mini".to_string(), 8, 4, 60, 4096)
+            .with_model_provider("chatgpt")
+            .with_model_routes(vec![ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(!runner.structured_output_required_for_config(&config));
+    }
+
+    #[test]
+    fn select_model_route_index_keeps_chatgpt_route_when_structured_output_is_disabled() {
+        let llm_client = build_llm_client_for_provider(
+            single_final_response_provider(),
+            "chatgpt",
+            "gpt-5.4-mini",
+        );
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let ctx = AgentRunnerContext {
+            task: "Route selection regression",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-chatgpt-route-selection",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config: AgentRunnerConfig::new("gpt-5.4-mini".to_string(), 8, 4, 60, 4096)
+                .with_model_provider("chatgpt")
+                .with_model_routes(vec![ModelInfo {
+                    id: "gpt-5.4-mini".to_string(),
+                    provider: "chatgpt".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                }]),
+        };
+
+        assert_eq!(
+            runner.select_model_route_index(&ctx, &std::collections::HashSet::new()),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn structured_output_requirement_uses_primary_route_before_selection() {
         let llm_client = build_llm_client(single_final_response_provider());
         let runner = AgentRunner::new(llm_client);
