@@ -105,6 +105,13 @@ impl AgentExecutor {
             sandbox_scope,
             Arc::clone(&self.settings),
         );
+        if let Some(agents_md) = &self.agents_md {
+            delegation_provider = delegation_provider.with_topic_agents_md_context(
+                Arc::clone(&agents_md.storage),
+                agents_md.user_id,
+                agents_md.topic_id.clone(),
+            );
+        }
         if let Some(profile_scope) = self.browser_use_profile_scope() {
             delegation_provider = delegation_provider.with_browser_use_profile_scope(profile_scope);
         }

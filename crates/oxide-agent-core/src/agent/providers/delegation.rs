@@ -25,6 +25,7 @@ use crate::config::{
 };
 use crate::llm::{Message, ToolDefinition};
 use crate::sandbox::SandboxScope;
+use crate::storage::StorageProvider;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -102,6 +103,7 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
 ];
 const SUB_AGENT_REPORT_MAX_MESSAGES: usize = 6;
 const SUB_AGENT_REPORT_MAX_CHARS: usize = 800;
+const TOPIC_AGENTS_MD_LOAD_TIMEOUT_SECS: u64 = 5;
 
 /// Provider for sub-agent delegation tool.
 pub struct DelegationProvider {
@@ -109,6 +111,7 @@ pub struct DelegationProvider {
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
     browser_use_profile_scope: Option<String>,
+    topic_agents_md_context: Option<TopicAgentsMdContext>,
     /// Semaphore to limit concurrent crawl4ai requests per sub-agent.
     /// Used via Arc::clone() in build_sub_agent_providers().
     #[allow(dead_code)]
@@ -117,6 +120,13 @@ pub struct DelegationProvider {
     /// Used via Arc::clone() in build_sub_agent_providers().
     #[allow(dead_code)]
     browser_use_semaphore: Arc<Semaphore>,
+}
+
+#[derive(Clone)]
+struct TopicAgentsMdContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_id: String,
 }
 
 struct PreparedSubAgentExecution {
@@ -154,6 +164,7 @@ impl DelegationProvider {
             sandbox_scope: sandbox_scope.into(),
             settings,
             browser_use_profile_scope: None,
+            topic_agents_md_context: None,
             crawl4ai_semaphore: Arc::new(Semaphore::new(
                 crate::config::get_crawl4ai_max_concurrent(),
             )),
@@ -169,6 +180,25 @@ impl DelegationProvider {
         let profile_scope = profile_scope.into();
         if !profile_scope.trim().is_empty() {
             self.browser_use_profile_scope = Some(profile_scope);
+        }
+        self
+    }
+
+    /// Inherit topic-scoped `AGENTS.md` context for sub-agent prompt composition.
+    #[must_use]
+    pub fn with_topic_agents_md_context(
+        mut self,
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+        topic_id: impl Into<String>,
+    ) -> Self {
+        let topic_id = topic_id.into();
+        if !topic_id.trim().is_empty() {
+            self.topic_agents_md_context = Some(TopicAgentsMdContext {
+                storage,
+                user_id,
+                topic_id,
+            });
         }
         self
     }
@@ -391,15 +421,57 @@ impl DelegationProvider {
         task: &str,
         max_tokens: usize,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        topic_agents_md: Option<&str>,
     ) -> EphemeralSession {
         let mut sub_session = match cancellation_token {
             Some(parent_token) => EphemeralSession::with_parent_token(max_tokens, parent_token),
             None => EphemeralSession::new(max_tokens),
         };
+        if let Some(topic_agents_md) = topic_agents_md
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+        {
+            sub_session
+                .memory_mut()
+                .add_message(AgentMessage::topic_agents_md(topic_agents_md));
+        }
         sub_session
             .memory_mut()
             .add_message(AgentMessage::user_task(task));
         sub_session
+    }
+
+    async fn load_topic_agents_md(&self) -> Result<Option<String>> {
+        let Some(context) = self.topic_agents_md_context.as_ref() else {
+            return Ok(None);
+        };
+        let record = timeout(
+            Duration::from_secs(TOPIC_AGENTS_MD_LOAD_TIMEOUT_SECS),
+            context
+                .storage
+                .get_topic_agents_md(context.user_id, context.topic_id.clone()),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "Timed out after {TOPIC_AGENTS_MD_LOAD_TIMEOUT_SECS}s while loading topic AGENTS.md for sub-agent bootstrap"
+            )
+        })?
+        .map_err(|error| {
+            anyhow!("Failed to load topic AGENTS.md for sub-agent bootstrap: {error}")
+        })?;
+
+        match record {
+            Some(record) => {
+                let agents_md = record.agents_md.trim().to_string();
+                if agents_md.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(agents_md))
+                }
+            }
+            None => Ok(None),
+        }
     }
 
     fn build_sub_agent_runner_config(&self, model: &crate::config::ModelInfo) -> AgentRunnerConfig {
@@ -415,7 +487,7 @@ impl DelegationProvider {
         .with_sub_agent(true)
     }
 
-    fn prepare_sub_agent_execution(
+    async fn prepare_sub_agent_execution(
         &self,
         arguments: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
@@ -434,10 +506,12 @@ impl DelegationProvider {
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_sub_agent_model());
         let sub_agent_context_budget = self.settings.get_sub_agent_internal_context_budget_tokens();
+        let topic_agents_md = self.load_topic_agents_md().await?;
         let sub_session = Self::build_sub_agent_session(
             task.as_str(),
             sub_agent_context_budget,
             cancellation_token,
+            topic_agents_md.as_deref(),
         );
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
         let (sub_agent_progress_tx, progress_relay_task) =
@@ -615,8 +689,9 @@ If the sub-agent doesn't finish, a partial report will be returned."
             return Err(anyhow!("Unknown delegation tool: {tool_name}"));
         }
 
-        let mut prepared =
-            self.prepare_sub_agent_execution(arguments, progress_tx, cancellation_token)?;
+        let mut prepared = self
+            .prepare_sub_agent_execution(arguments, progress_tx, cancellation_token)
+            .await?;
         let mut runner = self.create_sub_agent_runner(
             Self::blocked_tool_set(),
             prepared.sub_session.memory().max_tokens(),
@@ -838,6 +913,8 @@ mod tests {
     use crate::agent::providers::TodoList;
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
+    use crate::storage::MockStorageProvider;
+    use mockall::predicate::eq;
     use serde_json::json;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -1030,8 +1107,8 @@ mod tests {
         assert!(parent_rx.recv().await.is_none());
     }
 
-    #[test]
-    fn prepare_sub_agent_execution_applies_sub_agent_budget_policy() {
+    #[tokio::test]
+    async fn prepare_sub_agent_execution_applies_sub_agent_budget_policy() {
         let settings = Arc::new(AgentSettings {
             sub_agent_model_id: Some("sub-model".to_string()),
             sub_agent_model_provider: Some("mock".to_string()),
@@ -1053,11 +1130,93 @@ mod tests {
                 None,
                 None,
             )
+            .await
             .expect("sub-agent preparation succeeds");
 
         assert_eq!(prepared.runner_config.model_name, "sub-model");
         assert_eq!(prepared.runner_config.model_max_output_tokens, 12_345);
         assert_eq!(prepared.sub_session.memory().max_tokens(), 96_000);
+    }
+
+    #[tokio::test]
+    async fn prepare_sub_agent_execution_inherits_topic_agents_md() {
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .return_once(|user_id, topic_id| {
+                Ok(Some(crate::storage::TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 2,
+                    user_id,
+                    topic_id,
+                    agents_md: "# Topic AGENTS\nStay grounded in official docs.".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings)
+                .with_topic_agents_md_context(Arc::new(storage), 77, "topic-a");
+
+        let prepared = provider
+            .prepare_sub_agent_execution(
+                &json!({
+                    "task": "Inspect the workspace.",
+                    "tools": ["write_todos"]
+                })
+                .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("sub-agent preparation succeeds");
+
+        let messages = prepared.sub_session.memory().get_messages();
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].content.contains("[TOPIC_AGENTS_MD]"));
+        assert!(messages[0].content.contains("# Topic AGENTS"));
+        assert!(messages[1].content.contains("Inspect the workspace."));
+    }
+
+    #[tokio::test]
+    async fn prepare_sub_agent_execution_fails_when_topic_agents_md_load_fails() {
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .return_once(|_, _| {
+                Err(crate::storage::StorageError::Config(
+                    "storage unavailable".to_string(),
+                ))
+            });
+
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings)
+                .with_topic_agents_md_context(Arc::new(storage), 77, "topic-a");
+
+        let error = match provider
+            .prepare_sub_agent_execution(
+                &json!({
+                    "task": "Inspect the workspace.",
+                    "tools": ["write_todos"]
+                })
+                .to_string(),
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(_) => panic!("sub-agent preparation should fail closed on AGENTS load errors"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("Failed to load topic AGENTS.md for sub-agent bootstrap"));
     }
 
     #[cfg(feature = "browser_use")]
