@@ -14,9 +14,9 @@ use crate::llm::{
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::Client as HttpClient;
+use reqwest::{header::HeaderMap, Client as HttpClient};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 const CHATGPT_CODEX_API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
 const JSON_OBJECT_INSTRUCTIONS_SUFFIX: &str =
@@ -35,6 +35,31 @@ struct StreamedChatGptResponse {
     tool_calls: Vec<ToolCall>,
     finish_reason: String,
     usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone)]
+struct ChatGptResponseMetadata {
+    status: reqwest::StatusCode,
+    request_id: Option<String>,
+    trace_id: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct ChatGptStreamDiagnostics {
+    event_count: usize,
+    text_delta_count: usize,
+    tool_call_count: usize,
+    saw_completion: bool,
+    ignored_event_types: BTreeMap<String, usize>,
+}
+
+impl ChatGptStreamDiagnostics {
+    fn record_ignored_event(&mut self, event_type: impl Into<String>) {
+        *self
+            .ignored_event_types
+            .entry(event_type.into())
+            .or_insert(0) += 1;
+    }
 }
 
 impl ChatGptProvider {
@@ -170,7 +195,7 @@ impl LlmProvider for ChatGptProvider {
 
         response
             .content
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+            .ok_or_else(|| empty_chatgpt_response_error(model_id, "chat_completion_post_parse"))
     }
 
     async fn transcribe_audio(
@@ -226,7 +251,10 @@ impl LlmProvider for ChatGptProvider {
         let tool_calls = response.tool_calls;
 
         if content.is_none() && tool_calls.is_empty() {
-            return Err(LlmError::ApiError("Empty response".to_string()));
+            return Err(empty_chatgpt_response_error(
+                model_id,
+                "chat_with_tools_post_parse",
+            ));
         }
 
         Ok(ChatResponse {
@@ -448,10 +476,12 @@ fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
 async fn parse_streaming_response(
     response: reqwest::Response,
 ) -> Result<StreamedChatGptResponse, LlmError> {
+    let metadata = ChatGptResponseMetadata::from_headers(response.status(), response.headers());
     let mut state = StreamedChatGptResponse {
         finish_reason: "unknown".to_string(),
         ..StreamedChatGptResponse::default()
     };
+    let mut diagnostics = ChatGptStreamDiagnostics::default();
     let mut buffer = String::new();
     let mut pending_bytes = Vec::new();
     let mut current_text_item_id: Option<String> = None;
@@ -468,7 +498,12 @@ async fn parse_streaming_response(
         while let Some(boundary) = buffer.find("\n\n") {
             let raw_event = buffer[..boundary].to_string();
             buffer = buffer[(boundary + 2)..].to_string();
-            process_sse_event(&raw_event, &mut state, &mut current_text_item_id)?;
+            process_sse_event(
+                &raw_event,
+                &mut state,
+                &mut current_text_item_id,
+                &mut diagnostics,
+            )?;
         }
     }
 
@@ -480,15 +515,34 @@ async fn parse_streaming_response(
     }
 
     if !buffer.trim().is_empty() {
-        process_sse_event(&buffer, &mut state, &mut current_text_item_id)?;
+        process_sse_event(
+            &buffer,
+            &mut state,
+            &mut current_text_item_id,
+            &mut diagnostics,
+        )?;
     }
 
+    finish_streaming_response(state, diagnostics, metadata)
+}
+
+fn finish_streaming_response(
+    mut state: StreamedChatGptResponse,
+    diagnostics: ChatGptStreamDiagnostics,
+    metadata: ChatGptResponseMetadata,
+) -> Result<StreamedChatGptResponse, LlmError> {
     if state.finish_reason == "unknown" {
         state.finish_reason = if state.tool_calls.is_empty() {
             "stop".to_string()
         } else {
             "tool_calls".to_string()
         };
+    }
+
+    if state.content.is_none() && state.tool_calls.is_empty() {
+        return Err(LlmError::EmptyResponse(
+            format_chatgpt_empty_response_details(&state, &diagnostics, &metadata),
+        ));
     }
 
     Ok(state)
@@ -498,6 +552,7 @@ fn process_sse_event(
     raw_event: &str,
     state: &mut StreamedChatGptResponse,
     current_text_item_id: &mut Option<String>,
+    diagnostics: &mut ChatGptStreamDiagnostics,
 ) -> Result<(), LlmError> {
     let payload = raw_event
         .lines()
@@ -508,6 +563,8 @@ fn process_sse_event(
     if payload.is_empty() || payload == "[DONE]" {
         return Ok(());
     }
+
+    diagnostics.event_count += 1;
 
     let value: Value =
         serde_json::from_str(&payload).map_err(|error| LlmError::JsonError(error.to_string()))?;
@@ -520,6 +577,7 @@ fn process_sse_event(
             if delta.is_empty() {
                 return Ok(());
             }
+            diagnostics.text_delta_count += 1;
             let item_id = value
                 .get("item_id")
                 .and_then(Value::as_str)
@@ -563,10 +621,14 @@ fn process_sse_event(
                         None => CHAT_LIKE_TOOL_PROFILE
                             .inbound_uncorrelated_tool_call(name.to_string(), arguments),
                     });
+                    diagnostics.tool_call_count += 1;
+                } else {
+                    diagnostics.record_ignored_event("response.output_item.done");
                 }
             }
         }
         Some("response.completed") | Some("response.incomplete") => {
+            diagnostics.saw_completion = true;
             let reason = value
                 .get("response")
                 .and_then(|response| response.get("incomplete_details"))
@@ -593,10 +655,76 @@ fn process_sse_event(
                 "ChatGPT stream error: {message}"
             )));
         }
-        _ => {}
+        Some(event_type) => diagnostics.record_ignored_event(event_type),
+        None => diagnostics.record_ignored_event("<missing_type>"),
     }
 
     Ok(())
+}
+
+fn empty_chatgpt_response_error(model_id: &str, stage: &str) -> LlmError {
+    LlmError::EmptyResponse(format!(
+        " (provider=chatgpt, model={model_id}, stage={stage})"
+    ))
+}
+
+fn format_chatgpt_empty_response_details(
+    state: &StreamedChatGptResponse,
+    diagnostics: &ChatGptStreamDiagnostics,
+    metadata: &ChatGptResponseMetadata,
+) -> String {
+    let mut parts = vec![
+        "provider=chatgpt".to_string(),
+        format!("status={}", metadata.status),
+        format!("finish_reason={}", state.finish_reason),
+        format!("events={}", diagnostics.event_count),
+        format!("text_deltas={}", diagnostics.text_delta_count),
+        format!("tool_calls={}", diagnostics.tool_call_count),
+        format!("saw_completion={}", diagnostics.saw_completion),
+    ];
+
+    if let Some(request_id) = &metadata.request_id {
+        parts.push(format!("request_id={request_id}"));
+    }
+    if let Some(trace_id) = &metadata.trace_id {
+        parts.push(format!("trace_id={trace_id}"));
+    }
+    if !diagnostics.ignored_event_types.is_empty() {
+        let ignored = diagnostics
+            .ignored_event_types
+            .iter()
+            .map(|(event_type, count)| {
+                if *count == 1 {
+                    event_type.clone()
+                } else {
+                    format!("{event_type}×{count}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        parts.push(format!("ignored_event_types={ignored}"));
+    }
+
+    format!(" ({})", parts.join(", "))
+}
+
+fn response_header_value(headers: &HeaderMap, candidates: &[&str]) -> Option<String> {
+    candidates.iter().find_map(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string)
+    })
+}
+
+impl ChatGptResponseMetadata {
+    fn from_headers(status: reqwest::StatusCode, headers: &HeaderMap) -> Self {
+        Self {
+            status,
+            request_id: response_header_value(headers, &["x-request-id", "request-id"]),
+            trace_id: response_header_value(headers, &["traceparent", "x-trace-id", "cf-ray"]),
+        }
+    }
 }
 
 fn decode_utf8_prefix(pending_bytes: &mut Vec<u8>) -> Result<Option<String>, LlmError> {
@@ -649,10 +777,12 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_request_body, decode_utf8_prefix, prepare_responses_request, process_sse_event,
-        StreamedChatGptResponse,
+        build_chat_request_body, decode_utf8_prefix, finish_streaming_response,
+        prepare_responses_request, process_sse_event, ChatGptResponseMetadata,
+        ChatGptStreamDiagnostics, StreamedChatGptResponse,
     };
-    use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
+    use crate::llm::{LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
+    use reqwest::StatusCode;
     use serde_json::json;
 
     #[test]
@@ -759,10 +889,12 @@ mod tests {
     fn sse_function_call_preserves_provider_ids() {
         let mut state = StreamedChatGptResponse::default();
         let mut current_text_item_id = None;
+        let mut diagnostics = ChatGptStreamDiagnostics::default();
         process_sse_event(
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call-chatgpt-2\",\"name\":\"search\",\"arguments\":\"{\\\"query\\\":\\\"oxide\\\"}\",\"status\":\"completed\"}}",
             &mut state,
             &mut current_text_item_id,
+            &mut diagnostics,
         )
         .expect("tool calls parse");
 
@@ -777,22 +909,26 @@ mod tests {
     fn sse_text_and_finish_are_assembled() {
         let mut state = StreamedChatGptResponse::default();
         let mut current_text_item_id = None;
+        let mut diagnostics = ChatGptStreamDiagnostics::default();
         process_sse_event(
             "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"hello\"}",
             &mut state,
             &mut current_text_item_id,
+            &mut diagnostics,
         )
         .expect("text delta");
         process_sse_event(
             "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\" world\"}",
             &mut state,
             &mut current_text_item_id,
+            &mut diagnostics,
         )
         .expect("text delta");
         process_sse_event(
             "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}}",
             &mut state,
             &mut current_text_item_id,
+            &mut diagnostics,
         )
         .expect("finish");
 
@@ -802,6 +938,62 @@ mod tests {
             state.usage.as_ref().map(|usage| usage.total_tokens),
             Some(14)
         );
+    }
+
+    #[test]
+    fn sse_ignored_event_types_are_tracked() {
+        let mut state = StreamedChatGptResponse::default();
+        let mut current_text_item_id = None;
+        let mut diagnostics = ChatGptStreamDiagnostics::default();
+
+        process_sse_event(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}",
+            &mut state,
+            &mut current_text_item_id,
+            &mut diagnostics,
+        )
+        .expect("created event parses");
+
+        assert_eq!(diagnostics.event_count, 1);
+        assert_eq!(
+            diagnostics.ignored_event_types.get("response.created"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn empty_stream_error_contains_diagnostics() {
+        let mut diagnostics = ChatGptStreamDiagnostics {
+            event_count: 2,
+            ..ChatGptStreamDiagnostics::default()
+        };
+        diagnostics.record_ignored_event("response.created");
+        diagnostics.record_ignored_event("response.output_item.added");
+
+        let error = finish_streaming_response(
+            StreamedChatGptResponse::default(),
+            diagnostics,
+            ChatGptResponseMetadata {
+                status: StatusCode::OK,
+                request_id: Some("req_123".to_string()),
+                trace_id: Some("trace_456".to_string()),
+            },
+        )
+        .expect_err("empty stream should fail");
+
+        match error {
+            LlmError::EmptyResponse(details) => {
+                assert!(details.contains("provider=chatgpt"));
+                assert!(details.contains("status=200 OK"));
+                assert!(details.contains("request_id=req_123"));
+                assert!(details.contains("trace_id=trace_456"));
+                assert!(details.contains("events=2"));
+                assert!(details.contains("saw_completion=false"));
+                assert!(details
+                    .contains("ignored_event_types=response.created,response.output_item.added"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]

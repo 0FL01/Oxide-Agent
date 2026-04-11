@@ -1345,6 +1345,7 @@ impl AgentRunner {
                     "api"
                 }
             }
+            LlmError::EmptyResponse(_) => "empty_response",
             LlmError::JsonError(_) => "json_error",
             _ => "unknown",
         }

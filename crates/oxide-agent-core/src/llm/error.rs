@@ -6,6 +6,9 @@ pub enum LlmError {
     /// Error returned by the provider's API
     #[error("API error: {0}")]
     ApiError(String),
+    /// Provider returned a successful response envelope without usable content.
+    #[error("API error: Empty response{0}")]
+    EmptyResponse(String),
     /// Error during network communication
     #[error("Network error: {0}")]
     NetworkError(String),
