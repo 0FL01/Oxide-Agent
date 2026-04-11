@@ -35,6 +35,64 @@ async fn agent_profile_upsert_rejects_legacy_tools_shorthand() {
 }
 
 #[tokio::test]
+async fn agent_profile_upsert_persists_and_audits() {
+    let mut mock = crate::storage::MockStorageProvider::new();
+    mock.expect_get_agent_profile()
+        .with(eq(77_i64), eq("agent-a".to_string()))
+        .returning(|_, _| Ok(None));
+    mock.expect_upsert_agent_profile()
+        .withf(|options| {
+            options.user_id == 77
+                && options.agent_id == "agent-a"
+                && options.profile == json!({"mode":"safe"})
+        })
+        .returning(|options| {
+            Ok(agent_profile_record(
+                options.agent_id,
+                1,
+                options.profile,
+                10,
+                10,
+            ))
+        });
+    mock.expect_append_audit_event()
+        .withf(|options: &AppendAuditEventOptions| {
+            options.user_id == 77
+                && options.agent_id.as_deref() == Some("agent-a")
+                && options.action == TOOL_AGENT_PROFILE_UPSERT
+        })
+        .returning(|options| {
+            Ok(crate::storage::AuditEventRecord {
+                schema_version: 1,
+                version: 1,
+                event_id: "evt-1".to_string(),
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agent_id: options.agent_id,
+                action: options.action,
+                payload: options.payload,
+                created_at: 11,
+            })
+        });
+
+    let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+    let response = provider
+        .execute(
+            TOOL_AGENT_PROFILE_UPSERT,
+            r#"{"agent_id":"agent-a","profile":{"mode":"safe"}}"#,
+            None,
+            None,
+        )
+        .await
+        .expect("agent profile upsert should succeed");
+
+    let parsed = parse_json_response(&response);
+    assert_eq!(parsed["profile"]["agent_id"], "agent-a");
+    assert_eq!(parsed["profile"]["profile"]["mode"], "safe");
+    assert_eq!(parsed["audit_status"], "written");
+}
+
+#[tokio::test]
 async fn agent_profile_rollback_deletes_when_previous_snapshot_absent() {
     let mut mock = crate::storage::MockStorageProvider::new();
     mock.expect_get_agent_profile()

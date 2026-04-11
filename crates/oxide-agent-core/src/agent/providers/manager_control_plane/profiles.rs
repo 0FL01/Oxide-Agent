@@ -1,3 +1,4 @@
+use super::shared::{MutationAuditTarget, MutationExecutionResult, PreviewableMutationPlan};
 use super::*;
 
 #[derive(Debug, Deserialize)]
@@ -97,68 +98,57 @@ impl ManagerControlPlaneProvider {
             .get_agent_profile(self.user_id, agent_id.clone())
             .await
             .map_err(|err| anyhow!("failed to get current agent profile: {err}"))?;
+        let previous_value = Self::to_json_value(&previous)?;
+        let applied_previous = previous_value.clone();
+        let preview = json!({
+            "operation": "upsert",
+            "agent_id": agent_id.clone(),
+            "profile": profile.clone(),
+        });
+        let dry_run_payload = json!({
+            "agent_id": agent_id.clone(),
+            "profile": profile.clone(),
+            "previous": previous_value.clone(),
+            "outcome": Self::dry_run_outcome(true)
+        });
+        let storage = Arc::clone(&self.storage);
+        let user_id = self.user_id;
 
-        if args.dry_run {
-            let audit_status = self
-                .append_audit_with_status(AppendAuditEventOptions {
-                    user_id: self.user_id,
-                    topic_id: None,
-                    agent_id: Some(agent_id.clone()),
-                    action: TOOL_AGENT_PROFILE_UPSERT.to_string(),
-                    payload: json!({
+        self.execute_previewable_mutation(
+            TOOL_AGENT_PROFILE_UPSERT,
+            MutationAuditTarget {
+                topic_id: None,
+                agent_id: Some(agent_id.clone()),
+            },
+            PreviewableMutationPlan {
+                dry_run: args.dry_run,
+                preview,
+                previous: previous_value,
+                dry_run_payload,
+            },
+            || async move {
+                let record = storage
+                    .upsert_agent_profile(UpsertAgentProfileOptions {
+                        user_id,
+                        agent_id: agent_id.clone(),
+                        profile,
+                    })
+                    .await
+                    .map_err(|err| anyhow!("failed to upsert agent profile: {err}"))?;
+                let version = record.version;
+
+                Ok(MutationExecutionResult {
+                    response_body: json!({ "ok": true, "profile": record }),
+                    audit_payload: json!({
                         "agent_id": agent_id,
-                        "profile": profile,
-                        "previous": previous,
-                        "outcome": Self::dry_run_outcome(true)
+                        "version": version,
+                        "previous": applied_previous,
+                        "outcome": Self::dry_run_outcome(false)
                     }),
                 })
-                .await;
-
-            let response = Self::attach_audit_status(
-                json!({
-                    "ok": true,
-                    "dry_run": true,
-                    "preview": {
-                        "operation": "upsert",
-                        "agent_id": agent_id,
-                        "profile": profile
-                    },
-                    "previous": previous
-                }),
-                audit_status,
-            );
-
-            return Self::to_json_string(response);
-        }
-
-        let record = self
-            .storage
-            .upsert_agent_profile(UpsertAgentProfileOptions {
-                user_id: self.user_id,
-                agent_id: agent_id.clone(),
-                profile,
-            })
-            .await
-            .map_err(|err| anyhow!("failed to upsert agent profile: {err}"))?;
-
-        let audit_status = self
-            .append_audit_with_status(AppendAuditEventOptions {
-                user_id: self.user_id,
-                topic_id: None,
-                agent_id: Some(agent_id),
-                action: TOOL_AGENT_PROFILE_UPSERT.to_string(),
-                payload: json!({
-                    "agent_id": record.agent_id,
-                    "version": record.version,
-                    "previous": previous,
-                    "outcome": Self::dry_run_outcome(false)
-                }),
-            })
-            .await;
-
-        let response =
-            Self::attach_audit_status(json!({ "ok": true, "profile": record }), audit_status);
-        Self::to_json_string(response)
+            },
+        )
+        .await
     }
 
     pub(super) async fn execute_agent_profile_get(&self, arguments: &str) -> Result<String> {

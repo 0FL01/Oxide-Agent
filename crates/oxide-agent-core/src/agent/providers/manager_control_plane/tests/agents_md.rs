@@ -58,6 +58,50 @@ async fn topic_agents_md_upsert_persists_and_audits() {
 }
 
 #[tokio::test]
+async fn topic_agents_md_upsert_dry_run_does_not_persist() {
+    let mut mock = crate::storage::MockStorageProvider::new();
+    mock.expect_get_topic_agents_md()
+        .with(eq(77_i64), eq("topic-a".to_string()))
+        .returning(|_, _| Ok(None));
+    mock.expect_upsert_topic_agents_md().times(0);
+    mock.expect_append_audit_event()
+        .withf(|options: &AppendAuditEventOptions| {
+            options.user_id == 77
+                && options.action == TOOL_TOPIC_AGENTS_MD_UPSERT
+                && options.payload.get("outcome") == Some(&json!("dry_run"))
+        })
+        .returning(|options| {
+            Ok(crate::storage::AuditEventRecord {
+                schema_version: 1,
+                version: 1,
+                event_id: "evt-dry-run".to_string(),
+                user_id: options.user_id,
+                topic_id: options.topic_id,
+                agent_id: options.agent_id,
+                action: options.action,
+                payload: options.payload,
+                created_at: 11,
+            })
+        });
+
+    let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+    let response = provider
+        .execute(
+            TOOL_TOPIC_AGENTS_MD_UPSERT,
+            r##"{"topic_id":"topic-a","agents_md":"# Topic AGENTS\nFollow release process","dry_run":true}"##,
+            None,
+            None,
+        )
+        .await
+        .expect("topic AGENTS.md dry-run should succeed");
+
+    let parsed = parse_json_response(&response);
+    assert_eq!(parsed["dry_run"], true);
+    assert_eq!(parsed["preview"]["operation"], "upsert");
+    assert_eq!(parsed["audit_status"], "written");
+}
+
+#[tokio::test]
 async fn topic_agents_md_get_reports_missing_record() {
     let mut mock = crate::storage::MockStorageProvider::new();
     mock.expect_get_topic_agents_md()
