@@ -147,26 +147,6 @@ struct PreparedSubAgentExecution {
     progress_relay_task: Option<JoinHandle<()>>,
 }
 
-enum SubAgentRunOutcome {
-    Final(String),
-    WaitingForApproval,
-    Failed(anyhow::Error),
-    TimedOut,
-}
-
-impl From<TimedRunResult> for SubAgentRunOutcome {
-    fn from(result: TimedRunResult) -> Self {
-        match result {
-            TimedRunResult::Final(result) => Self::Final(result),
-            TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
-                Self::WaitingForApproval
-            }
-            TimedRunResult::Failed(error) => Self::Failed(error),
-            TimedRunResult::TimedOut => Self::TimedOut,
-        }
-    }
-}
-
 impl DelegationProvider {
     /// Create a new delegation provider.
     #[must_use]
@@ -590,10 +570,8 @@ impl DelegationProvider {
         &self,
         runner: &mut AgentRunner,
         ctx: &mut AgentRunnerContext<'_>,
-    ) -> SubAgentRunOutcome {
-        run_with_timeout(runner, ctx, self.sub_agent_timeout_duration())
-            .await
-            .into()
+    ) -> TimedRunResult {
+        run_with_timeout(runner, ctx, self.sub_agent_timeout_duration()).await
     }
 
     fn sub_agent_timeout_duration(&self) -> Duration {
@@ -627,6 +605,33 @@ impl DelegationProvider {
             memory,
             timeout_secs: limit,
         })
+    }
+
+    fn shape_sub_agent_terminal_output(
+        &self,
+        outcome: TimedRunResult,
+        task_id: &str,
+        memory: &AgentMemory,
+    ) -> String {
+        match outcome {
+            TimedRunResult::Final(result) => result,
+            TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
+                warn!(task_id = %task_id, "Sub-agent paused waiting for unsupported approval");
+                self.build_sub_agent_error_report(
+                    task_id,
+                    memory,
+                    "sub-agent paused waiting for unsupported external approval".to_string(),
+                )
+            }
+            TimedRunResult::Failed(err) => {
+                warn!(task_id = %task_id, error = %err, "Sub-agent failed");
+                self.build_sub_agent_error_report(task_id, memory, err.to_string())
+            }
+            TimedRunResult::TimedOut => {
+                warn!(task_id = %task_id, "Sub-agent hard timed out");
+                self.build_sub_agent_timeout_report(task_id, memory)
+            }
+        }
     }
 
     async fn finish_sub_agent_progress_relay(prepared: &mut PreparedSubAgentExecution) {
@@ -710,32 +715,11 @@ If the sub-agent doesn't finish, a partial report will be returned."
         };
         Self::finish_sub_agent_progress_relay(&mut prepared).await;
 
-        match outcome {
-            SubAgentRunOutcome::Final(result) => Ok(result),
-            SubAgentRunOutcome::WaitingForApproval => {
-                warn!(task_id = %prepared.task_id, "Sub-agent paused waiting for unsupported approval");
-                Ok(self.build_sub_agent_error_report(
-                    &prepared.task_id,
-                    prepared.sub_session.memory(),
-                    "sub-agent paused waiting for unsupported external approval".to_string(),
-                ))
-            }
-            SubAgentRunOutcome::Failed(err) => {
-                warn!(task_id = %prepared.task_id, error = %err, "Sub-agent failed");
-                Ok(self.build_sub_agent_error_report(
-                    &prepared.task_id,
-                    prepared.sub_session.memory(),
-                    err.to_string(),
-                ))
-            }
-            SubAgentRunOutcome::TimedOut => {
-                warn!(task_id = %prepared.task_id, "Sub-agent hard timed out");
-                Ok(self.build_sub_agent_timeout_report(
-                    &prepared.task_id,
-                    prepared.sub_session.memory(),
-                ))
-            }
-        }
+        Ok(self.shape_sub_agent_terminal_output(
+            outcome,
+            &prepared.task_id,
+            prepared.sub_session.memory(),
+        ))
     }
 }
 
@@ -914,9 +898,12 @@ mod tests {
         should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay, DelegationProvider,
     };
     use crate::agent::compaction::BudgetState;
-    use crate::agent::context::AgentContext;
+    use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::memory::AgentMessage;
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
     use crate::agent::providers::TodoList;
+    use crate::agent::runner::TimedRunResult;
+    use crate::agent::session::{PendingUserInput, UserInputKind};
     use crate::config::AgentSettings;
     use crate::llm::LlmClient;
     use crate::storage::MockStorageProvider;
@@ -1269,6 +1256,54 @@ mod tests {
             .collect();
 
         assert!(!tools.contains("compress"));
+    }
+
+    #[test]
+    fn shape_sub_agent_terminal_output_maps_user_input_pause_to_error_report() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let mut session = EphemeralSession::new(512);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Inspect the workspace."));
+
+        let report = provider.shape_sub_agent_terminal_output(
+            TimedRunResult::WaitingForUserInput(PendingUserInput {
+                kind: UserInputKind::Text,
+                prompt: "Need confirmation".to_string(),
+            }),
+            "sub-task-1",
+            session.memory(),
+        );
+
+        assert!(report.contains(r#""status": "error""#));
+        assert!(report.contains("unsupported external approval"));
+        assert!(report.contains("sub-task-1"));
+    }
+
+    #[test]
+    fn shape_sub_agent_terminal_output_maps_timeout_to_timeout_report() {
+        let settings = Arc::new(AgentSettings {
+            sub_agent_timeout_secs: Some(45),
+            ..AgentSettings::default()
+        });
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let mut session = EphemeralSession::new(512);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Inspect the workspace."));
+
+        let report = provider.shape_sub_agent_terminal_output(
+            TimedRunResult::TimedOut,
+            "sub-task-2",
+            session.memory(),
+        );
+
+        assert!(report.contains(r#""status": "timeout""#));
+        assert!(report.contains("Sub-agent hard timed out after 75 seconds"));
+        assert!(report.contains(r#""timeout_secs": 45"#));
     }
 
     fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {
