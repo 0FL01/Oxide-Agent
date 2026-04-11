@@ -52,6 +52,7 @@ pub fn get_retry_delay(error: &LlmError, attempt: usize) -> Option<Duration> {
 
             None
         }
+        LlmError::EmptyResponse(_) => Some(capped_transient_backoff(attempt)),
         LlmError::NetworkError(msg) => {
             if msg.to_lowercase().contains("builder") {
                 return None;
@@ -81,6 +82,7 @@ pub fn is_rate_limit_error(error: &LlmError) -> bool {
     match error {
         LlmError::RateLimit { .. } => true,
         LlmError::ApiError(msg) => msg.to_lowercase().contains("429"),
+        LlmError::EmptyResponse(_) => false,
         _ => false,
     }
 }
@@ -129,6 +131,12 @@ pub(crate) fn get_retry_delay_with_initial(
                 ));
             }
             None
+        }
+        LlmError::EmptyResponse(_) => {
+            let backoff_ms = initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
+            Some(Duration::from_millis(
+                backoff_ms.min(TRANSIENT_BACKOFF_CAP_SECS * 1000),
+            ))
         }
         LlmError::NetworkError(msg) => {
             let msg_lower = msg.to_lowercase();
@@ -239,5 +247,13 @@ mod tests {
             Duration::from_secs(30)
         );
         // capped
+    }
+
+    #[test]
+    fn empty_response_is_retryable() {
+        let error = LlmError::EmptyResponse(" (provider=chatgpt)".to_string());
+
+        let delay = get_retry_delay(&error, 2).expect("retry delay exists");
+        assert_eq!(delay, Duration::from_secs(2));
     }
 }
