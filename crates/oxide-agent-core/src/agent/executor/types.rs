@@ -4,7 +4,7 @@ use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoLi
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::AgentRunnerConfig;
 use crate::agent::session::PendingUserInput;
-use crate::llm::{Message, ToolDefinition};
+use crate::llm::{Message, ToolCall, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::Error;
 use std::sync::Arc;
@@ -46,6 +46,28 @@ pub(super) struct PreparedExecution {
 pub(super) struct RunnerContextServices<'a> {
     pub(super) compaction_service: &'a CompactionService,
     pub(super) persistent_memory: Option<&'a PersistentMemoryCoordinator>,
+}
+
+pub(super) enum ExecutionRequest {
+    NewTask { task: String },
+    ResumeApproval { request_id: String },
+    ResumeUserInput { content: String },
+    ContinueRuntimeContext,
+}
+
+pub(super) struct ResolvedExecutionRequest {
+    pub(super) task: String,
+    pub(super) append_user_message: bool,
+    pub(super) initial_tool_call: Option<ToolCall>,
+    pub(super) clear_pending_request_id: Option<String>,
+}
+
+pub(super) enum ExecutionTransition {
+    Completed(String),
+    WaitingForApproval,
+    WaitingForUserInput(PendingUserInput),
+    Failed(Error),
+    TimedOut,
 }
 
 pub(super) fn current_model_route(config: &AgentRunnerConfig) -> Option<crate::config::ModelInfo> {
