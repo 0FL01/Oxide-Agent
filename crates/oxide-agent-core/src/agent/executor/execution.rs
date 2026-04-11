@@ -16,7 +16,6 @@ use crate::agent::providers::{
 };
 use crate::agent::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
-use crate::agent::skills::SkillRegistry;
 use crate::agent::tool_bridge::{
     execute_single_tool_call, ToolExecutionContext, ToolExecutionResult,
 };
@@ -153,20 +152,16 @@ impl AgentExecutor {
 
     pub(super) async fn run_execution(
         &mut self,
-        task: &str,
+        request: ResolvedExecutionRequest,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-        append_user_message: bool,
-        initial_tool_call: Option<ToolCall>,
-        clear_pending_request_id: Option<&str>,
-    ) -> Result<AgentExecutionOutcome> {
-        if append_user_message {
-            self.session.reset_memory_behavior_runtime();
-        }
-        self.session.start_task();
-        let task_id = self.session.current_task_id.clone().unwrap_or_default();
-        if append_user_message {
-            self.session.remember_task(task);
-        }
+    ) -> Result<ExecutionTransition> {
+        let ResolvedExecutionRequest {
+            task,
+            append_user_message,
+            initial_tool_call,
+            clear_pending_request_id,
+        } = request;
+        let task_id = self.prime_session_for_execution(&task, append_user_message);
         info!(
             task = %task,
             task_id = %task_id,
@@ -175,37 +170,26 @@ impl AgentExecutor {
             "Starting agent task"
         );
 
-        if append_user_message {
-            self.session
-                .memory
-                .add_message(AgentMessage::user_task(task));
-        }
-
-        let mut prepared = self.prepare_execution(task, progress_tx.as_ref()).await;
+        let mut prepared = self.prepare_execution(&task, progress_tx.as_ref()).await;
         Self::emit_milestone(progress_tx.as_ref(), "prepare_execution_done").await;
 
         let timeout_duration = self.agent_timeout_duration();
-        let timeout_error_message = self.agent_timeout_error_message();
 
         if self
             .replay_initial_tool_call(
                 initial_tool_call,
-                clear_pending_request_id,
+                clear_pending_request_id.as_deref(),
                 &mut prepared,
                 progress_tx.as_ref(),
             )
             .await?
         {
-            return self.apply_execution_transition(
-                ExecutionTransition::WaitingForApproval,
-                timeout_error_message.as_str(),
-            );
+            return Ok(ExecutionTransition::WaitingForApproval);
         }
 
-        let mut ctx = Self::prepare_runner_context(
-            task,
+        let mut ctx = prepared.build_runner_context(
+            &task,
             &task_id,
-            &mut prepared,
             progress_tx.as_ref(),
             &mut self.session,
             self.skill_registry.as_mut(),
@@ -215,23 +199,11 @@ impl AgentExecutor {
             },
         );
 
-        let transition = Self::map_timed_run_result(
-            Self::run_with_outer_timeout(&mut self.runner, &mut ctx, timeout_duration).await,
-        );
-
-        self.apply_execution_transition(transition, timeout_error_message.as_str())
-    }
-
-    fn map_timed_run_result(result: TimedRunResult) -> ExecutionTransition {
-        match result {
-            TimedRunResult::Final(res) => ExecutionTransition::Completed(res),
-            TimedRunResult::WaitingForApproval => ExecutionTransition::WaitingForApproval,
-            TimedRunResult::WaitingForUserInput(request) => {
-                ExecutionTransition::WaitingForUserInput(request)
-            }
-            TimedRunResult::Failed(error) => ExecutionTransition::Failed(error),
-            TimedRunResult::TimedOut => ExecutionTransition::TimedOut,
-        }
+        Ok(
+            Self::run_with_outer_timeout(&mut self.runner, &mut ctx, timeout_duration)
+                .await
+                .into(),
+        )
     }
 
     fn apply_execution_transition(
@@ -266,6 +238,21 @@ impl AgentExecutor {
                 Err(anyhow!(timeout_error_message.to_string()))
             }
         }
+    }
+
+    fn prime_session_for_execution(&mut self, task: &str, append_user_message: bool) -> String {
+        if append_user_message {
+            self.session.reset_memory_behavior_runtime();
+        }
+        self.session.start_task();
+        let task_id = self.session.current_task_id.clone().unwrap_or_default();
+        if append_user_message {
+            self.session.remember_task(task);
+            self.session
+                .memory
+                .add_message(AgentMessage::user_task(task));
+        }
+        task_id
     }
 
     fn saved_task(&self, missing_task_error: &'static str) -> Result<String> {
@@ -351,14 +338,9 @@ impl AgentExecutor {
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
         let request = self.resolve_execution_request(request).await?;
-        self.run_execution(
-            &request.task,
-            progress_tx,
-            request.append_user_message,
-            request.initial_tool_call,
-            request.clear_pending_request_id.as_deref(),
-        )
-        .await
+        let timeout_error_message = self.agent_timeout_error_message();
+        let transition = self.run_execution(request, progress_tx).await?;
+        self.apply_execution_transition(transition, timeout_error_message.as_str())
     }
 
     pub(super) async fn prepare_execution(
@@ -494,39 +476,6 @@ impl AgentExecutor {
             tool_result,
             ToolExecutionResult::WaitingForApproval { .. }
         ))
-    }
-
-    fn prepare_runner_context<'a>(
-        task: &'a str,
-        task_id: &'a str,
-        prepared: &'a mut PreparedExecution,
-        progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
-        session: &'a mut AgentSession,
-        skill_registry: Option<&'a mut SkillRegistry>,
-        services: RunnerContextServices<'a>,
-    ) -> AgentRunnerContext<'a> {
-        let session_id = Some(session.session_id.to_string());
-        let memory_scope = Some(session.memory_scope().clone());
-        let memory_behavior = Some(session.memory_behavior_runtime());
-        AgentRunnerContext {
-            task,
-            system_prompt: &prepared.system_prompt,
-            tools: &prepared.tools,
-            registry: &prepared.registry,
-            progress_tx,
-            todos_arc: &prepared.todos_arc,
-            task_id,
-            messages: &mut prepared.messages,
-            agent: session,
-            skill_registry,
-            compaction_service: Some(services.compaction_service),
-            persistent_memory: services.persistent_memory,
-            session_id,
-            memory_scope,
-            memory_behavior,
-            memory_classification: prepared.memory_classification.clone(),
-            config: prepared.runner_config.clone(),
-        }
     }
 
     async fn run_with_outer_timeout(
