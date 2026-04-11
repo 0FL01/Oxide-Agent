@@ -21,7 +21,22 @@ use crate::llm::LlmClient;
 use crate::storage::{StorageMemoryRepository, StorageProvider, TopicInfraConfigRecord};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::warn;
+use tracing::{debug, warn};
+
+fn format_model_routes(routes: &[ModelInfo]) -> Vec<String> {
+    routes
+        .iter()
+        .map(|route| format!("{}/{}", route.provider, route.id))
+        .collect()
+}
+
+fn format_dedicated_model_route(id: &str, provider: &str) -> Option<String> {
+    if id.trim().is_empty() || provider.trim().is_empty() {
+        None
+    } else {
+        Some(format!("{provider}/{id}"))
+    }
+}
 
 fn memory_classifier_fallback_warning_key(route: &ModelInfo) -> String {
     format!("{}:{}", route.provider, route.id)
@@ -90,11 +105,26 @@ impl AgentExecutor {
         let skill_registry = None;
 
         let compaction_service = {
-            let (_, _, _, timeout_secs) = settings.get_configured_compaction_model();
+            let (compaction_model_id, compaction_model_provider, _, timeout_secs) =
+                settings.get_configured_compaction_model();
+            let inherited_routes = settings.get_configured_agent_model_routes();
+            let model_routes = settings.get_configured_compaction_model_routes(false);
+
+            debug!(
+                dedicated_compaction_route = ?format_dedicated_model_route(
+                    &compaction_model_id,
+                    &compaction_model_provider,
+                ),
+                inherited_agent_routes = ?format_model_routes(&inherited_routes),
+                effective_compaction_routes = ?format_model_routes(&model_routes),
+                timeout_secs,
+                "Configured compaction summarizer routes"
+            );
+
             CompactionService::default().with_summarizer(CompactionSummarizer::new(
                 llm_client,
                 CompactionSummarizerConfig {
-                    model_routes: settings.get_configured_compaction_model_routes(false),
+                    model_routes,
                     timeout_secs,
                     ..CompactionSummarizerConfig::default()
                 },

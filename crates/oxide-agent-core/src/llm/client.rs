@@ -394,6 +394,14 @@ impl LlmClient {
         self.providers.contains_key(&Self::provider_key(name))
     }
 
+    /// Returns configured provider keys for diagnostics.
+    #[must_use]
+    pub fn configured_provider_names(&self) -> Vec<String> {
+        let mut provider_names: Vec<String> = self.providers.keys().cloned().collect();
+        provider_names.sort();
+        provider_names
+    }
+
     /// Returns the provider for the given name
     ///
     /// # Errors
