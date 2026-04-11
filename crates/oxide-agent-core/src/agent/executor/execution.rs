@@ -1,6 +1,6 @@
 use super::types::{
-    current_model_route, retrieval_fallback_classification, PreparedExecution,
-    RunnerContextServices, TimedRunResult,
+    current_model_route, retrieval_fallback_classification, ExecutionRequest, ExecutionTransition,
+    PreparedExecution, ResolvedExecutionRequest, RunnerContextServices, TimedRunResult,
 };
 use super::{AgentExecutionOutcome, AgentExecutor};
 use crate::agent::memory::AgentMessage;
@@ -184,6 +184,9 @@ impl AgentExecutor {
         let mut prepared = self.prepare_execution(task, progress_tx.as_ref()).await;
         Self::emit_milestone(progress_tx.as_ref(), "prepare_execution_done").await;
 
+        let timeout_duration = self.agent_timeout_duration();
+        let timeout_error_message = self.agent_timeout_error_message();
+
         if self
             .replay_initial_tool_call(
                 initial_tool_call,
@@ -193,12 +196,11 @@ impl AgentExecutor {
             )
             .await?
         {
-            self.session.complete();
-            return Ok(AgentExecutionOutcome::WaitingForApproval);
+            return self.apply_execution_transition(
+                ExecutionTransition::WaitingForApproval,
+                timeout_error_message.as_str(),
+            );
         }
-
-        let timeout_duration = self.agent_timeout_duration();
-        let timeout_error_message = self.agent_timeout_error_message();
 
         let mut ctx = Self::prepare_runner_context(
             task,
@@ -213,21 +215,45 @@ impl AgentExecutor {
             },
         );
 
-        match Self::run_with_outer_timeout(&mut self.runner, &mut ctx, timeout_duration).await {
-            TimedRunResult::Final(res) => {
-                self.session.complete();
-                Ok(AgentExecutionOutcome::Completed(res))
+        let transition = Self::map_timed_run_result(
+            Self::run_with_outer_timeout(&mut self.runner, &mut ctx, timeout_duration).await,
+        );
+
+        self.apply_execution_transition(transition, timeout_error_message.as_str())
+    }
+
+    fn map_timed_run_result(result: TimedRunResult) -> ExecutionTransition {
+        match result {
+            TimedRunResult::Final(res) => ExecutionTransition::Completed(res),
+            TimedRunResult::WaitingForApproval => ExecutionTransition::WaitingForApproval,
+            TimedRunResult::WaitingForUserInput(request) => {
+                ExecutionTransition::WaitingForUserInput(request)
             }
-            TimedRunResult::WaitingForApproval => {
+            TimedRunResult::Failed(error) => ExecutionTransition::Failed(error),
+            TimedRunResult::TimedOut => ExecutionTransition::TimedOut,
+        }
+    }
+
+    fn apply_execution_transition(
+        &mut self,
+        transition: ExecutionTransition,
+        timeout_error_message: &str,
+    ) -> Result<AgentExecutionOutcome> {
+        match transition {
+            ExecutionTransition::Completed(response) => {
+                self.session.complete();
+                Ok(AgentExecutionOutcome::Completed(response))
+            }
+            ExecutionTransition::WaitingForApproval => {
                 self.session.complete();
                 Ok(AgentExecutionOutcome::WaitingForApproval)
             }
-            TimedRunResult::WaitingForUserInput(request) => {
+            ExecutionTransition::WaitingForUserInput(request) => {
                 self.session.complete();
                 self.session.set_pending_user_input(request.clone());
                 Ok(AgentExecutionOutcome::WaitingForUserInput(request))
             }
-            TimedRunResult::Failed(error) => {
+            ExecutionTransition::Failed(error) => {
                 let error_message = error.to_string();
                 if error_message.contains("cancelled") {
                     self.session.clear_todos();
@@ -235,11 +261,104 @@ impl AgentExecutor {
                 self.session.fail(error_message);
                 Err(error)
             }
-            TimedRunResult::TimedOut => {
+            ExecutionTransition::TimedOut => {
                 self.session.timeout();
-                Err(anyhow!(timeout_error_message))
+                Err(anyhow!(timeout_error_message.to_string()))
             }
         }
+    }
+
+    fn saved_task(&self, missing_task_error: &'static str) -> Result<String> {
+        self.last_task()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!(missing_task_error))
+    }
+
+    async fn resolve_execution_request(
+        &mut self,
+        request: ExecutionRequest,
+    ) -> Result<ResolvedExecutionRequest> {
+        match request {
+            ExecutionRequest::NewTask { task } => Ok(ResolvedExecutionRequest {
+                task,
+                append_user_message: true,
+                initial_tool_call: None,
+                clear_pending_request_id: None,
+            }),
+            ExecutionRequest::ResumeApproval { request_id } => {
+                let task = self.saved_task("no saved task to resume")?;
+                let grant = self
+                    .grant_ssh_approval(&request_id)
+                    .await
+                    .ok_or_else(|| anyhow!("SSH approval request not found or already handled"))?;
+                let replay = self
+                    .session
+                    .pending_ssh_replay(&request_id)
+                    .ok_or_else(|| anyhow!("pending SSH replay payload not found"))?;
+                let arguments = inject_approval_credentials(
+                    &replay.arguments,
+                    &grant.request_id,
+                    &grant.approval_token,
+                )?;
+                let tool_call = ToolCall::new(
+                    replay.invocation_id.to_string(),
+                    ToolCallFunction {
+                        name: replay.tool_name,
+                        arguments,
+                    },
+                    false,
+                );
+
+                Ok(ResolvedExecutionRequest {
+                    task,
+                    append_user_message: false,
+                    initial_tool_call: Some(tool_call),
+                    clear_pending_request_id: Some(request_id),
+                })
+            }
+            ExecutionRequest::ResumeUserInput { content } => {
+                let task = self.saved_task("no saved task to resume")?;
+                if !self.resume_with_user_input(content) {
+                    return Err(anyhow!("session is not waiting for user input"));
+                }
+
+                Ok(ResolvedExecutionRequest {
+                    task,
+                    append_user_message: false,
+                    initial_tool_call: None,
+                    clear_pending_request_id: None,
+                })
+            }
+            ExecutionRequest::ContinueRuntimeContext => {
+                let task = self.saved_task("no saved task to continue")?;
+                if !self.session.has_pending_runtime_context() {
+                    return Err(anyhow!("session has no queued runtime context"));
+                }
+
+                Ok(ResolvedExecutionRequest {
+                    task,
+                    append_user_message: false,
+                    initial_tool_call: None,
+                    clear_pending_request_id: None,
+                })
+            }
+        }
+    }
+
+    async fn run_execution_request(
+        &mut self,
+        request: ExecutionRequest,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentExecutionOutcome> {
+        let request = self.resolve_execution_request(request).await?;
+        self.run_execution(
+            &request.task,
+            progress_tx,
+            request.append_user_message,
+            request.initial_tool_call,
+            request.clear_pending_request_id.as_deref(),
+        )
+        .await
     }
 
     pub(super) async fn prepare_execution(
@@ -452,8 +571,13 @@ impl AgentExecutor {
         task: &str,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        self.run_execution(task, progress_tx, true, None, None)
-            .await
+        self.run_execution_request(
+            ExecutionRequest::NewTask {
+                task: task.to_string(),
+            },
+            progress_tx,
+        )
+        .await
     }
 
     /// Deterministically resume a paused SSH tool call after operator approval.
@@ -462,34 +586,13 @@ impl AgentExecutor {
         request_id: &str,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        let task = self
-            .last_task()
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("no saved task to resume"))?;
-        let grant = self
-            .grant_ssh_approval(request_id)
-            .await
-            .ok_or_else(|| anyhow!("SSH approval request not found or already handled"))?;
-        let replay = self
-            .session
-            .pending_ssh_replay(request_id)
-            .ok_or_else(|| anyhow!("pending SSH replay payload not found"))?;
-        let arguments = inject_approval_credentials(
-            &replay.arguments,
-            &grant.request_id,
-            &grant.approval_token,
-        )?;
-        let tool_call = ToolCall::new(
-            replay.invocation_id.to_string(),
-            ToolCallFunction {
-                name: replay.tool_name,
-                arguments,
+        self.run_execution_request(
+            ExecutionRequest::ResumeApproval {
+                request_id: request_id.to_string(),
             },
-            false,
-        );
-
-        self.run_execution(&task, progress_tx, false, Some(tool_call), Some(request_id))
-            .await
+            progress_tx,
+        )
+        .await
     }
 
     /// Resume a paused task after receiving the user input it requested.
@@ -498,16 +601,7 @@ impl AgentExecutor {
         content: String,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        let task = self
-            .last_task()
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("no saved task to resume"))?;
-
-        if !self.resume_with_user_input(content) {
-            return Err(anyhow!("session is not waiting for user input"));
-        }
-
-        self.run_execution(&task, progress_tx, false, None, None)
+        self.run_execution_request(ExecutionRequest::ResumeUserInput { content }, progress_tx)
             .await
     }
 
@@ -516,16 +610,7 @@ impl AgentExecutor {
         &mut self,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        let task = self
-            .last_task()
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("no saved task to continue"))?;
-
-        if !self.session.has_pending_runtime_context() {
-            return Err(anyhow!("session has no queued runtime context"));
-        }
-
-        self.run_execution(&task, progress_tx, false, None, None)
+        self.run_execution_request(ExecutionRequest::ContinueRuntimeContext, progress_tx)
             .await
     }
 }

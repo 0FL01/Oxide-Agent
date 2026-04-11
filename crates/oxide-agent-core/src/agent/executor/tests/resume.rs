@@ -130,3 +130,71 @@ async fn continue_after_runtime_context_rejects_sessions_without_queued_context(
 
     assert!(error.to_string().contains("no queued runtime context"));
 }
+
+#[tokio::test]
+async fn resume_ssh_approval_rejects_sessions_without_saved_task() {
+    let mut executor = build_executor();
+
+    let error = match executor.resume_ssh_approval("req-1", None).await {
+        Ok(_) => panic!("resume should fail without a saved task"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("no saved task to resume"));
+}
+
+#[tokio::test]
+async fn resume_ssh_approval_rejects_missing_replay_payload_after_grant() {
+    let mut executor = build_executor();
+    executor.session_mut().remember_task("original task");
+    executor.set_topic_infra(
+        Arc::new(MockStorageProvider::new()),
+        9,
+        "topic-a".to_string(),
+        Some(crate::storage::TopicInfraConfigRecord {
+            schema_version: 1,
+            version: 1,
+            user_id: 9,
+            topic_id: "topic-a".to_string(),
+            target_name: "stage".to_string(),
+            host: "stage.example.com".to_string(),
+            port: 22,
+            remote_user: "root".to_string(),
+            auth_mode: crate::storage::TopicInfraAuthMode::None,
+            secret_ref: None,
+            sudo_secret_ref: None,
+            environment: None,
+            tags: Vec::new(),
+            allowed_tool_modes: Vec::new(),
+            approval_required_modes: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+        }),
+    );
+
+    let request = executor
+        .topic_infra
+        .as_ref()
+        .expect("topic infra should be attached")
+        .approvals
+        .register(
+            "ssh_exec",
+            "topic-a",
+            "stage",
+            "Run uptime".to_string(),
+            "fp-1".to_string(),
+        )
+        .await;
+
+    let error = match executor
+        .resume_ssh_approval(&request.request_id, None)
+        .await
+    {
+        Ok(_) => panic!("resume should fail without a replay payload"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("pending SSH replay payload not found"));
+}
