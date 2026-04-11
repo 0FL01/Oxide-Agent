@@ -16,10 +16,31 @@ use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext, SshApprova
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::AgentSession;
 use crate::config::get_agent_search_limit;
+use crate::config::ModelInfo;
 use crate::llm::LlmClient;
 use crate::storage::{StorageMemoryRepository, StorageProvider, TopicInfraConfigRecord};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::warn;
+
+fn memory_classifier_fallback_warning_key(route: &ModelInfo) -> String {
+    format!("{}:{}", route.provider, route.id)
+}
+
+fn should_warn_memory_classifier_text_fallback(route: &ModelInfo) -> bool {
+    if crate::llm::LlmClient::supports_structured_output_for_model(route) {
+        return false;
+    }
+
+    static WARNED_ROUTES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let warned_routes = WARNED_ROUTES.get_or_init(|| Mutex::new(HashSet::new()));
+    let route_key = memory_classifier_fallback_warning_key(route);
+
+    match warned_routes.lock() {
+        Ok(mut warned_routes) => warned_routes.insert(route_key),
+        Err(_) => true,
+    }
+}
 
 impl AgentExecutor {
     /// Create a new agent executor
@@ -133,7 +154,7 @@ impl AgentExecutor {
         self.memory_store = Some(Arc::clone(&store));
         self.memory_artifact_storage = artifact_storage;
         let classifier_model = self.settings.get_configured_memory_classifier_model();
-        if !crate::llm::LlmClient::supports_structured_output_for_model(&classifier_model) {
+        if should_warn_memory_classifier_text_fallback(&classifier_model) {
             warn!(
                 provider = %classifier_model.provider,
                 model = %classifier_model.id,
@@ -252,5 +273,48 @@ impl AgentExecutor {
             control_plane.topic_lifecycle = Some(topic_lifecycle);
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        memory_classifier_fallback_warning_key, should_warn_memory_classifier_text_fallback,
+    };
+    use crate::config::ModelInfo;
+
+    fn route(provider: &str, id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            max_output_tokens: 512,
+            context_window_tokens: 32_000,
+            weight: 1,
+        }
+    }
+
+    #[test]
+    fn memory_classifier_fallback_warning_key_uses_provider_and_model() {
+        let route = route("chatgpt", "gpt-5.4-mini");
+
+        assert_eq!(
+            memory_classifier_fallback_warning_key(&route),
+            "chatgpt:gpt-5.4-mini"
+        );
+    }
+
+    #[test]
+    fn memory_classifier_text_fallback_warns_once_per_route() {
+        let route = route("chatgpt", "gpt-5.4-mini-warn-once-test");
+
+        assert!(should_warn_memory_classifier_text_fallback(&route));
+        assert!(!should_warn_memory_classifier_text_fallback(&route));
+    }
+
+    #[test]
+    fn memory_classifier_text_fallback_does_not_warn_for_structured_routes() {
+        let route = route("mistral", "mistral-small-2603");
+
+        assert!(!should_warn_memory_classifier_text_fallback(&route));
     }
 }
