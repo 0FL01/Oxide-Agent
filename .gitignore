@@ -1,4 +1,5 @@
 .env
+.env.secrets
 # ChatGPT OAuth auth.json is expected under config/, which is ignored below.
 config/
 !config/.gitkeep
