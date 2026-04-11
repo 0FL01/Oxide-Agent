@@ -1,9 +1,11 @@
 use crate::agent::compaction::CompactionService;
 use crate::agent::persistent_memory::{MemoryClassificationDecision, PersistentMemoryCoordinator};
+use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
 use crate::agent::registry::ToolRegistry;
-use crate::agent::runner::AgentRunnerConfig;
-use crate::agent::session::PendingUserInput;
+use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
+use crate::agent::session::{AgentSession, PendingUserInput};
+use crate::agent::skills::SkillRegistry;
 use crate::llm::{Message, ToolCall, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::Error;
@@ -48,6 +50,42 @@ pub(super) struct RunnerContextServices<'a> {
     pub(super) persistent_memory: Option<&'a PersistentMemoryCoordinator>,
 }
 
+impl PreparedExecution {
+    pub(super) fn build_runner_context<'a>(
+        &'a mut self,
+        task: &'a str,
+        task_id: &'a str,
+        progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
+        session: &'a mut AgentSession,
+        skill_registry: Option<&'a mut SkillRegistry>,
+        services: RunnerContextServices<'a>,
+    ) -> AgentRunnerContext<'a> {
+        let session_id = Some(session.session_id.to_string());
+        let memory_scope = Some(session.memory_scope().clone());
+        let memory_behavior = Some(session.memory_behavior_runtime());
+
+        AgentRunnerContext {
+            task,
+            system_prompt: &self.system_prompt,
+            tools: &self.tools,
+            registry: &self.registry,
+            progress_tx,
+            todos_arc: &self.todos_arc,
+            task_id,
+            messages: &mut self.messages,
+            agent: session,
+            skill_registry,
+            compaction_service: Some(services.compaction_service),
+            persistent_memory: services.persistent_memory,
+            session_id,
+            memory_scope,
+            memory_behavior,
+            memory_classification: self.memory_classification.clone(),
+            config: self.runner_config.clone(),
+        }
+    }
+}
+
 pub(super) enum ExecutionRequest {
     NewTask { task: String },
     ResumeApproval { request_id: String },
@@ -68,6 +106,18 @@ pub(super) enum ExecutionTransition {
     WaitingForUserInput(PendingUserInput),
     Failed(Error),
     TimedOut,
+}
+
+impl From<TimedRunResult> for ExecutionTransition {
+    fn from(result: TimedRunResult) -> Self {
+        match result {
+            TimedRunResult::Final(res) => Self::Completed(res),
+            TimedRunResult::WaitingForApproval => Self::WaitingForApproval,
+            TimedRunResult::WaitingForUserInput(request) => Self::WaitingForUserInput(request),
+            TimedRunResult::Failed(error) => Self::Failed(error),
+            TimedRunResult::TimedOut => Self::TimedOut,
+        }
+    }
 }
 
 pub(super) fn current_model_route(config: &AgentRunnerConfig) -> Option<crate::config::ModelInfo> {

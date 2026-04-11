@@ -45,3 +45,27 @@ fn executor_timeout_check_uses_configured_value_and_ignores_idle_sessions() {
     executor.reset();
     assert!(!executor.is_timed_out());
 }
+
+#[tokio::test]
+async fn execute_new_task_remembers_task_and_appends_single_user_task() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"done","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#,
+    );
+
+    let result = executor.execute("ship it", None).await;
+
+    assert!(matches!(
+        result,
+        Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "ok"
+    ));
+    assert_eq!(executor.last_task(), Some("ship it"));
+
+    let user_task_count = executor
+        .session()
+        .memory
+        .get_messages()
+        .iter()
+        .filter(|message| message.kind == crate::agent::compaction::AgentMessageKind::UserTask)
+        .count();
+    assert_eq!(user_task_count, 1);
+}
