@@ -584,26 +584,32 @@ impl DelegationProvider {
         memory: &AgentMemory,
         error: String,
     ) -> String {
-        build_sub_agent_report(SubAgentReportContext {
-            task_id,
-            status: SubAgentReportStatus::Error,
-            error: Some(error),
-            memory,
-            timeout_secs: self.settings.get_sub_agent_timeout_secs(),
-        })
+        self.build_sub_agent_report_with_status(task_id, memory, SubAgentReportStatus::Error, error)
     }
 
     fn build_sub_agent_timeout_report(&self, task_id: &str, memory: &AgentMemory) -> String {
         let limit = self.settings.get_sub_agent_timeout_secs();
+        self.build_sub_agent_report_with_status(
+            task_id,
+            memory,
+            SubAgentReportStatus::Timeout,
+            format!("Sub-agent hard timed out after {} seconds", limit + 30),
+        )
+    }
+
+    fn build_sub_agent_report_with_status(
+        &self,
+        task_id: &str,
+        memory: &AgentMemory,
+        status: SubAgentReportStatus,
+        error: String,
+    ) -> String {
         build_sub_agent_report(SubAgentReportContext {
             task_id,
-            status: SubAgentReportStatus::Timeout,
-            error: Some(format!(
-                "Sub-agent hard timed out after {} seconds",
-                limit + 30
-            )),
+            status,
+            error: Some(error),
             memory,
-            timeout_secs: limit,
+            timeout_secs: self.settings.get_sub_agent_timeout_secs(),
         })
     }
 
