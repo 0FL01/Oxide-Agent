@@ -59,7 +59,7 @@ Default branch: `testing`.
 - Для library crate используем `thiserror`, для app/binary crate - `anyhow`.
 - Agent Mode и manager/topic-функции проектируются как topic-aware и thread-aware.
 - Context-scoped storage обязателен для transport-контекстов; legacy fallback допустим только для DM-совместимости.
-- `Topic AGENTS.md` хранится отдельно в storage и инжектится prompt composer'ом; `skills/AGENT.md` больше не является дефолтным источником системного промпта.
+- `Topic AGENTS.md` хранится отдельно в storage, пинится в память flow при bootstrap, live-sync'ится после `agents_md_update` и наследуется sub-agent'ами при delegation; `skills/AGENT.md` больше не является дефолтным источником системного промпта.
 - Sandbox работает либо напрямую через Docker backend, либо через broker backend; при `SANDBOX_BACKEND=broker` доступ к `docker.sock` остается только у `oxide-agent-sandboxd`.
 - Manager CRUD идет через provider `manager_control_plane` с audit trail и RBAC на уровне Telegram transport (`manager_allowed_users`).
 - `oxide-agent-memory` определяет domain model и repository trait; `oxide-agent-core` реализует orchestration (classifier, coordinator, embeddings, post-run) поверх него.
@@ -83,11 +83,11 @@ Default branch: `testing`.
 - **Post-run memory writer** — LLM-based извлечение reusable memories из завершённого таска (до 8 записей): Fact, Preference, Procedure, Decision, Constraint.
 - **Episode finalizer** — детерминистическая генерация Thread + Episode + SessionState records.
 - **Context consolidator** — importance decay, exact + similarity dedup, TTL expiry, stale session cleanup.
-- **Embedding indexer** — async генерация embeddings + backfill; dimensions настраивается через `EMBEDDING_DIMENSIONS` (default 1024), custom OpenAI-compatible endpoints можно подключать через `openai-base` + `EMBEDDING_OPENAI_BASE_URL`.
+- **Embedding indexer** — async query/document-aware embeddings + backfill; active embedding profile id включает provider/model/dimensions/prompt-style/prefixes и используется для cache/vector isolation; `openai-base` требует `EMBEDDING_OPENAI_BASE_URL` и `EMBEDDING_OPENAI_API_KEY`.
 - **Retrieval advisor hook** — инжектирует контекстные карточки memory search suggestion, history, episode.
 - **Behavior hooks** — `EpisodicExtractHook` захватывает tool-derived memory drafts (write_file -> Procedure, failed exec -> Fact, repeated edits -> Preference).
 - Memory read tools: `memory_search`, `memory_read_episode`, `memory_read_thread_summary`, `memory_read_thread_window`, `memory_diagnostics`.
-- Config: `MEMORY_DATABASE_URL`, `MEMORY_DATABASE_MAX_CONNECTIONS`, `MEMORY_DATABASE_AUTO_MIGRATE`, `EMBEDDING_DIMENSIONS`, classifier env vars.
+- Config: `MEMORY_DATABASE_URL`, `MEMORY_DATABASE_MAX_CONNECTIONS`, `MEMORY_DATABASE_AUTO_MIGRATE`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_OPENAI_BASE_URL`, `EMBEDDING_OPENAI_API_KEY`, `EMBEDDING_PROMPT_STYLE`, `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_DOCUMENT_PREFIX`, classifier env vars.
 
 ### Agent Mode compaction
 - Pipeline: budget estimation -> classify -> externalize -> prune -> summarize -> rebuild hot context.
@@ -107,8 +107,8 @@ Default branch: `testing`.
 - Справка и детали жизненного цикла: `docs/hooks/`.
 
 ### Sub-agents
-- Делегация реализована через `DelegationProvider`, `DelegationGuardHook`, `SubAgentSafetyHook` и отдельную `EphemeralSession`.
-- У sub-agent'ов изолированный контекст, отдельная память, автоматическая очистка и запрет на рекурсивную делегацию, отправку файлов пользователю, reminder tools и stack_logs (операционные логи инфраструктуры).
+- Делегация реализована через `DelegationProvider`, `DelegationGuardHook`, `SubAgentSafetyHook` и отдельную `EphemeralSession`; при bootstrap sub-agent наследует topic-scoped `AGENTS.md`.
+- У sub-agent'ов изолированный контекст, отдельная память, автоматическая очистка и запрет на рекурсивную делегацию, отправку файлов пользователю, `recreate_sandbox`, reminders, `stack_logs` и весь topic-mutation/control-plane tool surface (`topic_*`, `agents_md_*`, `forum_topic_*`, profile/infra mutations).
 - Конфигурация: `sub_agent_model_id`, `sub_agent_model_provider`, `sub_agent_max_tokens`.
 
 ### Skills
@@ -124,9 +124,9 @@ Default branch: `testing`.
 - `forum_topic_list` доступен для memory-independent topic discovery, но заблокирован у sub-agent'ов.
 
 ### Topic-scoped AGENTS.md
-- Storage record: `TopicAgentsMdRecord`; orchestration via storage API and `prompt/composer.rs`.
+- Storage record: `TopicAgentsMdRecord`; flow bootstrap загружает запись в pinned system memory, а `agents_md_update` синхронизирует обновлённый текст обратно в live session и checkpoint.
 - Topic prompt ограничен: до 300 строк для `AGENTS.md`, до 40 строк для `topic_context`.
-- Self-editing tools: `agents_md_get`, `agents_md_update` (top-level agents only).
+- Tool surface: `agents_md_get` / `agents_md_update` для topic agent sessions; manager control plane даёт `topic_agents_md_{upsert,get,delete,rollback}` с audit trail и rollback.
 
 ### Manager control plane
 - Код: `agent/providers/manager_control_plane/`.
@@ -178,10 +178,11 @@ Default branch: `testing`.
 - Tests: `storage/tests/`.
 
 ### LLM
-- Providers: `gemini`, `groq`, `mistral`, `minimax/`, `nvidia`, `openrouter`, `zai`.
+- Providers: `chatgpt`, `gemini`, `groq`, `mistral`, `minimax/`, `nvidia`, `openrouter`, `zai`.
 - Browser-use bridge LLM resolution (disabled): отдельный от core провайдеров; поддерживает `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing relaxed для `zai`/`zhipuai`/`glm`.
+- `chatgpt` provider использует OAuth auth file (`CHATGPT_AUTH_PATH`) и Codex/Responses streaming API; structured-output/json-mode маршруты для него отключены и должны failover'иться на не-ChatGPT route.
 - HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
-- Embedding dimensions: default 1024, configurable via `EMBEDDING_DIMENSIONS`; Mistral provider skip dimensions param (auto-handles truncation); custom OpenAI-compatible embeddings доступны через `EMBEDDING_PROVIDER=openai-base` + `EMBEDDING_OPENAI_BASE_URL`.
+- Embedding dimensions: default 1024, configurable via `EMBEDDING_DIMENSIONS`; Mistral provider skip dimensions param (auto-handles truncation); custom OpenAI-compatible embeddings доступны через `EMBEDDING_PROVIDER=openai-base` + `EMBEDDING_OPENAI_BASE_URL` + `EMBEDDING_OPENAI_API_KEY`.
 - Voice transcription: `voxtral` (Mistral) с retry backoff (5 attempts, 3s→48s).
 - NVIDIA NIM provider: `nvidia/llama-3.3-nemotron-super-49b-v1`, `nvidia/nemotron-mini`, `minimaxai/minimax-m*`.
 - LLM module structure: `capabilities.rs` (model capabilities), `client.rs` (HTTP orchestration), `support/` (backoff, history, http utils), `types.rs` (domain types).
@@ -209,7 +210,7 @@ Default branch: `testing`.
 
 - Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Конфигурационные файлы опциональны (`required(false)`).
-- Ключевые: search/embedding provider, SearXNG (`SEARXNG_URL`), narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, persistent memory (`MEMORY_DATABASE_URL`, `EMBEDDING_DIMENSIONS`), Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`).
+- Ключевые: `CHATGPT_AUTH_PATH`, search/embedding provider, SearXNG (`SEARXNG_URL`), narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, persistent memory (`MEMORY_DATABASE_URL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_OPENAI_BASE_URL`, `EMBEDDING_OPENAI_API_KEY`, `EMBEDDING_PROMPT_STYLE`, `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_DOCUMENT_PREFIX`), Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`).
 - Telegram transport config: `ATTACH_DETACH_ENABLED` (default true).
 
 ## Практика разработки
