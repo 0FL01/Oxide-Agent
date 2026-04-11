@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
+pub(crate) use types::AgentRunnerContextBase;
 pub use types::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
 
 /// Agent runner that executes the core loop.
