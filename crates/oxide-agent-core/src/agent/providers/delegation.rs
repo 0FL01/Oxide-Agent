@@ -20,7 +20,8 @@ use crate::agent::providers::{
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{
-    AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
+    run_with_timeout, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
+    TimedRunResult,
 };
 use crate::config::{
     get_agent_search_limit, get_sub_agent_max_iterations, AGENT_CONTINUATION_LIMIT,
@@ -151,6 +152,19 @@ enum SubAgentRunOutcome {
     WaitingForApproval,
     Failed(anyhow::Error),
     TimedOut,
+}
+
+impl From<TimedRunResult> for SubAgentRunOutcome {
+    fn from(result: TimedRunResult) -> Self {
+        match result {
+            TimedRunResult::Final(result) => Self::Final(result),
+            TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
+                Self::WaitingForApproval
+            }
+            TimedRunResult::Failed(error) => Self::Failed(error),
+            TimedRunResult::TimedOut => Self::TimedOut,
+        }
+    }
 }
 
 impl DelegationProvider {
@@ -577,15 +591,9 @@ impl DelegationProvider {
         runner: &mut AgentRunner,
         ctx: &mut AgentRunnerContext<'_>,
     ) -> SubAgentRunOutcome {
-        match timeout(self.sub_agent_timeout_duration(), runner.run(ctx)).await {
-            Ok(Ok(AgentRunResult::Final(result))) => SubAgentRunOutcome::Final(result),
-            Ok(Ok(AgentRunResult::WaitingForApproval)) => SubAgentRunOutcome::WaitingForApproval,
-            Ok(Ok(AgentRunResult::WaitingForUserInput(_))) => {
-                SubAgentRunOutcome::WaitingForApproval
-            }
-            Ok(Err(error)) => SubAgentRunOutcome::Failed(error),
-            Err(_) => SubAgentRunOutcome::TimedOut,
-        }
+        run_with_timeout(runner, ctx, self.sub_agent_timeout_duration())
+            .await
+            .into()
     }
 
     fn sub_agent_timeout_duration(&self) -> Duration {

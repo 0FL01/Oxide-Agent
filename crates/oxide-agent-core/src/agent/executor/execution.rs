@@ -1,6 +1,6 @@
 use super::types::{
     current_model_route, retrieval_fallback_classification, ExecutionRequest, ExecutionTransition,
-    PreparedExecution, ResolvedExecutionRequest, RunnerContextServices, TimedRunResult,
+    PreparedExecution, ResolvedExecutionRequest, RunnerContextServices,
 };
 use super::{AgentExecutionOutcome, AgentExecutor};
 use crate::agent::memory::AgentMessage;
@@ -14,7 +14,7 @@ use crate::agent::providers::{
     inject_approval_credentials, SshApprovalGrant, SshApprovalRequestView,
     TopicInfraPreflightReport,
 };
-use crate::agent::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
+use crate::agent::runner::{run_with_timeout, AgentRunner, AgentRunnerConfig};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
 use crate::agent::tool_bridge::{
     execute_single_tool_call, ToolExecutionContext, ToolExecutionResult,
@@ -26,7 +26,6 @@ use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 
 impl AgentExecutor {
@@ -200,7 +199,7 @@ impl AgentExecutor {
         );
 
         Ok(
-            Self::run_with_outer_timeout(&mut self.runner, &mut ctx, timeout_duration)
+            run_with_timeout(&mut self.runner, &mut ctx, timeout_duration)
                 .await
                 .into(),
         )
@@ -476,22 +475,6 @@ impl AgentExecutor {
             tool_result,
             ToolExecutionResult::WaitingForApproval { .. }
         ))
-    }
-
-    async fn run_with_outer_timeout(
-        runner: &mut AgentRunner,
-        ctx: &mut AgentRunnerContext<'_>,
-        timeout_duration: Duration,
-    ) -> TimedRunResult {
-        match timeout(timeout_duration, runner.run(ctx)).await {
-            Ok(Ok(AgentRunResult::Final(res))) => TimedRunResult::Final(res),
-            Ok(Ok(AgentRunResult::WaitingForApproval)) => TimedRunResult::WaitingForApproval,
-            Ok(Ok(AgentRunResult::WaitingForUserInput(request))) => {
-                TimedRunResult::WaitingForUserInput(request)
-            }
-            Ok(Err(error)) => TimedRunResult::Failed(error),
-            Err(_) => TimedRunResult::TimedOut,
-        }
     }
 
     pub(super) async fn await_until_cancelled<T, F>(

@@ -18,8 +18,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 
 pub(crate) use types::AgentRunnerContextBase;
+pub(crate) use types::TimedRunResult;
 pub use types::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
 
 /// Agent runner that executes the core loop.
@@ -110,5 +112,17 @@ impl AgentRunner {
                 }
             })
             .collect()
+    }
+}
+
+pub(crate) async fn run_with_timeout(
+    runner: &mut AgentRunner,
+    ctx: &mut AgentRunnerContext<'_>,
+    timeout_duration: Duration,
+) -> TimedRunResult {
+    match timeout(timeout_duration, runner.run(ctx)).await {
+        Ok(Ok(result)) => result.into(),
+        Ok(Err(error)) => TimedRunResult::Failed(error),
+        Err(_) => TimedRunResult::TimedOut,
     }
 }

@@ -3,7 +3,9 @@ use crate::agent::persistent_memory::{MemoryClassificationDecision, PersistentMe
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
 use crate::agent::registry::ToolRegistry;
-use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase};
+use crate::agent::runner::{
+    AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
+};
 use crate::agent::session::{AgentSession, PendingUserInput};
 use crate::agent::skills::SkillRegistry;
 use crate::llm::{Message, ToolCall, ToolDefinition};
@@ -155,12 +157,4 @@ pub(super) fn retrieval_fallback_classification() -> MemoryClassificationDecisio
     decision.read_policy.top_k = 3;
     decision.read_policy.allow_full_thread_read = false;
     decision
-}
-
-pub(super) enum TimedRunResult {
-    Final(String),
-    WaitingForApproval,
-    WaitingForUserInput(PendingUserInput),
-    Failed(Error),
-    TimedOut,
 }
