@@ -19,7 +19,9 @@ use crate::agent::providers::{
     FileHosterProvider, SandboxProvider, TodoList, TodosProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
-use crate::agent::runner::{AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext};
+use crate::agent::runner::{
+    AgentRunResult, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
+};
 use crate::config::{
     get_agent_search_limit, get_sub_agent_max_iterations, AGENT_CONTINUATION_LIMIT,
 };
@@ -553,25 +555,21 @@ impl DelegationProvider {
     fn build_sub_agent_runner_context<'a>(
         prepared: &'a mut PreparedSubAgentExecution,
     ) -> AgentRunnerContext<'a> {
-        AgentRunnerContext {
-            task: prepared.task.as_str(),
-            system_prompt: &prepared.system_prompt,
-            tools: &prepared.tools,
-            registry: &prepared.registry,
-            progress_tx: prepared.progress_tx.as_ref(),
-            todos_arc: &prepared.todos_arc,
-            task_id: &prepared.task_id,
-            messages: &mut prepared.messages,
-            agent: &mut prepared.sub_session,
-            skill_registry: None,
-            compaction_service: Some(&prepared.compaction_service),
-            persistent_memory: None,
-            session_id: None,
-            memory_scope: None,
-            memory_behavior: None,
-            memory_classification: None,
-            config: prepared.runner_config.clone(),
-        }
+        AgentRunnerContext::new_base(
+            AgentRunnerContextBase {
+                task: prepared.task.as_str(),
+                system_prompt: &prepared.system_prompt,
+                tools: &prepared.tools,
+                registry: &prepared.registry,
+                progress_tx: prepared.progress_tx.as_ref(),
+                todos_arc: &prepared.todos_arc,
+                task_id: &prepared.task_id,
+                messages: &mut prepared.messages,
+                agent: &mut prepared.sub_session,
+            },
+            Some(&prepared.compaction_service),
+            prepared.runner_config.clone(),
+        )
     }
 
     async fn run_sub_agent_with_timeout(

@@ -142,6 +142,47 @@ pub struct AgentRunnerContext<'a> {
     pub config: AgentRunnerConfig,
 }
 
+pub(crate) struct AgentRunnerContextBase<'a> {
+    pub(crate) task: &'a str,
+    pub(crate) system_prompt: &'a str,
+    pub(crate) tools: &'a [ToolDefinition],
+    pub(crate) registry: &'a ToolRegistry,
+    pub(crate) progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
+    pub(crate) todos_arc: &'a Arc<Mutex<TodoList>>,
+    pub(crate) task_id: &'a str,
+    pub(crate) messages: &'a mut Vec<Message>,
+    pub(crate) agent: &'a mut dyn AgentContext,
+}
+
+impl<'a> AgentRunnerContext<'a> {
+    #[must_use]
+    pub(crate) fn new_base(
+        base: AgentRunnerContextBase<'a>,
+        compaction_service: Option<&'a CompactionService>,
+        config: AgentRunnerConfig,
+    ) -> Self {
+        Self {
+            task: base.task,
+            system_prompt: base.system_prompt,
+            tools: base.tools,
+            registry: base.registry,
+            progress_tx: base.progress_tx,
+            todos_arc: base.todos_arc,
+            task_id: base.task_id,
+            messages: base.messages,
+            agent: base.agent,
+            skill_registry: None,
+            compaction_service,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config,
+        }
+    }
+}
+
 /// Terminal outcome of a runner execution.
 pub enum AgentRunResult {
     /// The agent produced a final response for the user.

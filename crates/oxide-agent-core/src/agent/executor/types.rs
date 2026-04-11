@@ -3,7 +3,7 @@ use crate::agent::persistent_memory::{MemoryClassificationDecision, PersistentMe
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
 use crate::agent::registry::ToolRegistry;
-use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
+use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase};
 use crate::agent::session::{AgentSession, PendingUserInput};
 use crate::agent::skills::SkillRegistry;
 use crate::llm::{Message, ToolCall, ToolDefinition};
@@ -63,26 +63,30 @@ impl PreparedExecution {
         let session_id = Some(session.session_id.to_string());
         let memory_scope = Some(session.memory_scope().clone());
         let memory_behavior = Some(session.memory_behavior_runtime());
+        let mut ctx = AgentRunnerContext::new_base(
+            AgentRunnerContextBase {
+                task,
+                system_prompt: &self.system_prompt,
+                tools: &self.tools,
+                registry: &self.registry,
+                progress_tx,
+                todos_arc: &self.todos_arc,
+                task_id,
+                messages: &mut self.messages,
+                agent: session,
+            },
+            Some(services.compaction_service),
+            self.runner_config.clone(),
+        );
 
-        AgentRunnerContext {
-            task,
-            system_prompt: &self.system_prompt,
-            tools: &self.tools,
-            registry: &self.registry,
-            progress_tx,
-            todos_arc: &self.todos_arc,
-            task_id,
-            messages: &mut self.messages,
-            agent: session,
-            skill_registry,
-            compaction_service: Some(services.compaction_service),
-            persistent_memory: services.persistent_memory,
-            session_id,
-            memory_scope,
-            memory_behavior,
-            memory_classification: self.memory_classification.clone(),
-            config: self.runner_config.clone(),
-        }
+        ctx.skill_registry = skill_registry;
+        ctx.persistent_memory = services.persistent_memory;
+        ctx.session_id = session_id;
+        ctx.memory_scope = memory_scope;
+        ctx.memory_behavior = memory_behavior;
+        ctx.memory_classification = self.memory_classification.clone();
+
+        ctx
     }
 }
 
