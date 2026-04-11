@@ -83,6 +83,23 @@ impl CompactionSummarizer {
         let fallback =
             deterministic_fallback_summary(request, previous_summary.as_ref(), snapshot, messages);
         let compactable_entries = snapshot.compactable_history.message_count;
+        let effective_routes: Vec<String> = self
+            .config
+            .model_routes
+            .iter()
+            .filter(|route| !route.id.trim().is_empty() && !route.provider.trim().is_empty())
+            .map(|route| format!("{}/{}", route.provider, route.id))
+            .collect();
+        let configured_providers = self.llm_client.configured_provider_names();
+
+        debug!(
+            trigger = ?request.trigger,
+            budget_state = ?budget_state,
+            compactable_entries,
+            configured_providers = ?configured_providers,
+            effective_routes = ?effective_routes,
+            "Compaction summary route diagnostics"
+        );
 
         let mut attempted_model_name = None;
 
@@ -97,6 +114,8 @@ impl CompactionSummarizer {
                     trigger = ?request.trigger,
                     model = %route.id,
                     provider = %route.provider,
+                    configured_providers = ?configured_providers,
+                    effective_routes = ?effective_routes,
                     compactable_entries,
                     budget_state = ?budget_state,
                     "Compaction summary route unavailable, trying next route"
