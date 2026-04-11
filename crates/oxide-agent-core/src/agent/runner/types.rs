@@ -14,6 +14,7 @@ use crate::config::{
     get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
 };
 use crate::llm::{Message, ToolDefinition};
+use anyhow::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -191,6 +192,24 @@ pub enum AgentRunResult {
     WaitingForApproval,
     /// The agent paused because it requires additional user input.
     WaitingForUserInput(PendingUserInput),
+}
+
+pub(crate) enum TimedRunResult {
+    Final(String),
+    WaitingForApproval,
+    WaitingForUserInput(PendingUserInput),
+    Failed(Error),
+    TimedOut,
+}
+
+impl From<AgentRunResult> for TimedRunResult {
+    fn from(result: AgentRunResult) -> Self {
+        match result {
+            AgentRunResult::Final(res) => Self::Final(res),
+            AgentRunResult::WaitingForApproval => Self::WaitingForApproval,
+            AgentRunResult::WaitingForUserInput(request) => Self::WaitingForUserInput(request),
+        }
+    }
 }
 
 /// Internal run state for the current loop execution.
