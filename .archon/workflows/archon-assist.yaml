@@ -1,0 +1,25 @@
+name: archon-assist
+description: Codex-first general repository assistant for Oxide-Agent
+interactive: true
+provider: codex
+model: gpt-5.4
+modelReasoningEffort: high
+webSearchMode: live
+
+nodes:
+  - id: assist
+    prompt: |
+      You are working inside a large Rust monorepo.
+
+      Default mode: read-only analysis.
+      Do not modify files unless the user explicitly asks for edits.
+
+      When asked to assess technical debt, return:
+      1. Executive summary
+      2. Top debt items
+      3. Risk / impact
+      4. Suggested phased refactor plan
+      5. Quick wins
+
+      User request:
+      $USER_MESSAGE
