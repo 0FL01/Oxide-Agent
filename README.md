@@ -418,7 +418,7 @@ SSH, Jira, and Mattermost tools are **blocked by default in private/DM chats** f
 
 **Configuration:**
 ```dotenv
-DM_ALLOWED_TOOLS=todos_write,todos_list,delegate_to_sub_agent  # Allowlist mode
+DM_ALLOWED_TOOLS=write_todos,todos_list,delegate_to_sub_agent  # Allowlist mode
 DM_BLOCKED_TOOLS=sandbox_exec  # Additional blocklist
 ```
 

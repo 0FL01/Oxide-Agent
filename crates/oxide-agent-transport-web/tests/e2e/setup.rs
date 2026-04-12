@@ -16,8 +16,9 @@ use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
 /// Response sequence for delegated sub-agent tests.
 ///
 /// Call order: main-agent (delegate_to_sub_agent) -> sub-agent (write_todos) ->
-/// sub-agent (empty unstructured) -> main-agent (final text).
-pub fn delegated_sub_agent_empty_content_responses() -> Vec<oxide_agent_core::llm::ChatResponse> {
+/// sub-agent (structured final answer) -> main-agent (structured final answer).
+pub fn delegated_sub_agent_structured_final_responses() -> Vec<oxide_agent_core::llm::ChatResponse>
+{
     vec![
         super::helpers::tool_call_response(
             "delegate_to_sub_agent",
@@ -37,8 +38,8 @@ pub fn delegated_sub_agent_empty_content_responses() -> Vec<oxide_agent_core::ll
                 ]
             }),
         ),
-        super::helpers::empty_unstructured_response(),
-        super::helpers::unstructured_text_response("delegation complete"),
+        super::helpers::structured_final_answer_response("sub-agent complete"),
+        super::helpers::structured_final_answer_response("delegation complete"),
     ]
 }
 

@@ -650,7 +650,34 @@ impl DelegationProvider {
         drop(prepared.progress_tx.take());
 
         if let Some(task) = prepared.progress_relay_task.take() {
-            let _ = task.await;
+            let mut task = task;
+            let drain_deadline = Duration::from_secs(1);
+            match timeout(drain_deadline, &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    warn!(
+                        task_id = %prepared.task_id,
+                        error = %error,
+                        "Sub-agent progress relay ended unexpectedly"
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        task_id = %prepared.task_id,
+                        "Sub-agent progress relay did not drain before deadline; aborting relay task"
+                    );
+                    task.abort();
+                    if let Err(error) = task.await {
+                        if !error.is_cancelled() {
+                            warn!(
+                                task_id = %prepared.task_id,
+                                error = %error,
+                                "Sub-agent progress relay abort returned unexpected join error"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -901,13 +928,15 @@ fn role_label(role: &MessageRole) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay, DelegationProvider,
+        should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay,
+        DelegationProvider, PreparedSubAgentExecution,
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
     use crate::agent::providers::TodoList;
+    use crate::agent::registry::ToolRegistry;
     use crate::agent::runner::TimedRunResult;
     use crate::agent::session::{PendingUserInput, UserInputKind};
     use crate::config::AgentSettings;
@@ -918,6 +947,8 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::mpsc;
+    use tokio::task::JoinHandle;
+    use tokio::time::{sleep, timeout, Duration, Instant};
 
     #[test]
     fn sub_agent_blocklist_includes_sensitive_tools() {
@@ -1104,6 +1135,76 @@ mod tests {
         drop(parent_tx);
 
         assert!(parent_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn finish_sub_agent_progress_relay_waits_for_buffered_events_to_drain() {
+        let (parent_tx, mut parent_rx) = mpsc::channel(1);
+        parent_tx
+            .send(AgentEvent::ToolCall {
+                name: "seeded".to_string(),
+                input: "{}".to_string(),
+                command_preview: None,
+            })
+            .await
+            .expect("seed parent channel");
+
+        let (progress_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let progress_tx = progress_tx.expect("relay tx");
+        progress_tx
+            .send(AgentEvent::ToolResult {
+                name: "write_todos".to_string(),
+                output: "done".to_string(),
+                success: true,
+            })
+            .await
+            .expect("send buffered tool result");
+
+        let mut prepared = sample_prepared_sub_agent_execution(Some(progress_tx), relay_task);
+        let drain_parent = tokio::spawn(async move {
+            sleep(Duration::from_millis(150)).await;
+            let first = parent_rx
+                .recv()
+                .await
+                .expect("seeded event should remain queued");
+            let second = timeout(Duration::from_millis(500), parent_rx.recv())
+                .await
+                .expect("buffered event should drain before relay abort")
+                .expect("forwarded event should exist");
+            (first, second)
+        });
+
+        DelegationProvider::finish_sub_agent_progress_relay(&mut prepared).await;
+
+        let (first, second) = drain_parent.await.expect("drain join");
+        assert!(matches!(first, AgentEvent::ToolCall { name, .. } if name == "seeded"));
+        assert!(
+            matches!(second, AgentEvent::ToolResult { name, success, .. } if name == "write_todos" && success)
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_sub_agent_progress_relay_aborts_after_deadline_when_sender_stays_open() {
+        let (parent_tx, _parent_rx) = mpsc::channel(1);
+        let (progress_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let progress_tx = progress_tx.expect("relay tx");
+        let leaked_sender = progress_tx.clone();
+        let mut prepared = sample_prepared_sub_agent_execution(Some(progress_tx), relay_task);
+
+        let started_at = Instant::now();
+        DelegationProvider::finish_sub_agent_progress_relay(&mut prepared).await;
+        let elapsed = started_at.elapsed();
+
+        drop(leaked_sender);
+
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "relay cleanup should wait for the bounded drain window, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "relay cleanup should abort shortly after the drain deadline, elapsed={elapsed:?}"
+        );
     }
 
     #[tokio::test]
@@ -1326,6 +1427,26 @@ mod tests {
             headroom_tokens: context_window_tokens.saturating_sub(75_092),
             budget_state: BudgetState::Warning,
             last_api_usage: None,
+        }
+    }
+
+    fn sample_prepared_sub_agent_execution(
+        progress_tx: Option<mpsc::Sender<AgentEvent>>,
+        progress_relay_task: Option<JoinHandle<()>>,
+    ) -> PreparedSubAgentExecution {
+        PreparedSubAgentExecution {
+            task_id: "sub-test".to_string(),
+            task: "Inspect the workspace.".to_string(),
+            registry: ToolRegistry::new(),
+            tools: Vec::new(),
+            system_prompt: String::new(),
+            todos_arc: Arc::new(tokio::sync::Mutex::new(TodoList::new())),
+            messages: Vec::new(),
+            sub_session: EphemeralSession::new(512),
+            runner_config: crate::agent::runner::AgentRunnerConfig::default(),
+            compaction_service: crate::agent::compaction::CompactionService::default(),
+            progress_tx,
+            progress_relay_task,
         }
     }
 }

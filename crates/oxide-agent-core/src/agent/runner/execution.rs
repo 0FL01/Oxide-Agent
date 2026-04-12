@@ -2160,6 +2160,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_unstructured_mode_maps_empty_final_after_tool_call_to_fallback_answer() {
+        let llm_client = build_llm_client_for_provider(
+            tool_then_empty_final_provider(),
+            "openrouter",
+            "chat-openrouter",
+        );
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        session.memory_mut().add_message(AgentMessage::user_task(
+            "Capture package status and finish.",
+        ));
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SmallOutputToolProvider));
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Capture package status and finish.",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-empty-final-after-tool",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config: AgentRunnerConfig::new("chat-openrouter".to_string(), 3, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(
+            result,
+            AgentRunResult::Final(answer) if answer == "Task completed, but answer is empty."
+        ));
+        let last_message = ctx
+            .agent
+            .memory()
+            .get_messages()
+            .last()
+            .expect("assistant response should be saved");
+        assert_eq!(last_message.content, "Task completed, but answer is empty.");
+    }
+
+    #[tokio::test]
     async fn run_applies_pre_iteration_compaction_after_tool_growth() {
         let llm_client = build_llm_client(tool_then_final_provider());
         let compaction_service = CompactionService::default();
@@ -3151,6 +3204,46 @@ mod tests {
                 usage: None,
             })
         });
+        stub_non_chat_methods(&mut provider);
+        provider
+    }
+
+    fn tool_then_empty_final_provider() -> MockLlmProvider {
+        let mut provider = MockLlmProvider::new();
+        let mut sequence = mockall::Sequence::new();
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Ok(ChatResponse {
+                    content: Some(String::new()),
+                    tool_calls: vec![ToolCall::new(
+                        "call-1".to_string(),
+                        ToolCallFunction {
+                            name: "fake_small_tool".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        false,
+                    )],
+                    finish_reason: "tool_calls".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            });
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Ok(ChatResponse {
+                    content: Some(String::new()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            });
         stub_non_chat_methods(&mut provider);
         provider
     }

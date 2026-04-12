@@ -1,7 +1,7 @@
 //! Delegated sub-agent E2E tests.
 //!
 //! Regression tests for the sub-agent relay cleanup deadlock fix.
-//! See: <https://github.com/your-org/oxide-agent/pull/XXX>
+//! Covers `finish_sub_agent_progress_relay(...)` behavior end-to-end.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,15 +13,15 @@ use super::helpers::{
 };
 use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
 use super::setup::{
-    delegated_sub_agent_empty_content_responses, setup_web_test_with_custom_providers,
+    delegated_sub_agent_structured_final_responses, setup_web_test_with_custom_providers,
 };
 
 /// Test: after the sub-agent relay cleanup fix, a delegated sub-agent completes
-/// without deadlock, even when the sub-agent returns empty content.
+/// without deadlock when the realistic delegated path returns a structured final answer.
 #[tokio::test]
-async fn e2e_delegated_sub_agent_empty_content_completes_after_relay_cleanup() {
+async fn e2e_delegated_sub_agent_structured_final_completes_after_relay_cleanup() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(
-        delegated_sub_agent_empty_content_responses(),
+        delegated_sub_agent_structured_final_responses(),
     ));
     let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
     let app_state =
@@ -37,7 +37,7 @@ async fn e2e_delegated_sub_agent_empty_content_completes_after_relay_cleanup() {
         session_manager.as_ref(),
         &task_id,
         oxide_agent_transport_web::session::TaskStatus::Completed,
-        Duration::from_secs(2),
+        Duration::from_secs(6),
     )
     .await;
     wait_for_zai_calls(&zai_provider, 4, Duration::from_secs(2)).await;
@@ -69,7 +69,6 @@ async fn e2e_delegated_sub_agent_empty_content_completes_after_relay_cleanup() {
 
     server.abort();
 }
-
 /// Test: a delayed narrator call does NOT cause a deadlock on the delegated path.
 /// The relay cleanup fix ensures the sub-agent loop can finish even if the
 /// narrator is still hanging, because the registry is dropped before awaiting
@@ -77,7 +76,7 @@ async fn e2e_delegated_sub_agent_empty_content_completes_after_relay_cleanup() {
 #[tokio::test]
 async fn e2e_delegated_sub_agent_unblocks_after_delayed_narrator_release() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(
-        delegated_sub_agent_empty_content_responses(),
+        delegated_sub_agent_structured_final_responses(),
     ));
     let narrator_provider = Arc::new(ControlledNarratorProvider::new(Some(2)));
     let app_state =
@@ -112,7 +111,7 @@ async fn e2e_delegated_sub_agent_unblocks_after_delayed_narrator_release() {
         session_manager.as_ref(),
         &task_id,
         oxide_agent_transport_web::session::TaskStatus::Completed,
-        Duration::from_secs(2),
+        Duration::from_secs(6),
     )
     .await;
     wait_for_zai_calls(&zai_provider, 4, Duration::from_secs(2)).await;
