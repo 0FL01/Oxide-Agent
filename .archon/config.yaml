@@ -1,0 +1,7 @@
+assistant: codex
+
+assistants:
+  codex:
+    model: gpt-5.4
+    modelReasoningEffort: high
+    webSearchMode: live

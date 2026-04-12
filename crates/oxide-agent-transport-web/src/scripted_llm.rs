@@ -88,7 +88,7 @@ impl ScriptedResponse {
 ///     ScriptedResponse::ToolCalls {
 ///         tool_calls: vec![ScriptedToolCall {
 ///             id: "call_1".to_string(),
-///             name: "todos_write".to_string(),
+///             name: "write_todos".to_string(),
 ///             arguments: r#"{"todos":[{"description":"Test","status":"in_progress"}]}"#.to_string(),
 ///         }],
 ///         final_text: None,
@@ -218,7 +218,7 @@ mod tests {
         let response = ScriptedResponse::ToolCalls {
             tool_calls: vec![ScriptedToolCall {
                 id: "call_1".to_string(),
-                name: "todos_write".to_string(),
+                name: "write_todos".to_string(),
                 arguments: r#"{"todos":[]}"#.to_string(),
             }],
             final_text: None,
