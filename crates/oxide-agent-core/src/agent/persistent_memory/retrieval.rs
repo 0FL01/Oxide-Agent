@@ -65,8 +65,14 @@ impl RetrievalVectorStatus {
 pub(crate) struct DurableMemoryRetrievalDiagnostics {
     pub query: String,
     pub task_class: String,
+    pub inject_prompt_memory: bool,
     pub search_episodes: bool,
     pub search_memories: bool,
+    pub memory_type: Option<MemoryType>,
+    pub min_importance: f32,
+    pub top_k: usize,
+    pub allow_full_thread_read: bool,
+    pub allow_vector_only_memory: bool,
     pub candidate_limit: usize,
     pub episode_lexical_hits: usize,
     pub episode_vector_hits: usize,
@@ -86,43 +92,37 @@ pub(crate) struct DurableMemoryRetrievalDiagnostics {
     pub memory_vector_status: RetrievalVectorStatus,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RetrievalPolicyTelemetry {
+    inject_prompt_memory: bool,
+    search_episodes: bool,
+    search_memories: bool,
+    memory_type: Option<MemoryType>,
+    min_importance: f32,
+    top_k: usize,
+    allow_full_thread_read: bool,
+    allow_vector_only_memory: bool,
+}
+
 impl DurableMemoryRetrievalDiagnostics {
-    fn skipped(
+    fn from_policy(
         query: impl Into<String>,
         task_class: impl Into<String>,
-        empty_reason: &'static str,
+        policy: RetrievalPolicyTelemetry,
+        candidate_limit: usize,
+        empty_reason: Option<&'static str>,
     ) -> Self {
         Self {
             query: query.into(),
             task_class: task_class.into(),
-            search_episodes: false,
-            search_memories: false,
-            candidate_limit: 0,
-            episode_lexical_hits: 0,
-            episode_vector_hits: 0,
-            memory_lexical_hits: 0,
-            memory_vector_hits: 0,
-            fused_candidate_count: 0,
-            injected_item_count: 0,
-            lexical_only_items: 0,
-            vector_only_items: 0,
-            hybrid_items: 0,
-            filtered_low_score: 0,
-            filtered_vector_only_memory: 0,
-            filtered_duplicate_snippet: 0,
-            filtered_covered_episode: 0,
-            empty_reason: Some(empty_reason),
-            episode_vector_status: RetrievalVectorStatus::Disabled,
-            memory_vector_status: RetrievalVectorStatus::Disabled,
-        }
-    }
-
-    fn with_plan(plan: &RetrievalPlan, candidate_limit: usize) -> Self {
-        Self {
-            query: plan.query.clone(),
-            task_class: plan.class_label.clone(),
-            search_episodes: plan.search_episodes,
-            search_memories: plan.search_memories,
+            inject_prompt_memory: policy.inject_prompt_memory,
+            search_episodes: policy.search_episodes,
+            search_memories: policy.search_memories,
+            memory_type: policy.memory_type,
+            min_importance: policy.min_importance,
+            top_k: policy.top_k,
+            allow_full_thread_read: policy.allow_full_thread_read,
+            allow_vector_only_memory: policy.allow_vector_only_memory,
             candidate_limit,
             episode_lexical_hits: 0,
             episode_vector_hits: 0,
@@ -137,10 +137,76 @@ impl DurableMemoryRetrievalDiagnostics {
             filtered_vector_only_memory: 0,
             filtered_duplicate_snippet: 0,
             filtered_covered_episode: 0,
-            empty_reason: None,
+            empty_reason,
             episode_vector_status: RetrievalVectorStatus::Disabled,
             memory_vector_status: RetrievalVectorStatus::Disabled,
         }
+    }
+
+    fn skipped_from_classification(
+        query: impl Into<String>,
+        classification: &MemoryClassificationDecision,
+        empty_reason: &'static str,
+    ) -> Self {
+        let read_policy = &classification.read_policy;
+        Self::from_policy(
+            query,
+            classification.class.as_str(),
+            RetrievalPolicyTelemetry {
+                inject_prompt_memory: read_policy.inject_prompt_memory,
+                search_episodes: read_policy.search_episodes,
+                search_memories: read_policy.search_memories,
+                memory_type: read_policy.memory_type,
+                min_importance: read_policy.min_importance,
+                top_k: read_policy.top_k,
+                allow_full_thread_read: read_policy.allow_full_thread_read,
+                allow_vector_only_memory: read_policy.allow_vector_only_memory,
+            },
+            0,
+            Some(empty_reason),
+        )
+    }
+
+    fn skipped_from_search_request(
+        query: impl Into<String>,
+        request: &DurableMemorySearchRequest,
+        empty_reason: &'static str,
+    ) -> Self {
+        Self::from_policy(
+            query,
+            "explicit_search",
+            RetrievalPolicyTelemetry {
+                inject_prompt_memory: false,
+                search_episodes: request.search_episodes,
+                search_memories: request.search_memories,
+                memory_type: request.memory_type,
+                min_importance: request.min_importance.unwrap_or(0.0).clamp(0.0, 1.0),
+                top_k: request.limit.max(1),
+                allow_full_thread_read: request.allow_full_thread_read,
+                allow_vector_only_memory: true,
+            },
+            0,
+            Some(empty_reason),
+        )
+    }
+
+    fn with_plan(plan: &RetrievalPlan, candidate_limit: usize) -> Self {
+        Self::from_policy(
+            plan.query.clone(),
+            plan.class_label.clone(),
+            RetrievalPolicyTelemetry {
+                inject_prompt_memory: plan.inject_prompt_memory,
+                search_episodes: plan.search_episodes,
+                search_memories: plan.search_memories,
+                memory_type: plan.memory_type,
+                min_importance: plan.min_importance,
+                top_k: plan.top_k,
+                allow_full_thread_read: plan.allow_full_thread_read,
+                allow_vector_only_memory: plan.allow_vector_only_memory,
+            },
+            candidate_limit,
+            None,
+        )
     }
 
     pub const fn hit(&self) -> bool {
@@ -214,8 +280,17 @@ impl DurableMemoryRetriever {
             query = %diagnostics.query,
             task_class = diagnostics.task_class,
             retrieval_hit = diagnostics.hit(),
+            inject_prompt_memory = diagnostics.inject_prompt_memory,
             search_episodes = diagnostics.search_episodes,
             search_memories = diagnostics.search_memories,
+            memory_type = diagnostics
+                .memory_type
+                .map(memory_type_label)
+                .unwrap_or("none"),
+            min_importance = diagnostics.min_importance,
+            top_k = diagnostics.top_k,
+            allow_full_thread_read = diagnostics.allow_full_thread_read,
+            allow_vector_only_memory = diagnostics.allow_vector_only_memory,
             candidate_limit = diagnostics.candidate_limit,
             episode_lexical_hits = diagnostics.episode_lexical_hits,
             episode_vector_hits = diagnostics.episode_vector_hits,
@@ -271,9 +346,9 @@ impl DurableMemoryRetriever {
         let plan = match RetrievalPlan::from_search_request(&request) {
             Ok(plan) => plan,
             Err(empty_reason) => {
-                let diagnostics = DurableMemoryRetrievalDiagnostics::skipped(
+                let diagnostics = DurableMemoryRetrievalDiagnostics::skipped_from_search_request(
                     query,
-                    "explicit_search",
+                    &request,
                     empty_reason,
                 );
                 Self::log_retrieval_telemetry("tool", &diagnostics);
@@ -325,9 +400,9 @@ impl DurableMemoryRetriever {
         let plan = match RetrievalPlan::from_classifier(task, classification, options) {
             Ok(plan) => plan,
             Err(empty_reason) => {
-                let diagnostics = DurableMemoryRetrievalDiagnostics::skipped(
+                let diagnostics = DurableMemoryRetrievalDiagnostics::skipped_from_classification(
                     task,
-                    classification.class.as_str(),
+                    classification,
                     empty_reason,
                 );
                 return Ok(DurableMemoryRetrievalOutcome {
@@ -584,6 +659,7 @@ impl DurableMemoryRetriever {
 struct RetrievalPlan {
     query: String,
     class_label: String,
+    inject_prompt_memory: bool,
     search_episodes: bool,
     search_memories: bool,
     memory_type: Option<MemoryType>,
@@ -825,6 +901,7 @@ impl RetrievalPlan {
         Ok(Self {
             query: query.to_string(),
             class_label: classification.class.as_str().to_string(),
+            inject_prompt_memory: read_policy.inject_prompt_memory,
             search_episodes: read_policy.search_episodes,
             search_memories: read_policy.search_memories,
             memory_type: read_policy.memory_type,
@@ -850,6 +927,7 @@ impl RetrievalPlan {
         Ok(Self {
             query: query.to_string(),
             class_label: "explicit_search".to_string(),
+            inject_prompt_memory: false,
             search_episodes: request.search_episodes,
             search_memories: request.search_memories,
             memory_type: request.memory_type,
@@ -1059,4 +1137,47 @@ fn normalized_snippet_key(snippet: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::persistent_memory::{
+        MemoryClassificationClass, MemoryClassificationDecision,
+    };
+    use crate::storage::MockStorageProvider;
+
+    #[tokio::test]
+    async fn skipped_prompt_retrieval_diagnostics_preserve_classification_policy() {
+        let retriever = DurableMemoryRetriever::new(Arc::new(MockStorageProvider::new()));
+        let mut classification = MemoryClassificationDecision::conservative_safe_mode();
+        classification.class = MemoryClassificationClass::ExternalFreshFact;
+        classification.read_policy.min_importance = 0.72;
+        classification.read_policy.top_k = 4;
+
+        let outcome = retriever
+            .retrieve_outcome_for_task(
+                "Какая погода завтра будет?",
+                &classification,
+                &AgentMemoryScope::new(42, "topic-a", "flow-1"),
+                DurableMemoryRetrievalOptions::default(),
+            )
+            .await
+            .expect("skipped prompt retrieval should not fail");
+
+        assert!(outcome.retrieval.is_none());
+        assert_eq!(outcome.diagnostics.task_class, "external_fresh_fact");
+        assert!(!outcome.diagnostics.inject_prompt_memory);
+        assert!(!outcome.diagnostics.search_episodes);
+        assert!(!outcome.diagnostics.search_memories);
+        assert_eq!(outcome.diagnostics.memory_type, None);
+        assert_eq!(outcome.diagnostics.min_importance, 0.72);
+        assert_eq!(outcome.diagnostics.top_k, 4);
+        assert!(!outcome.diagnostics.allow_full_thread_read);
+        assert!(!outcome.diagnostics.allow_vector_only_memory);
+        assert_eq!(
+            outcome.diagnostics.empty_reason,
+            Some("query_class_disallows_prompt_memory")
+        );
+    }
 }
