@@ -148,6 +148,36 @@ impl MemoryClassificationDecision {
     }
 }
 
+fn log_memory_classification_decision(
+    model: &ModelInfo,
+    attempt: usize,
+    decision: &MemoryClassificationDecision,
+) {
+    info!(
+        model = %model.id,
+        provider = %model.provider,
+        attempt,
+        class = decision.class.as_str(),
+        confidence = decision.confidence,
+        inject_prompt_memory = decision.read_policy.inject_prompt_memory,
+        search_episodes = decision.read_policy.search_episodes,
+        search_memories = decision.read_policy.search_memories,
+        memory_type = decision
+            .read_policy
+            .memory_type
+            .map(memory_type_label)
+            .unwrap_or("none"),
+        min_importance = decision.read_policy.min_importance,
+        top_k = decision.read_policy.top_k,
+        allow_vector_only_memory = decision.read_policy.allow_vector_only_memory,
+        allow_full_thread_read = decision.read_policy.allow_full_thread_read,
+        allow_llm_durable_writes = decision.write_policy.allow_llm_durable_writes,
+        allow_tool_draft_writes = decision.write_policy.allow_tool_draft_writes,
+        episode_only = decision.write_policy.episode_only,
+        "Memory classifier decision"
+    );
+}
+
 #[async_trait]
 pub(crate) trait MemoryTaskClassifier: Send + Sync {
     async fn classify(&self, task: &str) -> Result<MemoryClassificationDecision>;
@@ -329,7 +359,11 @@ impl MemoryTaskClassifier for LlmMemoryTaskClassifier {
 
             match result {
                 Ok(Ok(response)) => match parse_memory_classification_response(&response) {
-                    Ok(parsed) => return Ok(parsed.normalized()),
+                    Ok(parsed) => {
+                        let decision = parsed.normalized();
+                        log_memory_classification_decision(&self.config.model, attempt, &decision);
+                        return Ok(decision);
+                    }
                     Err(error) => last_failure = Some(ClassifierAttemptFailure::retryable(error)),
                 },
                 Ok(Err(error)) => {
@@ -367,9 +401,18 @@ impl MemoryTaskClassifier for LlmMemoryTaskClassifier {
             sleep(backoff).await;
         }
 
-        Err(last_failure
+        let error = last_failure
             .map(|failure| failure.error)
-            .unwrap_or_else(|| anyhow::anyhow!("memory classifier failed")))
+            .unwrap_or_else(|| anyhow::anyhow!("memory classifier failed"));
+        warn!(
+            model = %self.config.model.id,
+            provider = %self.config.model.provider,
+            max_attempts,
+            timeout_secs = self.config.timeout_secs,
+            error = %error,
+            "Memory classifier failed after all attempts"
+        );
+        Err(error)
     }
 }
 
