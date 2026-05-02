@@ -1095,21 +1095,17 @@ impl SshMcpProvider {
             },
             ToolDefinition {
                 name: TOOL_SSH_CHECK_PROCESS.to_string(),
-                description: "Check remote processes on the topic infra target by pattern"
+                description: "Check remote processes on the topic infra target. Provide exactly one of job_id or pattern; prefer job_id returned by ssh_exec/ssh_sudo_exec for background jobs."
                     .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "pattern": { "type": "string", "description": "Legacy substring or process pattern to inspect via pgrep" },
+                        "pattern": { "type": "string", "description": "Legacy substring or process pattern to inspect via pgrep. Provide exactly one of pattern or job_id." },
                         "job_id": { "type": "string", "description": "Preferred background job id returned by ssh_exec/ssh_sudo_exec" },
                         "tail_lines": { "type": "integer", "description": "Optional tail line count when using job_id" },
                         "approval_request_id": { "type": "string", "description": "Approval request id for replay after operator confirmation" },
                         "approval_token": { "type": "string", "description": "Approval token issued by operator confirmation" }
-                    },
-                    "anyOf": [
-                        { "required": ["pattern"] },
-                        { "required": ["job_id"] }
-                    ]
+                    }
                 }),
             },
             ToolDefinition {
@@ -2590,10 +2586,12 @@ mod tests {
         normalize_check_process_args, parse_ssh_keygen_listing, parse_wrapped_remote_output,
         serialize_apply_file_edit_response, serialize_read_file_response,
         unique_transfer_local_path, validate_chat_file_name, write_private_key_tempfile_in,
-        SecretProbeKind, SecretProbeReport, SshApprovalRegistry, TopicInfraPreflightReport,
-        UpstreamApplyFileEditResponse, UpstreamReadFileResponse, WrappedCommandMarkers,
+        SecretProbeKind, SecretProbeReport, SshApprovalRegistry, SshMcpProvider,
+        TopicInfraPreflightReport, UpstreamApplyFileEditResponse, UpstreamReadFileResponse,
+        WrappedCommandMarkers,
     };
     use crate::storage::TopicInfraAuthMode;
+    use serde_json::json;
     use std::{fs, path::Path};
     use tempfile::tempdir;
 
@@ -2764,6 +2762,33 @@ mod tests {
         assert_eq!(parsed.stdout, "hello");
         assert_eq!(parsed.stderr, "warn");
         assert_eq!(parsed.exit_code, 7);
+    }
+
+    #[test]
+    fn check_process_tool_schema_uses_chatgpt_compatible_top_level_object() {
+        let tool = SshMcpProvider::tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "ssh_check_process")
+            .expect("ssh_check_process tool definition should exist");
+
+        let parameters = &tool.parameters;
+        assert_eq!(parameters["type"], json!("object"));
+        for keyword in ["oneOf", "anyOf", "allOf", "enum", "not"] {
+            assert!(
+                parameters.get(keyword).is_none(),
+                "top-level {keyword} should not be present"
+            );
+        }
+
+        let properties = parameters["properties"]
+            .as_object()
+            .expect("tool parameters should define properties");
+        for property in ["pattern", "job_id", "tail_lines"] {
+            assert!(
+                properties.contains_key(property),
+                "{property} property should be present"
+            );
+        }
     }
 
     #[test]
