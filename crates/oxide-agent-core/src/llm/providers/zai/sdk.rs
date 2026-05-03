@@ -288,7 +288,7 @@ impl ZaiProvider {
         let body = json!({
             "model": model_id,
             "messages": messages,
-            "thinking": ThinkingType::Enabled,
+            "thinking": ThinkingType::enabled(),
             "temperature": ZAI_TEMPERATURE,
             "max_tokens": max_tokens,
         });
@@ -309,7 +309,7 @@ impl ZaiProvider {
             "model": model_id,
             "messages": messages,
             "tools": tools,
-            "thinking": ThinkingType::Enabled,
+            "thinking": ThinkingType::enabled(),
             "temperature": temperature.unwrap_or(ZAI_TEMPERATURE),
             "max_tokens": max_tokens,
             "stream": false,
@@ -377,9 +377,9 @@ fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
 
 fn thinking_type_for_json_mode(json_mode: bool) -> ThinkingType {
     if json_mode {
-        ThinkingType::Disabled
+        ThinkingType::disabled()
     } else {
-        ThinkingType::Enabled
+        ThinkingType::enabled()
     }
 }
 
@@ -389,7 +389,7 @@ fn maybe_apply_json_mode_to_raw_body(
     has_tools: bool,
 ) {
     if should_use_native_json_mode(json_mode, has_tools) {
-        body["thinking"] = json!(ThinkingType::Disabled);
+        body["thinking"] = json!(ThinkingType::disabled());
         body["response_format"] = json!({ "type": "json_object" });
     }
 }
@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn raw_body_switches_to_disabled_thinking_for_native_json_mode() {
         let mut body = json!({
-            "thinking": ThinkingType::Enabled,
+            "thinking": ThinkingType::enabled(),
         });
 
         maybe_apply_json_mode_to_raw_body(&mut body, true, false);
