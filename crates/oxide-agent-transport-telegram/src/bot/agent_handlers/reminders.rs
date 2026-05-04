@@ -374,19 +374,22 @@ async fn defer_busy_reminder(
     scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: &ReminderJobRecord,
 ) {
-    let next_run_at = current_timestamp_unix_secs().saturating_add(REMINDER_BUSY_BACKOFF_SECS);
+    let retry_at = current_timestamp_unix_secs().saturating_add(REMINDER_BUSY_BACKOFF_SECS);
     match storage
         .reschedule_reminder_job(
             reminder.user_id,
             reminder.reminder_id.clone(),
-            next_run_at,
+            reminder.next_run_at,
             None,
             Some("Agent session is busy; reminder deferred.".to_string()),
             false,
         )
         .await
     {
-        Ok(Some(updated)) => scheduler.upsert_record(updated).await,
+        Ok(Some(mut updated)) => {
+            updated.next_run_at = retry_at;
+            scheduler.upsert_record(updated).await;
+        }
         Ok(None) => {
             let _ = scheduler
                 .reconcile_user_from_storage(storage, reminder.user_id)

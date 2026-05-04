@@ -560,7 +560,7 @@ fn compile_interval_schedule(
     let second_run_at =
         next_run_at.saturating_add(i64::try_from(interval_secs).unwrap_or(i64::MAX));
     let preview = format!(
-        "Fixed-delay reminder every {} seconds. Next runs: unix {} ({}), then unix {} ({}). Use cron for wall-clock schedules like every day at 09:00.",
+        "Fixed-rate reminder every {} seconds. Next runs: unix {} ({}), then unix {} ({}). Use cron for wall-clock schedules like every day at 09:00.",
         interval_secs,
         next_run_at,
         format_display_time(next_run_at, timezone.as_deref())?,
@@ -750,14 +750,14 @@ fn format_display_time(unix: i64, timezone: Option<&str>) -> Result<String> {
 fn reminder_schedule_definition() -> ToolDefinition {
     ToolDefinition {
         name: TOOL_REMINDER_SCHEDULE.to_string(),
-        description: "Schedule a wake-up task. Prefer date + time for one-time reminders, interval only for fixed-delay repetition, and cron for wall-clock schedules like every day at 09:00 or weekdays at 18:30. The agent will wake up later, execute the task, and post a report in the same topic.".to_string(),
+        description: "Schedule a wake-up task. Prefer date + time for one-time reminders, interval only for fixed-rate repetition, and cron for wall-clock schedules like every day at 09:00 or weekdays at 18:30. The agent will wake up later, execute the task, and post a report in the same topic.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
                 "kind": {
                     "type": "string",
                     "enum": ["once", "interval", "cron"],
-                    "description": "Schedule type: one-time, fixed-delay interval, or wall-clock cron"
+                    "description": "Schedule type: one-time, fixed-rate interval, or wall-clock cron"
                 },
                 "task": {
                     "type": "string",
@@ -773,11 +773,11 @@ fn reminder_schedule_definition() -> ToolDefinition {
                 },
                 "every_minutes": {
                     "type": "integer",
-                    "description": "Fixed-delay reminder cadence in minutes. Use this only for repeat-after-N-minutes schedules, not for every day at 09:00."
+                    "description": "Fixed-rate reminder cadence in minutes. Use this only for repeat-every-N-minutes schedules, not for every day at 09:00."
                 },
                 "every_hours": {
                     "type": "integer",
-                    "description": "Fixed-delay reminder cadence in hours. Use this only for repeat-after-N-hours schedules, not for every day at 09:00."
+                    "description": "Fixed-rate reminder cadence in hours. Use this only for repeat-every-N-hours schedules, not for every day at 09:00."
                 },
                 "first_date": {
                     "type": "string",

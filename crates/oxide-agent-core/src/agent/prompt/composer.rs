@@ -21,7 +21,7 @@ fn build_date_context() -> String {
 
 fn build_reminder_guidance(tools: &[ToolDefinition]) -> Option<&'static str> {
     tools.iter().any(|tool| tool.name == "reminder_schedule").then_some(
-        "## Reminder Scheduling\n- The current date/time block above is the source of truth for local time\n- Do not compute unix timestamps by hand for reminders\n- For a one-time reminder, use `kind=once` with `date` + `time` and optional `timezone`\n- For repeat-after-N-minutes or repeat-after-N-hours, use `kind=interval` with `every_minutes` or `every_hours`\n- For wall-clock schedules like every day at 09:00 or weekdays at 18:30, use `kind=cron` with `time`, optional `weekdays`, and optional `timezone`\n- Do not use `kind=interval` for calendar schedules like every day at 09:00 because interval means fixed delay after the previous run\n- When `timezone` is omitted, reminder scheduling uses the current local timezone shown above"
+        "## Reminder Scheduling\n- The current date/time block above is the source of truth for local time\n- Do not compute unix timestamps by hand for reminders\n- For a one-time reminder, use `kind=once` with `date` + `time` and optional `timezone`\n- For repeat-every-N-minutes or repeat-every-N-hours, use `kind=interval` with `every_minutes` or `every_hours`\n- For wall-clock schedules like every day at 09:00 or weekdays at 18:30, use `kind=cron` with `time`, optional `weekdays`, and optional `timezone`\n- Do not use `kind=interval` for calendar schedules like every day at 09:00; use `kind=cron` to preserve local wall-clock time across calendar/DST changes\n- When `timezone` is omitted, reminder scheduling uses the current local timezone shown above"
     )
 }
 

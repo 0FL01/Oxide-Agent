@@ -181,3 +181,56 @@ async fn provider_pause_and_resume_refresh_in_memory_queue() -> Result<()> {
     assert_eq!(scheduler.next_due_at().await, Some(resumed.next_run_at));
     Ok(())
 }
+
+#[tokio::test]
+async fn reconcile_preserves_local_busy_snooze_without_rephasing_storage() -> Result<()> {
+    let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+    let scheduler = Arc::new(ReminderSchedulerHandle::new([111]));
+    let now = now_unix_secs();
+    let original_next_run_at = now - 5;
+    let created = storage
+        .create_reminder_job(CreateReminderJobOptions {
+            user_id: 111,
+            context_key: "topic-d".to_string(),
+            flow_id: "flow-d".to_string(),
+            chat_id: 111,
+            thread_id: None,
+            thread_kind: ReminderThreadKind::None,
+            task_prompt: "wake up".to_string(),
+            schedule_kind: ReminderScheduleKind::Interval,
+            next_run_at: original_next_run_at,
+            interval_secs: Some(86_400),
+            cron_expression: None,
+            timezone: None,
+        })
+        .await?;
+    scheduler.bootstrap_from_storage(&storage).await?;
+
+    let storage_record = storage
+        .reschedule_reminder_job(
+            111,
+            created.reminder_id.clone(),
+            original_next_run_at,
+            None,
+            Some("Agent session is busy; reminder deferred.".to_string()),
+            false,
+        )
+        .await?
+        .expect("reminder should reschedule");
+    let retry_at = now + 30;
+    let mut snoozed_record = storage_record.clone();
+    snoozed_record.next_run_at = retry_at;
+    scheduler.upsert_record(snoozed_record).await;
+
+    scheduler.reconcile_user_from_storage(&storage, 111).await?;
+
+    let persisted = storage
+        .get_reminder_job(111, created.reminder_id.clone())
+        .await?
+        .expect("reminder should exist");
+    assert_eq!(persisted.next_run_at, original_next_run_at);
+    assert_eq!(scheduler.next_due_at().await, Some(retry_at));
+    assert!(scheduler.take_due_batch(now, 8).await.is_empty());
+    assert_eq!(scheduler.take_due_batch(retry_at, 8).await.len(), 1);
+    Ok(())
+}

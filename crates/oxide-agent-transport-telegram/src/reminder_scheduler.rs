@@ -84,14 +84,19 @@ impl ReminderSchedulerHandle {
             .await?;
 
         let mut state = self.state.lock().await;
+        let previous_records = state.records.clone();
         state
             .records
             .retain(|(record_user_id, _), _| *record_user_id != user_id);
         let tracked = records.len();
-        for record in records {
-            state
-                .records
-                .insert((record.user_id, record.reminder_id.clone()), record);
+        for mut record in records {
+            let key = (record.user_id, record.reminder_id.clone());
+            if let Some(previous) = previous_records.get(&key) {
+                if previous.version == record.version && previous.next_run_at > record.next_run_at {
+                    record.next_run_at = previous.next_run_at;
+                }
+            }
+            state.records.insert(key, record);
         }
         drop(state);
         self.wakeup.notify_one();
