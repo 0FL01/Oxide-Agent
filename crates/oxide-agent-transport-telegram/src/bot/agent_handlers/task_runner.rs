@@ -6,7 +6,7 @@ use super::{
 use crate::bot::agent_handlers::{
     preprocess_agent_message_input, send_multimodal_unavailable_message,
 };
-use crate::bot::agent_transport::TelegramAgentTransport;
+use crate::bot::agent_transport::{SilentTelegramAgentTransport, TelegramAgentTransport};
 use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::{AgentView, DefaultAgentView};
@@ -58,6 +58,8 @@ pub(crate) struct RunAgentTaskTextContext {
     pub(crate) use_inline_progress_controls: bool,
     pub(crate) use_inline_flow_controls: bool,
     pub(crate) attach_detach_enabled: bool,
+    pub(crate) progress_enabled: bool,
+    pub(crate) silent_no_change_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -120,14 +122,22 @@ struct TaskDeliveryContext {
     use_inline_progress_controls: bool,
     use_inline_flow_controls: bool,
     attach_detach_enabled: bool,
+    progress_enabled: bool,
+    silent_no_change_enabled: bool,
 }
 
 struct TaskProgressRuntime {
-    progress_message_id: MessageId,
+    progress_message_id: Option<MessageId>,
     progress_reply_markup: Option<InlineKeyboardMarkup>,
     progress_handle: tokio::task::JoinHandle<oxide_agent_core::agent::progress::ProgressState>,
     max_iterations: usize,
     tx: tokio::sync::mpsc::Sender<AgentEvent>,
+}
+
+struct TaskProgressDelivery {
+    message_id: MessageId,
+    reply_markup: Option<InlineKeyboardMarkup>,
+    text: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -154,6 +164,12 @@ static COMPLETED_RESPONSE_DELIVERY: LazyLock<
     Mutex<HashMap<SessionId, CompletedResponseDeliveryState>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+pub(crate) const NO_USER_VISIBLE_CHANGE_SENTINEL: &str = "<OXIDE_NO_USER_VISIBLE_CHANGE>";
+
+pub(crate) fn is_no_user_visible_change_response(response: &str) -> bool {
+    response.trim() == NO_USER_VISIBLE_CHANGE_SENTINEL
+}
+
 impl From<&RunAgentTaskTextContext> for TaskDeliveryContext {
     fn from(value: &RunAgentTaskTextContext) -> Self {
         Self {
@@ -168,6 +184,8 @@ impl From<&RunAgentTaskTextContext> for TaskDeliveryContext {
             use_inline_progress_controls: value.use_inline_progress_controls,
             use_inline_flow_controls: value.use_inline_flow_controls,
             attach_detach_enabled: value.attach_detach_enabled,
+            progress_enabled: value.progress_enabled,
+            silent_no_change_enabled: value.silent_no_change_enabled,
         }
     }
 }
@@ -186,6 +204,8 @@ impl From<&RunApprovedSshResumeContext> for TaskDeliveryContext {
             use_inline_progress_controls: value.use_inline_progress_controls,
             use_inline_flow_controls: value.use_inline_flow_controls,
             attach_detach_enabled: value.attach_detach_enabled,
+            progress_enabled: true,
+            silent_no_change_enabled: false,
         }
     }
 }
@@ -204,6 +224,8 @@ impl From<&RunUserInputResumeContext> for TaskDeliveryContext {
             use_inline_progress_controls: value.use_inline_progress_controls,
             use_inline_flow_controls: value.use_inline_flow_controls,
             attach_detach_enabled: value.attach_detach_enabled,
+            progress_enabled: true,
+            silent_no_change_enabled: false,
         }
     }
 }
@@ -222,6 +244,8 @@ impl From<&RunManualCompactionContext> for TaskDeliveryContext {
             use_inline_progress_controls: value.use_inline_progress_controls,
             use_inline_flow_controls: value.use_inline_flow_controls,
             attach_detach_enabled: value.attach_detach_enabled,
+            progress_enabled: true,
+            silent_no_change_enabled: false,
         }
     }
 }
@@ -285,6 +309,8 @@ pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         use_inline_progress_controls: ctx.use_inline_progress_controls,
         use_inline_flow_controls: ctx.use_inline_flow_controls,
         attach_detach_enabled: ctx.attach_detach_enabled,
+        progress_enabled: true,
+        silent_no_change_enabled: false,
     })
     .await
 }
@@ -294,7 +320,7 @@ pub(crate) async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Re
     let session_id = ctx.session_id;
     let task_text = ctx.task_text;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_agent_task(session_id, &task_text, Some(progress_tx)).await
+        execute_agent_task(session_id, &task_text, progress_tx).await
     })
     .await
 }
@@ -304,7 +330,7 @@ pub(crate) async fn run_approved_ssh_resume(ctx: RunApprovedSshResumeContext) ->
     let session_id = ctx.session_id;
     let request_id = ctx.request_id;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_ssh_approval_resume(session_id, &request_id, Some(progress_tx)).await
+        execute_ssh_approval_resume(session_id, &request_id, progress_tx).await
     })
     .await
 }
@@ -314,7 +340,7 @@ pub(crate) async fn run_user_input_resume(ctx: RunUserInputResumeContext) -> Res
     let session_id = ctx.session_id;
     let user_input = ctx.user_input;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_user_input_resume(session_id, user_input, Some(progress_tx)).await
+        execute_user_input_resume(session_id, user_input, progress_tx).await
     })
     .await
 }
@@ -349,6 +375,7 @@ pub(crate) async fn run_manual_compaction(ctx: RunManualCompactionContext) -> Re
         max_iterations,
         tx,
     } = runtime;
+    let progress_message_id = progress_message_id.expect("progress message id must exist");
     let result = execute_manual_compaction(ctx.session_id, Some(tx)).await;
     let progress_text = finish_task_progress_runtime(progress_handle, max_iterations).await;
 
@@ -373,24 +400,23 @@ pub(crate) async fn run_manual_compaction(ctx: RunManualCompactionContext) -> Re
 
 async fn run_task_execution<Exec, Fut>(ctx: TaskDeliveryContext, execute: Exec) -> Result<()>
 where
-    Exec: FnOnce(tokio::sync::mpsc::Sender<AgentEvent>) -> Fut,
+    Exec: FnOnce(Option<tokio::sync::mpsc::Sender<AgentEvent>>) -> Fut,
     Fut: Future<Output = Result<AgentExecutionOutcome>>,
 {
-    let TaskProgressRuntime {
-        progress_message_id,
-        progress_reply_markup,
-        progress_handle,
-        max_iterations,
-        tx,
-    } = start_task_progress_runtime(&ctx).await?;
-    let mut progress_message_id = progress_message_id;
-    let mut progress_reply_markup = progress_reply_markup;
-    let mut progress_handle = progress_handle;
-    let mut max_iterations = max_iterations;
+    let runtime = if ctx.progress_enabled {
+        start_task_progress_runtime(&ctx).await?
+    } else {
+        start_silent_task_progress_runtime(&ctx)
+    };
+    let mut progress_message_id = runtime.progress_message_id;
+    let mut progress_reply_markup = runtime.progress_reply_markup;
+    let mut progress_handle = Some(runtime.progress_handle);
+    let mut max_iterations = Some(runtime.max_iterations);
+    let progress_tx = Some(runtime.tx);
     mark_completed_response_execution_started(ctx.session_id).await;
     // Keep sender ownership with the active execution pass so the progress runtime
     // can observe channel closure and terminate once the pass finishes.
-    let mut result = execute(tx).await;
+    let mut result = execute(progress_tx).await;
 
     loop {
         let completed = matches!(result, Ok(AgentExecutionOutcome::Completed(_)));
@@ -398,7 +424,23 @@ where
             begin_completed_response_finalization(ctx.session_id).await;
         }
 
-        let progress_text = finish_task_progress_runtime(progress_handle, max_iterations).await;
+        let progress = match progress_handle.take() {
+            Some(handle) => {
+                let text = finish_task_progress_runtime(
+                    handle,
+                    max_iterations.expect("progress max iterations must exist"),
+                )
+                .await;
+                progress_message_id
+                    .as_ref()
+                    .map(|message_id| TaskProgressDelivery {
+                        message_id: *message_id,
+                        reply_markup: progress_reply_markup.take(),
+                        text,
+                    })
+            }
+            None => None,
+        };
 
         if completed {
             match prepare_completed_response_delivery(&ctx.session_id).await {
@@ -408,22 +450,36 @@ where
                         followup_count = followups.len(),
                         "Restarting task before completed response delivery"
                     );
-                    let runtime =
-                        match restart_task_progress_runtime(&ctx, progress_message_id).await {
+                    let next_progress_tx = if ctx.progress_enabled {
+                        let runtime = match restart_task_progress_runtime(
+                            &ctx,
+                            progress_message_id.expect("progress message id must exist"),
+                        )
+                        .await
+                        {
                             Ok(runtime) => runtime,
                             Err(error) => {
                                 clear_completed_response_delivery_state(&ctx.session_id).await;
                                 return Err(error);
                             }
                         };
-                    progress_message_id = runtime.progress_message_id;
-                    progress_reply_markup = runtime.progress_reply_markup;
-                    progress_handle = runtime.progress_handle;
-                    max_iterations = runtime.max_iterations;
+                        progress_message_id = runtime.progress_message_id;
+                        progress_reply_markup = runtime.progress_reply_markup;
+                        progress_handle = Some(runtime.progress_handle);
+                        max_iterations = Some(runtime.max_iterations);
+                        Some(runtime.tx)
+                    } else {
+                        let runtime = start_silent_task_progress_runtime(&ctx);
+                        progress_message_id = runtime.progress_message_id;
+                        progress_reply_markup = runtime.progress_reply_markup;
+                        progress_handle = Some(runtime.progress_handle);
+                        max_iterations = Some(runtime.max_iterations);
+                        Some(runtime.tx)
+                    };
                     result = execute_agent_task_continuation(
                         ctx.session_id,
                         followups,
-                        Some(runtime.tx),
+                        next_progress_tx,
                     )
                     .await;
                     continue;
@@ -441,14 +497,7 @@ where
         )
         .await;
 
-        let delivery_result = deliver_task_result(
-            &ctx,
-            result,
-            &progress_text,
-            progress_message_id,
-            progress_reply_markup,
-        )
-        .await;
+        let delivery_result = deliver_task_result(&ctx, result, progress).await;
         clear_completed_response_delivery_state(&ctx.session_id).await;
         return delivery_result;
     }
@@ -523,8 +572,25 @@ fn bind_task_progress_runtime(
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 
     TaskProgressRuntime {
-        progress_message_id,
+        progress_message_id: Some(progress_message_id),
         progress_reply_markup,
+        progress_handle,
+        max_iterations,
+        tx,
+    }
+}
+
+fn start_silent_task_progress_runtime(ctx: &TaskDeliveryContext) -> TaskProgressRuntime {
+    let max_iterations = get_agent_max_iterations();
+    let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
+    let transport =
+        SilentTelegramAgentTransport::new(ctx.bot.clone(), ctx.chat_id, ctx.message_thread_id);
+    let cfg = ProgressRuntimeConfig::new(max_iterations);
+    let progress_handle = spawn_progress_runtime(transport, rx, cfg);
+
+    TaskProgressRuntime {
+        progress_message_id: None,
+        progress_reply_markup: None,
         progress_handle,
         max_iterations,
         tx,
@@ -653,43 +719,48 @@ async fn finish_task_progress_runtime(
 async fn deliver_task_result(
     ctx: &TaskDeliveryContext,
     result: Result<AgentExecutionOutcome>,
-    progress_text: &str,
-    progress_message_id: MessageId,
-    progress_reply_markup: Option<InlineKeyboardMarkup>,
+    progress: Option<TaskProgressDelivery>,
 ) -> Result<()> {
-    let terminal_progress_reply_markup = progress_reply_markup
-        .as_ref()
-        .map(|_| crate::bot::views::empty_inline_keyboard());
+    let terminal_progress_reply_markup = progress.as_ref().and_then(|progress| {
+        progress
+            .reply_markup
+            .as_ref()
+            .map(|_| crate::bot::views::empty_inline_keyboard())
+    });
     let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
     let pending_ssh_approvals = take_pending_ssh_approvals(ctx.session_id).await;
 
     match result {
         Ok(AgentExecutionOutcome::Completed(response)) => {
-            crate::bot::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_message_id,
-                progress_text,
-                terminal_progress_reply_markup.clone(),
-            )
-            .await;
-            let final_markup = ctx
-                .use_inline_flow_controls
-                .then(|| {
-                    crate::bot::views::agent_flow_inline_keyboard_with_toggle(
-                        &ctx.agent_flow_id,
-                        ctx.attach_detach_enabled,
-                    )
-                })
-                .filter(|markup| !markup.inline_keyboard.is_empty());
-            send_long_message_in_thread_with_final_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                &response,
-                ctx.message_thread_id,
-                final_markup,
-            )
-            .await?;
+            if let Some(progress) = &progress {
+                crate::bot::resilient::edit_message_safe_resilient_with_markup(
+                    &ctx.bot,
+                    ctx.chat_id,
+                    progress.message_id,
+                    &progress.text,
+                    terminal_progress_reply_markup.clone(),
+                )
+                .await;
+            }
+            if !should_suppress_completed_response(ctx, &response) {
+                let final_markup = ctx
+                    .use_inline_flow_controls
+                    .then(|| {
+                        crate::bot::views::agent_flow_inline_keyboard_with_toggle(
+                            &ctx.agent_flow_id,
+                            ctx.attach_detach_enabled,
+                        )
+                    })
+                    .filter(|markup| !markup.inline_keyboard.is_empty());
+                send_long_message_in_thread_with_final_markup(
+                    &ctx.bot,
+                    ctx.chat_id,
+                    &response,
+                    ctx.message_thread_id,
+                    final_markup,
+                )
+                .await?;
+            }
             send_pending_ssh_approval_messages(
                 &ctx.bot,
                 ctx.chat_id,
@@ -699,14 +770,16 @@ async fn deliver_task_result(
             .await?;
         }
         Ok(AgentExecutionOutcome::WaitingForApproval) => {
-            crate::bot::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_message_id,
-                progress_text,
-                terminal_progress_reply_markup,
-            )
-            .await;
+            if let Some(progress) = &progress {
+                crate::bot::resilient::edit_message_safe_resilient_with_markup(
+                    &ctx.bot,
+                    ctx.chat_id,
+                    progress.message_id,
+                    &progress.text,
+                    terminal_progress_reply_markup,
+                )
+                .await;
+            }
             send_pending_ssh_approval_messages(
                 &ctx.bot,
                 ctx.chat_id,
@@ -716,14 +789,16 @@ async fn deliver_task_result(
             .await?;
         }
         Ok(AgentExecutionOutcome::WaitingForUserInput(request)) => {
-            crate::bot::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_message_id,
-                progress_text,
-                terminal_progress_reply_markup,
-            )
-            .await;
+            if let Some(progress) = &progress {
+                crate::bot::resilient::edit_message_safe_resilient_with_markup(
+                    &ctx.bot,
+                    ctx.chat_id,
+                    progress.message_id,
+                    &progress.text,
+                    terminal_progress_reply_markup,
+                )
+                .await;
+            }
             send_long_message_in_thread_with_final_markup(
                 &ctx.bot,
                 ctx.chat_id,
@@ -735,15 +810,28 @@ async fn deliver_task_result(
         }
         Err(error) => {
             let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&error.to_string());
-            let error_text = format!("{progress_text}\n\n❌ <b>Error:</b>\n\n{sanitized_error}");
-            crate::bot::resilient::edit_message_safe_resilient_with_markup(
-                &ctx.bot,
-                ctx.chat_id,
-                progress_message_id,
-                &error_text,
-                terminal_progress_reply_markup,
-            )
-            .await;
+            if let Some(progress) = &progress {
+                let error_text =
+                    format!("{}\n\n❌ <b>Error:</b>\n\n{sanitized_error}", progress.text);
+                crate::bot::resilient::edit_message_safe_resilient_with_markup(
+                    &ctx.bot,
+                    ctx.chat_id,
+                    progress.message_id,
+                    &error_text,
+                    terminal_progress_reply_markup,
+                )
+                .await;
+            } else {
+                send_agent_message(
+                    &ctx.bot,
+                    ctx.chat_id,
+                    DefaultAgentView::error_message(&error.to_string()),
+                    crate::bot::OutboundThreadParams {
+                        message_thread_id: ctx.message_thread_id,
+                    },
+                )
+                .await?;
+            }
         }
     }
 
@@ -761,6 +849,10 @@ async fn deliver_task_result(
     .await;
 
     Ok(())
+}
+
+fn should_suppress_completed_response(ctx: &TaskDeliveryContext, response: &str) -> bool {
+    ctx.silent_no_change_enabled && is_no_user_visible_change_response(response)
 }
 
 async fn execute_agent_task(

@@ -20,6 +20,14 @@ pub struct TelegramAgentTransport {
     progress_reply_markup: Option<InlineKeyboardMarkup>,
 }
 
+/// Telegram transport that keeps agent-side progress events and file delivery working
+/// without creating or editing a visible progress/status message.
+pub struct SilentTelegramAgentTransport {
+    bot: Bot,
+    chat_id: ChatId,
+    message_thread_id: Option<teloxide::types::ThreadId>,
+}
+
 impl TelegramAgentTransport {
     /// Create a Telegram transport bound to a progress message.
     pub fn new(
@@ -39,6 +47,21 @@ impl TelegramAgentTransport {
             } else {
                 None
             },
+        }
+    }
+}
+
+impl SilentTelegramAgentTransport {
+    /// Create a Telegram transport for silent progress handling.
+    pub fn new(
+        bot: Bot,
+        chat_id: ChatId,
+        message_thread_id: Option<teloxide::types::ThreadId>,
+    ) -> Self {
+        Self {
+            bot,
+            chat_id,
+            message_thread_id,
         }
     }
 }
@@ -69,6 +92,76 @@ impl AgentTransport for TelegramAgentTransport {
             reply_markup,
         )
         .await;
+        Ok(())
+    }
+
+    async fn deliver_file(
+        &self,
+        mode: DeliveryMode,
+        kind: FileDeliveryKind,
+        file_name: &str,
+        content: &[u8],
+    ) -> Result<()> {
+        match mode {
+            DeliveryMode::BestEffort => {
+                if let Err(e) = send_file_smart(
+                    &self.bot,
+                    self.chat_id,
+                    kind,
+                    file_name,
+                    content,
+                    self.message_thread_id,
+                )
+                .await
+                {
+                    warn!(file_name = %file_name, error = %e, "Failed to send file");
+                    return Err(e);
+                }
+                Ok(())
+            }
+            DeliveryMode::Confirmed => {
+                oxide_agent_core::utils::retry_transport_operation(|| async {
+                    send_file_smart(
+                        &self.bot,
+                        self.chat_id,
+                        kind,
+                        file_name,
+                        content,
+                        self.message_thread_id,
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
+                })
+                .await
+            }
+        }
+    }
+
+    async fn notify_loop_detected(&self, loop_type: LoopType, iteration: usize) -> Result<()> {
+        let text = format!(
+            "🔁 <b>Loop Detected in Task Execution</b>\nType: {}\nIteration: {}\n\nSelect an action:",
+            loop_type_label(loop_type),
+            iteration
+        );
+
+        let mut req = self
+            .bot
+            .send_message(self.chat_id, text)
+            .parse_mode(ParseMode::Html);
+        if let Some(thread_id) = self.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(loop_action_keyboard()).await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentTransport for SilentTelegramAgentTransport {
+    async fn update_progress(&self, _state: &ProgressState) -> Result<()> {
         Ok(())
     }
 

@@ -147,6 +147,8 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 TELEGRAM_TOKEN=YOUR_TOKEN
 ALLOWED_USERS=ID1,ID2 # List of allowed Telegram IDs (basic access)
 AGENT_ACCESS_IDS=ID1 # Access to Agent Mode (consumes many tokens)
+REMINDER_AGENT_PROGRESS_ENABLED=false # Watch/ward reminders: hide progress spam
+REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: stay silent on no visible change
 
 # Agent Configuration
 AGENT_TIMEOUT_SECS=300          # Agent execution timeout

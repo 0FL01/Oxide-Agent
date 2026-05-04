@@ -432,6 +432,8 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         use_inline_progress_controls: ctx.use_inline_progress_controls,
         use_inline_flow_controls: ctx.use_inline_flow_controls,
         attach_detach_enabled: ctx.attach_detach_enabled,
+        progress_enabled: true,
+        silent_no_change_enabled: false,
     })
     .await
 }

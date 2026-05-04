@@ -17,6 +17,10 @@ fn default_attach_detach_enabled() -> bool {
     true
 }
 
+fn default_reminder_agent_progress_enabled() -> bool {
+    true
+}
+
 /// Telegram per-topic configuration.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -44,7 +48,7 @@ pub struct TelegramTopicSettings {
 }
 
 /// Telegram transport settings loaded from environment variables.
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TelegramSettings {
     /// Telegram Bot API token.
     pub telegram_token: String,
@@ -69,12 +73,39 @@ pub struct TelegramSettings {
         alias = "attachDetachEnabled"
     )]
     pub attach_detach_enabled: bool,
+    /// Enables progress/status messages for reminder-triggered agent runs.
+    #[serde(
+        default = "default_reminder_agent_progress_enabled",
+        alias = "reminderAgentProgressEnabled"
+    )]
+    pub reminder_agent_progress_enabled: bool,
+    /// Allows reminder-triggered agent runs to return a no-change sentinel without notifying chat.
+    #[serde(default, alias = "reminderSilentNoChangeEnabled")]
+    pub reminder_silent_no_change_enabled: bool,
     /// Agent profile id used in the manager control-plane home topic.
     #[serde(default, alias = "managerHomeAgentId")]
     pub manager_home_agent_id: Option<String>,
     /// Per-topic overrides loaded from structured config.
     #[serde(default, rename = "topicConfigs", alias = "topic_configs")]
     pub topic_configs: Vec<TelegramTopicSettings>,
+}
+
+impl Default for TelegramSettings {
+    fn default() -> Self {
+        Self {
+            telegram_token: String::new(),
+            allowed_users_str: None,
+            agent_allowed_users_str: None,
+            manager_allowed_users_str: None,
+            manager_home_chat_id: None,
+            manager_home_thread_id: None,
+            attach_detach_enabled: default_attach_detach_enabled(),
+            reminder_agent_progress_enabled: default_reminder_agent_progress_enabled(),
+            reminder_silent_no_change_enabled: false,
+            manager_home_agent_id: None,
+            topic_configs: Vec::new(),
+        }
+    }
 }
 
 /// Combined settings used by the Telegram transport layer.
@@ -275,6 +306,8 @@ mod tests {
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         };
@@ -461,6 +494,8 @@ mod tests {
             manager_home_chat_id: Some(-10001),
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         };
@@ -486,6 +521,8 @@ mod tests {
             manager_home_chat_id: Some(-10001),
             manager_home_thread_id: Some(1),
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: Some("control-plane".to_string()),
             topic_configs: vec![super::TelegramTopicSettings {
                 chat_id: -10001,
@@ -530,6 +567,56 @@ mod tests {
         };
 
         assert!(settings.attach_detach_enabled);
+    }
+
+    #[test]
+    fn reminder_watch_toggles_have_safe_defaults() {
+        let raw = r#"
+        {
+          "telegram_token": "dummy"
+        }
+        "#;
+
+        let loaded = Config::builder()
+            .add_source(File::from_str(raw, FileFormat::Json))
+            .build();
+        let cfg = match loaded {
+            Ok(config) => config.try_deserialize::<TelegramSettings>(),
+            Err(err) => panic!("failed to build config: {err}"),
+        };
+        let settings = match cfg {
+            Ok(settings) => settings,
+            Err(err) => panic!("failed to deserialize settings: {err}"),
+        };
+
+        assert!(settings.reminder_agent_progress_enabled);
+        assert!(!settings.reminder_silent_no_change_enabled);
+    }
+
+    #[test]
+    fn deserializes_reminder_watch_toggles() {
+        let raw = r#"
+        {
+          "telegram_token": "dummy",
+          "reminderAgentProgressEnabled": false,
+          "reminderSilentNoChangeEnabled": true
+        }
+        "#;
+
+        let loaded = Config::builder()
+            .add_source(File::from_str(raw, FileFormat::Json))
+            .build();
+        let cfg = match loaded {
+            Ok(config) => config.try_deserialize::<TelegramSettings>(),
+            Err(err) => panic!("failed to build config: {err}"),
+        };
+        let settings = match cfg {
+            Ok(settings) => settings,
+            Err(err) => panic!("failed to deserialize settings: {err}"),
+        };
+
+        assert!(!settings.reminder_agent_progress_enabled);
+        assert!(settings.reminder_silent_no_change_enabled);
     }
 
     #[test]

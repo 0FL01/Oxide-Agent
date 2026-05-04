@@ -217,12 +217,13 @@ async fn process_due_reminder(
     .await;
     renew_cancellation_token(prepared.session_id).await;
 
+    let silent_no_change_enabled = settings.telegram.reminder_silent_no_change_enabled;
     let result = run_agent_task_with_text(RunAgentTaskTextContext {
         bot: bot.clone(),
         chat_id: prepared.chat_id,
         session_id: prepared.session_id,
         user_id: prepared.reminder.user_id,
-        task_text: scheduled_reminder_task_text(&prepared.reminder),
+        task_text: scheduled_reminder_task_text(&prepared.reminder, silent_no_change_enabled),
         storage: storage.clone(),
         context_key: prepared.reminder.context_key.clone(),
         agent_flow_id: prepared.reminder.flow_id.clone(),
@@ -230,6 +231,8 @@ async fn process_due_reminder(
         use_inline_progress_controls: use_inline_topic_controls(prepared.thread_spec),
         use_inline_flow_controls: use_inline_flow_controls(prepared.thread_spec),
         attach_detach_enabled: settings.telegram.attach_detach_enabled,
+        progress_enabled: settings.telegram.reminder_agent_progress_enabled,
+        silent_no_change_enabled,
     })
     .await;
 
@@ -703,19 +706,78 @@ async fn append_reminder_audit_event(
     Ok(())
 }
 
-fn scheduled_reminder_task_text(reminder: &ReminderJobRecord) -> String {
-    format!(
+fn scheduled_reminder_task_text(
+    reminder: &ReminderJobRecord,
+    silent_no_change_enabled: bool,
+) -> String {
+    let mut text = format!(
         "Scheduled wake-up reminder.\nReminder ID: {}\nSchedule: {:?}\nCurrent time (unix): {}\n\nTask:\n{}\n\nExecute the task now and send the user a concise report.",
         reminder.reminder_id,
         reminder.schedule_kind,
         current_timestamp_unix_secs(),
         reminder.task_prompt,
-    )
+    );
+    if silent_no_change_enabled {
+        text.push_str("\n\nIf there is no user-visible change, return exactly:\n");
+        text.push_str(super::NO_USER_VISIBLE_CHANGE_SENTINEL);
+        text.push_str("\nDo not add any other text.");
+    }
+    text
 }
 
 fn current_timestamp_unix_secs() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
         Err(_) => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_agent_core::storage::{ReminderJobStatus, ReminderScheduleKind};
+
+    fn reminder_record() -> ReminderJobRecord {
+        ReminderJobRecord {
+            schema_version: 1,
+            version: 1,
+            reminder_id: "reminder-1".to_string(),
+            user_id: 7,
+            context_key: "ctx".to_string(),
+            flow_id: "flow".to_string(),
+            chat_id: 42,
+            thread_id: None,
+            thread_kind: ReminderThreadKind::Dm,
+            task_prompt: "Check status and report only meaningful changes.".to_string(),
+            schedule_kind: ReminderScheduleKind::Interval,
+            status: ReminderJobStatus::Scheduled,
+            next_run_at: 100,
+            interval_secs: Some(60),
+            cron_expression: None,
+            timezone: None,
+            lease_until: None,
+            last_run_at: None,
+            last_error: None,
+            run_count: 0,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn scheduled_reminder_prompt_omits_sentinel_when_silence_disabled() {
+        let prompt = scheduled_reminder_task_text(&reminder_record(), false);
+
+        assert!(!prompt.contains(super::super::NO_USER_VISIBLE_CHANGE_SENTINEL));
+        assert!(prompt.contains("send the user a concise report"));
+    }
+
+    #[test]
+    fn scheduled_reminder_prompt_adds_exact_sentinel_when_silence_enabled() {
+        let prompt = scheduled_reminder_task_text(&reminder_record(), true);
+
+        assert!(prompt.contains(super::super::NO_USER_VISIBLE_CHANGE_SENTINEL));
+        assert!(prompt.contains("If there is no user-visible change, return exactly:"));
+        assert!(prompt.contains("Do not add any other text."));
     }
 }

@@ -1845,6 +1845,8 @@ mod tests {
                 manager_home_chat_id: None,
                 manager_home_thread_id: None,
                 attach_detach_enabled: true,
+                reminder_agent_progress_enabled: true,
+                reminder_silent_no_change_enabled: false,
                 manager_home_agent_id: None,
                 topic_configs: Vec::new(),
             },

@@ -3,7 +3,7 @@ use super::{
     cancel_status_reply_markup, cleanup_abandoned_empty_flow,
     clear_completed_response_delivery_state, clear_pending_cancel_confirmation,
     clear_pending_cancel_message, derive_agent_mode_session_id, ensure_session_exists,
-    manager_control_plane_enabled, manager_default_chat_id,
+    is_no_user_visible_change_response, manager_control_plane_enabled, manager_default_chat_id,
     mark_completed_response_execution_started, merge_prompt_instructions,
     parse_agent_callback_action, parse_agent_control_command, pending_cancel_confirmation,
     pending_cancel_message, prepare_completed_response_delivery,
@@ -14,7 +14,7 @@ use super::{
     take_pending_cancel_message, use_inline_flow_controls, AgentCallbackAction,
     AgentControlCommand, BatchedTextTaskContext, CompletedResponseDeliveryAction,
     EnsureSessionContext, PendingTextInputBatch, PendingTextInputPart, SessionTransportContext,
-    AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, SESSION_REGISTRY,
+    AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, NO_USER_VISIBLE_CHANGE_SENTINEL, SESSION_REGISTRY,
 };
 use crate::bot::views::{
     AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -101,6 +101,20 @@ fn does_not_merge_short_independent_messages() {
         "another short note",
         batch.updated_at + Duration::from_millis(200),
     ));
+}
+
+#[test]
+fn no_change_sentinel_requires_exact_trimmed_response() {
+    assert!(is_no_user_visible_change_response(
+        NO_USER_VISIBLE_CHANGE_SENTINEL
+    ));
+    assert!(is_no_user_visible_change_response(&format!(
+        "  {NO_USER_VISIBLE_CHANGE_SENTINEL}\n"
+    )));
+    assert!(!is_no_user_visible_change_response(&format!(
+        "{NO_USER_VISIBLE_CHANGE_SENTINEL}."
+    )));
+    assert!(!is_no_user_visible_change_response("No visible changes."));
 }
 
 #[test]
@@ -497,6 +511,8 @@ fn test_settings(manager_users: Option<&str>) -> Arc<BotSettings> {
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -797,6 +813,8 @@ fn manager_default_chat_id_is_restricted_to_configured_manager_home() {
             manager_home_chat_id: Some(-100_123),
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -828,6 +846,8 @@ fn manager_control_plane_access_is_restricted_to_configured_manager_home() {
             manager_home_chat_id: Some(-100_123),
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -869,6 +889,8 @@ fn manager_control_plane_access_requires_dedicated_allowlist_entry() {
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -902,6 +924,8 @@ fn manager_control_plane_access_is_disabled_in_direct_messages() {
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -929,6 +953,8 @@ fn manager_control_plane_access_is_disabled_in_non_forum_groups() {
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -956,6 +982,8 @@ fn manager_control_plane_access_disabled_when_allowlist_is_empty() {
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -983,6 +1011,8 @@ fn manager_control_plane_gating_disables_tools_inside_created_topics() {
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },

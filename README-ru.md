@@ -128,6 +128,8 @@
 TELEGRAM_TOKEN=ВАШ_ТОКЕН
 ALLOWED_USERS=ID1,ID2 # Список разрешенных Telegram ID (базовый доступ)
 AGENT_ACCESS_IDS=ID1 # Доступ к Режиму Агента (тратит много токенов)
+REMINDER_AGENT_PROGRESS_ENABLED=false # Watch/ward reminders: скрыть progress-шум
+REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: молчать, если изменений нет
 
 # Конфигурация Агента
 AGENT_TIMEOUT_SECS=300          # Тайм-аут выполнения агента

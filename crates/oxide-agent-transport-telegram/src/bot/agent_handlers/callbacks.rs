@@ -261,6 +261,8 @@ async fn handle_loop_retry(
             use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
             use_inline_flow_controls: use_inline_flow_controls(retry_ctx.thread_spec),
             attach_detach_enabled,
+            progress_enabled: true,
+            silent_no_change_enabled: false,
         })
         .await
         {
