@@ -2296,6 +2296,10 @@ pub const LLM_HTTP_TIMEOUT_SECS: u64 = 30;
 /// Default token budget reserved for recent tool interactions in hot memory.
 /// Only tool outputs within this budget are protected from pruning during active runs.
 pub const DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS: usize = 8_192;
+/// Default target for raw recent messages retained after PostRun cleanup.
+pub const DEFAULT_POST_RUN_RECENT_RAW_TARGET_TOKENS: usize = 24 * 1024;
+/// Default telemetry target for total hot context retained after PostRun cleanup.
+pub const DEFAULT_POST_RUN_HOT_CONTEXT_TARGET_TOKENS: usize = 32 * 1024;
 /// Default soft warning threshold for hot context growth.
 pub const DEFAULT_HOT_CONTEXT_SOFT_WARNING_TOKENS: usize = 60_000;
 /// Default hard threshold for hot context compaction.
@@ -2310,6 +2314,30 @@ pub fn get_compaction_protected_tool_window_tokens() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS)
+}
+
+/// Get the raw recent-message target retained after PostRun cleanup.
+///
+/// Environment variable: `POST_RUN_RECENT_RAW_TARGET_TOKENS`
+#[must_use]
+pub fn get_post_run_recent_raw_target_tokens() -> usize {
+    std::env::var("POST_RUN_RECENT_RAW_TARGET_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or(DEFAULT_POST_RUN_RECENT_RAW_TARGET_TOKENS)
+}
+
+/// Get the hot-context telemetry target used after PostRun cleanup.
+///
+/// Environment variable: `POST_RUN_HOT_CONTEXT_TARGET_TOKENS`
+#[must_use]
+pub fn get_post_run_hot_context_target_tokens() -> usize {
+    std::env::var("POST_RUN_HOT_CONTEXT_TARGET_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or(DEFAULT_POST_RUN_HOT_CONTEXT_TARGET_TOKENS)
 }
 
 /// Get LLM HTTP timeout from env or default

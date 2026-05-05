@@ -12,9 +12,8 @@ use crate::agent::persistent_memory::{
 use crate::agent::progress::{AgentEvent, TokenSnapshot};
 use crate::agent::session::PendingUserInput;
 use crate::agent::tool_bridge::sync_todos_from_arc;
+use crate::config::get_post_run_hot_context_target_tokens;
 use tracing::{info, warn};
-
-const POST_RUN_HOT_CONTEXT_TARGET_TOKENS: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PostRunCleanupTelemetry {
@@ -27,7 +26,7 @@ struct PostRunCleanupTelemetry {
 
 impl PostRunCleanupTelemetry {
     fn from_snapshots(before: &TokenSnapshot, after: &TokenSnapshot) -> Self {
-        let target_hot_tokens = POST_RUN_HOT_CONTEXT_TARGET_TOKENS;
+        let target_hot_tokens = get_post_run_hot_context_target_tokens();
         let after_hot_tokens = after.hot_memory_tokens;
 
         Self {
@@ -458,11 +457,12 @@ fn should_salvage_structured_output_failure(raw: &str) -> bool {
 mod tests {
     use super::{
         contains_explicit_remember_phrase, should_salvage_structured_output_failure, AgentRunner,
-        PostRunCleanupTelemetry, POST_RUN_HOT_CONTEXT_TARGET_TOKENS,
+        PostRunCleanupTelemetry,
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::memory::AgentMessage;
     use crate::agent::progress::TokenSnapshot;
+    use crate::config::get_post_run_hot_context_target_tokens;
 
     fn snapshot(hot_memory_tokens: usize) -> TokenSnapshot {
         TokenSnapshot {
@@ -483,31 +483,27 @@ mod tests {
 
     #[test]
     fn post_run_cleanup_telemetry_marks_target_met() {
-        let telemetry = PostRunCleanupTelemetry::from_snapshots(
-            &snapshot(48_000),
-            &snapshot(POST_RUN_HOT_CONTEXT_TARGET_TOKENS - 256),
-        );
+        let target = get_post_run_hot_context_target_tokens();
+        let after = target.saturating_sub(256);
+        let before = after + 10_000;
+        let telemetry =
+            PostRunCleanupTelemetry::from_snapshots(&snapshot(before), &snapshot(after));
 
-        assert_eq!(telemetry.before_hot_tokens, 48_000);
-        assert_eq!(
-            telemetry.after_hot_tokens,
-            POST_RUN_HOT_CONTEXT_TARGET_TOKENS - 256
-        );
-        assert_eq!(telemetry.reclaimed_hot_tokens, 31_872);
+        assert_eq!(telemetry.before_hot_tokens, before);
+        assert_eq!(telemetry.after_hot_tokens, after);
+        assert_eq!(telemetry.reclaimed_hot_tokens, 10_000);
         assert!(telemetry.target_met);
     }
 
     #[test]
     fn post_run_cleanup_telemetry_marks_target_miss() {
+        let target = get_post_run_hot_context_target_tokens();
         let telemetry = PostRunCleanupTelemetry::from_snapshots(
-            &snapshot(48_000),
-            &snapshot(POST_RUN_HOT_CONTEXT_TARGET_TOKENS + 1),
+            &snapshot(target + 10_000),
+            &snapshot(target + 1),
         );
 
-        assert_eq!(
-            telemetry.target_hot_tokens,
-            POST_RUN_HOT_CONTEXT_TARGET_TOKENS
-        );
+        assert_eq!(telemetry.target_hot_tokens, target);
         assert!(!telemetry.target_met);
     }
 

@@ -10,10 +10,10 @@ use super::types::{
     RebuildOutcome,
 };
 use crate::agent::memory::AgentMessage;
+use crate::config::get_post_run_recent_raw_target_tokens;
 use crate::llm::InvocationId;
 use tracing::warn;
 
-const POST_RUN_RECENT_RAW_TARGET_TOKENS: usize = 8 * 1024;
 const POST_RUN_MAX_RECENT_USER_REQUESTS: usize = 2;
 const POST_RUN_MAX_RECENT_ASSISTANT_UPDATES: usize = 2;
 const POST_RUN_MAX_RECENT_TOOL_OUTCOMES: usize = 3;
@@ -317,6 +317,7 @@ fn build_breadcrumb_card(messages: &[AgentMessage], summary: &CompactionSummary)
 fn collect_post_run_raw_tail_indices(messages: &[AgentMessage], preserved: &[bool]) -> Vec<usize> {
     let mut selected = Vec::new();
     let mut protected_tokens = 0usize;
+    let recent_raw_target_tokens = get_post_run_recent_raw_target_tokens();
 
     for (index, message) in messages.iter().enumerate().rev() {
         if preserved.get(index).copied().unwrap_or(false) {
@@ -328,7 +329,7 @@ fn collect_post_run_raw_tail_indices(messages: &[AgentMessage], preserved: &[boo
 
         let estimated_tokens = estimate_message_tokens(message);
         if !selected.is_empty()
-            && protected_tokens.saturating_add(estimated_tokens) > POST_RUN_RECENT_RAW_TARGET_TOKENS
+            && protected_tokens.saturating_add(estimated_tokens) > recent_raw_target_tokens
         {
             continue;
         }
