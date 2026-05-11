@@ -17,23 +17,9 @@ Default branch: `testing`.
 ## External Services
 
 ### browser_use_bridge (disabled)
-> **NOTE**: Browser Use is disabled. A high-quality vision-agent model is required at a reasonable token cost.
-> The code and bridge service are kept; enable it by setting `BROWSER_USE_URL` in the config.
-> Details: `docs/browser-use.md`.
-- Python/FastAPI service in `services/browser_use_bridge/` for browser automation via browser_use.
-- Architecture: FastAPI app with slices (`models/`, `services/`, `utils/`), each slice is a self-contained module.
-  - `app/main.py` — HTTP endpoints (session lifecycle, screenshot, extract_content, health)
-  - `app/config.py` — frozen Settings from env vars with the `BROWSER_USE_BRIDGE_*` prefix
-  - `app/services/` — session_manager, profiles, browser_ops, llm_resolver
-  - `app/utils/` — browser_utils (liveness probing), json_safe, text, time
-- **Profile lifecycle**: `active` → `idle` → `stale` → deleted; TTL pruning (default 7 days), orphan reconciliation on bridge restart.
-- **Profile scope isolation**: profiles are scoped (e.g. `topic-a`); cross-scope reuse is rejected with HTTP 409; quota `max_profiles_per_scope` (default 3).
-- **Execution modes**: `autonomous` (full browse) vs `navigation_only` (strict steering for follow-up tools, `enable_planning=False`, `max_actions_per_step=1`).
-- **Keep-alive**: `navigation_only` runs request `keep_alive=True` for runtime reuse in follow-up tools (`extract_content`/`screenshot`); reconnect attempt on dead runtime.
-- **Runtime liveness**: `probe_browser_runtime_ready()`, `probe_browser_session_state()`; transient CDP errors are retried; observability via `browser_runtime_alive`, `browser_reconnect_attempted/succeeded`.
-- **LLM resolution**: request-level `BrowserLlmConfig` (with `api_key_ref` like `env:ZAI_API_KEY`) or legacy `BROWSER_USE_BRIDGE_LLM_PROVIDER/MODEL`; providers: `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing is relaxed for `zai`/`zhipuai`/`glm`.
-- **Visual route guardrails**: configurable guardrails for visual follow-ups; legacy steering wrapper detection (tasks starting with `"Browser Use execution rules for this run:"` → `navigation_only`).
-- **Screenshots**: hydrated into the sandbox artifacts dir; available via `/sessions/{id}/artifacts/{artifact_id}`.
+- Browser Use is disabled until a cost-effective high-quality vision-agent model is available.
+- Code remains in `services/browser_use_bridge/`; enable it with `BROWSER_USE_URL` and see `docs/browser-use.md`.
+- Keep scope isolation, `navigation_only` guardrails, and runtime liveness/reconnect behavior when touching the bridge.
 
 ## Workspace Overview
 
@@ -73,54 +59,22 @@ Default branch: `testing`.
 ## Key subsystems
 
 ### Agent execution model
-- Runner (`agent/runner/`) - execution loop, tool dispatch, response parsing, hook integration, loop detection.
-- `AgentSession` - lifecycle tasks, timeout, cancellation, loaded skills, hot memory.
-- **Parallel tool execution** - multiple tool calls in one LLM response run concurrently.
-- **Fire-and-forget checkpoint** - memory persistence is async and non-blocking; flow checkpoints are coalesced to skip identical snapshots.
-- **History repair** - `tool_call_id` validation before LLM calls; orphaned tool results are prevented during compaction.
-- **Cold-start tool drift pruning** - removes stale tool calls from persisted memories; configurable via `STARTUP_TOOL_DRIFT_PRUNE_*` env vars.
-- Narrator - separate model for thought/narrative summarization.
-- **Configurable temperature** - `AGENT_MODEL_TEMPERATURE` env var for overriding main-agent generation.
+- Runner lives in `crates/oxide-agent-core/src/agent/runner/`; executor slices live under `agent/executor/`.
+- Sessions handle lifecycle, cancellation, loaded skills, hot memory, and transport-independent progress.
+- Tool calls can run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
+- Compaction protects recent tool context, prunes only before the summary boundary, and coalesces identical checkpoints.
 
 ### Persistent memory
-- Code: `agent/persistent_memory/{classifier,coordinator,retrieval,embeddings,post_run,store,behavior}.rs` in core; domain model in `oxide-agent-memory`.
-- Postgres backend (pgvector + tsvector); hybrid retrieval (lexical + vector + fusion scoring).
-- **LLM Memory Classifier** — 9-class taxonomy (Smalltalk, EpisodeHistory, ExternalFreshFact, ProcedureHowTo, ConstraintPolicy, PreferenceRecall, DecisionRecall, DurableProjectFact, General); returns read/write policy.
-- **Post-run memory writer** — LLM-based extraction of reusable memories from a completed task (up to 8 records): Fact, Preference, Procedure, Decision, Constraint.
-- **Episode finalizer** — deterministic generation of Thread + Episode + SessionState records.
-- **Context consolidator** — importance decay, exact + similarity dedup, TTL expiry, stale session cleanup.
-- **Embedding indexer** — async query/document-aware embeddings + backfill; the active embedding profile id includes provider/model/dimensions/prompt-style/prefixes and is used for cache/vector isolation; `openai-base` requires `EMBEDDING_OPENAI_BASE_URL` and `EMBEDDING_OPENAI_API_KEY`.
-- **Retrieval advisor hook** — injects contextual cards for memory search suggestion, history, episode.
-- **Behavior hooks** — `EpisodicExtractHook` captures tool-derived memory drafts (write_file -> Procedure, failed exec -> Fact, repeated edits -> Preference).
-- Memory read tools: `memory_search`, `memory_read_episode`, `memory_read_thread_summary`, `memory_read_thread_window`, `memory_diagnostics`.
-- Config: `MEMORY_DATABASE_URL`, `MEMORY_DATABASE_MAX_CONNECTIONS`, `MEMORY_DATABASE_AUTO_MIGRATE`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_OPENAI_BASE_URL`, `EMBEDDING_OPENAI_API_KEY`, `EMBEDDING_PROMPT_STYLE`, `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_DOCUMENT_PREFIX`, classifier env vars.
+- Domain model is in `crates/oxide-agent-memory`; orchestration is in `crates/oxide-agent-core/src/agent/persistent_memory/`.
+- Postgres uses pgvector + tsvector with hybrid lexical/vector retrieval and embedding-profile isolation.
+- Memory classification, post-run writing, episode finalization, consolidation, and retrieval hooks are separate stages; keep them transport-agnostic.
+- Main tools: `memory_search`, `memory_read_episode`, `memory_read_thread_summary`, `memory_read_thread_window`, `memory_diagnostics`.
 
-### Agent Mode compaction
-- Pipeline: budget estimation -> classify -> externalize -> prune -> summarize -> rebuild hot context.
-- Token-based protected window (configurable via `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`).
-- Compaction summarization inherits the `AGENT_MODEL_ROUTES`/`SUB_AGENT_MODEL_ROUTES` fallback.
-- Prunes only before the summary boundary; delegated results skip externalization.
-- **Superseded dedup** - Stage-4 deduplication of identical read-only results (read_file, list_files, agents_md_get, stack_logs). Blocked by mutation between reads (exec, write_file, apply_file_edit).
-
-### Model Route Failover
-- Weighted fallback routes via `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`.
-- Route quarantine after persistent 429s; emits the `ProviderFailoverActivated` event.
-
-### Hooks and loop detection
-- Hook system: `agent/hooks/` + integration in `agent/runner/hooks.rs`.
-- `completion_check` and `tool_access_policy` are always active; topic-managed hooks: `workload_distributor`, `delegation_guard`, `search_budget`, `timeout_report`.
-- Loop detection is three-layered: content detector, tool sequence detector, LLM detector.
-- Guide and lifecycle details: `docs/hooks/`.
-
-### Sub-agents
-- Delegation is implemented via `DelegationProvider`, `DelegationGuardHook`, `SubAgentSafetyHook`, and a separate `EphemeralSession`; on bootstrap, the sub-agent inherits the topic-scoped `AGENTS.md`.
-- Sub-agents have isolated context, separate memory, automatic cleanup, and are forbidden from recursive delegation, sending files to the user, `recreate_sandbox`, reminders, `stack_logs`, and the entire topic-mutation/control-plane tool surface (`topic_*`, `agents_md_*`, `forum_topic_*`, profile/infra mutations).
-- Configuration: `sub_agent_model_id`, `sub_agent_model_provider`, `sub_agent_max_tokens`.
-
-### Skills
-- Code: `agent/skills/{registry,embeddings,matcher,cache,loader,types}.rs`.
-- Skill matching is embedding-based; embedding dimensions can be auto-detected.
-- Available system skills live in `skills/`.
+### Hooks, sub-agents, and skills
+- Hooks live in `agent/hooks/`; `completion_check` and `tool_access_policy` are always active. Details: `docs/hooks/`.
+- Loop detection has content, tool-sequence, and LLM layers; avoid bypassing it in runner changes.
+- Sub-agents use isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, and cannot recurse, send files, mutate topics/control-plane state, use reminders, `stack_logs`, or `recreate_sandbox`.
+- Skills live in `agent/skills/` and `skills/`; matching is embedding-based.
 
 ### Topic- and flow-scoped state
 - Per-transport contexts live in `UserConfig.contexts` through `UserContextConfig`.
@@ -128,70 +82,25 @@ Default branch: `testing`.
 - Chat history is isolated via `scoped_chat_storage_id` in the form `"{context_key}/{chat_uuid}"`.
 - Topic-scoped flows support attach/detach UX and are stored under the `users/{user_id}/topics/{context_key}/flows/{flow_id}/` prefix.
 - `forum_topic_list` is available for memory-independent topic discovery, but blocked for sub-agents.
+- Topic-scoped `AGENTS.md` is a separate storage record, pinned during flow bootstrap, live-synced after `agents_md_update`, and inherited by sub-agents.
 
-### Topic-scoped AGENTS.md
-- Storage record: `TopicAgentsMdRecord`; flow bootstrap loads the record into pinned system memory, and `agents_md_update` syncs the updated text back into the live session and checkpoint.
-- Topic prompt limit: up to 300 lines for `AGENTS.md`, up to 40 lines for `topic_context`.
-- Tool surface: `agents_md_get` / `agents_md_update` for topic agent sessions; the manager control plane provides `topic_agents_md_{upsert,get,delete,rollback}` with audit trail and rollback.
+### Control plane and operational tools
+- Manager control plane lives in `agent/providers/manager_control_plane/`; it owns CRUD for topics, bindings, contexts, AGENTS.md, infra, sandboxes, profiles, controls, audit trail, and rollback.
+- Stack logs tools read Docker Compose logs, require `topic_infra`, and are blocked for sub-agents.
+- Reminders live in `agent/providers/reminder.rs` plus storage records; the in-memory scheduler wakes the original topic/flow.
+- SSH approval flow is currently disabled; native upstream SSH file tools are used directly.
 
-### Manager control plane
-- Code: `agent/providers/manager_control_plane/`.
-- Covers CRUD for forum topics, bindings, contexts, AGENTS.md, infra config, sandboxes, agent profiles, and controls.
-- All operations are logged in the audit trail; rollback exists for supported entities.
-- Optional `MANAGER_HOME_*` env vars restrict operations to a specific topic when configured.
-- Deleting a forum topic automatically cleans up topic memory, chat history, sandboxes, bindings, contexts, AGENTS.md, and infra records.
-
-### Stack logs
-- Access Docker Compose logs through `stack_logs_list_sources` and `stack_logs_fetch`.
-- Default: 200 entries, max 500; filtering by time, service, pagination.
-- Requires `topic_infra` (SSH) access; controlled via the manager control plane (`topic_agent_tools_enable`/`disable`).
-- Blocked for sub-agents (operational safety).
-
-### Sandbox and SSH infrastructure
+### Sandbox and SSH
 - Sandbox facade: `crates/oxide-agent-core/src/sandbox/manager.rs`; backends are direct Docker or broker via `sandbox/broker.rs`.
-- `SandboxScope` provides a stable container identity for persistent sandbox reuse.
+- `SandboxScope` provides stable container identity for persistent sandbox reuse.
 - SSH tools: `exec`, `sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`, `check_process`.
-- Native upstream file tools (ssh-mcp binary) are used for `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`; legacy Python fallback for non-absolute paths.
 - Secret refs support `env:KEY` and `storage:PATH`; secrets must not reach prompts or memory.
-- `recreate_sandbox` - exclusive lock, workspace reset; blocked for sub-agents.
 
-### Approval flow
-- Used for sensitive SSH operations.
-- Components: `SshApprovalRegistry`, `SshApprovalRequestView`, `SshApprovalGrant`, `ApprovalState`.
-- Approval is required for dangerous commands, sensitive paths, and modes from `approval_required_modes`.
-- Grants are topic-scoped, single-use, TTL 600s; after approval, the task is automatically re-run.
-- **Note**: the SSH approval flow is currently disabled — pending payloads are lost between request and grant; native upstream tools are used directly.
-
-### Reminder system
-- Main code: `agent/providers/reminder.rs` + storage records in `storage/reminder.rs` and `r2_reminder.rs`.
-- Supported schedules: `Once`, `Interval`, `Cron`.
-- Simplified args: `date`, `time`, `every_minutes`, `every_hours`, `timezone`, `weekdays`; partial date/time inputs are supported.
-- Main tools: `reminder_schedule`, `reminder_list`, `reminder_cancel`, `reminder_pause`, `reminder_resume`, `reminder_retry`.
-- In-memory scheduler queue (bootstrapped from storage); wakes the agent in the original topic/flow.
-
-### Progress and UI
-- Progress runtime lives in `oxide-agent-runtime`, transport rendering - in `oxide-agent-transport-telegram/src/bot/progress_render.rs`.
-- Agent Mode UI is centered in `views/agent.rs` and `bot/agent_handlers/`.
-- The transport layer handles welcome/error/progress UI, inline callbacks, topic controls, media handling, and resilient send/edit wrappers.
-- Rate limit status is shown immediately in the UI; it is reset automatically on recovery.
-
-## Storage, LLM, and providers
-
-### Storage
-- `storage/mod.rs` - facade and re-exports; the R2 backend is split by topic.
-- R2 telemetry: operation counts, cache hit/miss.
-- `R2_REGION` env (default `auto`) - MinIO/Wasabi/B2 compatibility.
-- Tests: `storage/tests/`.
-
-### LLM
-- Providers: `chatgpt`, `gemini`, `groq`, `mistral`, `minimax/`, `nvidia`, `openrouter`, `zai`.
-- Browser-use bridge LLM resolution (disabled): separate from core providers; supports `browser_use`, `google`, `anthropic`, `minimax`, `zai`, `openrouter`, `openai_compatible`; schema forcing is relaxed for `zai`/`zhipuai`/`glm`.
-- The `chatgpt` provider uses an OAuth auth file (`CHATGPT_AUTH_PATH`) and the Codex/Responses streaming API; structured-output/json-mode routes for it are disabled and must fail over to a non-ChatGPT route.
-- HTTP connection pooling + tokenizer caching (~15s startup latency eliminated).
-- Embedding dimensions: default 1024, configurable via `EMBEDDING_DIMENSIONS`; Mistral provider skips the dimensions param (auto-handles truncation); custom OpenAI-compatible embeddings are available via `EMBEDDING_PROVIDER=openai-base` + `EMBEDDING_OPENAI_BASE_URL` + `EMBEDDING_OPENAI_API_KEY`.
-- Voice transcription: `voxtral` (Mistral) with retry backoff (5 attempts, 3s→48s).
-- NVIDIA NIM provider: `nvidia/llama-3.3-nemotron-super-49b-v1`, `nvidia/nemotron-mini`, `minimaxai/minimax-m*`.
-- LLM module structure: `capabilities.rs` (model capabilities), `client.rs` (HTTP orchestration), `support/` (backoff, history, http utils), `types.rs` (domain types).
+### Storage and LLM
+- Storage facade and R2 backend are under `crates/oxide-agent-core/src/storage/`; use context-scoped APIs for transport state.
+- LLM providers live in `crates/oxide-agent-core/src/llm/providers/`; shared orchestration is in `llm/client.rs`, `llm/capabilities.rs`, `llm/support/`, and `llm/types.rs`.
+- Route failover uses weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route and emit `ProviderFailoverActivated`.
+- ChatGPT uses OAuth/Codex Responses streaming and must fail over for structured-output/json-mode routes.
 
 ### Tool providers
 - sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (native upstream file tools + legacy fallback), yt-dlp, reminders, agents_md, **persistent memory** (search, episode read, thread summary/window, diagnostics), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose logs; disabled by default for topic agents, blocked for sub-agents).
@@ -201,9 +110,8 @@ Default branch: `testing`.
 
 - `crates/oxide-agent-transport-telegram` - handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
 - `bot/agent_handlers/` - lifecycle, controls, callbacks, input, task runner, session, reminders.
-- `context.rs`, `topic_route.rs` - context-scoped state, topic binding resolution.
-- `thread.rs`, `session_registry.rs` - thread-aware session isolation.
-- Rate limit status is shown in the UI; provider failover notice is shown on switch.
+- `context.rs`, `topic_route.rs`, `thread.rs`, `session_registry.rs` - context, topic, and thread isolation.
+- Rate-limit and provider-failover states are rendered in the UI.
 
 ## Web transport (E2E tests)
 
@@ -235,6 +143,32 @@ Default branch: `testing`.
 - Main categories: hermetic tests, integration tests, snapshot tests (`insta`), property/fuzz tests (`proptest`).
 - E2E tests: `crates/oxide-agent-transport-web/tests/e2e.rs` — 6 E2E tests (session lifecycle, task execution, SSE streaming, latency milestones).
 - Useful references: `tests/hermetic_agent.rs`, `tests/snapshot_prompts.rs`, `tests/proptest_recovery.rs`.
+
+### Commit style
+- Use full commit messages, not short one-line commits.
+- Format:
+  - `<type>(<scope>): <description>`
+  - blank line
+  - indented body with `Changes:` and 2-4 concrete bullets
+- Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`.
+
+Example:
+
+```text
+feat(sources): add bybit proof of reserves source
+
+    Changes:
+    - Add Bybit proof-of-reserves source using the official frontend reserve ratio JSON endpoint
+    - Normalize target asset reserve ratio and missing-asset transparency candidates with source-local tests
+    - Wire scheduled checks and refresh source docs
+```
+
+## Where to find details
+
+- `docs/hooks/` - hook lifecycle and managed hook behavior.
+- `docs/browser-use.md` - disabled browser-use bridge details.
+- `README.md` / `README-ru.md` - product overview and user-facing setup notes.
+- `config/` and `.env.example` - runtime configuration examples.
 
 ## System extension
 
